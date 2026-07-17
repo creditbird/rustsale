@@ -1,5 +1,6 @@
 <script lang="ts">
   import Sidebar from '$lib/components/Sidebar.svelte';
+  import Dashboard from '$lib/components/Dashboard.svelte';
 
   let activeTab = $state('dashboard');
 </script>
@@ -10,10 +11,7 @@
   <main class="main-content">
     <div class="scroll-container">
       {#if activeTab === 'dashboard'}
-        <div class="view-container">
-          <h1 class="view-title">Dashboard</h1>
-          <p class="placeholder-text">Dashboard Placeholder - View switching implemented successfully.</p>
-        </div>
+        <Dashboard />
       {:else if activeTab === 'leads'}
         <div class="view-container">
           <h1 class="view-title">Leads & Contacts</h1>
