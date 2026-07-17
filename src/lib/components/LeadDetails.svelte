@@ -30,15 +30,20 @@
         crmService.getLeadDetails(id),
         crmService.getActivities(id)
       ]);
+      if (id !== leadId) return;
       lead = leadData;
       // Sort activities: newest first
       activities = activitiesData.sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
     } catch (err) {
-      errorMsg = err instanceof Error ? err.message : String(err);
+      if (id === leadId) {
+        errorMsg = err instanceof Error ? err.message : String(err);
+      }
     } finally {
-      loading = false;
+      if (id === leadId) {
+        loading = false;
+      }
     }
   }
 
@@ -47,20 +52,28 @@
     if (!activityContent.trim()) return;
 
     logging = true;
+    errorMsg = null;
+    const currentLeadId = leadId;
     try {
       const performer = lead?.owner || 'Self';
-      await crmService.addActivity(leadId, activityType, activityContent.trim(), performer);
+      await crmService.addActivity(currentLeadId, activityType, activityContent.trim(), performer);
+      if (currentLeadId !== leadId) return;
       activityContent = '';
       
       // Refresh activity list
-      const activitiesData = await crmService.getActivities(leadId);
+      const activitiesData = await crmService.getActivities(currentLeadId);
+      if (currentLeadId !== leadId) return;
       activities = activitiesData.sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
     } catch (err) {
-      errorMsg = err instanceof Error ? err.message : String(err);
+      if (currentLeadId === leadId) {
+        errorMsg = err instanceof Error ? err.message : String(err);
+      }
     } finally {
-      logging = false;
+      if (currentLeadId === leadId) {
+        logging = false;
+      }
     }
   }
 
@@ -122,10 +135,17 @@
     </div>
   {:else if lead}
     <div class="drawer-content">
+      {#if errorMsg}
+        <div class="error-banner">
+          <span class="material-icons">error_outline</span>
+          <span>{errorMsg}</span>
+        </div>
+      {/if}
+
       <!-- Profile Summary -->
       <section class="profile-summary">
         <div class="avatar">
-          {lead.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2)}
+          {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
         </div>
         <div class="profile-info">
           <h4>{lead.name}</h4>
@@ -490,6 +510,19 @@
 
   textarea:focus {
     border-color: var(--color-outline);
+  }
+
+  .error-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md);
+    background-color: rgba(244, 63, 94, 0.08);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--rounded-md);
+    color: var(--color-danger);
+    font-size: 13px;
+    margin-bottom: var(--spacing-md);
   }
 
   .submit-btn {

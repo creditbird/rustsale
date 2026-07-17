@@ -45,7 +45,7 @@
       {#if activeTab === 'dashboard'}
         <Dashboard />
       {:else if activeTab === 'leads'}
-        <LeadsList {leads} />
+        <LeadsList {leads} onRefresh={loadLeads} />
       {:else if activeTab === 'pipeline'}
         <KanbanBoard />
       {/if}
