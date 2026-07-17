@@ -1,10 +1,13 @@
 #[cfg(test)]
 mod tests {
     use crate::scrapers::browser::BrowserManager;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_browser_manager_lifecycle() {
-        let manager = BrowserManager::new(2);
+        let manager = BrowserManager::new(2).with_port(9222);
 
         // Start the browser in headless mode
         let start_res = manager.start(true).await;
@@ -34,5 +37,69 @@ mod tests {
         // Close the manager
         let close_res = manager.close().await;
         assert!(close_res.is_ok(), "Failed to close browser: {:?}", close_res.err());
+    }
+
+    #[tokio::test]
+    async fn test_browser_manager_session_pooling() {
+        let manager = Arc::new(BrowserManager::new(1).with_port(9223)); // max_sessions = 1
+
+        // Start the browser
+        manager.start(true).await.expect("Failed to start browser");
+
+        // Acquire the first and only allowed session
+        let session1 = manager.acquire().await.expect("Failed to acquire session 1");
+
+        // Spawn a task that will release the session after a short delay
+        let manager_clone = manager.clone();
+        let session1_clone = session1.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            manager_clone.release(session1_clone).await.expect("Failed to release session");
+        });
+
+        // Try to acquire another session. This should block/wait until the first session is released
+        let start_time = std::time::Instant::now();
+        let session2 = manager.acquire().await.expect("Failed to acquire session 2");
+        let elapsed = start_time.elapsed();
+
+        // Verify that it actually waited for at least some time (roughly > 150ms)
+        assert!(elapsed >= Duration::from_millis(150), "Should have blocked waiting for release, but finished in {:?}", elapsed);
+
+        // Verify that we reused the same session structure since it was released
+        assert!(Arc::ptr_eq(&session1, &session2));
+
+        // Clean up
+        manager.close().await.expect("Failed to close manager");
+    }
+
+    #[tokio::test]
+    async fn test_browser_manager_raii_drop() {
+        let manager = BrowserManager::new(1).with_port(9224);
+        manager.start(true).await.expect("Failed to start browser");
+
+        // Retrieve process ID
+        let pid = manager.process_id().await.unwrap();
+
+        // Verify it is currently running (kill -0 should return success)
+        let status = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status();
+        assert!(status.is_ok());
+        assert!(status.unwrap().success(), "Process should be alive");
+
+        // Drop the manager to trigger RAII drop implementation
+        drop(manager);
+
+        // Wait a short moment to ensure the process has completed exit handling
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify process is dead/reaped (kill -0 should fail)
+        let status = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status();
+        assert!(status.is_ok());
+        assert!(!status.unwrap().success(), "Process should have been killed and reaped by drop()");
     }
 }

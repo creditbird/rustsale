@@ -4305,6 +4305,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tokio",
+ "tokio-stream",
  "urlencoding",
  "zca-rs",
 ]

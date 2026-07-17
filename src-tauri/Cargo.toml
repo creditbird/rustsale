@@ -29,5 +29,6 @@ urlencoding = "2.1"
 zca-rs = { path = "../../zca-rs" }
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 
 
