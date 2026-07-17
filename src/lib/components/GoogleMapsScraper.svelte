@@ -15,6 +15,60 @@
   let maxLng = $state(106.7);
   let stepKm = $state(2.0);
 
+  const PRESET_PROVINCES: Record<string, { minLat: number; maxLat: number; minLng: number; maxLng: number }> = {
+    'TP. Hồ Chí Minh': { minLat: 10.37, maxLat: 11.16, minLng: 106.36, maxLng: 107.03 },
+    'Hà Nội': { minLat: 20.58, maxLat: 21.36, minLng: 105.28, maxLng: 106.03 },
+    'Đà Nẵng': { minLat: 15.91, maxLat: 16.23, minLng: 107.81, maxLng: 108.34 },
+    'Bình Dương': { minLat: 10.89, maxLat: 11.51, minLng: 106.50, maxLng: 106.91 },
+    'Đồng Nai': { minLat: 10.74, maxLat: 11.58, minLng: 106.75, maxLng: 107.58 },
+    'Cần Thơ': { minLat: 9.91, maxLat: 10.32, minLng: 105.22, maxLng: 105.86 },
+    'Hải Phòng': { minLat: 20.53, maxLat: 21.02, minLng: 106.40, maxLng: 107.13 },
+    'Long An': { minLat: 10.20, maxLat: 11.02, minLng: 105.50, maxLng: 106.80 },
+    'Quảng Ninh': { minLat: 20.67, maxLat: 21.68, minLng: 106.43, maxLng: 108.08 },
+    'Khánh Hòa (Nha Trang)': { minLat: 11.72, maxLat: 12.87, minLng: 108.68, maxLng: 109.47 },
+    'Lâm Đồng (Đà Lạt)': { minLat: 11.18, maxLat: 12.30, minLng: 107.27, maxLng: 108.78 },
+  };
+
+  let geocodeQuery = $state('');
+  let isGeocoding = $state(false);
+
+  async function detectCoordinates() {
+    if (!geocodeQuery.trim()) {
+      appendLog("Error: Please enter a region or address to search.");
+      return;
+    }
+    isGeocoding = true;
+    appendLog(`Geocoding coordinates for: "${geocodeQuery}"...`);
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(geocodeQuery + ", Vietnam")}&format=json&limit=1`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'RustSale-CRM-v2-Client'
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      if (data && data.length > 0) {
+        const bbox = data[0].boundingbox; // [minlat, maxlat, minlng, maxlng]
+        minLat = parseFloat(bbox[0]);
+        maxLat = parseFloat(bbox[1]);
+        minLng = parseFloat(bbox[2]);
+        maxLng = parseFloat(bbox[3]);
+        appendLog(`Successfully detected coordinates for "${data[0].display_name}":`);
+        appendLog(`-> Latitude: ${minLat} to ${maxLat}`);
+        appendLog(`-> Longitude: ${minLng} to ${maxLng}`);
+      } else {
+        appendLog(`Error: Could not find coordinates for "${geocodeQuery}". Try a broader name.`);
+      }
+    } catch (err) {
+      appendLog(`Geocoding failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      isGeocoding = false;
+    }
+  }
+
   // Scrape running states
   let isScraping = $state(false);
   let progress = $state(0);
@@ -203,8 +257,61 @@
             </div>
             <p class="input-desc">Focuses search on a specific neighborhood or town name.</p>
           </div>
-        {:else}
+          {:else}
           <div class="grid-inputs animate-slide-down">
+            <div class="helper-section">
+              <div class="input-group">
+                <label for="preset-select">Quick Select Province / City</label>
+                <select 
+                  id="preset-select" 
+                  disabled={isScraping}
+                  onchange={(e) => {
+                    const val = (e.target as HTMLSelectElement).value;
+                    if (val && PRESET_PROVINCES[val]) {
+                      const coords = PRESET_PROVINCES[val];
+                      minLat = coords.minLat;
+                      maxLat = coords.maxLat;
+                      minLng = coords.minLng;
+                      maxLng = coords.maxLng;
+                      appendLog(`Applied coordinates for preset: ${val}`);
+                    }
+                  }}
+                >
+                  <option value="">-- Select a Province / City --</option>
+                  {#each Object.keys(PRESET_PROVINCES) as prov}
+                    <option value={prov}>{prov}</option>
+                  {/each}
+                </select>
+              </div>
+
+              <div class="input-group">
+                <label for="geocode-query">Search Administrative Area (District/Ward/Address)</label>
+                <div style="display: flex; gap: var(--spacing-sm);">
+                  <input 
+                    id="geocode-query"
+                    type="text" 
+                    placeholder="e.g. Quận 1, TP. HCM" 
+                    bind:value={geocodeQuery}
+                    disabled={isScraping || isGeocoding}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        detectCoordinates();
+                      }
+                    }}
+                  />
+                  <button 
+                    type="button" 
+                    class="btn-secondary" 
+                    onclick={detectCoordinates}
+                    disabled={isScraping || isGeocoding}
+                  >
+                    {#if isGeocoding}Detecting...{:else}Detect{/if}
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div class="coordinates-title">Bounding Box Coordinates (Lat/Lng)</div>
             
             <div class="coord-grid">
@@ -824,5 +931,51 @@
   @keyframes slideDown {
     from { opacity: 0; transform: translateY(-8px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  .helper-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-sm);
+    padding-bottom: var(--spacing-md);
+    border-bottom: 1px dashed var(--color-outline-variant);
+  }
+  .helper-section select,
+  .helper-section input {
+    width: 100%;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--color-outline);
+    border-radius: var(--rounded-md);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-size: 13px;
+    height: 38px;
+    outline: none;
+    transition: var(--transition-fast);
+  }
+  .helper-section select:focus,
+  .helper-section input:focus {
+    border-color: var(--color-success);
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.1);
+  }
+  .btn-secondary {
+    background: var(--color-surface-container-high);
+    color: var(--color-on-surface);
+    border: 1px solid var(--color-outline);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: var(--rounded-md);
+    transition: var(--transition-fast);
+    height: 38px;
+    padding: 0 var(--spacing-md);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--color-surface-container-highest);
+  }
+  .btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>
