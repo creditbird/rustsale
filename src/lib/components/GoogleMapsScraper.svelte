@@ -20,7 +20,7 @@
   let progress = $state(0);
   let statusMessage = $state('Ready');
   let logs = $state<string[]>([]);
-  let consoleElement = $state<HTMLDivElement | null>(null);
+  let consoleElement: HTMLDivElement | null = null;
 
   let unlistenProgress: UnlistenFn | null = null;
   let unlistenLog: UnlistenFn | null = null;
@@ -44,6 +44,36 @@
       return;
     }
 
+    if (mode === 'grid') {
+      const latMin = Number(minLat);
+      const latMax = Number(maxLat);
+      const lngMin = Number(minLng);
+      const lngMax = Number(maxLng);
+      const step = Number(stepKm);
+
+      if (isNaN(latMin) || isNaN(latMax) || isNaN(lngMin) || isNaN(lngMax) || isNaN(step)) {
+        appendLog("Error: Bounding box coordinates and step size must be valid numbers.");
+        return;
+      }
+      if (latMin < -90 || latMin > 90 || latMax < -90 || latMax > 90 ||
+          lngMin < -180 || lngMin > 180 || lngMax < -180 || lngMax > 180) {
+        appendLog("Error: Latitude must be between -90 and 90, Longitude must be between -180 and 180.");
+        return;
+      }
+      if (latMin >= latMax) {
+        appendLog("Error: Min Latitude must be less than Max Latitude.");
+        return;
+      }
+      if (lngMin >= lngMax) {
+        appendLog("Error: Min Longitude must be less than Max Longitude.");
+        return;
+      }
+      if (step <= 0) {
+        appendLog("Error: Step size must be greater than 0.");
+        return;
+      }
+    }
+
     isScraping = true;
     progress = 0;
     statusMessage = 'Initializing scrape...';
@@ -52,16 +82,16 @@
     appendLog(`Keyword: "${keyword}"`);
 
     try {
-      const bbox = mode === 'grid' ? [minLat, maxLat, minLng, maxLng] : null;
+      const bbox = mode === 'grid' ? [Number(minLat), Number(maxLat), Number(minLng), Number(maxLng)] : null;
       const locationVal = mode === 'keyword' ? location : null;
-      const stepVal = mode === 'grid' ? stepKm : null;
+      const stepVal = mode === 'grid' ? Number(stepKm) : null;
 
       await invoke('start_google_maps_scrape', {
         keyword,
         mode,
         location: locationVal,
         bbox,
-        step_km: stepVal
+        stepKm: stepVal
       });
       appendLog('Tauri scrape command invoked successfully. Awaiting browser startup...');
     } catch (err) {
@@ -77,7 +107,7 @@
       (event) => {
         progress = event.payload.progress;
         statusMessage = event.payload.message;
-        if (event.payload.status === 'completed') {
+        if (event.payload.status === 'completed' || event.payload.status === 'failed') {
           isScraping = false;
         }
       }
@@ -122,6 +152,7 @@
 
       <div class="tabs">
         <button 
+          type="button"
           class="tab-btn" 
           class:active={mode === 'keyword'} 
           onclick={() => mode = 'keyword'}
@@ -131,6 +162,7 @@
           Keyword Search
         </button>
         <button 
+          type="button"
           class="tab-btn" 
           class:active={mode === 'grid'} 
           onclick={() => mode = 'grid'}
@@ -238,6 +270,7 @@
         {/if}
 
         <button 
+          type="button"
           class="start-btn" 
           onclick={startScrape} 
           disabled={isScraping || !keyword.trim()}
@@ -276,7 +309,7 @@
         <div class="console-header">
           <span class="material-icons console-icon">terminal</span>
           <h3>Console Output</h3>
-          <button class="clear-btn" onclick={() => logs = []} disabled={logs.length === 0}>
+          <button type="button" class="clear-btn" onclick={() => logs = []} disabled={logs.length === 0}>
             Clear
           </button>
         </div>
@@ -380,6 +413,11 @@
     padding: 4px;
     border-radius: var(--rounded-md);
     margin-bottom: var(--spacing-md);
+  }
+
+  button:focus-visible {
+    outline: 2px solid var(--color-success);
+    outline-offset: 2px;
   }
 
   .tab-btn {

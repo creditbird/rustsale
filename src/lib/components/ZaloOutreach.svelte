@@ -48,7 +48,7 @@
   let campaignProgress = $state(0);
   let campaignStatus = $state('Idle');
   let campaignLogs = $state<string[]>([]);
-  let campaignConsoleElement = $state<HTMLDivElement | null>(null);
+  let campaignConsoleElement: HTMLDivElement | null = null;
 
   // Tauri event listeners
   let qrUnlistens: UnlistenFn[] = [];
@@ -322,6 +322,10 @@
         (event) => {
           campaignProgress = event.payload.progress;
           campaignStatus = event.payload.message;
+          if (event.payload.status === 'failed') {
+            isCampaignRunning = false;
+            cleanupCampaignListeners();
+          }
         }
       );
       campaignUnlistens.push(progressUnlisten);
@@ -342,8 +346,8 @@
 
       await invoke('send_zalo_outreach', {
         imei: selectedImei,
-        lead_ids: selectedLeadIds,
-        template_id: selectedTemplateId
+        leadIds: selectedLeadIds,
+        templateId: selectedTemplateId
       });
       appendCampaignLog('Outreach campaign invoked successfully.');
     } catch (e) {
@@ -390,7 +394,7 @@
                   <span class="material-icons status-icon active">check_circle</span>
                   <span class="session-details">
                     <span class="session-name">IMEI: {s.imei}</span>
-                    <span class="session-ua">{s.user_agent.substring(0, 40)}...</span>
+                    <span class="session-ua">{(s.user_agent || '').substring(0, 40)}...</span>
                   </span>
                 </button>
                 <button type="button" class="delete-btn" onclick={() => deleteSession(s.imei)} title="Delete Session">
@@ -937,6 +941,11 @@
   .action-btn.delete:hover {
     color: var(--color-danger);
     background: rgba(244, 63, 94, 0.1);
+  }
+
+  button:focus-visible {
+    outline: 2px solid var(--color-success);
+    outline-offset: 2px;
   }
 
   /* Buttons */
