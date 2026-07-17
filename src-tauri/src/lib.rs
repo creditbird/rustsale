@@ -4,6 +4,7 @@ use tauri::Manager;
 mod db;
 mod models;
 mod commands;
+mod scrapers;
 #[cfg(test)]
 mod db_test;
 #[cfg(test)]
@@ -43,7 +44,9 @@ pub fn run() {
             commands::get_deals,
             commands::update_deal_stage,
             commands::get_activities,
-            commands::add_activity
+            commands::add_activity,
+            commands::update_lead,
+            commands::delete_lead
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
