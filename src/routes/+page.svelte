@@ -35,7 +35,6 @@
     background-color: var(--color-surface-container-lowest);
     border-radius: var(--rounded-xl);
     border: 1px solid var(--color-outline-variant);
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
     min-block-size: calc(100vh - (2 * var(--spacing-lg)) - (2 * var(--spacing-xl)));
     display: flex;
     flex-direction: column;

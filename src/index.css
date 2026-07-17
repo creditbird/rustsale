@@ -49,6 +49,9 @@
   /* Typography & Transitions */
   --font-family: Inter, system-ui, sans-serif;
   --transition-fast: 150ms ease;
+
+  /* Shadows */
+  --shadow-soft: 0px 2px 4px rgba(15, 23, 42, 0.05);
 }
 
 /* Reset / Base Elements */
