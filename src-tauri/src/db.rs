@@ -49,6 +49,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
     Ok(conn)
 }
 
+#[allow(dead_code)]
 pub fn seed_data(conn: &mut Connection) -> Result<()> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM leads", [], |row| row.get(0))?;
     if count == 0 {

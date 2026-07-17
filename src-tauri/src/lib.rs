@@ -1,4 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use tauri::Manager;
+
 mod db;
 mod models;
 mod commands;
@@ -14,15 +16,23 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut conn = db::init_db("rustsale.db").expect("Failed to initialize database");
-
-    #[cfg(debug_assertions)]
-    db::seed_data(&mut conn).expect("Failed to seed database");
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(commands::DbState {
-            conn: std::sync::Mutex::new(conn),
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir().expect("Failed to get app data directory");
+            std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data directory");
+            let db_path = app_data_dir.join("rustsale.db");
+            let db_path_str = db_path.to_str().expect("Failed to convert path to string");
+
+            #[allow(unused_mut)]
+            let mut conn = db::init_db(db_path_str).expect("Failed to initialize database");
+            #[cfg(debug_assertions)]
+            db::seed_data(&mut conn).expect("Failed to seed database");
+
+            app.manage(commands::DbState {
+                conn: std::sync::Mutex::new(conn),
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
