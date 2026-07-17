@@ -1,8 +1,33 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import Dashboard from '$lib/components/Dashboard.svelte';
+  import LeadsList from '$lib/components/LeadsList.svelte';
+  import KanbanBoard from '$lib/components/KanbanBoard.svelte';
+  import * as crmService from '$lib/services/crmService';
+  import type { Lead } from '$lib/services/crmService';
 
   let activeTab = $state('dashboard');
+  let leads = $state<Lead[]>([]);
+  let errorMsg = $state<string | null>(null);
+
+  async function loadLeads() {
+    try {
+      leads = await crmService.getLeads();
+      errorMsg = null;
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  // Load leads initially and when switching to the leads tab
+  $effect(() => {
+    if (activeTab === 'leads') {
+      loadLeads();
+    }
+  });
+
+  onMount(loadLeads);
 </script>
 
 <div class="app-shell">
@@ -10,43 +35,36 @@
 
   <main class="main-content">
     <div class="scroll-container">
+      {#if errorMsg}
+        <div class="error-banner">
+          <span class="material-icons">error_outline</span>
+          <span>{errorMsg}</span>
+        </div>
+      {/if}
+
       {#if activeTab === 'dashboard'}
         <Dashboard />
       {:else if activeTab === 'leads'}
-        <div class="view-container">
-          <h1 class="view-title">Leads & Contacts</h1>
-          <p class="placeholder-text">Leads & Contacts Placeholder - View switching implemented successfully.</p>
-        </div>
+        <LeadsList {leads} />
       {:else if activeTab === 'pipeline'}
-        <div class="view-container">
-          <h1 class="view-title">Deal Pipeline</h1>
-          <p class="placeholder-text">Deal Pipeline Placeholder - View switching implemented successfully.</p>
-        </div>
+        <KanbanBoard />
       {/if}
     </div>
   </main>
 </div>
 
 <style>
-  .view-container {
-    padding: var(--spacing-xl);
-    background-color: var(--color-surface-container-lowest);
-    border-radius: var(--rounded-xl);
-    border: 1px solid var(--color-outline-variant);
-    min-block-size: calc(100vh - (2 * var(--spacing-lg)) - (2 * var(--spacing-xl)));
+  .error-banner {
     display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-  }
-
-  .view-title {
-    font-size: 24px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .placeholder-text {
-    font-size: 14px;
-    color: var(--color-on-surface-variant);
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md);
+    background-color: rgba(244, 63, 94, 0.08);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--rounded-md);
+    color: var(--color-danger);
+    font-size: 13px;
+    margin-bottom: var(--spacing-md);
   }
 </style>
+
