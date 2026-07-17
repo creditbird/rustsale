@@ -138,11 +138,15 @@ impl GridCell {
 
 pub struct GridScraper {
     pub scraper: GoogleMapsScraper,
+    pub saturation_threshold: usize,
 }
 
 impl GridScraper {
     pub fn new(scraper: GoogleMapsScraper) -> Self {
-        Self { scraper }
+        Self {
+            scraper,
+            saturation_threshold: 55,
+        }
     }
 
     pub async fn search_grid<F>(&self, keyword: &str, initial_cells: Vec<GridCell>, mut on_progress: F) -> Result<Vec<BusinessInfo>>
@@ -170,7 +174,7 @@ impl GridScraper {
                         unique_results.insert(item.phone.clone(), item);
                     }
                     
-                    if count >= 55 && cell.depth < 4 {
+                    if count >= self.saturation_threshold && cell.depth < 4 {
                         let children = cell.subdivide();
                         total_count += children.len();
                         stack.extend(children);
@@ -209,13 +213,36 @@ mod tests {
                         let request = String::from_utf8_lossy(&buf[..n]);
                         
                         let response = if request.contains("/search") {
-                            // If it is the initial cell (center 10.1, 106.1), return 55 links to trigger subdivision
-                            let count = if request.contains("@10.1,106.1") { 55 } else { 2 };
+                            // If it is the initial cell (center 10.1, 106.1, zoom 13), return 5 links to trigger subdivision
+                            let is_initial = request.contains("@10.1,106.1,13z");
+                            let count = if is_initial { 5 } else { 2 };
+                            let mut offset = 40;
+                            if is_initial {
+                                offset = 0;
+                            } else {
+                                if let Some(at_idx) = request.find('@') {
+                                    let parts: Vec<&str> = request[at_idx + 1..].split(',').collect();
+                                    if parts.len() >= 2 {
+                                        if let (Ok(lat), Ok(lng)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                                            let lat_rounded = (lat * 1000.0).round() / 1000.0;
+                                            let lng_rounded = (lng * 1000.0).round() / 1000.0;
+                                            if (lat_rounded - 10.125).abs() < 0.001 && (lng_rounded - 106.075).abs() < 0.001 {
+                                                offset = 10;
+                                            } else if (lat_rounded - 10.125).abs() < 0.001 && (lng_rounded - 106.125).abs() < 0.001 {
+                                                offset = 20;
+                                            } else if (lat_rounded - 10.075).abs() < 0.001 && (lng_rounded - 106.075).abs() < 0.001 {
+                                                offset = 30;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             let mut links = String::new();
                             for i in 1..=count {
+                                let cafe_id = offset + i;
                                 links.push_str(&format!(
                                     r#"<a href="http://127.0.0.1:{}/maps/place/Cafe+{}">Cafe {}</a>"#,
-                                    port, i, i
+                                    port, cafe_id, cafe_id
                                 ));
                             }
                             let body = format!(
@@ -290,14 +317,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_grid_scraper_adaptive_subdivision() {
-        let manager = BrowserManager::new(1).with_port(9226);
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let manager = BrowserManager::new(1).with_port(port);
         manager.start(true).await.expect("Failed to start browser");
 
         let session = manager.acquire().await.expect("Failed to acquire session");
         let mock_base = spawn_mock_server().await;
 
         let scraper = GoogleMapsScraper::with_base_url(session, mock_base);
-        let grid_scraper = GridScraper::new(scraper);
+        let mut grid_scraper = GridScraper::new(scraper);
+        grid_scraper.saturation_threshold = 5;
 
         // Define a single cell centered at 10.1, 106.1 which will return 55 results and trigger subdivision
         let initial_cells = vec![GridCell {

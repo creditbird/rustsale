@@ -5,9 +5,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    fn get_random_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .map(|addr| addr.port())
+            .unwrap_or(9222)
+    }
+
     #[tokio::test]
     async fn test_browser_manager_lifecycle() {
-        let manager = BrowserManager::new(2).with_port(9222);
+        let manager = BrowserManager::new(2).with_port(get_random_port());
 
         // Start the browser in headless mode
         let start_res = manager.start(true).await;
@@ -41,7 +48,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_browser_manager_session_pooling() {
-        let manager = Arc::new(BrowserManager::new(1).with_port(9223)); // max_sessions = 1
+        let manager = Arc::new(BrowserManager::new(1).with_port(get_random_port())); // max_sessions = 1
 
         // Start the browser
         manager.start(true).await.expect("Failed to start browser");
@@ -75,7 +82,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_browser_manager_raii_drop() {
-        let manager = BrowserManager::new(1).with_port(9224);
+        let manager = BrowserManager::new(1).with_port(get_random_port());
         manager.start(true).await.expect("Failed to start browser");
 
         // Retrieve process ID

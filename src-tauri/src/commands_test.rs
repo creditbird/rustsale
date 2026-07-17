@@ -114,7 +114,12 @@ mod tests {
         let mock_base = format!("http://127.0.0.1:{}", port);
 
         // Initialize BrowserManager
-        let manager = std::sync::Arc::new(BrowserManager::new(1).with_port(9227));
+        let browser_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let manager = std::sync::Arc::new(BrowserManager::new(1).with_port(browser_port));
         manager.start(true).await.expect("Failed to start browser");
 
         let session = manager.acquire().await.expect("Failed to acquire session");

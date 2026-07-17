@@ -72,7 +72,23 @@ impl GoogleMapsScraper {
 
     pub async fn scrape_url(&self, url: &str) -> Result<Vec<BusinessInfo>> {
         self.session.navigate(url).await?;
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        
+        // Wait for maps page to load (feed, place title, or place links)
+        for _ in 0..20 {
+            let is_loaded = self.session.evaluate(r#"
+                (() => {
+                    return !!(
+                        document.querySelector('div[role="feed"]') || 
+                        document.querySelector('h1') || 
+                        document.querySelector('a[href*="/maps/place/"]')
+                    );
+                })()
+            "#).await.unwrap_or(serde_json::Value::Bool(false));
+            if is_loaded.as_bool().unwrap_or(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
 
         let current_url = self.session.evaluate("window.location.href").await?
             .as_str()
@@ -346,7 +362,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_google_maps_scraper_search() {
-        let manager = BrowserManager::new(1).with_port(9225);
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let manager = BrowserManager::new(1).with_port(port);
         manager.start(true).await.expect("Failed to start browser");
 
         let session = manager.acquire().await.expect("Failed to acquire session");

@@ -128,7 +128,12 @@ impl BrowserManager {
            .arg("--no-first-run")
            .arg("--no-default-browser-check")
            .arg("--disable-blink-features=AutomationControlled")
-           .arg("--disable-extensions");
+           .arg("--disable-extensions")
+           .arg("--disable-gpu")
+           .arg("--no-sandbox")
+           .arg("--disable-dev-shm-usage")
+           .arg("--disable-software-rasterizer")
+           .arg("--mute-audio");
 
         if headless {
             cmd.arg("--headless=new");
