@@ -10,7 +10,7 @@ mod tests {
 
         // Test get_leads_internal
         let leads = commands::get_leads_internal(&conn).unwrap();
-        assert_eq!(leads.len(), 2);
+        assert_eq!(leads.len(), 3);
         assert_eq!(leads[0].name, "Sarah Harrington");
         assert_eq!(leads[0].about, Some("CTO of Acme Corp".to_string()));
 
@@ -34,7 +34,7 @@ mod tests {
         assert!(new_lead_id > 0);
 
         let leads_updated = commands::get_leads_internal(&conn).unwrap();
-        assert_eq!(leads_updated.len(), 3);
+        assert_eq!(leads_updated.len(), 4);
 
         // Test update_lead_status_internal
         commands::update_lead_status_internal(&conn, new_lead_id, "Contacted".to_string()).unwrap();
@@ -151,7 +151,7 @@ mod tests {
         // Check if database lead has been inserted
         let conn_locked = db_mutex.lock().unwrap();
         let leads = commands::get_leads_internal(&conn_locked).unwrap();
-        assert_eq!(leads.len(), 3);
+        assert_eq!(leads.len(), 4);
 
         let scraped_lead = leads.iter().find(|l| l.name == "Scraped Cafe");
         assert!(scraped_lead.is_some(), "Scraped Cafe not found in database");

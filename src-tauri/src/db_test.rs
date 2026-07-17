@@ -31,12 +31,65 @@ mod tests {
         let lead_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM leads", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(lead_count, 2);
+        assert_eq!(lead_count, 3);
 
         let lead_name: String = conn
             .query_row("SELECT name FROM leads WHERE id = 1", [], |row| row.get(0))
             .unwrap();
         assert_eq!(lead_name, "Sarah Harrington");
+
+        // Verify new fields on Sarah Harrington (id = 1)
+        let address1: Option<String> = conn
+            .query_row("SELECT address FROM leads WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(address1, Some("123 Main St, New York".to_string()));
+
+        let has_zalo1: Option<i32> = conn
+            .query_row("SELECT has_zalo FROM leads WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(has_zalo1, Some(1));
+
+        let zalo_reached1: i32 = conn
+            .query_row("SELECT zalo_reached FROM leads WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(zalo_reached1, 0);
+
+        // Verify new fields on Jordan Smith (id = 2)
+        let address2: Option<String> = conn
+            .query_row("SELECT address FROM leads WHERE id = 2", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(address2, Some("456 Oak Ave, Boston".to_string()));
+
+        let has_zalo2: Option<i32> = conn
+            .query_row("SELECT has_zalo FROM leads WHERE id = 2", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(has_zalo2, None); // NULL in database
+
+        let zalo_reached2: i32 = conn
+            .query_row("SELECT zalo_reached FROM leads WHERE id = 2", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(zalo_reached2, 0);
+
+        // Verify lele (id = 3)
+        let lead3_name: String = conn
+            .query_row("SELECT name FROM leads WHERE id = 3", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lead3_name, "lele");
+
+        let address3: Option<String> = conn
+            .query_row("SELECT address FROM leads WHERE id = 3", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(address3, Some("789 Pine Rd, Seattle".to_string()));
+
+        let has_zalo3: Option<i32> = conn
+            .query_row("SELECT has_zalo FROM leads WHERE id = 3", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(has_zalo3, Some(1));
+
+        let zalo_reached3: i32 = conn
+            .query_row("SELECT zalo_reached FROM leads WHERE id = 3", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(zalo_reached3, 1);
 
         // Verify deals
         let deal_count: i64 = conn

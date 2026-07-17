@@ -17,7 +17,7 @@ pub fn get_leads(state: tauri::State<DbState>) -> Result<Vec<Lead>, String> {
 
 pub fn get_leads_internal(conn: &Connection) -> Result<Vec<Lead>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, name, company, status, value, last_activity, owner, email, phone, about FROM leads")
+        .prepare("SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached FROM leads")
         .map_err(|e| format!("Database query error: {}", e))?;
 
     let rows = stmt
@@ -33,6 +33,9 @@ pub fn get_leads_internal(conn: &Connection) -> Result<Vec<Lead>, String> {
                 email: row.get(7)?,
                 phone: row.get(8)?,
                 about: row.get(9)?,
+                address: row.get(10)?,
+                has_zalo: row.get(11)?,
+                zalo_reached: row.get(12)?,
             })
         })
         .map_err(|e| format!("Database query error: {}", e))?;
@@ -55,7 +58,7 @@ pub fn get_lead_details(id: i32, state: tauri::State<DbState>) -> Result<Lead, S
 
 pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, String> {
     conn.query_row(
-        "SELECT id, name, company, status, value, last_activity, owner, email, phone, about FROM leads WHERE id = ?1",
+        "SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached FROM leads WHERE id = ?1",
         [id],
         |row| {
             Ok(Lead {
@@ -69,6 +72,9 @@ pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, Str
                 email: row.get(7)?,
                 phone: row.get(8)?,
                 about: row.get(9)?,
+                address: row.get(10)?,
+                has_zalo: row.get(11)?,
+                zalo_reached: row.get(12)?,
             })
         }
     ).map_err(|e| format!("Database query error: {}", e))
@@ -535,9 +541,10 @@ pub async fn run_google_maps_scrape_task(
                         Some(about_parts.join("\n"))
                     };
 
+                    let has_zalo_val = if biz.zalo.is_some() { Some(1) } else { None };
                     let insert_res = conn.execute(
-                        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about) 
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo) 
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                         rusqlite::params![
                             biz.name,
                             biz.name,
@@ -547,7 +554,9 @@ pub async fn run_google_maps_scrape_task(
                             "System",
                             "",
                             biz.phone,
-                            about_str
+                            about_str,
+                            biz.address,
+                            has_zalo_val
                         ]
                     );
                     if insert_res.is_ok() {

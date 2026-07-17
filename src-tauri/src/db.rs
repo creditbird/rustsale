@@ -15,10 +15,17 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             owner TEXT NOT NULL,
             email TEXT NOT NULL,
             phone TEXT NOT NULL,
-            about TEXT
+            about TEXT,
+            address TEXT,
+            has_zalo INTEGER DEFAULT NULL,
+            zalo_reached INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
+
+    let _ = conn.execute("ALTER TABLE leads ADD COLUMN address TEXT", []);
+    let _ = conn.execute("ALTER TABLE leads ADD COLUMN has_zalo INTEGER DEFAULT NULL", []);
+    let _ = conn.execute("ALTER TABLE leads ADD COLUMN zalo_reached INTEGER NOT NULL DEFAULT 0", []);
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS activities (
@@ -75,9 +82,10 @@ pub fn seed_data(conn: &mut Connection) -> Result<()> {
     if count == 0 {
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about) VALUES 
-             ('Sarah Harrington', 'Acme Corp', 'Qualified', 45000.0, '2026-07-15T10:00:00Z', 'Alex Rivera', 'sarah@acme.com', '+12345678', 'CTO of Acme Corp'),
-             ('Jordan Smith', 'CloudSync', 'New', 15000.0, '2026-07-16T15:30:00Z', 'Jordan Smith', 'jordan@cloudsync.com', '+87654321', 'Procurement lead')",
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached) VALUES 
+             ('Sarah Harrington', 'Acme Corp', 'Qualified', 45000.0, '2026-07-15T10:00:00Z', 'Alex Rivera', 'sarah@acme.com', '+12345678', 'CTO of Acme Corp', '123 Main St, New York', 1, 0),
+             ('Jordan Smith', 'CloudSync', 'New', 15000.0, '2026-07-16T15:30:00Z', 'Jordan Smith', 'jordan@cloudsync.com', '+87654321', 'Procurement lead', '456 Oak Ave, Boston', NULL, 0),
+             ('lele', 'Zalo Corp', 'Qualified', 20000.0, '2026-07-17T12:00:00Z', 'Alex Rivera', 'lele@example.com', '+84987654321', 'Zalo developer', '789 Pine Rd, Seattle', 1, 1)",
             [],
         )?;
         tx.execute(

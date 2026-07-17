@@ -12,6 +12,9 @@ pub struct Lead {
     pub email: String,
     pub phone: String,
     pub about: Option<String>,
+    pub address: Option<String>,
+    pub has_zalo: Option<i32>,
+    pub zalo_reached: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
