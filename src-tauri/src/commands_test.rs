@@ -174,7 +174,7 @@ mod tests {
             image_base64: "base64-img".to_string(),
             token: "token-abc".to_string(),
         };
-        let (evt, val) = commands::handle_zalo_qr_event(event_gen, &conn).unwrap();
+        let (evt, val) = commands::handle_zalo_qr_event(event_gen, None).unwrap();
         assert_eq!(evt, "zalo-qr-code");
         assert_eq!(val["code"], "test-code");
         assert_eq!(val["image_base64"], "base64-img");
@@ -185,20 +185,20 @@ mod tests {
             avatar: "avatar-url".to_string(),
             display_name: "John Doe".to_string(),
         };
-        let (evt, val) = commands::handle_zalo_qr_event(event_scan, &conn).unwrap();
+        let (evt, val) = commands::handle_zalo_qr_event(event_scan, None).unwrap();
         assert_eq!(evt, "zalo-qr-scanned");
         assert_eq!(val["avatar"], "avatar-url");
         assert_eq!(val["display_name"], "John Doe");
 
         // 4. Test QRCodeExpired event translation
         let event_exp = zca_rs::apis::auth::LoginQREvent::QRCodeExpired;
-        let (evt, val) = commands::handle_zalo_qr_event(event_exp, &conn).unwrap();
+        let (evt, val) = commands::handle_zalo_qr_event(event_exp, None).unwrap();
         assert_eq!(evt, "zalo-qr-expired");
         assert!(val.is_null());
 
         // 5. Test QRCodeDeclined event translation
         let event_dec = zca_rs::apis::auth::LoginQREvent::QRCodeDeclined;
-        let (evt, val) = commands::handle_zalo_qr_event(event_dec, &conn).unwrap();
+        let (evt, val) = commands::handle_zalo_qr_event(event_dec, None).unwrap();
         assert_eq!(evt, "zalo-qr-declined");
         assert!(val.is_null());
 
@@ -216,7 +216,7 @@ mod tests {
             imei: "imei-999".to_string(),
             user_agent: "Mozilla/MockUA".to_string(),
         };
-        let (evt, val) = commands::handle_zalo_qr_event(event_success, &conn).unwrap();
+        let (evt, val) = commands::handle_zalo_qr_event(event_success, Some(&conn)).unwrap();
         assert_eq!(evt, "zalo-qr-success");
         assert_eq!(val["imei"], "imei-999");
 

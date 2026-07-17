@@ -575,16 +575,30 @@ pub fn start_zalo_qr_login(
         let callback_app_handle = app_handle_clone.clone();
 
         let callback = move |event: zca_rs::apis::auth::LoginQREvent| -> zca_rs::apis::auth::QRCallbackResult {
-            let db_state = callback_app_handle.state::<DbState>();
-            let handle_res = match db_state.conn.lock() {
-                Ok(conn) => {
-                    handle_zalo_qr_event(event, &conn)
+            let is_got_login_info = matches!(event, zca_rs::apis::auth::LoginQREvent::GotLoginInfo { .. });
+            let is_declined = matches!(event, zca_rs::apis::auth::LoginQREvent::QRCodeDeclined);
+
+            let db_state;
+            let mut conn_guard = None;
+            let mut lock_err = None;
+
+            if is_got_login_info {
+                db_state = callback_app_handle.state::<DbState>();
+                match db_state.conn.lock() {
+                    Ok(guard) => {
+                        conn_guard = Some(guard);
+                    }
+                    Err(e) => {
+                        lock_err = Some(format!("Failed to lock database for Zalo session: {}", e));
+                    }
                 }
-                Err(e) => {
-                    let err_msg = format!("Failed to lock database for Zalo session: {}", e);
-                    eprintln!("{}", err_msg);
-                    Err(err_msg)
-                }
+            }
+
+            let handle_res = if let Some(err) = lock_err {
+                Err(err)
+            } else {
+                let conn_ref = conn_guard.as_deref();
+                handle_zalo_qr_event(event, conn_ref)
             };
 
             match handle_res {
@@ -595,7 +609,12 @@ pub fn start_zalo_qr_login(
                     eprintln!("Error handling Zalo QR event: {}", e);
                 }
             }
-            zca_rs::apis::auth::QRCallbackResult::Continue
+
+            if is_declined {
+                zca_rs::apis::auth::QRCallbackResult::Cancel
+            } else {
+                zca_rs::apis::auth::QRCallbackResult::Continue
+            }
         };
 
         let options = zca_rs::Options::default();
@@ -609,7 +628,7 @@ pub fn start_zalo_qr_login(
 
 pub fn handle_zalo_qr_event(
     event: zca_rs::apis::auth::LoginQREvent,
-    conn: &Connection,
+    conn: Option<&Connection>,
 ) -> Result<(String, serde_json::Value), String> {
     match event {
         zca_rs::apis::auth::LoginQREvent::QRCodeGenerated { code, image_base64, token } => {
@@ -635,8 +654,10 @@ pub fn handle_zalo_qr_event(
         }
         zca_rs::apis::auth::LoginQREvent::GotLoginInfo { cookie, imei, user_agent } => {
             let cookies_json = serde_json::to_string(&cookie).map_err(|e| e.to_string())?;
-            crate::db::save_zalo_session(conn, &imei, &user_agent, &cookies_json, "vi")
-                .map_err(|e| e.to_string())?;
+            if let Some(c) = conn {
+                crate::db::save_zalo_session(c, &imei, &user_agent, &cookies_json, "vi")
+                    .map_err(|e| e.to_string())?;
+            }
 
             let payload = serde_json::to_value(ZaloQRSuccessPayload { imei }).map_err(|e| e.to_string())?;
             Ok(("zalo-qr-success".to_string(), payload))
