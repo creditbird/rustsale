@@ -74,7 +74,7 @@
       // 6. Outreach Status Filter
       if (filterOutreachStatus) {
         if (filterOutreachStatus === 'reached' && lead.zalo_reached !== 1) return false;
-        if (filterOutreachStatus === 'not_reached' && lead.zalo_reached !== 0) return false;
+        if (filterOutreachStatus === 'not_reached' && lead.zalo_reached === 1) return false;
       }
       
       return true;
