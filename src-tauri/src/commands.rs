@@ -971,28 +971,6 @@ pub async fn send_zalo_outreach_internal(
                 }
             };
 
-            if phone.trim().is_empty() {
-                let msg = format!("Lead {} is missing phone number", lead_id);
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "outreach-log",
-                        OutreachLogPayload {
-                            message: msg.clone(),
-                        },
-                    );
-                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
-                    let _ = app.emit(
-                        "outreach-progress",
-                        OutreachProgressPayload {
-                            progress: progress_val,
-                            status: "running".to_string(),
-                            message: msg,
-                        },
-                    );
-                }
-                continue;
-            }
-
             if phone == "not-found" {
                 let msg = format!("Phone number {} not found on Zalo (Mock)", phone);
                 if let Some(app) = app_handle {
@@ -1015,25 +993,52 @@ pub async fn send_zalo_outreach_internal(
                 continue;
             }
 
+            let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+
+            if sanitized_phone.trim().is_empty() {
+                let msg = format!("Lead {} is missing phone number", lead_id);
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                    let _ = app.emit(
+                        "outreach-progress",
+                        OutreachProgressPayload {
+                            progress: progress_val,
+                            status: "running".to_string(),
+                            message: msg,
+                        },
+                    );
+                }
+                continue;
+            }
+
             let formatted_content = template_content.replace("{name}", &lead_name);
             total_sent += 1;
-            let log_msg = format!("Message sent to {} ({}) (Mock)", lead_name, phone);
+            let log_msg = format!("Message sent to {} ({}) (Mock)", lead_name, sanitized_phone);
             if let Some(app) = app_handle {
                 let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
             }
 
-            let now: String = {
-                let conn_guard = conn_mutex.lock().unwrap();
-                conn_guard
+            let act_res: Result<(), String> = {
+                let mut conn_guard = conn_mutex
+                    .lock()
+                    .map_err(|e| format!("Database lock error: {}", e))?;
+                let tx = conn_guard
+                    .transaction()
+                    .map_err(|e| format!("Database transaction error: {}", e))?;
+
+                let now: String = tx
                     .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
                         row.get(0)
                     })
-                    .unwrap_or_else(|_| "".to_string())
-            };
+                    .map_err(|e| format!("Database query error: {}", e))?;
 
-            {
-                let conn_guard = conn_mutex.lock().unwrap();
-                let act_res = conn_guard.execute(
+                tx.execute(
                     "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by) VALUES (?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![
                         lead_id,
@@ -1042,21 +1047,28 @@ pub async fn send_zalo_outreach_internal(
                         &now,
                         "System (Zalo Outreach)"
                     ]
-                );
-                if let Err(e) = act_res {
-                    if let Some(app) = app_handle {
-                        let _ = app.emit(
-                            "outreach-log",
-                            OutreachLogPayload {
-                                message: format!("Failed to record activity log: {}", e),
-                            },
-                        );
-                    }
-                }
-                let _ = conn_guard.execute(
+                ).map_err(|e| format!("Database query error: {}", e))?;
+
+                tx.execute(
                     "UPDATE leads SET last_activity = ?1 WHERE id = ?2",
                     rusqlite::params![&now, lead_id],
-                );
+                )
+                .map_err(|e| format!("Database query error: {}", e))?;
+
+                tx.commit()
+                    .map_err(|e| format!("Database transaction commit error: {}", e))?;
+                Ok(())
+            };
+
+            if let Err(e) = act_res {
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: format!("Failed to record activity log: {}", e),
+                        },
+                    );
+                }
             }
 
             if let Some(app) = app_handle {
@@ -1261,7 +1273,9 @@ pub async fn send_zalo_outreach_internal(
             }
         };
 
-        if phone.trim().is_empty() {
+        let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+
+        if sanitized_phone.trim().is_empty() {
             let msg = format!("Lead {} ({}) is missing phone number", lead_name, lead_id);
             if let Some(app) = app_handle {
                 let _ = app.emit(
@@ -1287,17 +1301,20 @@ pub async fn send_zalo_outreach_internal(
             let _ = app.emit(
                 "outreach-log",
                 OutreachLogPayload {
-                    message: format!("Looking up Zalo UID for {} ({})", lead_name, phone),
+                    message: format!(
+                        "Looking up Zalo UID for {} ({})",
+                        lead_name, sanitized_phone
+                    ),
                 },
             );
         }
 
-        let user_opt = match zalo.find_user(&phone, None).await {
+        let user_opt = match zalo.find_user(&sanitized_phone, None).await {
             Ok(opt) => opt,
             Err(e) => {
                 let msg = format!(
                     "Failed to look up phone {} for {}: {:?}",
-                    phone, lead_name, e
+                    sanitized_phone, lead_name, e
                 );
                 if let Some(app) = app_handle {
                     let _ = app.emit(
@@ -1339,23 +1356,26 @@ pub async fn send_zalo_outreach_internal(
             {
                 Ok(_) => {
                     total_sent += 1;
-                    let log_msg = format!("Message sent to {} ({})", lead_name, phone);
+                    let log_msg = format!("Message sent to {} ({})", lead_name, sanitized_phone);
                     if let Some(app) = app_handle {
                         let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
                     }
 
-                    let now: String = {
-                        let conn_guard = conn_mutex.lock().unwrap();
-                        conn_guard
+                    let act_res: Result<(), String> = {
+                        let mut conn_guard = conn_mutex
+                            .lock()
+                            .map_err(|e| format!("Database lock error: {}", e))?;
+                        let tx = conn_guard
+                            .transaction()
+                            .map_err(|e| format!("Database transaction error: {}", e))?;
+
+                        let now: String = tx
                             .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
                                 row.get(0)
                             })
-                            .unwrap_or_else(|_| "".to_string())
-                    };
+                            .map_err(|e| format!("Database query error: {}", e))?;
 
-                    {
-                        let conn_guard = conn_mutex.lock().unwrap();
-                        let act_res = conn_guard.execute(
+                        tx.execute(
                             "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by) VALUES (?1, ?2, ?3, ?4, ?5)",
                             rusqlite::params![
                                 lead_id,
@@ -1364,27 +1384,34 @@ pub async fn send_zalo_outreach_internal(
                                 &now,
                                 "System (Zalo Outreach)"
                             ]
-                        );
-                        if let Err(e) = act_res {
-                            if let Some(app) = app_handle {
-                                let _ = app.emit(
-                                    "outreach-log",
-                                    OutreachLogPayload {
-                                        message: format!("Failed to record activity log: {}", e),
-                                    },
-                                );
-                            }
-                        }
-                        let _ = conn_guard.execute(
+                        ).map_err(|e| format!("Database query error: {}", e))?;
+
+                        tx.execute(
                             "UPDATE leads SET last_activity = ?1 WHERE id = ?2",
                             rusqlite::params![&now, lead_id],
-                        );
+                        )
+                        .map_err(|e| format!("Database query error: {}", e))?;
+
+                        tx.commit()
+                            .map_err(|e| format!("Database transaction commit error: {}", e))?;
+                        Ok(())
+                    };
+
+                    if let Err(e) = act_res {
+                        if let Some(app) = app_handle {
+                            let _ = app.emit(
+                                "outreach-log",
+                                OutreachLogPayload {
+                                    message: format!("Failed to record activity log: {}", e),
+                                },
+                            );
+                        }
                     }
                 }
                 Err(e) => {
                     let msg = format!(
                         "Failed to send Zalo message to {} ({}): {:?}",
-                        lead_name, phone, e
+                        lead_name, sanitized_phone, e
                     );
                     if let Some(app) = app_handle {
                         let _ = app.emit(
@@ -1397,7 +1424,10 @@ pub async fn send_zalo_outreach_internal(
                 }
             }
         } else {
-            let msg = format!("Phone number {} for {} not found on Zalo", phone, lead_name);
+            let msg = format!(
+                "Phone number {} for {} not found on Zalo",
+                sanitized_phone, lead_name
+            );
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "outreach-log",
