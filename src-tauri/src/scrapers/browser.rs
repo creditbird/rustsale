@@ -124,7 +124,7 @@ impl BrowserManager {
 
     pub async fn acquire(&self) -> Result<Arc<BrowserSession>> {
         loop {
-            let mut sessions = self.sessions.lock().await;
+            let sessions = self.sessions.lock().await;
 
             // Check if there is an unused session we can reuse
             for session in sessions.iter() {
@@ -136,17 +136,25 @@ impl BrowserManager {
             }
 
             // If all sessions are in use, but we haven't reached max_sessions, create a new one
-            if sessions.len() < self.max_sessions {
+            let can_create = sessions.len() < self.max_sessions;
+            drop(sessions);
+
+            if can_create {
                 let client = CdpClient::new(&self.endpoint, Duration::from_secs(30)).await?;
                 client.send_raw_command("Page.enable", NoParams).await?;
                 let session = Arc::new(BrowserSession::new(client));
                 *session.in_use.lock().await = true;
-                sessions.push(session.clone());
-                return Ok(session);
+
+                let mut sessions_lock = self.sessions.lock().await;
+                if sessions_lock.len() < self.max_sessions {
+                    sessions_lock.push(session.clone());
+                    return Ok(session);
+                } else {
+                    *session.in_use.lock().await = false;
+                }
             }
 
-            // Otherwise, release the lock and wait for a session to be released
-            drop(sessions);
+            // Otherwise, wait for a session to be released
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
