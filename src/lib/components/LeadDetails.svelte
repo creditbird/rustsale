@@ -499,6 +499,38 @@
     background: var(--color-danger);
     color: var(--color-on-primary);
   }
+  .cancel-btn {
+    background: none;
+    border: 1px solid var(--color-outline-variant);
+    color: var(--color-on-surface-variant);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--rounded-md);
+    font-size: 13px;
+    font-weight: 600;
+    transition: var(--transition-fast);
+    cursor: pointer;
+  }
+  .cancel-btn:hover {
+    background: var(--color-surface-container-low);
+    color: var(--color-on-surface);
+  }
+  .save-btn {
+    background: var(--color-secondary);
+    color: var(--color-on-secondary);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--rounded-md);
+    font-size: 13px;
+    font-weight: 600;
+    transition: var(--transition-fast);
+    cursor: pointer;
+  }
+  .save-btn:hover:not(:disabled) {
+    background: var(--color-on-secondary-container);
+  }
+  .save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
   .drawer-backdrop {
     position: fixed;
     inset: 0;
