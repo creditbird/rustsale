@@ -307,11 +307,20 @@
 
   function isVnMobile(phone: string | null | undefined): boolean {
     if (!phone) return false;
+    // Isolate number from any trailing alphabetic or non-standard comments
+    const match = phone.match(/[^0-9\s+\-().,\[\]]/);
+    const phonePart = match && match.index !== undefined ? phone.substring(0, match.index) : phone;
+
     // 1. Strip all non-digit characters
-    const digits = phone.replace(/\D/g, '');
+    const digits = phonePart.replace(/\D/g, '');
     
-    // 2. Normalize leading "84" to "0"
-    const normalized = digits.startsWith('84') ? '0' + digits.slice(2) : digits;
+    // 2. Normalize leading "0084" or "84" to "0"
+    let normalized = digits;
+    if (digits.startsWith('0084')) {
+      normalized = '0' + digits.slice(4);
+    } else if (digits.startsWith('84')) {
+      normalized = '0' + digits.slice(2);
+    }
     
     // 3. Match against Vietnamese mobile blocks: 03, 05, 07, 08, 09
     // and total length must be exactly 10 digits
@@ -327,8 +336,9 @@
       .map(l => l.id)
       .filter((id): id is number => !!id);
     
-    // Select only mobile leads from current filtered leads
-    selectedLeadIds = mobileIds;
+    // Add all mobile lead IDs to selectedLeadIds without duplicates
+    const otherSelectedIds = selectedLeadIds.filter(id => !mobileIds.includes(id));
+    selectedLeadIds = [...otherSelectedIds, ...mobileIds];
   }
 
   // Campaign Execution
@@ -610,7 +620,9 @@
                         </span>
                         <span class="lead-lbl-details">
                           {lead.phone}
-                          {#if isVnMobile(lead.phone)}
+                          {#if !lead.phone || lead.phone.trim() === ''}
+                            <span class="phone-badge missing" style="color: var(--color-danger); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-danger); border-radius: 4px; display: inline-block;">Missing</span>
+                          {:else if isVnMobile(lead.phone)}
                             <span class="phone-badge mobile" style="color: var(--color-success); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-success); border-radius: 4px; display: inline-block;">Mobile</span>
                           {:else}
                             <span class="phone-badge landline" style="color: var(--color-on-surface-variant); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-outline-variant); border-radius: 4px; display: inline-block;">Landline</span>

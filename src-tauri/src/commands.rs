@@ -943,11 +943,21 @@ pub async fn send_zalo_outreach(
 }
 
 fn is_vn_mobile(phone: &str) -> bool {
+    // Isolate the phone number part by truncating at the first character that is not a standard phone character
+    let phone_part = match phone.find(|c: char| {
+        !c.is_ascii_digit() && c != ' ' && c != '+' && c != '-' && c != '(' && c != ')' && c != '.' && c != ',' && c != '[' && c != ']'
+    }) {
+        Some(idx) => &phone[..idx],
+        None => phone,
+    };
+
     // 1. Strip all non-digit characters
-    let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits: String = phone_part.chars().filter(|c| c.is_ascii_digit()).collect();
     
-    // 2. Normalize leading "84" to "0"
-    let normalized = if digits.starts_with("84") {
+    // 2. Normalize leading "0084" or "84" to "0"
+    let normalized = if digits.starts_with("0084") {
+        format!("0{}", &digits[4..])
+    } else if digits.starts_with("84") {
         format!("0{}", &digits[2..])
     } else {
         digits
@@ -1004,6 +1014,30 @@ pub async fn send_zalo_outreach_internal(
                 }
             };
 
+            let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+
+            if phone.trim().is_empty() {
+                let msg = format!("Lead {} is missing phone number", lead_id);
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                    let _ = app.emit(
+                        "outreach-progress",
+                        OutreachProgressPayload {
+                            progress: progress_val,
+                            status: "running".to_string(),
+                            message: msg,
+                        },
+                    );
+                }
+                continue;
+            }
+
             if phone != "not-found" && !is_vn_mobile(&phone) {
                 let msg = format!("Skipping non-mobile number: {}", phone);
                 println!("{}", msg);
@@ -1043,30 +1077,6 @@ pub async fn send_zalo_outreach_internal(
                         rusqlite::params![lead_id],
                     )
                 };
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "outreach-log",
-                        OutreachLogPayload {
-                            message: msg.clone(),
-                        },
-                    );
-                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
-                    let _ = app.emit(
-                        "outreach-progress",
-                        OutreachProgressPayload {
-                            progress: progress_val,
-                            status: "running".to_string(),
-                            message: msg,
-                        },
-                    );
-                }
-                continue;
-            }
-
-            let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-
-            if sanitized_phone.trim().is_empty() {
-                let msg = format!("Lead {} is missing phone number", lead_id);
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "outreach-log",
@@ -1343,16 +1353,10 @@ pub async fn send_zalo_outreach_internal(
             }
         };
 
-        if !is_vn_mobile(&phone) {
-            let msg = format!("Skipping non-mobile number: {}", phone);
-            println!("{}", msg);
-            let _ = {
-                let conn_guard = conn_mutex.lock().unwrap();
-                conn_guard.execute(
-                    "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
-                    rusqlite::params![lead_id],
-                )
-            };
+        let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+
+        if phone.trim().is_empty() {
+            let msg = format!("Lead {} ({}) is missing phone number", lead_name, lead_id);
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "outreach-log",
@@ -1373,10 +1377,16 @@ pub async fn send_zalo_outreach_internal(
             continue;
         }
 
-        let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-
-        if sanitized_phone.trim().is_empty() {
-            let msg = format!("Lead {} ({}) is missing phone number", lead_name, lead_id);
+        if !is_vn_mobile(&phone) {
+            let msg = format!("Skipping non-mobile number: {}", phone);
+            println!("{}", msg);
+            let _ = {
+                let conn_guard = conn_mutex.lock().unwrap();
+                conn_guard.execute(
+                    "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                    rusqlite::params![lead_id],
+                )
+            };
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "outreach-log",
