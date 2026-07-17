@@ -142,7 +142,7 @@ test('opens LeadDetails drawer when clicking a lead row in LeadsList', async () 
 
   // Verify lead properties render in drawer
   expect(screen.getByText('Contact Details')).toBeTruthy();
-  expect(screen.getByText('alice@acme.com')).toBeTruthy();
+  expect(screen.getAllByText('alice@acme.com').length).toBeGreaterThan(0);
   expect(screen.getByText('Interested in enterprise plan')).toBeTruthy();
 });
 

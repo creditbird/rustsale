@@ -305,6 +305,32 @@
     selectedLeadIds = [...otherSelectedIds, ...unreachedIds];
   }
 
+  function isVnMobile(phone: string | null | undefined): boolean {
+    if (!phone) return false;
+    // 1. Strip all non-digit characters
+    const digits = phone.replace(/\D/g, '');
+    
+    // 2. Normalize leading "84" to "0"
+    const normalized = digits.startsWith('84') ? '0' + digits.slice(2) : digits;
+    
+    // 3. Match against Vietnamese mobile blocks: 03, 05, 07, 08, 09
+    // and total length must be exactly 10 digits
+    if (normalized.length !== 10) return false;
+    
+    const prefix = normalized.slice(0, 2);
+    return ['03', '05', '07', '08', '09'].includes(prefix);
+  }
+
+  function selectMobileOnly() {
+    const mobileIds = filteredLeads
+      .filter(l => isVnMobile(l.phone))
+      .map(l => l.id)
+      .filter((id): id is number => !!id);
+    
+    // Select only mobile leads from current filtered leads
+    selectedLeadIds = mobileIds;
+  }
+
   // Campaign Execution
   function appendCampaignLog(msg: string) {
     const timestamp = new Date().toLocaleTimeString();
@@ -543,6 +569,15 @@
               >
                 Select Unreached
               </button>
+              <button 
+                type="button" 
+                class="select-all-btn" 
+                onclick={selectMobileOnly}
+                disabled={filteredLeads.filter(l => isVnMobile(l.phone)).length === 0}
+                style="font-size: 10px; padding: 2px var(--spacing-xs);"
+              >
+                Select Mobile Leads Only
+              </button>
             </div>
 
             <div class="leads-list-box">
@@ -573,7 +608,15 @@
                             </span>
                           {/if}
                         </span>
-                        <span class="lead-lbl-details">{lead.phone} • {lead.company}</span>
+                        <span class="lead-lbl-details">
+                          {lead.phone}
+                          {#if isVnMobile(lead.phone)}
+                            <span class="phone-badge mobile" style="color: var(--color-success); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-success); border-radius: 4px; display: inline-block;">Mobile</span>
+                          {:else}
+                            <span class="phone-badge landline" style="color: var(--color-on-surface-variant); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-outline-variant); border-radius: 4px; display: inline-block;">Landline</span>
+                          {/if}
+                          • {lead.company}
+                        </span>
                       </span>
                     </label>
                   {/if}

@@ -274,7 +274,7 @@ mod tests {
             45000.0,
             "Alex Rivera".to_string(),
             "sarah@acme.com".to_string(),
-            "+12345678".to_string(),
+            "0912345678".to_string(),
             Some("CTO".to_string()),
             None,
         )
@@ -310,6 +310,21 @@ mod tests {
         )
         .unwrap();
 
+        // Lead 4: landline phone (should be skipped)
+        let lead_id_4 = commands::add_lead_internal(
+            &mut conn,
+            "Landline Lead".to_string(),
+            "Landline Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Alex Rivera".to_string(),
+            "landline@example.com".to_string(),
+            "+12345678".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
         let db_mutex = Mutex::new(conn);
 
         // Run send_zalo_outreach_internal
@@ -317,7 +332,7 @@ mod tests {
             None,
             &db_mutex,
             "mock-imei".to_string(),
-            vec![lead_id_1, lead_id_2, lead_id_3],
+            vec![lead_id_1, lead_id_2, lead_id_3, lead_id_4],
             template_id,
         )
         .await;
@@ -341,6 +356,9 @@ mod tests {
         let activities_3 = commands::get_activities_internal(&conn_locked, lead_id_3).unwrap();
         assert!(activities_3.is_empty());
 
+        let activities_4 = commands::get_activities_internal(&conn_locked, lead_id_4).unwrap();
+        assert!(activities_4.is_empty());
+
         // Verify lead's last activity updated
         let lead_1 = commands::get_lead_details_internal(&conn_locked, lead_id_1).unwrap();
         assert_ne!(lead_1.last_activity, "");
@@ -350,5 +368,9 @@ mod tests {
         let lead_3 = commands::get_lead_details_internal(&conn_locked, lead_id_3).unwrap();
         assert_eq!(lead_3.has_zalo, Some(0));
         assert_eq!(lead_3.zalo_reached, 0);
+
+        let lead_4 = commands::get_lead_details_internal(&conn_locked, lead_id_4).unwrap();
+        assert_eq!(lead_4.has_zalo, Some(0));
+        assert_eq!(lead_4.zalo_reached, 0);
     }
 }

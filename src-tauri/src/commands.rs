@@ -942,6 +942,27 @@ pub async fn send_zalo_outreach(
     Ok(())
 }
 
+fn is_vn_mobile(phone: &str) -> bool {
+    // 1. Strip all non-digit characters
+    let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    
+    // 2. Normalize leading "84" to "0"
+    let normalized = if digits.starts_with("84") {
+        format!("0{}", &digits[2..])
+    } else {
+        digits
+    };
+    
+    // 3. Match against Vietnamese mobile blocks: 03, 05, 07, 08, 09
+    // and total length must be exactly 10 digits
+    if normalized.len() != 10 {
+        return false;
+    }
+    
+    let prefix = &normalized[0..2];
+    matches!(prefix, "03" | "05" | "07" | "08" | "09")
+}
+
 pub async fn send_zalo_outreach_internal(
     app_handle: Option<&tauri::AppHandle>,
     conn_mutex: &std::sync::Mutex<Connection>,
@@ -982,6 +1003,36 @@ pub async fn send_zalo_outreach_internal(
                     }
                 }
             };
+
+            if phone != "not-found" && !is_vn_mobile(&phone) {
+                let msg = format!("Skipping non-mobile number: {}", phone);
+                println!("{}", msg);
+                let _ = {
+                    let conn_guard = conn_mutex.lock().unwrap();
+                    conn_guard.execute(
+                        "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                        rusqlite::params![lead_id],
+                    )
+                };
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                    let _ = app.emit(
+                        "outreach-progress",
+                        OutreachProgressPayload {
+                            progress: progress_val,
+                            status: "running".to_string(),
+                            message: msg,
+                        },
+                    );
+                }
+                continue;
+            }
 
             if phone == "not-found" {
                 let msg = format!("Phone number {} not found on Zalo (Mock)", phone);
@@ -1291,6 +1342,36 @@ pub async fn send_zalo_outreach_internal(
                 }
             }
         };
+
+        if !is_vn_mobile(&phone) {
+            let msg = format!("Skipping non-mobile number: {}", phone);
+            println!("{}", msg);
+            let _ = {
+                let conn_guard = conn_mutex.lock().unwrap();
+                conn_guard.execute(
+                    "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                    rusqlite::params![lead_id],
+                )
+            };
+            if let Some(app) = app_handle {
+                let _ = app.emit(
+                    "outreach-log",
+                    OutreachLogPayload {
+                        message: msg.clone(),
+                    },
+                );
+                let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                let _ = app.emit(
+                    "outreach-progress",
+                    OutreachProgressPayload {
+                        progress: progress_val,
+                        status: "running".to_string(),
+                        message: msg,
+                    },
+                );
+            }
+            continue;
+        }
 
         let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
 
