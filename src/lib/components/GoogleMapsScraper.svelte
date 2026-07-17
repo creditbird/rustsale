@@ -314,6 +314,34 @@
         </div>
 
         {#if mode === 'keyword'}
+          <div class="input-group">
+            <span class="segmented-label">Location Targeting Mode</span>
+            <div class="segmented-control" role="tablist" aria-label="Location targeting options">
+              <button 
+                type="button" 
+                class="segmented-btn" 
+                class:active={!deepScan} 
+                onclick={() => deepScan = false}
+                disabled={isScraping}
+                role="tab"
+                aria-selected={!deepScan}
+              >
+                Text Search (Simple)
+              </button>
+              <button 
+                type="button" 
+                class="segmented-btn" 
+                class:active={deepScan} 
+                onclick={() => deepScan = true}
+                disabled={isScraping}
+                role="tab"
+                aria-selected={deepScan}
+              >
+                Select by District/Ward (Deep Scan)
+              </button>
+            </div>
+          </div>
+
           {#if !deepScan}
             <div class="input-group animate-slide-down">
               <label for="location-input">Location / Area</label>
@@ -412,18 +440,6 @@
             </div>
           {/if}
 
-          <!-- Deep Scan Toggle -->
-          <div class="input-group" style="margin-block: var(--spacing-md) var(--spacing-sm);">
-            <label class="toggle-container" style="display: flex; align-items: center; gap: var(--spacing-xs); cursor: pointer; font-size: 13px; font-weight: 600; color: var(--color-on-surface);">
-              <input 
-                type="checkbox" 
-                bind:checked={deepScan} 
-                disabled={isScraping}
-              />
-              <span>Run Deep Scan (Sequential District Search)</span>
-            </label>
-            <p class="input-desc">Highly recommended for city-wide crawls. Sequentially searches district-by-district to bypass Google's 120-listing limit safely.</p>
-          </div>
           {:else}
           <div class="grid-inputs animate-slide-down">
             <div class="helper-section">
@@ -737,7 +753,8 @@
     gap: var(--spacing-xs);
   }
 
-  .input-group label {
+  .input-group label,
+  .input-group .segmented-label {
     font-size: 12px;
     font-weight: 600;
     color: var(--color-on-surface-variant);
@@ -1230,11 +1247,6 @@
     height: auto;
     cursor: pointer;
   }
-  .toggle-container input[type="checkbox"] {
-    width: auto;
-    height: auto;
-    cursor: pointer;
-  }
   .district-suffix {
     color: var(--color-on-surface-variant);
     font-size: 10px;
@@ -1246,5 +1258,43 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .segmented-control {
+    display: flex;
+    background: var(--color-surface-container-low);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-md);
+    padding: 3px;
+    margin-bottom: var(--spacing-sm);
+  }
+  .segmented-btn {
+    flex: 1;
+    background: none;
+    border: none;
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-on-surface-variant);
+    cursor: pointer;
+    border-radius: var(--rounded-sm);
+    transition: var(--transition-fast);
+    outline: none;
+  }
+  .segmented-btn.active {
+    background: var(--color-success);
+    color: white;
+    box-shadow: var(--shadow-sm);
+  }
+  .segmented-btn:hover:not(.active):not(:disabled) {
+    background: var(--color-surface-container-high);
+    color: var(--color-on-surface);
+  }
+  .segmented-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .segmented-btn:focus-visible {
+    outline: 2px solid var(--color-success);
+    outline-offset: -2px;
   }
 </style>
