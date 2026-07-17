@@ -90,6 +90,7 @@ pub fn add_lead(
     email: String,
     phone: String,
     about: Option<String>,
+    address: Option<String>,
     state: tauri::State<DbState>,
 ) -> Result<i32, String> {
     let mut conn = state
@@ -97,7 +98,7 @@ pub fn add_lead(
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
     add_lead_internal(
-        &mut conn, name, company, status, value, owner, email, phone, about,
+        &mut conn, name, company, status, value, owner, email, phone, about, address,
     )
 }
 
@@ -111,6 +112,7 @@ pub fn add_lead_internal(
     email: String,
     phone: String,
     about: Option<String>,
+    address: Option<String>,
 ) -> Result<i32, String> {
     let now: String = conn
         .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
@@ -118,8 +120,8 @@ pub fn add_lead_internal(
         })
         .map_err(|e| format!("Database query error: {}", e))?;
     conn.execute(
-        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        rusqlite::params![name, company, status, value, now, owner, email, phone, about],
+        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, 0)",
+        rusqlite::params![name, company, status, value, now, owner, email, phone, about, address],
     ).map_err(|e| format!("Database query error: {}", e))?;
     let last_id = conn.last_insert_rowid() as i32;
     Ok(last_id)
@@ -299,6 +301,7 @@ pub fn update_lead(
     email: String,
     phone: String,
     about: Option<String>,
+    address: Option<String>,
     state: tauri::State<DbState>,
 ) -> Result<(), String> {
     let conn = state
@@ -306,8 +309,8 @@ pub fn update_lead(
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
     conn.execute(
-        "UPDATE leads SET name = ?1, company = ?2, status = ?3, value = ?4, owner = ?5, email = ?6, phone = ?7, about = ?8 WHERE id = ?9",
-        rusqlite::params![name, company, status, value, owner, email, phone, about, id],
+        "UPDATE leads SET name = ?1, company = ?2, status = ?3, value = ?4, owner = ?5, email = ?6, phone = ?7, about = ?8, address = ?9 WHERE id = ?10",
+        rusqlite::params![name, company, status, value, owner, email, phone, about, address, id],
     ).map_err(|e| format!("Database query error: {}", e))?;
     Ok(())
 }
@@ -982,6 +985,13 @@ pub async fn send_zalo_outreach_internal(
 
             if phone == "not-found" {
                 let msg = format!("Phone number {} not found on Zalo (Mock)", phone);
+                let _ = {
+                    let conn_guard = conn_mutex.lock().unwrap();
+                    conn_guard.execute(
+                        "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                        rusqlite::params![lead_id],
+                    )
+                };
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "outreach-log",
@@ -1059,7 +1069,7 @@ pub async fn send_zalo_outreach_internal(
                 ).map_err(|e| format!("Database query error: {}", e))?;
 
                 tx.execute(
-                    "UPDATE leads SET last_activity = ?1 WHERE id = ?2",
+                    "UPDATE leads SET last_activity = ?1, has_zalo = 1, zalo_reached = 1 WHERE id = ?2",
                     rusqlite::params![&now, lead_id],
                 )
                 .map_err(|e| format!("Database query error: {}", e))?;
@@ -1396,7 +1406,7 @@ pub async fn send_zalo_outreach_internal(
                         ).map_err(|e| format!("Database query error: {}", e))?;
 
                         tx.execute(
-                            "UPDATE leads SET last_activity = ?1 WHERE id = ?2",
+                            "UPDATE leads SET last_activity = ?1, has_zalo = 1, zalo_reached = 1 WHERE id = ?2",
                             rusqlite::params![&now, lead_id],
                         )
                         .map_err(|e| format!("Database query error: {}", e))?;
@@ -1437,6 +1447,18 @@ pub async fn send_zalo_outreach_internal(
                 "Phone number {} for {} not found on Zalo",
                 sanitized_phone, lead_name
             );
+            let _ = {
+                let conn_guard = conn_mutex.lock();
+                match conn_guard {
+                    Ok(conn) => {
+                        let _ = conn.execute(
+                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                            rusqlite::params![lead_id],
+                        );
+                    }
+                    Err(_) => {}
+                }
+            };
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "outreach-log",

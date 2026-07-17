@@ -47,7 +47,8 @@ export async function addLead(
   owner: string,
   email: string,
   phone: string,
-  about?: string | null
+  about?: string | null,
+  address?: string | null
 ): Promise<number> {
   return invoke<number>('add_lead', {
     name,
@@ -57,7 +58,8 @@ export async function addLead(
     owner,
     email,
     phone,
-    about
+    about,
+    address
   });
 }
 
@@ -100,7 +102,8 @@ export async function updateLead(
   owner: string,
   email: string,
   phone: string,
-  about?: string | null
+  about?: string | null,
+  address?: string | null
 ): Promise<void> {
   return invoke<void>('update_lead', {
     id,
@@ -111,7 +114,8 @@ export async function updateLead(
     owner,
     email,
     phone,
-    about
+    about,
+    address
   });
 }
 

@@ -29,9 +29,15 @@ mod tests {
             "john@example.com".to_string(),
             "+11223344".to_string(),
             Some("CEO".to_string()),
+            Some("123 Main St".to_string()),
         )
         .unwrap();
         assert!(new_lead_id > 0);
+
+        let lead_retrieved = commands::get_lead_details_internal(&conn, new_lead_id).unwrap();
+        assert_eq!(lead_retrieved.address, Some("123 Main St".to_string()));
+        assert_eq!(lead_retrieved.has_zalo, None);
+        assert_eq!(lead_retrieved.zalo_reached, 0);
 
         let leads_updated = commands::get_leads_internal(&conn).unwrap();
         assert_eq!(leads_updated.len(), 4);
@@ -270,6 +276,7 @@ mod tests {
             "sarah@acme.com".to_string(),
             "+12345678".to_string(),
             Some("CTO".to_string()),
+            None,
         )
         .unwrap();
 
@@ -284,6 +291,7 @@ mod tests {
             "nophone@example.com".to_string(),
             "".to_string(),
             None,
+            None,
         )
         .unwrap();
 
@@ -297,6 +305,7 @@ mod tests {
             "Alex Rivera".to_string(),
             "notfound@example.com".to_string(),
             "not-found".to_string(),
+            None,
             None,
         )
         .unwrap();
@@ -335,5 +344,11 @@ mod tests {
         // Verify lead's last activity updated
         let lead_1 = commands::get_lead_details_internal(&conn_locked, lead_id_1).unwrap();
         assert_ne!(lead_1.last_activity, "");
+        assert_eq!(lead_1.has_zalo, Some(1));
+        assert_eq!(lead_1.zalo_reached, 1);
+
+        let lead_3 = commands::get_lead_details_internal(&conn_locked, lead_id_3).unwrap();
+        assert_eq!(lead_3.has_zalo, Some(0));
+        assert_eq!(lead_3.zalo_reached, 0);
     }
 }
