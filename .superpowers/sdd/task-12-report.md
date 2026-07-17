@@ -61,3 +61,4 @@ All styles comply with the strict light-mode vanilla CSS palette defined in `src
 
 - **Commit**: `e30a5a3` - `feat(frontend): implement Google Maps Scraper and Zalo Outreach panels in Svelte 5`
 - **Commit**: `500d72e` - `fix(frontend): resolve tauri ipc mismatch, robust state derivation, and visibility toggling state preservation`
+- **Commit**: `b597f8d` - `fix(frontend): adjust tauri ipc parameter case, add failed progress checking, fix state references, and improve input/UA robustness`
