@@ -79,4 +79,47 @@ mod tests {
         ).unwrap();
         assert_eq!(content, "Hello, {{name}}!");
     }
+
+    #[test]
+    fn test_zalo_session_helpers() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // Initially no sessions
+        let sessions = db::get_all_zalo_sessions(&conn).unwrap();
+        assert!(sessions.is_empty());
+
+        // Test save session
+        db::save_zalo_session(&conn, "imei-123", "UA-test", "[]", "en").unwrap();
+
+        // Get by IMEI
+        let s1 = db::get_zalo_session(&conn, "imei-123").unwrap().unwrap();
+        assert_eq!(s1.imei, "imei-123");
+        assert_eq!(s1.user_agent, "UA-test");
+        assert_eq!(s1.cookies_json, "[]");
+        assert_eq!(s1.language, "en");
+
+        // Save again (should update/replace)
+        db::save_zalo_session(&conn, "imei-123", "UA-new", "[{}]", "vi").unwrap();
+        let s2 = db::get_zalo_session(&conn, "imei-123").unwrap().unwrap();
+        assert_eq!(s2.user_agent, "UA-new");
+        assert_eq!(s2.cookies_json, "[{}]");
+        assert_eq!(s2.language, "vi");
+
+        // Save another session
+        db::save_zalo_session(&conn, "imei-456", "UA-other", "[]", "en").unwrap();
+
+        // List all
+        let all = db::get_all_zalo_sessions(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Delete one
+        db::delete_zalo_session(&conn, "imei-123").unwrap();
+        assert!(db::get_zalo_session(&conn, "imei-123").unwrap().is_none());
+
+        // List all again
+        let all_after = db::get_all_zalo_sessions(&conn).unwrap();
+        assert_eq!(all_after.len(), 1);
+        assert_eq!(all_after[0].imei, "imei-456");
+    }
 }
+

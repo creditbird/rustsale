@@ -545,3 +545,133 @@ pub fn start_google_maps_scrape(
 
     Ok(())
 }
+
+#[derive(Clone, serde::Serialize)]
+pub struct ZaloQRCodePayload {
+    pub image_base64: String,
+    pub token: String,
+    pub code: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ZaloQRScannedPayload {
+    pub avatar: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ZaloQRSuccessPayload {
+    pub imei: String,
+}
+
+#[tauri::command]
+pub fn start_zalo_qr_login(
+    app_handle: tauri::AppHandle,
+    _state: tauri::State<DbState>,
+) -> Result<(), String> {
+    let app_handle_clone = app_handle.clone();
+
+    tokio::spawn(async move {
+        let callback_app_handle = app_handle_clone.clone();
+
+        let callback = move |event: zca_rs::apis::auth::LoginQREvent| -> zca_rs::apis::auth::QRCallbackResult {
+            let db_state = callback_app_handle.state::<DbState>();
+            let handle_res = match db_state.conn.lock() {
+                Ok(conn) => {
+                    handle_zalo_qr_event(event, &conn)
+                }
+                Err(e) => {
+                    let err_msg = format!("Failed to lock database for Zalo session: {}", e);
+                    eprintln!("{}", err_msg);
+                    Err(err_msg)
+                }
+            };
+
+            match handle_res {
+                Ok((event_name, payload)) => {
+                    let _ = callback_app_handle.emit(&event_name, payload);
+                }
+                Err(e) => {
+                    eprintln!("Error handling Zalo QR event: {}", e);
+                }
+            }
+            zca_rs::apis::auth::QRCallbackResult::Continue
+        };
+
+        let options = zca_rs::Options::default();
+        if let Err(e) = zca_rs::Zalo::login_qr(options, callback).await {
+            eprintln!("Zalo QR login failed or cancelled: {:?}", e);
+        }
+    });
+
+    Ok(())
+}
+
+pub fn handle_zalo_qr_event(
+    event: zca_rs::apis::auth::LoginQREvent,
+    conn: &Connection,
+) -> Result<(String, serde_json::Value), String> {
+    match event {
+        zca_rs::apis::auth::LoginQREvent::QRCodeGenerated { code, image_base64, token } => {
+            let payload = serde_json::to_value(ZaloQRCodePayload {
+                image_base64,
+                token,
+                code,
+            }).map_err(|e| e.to_string())?;
+            Ok(("zalo-qr-code".to_string(), payload))
+        }
+        zca_rs::apis::auth::LoginQREvent::QRCodeScanned { avatar, display_name } => {
+            let payload = serde_json::to_value(ZaloQRScannedPayload {
+                avatar,
+                display_name,
+            }).map_err(|e| e.to_string())?;
+            Ok(("zalo-qr-scanned".to_string(), payload))
+        }
+        zca_rs::apis::auth::LoginQREvent::QRCodeExpired => {
+            Ok(("zalo-qr-expired".to_string(), serde_json::Value::Null))
+        }
+        zca_rs::apis::auth::LoginQREvent::QRCodeDeclined => {
+            Ok(("zalo-qr-declined".to_string(), serde_json::Value::Null))
+        }
+        zca_rs::apis::auth::LoginQREvent::GotLoginInfo { cookie, imei, user_agent } => {
+            let cookies_json = serde_json::to_string(&cookie).map_err(|e| e.to_string())?;
+            crate::db::save_zalo_session(conn, &imei, &user_agent, &cookies_json, "vi")
+                .map_err(|e| e.to_string())?;
+
+            let payload = serde_json::to_value(ZaloQRSuccessPayload { imei }).map_err(|e| e.to_string())?;
+            Ok(("zalo-qr-success".to_string(), payload))
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_zalo_sessions(
+    state: tauri::State<DbState>,
+) -> Result<Vec<crate::models::ZaloSession>, String> {
+    let conn = state.conn.lock().map_err(|e| format!("Database lock error: {}", e))?;
+    get_zalo_sessions_internal(&conn)
+}
+
+pub fn get_zalo_sessions_internal(
+    conn: &Connection,
+) -> Result<Vec<crate::models::ZaloSession>, String> {
+    crate::db::get_all_zalo_sessions(conn).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_zalo_session(
+    imei: String,
+    state: tauri::State<DbState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| format!("Database lock error: {}", e))?;
+    delete_zalo_session_internal(&conn, &imei)
+}
+
+pub fn delete_zalo_session_internal(
+    conn: &Connection,
+    imei: &str,
+) -> Result<(), String> {
+    crate::db::delete_zalo_session(conn, imei).map_err(|e| format!("Database error: {}", e))
+}
+
+

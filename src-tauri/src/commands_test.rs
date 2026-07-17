@@ -159,4 +159,83 @@ mod tests {
 
         let _ = manager.close().await;
     }
+
+    #[test]
+    fn test_zalo_qr_and_session_commands() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        // 1. Initial state check
+        let sessions = commands::get_zalo_sessions_internal(&conn).unwrap();
+        assert!(sessions.is_empty());
+
+        // 2. Test QRCodeGenerated event translation
+        let event_gen = zca_rs::apis::auth::LoginQREvent::QRCodeGenerated {
+            code: "test-code".to_string(),
+            image_base64: "base64-img".to_string(),
+            token: "token-abc".to_string(),
+        };
+        let (evt, val) = commands::handle_zalo_qr_event(event_gen, &conn).unwrap();
+        assert_eq!(evt, "zalo-qr-code");
+        assert_eq!(val["code"], "test-code");
+        assert_eq!(val["image_base64"], "base64-img");
+        assert_eq!(val["token"], "token-abc");
+
+        // 3. Test QRCodeScanned event translation
+        let event_scan = zca_rs::apis::auth::LoginQREvent::QRCodeScanned {
+            avatar: "avatar-url".to_string(),
+            display_name: "John Doe".to_string(),
+        };
+        let (evt, val) = commands::handle_zalo_qr_event(event_scan, &conn).unwrap();
+        assert_eq!(evt, "zalo-qr-scanned");
+        assert_eq!(val["avatar"], "avatar-url");
+        assert_eq!(val["display_name"], "John Doe");
+
+        // 4. Test QRCodeExpired event translation
+        let event_exp = zca_rs::apis::auth::LoginQREvent::QRCodeExpired;
+        let (evt, val) = commands::handle_zalo_qr_event(event_exp, &conn).unwrap();
+        assert_eq!(evt, "zalo-qr-expired");
+        assert!(val.is_null());
+
+        // 5. Test QRCodeDeclined event translation
+        let event_dec = zca_rs::apis::auth::LoginQREvent::QRCodeDeclined;
+        let (evt, val) = commands::handle_zalo_qr_event(event_dec, &conn).unwrap();
+        assert_eq!(evt, "zalo-qr-declined");
+        assert!(val.is_null());
+
+        // 6. Test GotLoginInfo event translation and persistence
+        let dummy_cookies = vec![
+            zca_rs::context::ZaloCookie {
+                name: "zpw_sek".to_string(),
+                value: "sek-123456".to_string(),
+                domain: "zalo.me".to_string(),
+                path: "/".to_string(),
+            }
+        ];
+        let event_success = zca_rs::apis::auth::LoginQREvent::GotLoginInfo {
+            cookie: dummy_cookies,
+            imei: "imei-999".to_string(),
+            user_agent: "Mozilla/MockUA".to_string(),
+        };
+        let (evt, val) = commands::handle_zalo_qr_event(event_success, &conn).unwrap();
+        assert_eq!(evt, "zalo-qr-success");
+        assert_eq!(val["imei"], "imei-999");
+
+        // Verify session was persisted to database
+        let saved_sessions = commands::get_zalo_sessions_internal(&conn).unwrap();
+        assert_eq!(saved_sessions.len(), 1);
+        assert_eq!(saved_sessions[0].imei, "imei-999");
+        assert_eq!(saved_sessions[0].user_agent, "Mozilla/MockUA");
+        assert_eq!(saved_sessions[0].language, "vi");
+        
+        let cookies: Vec<zca_rs::context::ZaloCookie> = serde_json::from_str(&saved_sessions[0].cookies_json).unwrap();
+        assert_eq!(cookies.len(), 1);
+        assert_eq!(cookies[0].name, "zpw_sek");
+        assert_eq!(cookies[0].value, "sek-123456");
+
+        // 7. Test delete session
+        commands::delete_zalo_session_internal(&conn, "imei-999").unwrap();
+        let sessions_after_delete = commands::get_zalo_sessions_internal(&conn).unwrap();
+        assert!(sessions_after_delete.is_empty());
+    }
 }
+

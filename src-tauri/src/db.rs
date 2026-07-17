@@ -95,3 +95,56 @@ pub fn seed_data(conn: &mut Connection) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn save_zalo_session(
+    conn: &Connection,
+    imei: &str,
+    user_agent: &str,
+    cookies_json: &str,
+    language: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO zalo_sessions (imei, user_agent, cookies_json, language) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![imei, user_agent, cookies_json, language],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn get_zalo_session(conn: &Connection, imei: &str) -> Result<Option<crate::models::ZaloSession>> {
+    let mut stmt = conn.prepare("SELECT imei, user_agent, cookies_json, language FROM zalo_sessions WHERE imei = ?1")?;
+    let mut rows = stmt.query([imei])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(crate::models::ZaloSession {
+            imei: row.get(0)?,
+            user_agent: row.get(1)?,
+            cookies_json: row.get(2)?,
+            language: row.get(3)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn get_all_zalo_sessions(conn: &Connection) -> Result<Vec<crate::models::ZaloSession>> {
+    let mut stmt = conn.prepare("SELECT imei, user_agent, cookies_json, language FROM zalo_sessions")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(crate::models::ZaloSession {
+            imei: row.get(0)?,
+            user_agent: row.get(1)?,
+            cookies_json: row.get(2)?,
+            language: row.get(3)?,
+        })
+    })?;
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row?);
+    }
+    Ok(sessions)
+}
+
+pub fn delete_zalo_session(conn: &Connection, imei: &str) -> Result<()> {
+    conn.execute("DELETE FROM zalo_sessions WHERE imei = ?1", [imei])?;
+    Ok(())
+}
+

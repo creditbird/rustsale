@@ -56,7 +56,10 @@ pub fn run() {
             commands::add_activity,
             commands::update_lead,
             commands::delete_lead,
-            commands::start_google_maps_scrape
+            commands::start_google_maps_scrape,
+            commands::start_zalo_qr_login,
+            commands::get_zalo_sessions,
+            commands::delete_zalo_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
