@@ -1,0 +1,59 @@
+// Database Markup Language (DBML) Specification for RustSale v2
+
+Table leads {
+  id integer [primary key, increment]
+  name varchar [not null]
+  company varchar [not null]
+  status varchar [not null, note: "New, Contacted, Nurturing, Qualified, Lost, Won"]
+  value real [not null, default: 0.0]
+  last_activity varchar [not null, note: "ISO-8601 string"]
+  owner varchar [not null]
+  email varchar [not null]
+  phone varchar [not null]
+  about text
+}
+
+Table activities {
+  id integer [primary key, increment]
+  lead_id integer [not null]
+  type varchar [not null, note: "Email, Call, Meeting, Task, System"]
+  content text [not null]
+  created_at varchar [not null, note: "ISO-8601 string"]
+  performed_by varchar [not null]
+}
+
+Table deals {
+  id integer [primary key, increment]
+  lead_id integer [not null]
+  title varchar [not null]
+  value real [not null, default: 0.0]
+  stage varchar [not null, note: "Prospecting, Demo, Proposal, Negotiation, Won, Lost"]
+  created_at varchar [not null, note: "ISO-8601 string"]
+}
+
+Table commission_rules {
+  id integer [primary key, increment]
+  name varchar [not null]
+  type varchar [not null, note: "Tiered Enterprise, Flat Rate"]
+  rate real [not null]
+  threshold real [not null]
+  status varchar [not null, note: "Active, Inactive, New"]
+  created_at varchar [not null, note: "ISO-8601 string"]
+}
+
+Table commissions {
+  id integer [primary key, increment]
+  deal_id integer [not null]
+  deal_name varchar [not null]
+  contract_value real [not null]
+  rate real [not null]
+  earnings real [not null]
+  status varchar [not null, note: "New, Pending, Approved, Rejected"]
+  user_id integer [not null]
+  created_at varchar [not null, note: "ISO-8601 string"]
+}
+
+// Relationships
+Ref: activities.lead_id > leads.id [delete: cascade]
+Ref: deals.lead_id > leads.id [delete: cascade]
+Ref: commissions.deal_id > deals.id [delete: cascade]
