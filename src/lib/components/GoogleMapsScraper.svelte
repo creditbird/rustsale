@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { CITY_DISTRICTS, DISTRICT_WARDS } from '$lib/constants/vietnam_regions';
 
   // State runes
   let mode = $state<'keyword' | 'grid'>('keyword');
@@ -37,27 +38,46 @@
   let selectedCity = $state<'hcm' | 'hanoi'>('hcm');
   let selectedDistricts = $state<string[]>([]);
 
-  const CITY_DISTRICTS = {
-    hcm: [
-      'Quận 1', 'Quận 3', 'Quận 4', 'Quận 5', 'Quận 6', 'Quận 7', 'Quận 8', 'Quận 10', 'Quận 11', 'Quận 12',
-      'Quận Bình Thạnh', 'Quận Gò Vấp', 'Quận Phú Nhuận', 'Quận Tân Bình', 'Quận Tân Phú', 'Quận Bình Tân',
-      'Thành phố Thủ Đức', 'Huyện Hóc Môn', 'Huyện Củ Chi', 'Huyện Bình Chánh', 'Huyện Nhà Bè', 'Huyện Cần Giờ'
-    ],
-    hanoi: [
-      'Quận Ba Đình', 'Quận Hoàn Kiếm', 'Quận Tây Hồ', 'Quận Long Biên', 'Quận Cầu Giấy', 'Quận Đống Đa',
-      'Quận Hai Bà Trưng', 'Quận Hoàng Mai', 'Quận Thanh Xuân', 'Huyện Sóc Sơn', 'Huyện Đông Anh', 'Huyện Gia Lâm',
-      'Quận Nam Từ Liêm', 'Huyện Thanh Trì', 'Quận Bắc Từ Liêm', 'Huyện Mê Linh', 'Quận Hà Đông', 'Thị xã Sơn Tây',
-      'Huyện Ba Vì', 'Huyện Phúc Thọ', 'Huyện Đan Phượng', 'Huyện Hoài Đức', 'Huyện Quốc Oai', 'Huyện Thạch Thất',
-      'Huyện Chương Mỹ', 'Huyện Thanh Oai', 'Huyện Thường Tín', 'Huyện Phú Xuyên', 'Huyện Ứng Hòa', 'Huyện Mỹ Đức'
-    ]
-  };
+  let selectedWards = $state<string[]>([]);
+
+  // Derived state to get the list of wards under selected districts
+  let availableWards = $derived.by(() => {
+    let list: { name: string; district: string }[] = [];
+    for (const district of selectedDistricts) {
+      const wards = DISTRICT_WARDS[district] || [];
+      for (const ward of wards) {
+        list.push({ name: ward, district });
+      }
+    }
+    return list;
+  });
 
   function selectAllDistricts() {
     selectedDistricts = [...CITY_DISTRICTS[selectedCity]];
+    selectedWards = [];
   }
 
   function deselectAllDistricts() {
     selectedDistricts = [];
+    selectedWards = [];
+  }
+
+  function selectAllWards() {
+    selectedWards = availableWards.map(w => `${w.name}, ${w.district}`);
+  }
+
+  function deselectAllWards() {
+    selectedWards = [];
+  }
+
+  function toggleDistrict(district: string, checked: boolean) {
+    if (checked) {
+      selectedDistricts = [...selectedDistricts, district];
+    } else {
+      selectedDistricts = selectedDistricts.filter(d => d !== district);
+      // Remove any wards associated with this deselected district
+      selectedWards = selectedWards.filter(w => !w.endsWith(`, ${district}`));
+    }
   }
 
   async function detectCoordinates() {
@@ -156,7 +176,7 @@
       }
     }
 
-    // If deepScan is true and we selected some districts, validate
+    // If deepScan is true, validate and build targets list
     let districtsVal: string[] | null = null;
     let locationVal = mode === 'keyword' ? location : null;
     if (mode === 'keyword' && deepScan) {
@@ -164,8 +184,12 @@
         appendLog("Error: Please select at least one district for Deep Scan.");
         return;
       }
-      districtsVal = selectedDistricts;
       locationVal = selectedCity === 'hcm' ? 'Hồ Chí Minh' : 'Hà Nội';
+      if (selectedWards.length > 0) {
+        districtsVal = selectedWards;
+      } else {
+        districtsVal = selectedDistricts;
+      }
     }
 
     isScraping = true;
@@ -175,7 +199,11 @@
     appendLog(`Starting Google Maps Scraper in ${mode} mode...`);
     appendLog(`Keyword: "${keyword}"`);
     if (deepScan && districtsVal) {
-      appendLog(`Deep Scan active for city: ${locationVal} (${districtsVal.length} districts selected)`);
+      if (selectedWards.length > 0) {
+        appendLog(`Deep Scan active for city: ${locationVal} (${districtsVal.length} wards selected)`);
+      } else {
+        appendLog(`Deep Scan active for city: ${locationVal} (${districtsVal.length} districts selected)`);
+      }
     }
 
     try {
@@ -310,7 +338,7 @@
                   id="deep-city-select" 
                   bind:value={selectedCity} 
                   disabled={isScraping}
-                  onchange={() => selectedDistricts = []}
+                  onchange={() => { selectedDistricts = []; selectedWards = []; }}
                 >
                   <option value="hcm">TP. Hồ Chí Minh</option>
                   <option value="hanoi">Hà Nội</option>
@@ -337,11 +365,7 @@
                         checked={selectedDistricts.includes(district)}
                         onchange={(e) => {
                           const checked = (e.target as HTMLInputElement).checked;
-                          if (checked) {
-                            selectedDistricts = [...selectedDistricts, district];
-                          } else {
-                            selectedDistricts = selectedDistricts.filter(d => d !== district);
-                          }
+                          toggleDistrict(district, checked);
                         }}
                       />
                       <span>{district}</span>
@@ -349,6 +373,42 @@
                   {/each}
                 </div>
               </div>
+
+              {#if selectedDistricts.length > 0}
+                <div class="input-group animate-slide-down" style="margin-top: var(--spacing-sm);">
+                  <div class="districts-header">
+                    <span class="districts-label">Select Wards to Scan ({selectedWards.length} selected / {availableWards.length} available)</span>
+                    <div class="districts-actions">
+                      <button type="button" class="btn-text" onclick={selectAllWards} disabled={isScraping}>Select All</button>
+                      <span class="divider">|</span>
+                      <button type="button" class="btn-text" onclick={deselectAllWards} disabled={isScraping}>Clear</button>
+                    </div>
+                  </div>
+                  
+                  <div class="districts-grid">
+                    {#each availableWards as ward}
+                      <label class="district-checkbox-label" title={`${ward.name} (${ward.district})`}>
+                        <input 
+                          type="checkbox" 
+                          value={`${ward.name}, ${ward.district}`} 
+                          disabled={isScraping}
+                          checked={selectedWards.includes(`${ward.name}, ${ward.district}`)}
+                          onchange={(e) => {
+                            const checked = (e.target as HTMLInputElement).checked;
+                            const val = `${ward.name}, ${ward.district}`;
+                            if (checked) {
+                              selectedWards = [...selectedWards, val];
+                            } else {
+                              selectedWards = selectedWards.filter(w => w !== val);
+                            }
+                          }}
+                        />
+                        <span class="ward-text">{ward.name} <small class="district-suffix">({ward.district.replace('Quận ', 'Q.').replace('Huyện ', 'H.')})</small></span>
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
             </div>
           {/if}
 
@@ -1174,5 +1234,17 @@
     width: auto;
     height: auto;
     cursor: pointer;
+  }
+  .district-suffix {
+    color: var(--color-on-surface-variant);
+    font-size: 10px;
+    opacity: 0.8;
+  }
+  .ward-text {
+    display: inline-block;
+    max-width: 100px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>
