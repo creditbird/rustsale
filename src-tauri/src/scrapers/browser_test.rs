@@ -49,12 +49,13 @@ mod tests {
         // Acquire the first and only allowed session
         let session1 = manager.acquire().await.expect("Failed to acquire session 1");
 
-        // Spawn a task that will release the session after a short delay
-        let manager_clone = manager.clone();
-        let session1_clone = session1.clone();
+        // Retain pointer to verify session reuse
+        let session1_ptr = Arc::as_ptr(&session1.session);
+
+        // Spawn a task that will drop the session after a short delay to trigger auto-release
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            manager_clone.release(session1_clone).await.expect("Failed to release session");
+            drop(session1);
         });
 
         // Try to acquire another session. This should block/wait until the first session is released
@@ -66,7 +67,7 @@ mod tests {
         assert!(elapsed >= Duration::from_millis(150), "Should have blocked waiting for release, but finished in {:?}", elapsed);
 
         // Verify that we reused the same session structure since it was released
-        assert!(Arc::ptr_eq(&session1, &session2));
+        assert_eq!(session1_ptr, Arc::as_ptr(&session2.session));
 
         // Clean up
         manager.close().await.expect("Failed to close manager");

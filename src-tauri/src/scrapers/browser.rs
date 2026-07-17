@@ -5,21 +5,21 @@ use cdp_lite::client::CdpClient;
 use cdp_lite::protocol::NoParams;
 use serde_json::json;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-#[derive(Clone)]
 pub struct BrowserSession {
     pub client: Arc<CdpClient>,
-    pub(crate) in_use: Arc<Mutex<bool>>,
+    pub(crate) in_use: AtomicBool,
 }
 
 impl BrowserSession {
     pub fn new(client: CdpClient) -> Self {
         Self {
             client: Arc::new(client),
-            in_use: Arc::new(Mutex::new(false)),
+            in_use: AtomicBool::new(false),
         }
     }
 
@@ -58,12 +58,34 @@ impl BrowserSession {
     }
 }
 
+pub struct SessionGuard {
+    pub(crate) session: Arc<BrowserSession>,
+}
+
+impl std::ops::Deref for SessionGuard {
+    type Target = BrowserSession;
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.session.in_use.store(false, Ordering::SeqCst);
+    }
+}
+
+struct SessionPool {
+    vec: Vec<Arc<BrowserSession>>,
+    pending_creations: usize,
+}
+
 pub struct BrowserManager {
     port: u16,
     endpoint: String,
-    sessions: Arc<Mutex<Vec<Arc<BrowserSession>>>>,
+    sessions: Arc<Mutex<SessionPool>>,
     max_sessions: usize,
-    process: Arc<Mutex<Option<Child>>>,
+    process: Arc<std::sync::Mutex<Option<Child>>>,
 }
 
 impl BrowserManager {
@@ -71,9 +93,12 @@ impl BrowserManager {
         Self {
             port: 9222,
             endpoint: "127.0.0.1:9222".to_string(),
-            sessions: Arc::new(Mutex::new(Vec::new())),
+            sessions: Arc::new(Mutex::new(SessionPool {
+                vec: Vec::new(),
+                pending_creations: 0,
+            })),
             max_sessions,
-            process: Arc::new(Mutex::new(Option::None)),
+            process: Arc::new(std::sync::Mutex::new(Option::None)),
         }
     }
 
@@ -110,63 +135,74 @@ impl BrowserManager {
         }
 
         let child = cmd.spawn().context("Failed to spawn browser")?;
-        *self.process.lock().await = Some(child);
+        *self.process.lock().unwrap() = Some(child);
 
         // Wait for browser port to bind
         for _ in 0..10 {
             if CdpClient::new(&self.endpoint, Duration::from_secs(1)).await.is_ok() {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         Ok(())
     }
 
-    pub async fn acquire(&self) -> Result<Arc<BrowserSession>> {
+    pub async fn acquire(&self) -> Result<SessionGuard> {
         loop {
-            let sessions = self.sessions.lock().await;
+            let mut pool = self.sessions.lock().await;
 
-            // Check if there is an unused session we can reuse
-            for session in sessions.iter() {
-                let mut in_use = session.in_use.lock().await;
-                if !*in_use {
-                    *in_use = true;
-                    return Ok(session.clone());
+            // 1. Check if there is an unused session we can reuse
+            for session in pool.vec.iter() {
+                if session.in_use.compare_exchange(
+                    false,
+                    true,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst
+                ).is_ok() {
+                    return Ok(SessionGuard { session: session.clone() });
                 }
             }
 
-            // If all sessions are in use, but we haven't reached max_sessions, create a new one
-            let can_create = sessions.len() < self.max_sessions;
-            drop(sessions);
+            // 2. Check if total active + pending sessions is less than max_sessions
+            if pool.vec.len() + pool.pending_creations < self.max_sessions {
+                pool.pending_creations += 1;
+                drop(pool);
 
-            if can_create {
-                let client = CdpClient::new(&self.endpoint, Duration::from_secs(30)).await?;
-                client.send_raw_command("Page.enable", NoParams).await?;
-                let session = Arc::new(BrowserSession::new(client));
-                *session.in_use.lock().await = true;
+                let create_result = async {
+                    let client = CdpClient::new(&self.endpoint, Duration::from_secs(30)).await?;
+                    client.send_raw_command("Page.enable", NoParams).await?;
+                    let session = Arc::new(BrowserSession::new(client));
+                    session.in_use.store(true, Ordering::SeqCst);
+                    Ok(session)
+                }.await;
 
-                let mut sessions_lock = self.sessions.lock().await;
-                if sessions_lock.len() < self.max_sessions {
-                    sessions_lock.push(session.clone());
-                    return Ok(session);
-                } else {
-                    *session.in_use.lock().await = false;
+                let mut pool_lock = self.sessions.lock().await;
+                pool_lock.pending_creations -= 1;
+
+                match create_result {
+                    Ok(session) => {
+                        pool_lock.vec.push(session.clone());
+                        return Ok(SessionGuard { session });
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
                 }
             }
 
-            // Otherwise, wait for a session to be released
+            // 3. Otherwise, wait for a session to be released
+            drop(pool);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
     pub async fn release(&self, session: Arc<BrowserSession>) -> Result<()> {
-        let mut in_use = session.in_use.lock().await;
-        *in_use = false;
+        session.in_use.store(false, Ordering::SeqCst);
         Ok(())
     }
 
     pub async fn close(&self) -> Result<()> {
-        if let Some(mut child) = self.process.lock().await.take() {
+        if let Some(mut child) = self.process.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -174,18 +210,17 @@ impl BrowserManager {
     }
 
     pub async fn process_id(&self) -> Option<u32> {
-        let guard = self.process.lock().await;
+        let guard = self.process.lock().unwrap();
         guard.as_ref().map(|c| c.id())
     }
 }
 
 impl Drop for BrowserManager {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.process.try_lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        let mut guard = self.process.lock().unwrap();
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
