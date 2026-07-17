@@ -18,6 +18,74 @@
   let saving = $state(false);
   let modalErrorMsg = $state<string | null>(null);
 
+  // Search, filter, and pagination states
+  let searchQuery = $state('');
+  let filterStatus = $state('');
+  let filterOwner = $state('');
+  let filterValueRange = $state(''); // 'all', 'under_10k', '10k_to_50k', 'above_50k'
+  let currentPage = $state(1);
+  let pageSize = $state(10);
+
+  // Derived variables
+  let uniqueStatuses = $derived(Array.from(new Set(leads.map((l: Lead) => l.status))));
+  let uniqueOwners = $derived(Array.from(new Set(leads.map((l: Lead) => l.owner).filter(Boolean))) as string[]);
+
+  let filteredLeads = $derived(
+    leads.filter((lead: Lead) => {
+      // 1. Search Query
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase().trim();
+        const matchesName = lead.name.toLowerCase().includes(query);
+        const matchesCompany = lead.company.toLowerCase().includes(query);
+        const matchesEmail = lead.email.toLowerCase().includes(query);
+        const matchesOwner = (lead.owner || '').toLowerCase().includes(query);
+        if (!matchesName && !matchesCompany && !matchesEmail && !matchesOwner) {
+          return false;
+        }
+      }
+      
+      // 2. Status Filter
+      if (filterStatus && lead.status !== filterStatus) {
+        return false;
+      }
+      
+      // 3. Owner Filter
+      if (filterOwner && lead.owner !== filterOwner) {
+        return false;
+      }
+      
+      // 4. Value Range Filter
+      if (filterValueRange) {
+        const val = lead.value || 0;
+        if (filterValueRange === 'under_10k' && val >= 10000) return false;
+        if (filterValueRange === '10k_to_50k' && (val < 10000 || val > 50000)) return false;
+        if (filterValueRange === 'above_50k' && val <= 50000) return false;
+      }
+      
+      return true;
+    })
+  );
+
+  // Reset to first page when filters change
+  $effect(() => {
+    // track dependencies
+    const _s = searchQuery;
+    const _st = filterStatus;
+    const _o = filterOwner;
+    const _v = filterValueRange;
+    const _p = pageSize;
+    currentPage = 1;
+  });
+
+  let paginatedLeads = $derived(
+    filteredLeads.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+  );
+
+  let totalPages = $derived(Math.max(1, Math.ceil(filteredLeads.length / pageSize)));
+  let totalEntries = $derived(filteredLeads.length);
+  let showingStart = $derived(totalEntries === 0 ? 0 : (currentPage - 1) * pageSize + 1);
+  let showingEnd = $derived(Math.min(totalEntries, currentPage * pageSize));
+
   async function handleAddLead(e: Event) {
     e.preventDefault();
     if (!name.trim() || !company.trim() || !email.trim()) return;
@@ -68,6 +136,51 @@
     <p class="subtitle">Select a lead row to view details, notes, and activity history.</p>
   </div>
 
+  <div class="controls-bar">
+    <div class="search-box">
+      <span class="material-icons search-icon">search</span>
+      <input 
+        type="text" 
+        bind:value={searchQuery} 
+        placeholder="Search by name, company, email, owner..." 
+      />
+    </div>
+
+    <div class="filters-box">
+      {#if uniqueStatuses.length > 1}
+        <select bind:value={filterStatus} class="filter-select">
+          <option value="">All Statuses</option>
+          {#each uniqueStatuses as status}
+            <option value={status}>{status}</option>
+          {/each}
+        </select>
+      {/if}
+
+      <select bind:value={filterOwner} class="filter-select">
+        <option value="">All Owners</option>
+        {#each uniqueOwners as owner}
+          <option value={owner}>{owner}</option>
+        {/each}
+      </select>
+
+      <select bind:value={filterValueRange} class="filter-select">
+        <option value="">All Values</option>
+        <option value="under_10k">Under $10k</option>
+        <option value="10k_to_50k">$10k - $50k</option>
+        <option value="above_50k">Above $50k</option>
+      </select>
+
+      {#if searchQuery || filterStatus || filterOwner || filterValueRange}
+        <button 
+          class="clear-filters-btn" 
+          onclick={() => { searchQuery = ''; filterStatus = ''; filterOwner = ''; filterValueRange = ''; }}
+        >
+          Clear
+        </button>
+      {/if}
+    </div>
+  </div>
+
   <div class="table-wrapper">
     <table class="leads-table">
       <thead>
@@ -80,12 +193,12 @@
         </tr>
       </thead>
       <tbody>
-        {#if leads.length === 0}
+        {#if paginatedLeads.length === 0}
           <tr>
-            <td colspan="5" class="empty-state">No leads available.</td>
+            <td colspan="5" class="empty-state">No matching records found.</td>
           </tr>
         {:else}
-          {#each leads as lead}
+          {#each paginatedLeads as lead}
             <tr 
               tabindex="0"
               onclick={() => { if (lead.id !== undefined) selectedLeadId = lead.id; }}
@@ -117,8 +230,51 @@
     </table>
   </div>
 
+  {#if totalEntries > 0}
+    <div class="pagination-bar">
+      <div class="pagination-info">
+        Showing {showingStart} to {showingEnd} of {totalEntries} entries
+      </div>
+      
+      <div class="pagination-controls">
+        <label for="page-size-select" class="sr-only">Entries per page</label>
+        <select id="page-size-select" bind:value={pageSize} class="page-size-select">
+          <option value={5}>5 per page</option>
+          <option value={10}>10 per page</option>
+          <option value={25}>25 per page</option>
+        </select>
+
+        <button 
+          class="page-btn" 
+          disabled={currentPage === 1} 
+          onclick={() => currentPage--}
+        >
+          Previous
+        </button>
+        
+        {#each Array(totalPages) as _, i}
+          <button 
+            class="page-btn" 
+            class:active={currentPage === i + 1}
+            onclick={() => currentPage = i + 1}
+          >
+            {i + 1}
+          </button>
+        {/each}
+        
+        <button 
+          class="page-btn" 
+          disabled={currentPage === totalPages} 
+          onclick={() => currentPage++}
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  {/if}
+
   {#if selectedLeadId !== null}
-    <LeadDetails leadId={selectedLeadId} onClose={() => selectedLeadId = null} />
+    <LeadDetails leadId={selectedLeadId} onClose={() => selectedLeadId = null} onRefresh={onRefresh} />
   {/if}
 </div>
 
@@ -195,6 +351,141 @@
 {/if}
 
 <style>
+  .controls-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--spacing-md);
+    flex-wrap: wrap;
+    background: var(--color-surface-container-lowest);
+    border: 1px solid var(--color-outline-variant);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--rounded-md);
+    box-shadow: var(--shadow-soft);
+  }
+  .search-box {
+    position: relative;
+    flex: 1;
+    min-inline-size: 200px;
+    max-inline-size: 400px;
+    display: flex;
+    align-items: center;
+  }
+  .search-icon {
+    position: absolute;
+    left: var(--spacing-sm);
+    color: var(--color-on-surface-variant);
+    font-size: 18px;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+  }
+  .search-box input {
+    width: 100%;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    padding-left: calc(var(--spacing-sm) + 22px);
+    border-radius: var(--rounded-md);
+    border: 1px solid var(--color-outline-variant);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-family: var(--font-family);
+    font-size: 13px;
+    outline: none;
+    transition: var(--transition-fast);
+  }
+  .search-box input:focus {
+    border-color: var(--color-outline);
+  }
+  .filters-box {
+    display: flex;
+    gap: var(--spacing-sm);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .filter-select {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--rounded-md);
+    border: 1px solid var(--color-outline-variant);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-family: var(--font-family);
+    font-size: 13px;
+    outline: none;
+    cursor: pointer;
+    transition: var(--transition-fast);
+  }
+  .filter-select:focus {
+    border-color: var(--color-outline);
+  }
+  .clear-filters-btn {
+    background: none;
+    border: 1px solid var(--color-outline-variant);
+    color: var(--color-on-surface-variant);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--rounded-md);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition-fast);
+  }
+  .clear-filters-btn:hover {
+    background: var(--color-surface-container-low);
+    color: var(--color-primary);
+  }
+  .pagination-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--spacing-md);
+    background: var(--color-surface-container-lowest);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-md);
+    box-shadow: var(--shadow-soft);
+    font-size: 13px;
+    color: var(--color-on-surface-variant);
+    flex-wrap: wrap;
+    gap: var(--spacing-md);
+  }
+  .pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+  .page-size-select {
+    padding: 4px var(--spacing-sm);
+    border-radius: var(--rounded-md);
+    border: 1px solid var(--color-outline-variant);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface-variant);
+    font-size: 12px;
+    margin-right: var(--spacing-sm);
+    cursor: pointer;
+    outline: none;
+  }
+  .page-btn {
+    background: var(--color-surface-container-lowest);
+    border: 1px solid var(--color-outline-variant);
+    color: var(--color-on-surface-variant);
+    padding: 6px 12px;
+    border-radius: var(--rounded-md);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition-fast);
+  }
+  .page-btn:hover:not(:disabled) {
+    background: var(--color-surface-container-low);
+    color: var(--color-primary);
+  }
+  .page-btn.active {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    border-color: var(--color-primary);
+  }
+  .page-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
   .leads-container {
     display: flex;
     flex-direction: column;

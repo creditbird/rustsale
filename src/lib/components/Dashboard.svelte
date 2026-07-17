@@ -97,10 +97,10 @@
             Actual: {formatCurrency(totalRevenue)} ({Math.min(100, Math.round((totalRevenue / 150000) * 100))}%)
           </text>
           <line x1="308" y1="35" x2="308" y2="65" stroke="var(--color-danger)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="314" y="28" fill="var(--color-danger)" font-size="9" font-weight="700">Target: $120k (80%)</text>
+          <text x="308" y="22" text-anchor="middle" fill="var(--color-danger)" font-size="9" font-weight="700">Target: $120k (80%)</text>
           
           <line x1="380" y1="35" x2="380" y2="65" stroke="var(--color-primary)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="340" y="78" fill="var(--color-primary)" font-size="9" font-weight="700">Stretch: $150k</text>
+          <text x="380" y="78" text-anchor="end" fill="var(--color-primary)" font-size="9" font-weight="700">Stretch: $150k</text>
         </svg>
       </div>
     </div>

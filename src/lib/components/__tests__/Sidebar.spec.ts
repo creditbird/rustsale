@@ -18,7 +18,7 @@ test('updates activeTab on navigation item click', async () => {
     }
   });
 
-  const leadsButton = screen.getByText('Leads & Contacts');
+  const leadsButton = screen.getByText('Leads');
   await fireEvent.click(leadsButton);
   expect(activeTab).toBe('leads');
 });

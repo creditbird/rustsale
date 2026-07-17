@@ -59,22 +59,43 @@ mock.module('@tauri-apps/api/core', () => {
         return found ? Promise.resolve(found) : Promise.reject("Lead not found");
       }
       if (cmd === 'get_activities') {
-        return Promise.resolve(mockActivities.filter(a => a.lead_id === args.lead_id));
+        return Promise.resolve(mockActivities.filter(a => a.lead_id === args.leadId));
       }
       if (cmd === 'add_activity') {
         mockActivities.push({
           id: Math.floor(Math.random() * 1000),
-          lead_id: args.lead_id,
-          activity_type: args.activity_type,
+          lead_id: args.leadId,
+          activity_type: args.activityType,
           content: args.content,
           created_at: new Date().toISOString(),
-          performed_by: args.performed_by
+          performed_by: args.performedBy
         });
         return Promise.resolve();
       }
       if (cmd === 'update_deal_stage') {
         const deal = mockDeals.find(d => d.id === args.id);
         if (deal) deal.stage = args.stage;
+        return Promise.resolve();
+      }
+      if (cmd === 'update_lead') {
+        const lead = mockLeads.find(l => l.id === args.id);
+        if (lead) {
+          lead.name = args.name;
+          lead.company = args.company;
+          lead.status = args.status;
+          lead.value = args.value;
+          lead.owner = args.owner;
+          lead.email = args.email;
+          lead.phone = args.phone;
+          lead.about = args.about;
+        }
+        return Promise.resolve();
+      }
+      if (cmd === 'delete_lead') {
+        const index = mockLeads.findIndex(l => l.id === args.id);
+        if (index !== -1) {
+          mockLeads.splice(index, 1);
+        }
         return Promise.resolve();
       }
       return Promise.resolve();
@@ -169,5 +190,54 @@ test('logs a new activity via LeadDetails', async () => {
   // Verify new activity appears in history
   const newActivityText = await screen.findByText('Sent follow up email about pricing');
   expect(newActivityText).toBeTruthy();
+});
+
+test('edits a lead and saves changes', async () => {
+  render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
+
+  // Wait for details to render
+  await screen.findByText('Alice Smith');
+
+  // Trigger edit mode
+  const editBtn = screen.getByLabelText('Edit details');
+  await fireEvent.click(editBtn);
+
+  // Find inputs
+  const nameInput = screen.getByLabelText('Name *') as HTMLInputElement;
+  const statusSelect = screen.getByLabelText('Status') as HTMLSelectElement;
+
+  // Change values
+  await fireEvent.input(nameInput, { target: { value: 'Alice Johnson' } });
+  await fireEvent.change(statusSelect, { target: { value: 'Converted' } });
+
+  // Save changes
+  const saveBtn = screen.getByText('Save');
+  await fireEvent.click(saveBtn);
+
+  // Check that new values are rendered in view mode
+  const updatedName = await screen.findByText('Alice Johnson');
+  expect(updatedName).toBeTruthy();
+  expect(screen.getByText('Converted')).toBeTruthy();
+});
+
+test('deletes a lead with confirmation', async () => {
+  let closed = false;
+  globalThis.confirm = () => true; // Mock confirm
+
+  render(LeadDetails, { props: { leadId: 2, onClose: () => { closed = true; } } });
+
+  // Wait for details to render
+  await screen.findByText('Bob Jones');
+
+  // Trigger edit mode
+  const editBtn = screen.getByLabelText('Edit details');
+  await fireEvent.click(editBtn);
+
+  // Click Delete
+  const deleteBtn = screen.getByText('Delete');
+  await fireEvent.click(deleteBtn);
+
+  // Drawer should be closed
+  expect(closed).toBe(true);
 });
 

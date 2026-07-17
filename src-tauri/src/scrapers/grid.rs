@@ -40,18 +40,18 @@ pub fn radius_to_zoom(radius_m: f64) -> u8 {
 pub fn generate_grid(bbox: BoundingBox, step_km: f64) -> Vec<GridCell> {
     let mut cells = Vec::new();
     let lat_step_deg = step_km / 111.0;
-    
+
     let mut lat_curr = bbox.lat_min;
     while lat_curr < bbox.lat_max {
         let center_lat = lat_curr + lat_step_deg / 2.0;
-        
+
         let cos_lat = center_lat.to_radians().cos().abs();
         let lng_step_deg = if cos_lat > 1e-6 {
             step_km / (111.0 * cos_lat)
         } else {
             step_km / 111.0
         };
-        
+
         let mut lng_curr = bbox.lng_min;
         while lng_curr < bbox.lng_max {
             let center_lng = lng_curr + lng_step_deg / 2.0;
@@ -65,19 +65,23 @@ pub fn generate_grid(bbox: BoundingBox, step_km: f64) -> Vec<GridCell> {
                 radius_m,
                 depth: 0,
             });
-            
+
             lng_curr += lng_step_deg;
         }
-        
+
         lat_curr += lat_step_deg;
     }
-    
+
     if cells.is_empty() {
         let center_lat = (bbox.lat_min + bbox.lat_max) / 2.0;
         let center_lng = (bbox.lng_min + bbox.lng_max) / 2.0;
         let lat_step_deg = (bbox.lat_max - bbox.lat_min).max(step_km / 111.0);
         let cos_lat = center_lat.to_radians().cos().abs();
-        let lng_step_deg = (bbox.lng_max - bbox.lng_min).max(if cos_lat > 1e-6 { step_km / (111.0 * cos_lat) } else { step_km / 111.0 });
+        let lng_step_deg = (bbox.lng_max - bbox.lng_min).max(if cos_lat > 1e-6 {
+            step_km / (111.0 * cos_lat)
+        } else {
+            step_km / 111.0
+        });
         let radius_m = step_km * 1000.0 * 0.70710678;
         cells.push(GridCell {
             center_lat,
@@ -88,7 +92,7 @@ pub fn generate_grid(bbox: BoundingBox, step_km: f64) -> Vec<GridCell> {
             depth: 0,
         });
     }
-    
+
     cells
 }
 
@@ -98,7 +102,7 @@ impl GridCell {
         let child_step_lng = self.step_lng_deg / 2.0;
         let child_radius = self.radius_m / 2.0;
         let child_depth = self.depth + 1;
-        
+
         vec![
             GridCell {
                 center_lat: self.center_lat + child_step_lat / 2.0,
@@ -149,37 +153,50 @@ impl GridScraper {
         }
     }
 
-    pub async fn search_grid<F>(&self, keyword: &str, initial_cells: Vec<GridCell>, mut on_progress: F) -> Result<Vec<BusinessInfo>>
+    pub async fn search_grid<F>(
+        &self,
+        keyword: &str,
+        initial_cells: Vec<GridCell>,
+        mut on_progress: F,
+    ) -> Result<Vec<BusinessInfo>>
     where
         F: FnMut(&GridCell, usize, usize, &str) + Send,
     {
         let mut stack = initial_cells;
         let mut unique_results = std::collections::HashMap::new();
-        
+
         let mut processed_count = 0;
         let mut total_count = stack.len();
 
         while let Some(cell) = stack.pop() {
             processed_count += 1;
             let zoom = radius_to_zoom(cell.radius_m);
-            
-            let msg = format!("Scraping cell at lat: {:.4}, lng: {:.4}, zoom: {}, depth: {}", cell.center_lat, cell.center_lng, zoom, cell.depth);
+
+            let msg = format!(
+                "Scraping cell at lat: {:.4}, lng: {:.4}, zoom: {}, depth: {}",
+                cell.center_lat, cell.center_lng, zoom, cell.depth
+            );
             on_progress(&cell, processed_count, total_count, &msg);
-            
-            match self.scraper.search_region(keyword, cell.center_lat, cell.center_lng, zoom).await {
+
+            match self
+                .scraper
+                .search_region(keyword, cell.center_lat, cell.center_lng, zoom)
+                .await
+            {
                 Ok(results) => {
                     let count = results.len();
-                    
+
                     for item in results {
                         unique_results.insert(item.phone.clone(), item);
                     }
-                    
+
                     if count >= self.saturation_threshold && cell.depth < 4 {
                         let children = cell.subdivide();
                         total_count += children.len();
                         stack.extend(children);
-                        
-                        let subdivide_msg = format!("Cell saturated ({} results). Subdivided.", count);
+
+                        let subdivide_msg =
+                            format!("Cell saturated ({} results). Subdivided.", count);
                         on_progress(&cell, processed_count, total_count, &subdivide_msg);
                     }
                 }
@@ -189,7 +206,7 @@ impl GridScraper {
                 }
             }
         }
-        
+
         Ok(unique_results.into_values().collect())
     }
 }
@@ -198,8 +215,8 @@ impl GridScraper {
 mod tests {
     use super::*;
     use crate::scrapers::browser::BrowserManager;
-    use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     async fn spawn_mock_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -211,7 +228,7 @@ mod tests {
                     let mut buf = [0; 4096];
                     if let Ok(n) = socket.read(&mut buf).await {
                         let request = String::from_utf8_lossy(&buf[..n]);
-                        
+
                         let response = if request.contains("/search") {
                             // If it is the initial cell (center 10.1, 106.1, zoom 13), return 5 links to trigger subdivision
                             let is_initial = request.contains("@10.1,106.1,13z");
@@ -221,16 +238,25 @@ mod tests {
                                 offset = 0;
                             } else {
                                 if let Some(at_idx) = request.find('@') {
-                                    let parts: Vec<&str> = request[at_idx + 1..].split(',').collect();
+                                    let parts: Vec<&str> =
+                                        request[at_idx + 1..].split(',').collect();
                                     if parts.len() >= 2 {
-                                        if let (Ok(lat), Ok(lng)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                                        if let (Ok(lat), Ok(lng)) =
+                                            (parts[0].parse::<f64>(), parts[1].parse::<f64>())
+                                        {
                                             let lat_rounded = (lat * 1000.0).round() / 1000.0;
                                             let lng_rounded = (lng * 1000.0).round() / 1000.0;
-                                            if (lat_rounded - 10.125).abs() < 0.001 && (lng_rounded - 106.075).abs() < 0.001 {
+                                            if (lat_rounded - 10.125).abs() < 0.001
+                                                && (lng_rounded - 106.075).abs() < 0.001
+                                            {
                                                 offset = 10;
-                                            } else if (lat_rounded - 10.125).abs() < 0.001 && (lng_rounded - 106.125).abs() < 0.001 {
+                                            } else if (lat_rounded - 10.125).abs() < 0.001
+                                                && (lng_rounded - 106.125).abs() < 0.001
+                                            {
                                                 offset = 20;
-                                            } else if (lat_rounded - 10.075).abs() < 0.001 && (lng_rounded - 106.075).abs() < 0.001 {
+                                            } else if (lat_rounded - 10.075).abs() < 0.001
+                                                && (lng_rounded - 106.075).abs() < 0.001
+                                            {
                                                 offset = 30;
                                             }
                                         }
@@ -255,8 +281,9 @@ mod tests {
                             )
                         } else if let Some(pos) = request.find("/maps/place/Cafe+") {
                             let end_pos = request[pos..].find(' ').unwrap_or(request[pos..].len());
-                            let place_name = &request[pos..pos+end_pos];
-                            let num_str: String = place_name.chars().filter(|c| c.is_digit(10)).collect();
+                            let place_name = &request[pos..pos + end_pos];
+                            let num_str: String =
+                                place_name.chars().filter(|c| c.is_digit(10)).collect();
                             let phone = if num_str.is_empty() {
                                 "+84987654320".to_string()
                             } else {
@@ -302,11 +329,11 @@ mod tests {
         };
         let cells = generate_grid(bbox, 10.0);
         assert!(!cells.is_empty(), "Should generate at least one cell");
-        
+
         let cell = &cells[0];
         let sub_cells = cell.subdivide();
         assert_eq!(sub_cells.len(), 4, "Subdivision should yield 4 quadrants");
-        
+
         for child in sub_cells {
             assert_eq!(child.depth, cell.depth + 1);
             assert_eq!(child.step_lat_deg, cell.step_lat_deg / 2.0);
@@ -343,9 +370,11 @@ mod tests {
         }];
 
         let mut progress_calls = Vec::new();
-        let results = grid_scraper.search_grid("cafe", initial_cells, |cell, processed, total, msg| {
-            progress_calls.push((cell.depth, processed, total, msg.to_string()));
-        }).await;
+        let results = grid_scraper
+            .search_grid("cafe", initial_cells, |cell, processed, total, msg| {
+                progress_calls.push((cell.depth, processed, total, msg.to_string()));
+            })
+            .await;
 
         assert!(results.is_ok());
         let results = results.unwrap();
@@ -356,10 +385,15 @@ mod tests {
         // The child cells return 2 results each and are not saturated, so no more subdivision.
         // Unique results should contain multiple cafes.
         assert!(results.len() > 10, "Should have retrieved multiple cafes");
-        
+
         // Let's verify progress callback registered subdivision
-        let has_subdivision_msg = progress_calls.iter().any(|(_, _, _, msg)| msg.contains("Subdivided"));
-        assert!(has_subdivision_msg, "Progress calls should record subdivision event");
+        let has_subdivision_msg = progress_calls
+            .iter()
+            .any(|(_, _, _, msg)| msg.contains("Subdivided"));
+        assert!(
+            has_subdivision_msg,
+            "Progress calls should record subdivision event"
+        );
 
         let _ = manager.close().await;
     }

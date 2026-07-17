@@ -1,8 +1,8 @@
 use crate::scrapers::browser::SessionGuard;
 use anyhow::Result;
-use serde::{Serialize, Deserialize};
-use std::time::Duration;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct BusinessInfo {
@@ -61,7 +61,13 @@ impl GoogleMapsScraper {
         self.scrape_url(&url).await
     }
 
-    pub async fn search_region(&self, keyword: &str, lat: f64, lng: f64, zoom: u8) -> Result<Vec<BusinessInfo>> {
+    pub async fn search_region(
+        &self,
+        keyword: &str,
+        lat: f64,
+        lng: f64,
+        zoom: u8,
+    ) -> Result<Vec<BusinessInfo>> {
         let encoded_keyword = urlencoding::encode(keyword);
         let url = format!(
             "{}/search/{}/@{},{},{}z?hl=en",
@@ -72,10 +78,13 @@ impl GoogleMapsScraper {
 
     pub async fn scrape_url(&self, url: &str) -> Result<Vec<BusinessInfo>> {
         self.session.navigate(url).await?;
-        
+
         // Wait for maps page to load (feed, place title, or place links)
         for _ in 0..20 {
-            let is_loaded = self.session.evaluate(r#"
+            let is_loaded = self
+                .session
+                .evaluate(
+                    r#"
                 (() => {
                     return !!(
                         document.querySelector('div[role="feed"]') || 
@@ -83,14 +92,20 @@ impl GoogleMapsScraper {
                         document.querySelector('a[href*="/maps/place/"]')
                     );
                 })()
-            "#).await.unwrap_or(serde_json::Value::Bool(false));
+            "#,
+                )
+                .await
+                .unwrap_or(serde_json::Value::Bool(false));
             if is_loaded.as_bool().unwrap_or(false) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        let current_url = self.session.evaluate("window.location.href").await?
+        let current_url = self
+            .session
+            .evaluate("window.location.href")
+            .await?
             .as_str()
             .unwrap_or("")
             .to_string();
@@ -112,7 +127,10 @@ impl GoogleMapsScraper {
 
         // Scroll feed to load all results
         for _ in 0..10 {
-            let _ = self.session.evaluate(r#"
+            let _ = self
+                .session
+                .evaluate(
+                    r#"
                 (() => {
                     const feed = document.querySelector('div[role="feed"]');
                     if (feed) {
@@ -121,12 +139,17 @@ impl GoogleMapsScraper {
                         window.scrollBy(0, 1500);
                     }
                 })()
-            "#).await?;
+            "#,
+                )
+                .await?;
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
         // Collect all place URLs
-        let urls_val = self.session.evaluate(r#"
+        let urls_val = self
+            .session
+            .evaluate(
+                r#"
             (() => {
                 const links = Array.from(document.querySelectorAll('a'));
                 return links
@@ -135,9 +158,9 @@ impl GoogleMapsScraper {
                     })
                     .filter(href => href && href.includes('/maps/place/'));
             })()
-        "#).await?;
-
-
+        "#,
+            )
+            .await?;
 
         let mut urls: Vec<String> = serde_json::from_value(urls_val).unwrap_or_default();
         urls.sort();
@@ -149,7 +172,7 @@ impl GoogleMapsScraper {
                 eprintln!("Failed to navigate to {}: {}", place_url, e);
                 continue;
             }
-            
+
             self.delay().await;
 
             let _ = self.session.evaluate(r#"
@@ -288,8 +311,8 @@ impl GoogleMapsScraper {
 mod tests {
     use super::*;
     use crate::scrapers::browser::BrowserManager;
-    use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     async fn spawn_mock_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -301,7 +324,7 @@ mod tests {
                     let mut buf = [0; 4096];
                     if let Ok(n) = socket.read(&mut buf).await {
                         let request = String::from_utf8_lossy(&buf[..n]);
-                        
+
                         let response = if request.contains("/search") {
                             let body = format!(
                                 r#"<html>
@@ -378,14 +401,20 @@ mod tests {
 
         assert!(results.is_ok(), "search failed: {:?}", results.err());
         let results = results.unwrap();
-        
+
         assert_eq!(results.len(), 1);
         let first = &results[0];
         assert_eq!(first.name, "Cafe One");
         assert_eq!(first.phone, "+84987654321");
-        assert_eq!(first.address, Some("123 Le Loi St, Dist 1, HCMC".to_string()));
+        assert_eq!(
+            first.address,
+            Some("123 Le Loi St, Dist 1, HCMC".to_string())
+        );
         assert_eq!(first.website, Some("https://cafeone.com".to_string()));
-        assert_eq!(first.facebook, Some("https://facebook.com/cafeone".to_string()));
+        assert_eq!(
+            first.facebook,
+            Some("https://facebook.com/cafeone".to_string())
+        );
         assert_eq!(first.zalo, Some("https://zalo.me/cafeone".to_string()));
 
         let _ = manager.close().await;

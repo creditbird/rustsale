@@ -74,7 +74,7 @@ export async function updateDealStage(id: number, stage: string): Promise<void> 
 }
 
 export async function getActivities(leadId: number): Promise<Activity[]> {
-  return invoke<Activity[]>('get_activities', { lead_id: leadId });
+  return invoke<Activity[]>('get_activities', { leadId });
 }
 
 export async function addActivity(
@@ -84,9 +84,37 @@ export async function addActivity(
   performedBy: string
 ): Promise<void> {
   return invoke<void>('add_activity', {
-    lead_id: leadId,
-    activity_type: activityType,
+    leadId,
+    activityType,
     content,
-    performed_by: performedBy
+    performedBy
   });
+}
+
+export async function updateLead(
+  id: number,
+  name: string,
+  company: string,
+  status: string,
+  value: number,
+  owner: string,
+  email: string,
+  phone: string,
+  about?: string | null
+): Promise<void> {
+  return invoke<void>('update_lead', {
+    id,
+    name,
+    company,
+    status,
+    value,
+    owner,
+    email,
+    phone,
+    about
+  });
+}
+
+export async function deleteLead(id: number): Promise<void> {
+  return invoke<void>('delete_lead', { id });
 }

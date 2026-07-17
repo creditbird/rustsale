@@ -3,12 +3,88 @@
   import * as crmService from '$lib/services/crmService';
   import type { Lead, Activity } from '$lib/services/crmService';
 
-  let { leadId, onClose } = $props<{ leadId: number; onClose: () => void }>();
+  let { leadId, onClose, onRefresh } = $props<{ leadId: number; onClose: () => void; onRefresh?: () => void }>();
 
   let lead = $state<Lead | null>(null);
   let activities = $state<Activity[]>([]);
   let loading = $state(false);
   let errorMsg = $state<string | null>(null);
+
+  // Edit mode states
+  let isEditing = $state(false);
+  let editName = $state('');
+  let editCompany = $state('');
+  let editStatus = $state('');
+  let editValue = $state(0);
+  let editOwner = $state('');
+  let editEmail = $state('');
+  let editPhone = $state('');
+  let editAbout = $state('');
+  let savingLead = $state(false);
+  let deletingLead = $state(false);
+
+  function startEditing() {
+    if (!lead) return;
+    editName = lead.name;
+    editCompany = lead.company;
+    editStatus = lead.status;
+    editValue = lead.value;
+    editOwner = lead.owner || '';
+    editEmail = lead.email;
+    editPhone = lead.phone || '';
+    editAbout = lead.about || '';
+    isEditing = true;
+  }
+
+  async function handleSaveLead(e: Event) {
+    e.preventDefault();
+    if (!lead || !editName.trim() || !editCompany.trim() || !editEmail.trim()) return;
+
+    savingLead = true;
+    errorMsg = null;
+    try {
+      await crmService.updateLead(
+        leadId,
+        editName.trim(),
+        editCompany.trim(),
+        editStatus,
+        editValue,
+        editOwner.trim(),
+        editEmail.trim(),
+        editPhone.trim(),
+        editAbout.trim() || null
+      );
+      isEditing = false;
+      await loadLeadDetails(leadId);
+      if (onRefresh) {
+        onRefresh();
+      }
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : String(err);
+    } finally {
+      savingLead = false;
+    }
+  }
+
+  async function handleDeleteLead() {
+    if (!lead) return;
+    const confirmDelete = confirm(`Are you sure you want to delete ${lead.name}? This will also delete all associated activities and deals.`);
+    if (!confirmDelete) return;
+
+    deletingLead = true;
+    errorMsg = null;
+    try {
+      await crmService.deleteLead(leadId);
+      if (onRefresh) {
+        onRefresh();
+      }
+      onClose();
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : String(err);
+    } finally {
+      deletingLead = false;
+    }
+  }
 
   // Form states
   let activityType = $state('Call');
@@ -152,97 +228,240 @@
           <p class="company">{lead.company}</p>
           <span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span>
         </div>
-      </section>
-
-      <!-- Details List -->
-      <section class="details-section">
-        <h5>Contact Details</h5>
-        <div class="detail-row">
-          <span class="detail-label">Email</span>
-          <span class="detail-value"><a href="mailto:{lead.email}">{lead.email}</a></span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">Phone</span>
-          <span class="detail-value">{lead.phone || '—'}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">Lead Owner</span>
-          <span class="detail-value">{lead.owner || '—'}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">Est. Value</span>
-          <span class="detail-value value-text">${(lead.value || 0).toLocaleString()}</span>
-        </div>
-        {#if lead.about}
-          <div class="about-block">
-            <span class="detail-label">About</span>
-            <p>{lead.about}</p>
-          </div>
+        {#if !isEditing}
+          <button class="edit-toggle-btn" onclick={startEditing} aria-label="Edit details">
+            <span class="material-icons">edit</span>
+          </button>
         {/if}
       </section>
 
-      <!-- Log Activity -->
-      <section class="log-activity-section">
-        <h5>Log Activity</h5>
-        <form onsubmit={handleLogActivity} class="activity-form">
-          <div class="form-row">
-            <label for="act-type" class="sr-only">Type</label>
-            <select id="act-type" bind:value={activityType} class="activity-select">
-              <option value="Call">Call</option>
-              <option value="Email">Email</option>
-              <option value="Meeting">Meeting</option>
+      {#if isEditing}
+        <form onsubmit={handleSaveLead} class="edit-lead-form">
+          <div class="form-group">
+            <label for="edit-name">Name *</label>
+            <input type="text" id="edit-name" bind:value={editName} required />
+          </div>
+          <div class="form-group">
+            <label for="edit-company">Company *</label>
+            <input type="text" id="edit-company" bind:value={editCompany} required />
+          </div>
+          <div class="form-group">
+            <label for="edit-status">Status</label>
+            <select id="edit-status" bind:value={editStatus}>
+              <option value="New">New</option>
+              <option value="Contacted">Contacted</option>
+              <option value="Qualified">Qualified</option>
+              <option value="Lost">Lost</option>
+              <option value="Converted">Converted (Contact)</option>
             </select>
           </div>
-          <div class="form-row">
-            <label for="act-content" class="sr-only">Activity notes</label>
-            <textarea
-              id="act-content"
-              bind:value={activityContent}
-              placeholder="What did you discuss? Enter notes here..."
-              rows="3"
-              required
-            ></textarea>
+          <div class="form-group">
+            <label for="edit-value">Est. Value ($)</label>
+            <input type="number" id="edit-value" bind:value={editValue} min="0" />
           </div>
-          <button type="submit" class="submit-btn" disabled={logging || !activityContent.trim()}>
-            {#if logging}
-              Logging...
-            {:else}
-              Log Activity
-            {/if}
-          </button>
-        </form>
-      </section>
+          <div class="form-group">
+            <label for="edit-owner">Lead Owner</label>
+            <input type="text" id="edit-owner" bind:value={editOwner} />
+          </div>
+          <div class="form-group">
+            <label for="edit-email">Email *</label>
+            <input type="email" id="edit-email" bind:value={editEmail} required />
+          </div>
+          <div class="form-group">
+            <label for="edit-phone">Phone</label>
+            <input type="text" id="edit-phone" bind:value={editPhone} />
+          </div>
+          <div class="form-group">
+            <label for="edit-about">About</label>
+            <textarea id="edit-about" bind:value={editAbout} rows="3"></textarea>
+          </div>
 
-      <!-- Activity History -->
-      <section class="activities-section">
-        <h5>Activity History</h5>
-        {#if activities.length === 0}
-          <p class="no-activities">No activities logged yet.</p>
-        {:else}
-          <div class="timeline">
-            {#each activities as activity}
-              <div class="timeline-item">
-                <div class="timeline-icon">
-                  <span class="material-icons">{getActivityIcon(activity.activity_type)}</span>
-                </div>
-                <div class="timeline-content">
-                  <div class="timeline-meta">
-                    <span class="activity-type">{activity.activity_type}</span>
-                    <span class="activity-time">{formatDateTime(activity.created_at)}</span>
-                  </div>
-                  <p class="activity-text">{activity.content}</p>
-                  <span class="activity-performer">Logged by {activity.performed_by}</span>
-                </div>
-              </div>
-            {/each}
+          <div class="edit-actions">
+            <button type="button" class="delete-btn-danger" onclick={handleDeleteLead} disabled={deletingLead}>
+              {#if deletingLead}Deleting...{:else}Delete{/if}
+            </button>
+            <div class="right-actions">
+              <button type="button" class="cancel-btn" onclick={() => isEditing = false}>Cancel</button>
+              <button type="submit" class="save-btn" disabled={savingLead}>
+                {#if savingLead}Saving...{:else}Save{/if}
+              </button>
+            </div>
           </div>
-        {/if}
-      </section>
+        </form>
+      {:else}
+        <!-- Details List -->
+        <section class="details-section">
+          <h5>Contact Details</h5>
+          <div class="detail-row">
+            <span class="detail-label">Email</span>
+            <span class="detail-value"><a href="mailto:{lead.email}">{lead.email}</a></span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Phone</span>
+            <span class="detail-value">{lead.phone || '—'}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Lead Owner</span>
+            <span class="detail-value">{lead.owner || '—'}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Est. Value</span>
+            <span class="detail-value value-text">${(lead.value || 0).toLocaleString()}</span>
+          </div>
+          {#if lead.about}
+            <div class="about-block">
+              <span class="detail-label">About</span>
+              <p>{lead.about}</p>
+            </div>
+          {/if}
+        </section>
+
+        <!-- Log Activity -->
+        <section class="log-activity-section">
+          <h5>Log Activity</h5>
+          <form onsubmit={handleLogActivity} class="activity-form">
+            <div class="form-row">
+              <label for="act-type" class="sr-only">Type</label>
+              <select id="act-type" bind:value={activityType} class="activity-select">
+                <option value="Call">Call</option>
+                <option value="Email">Email</option>
+                <option value="Meeting">Meeting</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="act-content" class="sr-only">Activity notes</label>
+              <textarea
+                id="act-content"
+                bind:value={activityContent}
+                placeholder="What did you discuss? Enter notes here..."
+                rows="3"
+                required
+              ></textarea>
+            </div>
+            <button type="submit" class="submit-btn" disabled={logging || !activityContent.trim()}>
+              {#if logging}
+                Logging...
+              {:else}
+                Log Activity
+              {/if}
+            </button>
+          </form>
+        </section>
+
+        <!-- Activity History -->
+        <section class="activities-section">
+          <h5>Activity History</h5>
+          {#if activities.length === 0}
+            <p class="no-activities">No activities logged yet.</p>
+          {:else}
+            <div class="timeline">
+              {#each activities as activity}
+                <div class="timeline-item">
+                  <div class="timeline-icon">
+                    <span class="material-icons">{getActivityIcon(activity.activity_type)}</span>
+                  </div>
+                  <div class="timeline-content">
+                    <div class="timeline-meta">
+                      <span class="activity-type">{activity.activity_type}</span>
+                      <span class="activity-time">{formatDateTime(activity.created_at)}</span>
+                    </div>
+                    <p class="activity-text">{activity.content}</p>
+                    <span class="activity-performer">Logged by {activity.performed_by}</span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {/if}
     </div>
   {/if}
 </div>
 
 <style>
+  .profile-summary {
+    position: relative;
+  }
+  .edit-toggle-btn {
+    position: absolute;
+    top: var(--spacing-md);
+    right: var(--spacing-md);
+    background: none;
+    border: none;
+    color: var(--color-on-surface-variant);
+    cursor: pointer;
+    padding: var(--spacing-xs);
+    border-radius: var(--rounded-full);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition-fast);
+  }
+  .edit-toggle-btn:hover {
+    background: var(--color-surface-container-high);
+    color: var(--color-primary);
+  }
+  .edit-lead-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+  .edit-lead-form .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .edit-lead-form .form-group label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--color-on-surface-variant);
+  }
+  .edit-lead-form input,
+  .edit-lead-form select,
+  .edit-lead-form textarea {
+    padding: var(--spacing-sm);
+    border-radius: var(--rounded-md);
+    border: 1px solid var(--color-outline-variant);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-family: var(--font-family);
+    font-size: 13px;
+    outline: none;
+    transition: var(--transition-fast);
+  }
+  .edit-lead-form input:focus,
+  .edit-lead-form select:focus,
+  .edit-lead-form textarea:focus {
+    border-color: var(--color-outline);
+  }
+  .edit-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--color-outline-variant);
+  }
+  .right-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+  }
+  .delete-btn-danger {
+    background: rgba(244, 63, 94, 0.1);
+    color: var(--color-danger);
+    border: 1px solid rgba(244, 63, 94, 0.2);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--rounded-md);
+    font-size: 13px;
+    font-weight: 600;
+    transition: var(--transition-fast);
+    cursor: pointer;
+  }
+  .delete-btn-danger:hover:not(:disabled) {
+    background: var(--color-danger);
+    color: var(--color-on-primary);
+  }
   .drawer-backdrop {
     position: fixed;
     inset: 0;
