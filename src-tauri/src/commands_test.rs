@@ -29,7 +29,8 @@ mod tests {
             "john@example.com".to_string(),
             "+11223344".to_string(),
             Some("CEO".to_string()),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(new_lead_id > 0);
 
         let leads_updated = commands::get_leads_internal(&conn).unwrap();
@@ -55,7 +56,14 @@ mod tests {
         assert_eq!(activities[0].activity_type, "Email");
 
         // Test add_activity_internal
-        commands::add_activity_internal(&mut conn, 1, "Call".to_string(), "Intro call".to_string(), "Alex Rivera".to_string()).unwrap();
+        commands::add_activity_internal(
+            &mut conn,
+            1,
+            "Call".to_string(),
+            "Intro call".to_string(),
+            "Alex Rivera".to_string(),
+        )
+        .unwrap();
         let activities_updated = commands::get_activities_internal(&conn, 1).unwrap();
         assert_eq!(activities_updated.len(), 2);
         assert_eq!(activities_updated[1].activity_type, "Call");
@@ -66,8 +74,8 @@ mod tests {
         use crate::scrapers::browser::BrowserManager;
         use crate::scrapers::google_maps::GoogleMapsScraper;
         use std::sync::Mutex;
-        use tokio::net::TcpListener;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
 
         // Initialize a memory database
         let mut conn = db::init_db(":memory:").unwrap();
@@ -135,7 +143,8 @@ mod tests {
             Some("District 1".to_string()),
             None,
             None,
-        ).await;
+        )
+        .await;
 
         assert!(res.is_ok(), "Scrape task failed: {:?}", res.err());
 
@@ -150,7 +159,7 @@ mod tests {
         assert_eq!(lead.phone, "+84111222333");
         assert_eq!(lead.company, "Scraped Cafe");
         assert_eq!(lead.status, "New");
-        
+
         let about = lead.about.as_ref().unwrap();
         assert!(about.contains("Address: 789 Dong Khoi St, HCMC"));
         assert!(about.contains("Website: https://scrapedcafe.com"));
@@ -203,14 +212,12 @@ mod tests {
         assert!(val.is_null());
 
         // 6. Test GotLoginInfo event translation and persistence
-        let dummy_cookies = vec![
-            zca_rs::context::ZaloCookie {
-                name: "zpw_sek".to_string(),
-                value: "sek-123456".to_string(),
-                domain: "zalo.me".to_string(),
-                path: "/".to_string(),
-            }
-        ];
+        let dummy_cookies = vec![zca_rs::context::ZaloCookie {
+            name: "zpw_sek".to_string(),
+            value: "sek-123456".to_string(),
+            domain: "zalo.me".to_string(),
+            path: "/".to_string(),
+        }];
         let event_success = zca_rs::apis::auth::LoginQREvent::GotLoginInfo {
             cookie: dummy_cookies,
             imei: "imei-999".to_string(),
@@ -226,8 +233,9 @@ mod tests {
         assert_eq!(saved_sessions[0].imei, "imei-999");
         assert_eq!(saved_sessions[0].user_agent, "Mozilla/MockUA");
         assert_eq!(saved_sessions[0].language, "vi");
-        
-        let cookies: Vec<zca_rs::context::ZaloCookie> = serde_json::from_str(&saved_sessions[0].cookies_json).unwrap();
+
+        let cookies: Vec<zca_rs::context::ZaloCookie> =
+            serde_json::from_str(&saved_sessions[0].cookies_json).unwrap();
         assert_eq!(cookies.len(), 1);
         assert_eq!(cookies[0].name, "zpw_sek");
         assert_eq!(cookies[0].value, "sek-123456");
@@ -237,5 +245,95 @@ mod tests {
         let sessions_after_delete = commands::get_zalo_sessions_internal(&conn).unwrap();
         assert!(sessions_after_delete.is_empty());
     }
-}
 
+    #[tokio::test]
+    async fn test_send_zalo_outreach_mock() {
+        use std::sync::Mutex;
+
+        // Initialize a memory database
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        // 1. Create a template
+        let template_id =
+            db::create_outreach_template(&conn, "Template Welcome", "Hello {name}!").unwrap();
+
+        // 2. Add some leads
+        // Lead 1: valid phone
+        let lead_id_1 = commands::add_lead_internal(
+            &mut conn,
+            "Sarah Harrington".to_string(),
+            "Acme Corp".to_string(),
+            "Qualified".to_string(),
+            45000.0,
+            "Alex Rivera".to_string(),
+            "sarah@acme.com".to_string(),
+            "+12345678".to_string(),
+            Some("CTO".to_string()),
+        )
+        .unwrap();
+
+        // Lead 2: missing phone
+        let lead_id_2 = commands::add_lead_internal(
+            &mut conn,
+            "No Phone Lead".to_string(),
+            "No Phone Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Alex Rivera".to_string(),
+            "nophone@example.com".to_string(),
+            "".to_string(),
+            None,
+        )
+        .unwrap();
+
+        // Lead 3: phone that won't be found (mocking "not-found")
+        let lead_id_3 = commands::add_lead_internal(
+            &mut conn,
+            "Not Found Lead".to_string(),
+            "Not Found Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Alex Rivera".to_string(),
+            "notfound@example.com".to_string(),
+            "not-found".to_string(),
+            None,
+        )
+        .unwrap();
+
+        let db_mutex = Mutex::new(conn);
+
+        // Run send_zalo_outreach_internal
+        let res = commands::send_zalo_outreach_internal(
+            None,
+            &db_mutex,
+            "mock-imei".to_string(),
+            vec![lead_id_1, lead_id_2, lead_id_3],
+            template_id,
+        )
+        .await;
+
+        assert!(res.is_ok());
+
+        // Verify that activities log was written for lead_id_1 but not others
+        let conn_locked = db_mutex.lock().unwrap();
+        let activities_1 = commands::get_activities_internal(&conn_locked, lead_id_1).unwrap();
+        assert_eq!(activities_1.len(), 1);
+        assert_eq!(activities_1[0].activity_type, "Outreach");
+        assert_eq!(
+            activities_1[0].content,
+            "Zalo message sent: Hello Sarah Harrington!"
+        );
+        assert_eq!(activities_1[0].performed_by, "System (Zalo Outreach)");
+
+        let activities_2 = commands::get_activities_internal(&conn_locked, lead_id_2).unwrap();
+        assert!(activities_2.is_empty());
+
+        let activities_3 = commands::get_activities_internal(&conn_locked, lead_id_3).unwrap();
+        assert!(activities_3.is_empty());
+
+        // Verify lead's last activity updated
+        let lead_1 = commands::get_lead_details_internal(&conn_locked, lead_id_1).unwrap();
+        assert_ne!(lead_1.last_activity, "");
+    }
+}

@@ -1,14 +1,14 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use tauri::Manager;
 
-mod db;
-mod models;
 mod commands;
-mod scrapers;
-#[cfg(test)]
-mod db_test;
 #[cfg(test)]
 mod commands_test;
+mod db;
+#[cfg(test)]
+mod db_test;
+mod models;
+mod scrapers;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -20,7 +20,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir().expect("Failed to get app data directory");
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("Failed to get app data directory");
             std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data directory");
             let db_path = app_data_dir.join("rustsale.db");
             let db_path_str = db_path.to_str().expect("Failed to convert path to string");
@@ -34,9 +37,8 @@ pub fn run() {
                 conn: std::sync::Mutex::new(conn),
             });
 
-            let browser_manager = std::sync::Arc::new(
-                scrapers::browser::BrowserManager::new(2).with_port(9222)
-            );
+            let browser_manager =
+                std::sync::Arc::new(scrapers::browser::BrowserManager::new(2).with_port(9222));
             app.manage(commands::BrowserState {
                 manager: browser_manager,
                 start_lock: tokio::sync::Mutex::new(()),
@@ -59,7 +61,12 @@ pub fn run() {
             commands::start_google_maps_scrape,
             commands::start_zalo_qr_login,
             commands::get_zalo_sessions,
-            commands::delete_zalo_session
+            commands::delete_zalo_session,
+            commands::get_outreach_templates,
+            commands::create_outreach_template,
+            commands::update_outreach_template,
+            commands::delete_outreach_template,
+            commands::send_zalo_outreach
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

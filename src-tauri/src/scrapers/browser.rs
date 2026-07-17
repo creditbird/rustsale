@@ -26,8 +26,10 @@ impl BrowserSession {
     pub async fn navigate(&self, url: &str) -> Result<()> {
         use tokio_stream::StreamExt;
         let mut page_events = self.client.on_domain("Page");
-        self.client.send_raw_command("Page.navigate", json!({"url": url})).await?;
-        
+        self.client
+            .send_raw_command("Page.navigate", json!({"url": url}))
+            .await?;
+
         let wait_load = async {
             while let Some(event_res) = page_events.next().await {
                 if let Ok(event) = event_res {
@@ -45,10 +47,13 @@ impl BrowserSession {
     }
 
     pub async fn evaluate(&self, script: &str) -> Result<serde_json::Value> {
-        let response = self.client.send_raw_command(
-            "Runtime.evaluate",
-            json!({"expression": script, "returnByValue": true}),
-        ).await?;
+        let response = self
+            .client
+            .send_raw_command(
+                "Runtime.evaluate",
+                json!({"expression": script, "returnByValue": true}),
+            )
+            .await?;
         if let Some(result) = response.result {
             if let Some(value) = result.get("result").and_then(|r| r.get("value")) {
                 return Ok(value.clone());
@@ -125,15 +130,15 @@ impl BrowserManager {
 
         let mut cmd = Command::new(&path);
         cmd.arg(format!("--remote-debugging-port={}", self.port))
-           .arg("--no-first-run")
-           .arg("--no-default-browser-check")
-           .arg("--disable-blink-features=AutomationControlled")
-           .arg("--disable-extensions")
-           .arg("--disable-gpu")
-           .arg("--no-sandbox")
-           .arg("--disable-dev-shm-usage")
-           .arg("--disable-software-rasterizer")
-           .arg("--mute-audio");
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("--disable-blink-features=AutomationControlled")
+            .arg("--disable-extensions")
+            .arg("--disable-gpu")
+            .arg("--no-sandbox")
+            .arg("--disable-dev-shm-usage")
+            .arg("--disable-software-rasterizer")
+            .arg("--mute-audio");
 
         if headless {
             cmd.arg("--headless=new");
@@ -144,7 +149,10 @@ impl BrowserManager {
 
         // Wait for browser port to bind
         for _ in 0..10 {
-            if CdpClient::new(&self.endpoint, Duration::from_secs(1)).await.is_ok() {
+            if CdpClient::new(&self.endpoint, Duration::from_secs(1))
+                .await
+                .is_ok()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -158,13 +166,14 @@ impl BrowserManager {
 
             // 1. Check if there is an unused session we can reuse
             for session in pool.vec.iter() {
-                if session.in_use.compare_exchange(
-                    false,
-                    true,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst
-                ).is_ok() {
-                    return Ok(SessionGuard { session: session.clone() });
+                if session
+                    .in_use
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    return Ok(SessionGuard {
+                        session: session.clone(),
+                    });
                 }
             }
 
@@ -179,7 +188,8 @@ impl BrowserManager {
                     let session = Arc::new(BrowserSession::new(client));
                     session.in_use.store(true, Ordering::SeqCst);
                     Ok(session)
-                }.await;
+                }
+                .await;
 
                 let mut pool_lock = self.sessions.lock().await;
                 pool_lock.pending_creations -= 1;

@@ -18,11 +18,19 @@ mod tests {
 
         // Start the browser in headless mode
         let start_res = manager.start(true).await;
-        assert!(start_res.is_ok(), "Failed to start browser: {:?}", start_res.err());
+        assert!(
+            start_res.is_ok(),
+            "Failed to start browser: {:?}",
+            start_res.err()
+        );
 
         // Acquire a session
         let session_res = manager.acquire().await;
-        assert!(session_res.is_ok(), "Failed to acquire session: {:?}", session_res.err());
+        assert!(
+            session_res.is_ok(),
+            "Failed to acquire session: {:?}",
+            session_res.err()
+        );
         let session = session_res.unwrap();
 
         // Navigate to about:blank
@@ -31,19 +39,31 @@ mod tests {
 
         // Evaluate some script
         let eval_res = session.evaluate("1 + 2").await;
-        assert!(eval_res.is_ok(), "Failed to evaluate script: {:?}", eval_res.err());
+        assert!(
+            eval_res.is_ok(),
+            "Failed to evaluate script: {:?}",
+            eval_res.err()
+        );
         let val = eval_res.unwrap();
         assert_eq!(val, serde_json::json!(3));
 
         // Evaluate location.href
         let eval_href = session.evaluate("window.location.href").await;
-        assert!(eval_href.is_ok(), "Failed to evaluate href: {:?}", eval_href.err());
+        assert!(
+            eval_href.is_ok(),
+            "Failed to evaluate href: {:?}",
+            eval_href.err()
+        );
         let href = eval_href.unwrap();
         assert_eq!(href, serde_json::json!("about:blank"));
 
         // Close the manager
         let close_res = manager.close().await;
-        assert!(close_res.is_ok(), "Failed to close browser: {:?}", close_res.err());
+        assert!(
+            close_res.is_ok(),
+            "Failed to close browser: {:?}",
+            close_res.err()
+        );
     }
 
     #[tokio::test]
@@ -54,7 +74,10 @@ mod tests {
         manager.start(true).await.expect("Failed to start browser");
 
         // Acquire the first and only allowed session
-        let session1 = manager.acquire().await.expect("Failed to acquire session 1");
+        let session1 = manager
+            .acquire()
+            .await
+            .expect("Failed to acquire session 1");
 
         // Retain pointer to verify session reuse
         let session1_ptr = Arc::as_ptr(&session1.session);
@@ -67,11 +90,18 @@ mod tests {
 
         // Try to acquire another session. This should block/wait until the first session is released
         let start_time = std::time::Instant::now();
-        let session2 = manager.acquire().await.expect("Failed to acquire session 2");
+        let session2 = manager
+            .acquire()
+            .await
+            .expect("Failed to acquire session 2");
         let elapsed = start_time.elapsed();
 
         // Verify that it actually waited for at least some time (roughly > 150ms)
-        assert!(elapsed >= Duration::from_millis(150), "Should have blocked waiting for release, but finished in {:?}", elapsed);
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "Should have blocked waiting for release, but finished in {:?}",
+            elapsed
+        );
 
         // Verify that we reused the same session structure since it was released
         assert_eq!(session1_ptr, Arc::as_ptr(&session2.session));
@@ -89,10 +119,7 @@ mod tests {
         let pid = manager.process_id().await.unwrap();
 
         // Verify it is currently running (kill -0 should return success)
-        let status = Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .status();
+        let status = Command::new("kill").arg("-0").arg(pid.to_string()).status();
         assert!(status.is_ok());
         assert!(status.unwrap().success(), "Process should be alive");
 
@@ -103,11 +130,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Verify process is dead/reaped (kill -0 should fail)
-        let status = Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .status();
+        let status = Command::new("kill").arg("-0").arg(pid.to_string()).status();
         assert!(status.is_ok());
-        assert!(!status.unwrap().success(), "Process should have been killed and reaped by drop()");
+        assert!(
+            !status.unwrap().success(),
+            "Process should have been killed and reaped by drop()"
+        );
     }
 }

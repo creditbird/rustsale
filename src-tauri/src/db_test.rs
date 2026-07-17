@@ -5,11 +5,16 @@ mod tests {
     #[test]
     fn test_db_init_and_tables() {
         let conn = db::init_db(":memory:").expect("Failed to init db");
-        
-        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap();
-        let tables: Vec<String> = stmt.query_map([], |row: &rusqlite::Row| row.get::<_, String>(0)).unwrap()
-            .map(|r: Result<String, rusqlite::Error>| r.unwrap()).collect();
-            
+
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row: &rusqlite::Row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r: Result<String, rusqlite::Error>| r.unwrap())
+            .collect();
+
         assert!(tables.contains(&"leads".to_string()));
         assert!(tables.contains(&"activities".to_string()));
         assert!(tables.contains(&"deals".to_string()));
@@ -23,18 +28,26 @@ mod tests {
         db::seed_data(&mut conn).expect("Failed to seed db");
 
         // Verify leads
-        let lead_count: i64 = conn.query_row("SELECT COUNT(*) FROM leads", [], |row| row.get(0)).unwrap();
+        let lead_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM leads", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(lead_count, 2);
 
-        let lead_name: String = conn.query_row("SELECT name FROM leads WHERE id = 1", [], |row| row.get(0)).unwrap();
+        let lead_name: String = conn
+            .query_row("SELECT name FROM leads WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(lead_name, "Sarah Harrington");
 
         // Verify deals
-        let deal_count: i64 = conn.query_row("SELECT COUNT(*) FROM deals", [], |row| row.get(0)).unwrap();
+        let deal_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deals", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(deal_count, 2);
 
         // Verify activities
-        let activity_count: i64 = conn.query_row("SELECT COUNT(*) FROM activities", [], |row| row.get(0)).unwrap();
+        let activity_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM activities", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(activity_count, 1);
     }
 
@@ -54,11 +67,13 @@ mod tests {
         ).unwrap();
 
         // Verify session retrieval
-        let imei: String = conn.query_row(
-            "SELECT imei FROM zalo_sessions WHERE language = 'vi'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let imei: String = conn
+            .query_row(
+                "SELECT imei FROM zalo_sessions WHERE language = 'vi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(imei, "123456789012345");
 
         // Test inserting an outreach template
@@ -69,15 +84,53 @@ mod tests {
                 "Hello, {{name}}!",
                 "2026-07-17T20:00:00Z",
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify template retrieval
-        let content: String = conn.query_row(
-            "SELECT content FROM outreach_templates WHERE name = 'Welcome Template'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM outreach_templates WHERE name = 'Welcome Template'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(content, "Hello, {{name}}!");
+    }
+
+    #[test]
+    fn test_outreach_template_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // 1. Initially empty
+        let templates = db::get_outreach_templates(&conn).unwrap();
+        assert!(templates.is_empty());
+
+        // 2. Create template
+        let id1 = db::create_outreach_template(&conn, "Template One", "Hello {name}").unwrap();
+        assert!(id1 > 0);
+
+        let id2 = db::create_outreach_template(&conn, "Template Two", "Hi {name}").unwrap();
+        assert!(id2 > 0);
+
+        // 3. Get all templates
+        let templates = db::get_outreach_templates(&conn).unwrap();
+        assert_eq!(templates.len(), 2);
+        assert_eq!(templates[0].name, "Template One");
+        assert_eq!(templates[0].content, "Hello {name}");
+
+        // 4. Update template
+        db::update_outreach_template(&conn, id1, "Template One Updated", "Hello {name}!").unwrap();
+        let templates = db::get_outreach_templates(&conn).unwrap();
+        let t1 = templates.iter().find(|t| t.id == Some(id1)).unwrap();
+        assert_eq!(t1.name, "Template One Updated");
+        assert_eq!(t1.content, "Hello {name}!");
+
+        // 5. Delete template
+        db::delete_outreach_template(&conn, id2).unwrap();
+        let templates = db::get_outreach_templates(&conn).unwrap();
+        assert_eq!(templates.len(), 1);
+        assert!(templates.iter().all(|t| t.id != Some(id2)));
     }
 
     #[test]
@@ -122,4 +175,3 @@ mod tests {
         assert_eq!(all_after[0].imei, "imei-456");
     }
 }
-

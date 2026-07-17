@@ -3,7 +3,7 @@ use rusqlite::{Connection, Result};
 pub fn init_db(db_path: &str) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.execute("PRAGMA foreign_keys = ON;", [])?;
-    
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS leads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,8 +111,13 @@ pub fn save_zalo_session(
 }
 
 #[allow(dead_code)]
-pub fn get_zalo_session(conn: &Connection, imei: &str) -> Result<Option<crate::models::ZaloSession>> {
-    let mut stmt = conn.prepare("SELECT imei, user_agent, cookies_json, language FROM zalo_sessions WHERE imei = ?1")?;
+pub fn get_zalo_session(
+    conn: &Connection,
+    imei: &str,
+) -> Result<Option<crate::models::ZaloSession>> {
+    let mut stmt = conn.prepare(
+        "SELECT imei, user_agent, cookies_json, language FROM zalo_sessions WHERE imei = ?1",
+    )?;
     let mut rows = stmt.query([imei])?;
     if let Some(row) = rows.next()? {
         Ok(Some(crate::models::ZaloSession {
@@ -127,7 +132,8 @@ pub fn get_zalo_session(conn: &Connection, imei: &str) -> Result<Option<crate::m
 }
 
 pub fn get_all_zalo_sessions(conn: &Connection) -> Result<Vec<crate::models::ZaloSession>> {
-    let mut stmt = conn.prepare("SELECT imei, user_agent, cookies_json, language FROM zalo_sessions")?;
+    let mut stmt =
+        conn.prepare("SELECT imei, user_agent, cookies_json, language FROM zalo_sessions")?;
     let rows = stmt.query_map([], |row| {
         Ok(crate::models::ZaloSession {
             imei: row.get(0)?,
@@ -148,3 +154,50 @@ pub fn delete_zalo_session(conn: &Connection, imei: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn get_outreach_templates(conn: &Connection) -> Result<Vec<crate::models::OutreachTemplate>> {
+    let mut stmt = conn.prepare("SELECT id, name, content, created_at FROM outreach_templates")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(crate::models::OutreachTemplate {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            content: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    })?;
+    let mut templates = Vec::new();
+    for row in rows {
+        templates.push(row?);
+    }
+    Ok(templates)
+}
+
+pub fn create_outreach_template(conn: &Connection, name: &str, content: &str) -> Result<i32> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO outreach_templates (name, content, created_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![name, content, now],
+    )?;
+    let last_id = conn.last_insert_rowid() as i32;
+    Ok(last_id)
+}
+
+pub fn update_outreach_template(
+    conn: &Connection,
+    id: i32,
+    name: &str,
+    content: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE outreach_templates SET name = ?1, content = ?2 WHERE id = ?3",
+        rusqlite::params![name, content, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_outreach_template(conn: &Connection, id: i32) -> Result<()> {
+    conn.execute("DELETE FROM outreach_templates WHERE id = ?1", [id])?;
+    Ok(())
+}
