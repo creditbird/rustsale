@@ -1,0 +1,790 @@
+<script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+  // State runes
+  let mode = $state<'keyword' | 'grid'>('keyword');
+  let keyword = $state('');
+  let location = $state('');
+
+  // Grid coordinates default to HCM City coordinates
+  let minLat = $state(10.7);
+  let maxLat = $state(10.8);
+  let minLng = $state(106.6);
+  let maxLng = $state(106.7);
+  let stepKm = $state(2.0);
+
+  // Scrape running states
+  let isScraping = $state(false);
+  let progress = $state(0);
+  let statusMessage = $state('Ready');
+  let logs = $state<string[]>([]);
+  let consoleElement = $state<HTMLDivElement | null>(null);
+
+  let unlistenProgress: UnlistenFn | null = null;
+  let unlistenLog: UnlistenFn | null = null;
+  let unlistenComplete: UnlistenFn | null = null;
+
+  function appendLog(msg: string) {
+    const timestamp = new Date().toLocaleTimeString();
+    logs = [...logs, `[${timestamp}] ${msg}`];
+    
+    // Auto-scroll to bottom of console
+    setTimeout(() => {
+      if (consoleElement) {
+        consoleElement.scrollTop = consoleElement.scrollHeight;
+      }
+    }, 50);
+  }
+
+  async function startScrape() {
+    if (!keyword.trim()) {
+      appendLog("Error: Keyword is required.");
+      return;
+    }
+
+    isScraping = true;
+    progress = 0;
+    statusMessage = 'Initializing scrape...';
+    logs = [];
+    appendLog(`Starting Google Maps Scraper in ${mode} mode...`);
+    appendLog(`Keyword: "${keyword}"`);
+
+    try {
+      const bbox = mode === 'grid' ? [minLat, maxLat, minLng, maxLng] : null;
+      const locationVal = mode === 'keyword' ? location : null;
+      const stepVal = mode === 'grid' ? stepKm : null;
+
+      await invoke('start_google_maps_scrape', {
+        keyword,
+        mode,
+        location: locationVal,
+        bbox,
+        step_km: stepVal
+      });
+      appendLog('Tauri scrape command invoked successfully. Awaiting browser startup...');
+    } catch (err) {
+      isScraping = false;
+      statusMessage = 'Failed to start scrape';
+      appendLog(`Error invoking scrape: ${err}`);
+    }
+  }
+
+  onMount(async () => {
+    unlistenProgress = await listen<{ progress: number; status: string; message: string }>(
+      'scrape-progress',
+      (event) => {
+        progress = event.payload.progress;
+        statusMessage = event.payload.message;
+        if (event.payload.status === 'completed') {
+          isScraping = false;
+        }
+      }
+    );
+
+    unlistenLog = await listen<{ message: string }>('scrape-log', (event) => {
+      appendLog(event.payload.message);
+    });
+
+    unlistenComplete = await listen<{ total_scraped: number; message: string }>('scrape-complete', (event) => {
+      isScraping = false;
+      progress = 100;
+      statusMessage = event.payload.message;
+      appendLog(`[COMPLETE] ${event.payload.message}`);
+    });
+  });
+
+  onDestroy(() => {
+    if (unlistenProgress) unlistenProgress();
+    if (unlistenLog) unlistenLog();
+    if (unlistenComplete) unlistenComplete();
+  });
+</script>
+
+<div class="container animate-fade-in">
+  <header class="header">
+    <div class="title-section">
+      <span class="material-icons scraper-icon">map</span>
+      <div>
+        <h1>Google Maps Scraper</h1>
+        <p class="subtitle">Extract local business leads dynamically with high precision</p>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout-grid">
+    <!-- Left Configuration Panel -->
+    <div class="card config-card">
+      <div class="card-header">
+        <h2>Scraper Configuration</h2>
+      </div>
+
+      <div class="tabs">
+        <button 
+          class="tab-btn" 
+          class:active={mode === 'keyword'} 
+          onclick={() => mode = 'keyword'}
+          disabled={isScraping}
+        >
+          <span class="material-icons">search</span>
+          Keyword Search
+        </button>
+        <button 
+          class="tab-btn" 
+          class:active={mode === 'grid'} 
+          onclick={() => mode = 'grid'}
+          disabled={isScraping}
+        >
+          <span class="material-icons">grid_on</span>
+          Grid Crawl
+        </button>
+      </div>
+
+      <div class="form-content">
+        <div class="input-group">
+          <label for="keyword-input">Search Keyword <span class="required">*</span></label>
+          <div class="input-wrapper">
+            <span class="material-icons input-icon">storefront</span>
+            <input 
+              id="keyword-input"
+              type="text" 
+              bind:value={keyword} 
+              placeholder="e.g. Cafe, Spa, Dental Clinic..." 
+              disabled={isScraping} 
+            />
+          </div>
+        </div>
+
+        {#if mode === 'keyword'}
+          <div class="input-group animate-slide-down">
+            <label for="location-input">Location / Area</label>
+            <div class="input-wrapper">
+              <span class="material-icons input-icon">place</span>
+              <input 
+                id="location-input"
+                type="text" 
+                bind:value={location} 
+                placeholder="e.g. Quận 1, Ho Chi Minh City" 
+                disabled={isScraping} 
+              />
+            </div>
+            <p class="input-desc">Focuses search on a specific neighborhood or town name.</p>
+          </div>
+        {:else}
+          <div class="grid-inputs animate-slide-down">
+            <div class="coordinates-title">Bounding Box Coordinates (Lat/Lng)</div>
+            
+            <div class="coord-grid">
+              <div class="input-group">
+                <label for="min-lat">Min Latitude</label>
+                <input 
+                  id="min-lat"
+                  type="number" 
+                  step="0.0001" 
+                  bind:value={minLat} 
+                  disabled={isScraping} 
+                />
+              </div>
+              <div class="input-group">
+                <label for="max-lat">Max Latitude</label>
+                <input 
+                  id="max-lat"
+                  type="number" 
+                  step="0.0001" 
+                  bind:value={maxLat} 
+                  disabled={isScraping} 
+                />
+              </div>
+              <div class="input-group">
+                <label for="min-lng">Min Longitude</label>
+                <input 
+                  id="min-lng"
+                  type="number" 
+                  step="0.0001" 
+                  bind:value={minLng} 
+                  disabled={isScraping} 
+                />
+              </div>
+              <div class="input-group">
+                <label for="max-lng">Max Longitude</label>
+                <input 
+                  id="max-lng"
+                  type="number" 
+                  step="0.0001" 
+                  bind:value={maxLng} 
+                  disabled={isScraping} 
+                />
+              </div>
+            </div>
+
+            <div class="input-group step-size-group">
+              <div class="slider-header">
+                <label for="step-km">Grid Step Size: <strong>{stepKm.toFixed(1)} km</strong></label>
+              </div>
+              <input 
+                id="step-km"
+                type="range" 
+                min="0.5" 
+                max="10.0" 
+                step="0.5" 
+                bind:value={stepKm} 
+                disabled={isScraping} 
+                class="slider"
+              />
+              <p class="input-desc">Smaller steps increase accuracy but require more search grid points.</p>
+            </div>
+          </div>
+        {/if}
+
+        <button 
+          class="start-btn" 
+          onclick={startScrape} 
+          disabled={isScraping || !keyword.trim()}
+        >
+          {#if isScraping}
+            <span class="spinner"></span>
+            Scraping...
+          {:else}
+            <span class="material-icons">play_arrow</span>
+            Start Scrape Campaign
+          {/if}
+        </button>
+      </div>
+    </div>
+
+    <!-- Right Console & Progress Panel -->
+    <div class="card status-card">
+      <div class="card-header">
+        <h2>Execution & Progress</h2>
+        <span class="status-indicator" class:active={isScraping}>
+          {isScraping ? 'Running' : 'Idle'}
+        </span>
+      </div>
+
+      <div class="progress-section">
+        <div class="progress-labels">
+          <span class="status-msg">{statusMessage}</span>
+          <span class="percentage">{Math.round(progress)}%</span>
+        </div>
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" style="width: {progress}%" class:animated={isScraping}></div>
+        </div>
+      </div>
+
+      <div class="console-section">
+        <div class="console-header">
+          <span class="material-icons console-icon">terminal</span>
+          <h3>Console Output</h3>
+          <button class="clear-btn" onclick={() => logs = []} disabled={logs.length === 0}>
+            Clear
+          </button>
+        </div>
+        <div class="console-body" bind:this={consoleElement}>
+          {#if logs.length === 0}
+            <div class="console-placeholder">
+              <span class="material-icons">insights</span>
+              <p>Logs will appear here once scraping starts.</p>
+            </div>
+          {:else}
+            {#each logs as log}
+              <div class="log-line">{log}</div>
+            {/each}
+          {/if}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+    block-size: 100%;
+  }
+
+  .header {
+    background: linear-gradient(135deg, var(--color-surface-container) 0%, var(--color-surface-container-low) 100%);
+    padding: var(--spacing-md) var(--spacing-lg);
+    border-radius: var(--rounded-lg);
+    border: 1px solid var(--color-outline-variant);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .title-section {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+  }
+
+  .scraper-icon {
+    font-size: 36px;
+    color: var(--color-success);
+    background: rgba(16, 185, 129, 0.1);
+    padding: var(--spacing-sm);
+    border-radius: var(--rounded-md);
+  }
+
+  .subtitle {
+    font-size: 13px;
+    color: var(--color-on-surface-variant);
+    margin-top: 2px;
+  }
+
+  .layout-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-lg);
+    flex: 1;
+    min-block-size: 0; /* Important for flex child scrolling */
+  }
+
+  @media (max-width: 1024px) {
+    .layout-grid {
+      grid-template-columns: 1fr;
+      overflow-y: auto;
+    }
+  }
+
+  .card {
+    background: var(--color-surface-container-lowest);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-xl);
+    box-shadow: var(--shadow-soft);
+    display: flex;
+    flex-direction: column;
+    padding: var(--spacing-lg);
+    min-block-size: 0;
+  }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-md);
+    border-bottom: 1px solid var(--color-outline-variant);
+    padding-bottom: var(--spacing-sm);
+  }
+
+  .card-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .tabs {
+    display: flex;
+    gap: var(--spacing-xs);
+    background: var(--color-surface-container-low);
+    padding: 4px;
+    border-radius: var(--rounded-md);
+    margin-bottom: var(--spacing-md);
+  }
+
+  .tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: var(--rounded-md);
+    transition: var(--transition-fast);
+    color: var(--color-on-surface-variant);
+  }
+
+  .tab-btn:hover:not(:disabled) {
+    background: var(--color-surface-container);
+    color: var(--color-primary);
+  }
+
+  .tab-btn.active {
+    background: var(--color-surface-container-lowest);
+    color: var(--color-primary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  }
+
+  .tab-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .form-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    flex: 1;
+  }
+
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+  }
+
+  .input-group label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-on-surface-variant);
+  }
+
+  .required {
+    color: var(--color-danger);
+  }
+
+  .input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .input-icon {
+    position: absolute;
+    left: 12px;
+    color: var(--color-neutral-slate);
+    font-size: 18px;
+    pointer-events: none;
+  }
+
+  .input-wrapper input {
+    width: 100%;
+    padding: 10px 10px 10px 38px;
+    border: 1px solid var(--color-outline);
+    border-radius: var(--rounded-md);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-family: inherit;
+    font-size: 14px;
+    transition: var(--transition-fast);
+  }
+
+  .input-wrapper input:focus {
+    border-color: var(--color-success);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+  }
+
+  .input-wrapper input:disabled {
+    background: var(--color-surface-container-low);
+    color: var(--color-neutral-slate);
+    cursor: not-allowed;
+  }
+
+  .input-desc {
+    font-size: 11px;
+    color: var(--color-neutral-slate);
+    margin-top: 2px;
+  }
+
+  .grid-inputs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    background: var(--color-surface-container-low);
+    padding: var(--spacing-md);
+    border-radius: var(--rounded-md);
+    border: 1px solid var(--color-outline-variant);
+  }
+
+  .coordinates-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--color-on-surface);
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .coord-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-sm);
+  }
+
+  .coord-grid input {
+    width: 100%;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--color-outline);
+    border-radius: var(--rounded-sm);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-size: 13px;
+  }
+
+  .coord-grid input:focus {
+    border-color: var(--color-success);
+    outline: none;
+  }
+
+  .step-size-group {
+    margin-top: var(--spacing-xs);
+  }
+
+  .slider-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+  }
+
+  .slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: var(--rounded-full);
+    background: var(--color-outline-variant);
+    outline: none;
+    margin-block: var(--spacing-sm);
+  }
+
+  .slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--color-success);
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    transition: transform var(--transition-fast);
+  }
+
+  .slider::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
+
+  .slider:disabled::-webkit-slider-thumb {
+    background: var(--color-neutral-slate);
+    cursor: not-allowed;
+  }
+
+  .start-btn {
+    margin-top: auto;
+    width: 100%;
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    padding: var(--spacing-md);
+    border-radius: var(--rounded-md);
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-sm);
+    transition: var(--transition-fast);
+  }
+
+  .start-btn:hover:not(:disabled) {
+    background: var(--color-primary-container);
+    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.15);
+  }
+
+  .start-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  /* Status Card & Execution elements */
+  .status-indicator {
+    font-size: 12px;
+    font-weight: 600;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--rounded-full);
+    background: var(--color-surface-container-low);
+    color: var(--color-neutral-slate);
+    transition: var(--transition-fast);
+  }
+
+  .status-indicator.active {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--color-success);
+  }
+
+  .progress-section {
+    background: var(--color-surface-container-low);
+    border: 1px solid var(--color-outline-variant);
+    padding: var(--spacing-md);
+    border-radius: var(--rounded-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-lg);
+  }
+
+  .progress-labels {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .status-msg {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-on-surface);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 80%;
+  }
+
+  .percentage {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--color-success);
+  }
+
+  .progress-bar-container {
+    height: 10px;
+    background: var(--color-surface-container-highest);
+    border-radius: var(--rounded-full);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--color-success) 0%, #34d399 100%);
+    border-radius: var(--rounded-full);
+    transition: width var(--transition-fast) ease-out;
+  }
+
+  .progress-bar-fill.animated {
+    background-image: linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.15) 25%,
+      transparent 25%,
+      transparent 50%,
+      rgba(255, 255, 255, 0.15) 50%,
+      rgba(255, 255, 255, 0.15) 75%,
+      transparent 75%,
+      transparent
+    );
+    background-size: 1rem 1rem;
+    animation: progress-bar-stripes 1s linear infinite;
+  }
+
+  @keyframes progress-bar-stripes {
+    from { background-position: 1rem 0; }
+    to { background-position: 0 0; }
+  }
+
+  /* Console Styling */
+  .console-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    background: #0f172a; /* Slate 900 for dark retro console */
+    border-radius: var(--rounded-md);
+    overflow: hidden;
+    border: 1px solid #1e293b;
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .console-header {
+    background: #1e293b;
+    padding: var(--spacing-sm) var(--spacing-md);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    border-bottom: 1px solid #334155;
+  }
+
+  .console-icon {
+    font-size: 18px;
+    color: #38bdf8;
+  }
+
+  .console-header h3 {
+    font-size: 12px;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin: 0;
+    flex: 1;
+  }
+
+  .clear-btn {
+    font-size: 11px;
+    font-weight: 600;
+    color: #94a3b8;
+    background: #334155;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--rounded-sm);
+    transition: var(--transition-fast);
+  }
+
+  .clear-btn:hover:not(:disabled) {
+    color: #f1f5f9;
+    background: #475569;
+  }
+
+  .clear-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .console-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--spacing-md);
+    font-family: Menlo, Monaco, Consolas, "Fira Code", monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #34d399; /* Green text */
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+  }
+
+  .console-placeholder {
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-sm);
+    color: #64748b;
+    text-align: center;
+  }
+
+  .console-placeholder .material-icons {
+    font-size: 32px;
+  }
+
+  .log-line {
+    word-break: break-all;
+    white-space: pre-wrap;
+  }
+
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: var(--color-on-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Transition animations */
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out forwards;
+  }
+
+  .animate-slide-down {
+    animation: slideDown 0.25s ease-out forwards;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+</style>

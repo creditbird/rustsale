@@ -3,8 +3,11 @@
 
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
-    { id: 'leads', label: 'Leads & Contacts', icon: 'people' },
-    { id: 'pipeline', label: 'Deal Pipeline', icon: 'view_kanban' }
+    { id: 'leads', label: 'Leads', icon: 'person_search' },
+    { id: 'contacts', label: 'Contacts', icon: 'contacts' },
+    { id: 'pipeline', label: 'Deal Pipeline', icon: 'view_kanban' },
+    { id: 'scraper', label: 'Google Maps Scraper', icon: 'map' },
+    { id: 'outreach', label: 'Zalo Outreach', icon: 'campaign' }
   ];
 </script>
 

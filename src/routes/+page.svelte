@@ -4,6 +4,8 @@
   import Dashboard from '$lib/components/Dashboard.svelte';
   import LeadsList from '$lib/components/LeadsList.svelte';
   import KanbanBoard from '$lib/components/KanbanBoard.svelte';
+  import GoogleMapsScraper from '$lib/components/GoogleMapsScraper.svelte';
+  import ZaloOutreach from '$lib/components/ZaloOutreach.svelte';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
 
@@ -20,9 +22,9 @@
     }
   }
 
-  // Load leads initially and when switching to the leads tab
+  // Load leads initially and when switching to the leads or contacts tab
   $effect(() => {
-    if (activeTab === 'leads') {
+    if (activeTab === 'leads' || activeTab === 'contacts') {
       loadLeads();
     }
   });
@@ -45,9 +47,15 @@
       {#if activeTab === 'dashboard'}
         <Dashboard />
       {:else if activeTab === 'leads'}
-        <LeadsList {leads} onRefresh={loadLeads} />
+        <LeadsList leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} />
+      {:else if activeTab === 'contacts'}
+        <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} />
       {:else if activeTab === 'pipeline'}
         <KanbanBoard />
+      {:else if activeTab === 'scraper'}
+        <GoogleMapsScraper />
+      {:else if activeTab === 'outreach'}
+        <ZaloOutreach />
       {/if}
     </div>
   </main>
