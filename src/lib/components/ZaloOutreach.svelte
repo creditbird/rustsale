@@ -57,9 +57,9 @@
   // Computed / filtered leads
   let filteredLeads = $derived(
     leads.filter(lead => 
-      lead.name.toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
-      lead.company.toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
-      lead.phone.includes(leadSearchQuery)
+      (lead.name || '').toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
+      (lead.company || '').toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
+      (lead.phone || '').includes(leadSearchQuery)
     )
   );
 
@@ -342,8 +342,8 @@
 
       await invoke('send_zalo_outreach', {
         imei: selectedImei,
-        leadIds: selectedLeadIds,
-        templateId: selectedTemplateId
+        lead_ids: selectedLeadIds,
+        template_id: selectedTemplateId
       });
       appendCampaignLog('Outreach campaign invoked successfully.');
     } catch (e) {
@@ -372,7 +372,7 @@
       <div class="card session-card">
         <div class="card-header">
           <h2>Zalo Sessions</h2>
-          <button class="add-session-btn" onclick={openQrLogin}>
+          <button type="button" class="add-session-btn" onclick={openQrLogin}>
             <span class="material-icons">qr_code_scanner</span>
             Add Session
           </button>
@@ -393,7 +393,7 @@
                     <span class="session-ua">{s.user_agent.substring(0, 40)}...</span>
                   </span>
                 </button>
-                <button class="delete-btn" onclick={() => deleteSession(s.imei)} title="Delete Session">
+                <button type="button" class="delete-btn" onclick={() => deleteSession(s.imei)} title="Delete Session">
                   <span class="material-icons">delete</span>
                 </button>
               </div>
@@ -406,7 +406,7 @@
       <div class="card template-card">
         <div class="card-header">
           <h2>Outreach Templates</h2>
-          <button class="add-template-btn" onclick={openCreateTemplate}>
+          <button type="button" class="add-template-btn" onclick={openCreateTemplate}>
             <span class="material-icons">add</span>
             Create Template
           </button>
@@ -425,10 +425,10 @@
                   <span class="template-preview">{t.content}</span>
                 </button>
                 <div class="template-actions">
-                  <button class="action-btn" onclick={() => openEditTemplate(t)} title="Edit Template">
+                  <button type="button" class="action-btn" onclick={() => openEditTemplate(t)} title="Edit Template">
                     <span class="material-icons">edit</span>
                   </button>
-                  <button class="action-btn delete" onclick={() => t.id && deleteTemplate(t.id)} title="Delete Template">
+                  <button type="button" class="action-btn delete" onclick={() => t.id && deleteTemplate(t.id)} title="Delete Template">
                     <span class="material-icons">delete</span>
                   </button>
                 </div>
@@ -523,6 +523,7 @@
           </div>
 
           <button 
+            type="button"
             class="start-campaign-btn" 
             onclick={startCampaign} 
             disabled={isCampaignRunning || !selectedImei || selectedTemplateId === null || selectedLeadIds.length === 0}
@@ -551,7 +552,7 @@
             <div class="console-header">
               <span class="material-icons console-icon">terminal</span>
               <h3>Outreach Console Logs</h3>
-              <button class="clear-btn" onclick={() => campaignLogs = []} disabled={campaignLogs.length === 0}>
+              <button type="button" class="clear-btn" onclick={() => campaignLogs = []} disabled={campaignLogs.length === 0}>
                 Clear
               </button>
             </div>
@@ -579,7 +580,7 @@
       <div class="modal-card qr-modal animate-slide-down">
         <div class="modal-header">
           <h2>Zalo QR Login</h2>
-          <button class="modal-close" onclick={closeQrModal}>
+          <button type="button" class="modal-close" onclick={closeQrModal}>
             <span class="material-icons">close</span>
           </button>
         </div>
@@ -621,7 +622,7 @@
       <div class="modal-card template-form-modal animate-slide-down">
         <div class="modal-header">
           <h2>{editingTemplateId ? 'Edit Outreach Template' : 'Create Outreach Template'}</h2>
-          <button class="modal-close" onclick={() => isTemplateModalOpen = false}>
+          <button type="button" class="modal-close" onclick={() => isTemplateModalOpen = false}>
             <span class="material-icons">close</span>
           </button>
         </div>
@@ -652,10 +653,10 @@
           </div>
 
           <div class="modal-footer">
-            <button class="secondary-btn" onclick={() => isTemplateModalOpen = false}>
+            <button type="button" class="secondary-btn" onclick={() => isTemplateModalOpen = false}>
               Cancel
             </button>
-            <button class="primary-btn" onclick={saveTemplate}>
+            <button type="button" class="primary-btn" onclick={saveTemplate}>
               Save Template
             </button>
           </div>
@@ -803,6 +804,15 @@
     border-color: var(--color-success);
     background: rgba(16, 185, 129, 0.05);
     box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.1);
+  }
+
+  .session-item:focus-within,
+  .template-item:focus-within,
+  .lead-checkbox-item:focus-within {
+    border-color: var(--color-success);
+    background: var(--color-surface-container-low);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
   }
 
   .session-info {

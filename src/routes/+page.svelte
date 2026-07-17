@@ -52,11 +52,14 @@
         <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} />
       {:else if activeTab === 'pipeline'}
         <KanbanBoard />
-      {:else if activeTab === 'scraper'}
-        <GoogleMapsScraper />
-      {:else if activeTab === 'outreach'}
-        <ZaloOutreach />
       {/if}
+
+      <div class:hidden={activeTab !== 'scraper'}>
+        <GoogleMapsScraper />
+      </div>
+      <div class:hidden={activeTab !== 'outreach'}>
+        <ZaloOutreach />
+      </div>
     </div>
   </main>
 </div>
@@ -73,6 +76,9 @@
     color: var(--color-danger);
     font-size: 13px;
     margin-bottom: var(--spacing-md);
+  }
+  .hidden {
+    display: none !important;
   }
 </style>
 
