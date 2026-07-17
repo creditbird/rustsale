@@ -4,14 +4,22 @@
 
   let leads = $state<Lead[]>([]);
   let deals = $state<Deal[]>([]);
+  let errorMsg = $state<string | null>(null);
 
   $effect(() => {
-    crmService.getLeads().then(data => leads = data).catch(console.error);
-    crmService.getDeals().then(data => deals = data).catch(console.error);
+    Promise.all([crmService.getLeads(), crmService.getDeals()])
+      .then(([leadsData, dealsData]) => {
+        leads = leadsData;
+        deals = dealsData;
+        errorMsg = null;
+      })
+      .catch((err) => {
+        errorMsg = err instanceof Error ? err.message : String(err);
+      });
   });
 
   const totalRevenue = $derived(
-    deals.filter(d => d.stage === 'Won').reduce((sum, d) => sum + d.value, 0) || 45000
+    deals.filter(d => d.stage === 'Won').reduce((sum, d) => sum + d.value, 0)
   );
 
   const dealsWon = $derived(
@@ -45,6 +53,13 @@
 </script>
 
 <div class="dashboard-container">
+  {#if errorMsg}
+    <div class="error-banner">
+      <span class="material-icons">error_outline</span>
+      <span class="error-text">Failed to load CRM data: {errorMsg}</span>
+    </div>
+  {/if}
+
   <header class="dashboard-header">
     <div class="header-title-area">
       <h1>Sales Performance</h1>
@@ -81,11 +96,11 @@
           <text x="30" y="44" fill="var(--color-on-primary)" font-size="10" font-weight="700">
             Actual: {formatCurrency(totalRevenue)} ({Math.min(100, Math.round((totalRevenue / 150000) * 100))}%)
           </text>
-          <line x1="288" y1="15" x2="288" y2="65" stroke="var(--color-danger)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="294" y="22" fill="var(--color-danger)" font-size="9" font-weight="700">Target: $120k (80%)</text>
+          <line x1="308" y1="15" x2="308" y2="65" stroke="var(--color-danger)" stroke-width="2" stroke-dasharray="3 3"></line>
+          <text x="314" y="22" fill="var(--color-danger)" font-size="9" font-weight="700">Target: $120k (80%)</text>
           
-          <line x1="360" y1="15" x2="360" y2="65" stroke="var(--color-primary)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="320" y="80" fill="var(--color-primary)" font-size="9" font-weight="700">Stretch: $150k</text>
+          <line x1="380" y1="15" x2="380" y2="65" stroke="var(--color-primary)" stroke-width="2" stroke-dasharray="3 3"></line>
+          <text x="340" y="80" fill="var(--color-primary)" font-size="9" font-weight="700">Stretch: $150k</text>
         </svg>
       </div>
     </div>
@@ -272,5 +287,20 @@
     color: var(--color-on-surface-variant);
     margin: 0;
     margin-top: 2px;
+  }
+  .error-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md);
+    background-color: rgba(244, 63, 94, 0.08);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--rounded-md);
+    color: var(--color-danger);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .error-banner .material-icons {
+    font-size: 20px;
   }
 </style>

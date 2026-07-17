@@ -34,10 +34,8 @@ test('renders Dashboard screen headings and initial stats', async () => {
   expect(screen.getByText('Revenue Target vs. Actual')).toBeTruthy();
 
   // Wait for the async Svelte effects to resolve and update the stats
-  await new Promise((resolve) => setTimeout(resolve, 50));
-
-  // With 2 won deals, sum = $45,000.00
-  expect(screen.getByText('$45,000.00')).toBeTruthy();
+  const revenueElement = await screen.findByText('$45,000.00');
+  expect(revenueElement).toBeTruthy();
   
   // Deals won = 2 and Active leads = 2
   const countElements = screen.getAllByText('2');
