@@ -1,3 +1,7 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 :root {
   /* Colors */
   --color-background: #f8f9ff;
@@ -91,6 +95,22 @@ button {
   padding: 0;
   cursor: pointer;
   outline: none;
+}
+
+/* Custom Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-surface-container-lowest);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-outline-variant);
+  border-radius: var(--rounded-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-outline);
 }
 
 /* Common Layout Utilities */
