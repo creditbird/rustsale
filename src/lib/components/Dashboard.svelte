@@ -96,11 +96,11 @@
           <text x="30" y="44" fill="var(--color-on-primary)" font-size="10" font-weight="700">
             Actual: {formatCurrency(totalRevenue)} ({Math.min(100, Math.round((totalRevenue / 150000) * 100))}%)
           </text>
-          <line x1="308" y1="15" x2="308" y2="65" stroke="var(--color-danger)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="314" y="22" fill="var(--color-danger)" font-size="9" font-weight="700">Target: $120k (80%)</text>
+          <line x1="308" y1="35" x2="308" y2="65" stroke="var(--color-danger)" stroke-width="2" stroke-dasharray="3 3"></line>
+          <text x="314" y="28" fill="var(--color-danger)" font-size="9" font-weight="700">Target: $120k (80%)</text>
           
-          <line x1="380" y1="15" x2="380" y2="65" stroke="var(--color-primary)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="340" y="80" fill="var(--color-primary)" font-size="9" font-weight="700">Stretch: $150k</text>
+          <line x1="380" y1="35" x2="380" y2="65" stroke="var(--color-primary)" stroke-width="2" stroke-dasharray="3 3"></line>
+          <text x="340" y="78" fill="var(--color-primary)" font-size="9" font-weight="700">Stretch: $150k</text>
         </svg>
       </div>
     </div>
