@@ -217,6 +217,9 @@
         <tr>
           <th>Name</th>
           <th>Company</th>
+          <th>Phone</th>
+          <th>Email</th>
+          <th>Zalo</th>
           <th>Address</th>
           <th>Status</th>
           <th>Value</th>
@@ -226,7 +229,7 @@
       <tbody>
         {#if paginatedLeads.length === 0}
           <tr>
-            <td colspan="6" class="empty-state">No matching records found.</td>
+            <td colspan="9" class="empty-state">No matching records found.</td>
           </tr>
         {:else}
           {#each paginatedLeads as lead}
@@ -245,26 +248,25 @@
                   <div class="avatar-sm">
                     {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
                   </div>
-                  <div style="display: flex; flex-direction: column;">
-                    <strong>{lead.name}</strong>
-                    {#if lead.phone}
-                      <span style="font-size: 11px; color: var(--color-on-surface-variant); display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                        {lead.phone}
-                        {#if lead.has_zalo === 1}
-                          <span class="zalo-badge verified" title="Zalo Verified" style="color: #0284c7; display: inline-flex; align-items: center;">
-                            <span class="material-icons" style="font-size: 12px;">check_circle</span>
-                          </span>
-                        {:else if lead.has_zalo === 0}
-                          <span class="zalo-badge unverified" title="No Zalo" style="color: #94a3b8; display: inline-flex; align-items: center;">
-                            <span class="material-icons" style="font-size: 12px;">cancel</span>
-                          </span>
-                        {/if}
-                      </span>
-                    {/if}
-                  </div>
+                  <strong>{lead.name}</strong>
                 </div>
               </td>
               <td>{lead.company}</td>
+              <td>{lead.phone || '—'}</td>
+              <td>{lead.email || '—'}</td>
+              <td>
+                {#if lead.has_zalo === 1}
+                  <span class="zalo-badge verified" title="Zalo Verified" style="color: #0284c7; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; font-size: 11px;">
+                    <span class="material-icons" style="font-size: 14px;">check_circle</span> Yes
+                  </span>
+                {:else if lead.has_zalo === 0}
+                  <span class="zalo-badge unverified" title="No Zalo" style="color: #94a3b8; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; font-size: 11px;">
+                    <span class="material-icons" style="font-size: 14px;">cancel</span> No
+                  </span>
+                {:else}
+                  <span style="color: #cbd5e1; font-size: 11px;">—</span>
+                {/if}
+              </td>
               <td>{lead.address || '—'}</td>
               <td>
                 <span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span>
