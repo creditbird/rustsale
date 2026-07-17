@@ -282,6 +282,29 @@
     }
   }
 
+  function selectVerifiedZalo() {
+    const verifiedIds = filteredLeads
+      .filter(l => l.has_zalo === 1)
+      .map(l => l.id)
+      .filter((id): id is number => !!id);
+    
+    // Add all verified lead IDs to selectedLeadIds without duplicates
+    const otherSelectedIds = selectedLeadIds.filter(id => !verifiedIds.includes(id));
+    selectedLeadIds = [...otherSelectedIds, ...verifiedIds];
+  }
+
+  // selectUnreached filters for leads with zalo_reached === 0 (or null/undefined)
+  function selectUnreached() {
+    const unreachedIds = filteredLeads
+      .filter(l => l.zalo_reached === 0 || l.zalo_reached === null || l.zalo_reached === undefined)
+      .map(l => l.id)
+      .filter((id): id is number => !!id);
+
+    // Add all unreached lead IDs to selectedLeadIds without duplicates
+    const otherSelectedIds = selectedLeadIds.filter(id => !unreachedIds.includes(id));
+    selectedLeadIds = [...otherSelectedIds, ...unreachedIds];
+  }
+
   // Campaign Execution
   function appendCampaignLog(msg: string) {
     const timestamp = new Date().toLocaleTimeString();
@@ -500,6 +523,28 @@
               </div>
             </div>
 
+            <!-- Quick selection helpers -->
+            <div class="quick-select-helpers" style="display: flex; gap: var(--spacing-sm); margin-top: var(--spacing-xs); justify-content: flex-end;">
+              <button 
+                type="button" 
+                class="select-all-btn" 
+                onclick={selectVerifiedZalo}
+                disabled={filteredLeads.filter(l => l.has_zalo === 1).length === 0}
+                style="font-size: 10px; padding: 2px var(--spacing-xs);"
+              >
+                Select Verified Zalo
+              </button>
+              <button 
+                type="button" 
+                class="select-all-btn" 
+                onclick={selectUnreached}
+                disabled={filteredLeads.filter(l => l.zalo_reached === 0 || l.zalo_reached === null || l.zalo_reached === undefined).length === 0}
+                style="font-size: 10px; padding: 2px var(--spacing-xs);"
+              >
+                Select Unreached
+              </button>
+            </div>
+
             <div class="leads-list-box">
               {#if filteredLeads.length === 0}
                 <div class="empty-state">
@@ -516,7 +561,18 @@
                         disabled={isCampaignRunning}
                       />
                       <span class="lead-label-info">
-                        <span class="lead-lbl-name">{lead.name}</span>
+                        <span class="lead-lbl-name">
+                          {lead.name}
+                          {#if lead.has_zalo === 1}
+                            <span class="zalo-badge verified" title="Zalo Verified" style="color: #0284c7; margin-left: 4px; display: inline-flex; align-items: center; vertical-align: middle;">
+                              <span class="material-icons" style="font-size: 14px;">check_circle</span>
+                            </span>
+                          {:else if lead.has_zalo === 0}
+                            <span class="zalo-badge unverified" title="No Zalo" style="color: #94a3b8; margin-left: 4px; display: inline-flex; align-items: center; vertical-align: middle;">
+                              <span class="material-icons" style="font-size: 14px;">cancel</span>
+                            </span>
+                          {/if}
+                        </span>
                         <span class="lead-lbl-details">{lead.phone} • {lead.company}</span>
                       </span>
                     </label>

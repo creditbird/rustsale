@@ -23,6 +23,8 @@
   let filterStatus = $state('');
   let filterOwner = $state('');
   let filterValueRange = $state(''); // 'all', 'under_10k', '10k_to_50k', 'above_50k'
+  let filterZaloStatus = $state(''); // '', 'verified', 'no_zalo', 'unchecked'
+  let filterOutreachStatus = $state(''); // '', 'reached', 'not_reached'
   let currentPage = $state(1);
   let pageSize = $state(10);
 
@@ -61,6 +63,19 @@
         if (filterValueRange === '10k_to_50k' && (val < 10000 || val > 50000)) return false;
         if (filterValueRange === 'above_50k' && val <= 50000) return false;
       }
+
+      // 5. Zalo Status Filter
+      if (filterZaloStatus) {
+        if (filterZaloStatus === 'verified' && lead.has_zalo !== 1) return false;
+        if (filterZaloStatus === 'no_zalo' && lead.has_zalo !== 0) return false;
+        if (filterZaloStatus === 'unchecked' && lead.has_zalo !== null && lead.has_zalo !== undefined) return false;
+      }
+
+      // 6. Outreach Status Filter
+      if (filterOutreachStatus) {
+        if (filterOutreachStatus === 'reached' && lead.zalo_reached !== 1) return false;
+        if (filterOutreachStatus === 'not_reached' && lead.zalo_reached !== 0) return false;
+      }
       
       return true;
     })
@@ -73,6 +88,8 @@
     const _st = filterStatus;
     const _o = filterOwner;
     const _v = filterValueRange;
+    const _z = filterZaloStatus;
+    const _or = filterOutreachStatus;
     const _p = pageSize;
     currentPage = 1;
   });
@@ -170,10 +187,23 @@
         <option value="above_50k">Above $50k</option>
       </select>
 
-      {#if searchQuery || filterStatus || filterOwner || filterValueRange}
+      <select bind:value={filterZaloStatus} class="filter-select">
+        <option value="">All Zalo Statuses</option>
+        <option value="verified">Verified Zalo</option>
+        <option value="no_zalo">No Zalo</option>
+        <option value="unchecked">Unchecked</option>
+      </select>
+
+      <select bind:value={filterOutreachStatus} class="filter-select">
+        <option value="">All Outreach Statuses</option>
+        <option value="reached">Reached</option>
+        <option value="not_reached">Not Reached</option>
+      </select>
+
+      {#if searchQuery || filterStatus || filterOwner || filterValueRange || filterZaloStatus || filterOutreachStatus}
         <button 
           class="clear-filters-btn" 
-          onclick={() => { searchQuery = ''; filterStatus = ''; filterOwner = ''; filterValueRange = ''; }}
+          onclick={() => { searchQuery = ''; filterStatus = ''; filterOwner = ''; filterValueRange = ''; filterZaloStatus = ''; filterOutreachStatus = ''; }}
         >
           Clear
         </button>
@@ -187,6 +217,7 @@
         <tr>
           <th>Name</th>
           <th>Company</th>
+          <th>Address</th>
           <th>Status</th>
           <th>Value</th>
           <th>Owner</th>
@@ -195,7 +226,7 @@
       <tbody>
         {#if paginatedLeads.length === 0}
           <tr>
-            <td colspan="5" class="empty-state">No matching records found.</td>
+            <td colspan="6" class="empty-state">No matching records found.</td>
           </tr>
         {:else}
           {#each paginatedLeads as lead}
@@ -214,10 +245,27 @@
                   <div class="avatar-sm">
                     {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
                   </div>
-                  <strong>{lead.name}</strong>
+                  <div style="display: flex; flex-direction: column;">
+                    <strong>{lead.name}</strong>
+                    {#if lead.phone}
+                      <span style="font-size: 11px; color: var(--color-on-surface-variant); display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                        {lead.phone}
+                        {#if lead.has_zalo === 1}
+                          <span class="zalo-badge verified" title="Zalo Verified" style="color: #0284c7; display: inline-flex; align-items: center;">
+                            <span class="material-icons" style="font-size: 12px;">check_circle</span>
+                          </span>
+                        {:else if lead.has_zalo === 0}
+                          <span class="zalo-badge unverified" title="No Zalo" style="color: #94a3b8; display: inline-flex; align-items: center;">
+                            <span class="material-icons" style="font-size: 12px;">cancel</span>
+                          </span>
+                        {/if}
+                      </span>
+                    {/if}
+                  </div>
                 </div>
               </td>
               <td>{lead.company}</td>
+              <td>{lead.address || '—'}</td>
               <td>
                 <span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span>
               </td>

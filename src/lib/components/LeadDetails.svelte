@@ -20,6 +20,7 @@
   let editEmail = $state('');
   let editPhone = $state('');
   let editAbout = $state('');
+  let editAddress = $state('');
   let savingLead = $state(false);
   let deletingLead = $state(false);
 
@@ -33,6 +34,7 @@
     editEmail = lead.email;
     editPhone = lead.phone || '';
     editAbout = lead.about || '';
+    editAddress = lead.address || '';
     isEditing = true;
   }
 
@@ -52,7 +54,8 @@
         editOwner.trim(),
         editEmail.trim(),
         editPhone.trim(),
-        editAbout.trim() || null
+        editAbout.trim() || null,
+        editAddress.trim() || null
       );
       isEditing = false;
       await loadLeadDetails(leadId);
@@ -226,7 +229,33 @@
         <div class="profile-info">
           <h4>{lead.name}</h4>
           <p class="company">{lead.company}</p>
-          <span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span>
+          <div class="badges-row" style="display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px;">
+            <span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span>
+            
+            {#if lead.has_zalo === 1}
+              <span class="status-badge zalo-verified" style="background: #e0f2fe; color: #0369a1; display: inline-flex; align-items: center; gap: 2px;">
+                <span class="material-icons" style="font-size: 10px;">check_circle</span> Verified Zalo
+              </span>
+            {:else if lead.has_zalo === 0}
+              <span class="status-badge zalo-no" style="background: #f1f5f9; color: #64748b; display: inline-flex; align-items: center; gap: 2px;">
+                <span class="material-icons" style="font-size: 10px;">cancel</span> No Zalo
+              </span>
+            {:else}
+              <span class="status-badge zalo-unchecked" style="background: #f8fafc; color: #94a3b8; display: inline-flex; align-items: center; gap: 2px;">
+                <span class="material-icons" style="font-size: 10px;">help_outline</span> Zalo Unchecked
+              </span>
+            {/if}
+
+            {#if lead.zalo_reached === 1}
+              <span class="status-badge reached" style="background: #dcfce7; color: #15803d; display: inline-flex; align-items: center; gap: 2px;">
+                <span class="material-icons" style="font-size: 10px;">done</span> Reached
+              </span>
+            {:else}
+              <span class="status-badge not-reached" style="background: #fee2e2; color: #b91c1c; display: inline-flex; align-items: center; gap: 2px;">
+                <span class="material-icons" style="font-size: 10px;">hourglass_empty</span> Not Reached
+              </span>
+            {/if}
+          </div>
         </div>
         {#if !isEditing}
           <button class="edit-toggle-btn" onclick={startEditing} aria-label="Edit details">
@@ -272,6 +301,10 @@
             <input type="text" id="edit-phone" bind:value={editPhone} />
           </div>
           <div class="form-group">
+            <label for="edit-address">Address</label>
+            <input type="text" id="edit-address" bind:value={editAddress} />
+          </div>
+          <div class="form-group">
             <label for="edit-about">About</label>
             <textarea id="edit-about" bind:value={editAbout} rows="3"></textarea>
           </div>
@@ -299,6 +332,10 @@
           <div class="detail-row">
             <span class="detail-label">Phone</span>
             <span class="detail-value">{lead.phone || '—'}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Address</span>
+            <span class="detail-value">{lead.address || '—'}</span>
           </div>
           <div class="detail-row">
             <span class="detail-label">Lead Owner</span>

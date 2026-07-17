@@ -11,6 +11,9 @@ export interface Lead {
   email: string;
   phone: string;
   about?: string | null;
+  address?: string | null;
+  has_zalo?: number | null; // null = unchecked, 0 = no, 1 = yes
+  zalo_reached?: number;     // 0 = no, 1 = yes
 }
 
 export interface Deal {
@@ -58,8 +61,8 @@ export async function addLead(
     owner,
     email,
     phone,
-    about,
-    address
+    about: about ?? null,
+    address: address ?? null
   });
 }
 
@@ -114,8 +117,8 @@ export async function updateLead(
     owner,
     email,
     phone,
-    about,
-    address
+    about: about ?? null,
+    address: address ?? null
   });
 }
 
