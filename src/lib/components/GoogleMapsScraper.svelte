@@ -319,7 +319,7 @@
 
               <div class="input-group" style="margin-top: var(--spacing-sm);">
                 <div class="districts-header">
-                  <label for="geocode-query">Select Districts to Scan ({selectedDistricts.length} selected)</label>
+                  <span class="districts-label">Select Districts to Scan ({selectedDistricts.length} selected)</span>
                   <div class="districts-actions">
                     <button type="button" class="btn-text" onclick={selectAllDistricts} disabled={isScraping}>Select All</button>
                     <span class="divider">|</span>
@@ -1084,5 +1084,95 @@
   .btn-secondary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .deep-scan-config {
+    background: var(--color-surface-container-low);
+    padding: var(--spacing-md);
+    border-radius: var(--rounded-md);
+    border: 1px solid var(--color-outline-variant);
+    margin-bottom: var(--spacing-sm);
+  }
+  .deep-scan-config select {
+    width: 100%;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--color-outline);
+    border-radius: var(--rounded-md);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-size: 13px;
+    height: 38px;
+    outline: none;
+    transition: var(--transition-fast);
+  }
+  .deep-scan-config select:focus {
+    border-color: var(--color-success);
+  }
+  .districts-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-xs);
+  }
+  .districts-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--color-on-surface);
+  }
+  .districts-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+  .btn-text {
+    background: none;
+    border: none;
+    color: var(--color-success);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0;
+    transition: var(--transition-fast);
+  }
+  .btn-text:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+  .btn-text:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .divider {
+    color: var(--color-outline);
+    font-size: 11px;
+  }
+  .districts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: var(--spacing-xs);
+    max-height: 180px;
+    overflow-y: auto;
+    border: 1px solid var(--color-outline-variant);
+    padding: var(--spacing-sm);
+    border-radius: var(--rounded-sm);
+    background: var(--color-surface-container-lowest);
+  }
+  .district-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-on-surface-variant);
+    cursor: pointer;
+    user-select: none;
+  }
+  .district-checkbox-label input[type="checkbox"] {
+    width: auto;
+    height: auto;
+    cursor: pointer;
+  }
+  .toggle-container input[type="checkbox"] {
+    width: auto;
+    height: auto;
+    cursor: pointer;
   }
 </style>

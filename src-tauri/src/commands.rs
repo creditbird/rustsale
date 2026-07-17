@@ -576,18 +576,24 @@ pub async fn run_google_maps_scrape_task(
 
     // 3. Write all extracted businesses to the SQLite database
     let inserted_count = {
-        let conn_guard = conn_mutex.lock();
-        match conn_guard {
-            Ok(conn) => {
-                let mut count = 0;
-                let now: String = conn
-                    .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
-                        row.get(0)
-                    })
-                    .unwrap_or_else(|_| "".to_string());
+        let conn_res: Result<usize, String> = (|| {
+            let mut conn_guard = conn_mutex
+                .lock()
+                .map_err(|e| format!("Database lock error: {}", e))?;
+            let tx = conn_guard
+                .transaction()
+                .map_err(|e| format!("Database transaction error: {}", e))?;
 
-                for biz in &final_businesses {
-                    let exists: i64 = conn
+            let mut count: usize = 0;
+            let now: String = tx
+                .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| format!("Database query error: {}", e))?;
+
+            for biz in &final_businesses {
+                if !biz.phone.trim().is_empty() {
+                    let exists: i64 = tx
                         .query_row(
                             "SELECT COUNT(*) FROM leads WHERE phone = ?1",
                             [&biz.phone],
@@ -598,60 +604,65 @@ pub async fn run_google_maps_scrape_task(
                     if exists > 0 {
                         continue;
                     }
-
-                    let mut about_parts = Vec::new();
-                    if let Some(addr) = &biz.address {
-                        about_parts.push(format!("Address: {}", addr));
-                    }
-                    if let Some(web) = &biz.website {
-                        about_parts.push(format!("Website: {}", web));
-                    }
-                    if let Some(fb) = &biz.facebook {
-                        about_parts.push(format!("Facebook: {}", fb));
-                    }
-                    if let Some(zalo) = &biz.zalo {
-                        about_parts.push(format!("Zalo: {}", zalo));
-                    }
-                    let about_str = if about_parts.is_empty() {
-                        None
-                    } else {
-                        Some(about_parts.join("\n"))
-                    };
-
-                    let has_zalo_val = if biz.zalo.is_some() { Some(1) } else { None };
-                    let insert_res = conn.execute(
-                        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo) 
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                        rusqlite::params![
-                            biz.name,
-                            biz.name,
-                            "New",
-                            0.0,
-                            &now,
-                            "System",
-                            "",
-                            biz.phone,
-                            about_str,
-                            biz.address,
-                            has_zalo_val
-                        ]
-                    );
-                    if insert_res.is_ok() {
-                        count += 1;
-                    }
                 }
-                count
+
+                let mut about_parts = Vec::new();
+                if let Some(addr) = &biz.address {
+                    about_parts.push(format!("Address: {}", addr));
+                }
+                if let Some(web) = &biz.website {
+                    about_parts.push(format!("Website: {}", web));
+                }
+                if let Some(fb) = &biz.facebook {
+                    about_parts.push(format!("Facebook: {}", fb));
+                }
+                if let Some(zalo) = &biz.zalo {
+                    about_parts.push(format!("Zalo: {}", zalo));
+                }
+                let about_str = if about_parts.is_empty() {
+                    None
+                } else {
+                    Some(about_parts.join("\n"))
+                };
+
+                let has_zalo_val = if biz.zalo.is_some() { Some(1) } else { None };
+                let insert_res = tx.execute(
+                    "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo) 
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![
+                        biz.name,
+                        biz.name,
+                        "New",
+                        0.0,
+                        &now,
+                        "System",
+                        "",
+                        biz.phone,
+                        about_str,
+                        biz.address,
+                        has_zalo_val
+                    ]
+                );
+                if insert_res.is_ok() {
+                    count += 1;
+                }
             }
+            tx.commit().map_err(|e| format!("Transaction commit error: {}", e))?;
+            Ok(count)
+        })();
+
+        match conn_res {
+            Ok(c) => c,
             Err(e) => {
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "scrape-log",
                         ScrapeLogPayload {
-                            message: format!("Failed to lock database: {}", e),
+                            message: format!("Database transaction failed: {}", e),
                         },
                     );
                 }
-                return Err(format!("Failed to lock database: {}", e));
+                0
             }
         }
     };
@@ -725,6 +736,14 @@ pub async fn start_google_maps_scrape(
                             message: format!("Failed to start browser: {}", e),
                         },
                     );
+                    let _ = app_handle_clone.emit(
+                        "scrape-progress",
+                        ScrapeProgressPayload {
+                            progress: 100.0,
+                            status: "failed".to_string(),
+                            message: format!("Failed to start browser: {}", e),
+                        },
+                    );
                     return;
                 }
             }
@@ -737,6 +756,14 @@ pub async fn start_google_maps_scrape(
                 let _ = app_handle_clone.emit(
                     "scrape-log",
                     ScrapeLogPayload {
+                        message: format!("Failed to acquire browser session: {}", e),
+                    },
+                );
+                let _ = app_handle_clone.emit(
+                    "scrape-progress",
+                    ScrapeProgressPayload {
+                        progress: 100.0,
+                        status: "failed".to_string(),
                         message: format!("Failed to acquire browser session: {}", e),
                     },
                 );
