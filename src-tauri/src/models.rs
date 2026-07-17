@@ -33,3 +33,21 @@ pub struct Deal {
     pub stage: String,
     pub created_at: String,
 }
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OutreachTemplate {
+    pub id: Option<i32>,
+    pub name: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ZaloSession {
+    pub imei: String,
+    pub user_agent: String,
+    pub cookies_json: String,
+    pub language: String,
+}

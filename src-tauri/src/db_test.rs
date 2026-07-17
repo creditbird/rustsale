@@ -13,6 +13,8 @@ mod tests {
         assert!(tables.contains(&"leads".to_string()));
         assert!(tables.contains(&"activities".to_string()));
         assert!(tables.contains(&"deals".to_string()));
+        assert!(tables.contains(&"zalo_sessions".to_string()));
+        assert!(tables.contains(&"outreach_templates".to_string()));
     }
 
     #[test]
@@ -34,5 +36,47 @@ mod tests {
         // Verify activities
         let activity_count: i64 = conn.query_row("SELECT COUNT(*) FROM activities", [], |row| row.get(0)).unwrap();
         assert_eq!(activity_count, 1);
+    }
+
+    #[test]
+    fn test_zalo_sessions_and_templates_operations() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // Test inserting a Zalo session
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language) VALUES (?, ?, ?, ?)",
+            [
+                "123456789012345",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "[]",
+                "vi",
+            ],
+        ).unwrap();
+
+        // Verify session retrieval
+        let imei: String = conn.query_row(
+            "SELECT imei FROM zalo_sessions WHERE language = 'vi'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(imei, "123456789012345");
+
+        // Test inserting an outreach template
+        conn.execute(
+            "INSERT INTO outreach_templates (name, content, created_at) VALUES (?, ?, ?)",
+            [
+                "Welcome Template",
+                "Hello, {{name}}!",
+                "2026-07-17T20:00:00Z",
+            ],
+        ).unwrap();
+
+        // Verify template retrieval
+        let content: String = conn.query_row(
+            "SELECT content FROM outreach_templates WHERE name = 'Welcome Template'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(content, "Hello, {{name}}!");
     }
 }

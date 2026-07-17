@@ -46,6 +46,26 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS zalo_sessions (
+            imei TEXT PRIMARY KEY,
+            user_agent TEXT NOT NULL,
+            cookies_json TEXT NOT NULL,
+            language TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS outreach_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
     Ok(conn)
 }
 
