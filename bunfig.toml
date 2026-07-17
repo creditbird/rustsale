@@ -1,0 +1,5 @@
+[resolve]
+conditions = ["browser"]
+
+[test]
+preload = ["./src/lib/components/__tests__/setup.ts"]
