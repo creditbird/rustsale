@@ -24,7 +24,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         "CREATE TABLE IF NOT EXISTS activities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             lead_id INTEGER NOT NULL,
-            type TEXT NOT NULL,
+            activity_type TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL,
             performed_by TEXT NOT NULL,
@@ -68,7 +68,7 @@ pub fn seed_data(conn: &mut Connection) -> Result<()> {
             [],
         )?;
         tx.execute(
-            "INSERT INTO activities (lead_id, type, content, created_at, performed_by) VALUES 
+            "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by) VALUES 
              (1, 'Email', 'Initial discovery email sent.', '2026-07-15T10:00:00Z', 'Alex Rivera')",
             [],
         )?;

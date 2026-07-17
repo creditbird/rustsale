@@ -11,7 +11,7 @@ pub struct Lead {
     pub owner: String,
     pub email: String,
     pub phone: String,
-    pub about: String,
+    pub about: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
