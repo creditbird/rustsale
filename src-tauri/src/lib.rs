@@ -33,6 +33,15 @@ pub fn run() {
             app.manage(commands::DbState {
                 conn: std::sync::Mutex::new(conn),
             });
+
+            let browser_manager = std::sync::Arc::new(
+                scrapers::browser::BrowserManager::new(2).with_port(9222)
+            );
+            app.manage(commands::BrowserState {
+                manager: browser_manager,
+                start_lock: tokio::sync::Mutex::new(()),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -46,7 +55,8 @@ pub fn run() {
             commands::get_activities,
             commands::add_activity,
             commands::update_lead,
-            commands::delete_lead
+            commands::delete_lead,
+            commands::start_google_maps_scrape
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

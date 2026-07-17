@@ -225,3 +225,323 @@ pub fn add_activity_internal(
     tx.commit().map_err(|e| format!("Database transaction commit error: {}", e))?;
     Ok(())
 }
+
+#[tauri::command]
+pub fn update_lead(
+    id: i32,
+    name: String,
+    company: String,
+    status: String,
+    value: f64,
+    owner: String,
+    email: String,
+    phone: String,
+    about: Option<String>,
+    state: tauri::State<DbState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| format!("Database lock error: {}", e))?;
+    conn.execute(
+        "UPDATE leads SET name = ?1, company = ?2, status = ?3, value = ?4, owner = ?5, email = ?6, phone = ?7, about = ?8 WHERE id = ?9",
+        rusqlite::params![name, company, status, value, owner, email, phone, about, id],
+    ).map_err(|e| format!("Database query error: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_lead(id: i32, state: tauri::State<DbState>) -> Result<(), String> {
+    let mut conn = state.conn.lock().map_err(|e| format!("Database lock error: {}", e))?;
+    let tx = conn.transaction().map_err(|e| format!("Database transaction error: {}", e))?;
+    
+    tx.execute("DELETE FROM activities WHERE lead_id = ?1", [id])
+        .map_err(|e| format!("Database query error: {}", e))?;
+        
+    tx.execute("DELETE FROM deals WHERE lead_id = ?1", [id])
+        .map_err(|e| format!("Database query error: {}", e))?;
+        
+    tx.execute("DELETE FROM leads WHERE id = ?1", [id])
+        .map_err(|e| format!("Database query error: {}", e))?;
+        
+    tx.commit().map_err(|e| format!("Database transaction commit error: {}", e))?;
+    Ok(())
+}
+
+use crate::scrapers::browser::BrowserManager;
+use tauri::Emitter;
+use tauri::Manager;
+
+pub struct BrowserState {
+    pub manager: std::sync::Arc<BrowserManager>,
+    pub start_lock: tokio::sync::Mutex<()>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ScrapeProgressPayload {
+    pub progress: f64,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ScrapeLogPayload {
+    pub message: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ScrapeCompletePayload {
+    pub total_scraped: usize,
+    pub message: String,
+}
+
+
+pub async fn run_google_maps_scrape_task(
+    app_handle: Option<&tauri::AppHandle>,
+    conn_mutex: &std::sync::Mutex<Connection>,
+    _manager: std::sync::Arc<BrowserManager>,
+    scraper: crate::scrapers::google_maps::GoogleMapsScraper,
+    keyword: String,
+    mode: String,
+    location: Option<String>,
+    bbox: Option<[f64; 4]>,
+    step_km: Option<f64>,
+) -> Result<(), String> {
+    let final_businesses = if mode == "grid" {
+        let bbox_arr = match bbox {
+            Some(b) => b,
+            None => {
+                if let Some(app) = app_handle {
+                    let _ = app.emit("scrape-log", ScrapeLogPayload {
+                        message: "Error: Bounding box is required for grid mode".to_string()
+                    });
+                }
+                return Err("Bounding box is required for grid mode".to_string());
+            }
+        };
+        let step = step_km.unwrap_or(2.0);
+        
+        let grid_bbox = crate::scrapers::grid::BoundingBox {
+            lat_min: bbox_arr[0],
+            lat_max: bbox_arr[1],
+            lng_min: bbox_arr[2],
+            lng_max: bbox_arr[3],
+        };
+        
+        let initial_cells = crate::scrapers::grid::generate_grid(grid_bbox, step);
+        let grid_scraper = crate::scrapers::grid::GridScraper::new(scraper);
+        
+        let app_clone = app_handle.map(|a| a.clone());
+        let scrape_res = grid_scraper.search_grid(&keyword, initial_cells, move |_cell, processed, total, msg| {
+            if let Some(app) = &app_clone {
+                let progress_percent = if total > 0 {
+                    (processed as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let _ = app.emit("scrape-progress", ScrapeProgressPayload {
+                    progress: progress_percent,
+                    status: "running".to_string(),
+                    message: msg.to_string(),
+                });
+                let _ = app.emit("scrape-log", ScrapeLogPayload {
+                    message: msg.to_string(),
+                });
+            }
+        }).await;
+        
+        match scrape_res {
+            Ok(res) => res,
+            Err(e) => {
+                if let Some(app) = app_handle {
+                    let _ = app.emit("scrape-log", ScrapeLogPayload {
+                        message: format!("Grid scraping failed: {}", e)
+                    });
+                }
+                return Err(format!("Grid scraping failed: {}", e));
+            }
+        }
+    } else {
+        // Text mode
+        let loc_str = location.as_deref();
+        if let Some(app) = app_handle {
+            let _ = app.emit("scrape-progress", ScrapeProgressPayload {
+                progress: 10.0,
+                status: "running".to_string(),
+                message: format!("Searching for '{}' in '{:?}'", keyword, location),
+            });
+            let _ = app.emit("scrape-log", ScrapeLogPayload {
+                message: format!("Navigating to Google Maps search page for '{}'...", keyword),
+            });
+        }
+        
+        match scraper.search(&keyword, loc_str).await {
+            Ok(res) => {
+                if let Some(app) = app_handle {
+                    let _ = app.emit("scrape-progress", ScrapeProgressPayload {
+                        progress: 80.0,
+                        status: "running".to_string(),
+                        message: format!("Search completed. Extracted {} businesses.", res.len()),
+                    });
+                }
+                res
+            }
+            Err(e) => {
+                if let Some(app) = app_handle {
+                    let _ = app.emit("scrape-log", ScrapeLogPayload {
+                        message: format!("Search scraping failed: {}", e)
+                    });
+                }
+                return Err(format!("Search scraping failed: {}", e));
+            }
+        }
+    };
+
+    // 3. Write all extracted businesses to the SQLite database
+    let inserted_count = {
+        let conn_guard = conn_mutex.lock();
+        match conn_guard {
+            Ok(conn) => {
+                let mut count = 0;
+                let now: String = conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| row.get(0)).unwrap_or_else(|_| "".to_string());
+                
+                for biz in &final_businesses {
+                    let exists: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM leads WHERE phone = ?1",
+                        [&biz.phone],
+                        |row| row.get(0)
+                    ).unwrap_or(0);
+                    
+                    if exists > 0 {
+                        continue;
+                    }
+
+                    let mut about_parts = Vec::new();
+                    if let Some(addr) = &biz.address {
+                        about_parts.push(format!("Address: {}", addr));
+                    }
+                    if let Some(web) = &biz.website {
+                        about_parts.push(format!("Website: {}", web));
+                    }
+                    if let Some(fb) = &biz.facebook {
+                        about_parts.push(format!("Facebook: {}", fb));
+                    }
+                    if let Some(zalo) = &biz.zalo {
+                        about_parts.push(format!("Zalo: {}", zalo));
+                    }
+                    let about_str = if about_parts.is_empty() {
+                        None
+                    } else {
+                        Some(about_parts.join("\n"))
+                    };
+
+                    let insert_res = conn.execute(
+                        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about) 
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        rusqlite::params![
+                            biz.name,
+                            biz.name,
+                            "New",
+                            0.0,
+                            &now,
+                            "System",
+                            "",
+                            biz.phone,
+                            about_str
+                        ]
+                    );
+                    if insert_res.is_ok() {
+                        count += 1;
+                    }
+                }
+                count
+            }
+            Err(e) => {
+                if let Some(app) = app_handle {
+                    let _ = app.emit("scrape-log", ScrapeLogPayload {
+                        message: format!("Failed to lock database: {}", e)
+                    });
+                }
+                return Err(format!("Failed to lock database: {}", e));
+            }
+        }
+    };
+
+    // 4. Emit complete event
+    let msg = format!("Scrape complete! {} new leads added out of {} unique scraped businesses.", inserted_count, final_businesses.len());
+    if let Some(app) = app_handle {
+        let _ = app.emit("scrape-progress", ScrapeProgressPayload {
+            progress: 100.0,
+            status: "completed".to_string(),
+            message: msg.clone(),
+        });
+        let _ = app.emit("scrape-log", ScrapeLogPayload {
+            message: msg.clone(),
+        });
+        let _ = app.emit("scrape-complete", ScrapeCompletePayload {
+            total_scraped: inserted_count,
+            message: msg,
+        });
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn start_google_maps_scrape(
+    app_handle: tauri::AppHandle,
+    keyword: String,
+    mode: String,
+    location: Option<String>,
+    bbox: Option<[f64; 4]>,
+    step_km: Option<f64>,
+) -> Result<(), String> {
+    let app_handle_clone = app_handle.clone();
+    
+    tokio::spawn(async move {
+        let db_state = app_handle_clone.state::<DbState>();
+        let browser_state = app_handle_clone.state::<BrowserState>();
+
+        let manager = browser_state.manager.clone();
+        
+        let _ = app_handle_clone.emit("scrape-log", ScrapeLogPayload {
+            message: "Starting browser...".to_string()
+        });
+
+        // 1. Start browser if not running
+        {
+            let _guard = browser_state.start_lock.lock().await;
+            if manager.process_id().await.is_none() {
+                if let Err(e) = manager.start(true).await {
+                    let _ = app_handle_clone.emit("scrape-log", ScrapeLogPayload {
+                        message: format!("Failed to start browser: {}", e)
+                    });
+                    return;
+                }
+            }
+        }
+
+        // 2. Acquire session
+        let session = match manager.acquire().await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = app_handle_clone.emit("scrape-log", ScrapeLogPayload {
+                    message: format!("Failed to acquire browser session: {}", e)
+                });
+                return;
+            }
+        };
+
+        let scraper = crate::scrapers::google_maps::GoogleMapsScraper::new(session);
+        let _ = run_google_maps_scrape_task(
+            Some(&app_handle_clone),
+            &db_state.conn,
+            manager,
+            scraper,
+            keyword,
+            mode,
+            location,
+            bbox,
+            step_km,
+        ).await;
+    });
+
+    Ok(())
+}
