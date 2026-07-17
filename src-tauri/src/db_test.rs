@@ -17,7 +17,8 @@ mod tests {
 
     #[test]
     fn test_db_seeding() {
-        let conn = db::init_db(":memory:").expect("Failed to init db");
+        let mut conn = db::init_db(":memory:").expect("Failed to init db");
+        db::seed_data(&mut conn).expect("Failed to seed db");
 
         // Verify leads
         let lead_count: i64 = conn.query_row("SELECT COUNT(*) FROM leads", [], |row| row.get(0)).unwrap();

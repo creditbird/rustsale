@@ -14,7 +14,10 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let conn = db::init_db("rustsale.db").expect("Failed to initialize database");
+    let mut conn = db::init_db("rustsale.db").expect("Failed to initialize database");
+
+    #[cfg(debug_assertions)]
+    db::seed_data(&mut conn).expect("Failed to seed database");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

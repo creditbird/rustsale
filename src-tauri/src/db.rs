@@ -1,7 +1,7 @@
 use rusqlite::{Connection, Result};
 
 pub fn init_db(db_path: &str) -> Result<Connection> {
-    let mut conn = Connection::open(db_path)?;
+    let conn = Connection::open(db_path)?;
     conn.execute("PRAGMA foreign_keys = ON;", [])?;
     
     conn.execute(
@@ -45,8 +45,6 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         )",
         [],
     )?;
-
-    seed_data(&mut conn)?;
 
     Ok(conn)
 }

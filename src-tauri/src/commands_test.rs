@@ -6,6 +6,7 @@ mod tests {
     #[test]
     fn test_crm_commands() {
         let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
 
         // Test get_leads_internal
         let leads = commands::get_leads_internal(&conn).unwrap();
