@@ -32,6 +32,34 @@
   let geocodeQuery = $state('');
   let isGeocoding = $state(false);
 
+  // Deep Scan states
+  let deepScan = $state(false);
+  let selectedCity = $state<'hcm' | 'hanoi'>('hcm');
+  let selectedDistricts = $state<string[]>([]);
+
+  const CITY_DISTRICTS = {
+    hcm: [
+      'Quận 1', 'Quận 3', 'Quận 4', 'Quận 5', 'Quận 6', 'Quận 7', 'Quận 8', 'Quận 10', 'Quận 11', 'Quận 12',
+      'Quận Bình Thạnh', 'Quận Gò Vấp', 'Quận Phú Nhuận', 'Quận Tân Bình', 'Quận Tân Phú', 'Quận Bình Tân',
+      'Thành phố Thủ Đức', 'Huyện Hóc Môn', 'Huyện Củ Chi', 'Huyện Bình Chánh', 'Huyện Nhà Bè', 'Huyện Cần Giờ'
+    ],
+    hanoi: [
+      'Quận Ba Đình', 'Quận Hoàn Kiếm', 'Quận Tây Hồ', 'Quận Long Biên', 'Quận Cầu Giấy', 'Quận Đống Đa',
+      'Quận Hai Bà Trưng', 'Quận Hoàng Mai', 'Quận Thanh Xuân', 'Huyện Sóc Sơn', 'Huyện Đông Anh', 'Huyện Gia Lâm',
+      'Quận Nam Từ Liêm', 'Huyện Thanh Trì', 'Quận Bắc Từ Liêm', 'Huyện Mê Linh', 'Quận Hà Đông', 'Thị xã Sơn Tây',
+      'Huyện Ba Vì', 'Huyện Phúc Thọ', 'Huyện Đan Phượng', 'Huyện Hoài Đức', 'Huyện Quốc Oai', 'Huyện Thạch Thất',
+      'Huyện Chương Mỹ', 'Huyện Thanh Oai', 'Huyện Thường Tín', 'Huyện Phú Xuyên', 'Huyện Ứng Hòa', 'Huyện Mỹ Đức'
+    ]
+  };
+
+  function selectAllDistricts() {
+    selectedDistricts = [...CITY_DISTRICTS[selectedCity]];
+  }
+
+  function deselectAllDistricts() {
+    selectedDistricts = [];
+  }
+
   async function detectCoordinates() {
     if (!geocodeQuery.trim()) {
       appendLog("Error: Please enter a region or address to search.");
@@ -128,16 +156,30 @@
       }
     }
 
+    // If deepScan is true and we selected some districts, validate
+    let districtsVal: string[] | null = null;
+    let locationVal = mode === 'keyword' ? location : null;
+    if (mode === 'keyword' && deepScan) {
+      if (selectedDistricts.length === 0) {
+        appendLog("Error: Please select at least one district for Deep Scan.");
+        return;
+      }
+      districtsVal = selectedDistricts;
+      locationVal = selectedCity === 'hcm' ? 'Hồ Chí Minh' : 'Hà Nội';
+    }
+
     isScraping = true;
     progress = 0;
     statusMessage = 'Initializing scrape...';
     logs = [];
     appendLog(`Starting Google Maps Scraper in ${mode} mode...`);
     appendLog(`Keyword: "${keyword}"`);
+    if (deepScan && districtsVal) {
+      appendLog(`Deep Scan active for city: ${locationVal} (${districtsVal.length} districts selected)`);
+    }
 
     try {
       const bbox = mode === 'grid' ? [Number(minLat), Number(maxLat), Number(minLng), Number(maxLng)] : null;
-      const locationVal = mode === 'keyword' ? location : null;
       const stepVal = mode === 'grid' ? Number(stepKm) : null;
 
       await invoke('start_google_maps_scrape', {
@@ -145,7 +187,8 @@
         mode,
         location: locationVal,
         bbox,
-        stepKm: stepVal
+        stepKm: stepVal,
+        districts: districtsVal
       });
       appendLog('Tauri scrape command invoked successfully. Awaiting browser startup...');
     } catch (err) {
@@ -243,19 +286,83 @@
         </div>
 
         {#if mode === 'keyword'}
-          <div class="input-group animate-slide-down">
-            <label for="location-input">Location / Area</label>
-            <div class="input-wrapper">
-              <span class="material-icons input-icon">place</span>
-              <input 
-                id="location-input"
-                type="text" 
-                bind:value={location} 
-                placeholder="e.g. Quận 1, Ho Chi Minh City" 
-                disabled={isScraping} 
-              />
+          {#if !deepScan}
+            <div class="input-group animate-slide-down">
+              <label for="location-input">Location / Area</label>
+              <div class="input-wrapper">
+                <span class="material-icons input-icon">place</span>
+                <input 
+                  id="location-input"
+                  type="text" 
+                  bind:value={location} 
+                  placeholder="e.g. Quận 1, Ho Chi Minh City" 
+                  disabled={isScraping} 
+                />
+              </div>
+              <p class="input-desc">Focuses search on a specific neighborhood or town name.</p>
             </div>
-            <p class="input-desc">Focuses search on a specific neighborhood or town name.</p>
+          {:else}
+            <!-- Deep Scan Configuration -->
+            <div class="deep-scan-config animate-slide-down">
+              <div class="input-group">
+                <label for="deep-city-select">Target City</label>
+                <select 
+                  id="deep-city-select" 
+                  bind:value={selectedCity} 
+                  disabled={isScraping}
+                  onchange={() => selectedDistricts = []}
+                >
+                  <option value="hcm">TP. Hồ Chí Minh</option>
+                  <option value="hanoi">Hà Nội</option>
+                </select>
+              </div>
+
+              <div class="input-group" style="margin-top: var(--spacing-sm);">
+                <div class="districts-header">
+                  <label for="geocode-query">Select Districts to Scan ({selectedDistricts.length} selected)</label>
+                  <div class="districts-actions">
+                    <button type="button" class="btn-text" onclick={selectAllDistricts} disabled={isScraping}>Select All</button>
+                    <span class="divider">|</span>
+                    <button type="button" class="btn-text" onclick={deselectAllDistricts} disabled={isScraping}>Clear</button>
+                  </div>
+                </div>
+                
+                <div class="districts-grid">
+                  {#each CITY_DISTRICTS[selectedCity] as district}
+                    <label class="district-checkbox-label">
+                      <input 
+                        type="checkbox" 
+                        value={district} 
+                        disabled={isScraping}
+                        checked={selectedDistricts.includes(district)}
+                        onchange={(e) => {
+                          const checked = (e.target as HTMLInputElement).checked;
+                          if (checked) {
+                            selectedDistricts = [...selectedDistricts, district];
+                          } else {
+                            selectedDistricts = selectedDistricts.filter(d => d !== district);
+                          }
+                        }}
+                      />
+                      <span>{district}</span>
+                    </label>
+                  {/each}
+                </div>
+              </div>
+            </div>
+          {/if}
+
+          <!-- Deep Scan Toggle -->
+          <div class="input-group" style="margin-block: var(--spacing-md) var(--spacing-sm);">
+            <label class="toggle-container" style="display: flex; align-items: center; gap: var(--spacing-xs); cursor: pointer; font-size: 13px; font-weight: 600; color: var(--color-on-surface);">
+              <input 
+                type="checkbox" 
+                bind:checked={deepScan} 
+                disabled={isScraping}
+              />
+              <span>Run Deep Scan (Sequential District Search)</span>
+            </label>
+            <p class="input-desc">Highly recommended for city-wide crawls. Sequentially searches district-by-district to bypass Google's 120-listing limit safely.</p>
           </div>
           {:else}
           <div class="grid-inputs animate-slide-down">

@@ -376,6 +376,7 @@ pub async fn run_google_maps_scrape_task(
     location: Option<String>,
     bbox: Option<[f64; 4]>,
     step_km: Option<f64>,
+    districts: Option<Vec<String>>,
 ) -> Result<(), String> {
     let final_businesses = if mode == "grid" {
         let bbox_arr = match bbox {
@@ -449,6 +450,79 @@ pub async fn run_google_maps_scrape_task(
                 return Err(format!("Grid scraping failed: {}", e));
             }
         }
+    } else if let Some(districts_list) = districts {
+        // Text mode with Deep Scan (Districts)
+        let total_districts = districts_list.len();
+        let mut all_results = Vec::new();
+        let mut seen_phones = std::collections::HashSet::new();
+        let base_loc = location.clone().unwrap_or_else(|| "Vietnam".to_string());
+
+        for (idx, district) in districts_list.iter().enumerate() {
+            let combined_loc = format!("{}, {}", district, base_loc);
+            
+            if let Some(app) = app_handle {
+                let progress_val = (idx as f64 / total_districts as f64) * 70.0 + 10.0;
+                let _ = app.emit(
+                    "scrape-progress",
+                    ScrapeProgressPayload {
+                        progress: progress_val,
+                        status: "running".to_string(),
+                        message: format!(
+                            "Deep Scan: Searching in {} ({}/{})",
+                            district,
+                            idx + 1,
+                            total_districts
+                        ),
+                    },
+                );
+                let _ = app.emit(
+                    "scrape-log",
+                    ScrapeLogPayload {
+                        message: format!("Searching for '{}' in '{}'...", keyword, combined_loc),
+                    },
+                );
+            }
+
+            match scraper.search(&keyword, Some(&combined_loc)).await {
+                Ok(res) => {
+                    let mut new_count = 0;
+                    for biz in res {
+                        if !biz.phone.trim().is_empty() {
+                            if seen_phones.insert(biz.phone.clone()) {
+                                all_results.push(biz);
+                                new_count += 1;
+                            }
+                        } else {
+                            all_results.push(biz);
+                        }
+                    }
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "scrape-log",
+                            ScrapeLogPayload {
+                                message: format!("District '{}' scan finished: found {} businesses ({} new).", district, all_results.len(), new_count),
+                            },
+                        );
+                    }
+                }
+                Err(e) => {
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "scrape-log",
+                            ScrapeLogPayload {
+                                message: format!("Failed to search in district '{}': {}. Continuing to next district...", district, e),
+                            },
+                        );
+                    }
+                }
+            }
+
+            // Sleep a small duration to be polite and avoid Google rate limit blocks
+            if idx + 1 < total_districts {
+                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+            }
+        }
+        all_results
     } else {
         // Text mode
         let loc_str = location.as_deref();
@@ -623,6 +697,7 @@ pub async fn start_google_maps_scrape(
     location: Option<String>,
     bbox: Option<[f64; 4]>,
     step_km: Option<f64>,
+    districts: Option<Vec<String>>,
 ) -> Result<(), String> {
     let app_handle_clone = app_handle.clone();
 
@@ -680,6 +755,7 @@ pub async fn start_google_maps_scrape(
             location,
             bbox,
             step_km,
+            districts,
         )
         .await;
     });
