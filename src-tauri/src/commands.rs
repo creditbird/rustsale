@@ -616,7 +616,7 @@ pub async fn run_google_maps_scrape_task(
 }
 
 #[tauri::command]
-pub fn start_google_maps_scrape(
+pub async fn start_google_maps_scrape(
     app_handle: tauri::AppHandle,
     keyword: String,
     mode: String,
@@ -706,9 +706,9 @@ pub struct ZaloQRSuccessPayload {
 }
 
 #[tauri::command]
-pub fn start_zalo_qr_login(
+pub async fn start_zalo_qr_login(
     app_handle: tauri::AppHandle,
-    _state: tauri::State<DbState>,
+    _state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
     let app_handle_clone = app_handle.clone();
 
@@ -921,7 +921,7 @@ pub fn delete_outreach_template(id: i32, state: tauri::State<DbState>) -> Result
 }
 
 #[tauri::command]
-pub fn send_zalo_outreach(
+pub async fn send_zalo_outreach(
     app_handle: tauri::AppHandle,
     imei: String,
     lead_ids: Vec<i32>,
