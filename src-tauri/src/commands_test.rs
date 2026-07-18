@@ -555,4 +555,119 @@ mod tests {
         let category_leads3 = commands::get_leads_by_category(state.clone(), category_id).unwrap();
         assert!(category_leads3.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_send_zalo_campaign_mock() {
+        use std::sync::Mutex;
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        let template_id =
+            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!").unwrap();
+
+        let category_id = db::create_category(&conn, "Campaign Category").unwrap();
+
+        let lead_1 = commands::add_lead_internal(
+            &mut conn,
+            "Valid Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "0912345678".to_string(),
+            None,
+            None,
+        ).unwrap();
+
+        let lead_2 = commands::add_lead_internal(
+            &mut conn,
+            "Missing Phone Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "".to_string(),
+            None,
+            None,
+        ).unwrap();
+
+        let lead_3 = commands::add_lead_internal(
+            &mut conn,
+            "Not Found Zalo Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "not-found".to_string(),
+            None,
+            None,
+        ).unwrap();
+        
+        let lead_4 = commands::add_lead_internal(
+            &mut conn,
+            "Mock Cached Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "0987654321".to_string(),
+            None,
+            None,
+        ).unwrap();
+        
+        // Add all to category
+        db::add_lead_to_category(&conn, lead_1, category_id).unwrap();
+        db::add_lead_to_category(&conn, lead_2, category_id).unwrap();
+        db::add_lead_to_category(&conn, lead_3, category_id).unwrap();
+        db::add_lead_to_category(&conn, lead_4, category_id).unwrap();
+        
+        // Manually set cached uid for lead 4
+        conn.execute("UPDATE leads SET zalo_uid = 'cached-123' WHERE id = ?1", [lead_4]).unwrap();
+
+        let db_mutex = Mutex::new(conn);
+
+        let session_imeis = vec!["mock-fail-imei".to_string(), "mock-success-imei".to_string()];
+
+        let res = commands::send_zalo_campaign_internal(
+            None,
+            &db_mutex,
+            category_id,
+            template_id,
+            session_imeis,
+        )
+        .await;
+
+        assert!(res.is_ok());
+
+        let conn_locked = db_mutex.lock().unwrap();
+
+        // Lead 1: valid phone, not cached. 
+        // 1st iteration uses active_index 0 ("mock-fail-imei") -> send fails, session rotated to 1.
+        let l1 = commands::get_lead_details_internal(&conn_locked, lead_1).unwrap();
+        assert_eq!(l1.zalo_reached, 0);
+        let h1: i64 = conn_locked.query_row("SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'FAILED'", [lead_1], |row| row.get(0)).unwrap();
+        assert_eq!(h1, 1);
+
+        // Lead 2: missing phone, skipped early.
+        let l2 = commands::get_lead_details_internal(&conn_locked, lead_2).unwrap();
+        assert_eq!(l2.zalo_reached, 0);
+
+        // Lead 3: not found. 
+        // 2nd iteration uses active_index 1 ("mock-success-imei")
+        // But lookup fails.
+        let l3 = commands::get_lead_details_internal(&conn_locked, lead_3).unwrap();
+        assert_eq!(l3.has_zalo, Some(0));
+        assert_eq!(l3.zalo_reached, 0);
+
+        // Lead 4: cached uid.
+        // 3rd iteration uses active_index 1 ("mock-success-imei") -> success.
+        let l4 = commands::get_lead_details_internal(&conn_locked, lead_4).unwrap();
+        assert_eq!(l4.zalo_reached, 1);
+        let h4: i64 = conn_locked.query_row("SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'SUCCESS'", [lead_4], |row| row.get(0)).unwrap();
+        assert_eq!(h4, 1);
+    }
 }

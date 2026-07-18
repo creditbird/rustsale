@@ -77,7 +77,8 @@ pub fn run() {
             commands::delete_category,
             commands::add_leads_to_category,
             commands::remove_leads_from_category,
-            commands::get_leads_by_category
+            commands::get_leads_by_category,
+            commands::send_zalo_campaign
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
