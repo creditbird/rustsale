@@ -154,3 +154,16 @@ export async function removeLeadsFromCategory(leadIds: number[], categoryId: num
 export async function getLeadsByCategory(categoryId: number): Promise<Lead[]> {
   return invoke<Lead[]>('get_leads_by_category', { categoryId });
 }
+
+export async function getCampaignLeads(
+  categoryId: number,
+  segmentation: string,
+  filterTemplateId?: number | null
+): Promise<Lead[]> {
+  return invoke<Lead[]>('get_campaign_leads', {
+    categoryId,
+    segmentation,
+    filterTemplateId: filterTemplateId ?? null
+  });
+}
+

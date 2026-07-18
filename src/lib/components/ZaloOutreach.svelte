@@ -25,9 +25,17 @@
   let leadSearchQuery = $state('');
 
   // Selected campaign parameters
-  let selectedImei = $state('');
+  let selectedImeis = $state<string[]>([]);
   let selectedTemplateId = $state<number | null>(null);
   let selectedLeadIds = $state<number[]>([]);
+
+  // Category and Segmentation targeting
+  import { getCategories, getCampaignLeads, type Category } from '$lib/services/crmService';
+  let categories = $state<Category[]>([]);
+  let selectedCategoryId = $state<number | null>(null);
+  let segmentationFilter = $state('all');
+  let filterTemplateId = $state<number | null>(null);
+
 
   // QR Modal flow states
   let isQrModalOpen = $state(false);
@@ -72,8 +80,8 @@
   async function loadSessions() {
     try {
       sessions = await invoke<ZaloSession[]>('get_zalo_sessions');
-      if (sessions.length > 0 && !selectedImei) {
-        selectedImei = sessions[0].imei;
+      if (sessions.length > 0 && selectedImeis.length === 0) {
+        selectedImeis = [sessions[0].imei];
       }
     } catch (e) {
       console.error('Error loading Zalo sessions:', e);
@@ -99,7 +107,33 @@
     }
   }
 
+  
+  async function loadCategories() {
+    try {
+      categories = await getCategories();
+    } catch (e) {
+      console.error('Error loading categories:', e);
+    }
+  }
+
+  
+  $effect(() => {
+    if (selectedCategoryId !== null) {
+      getCampaignLeads(selectedCategoryId, segmentationFilter, filterTemplateId)
+        .then(res => {
+          leads = res;
+        })
+        .catch(err => {
+          console.error('Error fetching campaign leads', err);
+          leads = [];
+        });
+    } else {
+      leads = [];
+    }
+  });
+
   onMount(() => {
+    loadCategories();
     loadSessions();
     loadTemplates();
     loadLeadsData();
@@ -194,9 +228,7 @@
     if (!confirm('Are you sure you want to log out and delete this session?')) return;
     try {
       await invoke('delete_zalo_session', { imei });
-      if (selectedImei === imei) {
-        selectedImei = '';
-      }
+      selectedImeis = selectedImeis.filter(i => i !== imei);
       await loadSessions();
     } catch (e) {
       alert(`Failed to delete session: ${e}`);
@@ -354,8 +386,12 @@
   }
 
   async function startCampaign() {
-    if (!selectedImei) {
-      alert('Please select an active Zalo session first.');
+    if (selectedImeis.length === 0) {
+      alert('Please select at least one active Zalo session first.');
+      return;
+    }
+    if (selectedCategoryId === null) {
+      alert('Please select a target category first.');
       return;
     }
     if (selectedTemplateId === null) {
@@ -377,7 +413,7 @@
 
     try {
       const progressUnlisten = await listen<{ progress: number; status: string; message: string }>(
-        'outreach-progress',
+        'campaign-progress',
         (event) => {
           campaignProgress = event.payload.progress;
           campaignStatus = event.payload.message;
@@ -389,12 +425,12 @@
       );
       campaignUnlistens.push(progressUnlisten);
 
-      const logUnlisten = await listen<{ message: string }>('outreach-log', (event) => {
+      const logUnlisten = await listen<{ message: string }>('campaign-log', (event) => {
         appendCampaignLog(event.payload.message);
       });
       campaignUnlistens.push(logUnlisten);
 
-      const completeUnlisten = await listen<{ total_sent: number; message: string }>('outreach-complete', (event) => {
+      const completeUnlisten = await listen<{ total_sent: number; message: string }>('campaign-complete', (event) => {
         isCampaignRunning = false;
         campaignProgress = 100;
         campaignStatus = event.payload.message;
@@ -403,9 +439,9 @@
       });
       campaignUnlistens.push(completeUnlisten);
 
-      await invoke('send_zalo_outreach', {
-        imei: selectedImei,
-        leadIds: selectedLeadIds,
+      await invoke('send_zalo_campaign', {
+        categoryId: selectedCategoryId,
+        sessionImeis: selectedImeis,
         templateId: selectedTemplateId
       });
       appendCampaignLog('Outreach campaign invoked successfully.');
@@ -448,8 +484,8 @@
             </div>
           {:else}
             {#each sessions as s}
-              <div class="session-item" class:selected={selectedImei === s.imei}>
-                <button type="button" class="session-info" onclick={() => selectedImei = s.imei}>
+              <div class="session-item" class:selected={selectedImeis.includes(s.imei)}>
+                <button type="button" class="session-info" onclick={() => { if (selectedImeis.includes(s.imei)) selectedImeis = selectedImeis.filter(i => i !== s.imei); else selectedImeis = [...selectedImeis, s.imei]; }}>
                   <span class="material-icons status-icon active">check_circle</span>
                   <span class="session-details">
                     <span class="session-name">IMEI: {s.imei}</span>
@@ -511,18 +547,57 @@
         </div>
 
         <div class="campaign-form">
-          <!-- Step 1: Select Session -->
+          <!-- Step 1: Select Session(s) -->
           <div class="input-group">
-            <label for="campaign-session">Step 1: Select Active Zalo Session</label>
+            <label>Step 1: Select Active Zalo Session(s)</label>
+            <div class="checkbox-group" style="display: flex; gap: 10px; flex-wrap: wrap;">
+              {#each sessions as s}
+                <label style="display: flex; align-items: center; gap: 5px;">
+                  <input type="checkbox" value={s.imei} bind:group={selectedImeis} disabled={isCampaignRunning} />
+                  IMEI: {s.imei}
+                </label>
+              {/each}
+            </div>
+          </div>
+          
+          <!-- Category Selection -->
+          <div class="input-group">
+            <label for="campaign-category">Target Category</label>
             <div class="select-wrapper">
-              <select id="campaign-session" bind:value={selectedImei} disabled={isCampaignRunning}>
-                <option value="" disabled>-- Choose Session --</option>
-                {#each sessions as s}
-                  <option value={s.imei}>IMEI: {s.imei}</option>
+              <select id="campaign-category" bind:value={selectedCategoryId} disabled={isCampaignRunning}>
+                <option value={null} disabled>-- Choose Category --</option>
+                {#each categories as cat}
+                  <option value={cat.id}>{cat.name}</option>
                 {/each}
               </select>
             </div>
           </div>
+          
+          <!-- Segmentation Filters -->
+          <div class="input-group">
+            <label>Campaign Segmentation Filter</label>
+            <div class="radio-group" style="display: flex; flex-direction: column; gap: 5px;">
+              <label><input type="radio" value="all" bind:group={segmentationFilter} disabled={isCampaignRunning} /> All Leads in Category</label>
+              <label><input type="radio" value="never_sent" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Never Sent Successfully</label>
+              <label><input type="radio" value="last_failed" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Last Attempt Failed</label>
+              <label><input type="radio" value="template_success" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Successful Template Match</label>
+            </div>
+          </div>
+          
+          {#if segmentationFilter === 'template_success'}
+          <div class="input-group" style="margin-left: 20px;">
+            <label for="filter-template">Filter by Success Template</label>
+            <div class="select-wrapper">
+              <select id="filter-template" bind:value={filterTemplateId} disabled={isCampaignRunning}>
+                <option value={null} disabled>-- Choose Template --</option>
+                {#each templates as t}
+                  <option value={t.id}>{t.name}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+          {/if}
+
 
           <!-- Step 2: Select Template -->
           <div class="input-group">
@@ -641,7 +716,7 @@
             type="button"
             class="start-campaign-btn" 
             onclick={startCampaign} 
-            disabled={isCampaignRunning || !selectedImei || selectedTemplateId === null || selectedLeadIds.length === 0}
+            disabled={isCampaignRunning || selectedImeis.length === 0 || selectedTemplateId === null || selectedCategoryId === null || selectedLeadIds.length === 0}
           >
             {#if isCampaignRunning}
               <span class="spinner"></span>
