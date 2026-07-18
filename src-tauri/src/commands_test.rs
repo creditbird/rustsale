@@ -487,27 +487,40 @@ mod tests {
         let initial_categories = commands::get_categories(state.clone()).unwrap();
         assert!(initial_categories.is_empty());
 
-        // 2. Create a category
+        // 2. Failure path: empty or whitespace category name should return an error
+        let res_empty = commands::create_category(state.clone(), "".to_string());
+        assert!(res_empty.is_err());
+        assert_eq!(res_empty.err().unwrap(), "Category name cannot be empty");
+
+        let res_whitespace = commands::create_category(state.clone(), "   ".to_string());
+        assert!(res_whitespace.is_err());
+        assert_eq!(res_whitespace.err().unwrap(), "Category name cannot be empty");
+
+        // 3. Create a valid category
         let category_id = commands::create_category(state.clone(), "Partners".to_string()).unwrap();
         assert!(category_id > 0);
 
-        // 3. Verify get_categories now returns the category
+        // 4. Verify get_categories now returns the category
         let categories2 = commands::get_categories(state.clone()).unwrap();
         assert_eq!(categories2.len(), 1);
         assert_eq!(categories2[0].name, "Partners");
         assert_eq!(categories2[0].id, Some(category_id));
 
-        // 4. Add leads to category (leads 1 and 2 exist in seed data)
+        // 5. Failure path: adding a non-existent lead ID (e.g. 99999) should return an error
+        let res_nonexistent = commands::add_leads_to_category(state.clone(), vec![99999], category_id);
+        assert!(res_nonexistent.is_err());
+
+        // 6. Add valid leads to category (leads 1 and 2 exist in seed data)
         let res_add = commands::add_leads_to_category(state.clone(), vec![1, 2], category_id);
         assert!(res_add.is_ok());
 
-        // 5. Verify get_leads_by_category returns 2 leads
+        // 7. Verify get_leads_by_category returns 2 leads
         let category_leads = commands::get_leads_by_category(state.clone(), category_id).unwrap();
         assert_eq!(category_leads.len(), 2);
         assert!(category_leads.iter().any(|l| l.name == "Sarah Harrington"));
         assert!(category_leads.iter().any(|l| l.name == "Jordan Smith"));
 
-        // 6. Remove lead 1 from category
+        // 8. Remove lead 1 from category
         let res_remove = commands::remove_leads_from_category(state.clone(), vec![1], category_id);
         assert!(res_remove.is_ok());
 
@@ -516,12 +529,30 @@ mod tests {
         assert_eq!(category_leads2.len(), 1);
         assert_eq!(category_leads2[0].name, "Jordan Smith");
 
-        // 7. Delete category
+        // 9. Delete category
         let res_delete = commands::delete_category(state.clone(), category_id);
         assert!(res_delete.is_ok());
 
         // Verify get_categories is empty again
         let final_categories = commands::get_categories(state.clone()).unwrap();
         assert!(final_categories.is_empty());
+
+        // Verify that deleting a category cleans up its join table entries (cascade delete worked)
+        // Query the join table directly
+        let join_count: i32 = {
+            let conn_guard = state.conn.lock().unwrap();
+            conn_guard
+                .query_row(
+                    "SELECT COUNT(*) FROM lead_categories WHERE category_id = ?1",
+                    [category_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(join_count, 0);
+
+        // Verify get_leads_by_category shows no association exists
+        let category_leads3 = commands::get_leads_by_category(state.clone(), category_id).unwrap();
+        assert!(category_leads3.is_empty());
     }
 }

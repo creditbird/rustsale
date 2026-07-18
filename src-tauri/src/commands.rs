@@ -1832,6 +1832,7 @@ pub async fn send_zalo_outreach_internal(
     Ok(())
 }
 
+/// Retrieves all categories from the database.
 #[tauri::command]
 pub fn get_categories(state: tauri::State<'_, DbState>) -> Result<Vec<Category>, String> {
     let conn = state
@@ -1841,8 +1842,14 @@ pub fn get_categories(state: tauri::State<'_, DbState>) -> Result<Vec<Category>,
     crate::db::get_categories(&conn).map_err(|e| format!("Database error: {}", e))
 }
 
+/// Creates a new category in the database.
+///
+/// Returns an error if the category name is empty or contains only whitespace.
 #[tauri::command]
 pub fn create_category(state: tauri::State<'_, DbState>, name: String) -> Result<i32, String> {
+    if name.trim().is_empty() {
+        return Err("Category name cannot be empty".to_string());
+    }
     let conn = state
         .conn
         .lock()
@@ -1850,6 +1857,7 @@ pub fn create_category(state: tauri::State<'_, DbState>, name: String) -> Result
     crate::db::create_category(&conn, &name).map_err(|e| format!("Database error: {}", e))
 }
 
+/// Deletes a category by its ID.
 #[tauri::command]
 pub fn delete_category(state: tauri::State<'_, DbState>, id: i32) -> Result<(), String> {
     let conn = state
@@ -1859,12 +1867,18 @@ pub fn delete_category(state: tauri::State<'_, DbState>, id: i32) -> Result<(), 
     crate::db::delete_category(&conn, id).map_err(|e| format!("Database error: {}", e))
 }
 
+/// Associates multiple leads with a category.
+///
+/// Returns early if the `lead_ids` list is empty.
 #[tauri::command]
 pub fn add_leads_to_category(
     state: tauri::State<'_, DbState>,
     lead_ids: Vec<i32>,
     category_id: i32,
 ) -> Result<(), String> {
+    if lead_ids.is_empty() {
+        return Ok(());
+    }
     let mut conn = state
         .conn
         .lock()
@@ -1883,12 +1897,18 @@ pub fn add_leads_to_category(
     Ok(())
 }
 
+/// Removes multiple leads from a category.
+///
+/// Returns early if the `lead_ids` list is empty.
 #[tauri::command]
 pub fn remove_leads_from_category(
     state: tauri::State<'_, DbState>,
     lead_ids: Vec<i32>,
     category_id: i32,
 ) -> Result<(), String> {
+    if lead_ids.is_empty() {
+        return Ok(());
+    }
     let mut conn = state
         .conn
         .lock()
@@ -1907,6 +1927,7 @@ pub fn remove_leads_from_category(
     Ok(())
 }
 
+/// Retrieves all leads associated with a specific category.
 #[tauri::command]
 pub fn get_leads_by_category(
     state: tauri::State<'_, DbState>,
