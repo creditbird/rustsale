@@ -125,24 +125,62 @@ impl GoogleMapsScraper {
             return Ok(vec![]);
         }
 
-        // Scroll feed to load all results
-        for _ in 0..10 {
-            let _ = self
+        // Scroll feed to load all results (up to ~120 maximum results of Google Maps)
+        let mut last_height = 0;
+        let mut no_change_count = 0;
+        for _ in 0..30 {
+            let scroll_info = self
                 .session
                 .evaluate(
                     r#"
                 (() => {
                     const feed = document.querySelector('div[role="feed"]');
                     if (feed) {
-                        feed.scrollTop += 1500;
+                        feed.scrollTop = feed.scrollHeight;
+                        const text = feed.textContent || "";
+                        const is_end = text.includes("You've reached the end of the list.") || 
+                                       text.includes("kết thúc danh sách") ||
+                                       text.includes("reached the end");
+                        const place_count = Array.from(feed.querySelectorAll('a[href*="/maps/place/"]')).length;
+                        return {
+                            height: feed.scrollHeight,
+                            is_end: is_end || place_count >= 120,
+                            place_count: place_count
+                        };
                     } else {
                         window.scrollBy(0, 1500);
+                        return {
+                            height: document.body.scrollHeight,
+                            is_end: false,
+                            place_count: Array.from(document.querySelectorAll('a[href*="/maps/place/"]')).length
+                        };
                     }
                 })()
             "#,
                 )
-                .await?;
-            tokio::time::sleep(Duration::from_millis(500)).await;
+                .await
+                .unwrap_or(serde_json::Value::Null);
+
+            if let Some(obj) = scroll_info.as_object() {
+                let height = obj.get("height").and_then(|h| h.as_i64()).unwrap_or(0);
+                let is_end = obj.get("is_end").and_then(|e| e.as_bool()).unwrap_or(false);
+
+                if is_end {
+                    break;
+                }
+
+                if height == last_height {
+                    no_change_count += 1;
+                    if no_change_count >= 3 {
+                        break;
+                    }
+                } else {
+                    no_change_count = 0;
+                    last_height = height;
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(800)).await;
         }
 
         // Collect all place URLs

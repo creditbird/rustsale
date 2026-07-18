@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use tauri::Manager;
 
@@ -37,8 +39,9 @@ pub fn run() {
                 conn: std::sync::Mutex::new(conn),
             });
 
+            let port = find_free_port(9333);
             let browser_manager =
-                std::sync::Arc::new(scrapers::browser::BrowserManager::new(2).with_port(9222));
+                std::sync::Arc::new(scrapers::browser::BrowserManager::new(2).with_port(port));
             app.manage(commands::BrowserState {
                 manager: browser_manager,
                 start_lock: tokio::sync::Mutex::new(()),
@@ -59,6 +62,8 @@ pub fn run() {
             commands::update_lead,
             commands::delete_lead,
             commands::start_google_maps_scrape,
+            commands::stop_google_maps_scrape,
+            commands::get_preset_provinces,
             commands::start_zalo_qr_login,
             commands::get_zalo_sessions,
             commands::delete_zalo_session,
@@ -70,4 +75,13 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn find_free_port(start_port: u16) -> u16 {
+    for port in start_port..65535 {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    start_port
 }

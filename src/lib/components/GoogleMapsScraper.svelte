@@ -17,18 +17,6 @@
   let maxLng = $state(106.7);
   let stepKm = $state(2.0);
 
-  const PRESET_PROVINCES: Record<string, { minLat: number; maxLat: number; minLng: number; maxLng: number }> = {
-    'TP. Hồ Chí Minh': { minLat: 10.37, maxLat: 11.16, minLng: 106.36, maxLng: 107.03 },
-    'Hà Nội': { minLat: 20.58, maxLat: 21.36, minLng: 105.28, maxLng: 106.03 },
-    'Bình Dương': { minLat: 10.85, maxLat: 11.52, minLng: 106.38, maxLng: 106.91 },
-    'Đồng Nai': { minLat: 10.73, maxLat: 11.45, minLng: 106.75, maxLng: 107.58 },
-    'Long An': { minLat: 10.20, maxLat: 11.03, minLng: 105.50, maxLng: 106.68 },
-    'Bà Rịa - Vũng Tàu': { minLat: 10.30, maxLat: 10.80, minLng: 107.00, maxLng: 107.60 },
-    'Cần Thơ': { minLat: 9.90, maxLat: 10.30, minLng: 105.30, maxLng: 105.90 },
-    'Đà Nẵng': { minLat: 15.90, maxLat: 16.30, minLng: 107.90, maxLng: 108.30 },
-    'Khánh Hòa (Nha Trang)': { minLat: 11.72, maxLat: 12.87, minLng: 108.68, maxLng: 109.35 },
-    'Lâm Đồng (Đà Lạt)': { minLat: 11.18, maxLat: 12.30, minLng: 107.27, maxLng: 108.78 },
-  };
 
   let geocodeQuery = $state('');
   let isGeocoding = $state(false);
@@ -214,6 +202,8 @@
   let progress = $state(0);
   let statusMessage = $state('Ready');
   let logs = $state<string[]>([]);
+  let headless = $state(true);
+  let presetProvinces = $state<Record<string, { minLat: number; maxLat: number; minLng: number; maxLng: number }>>({});
   let consoleElement: HTMLDivElement | null = null;
 
   let unlistenProgress: UnlistenFn | null = null;
@@ -230,6 +220,16 @@
         consoleElement.scrollTop = consoleElement.scrollHeight;
       }
     }, 50);
+  }
+
+  async function stopScrape() {
+    try {
+      appendLog("Requesting to stop campaign...");
+      await invoke('stop_google_maps_scrape');
+      appendLog("Campaign stop command sent successfully.");
+    } catch (err) {
+      appendLog(`Error stopping campaign: ${err}`);
+    }
   }
 
   async function startScrape() {
@@ -316,7 +316,8 @@
         location: locationVal,
         bbox,
         stepKm: stepVal,
-        districts: districtsVal
+        districts: districtsVal,
+        headless
       });
       appendLog('Tauri scrape command invoked successfully. Awaiting browser startup...');
     } catch (err) {
@@ -329,6 +330,12 @@
   let docClickHandler: (e: MouseEvent) => void;
 
   onMount(async () => {
+    try {
+      presetProvinces = await invoke('get_preset_provinces');
+    } catch (err) {
+      appendLog(`Error loading preset provinces: ${err}`);
+    }
+
     unlistenProgress = await listen<{ progress: number; status: string; message: string }>(
       'scrape-progress',
       (event) => {
@@ -613,13 +620,13 @@
             <div class="helper-section">
               <div class="input-group">
                 <label for="preset-select">Quick Select Province / City</label>
-                <select 
+                 <select 
                   id="preset-select" 
                   disabled={isScraping}
                   onchange={(e) => {
                     const val = (e.target as HTMLSelectElement).value;
-                    if (val && PRESET_PROVINCES[val]) {
-                      const coords = PRESET_PROVINCES[val];
+                    if (val && presetProvinces[val]) {
+                      const coords = presetProvinces[val];
                       minLat = coords.minLat;
                       maxLat = coords.maxLat;
                       minLng = coords.minLng;
@@ -629,7 +636,7 @@
                   }}
                 >
                   <option value="">-- Select a Province / City --</option>
-                  {#each Object.keys(PRESET_PROVINCES) as prov}
+                  {#each Object.keys(presetProvinces) as prov}
                     <option value={prov}>{prov}</option>
                   {/each}
                 </select>
@@ -727,20 +734,39 @@
           </div>
         {/if}
 
-        <button 
-          type="button"
-          class="start-btn" 
-          onclick={startScrape} 
-          disabled={isScraping || !keyword.trim()}
-        >
-          {#if isScraping}
-            <span class="spinner"></span>
-            Scraping...
-          {:else}
+        <!-- Headless Option Checkbox -->
+        <div class="headless-option-group">
+          <label class="headless-checkbox-label" for="headless-checkbox">
+            <input 
+              id="headless-checkbox"
+              type="checkbox" 
+              bind:checked={headless} 
+              disabled={isScraping}
+            />
+            <span class="checkbox-text">Run Headless (Hide browser window)</span>
+          </label>
+        </div>
+
+        {#if isScraping}
+          <button 
+            type="button"
+            class="stop-btn" 
+            onclick={stopScrape}
+          >
+            <span class="material-icons">stop</span>
+            Stop Scrape Campaign
+          </button>
+        {:else}
+          <button 
+            type="button"
+            class="start-btn" 
+            onclick={startScrape} 
+            disabled={!keyword.trim()}
+          >
             <span class="material-icons">play_arrow</span>
             Start Scrape Campaign
-          {/if}
-        </button>
+          </button>
+        {/if}
       </div>
     </div>
 
@@ -1080,6 +1106,29 @@
   .start-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .stop-btn {
+    margin-top: auto;
+    width: 100%;
+    background: var(--color-error, #ef4444);
+    color: #fff;
+    padding: var(--spacing-md);
+    border-radius: var(--rounded-md);
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-sm);
+    transition: var(--transition-fast);
+    border: none;
+    cursor: pointer;
+  }
+
+  .stop-btn:hover {
+    background: #dc2626;
+    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.15);
   }
 
   /* Status Card & Execution elements */
@@ -1598,5 +1647,27 @@
     color: var(--color-on-surface-variant);
     text-align: center;
     font-style: italic;
+  }
+  .headless-option-group {
+    margin: var(--spacing-md) 0;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--color-surface-container-low);
+    border: 1px dashed var(--color-outline-variant);
+    border-radius: var(--rounded-md);
+  }
+  .headless-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--color-on-surface);
+    cursor: pointer;
+    user-select: none;
+  }
+  .headless-checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--color-primary);
   }
 </style>

@@ -145,6 +145,13 @@ pub struct GridScraper {
     pub saturation_threshold: usize,
 }
 
+fn normalize_string(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
 impl GridScraper {
     pub fn new(scraper: GoogleMapsScraper) -> Self {
         Self {
@@ -187,17 +194,28 @@ impl GridScraper {
                     let count = results.len();
 
                     for item in results {
-                        unique_results.insert(item.phone.clone(), item);
+                        let norm_name = normalize_string(&item.name);
+                        let norm_addr = normalize_string(item.address.as_deref().unwrap_or(""));
+                        let key = format!("{}_{}", norm_name, norm_addr);
+                        unique_results.insert(key, item);
                     }
 
-                    if count >= self.saturation_threshold && cell.depth < 4 {
-                        let children = cell.subdivide();
-                        total_count += children.len();
-                        stack.extend(children);
+                    if count >= self.saturation_threshold && cell.depth < 6 {
+                        if cell.radius_m >= 20.0 {
+                            let children = cell.subdivide();
+                            total_count += children.len();
+                            stack.extend(children);
 
-                        let subdivide_msg =
-                            format!("Cell saturated ({} results). Subdivided.", count);
-                        on_progress(&cell, processed_count, total_count, &subdivide_msg);
+                            let subdivide_msg =
+                                format!("Cell saturated ({} results). Subdivided.", count);
+                            on_progress(&cell, processed_count, total_count, &subdivide_msg);
+                        } else {
+                            let stop_msg = format!(
+                                "Cell saturated ({} results) but hit min radius limit (20m). Stopped subdivision.",
+                                count
+                            );
+                            on_progress(&cell, processed_count, total_count, &stop_msg);
+                        }
                     }
                 }
                 Err(e) => {

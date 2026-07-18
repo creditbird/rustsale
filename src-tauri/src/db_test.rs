@@ -237,6 +237,8 @@ mod tests {
         let db_path = temp_dir.join("test_wal.db");
         let db_path_str = db_path.to_str().unwrap();
         let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(temp_dir.join("test_wal.db-wal"));
+        let _ = std::fs::remove_file(temp_dir.join("test_wal.db-shm"));
 
         let conn = db::init_db(db_path_str).expect("Failed to init db");
         let journal_mode: String = conn
@@ -251,6 +253,8 @@ mod tests {
 
         drop(conn);
         let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(temp_dir.join("test_wal.db-wal"));
+        let _ = std::fs::remove_file(temp_dir.join("test_wal.db-shm"));
     }
 
     #[test]
@@ -292,7 +296,17 @@ mod tests {
 
         let cat_id = db::create_category(&conn, "Hot Leads").unwrap();
 
+        // 1. Success case
         db::add_lead_to_category(&conn, lead_id, cat_id).unwrap();
+
+        // 2. Duplicate case: ON CONFLICT DO NOTHING should succeed and return Ok(())
+        db::add_lead_to_category(&conn, lead_id, cat_id).expect("Duplicate insert failed but should be ignored");
+
+        // 3. FK violation: non-existent lead_id should throw error
+        assert!(db::add_lead_to_category(&conn, 99999, cat_id).is_err());
+
+        // 4. FK violation: non-existent category_id should throw error
+        assert!(db::add_lead_to_category(&conn, lead_id, 99999).is_err());
 
         let leads = db::get_leads_by_category(&conn, cat_id).unwrap();
         assert_eq!(leads.len(), 1);

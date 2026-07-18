@@ -96,8 +96,8 @@ pub struct BrowserManager {
 impl BrowserManager {
     pub fn new(max_sessions: usize) -> Self {
         Self {
-            port: 9222,
-            endpoint: "127.0.0.1:9222".to_string(),
+            port: 9333,
+            endpoint: "127.0.0.1:9333".to_string(),
             sessions: Arc::new(Mutex::new(SessionPool {
                 vec: Vec::new(),
                 pending_creations: 0,
@@ -115,10 +115,10 @@ impl BrowserManager {
 
     pub async fn start(&self, headless: bool) -> Result<()> {
         let candidates = vec![
+            "/home/arch/.cloakbrowser/chromium-146.0.7680.177.5/chrome",
             "/usr/bin/google-chrome-stable",
             "/usr/bin/google-chrome",
             "/usr/bin/chromium",
-            "/home/arch/.cloakbrowser/chromium-146.0.7680.177.5/chrome",
         ];
         let mut path = "/usr/bin/chromium".to_string();
         for p in candidates {
@@ -128,8 +128,12 @@ impl BrowserManager {
             }
         }
 
+        let temp_dir = std::env::temp_dir().join(format!("tauri_scraper_profile_{}", self.port));
+        let user_data_dir = temp_dir.to_string_lossy().to_string();
+
         let mut cmd = Command::new(&path);
         cmd.arg(format!("--remote-debugging-port={}", self.port))
+            .arg(format!("--user-data-dir={}", user_data_dir))
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
             .arg("--disable-blink-features=AutomationControlled")
@@ -221,6 +225,9 @@ impl BrowserManager {
             let _ = child.kill();
             let _ = child.wait();
         }
+        let mut pool = self.sessions.lock().await;
+        pool.vec.clear();
+        pool.pending_creations = 0;
         Ok(())
     }
 

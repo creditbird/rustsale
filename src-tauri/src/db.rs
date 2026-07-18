@@ -1,121 +1,153 @@
 use rusqlite::{Connection, Result};
 
+fn add_column_if_missing(conn: &Connection, table: &str, col_name: &str, col_def: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let mut rows = stmt.query([])?;
+    let mut exists = false;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == col_name {
+            exists = true;
+            break;
+        }
+    }
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {} ADD COLUMN {}", table, col_def), [])?;
+    }
+    Ok(())
+}
+
 pub fn init_db(db_path: &str) -> Result<Connection> {
-    let conn = Connection::open(db_path)?;
-    conn.execute("PRAGMA foreign_keys = ON;", [])?;
+    let mut conn = Connection::open(db_path)?;
     conn.pragma_update(None, "journal_mode", &"WAL")?;
     conn.pragma_update(None, "synchronous", &"NORMAL")?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            company TEXT NOT NULL,
-            status TEXT NOT NULL,
-            value REAL NOT NULL DEFAULT 0.0,
-            last_activity TEXT NOT NULL,
-            owner TEXT NOT NULL,
-            email TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            about TEXT,
-            address TEXT,
-            has_zalo INTEGER DEFAULT NULL,
-            zalo_reached INTEGER NOT NULL DEFAULT 0,
-            zalo_uid TEXT,
-            zalo_status TEXT DEFAULT 'UNTESTED',
-            relationship_status TEXT DEFAULT 'UNKNOWN',
-            last_lookup_attempt TEXT
-        )",
-        [],
-    )?;
+    {
+        let tx = conn.transaction()?;
+        tx.execute("PRAGMA foreign_keys = ON;", [])?;
 
-    let _ = conn.execute("ALTER TABLE leads ADD COLUMN address TEXT", []);
-    let _ = conn.execute("ALTER TABLE leads ADD COLUMN has_zalo INTEGER DEFAULT NULL", []);
-    let _ = conn.execute("ALTER TABLE leads ADD COLUMN zalo_reached INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE leads ADD COLUMN zalo_uid TEXT", []);
-    let _ = conn.execute("ALTER TABLE leads ADD COLUMN zalo_status TEXT DEFAULT 'UNTESTED'", []);
-    let _ = conn.execute("ALTER TABLE leads ADD COLUMN relationship_status TEXT DEFAULT 'UNKNOWN'", []);
-    let _ = conn.execute("ALTER TABLE leads ADD COLUMN last_lookup_attempt TEXT", []);
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                company TEXT NOT NULL,
+                status TEXT NOT NULL,
+                value REAL NOT NULL DEFAULT 0.0,
+                last_activity TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                email TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                about TEXT,
+                address TEXT,
+                has_zalo INTEGER DEFAULT NULL,
+                zalo_reached INTEGER NOT NULL DEFAULT 0,
+                zalo_uid TEXT,
+                zalo_status TEXT DEFAULT 'UNTESTED',
+                relationship_status TEXT DEFAULT 'UNKNOWN',
+                last_lookup_attempt TEXT
+            )",
+            [],
+        )?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS activities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER NOT NULL,
-            activity_type TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            performed_by TEXT NOT NULL,
-            FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
+        add_column_if_missing(&tx, "leads", "address", "address TEXT")?;
+        add_column_if_missing(&tx, "leads", "has_zalo", "has_zalo INTEGER DEFAULT NULL")?;
+        add_column_if_missing(&tx, "leads", "zalo_reached", "zalo_reached INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(&tx, "leads", "zalo_uid", "zalo_uid TEXT")?;
+        add_column_if_missing(&tx, "leads", "zalo_status", "zalo_status TEXT DEFAULT 'UNTESTED'")?;
+        add_column_if_missing(&tx, "leads", "relationship_status", "relationship_status TEXT DEFAULT 'UNKNOWN'")?;
+        add_column_if_missing(&tx, "leads", "last_lookup_attempt", "last_lookup_attempt TEXT")?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS deals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            value REAL NOT NULL DEFAULT 0.0,
-            stage TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS activities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                activity_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                performed_by TEXT NOT NULL,
+                FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS zalo_sessions (
-            imei TEXT PRIMARY KEY,
-            user_agent TEXT NOT NULL,
-            cookies_json TEXT NOT NULL,
-            language TEXT NOT NULL
-        )",
-        [],
-    )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS deals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                value REAL NOT NULL DEFAULT 0.0,
+                stage TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS outreach_templates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )",
-        [],
-    )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS zalo_sessions (
+                imei TEXT PRIMARY KEY,
+                user_agent TEXT NOT NULL,
+                cookies_json TEXT NOT NULL,
+                language TEXT NOT NULL
+            )",
+            [],
+        )?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE
-        )",
-        [],
-    )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS outreach_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS lead_categories (
-            lead_id INTEGER NOT NULL,
-            category_id INTEGER NOT NULL,
-            PRIMARY KEY (lead_id, category_id),
-            FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE,
-            FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            )",
+            [],
+        )?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS outreach_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER NOT NULL,
-            template_id INTEGER NOT NULL,
-            status TEXT NOT NULL,
-            error_message TEXT,
-            sent_at TEXT NOT NULL,
-            session_imei TEXT NOT NULL,
-            FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE,
-            FOREIGN KEY(template_id) REFERENCES outreach_templates(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS lead_categories (
+                lead_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                PRIMARY KEY (lead_id, category_id),
+                FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+                FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS outreach_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                template_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                sent_at TEXT NOT NULL,
+                session_imei TEXT NOT NULL,
+                FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+                FOREIGN KEY(template_id) REFERENCES outreach_templates(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lead_categories_category ON lead_categories(category_id)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outreach_history_lead ON outreach_history(lead_id)",
+            [],
+        )?;
+
+        tx.commit()?;
+    }
 
     Ok(conn)
 }
@@ -269,7 +301,8 @@ pub fn delete_category(conn: &Connection, id: i32) -> Result<()> {
 
 pub fn add_lead_to_category(conn: &Connection, lead_id: i32, category_id: i32) -> Result<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO lead_categories (lead_id, category_id) VALUES (?1, ?2)",
+        "INSERT INTO lead_categories (lead_id, category_id) VALUES (?1, ?2)
+         ON CONFLICT(lead_id, category_id) DO NOTHING",
         rusqlite::params![lead_id, category_id],
     )?;
     Ok(())
