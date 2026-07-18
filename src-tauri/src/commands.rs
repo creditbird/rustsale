@@ -1989,6 +1989,11 @@ pub async fn send_zalo_campaign_internal(
     template_id: i32,
     session_imeis: Vec<String>,
 ) -> Result<(), String> {
+    let mut is_mock = false;
+    if session_imeis.iter().any(|i| i.starts_with("mock-")) {
+        is_mock = true;
+    }
+
     if let Some(app) = app_handle {
         let _ = app.emit(
             "campaign-progress",
@@ -2032,7 +2037,12 @@ pub async fn send_zalo_campaign_internal(
 
     let mut eligible_leads = Vec::new();
     for lead in leads {
-        if lead.phone != "not-found" && !is_vn_mobile(&lead.phone) {
+        let is_valid_phone = if is_mock {
+            lead.phone == "not-found" || lead.phone == "mock-rate-limit" || is_vn_mobile(&lead.phone)
+        } else {
+            is_vn_mobile(&lead.phone)
+        };
+        if !is_valid_phone {
             continue;
         }
         if let Some(status) = &lead.zalo_status {
@@ -2041,13 +2051,12 @@ pub async fn send_zalo_campaign_internal(
             }
             if status == "RATE_LIMITED" {
                 if let Some(last_lookup) = &lead.last_lookup_attempt {
-                    let recent: bool = {
-                        let conn_guard = conn_mutex.lock().unwrap();
-                        conn_guard.query_row(
-                            "SELECT strftime('%s', 'now') - strftime('%s', ?1) < 3600",
-                            [last_lookup],
-                            |row| row.get(0),
-                        ).unwrap_or(false)
+                    let recent = if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(last_lookup) {
+                        let now = chrono::Utc::now();
+                        let diff = now - parsed_time.with_timezone(&chrono::Utc);
+                        diff.num_seconds() < 3600
+                    } else {
+                        false
                     };
                     if recent {
                         continue;
@@ -2085,11 +2094,6 @@ pub async fn send_zalo_campaign_internal(
             );
         }
         return Ok(());
-    }
-
-    let mut is_mock = false;
-    if session_imeis.iter().any(|i| i.starts_with("mock-")) {
-        is_mock = true;
     }
 
     let mut active_clients: Vec<zca_rs::Zalo> = Vec::new();
@@ -2171,6 +2175,8 @@ pub async fn send_zalo_campaign_internal(
             if is_mock {
                 if lead.phone == "not-found" {
                     found = false;
+                } else if lead.phone == "mock-rate-limit" {
+                    lookup_failed = true;
                 } else {
                     uid = Some(format!("uid-{}", sanitized_phone));
                     found = true;
@@ -2191,10 +2197,7 @@ pub async fn send_zalo_campaign_internal(
                 }
             }
 
-            let now: String = {
-                let conn_guard = conn_mutex.lock().unwrap();
-                conn_guard.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| row.get(0)).unwrap_or_default()
-            };
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             
             if lookup_failed {
                 let _ = {
@@ -2217,7 +2220,27 @@ pub async fn send_zalo_campaign_internal(
                     let conn_guard = conn_mutex.lock().unwrap();
                     crate::db::log_outreach_attempt(&conn_guard, &history)
                 };
-                active_index += 1;
+                
+                // Evict failed session
+                active_imeis.remove(active_index);
+                if !is_mock {
+                    active_clients.remove(active_index);
+                }
+
+                if active_imeis.is_empty() {
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "campaign-log",
+                            CampaignLogPayload {
+                                message: "All sessions exhausted. Stopping campaign.".to_string(),
+                            },
+                        );
+                    }
+                    break;
+                }
+                active_index %= active_imeis.len();
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
             
@@ -2291,10 +2314,7 @@ pub async fn send_zalo_campaign_internal(
             }
         }
         
-        let now: String = {
-            let conn_guard = conn_mutex.lock().unwrap();
-            conn_guard.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| row.get(0)).unwrap_or_default()
-        };
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         
         if send_success {
             total_sent += 1;
@@ -2362,7 +2382,27 @@ pub async fn send_zalo_campaign_internal(
                     },
                 );
             }
-            active_index += 1;
+
+            // Evict failed session
+            active_imeis.remove(active_index);
+            if !is_mock {
+                active_clients.remove(active_index);
+            }
+
+            if active_imeis.is_empty() {
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "campaign-log",
+                        CampaignLogPayload {
+                            message: "All sessions exhausted. Stopping campaign.".to_string(),
+                        },
+                    );
+                }
+                break;
+            }
+            active_index %= active_imeis.len();
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
         
         if let Some(app) = app_handle {

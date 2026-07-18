@@ -670,4 +670,142 @@ mod tests {
         let h4: i64 = conn_locked.query_row("SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'SUCCESS'", [lead_4], |row| row.get(0)).unwrap();
         assert_eq!(h4, 1);
     }
+
+    #[tokio::test]
+    async fn test_send_zalo_campaign_eviction_on_lookup_failure() {
+        use std::sync::Mutex;
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        let template_id =
+            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!").unwrap();
+        let category_id = db::create_category(&conn, "Campaign Category").unwrap();
+
+        let lead_1 = commands::add_lead_internal(
+            &mut conn,
+            "Rate Limited Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "mock-rate-limit".to_string(),
+            None,
+            None,
+        ).unwrap();
+
+        let lead_2 = commands::add_lead_internal(
+            &mut conn,
+            "Success Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "0912345678".to_string(),
+            None,
+            None,
+        ).unwrap();
+
+        db::add_lead_to_category(&conn, lead_1, category_id).unwrap();
+        db::add_lead_to_category(&conn, lead_2, category_id).unwrap();
+
+        // Lead 2 has cached uid to bypass lookup
+        conn.execute("UPDATE leads SET zalo_uid = 'cached-123' WHERE id = ?1", [lead_2]).unwrap();
+
+        let db_mutex = Mutex::new(conn);
+
+        // mock-fail-imei is index 0, mock-success-imei is index 1
+        let session_imeis = vec!["mock-fail-imei".to_string(), "mock-success-imei".to_string()];
+
+        let res = commands::send_zalo_campaign_internal(
+            None,
+            &db_mutex,
+            category_id,
+            template_id,
+            session_imeis,
+        )
+        .await;
+
+        assert!(res.is_ok());
+
+        let conn_locked = db_mutex.lock().unwrap();
+
+        // Lead 1 lookup fails, so it is rate limited and session mock-fail-imei is evicted
+        let l1 = commands::get_lead_details_internal(&conn_locked, lead_1).unwrap();
+        assert_eq!(l1.zalo_status, Some("RATE_LIMITED".to_string()));
+
+        // Lead 2 must have succeeded using mock-success-imei because mock-fail-imei was evicted.
+        // If mock-fail-imei was NOT evicted, it would be used and fail.
+        let l2 = commands::get_lead_details_internal(&conn_locked, lead_2).unwrap();
+        assert_eq!(l2.zalo_reached, 1);
+    }
+
+    #[tokio::test]
+    async fn test_send_zalo_campaign_exhausted_sessions() {
+        use std::sync::Mutex;
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        let template_id =
+            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!").unwrap();
+        let category_id = db::create_category(&conn, "Campaign Category").unwrap();
+
+        let lead_1 = commands::add_lead_internal(
+            &mut conn,
+            "Rate Limited Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "mock-rate-limit".to_string(),
+            None,
+            None,
+        ).unwrap();
+
+        let lead_2 = commands::add_lead_internal(
+            &mut conn,
+            "Unreached Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "0912345678".to_string(),
+            None,
+            None,
+        ).unwrap();
+
+        db::add_lead_to_category(&conn, lead_1, category_id).unwrap();
+        db::add_lead_to_category(&conn, lead_2, category_id).unwrap();
+
+        let db_mutex = Mutex::new(conn);
+
+        // Only one failing session
+        let session_imeis = vec!["mock-fail-imei".to_string()];
+
+        let res = commands::send_zalo_campaign_internal(
+            None,
+            &db_mutex,
+            category_id,
+            template_id,
+            session_imeis,
+        )
+        .await;
+
+        assert!(res.is_ok());
+
+        let conn_locked = db_mutex.lock().unwrap();
+
+        let l2 = commands::get_lead_details_internal(&conn_locked, lead_2).unwrap();
+        assert_eq!(l2.zalo_reached, 0);
+
+        let h2_count: i64 = conn_locked.query_row(
+            "SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1",
+            [lead_2],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(h2_count, 0);
+    }
 }

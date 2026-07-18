@@ -26,6 +26,7 @@ rusqlite = { version = "0.31.0", features = ["bundled"] }
 cdp-lite = "0.1"
 rand = "0.8"
 urlencoding = "2.1"
+chrono = { version = "0.4", features = ["serde"] }
 zca-rs = { path = "../../zca-rs" }
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
