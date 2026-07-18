@@ -20,6 +20,9 @@ mod tests {
         assert!(tables.contains(&"deals".to_string()));
         assert!(tables.contains(&"zalo_sessions".to_string()));
         assert!(tables.contains(&"outreach_templates".to_string()));
+        assert!(tables.contains(&"categories".to_string()));
+        assert!(tables.contains(&"lead_categories".to_string()));
+        assert!(tables.contains(&"outreach_history".to_string()));
     }
 
     #[test]
@@ -226,5 +229,131 @@ mod tests {
         let all_after = db::get_all_zalo_sessions(&conn).unwrap();
         assert_eq!(all_after.len(), 1);
         assert_eq!(all_after[0].imei, "imei-456");
+    }
+
+    #[test]
+    fn test_wal_mode_and_synchronous() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_wal.db");
+        let db_path_str = db_path.to_str().unwrap();
+        let _ = std::fs::remove_file(&db_path);
+
+        let conn = db::init_db(db_path_str).expect("Failed to init db");
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode;", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+
+        let synchronous: i32 = conn
+            .query_row("PRAGMA synchronous;", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 1); // 1 = NORMAL in SQLite
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_categories_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        let cat_id = db::create_category(&conn, "VIP Clients").unwrap();
+        assert!(cat_id > 0);
+
+        assert!(db::create_category(&conn, "VIP Clients").is_err());
+
+        let cats = db::get_categories(&conn).unwrap();
+        assert_eq!(cats.len(), 1);
+        assert_eq!(cats[0].name, "VIP Clients");
+        assert_eq!(cats[0].id, Some(cat_id));
+
+        db::delete_category(&conn, cat_id).unwrap();
+        let cats_after = db::get_categories(&conn).unwrap();
+        assert!(cats_after.is_empty());
+    }
+
+    #[test]
+    fn test_lead_categories_association() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        conn.execute(
+            "INSERT INTO leads (name, company, status, last_activity, owner, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                "John Doe",
+                "Company A",
+                "New",
+                "2026-07-17T20:00:00Z",
+                "Alex",
+                "john@example.com",
+                "123456",
+            ],
+        ).unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        let cat_id = db::create_category(&conn, "Hot Leads").unwrap();
+
+        db::add_lead_to_category(&conn, lead_id, cat_id).unwrap();
+
+        let leads = db::get_leads_by_category(&conn, cat_id).unwrap();
+        assert_eq!(leads.len(), 1);
+        assert_eq!(leads[0].name, "John Doe");
+        assert_eq!(leads[0].zalo_status.as_deref(), Some("UNTESTED"));
+
+        db::remove_lead_from_category(&conn, lead_id, cat_id).unwrap();
+        let leads_after = db::get_leads_by_category(&conn, cat_id).unwrap();
+        assert!(leads_after.is_empty());
+    }
+
+    #[test]
+    fn test_outreach_history_logging() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        conn.execute(
+            "INSERT INTO leads (name, company, status, last_activity, owner, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                "Jane Doe",
+                "Company B",
+                "Qualified",
+                "2026-07-17T20:00:00Z",
+                "Alex",
+                "jane@example.com",
+                "654321",
+            ],
+        ).unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        conn.execute(
+            "INSERT INTO outreach_templates (name, content, created_at) VALUES (?, ?, ?)",
+            [
+                "Template A",
+                "Hello",
+                "2026-07-17T20:00:00Z",
+            ],
+        ).unwrap();
+        let template_id = conn.last_insert_rowid() as i32;
+
+        let history = crate::models::OutreachHistory {
+            id: None,
+            lead_id,
+            template_id,
+            status: "SUCCESS".to_string(),
+            error_message: None,
+            sent_at: "2026-07-18T10:00:00Z".to_string(),
+            session_imei: "imei-12345".to_string(),
+        };
+
+        db::log_outreach_attempt(&conn, &history).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT lead_id, template_id, status, error_message, sent_at, session_imei FROM outreach_history")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(row.get::<_, i32>(0).unwrap(), lead_id);
+        assert_eq!(row.get::<_, i32>(1).unwrap(), template_id);
+        assert_eq!(row.get::<_, String>(2).unwrap(), "SUCCESS");
+        assert_eq!(row.get::<_, Option<String>>(3).unwrap(), None);
+        assert_eq!(row.get::<_, String>(4).unwrap(), "2026-07-18T10:00:00Z");
+        assert_eq!(row.get::<_, String>(5).unwrap(), "imei-12345");
     }
 }

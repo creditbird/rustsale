@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { CITY_DISTRICTS, DISTRICT_WARDS } from '$lib/constants/vietnam_regions';
+  import divisions from '$lib/constants/vietnam-divisions.json';
+  import { Search, Check, X } from 'lucide-svelte';
 
   // State runes
   let mode = $state<'keyword' | 'grid'>('keyword');
@@ -19,14 +20,13 @@
   const PRESET_PROVINCES: Record<string, { minLat: number; maxLat: number; minLng: number; maxLng: number }> = {
     'TP. Hồ Chí Minh': { minLat: 10.37, maxLat: 11.16, minLng: 106.36, maxLng: 107.03 },
     'Hà Nội': { minLat: 20.58, maxLat: 21.36, minLng: 105.28, maxLng: 106.03 },
-    'Đà Nẵng': { minLat: 15.91, maxLat: 16.23, minLng: 107.81, maxLng: 108.34 },
-    'Bình Dương': { minLat: 10.89, maxLat: 11.51, minLng: 106.50, maxLng: 106.91 },
-    'Đồng Nai': { minLat: 10.74, maxLat: 11.58, minLng: 106.75, maxLng: 107.58 },
-    'Cần Thơ': { minLat: 9.91, maxLat: 10.32, minLng: 105.22, maxLng: 105.86 },
-    'Hải Phòng': { minLat: 20.53, maxLat: 21.02, minLng: 106.40, maxLng: 107.13 },
-    'Long An': { minLat: 10.20, maxLat: 11.02, minLng: 105.50, maxLng: 106.80 },
-    'Quảng Ninh': { minLat: 20.67, maxLat: 21.68, minLng: 106.43, maxLng: 108.08 },
-    'Khánh Hòa (Nha Trang)': { minLat: 11.72, maxLat: 12.87, minLng: 108.68, maxLng: 109.47 },
+    'Bình Dương': { minLat: 10.85, maxLat: 11.52, minLng: 106.38, maxLng: 106.91 },
+    'Đồng Nai': { minLat: 10.73, maxLat: 11.45, minLng: 106.75, maxLng: 107.58 },
+    'Long An': { minLat: 10.20, maxLat: 11.03, minLng: 105.50, maxLng: 106.68 },
+    'Bà Rịa - Vũng Tàu': { minLat: 10.30, maxLat: 10.80, minLng: 107.00, maxLng: 107.60 },
+    'Cần Thơ': { minLat: 9.90, maxLat: 10.30, minLng: 105.30, maxLng: 105.90 },
+    'Đà Nẵng': { minLat: 15.90, maxLat: 16.30, minLng: 107.90, maxLng: 108.30 },
+    'Khánh Hòa (Nha Trang)': { minLat: 11.72, maxLat: 12.87, minLng: 108.68, maxLng: 109.35 },
     'Lâm Đồng (Đà Lạt)': { minLat: 11.18, maxLat: 12.30, minLng: 107.27, maxLng: 108.78 },
   };
 
@@ -34,49 +34,141 @@
   let isGeocoding = $state(false);
 
   // Deep Scan states
-  let deepScan = $state(false);
-  let selectedCity = $state<'hcm' | 'hanoi'>('hcm');
-  let selectedDistricts = $state<string[]>([]);
+  let deepScan = $state(true);
+  let selectedCities = $state<string[]>(['thanh_pho_ho_chi_minh']);
+  let selectedDistricts = $state<number[]>([]);
+  let selectedWards = $state<number[]>([]);
+  let citySearchQuery = $state('');
+  let showCityDropdown = $state(false);
+  let districtFilter = $state('');
+  let wardFilter = $state('');
 
-  let selectedWards = $state<string[]>([]);
+  // Derived state to get filtered cities based on search query
+  let filteredCities = $derived.by(() => {
+    const q = citySearchQuery.trim().toLowerCase();
+    if (!q) return divisions;
+    return divisions.filter(p => p.name.toLowerCase().includes(q));
+  });
+
+  // Derived state to get available districts in the selected provinces
+  let availableDistricts = $derived.by(() => {
+    let list: { name: string; code: number; provinceName: string; provinceCodename: string; wards: any[] }[] = [];
+    for (const cityCodename of selectedCities) {
+      const province = divisions.find(p => p.codename === cityCodename);
+      if (province) {
+        const districts = province.districts || [];
+        for (const d of districts) {
+          list.push({
+            name: d.name,
+            code: d.code,
+            provinceName: province.name,
+            provinceCodename: province.codename,
+            wards: d.wards || []
+          });
+        }
+      }
+    }
+    // Sort districts by city, then by name
+    return list.sort((a, b) => a.provinceName.localeCompare(b.provinceName) || a.name.localeCompare(b.name));
+  });
+
+  // Filtered districts for display
+  let filteredDistricts = $derived.by(() => {
+    const q = districtFilter.trim().toLowerCase();
+    if (!q) return availableDistricts;
+    return availableDistricts.filter(d => d.name.toLowerCase().includes(q) || d.provinceName.toLowerCase().includes(q));
+  });
 
   // Derived state to get the list of wards under selected districts
   let availableWards = $derived.by(() => {
-    let list: { name: string; district: string }[] = [];
-    for (const district of selectedDistricts) {
-      const wards = DISTRICT_WARDS[district] || [];
-      for (const ward of wards) {
-        list.push({ name: ward, district });
+    let list: { name: string; code: number; districtName: string; districtCode: number; provinceName: string }[] = [];
+    for (const districtCode of selectedDistricts) {
+      const dist = availableDistricts.find(d => d.code === districtCode);
+      if (dist) {
+        const wards = dist.wards || [];
+        for (const ward of wards) {
+          list.push({ 
+            name: ward.name, 
+            code: ward.code, 
+            districtName: dist.name,
+            districtCode: dist.code,
+            provinceName: dist.provinceName
+          });
+        }
       }
     }
     return list;
   });
 
-  function selectAllDistricts() {
-    selectedDistricts = [...CITY_DISTRICTS[selectedCity]];
+  // Filtered wards for display
+  let filteredWards = $derived.by(() => {
+    const q = wardFilter.trim().toLowerCase();
+    if (!q) return availableWards;
+    return availableWards.filter(w => w.name.toLowerCase().includes(q) || w.districtName.toLowerCase().includes(q));
+  });
+
+  function toggleCity(cityCodename: string) {
+    if (selectedCities.includes(cityCodename)) {
+      selectedCities = selectedCities.filter(c => c !== cityCodename);
+      // Clean up districts and wards belonging to this city
+      const province = divisions.find(p => p.codename === cityCodename);
+      if (province) {
+        const districtCodes = (province.districts || []).map(d => d.code);
+        selectedDistricts = selectedDistricts.filter(code => !districtCodes.includes(code));
+        
+        let wardCodes: number[] = [];
+        for (const d of province.districts || []) {
+          const wards = d.wards || [];
+          wardCodes.push(...wards.map(w => w.code));
+        }
+        selectedWards = selectedWards.filter(code => !wardCodes.includes(code));
+      }
+    } else {
+      selectedCities = [...selectedCities, cityCodename];
+    }
+    districtFilter = '';
+    wardFilter = '';
+  }
+
+  function clearAllCities() {
+    selectedCities = [];
+    selectedDistricts = [];
     selectedWards = [];
+    citySearchQuery = '';
+    districtFilter = '';
+    wardFilter = '';
+  }
+
+  function selectAllDistricts() {
+    selectedDistricts = availableDistricts.map(d => d.code);
+    selectedWards = [];
+    wardFilter = '';
   }
 
   function deselectAllDistricts() {
     selectedDistricts = [];
     selectedWards = [];
+    wardFilter = '';
   }
 
   function selectAllWards() {
-    selectedWards = availableWards.map(w => `${w.name}, ${w.district}`);
+    selectedWards = availableWards.map(w => w.code);
   }
 
   function deselectAllWards() {
     selectedWards = [];
   }
 
-  function toggleDistrict(district: string, checked: boolean) {
+  function toggleDistrict(districtCode: number, checked: boolean) {
     if (checked) {
-      selectedDistricts = [...selectedDistricts, district];
+      selectedDistricts = [...selectedDistricts, districtCode];
     } else {
-      selectedDistricts = selectedDistricts.filter(d => d !== district);
-      // Remove any wards associated with this deselected district
-      selectedWards = selectedWards.filter(w => !w.endsWith(`, ${district}`));
+      // Find wards to remove BEFORE updating selectedDistricts
+      const dist = availableDistricts.find(d => d.code === districtCode);
+      const wardCodesToRemove = dist ? (dist.wards || []).map(w => w.code) : [];
+      
+      selectedDistricts = selectedDistricts.filter(c => c !== districtCode);
+      selectedWards = selectedWards.filter(code => !wardCodesToRemove.includes(code));
     }
   }
 
@@ -184,11 +276,19 @@
         appendLog("Error: Please select at least one district for Deep Scan.");
         return;
       }
-      locationVal = selectedCity === 'hcm' ? 'Hồ Chí Minh' : 'Hà Nội';
+      locationVal = "Việt Nam";
       if (selectedWards.length > 0) {
-        districtsVal = selectedWards;
+        const wardMap = new Map(availableWards.map(w => [w.code, w]));
+        districtsVal = selectedWards.map(code => {
+          const ward = wardMap.get(code);
+          return ward ? `${ward.name}, ${ward.districtName}, ${ward.provinceName}` : '';
+        }).filter(Boolean);
       } else {
-        districtsVal = selectedDistricts;
+        const distMap = new Map(availableDistricts.map(d => [d.code, d]));
+        districtsVal = selectedDistricts.map(code => {
+          const dist = distMap.get(code);
+          return dist ? `${dist.name}, ${dist.provinceName}` : '';
+        }).filter(Boolean);
       }
     }
 
@@ -200,9 +300,9 @@
     appendLog(`Keyword: "${keyword}"`);
     if (deepScan && districtsVal) {
       if (selectedWards.length > 0) {
-        appendLog(`Deep Scan active for city: ${locationVal} (${districtsVal.length} wards selected)`);
+        appendLog(`Deep Scan active across ${selectedCities.length} cities/provinces (${districtsVal.length} wards selected)`);
       } else {
-        appendLog(`Deep Scan active for city: ${locationVal} (${districtsVal.length} districts selected)`);
+        appendLog(`Deep Scan active across ${selectedCities.length} cities/provinces (${districtsVal.length} districts selected)`);
       }
     }
 
@@ -226,6 +326,8 @@
     }
   }
 
+  let docClickHandler: (e: MouseEvent) => void;
+
   onMount(async () => {
     unlistenProgress = await listen<{ progress: number; status: string; message: string }>(
       'scrape-progress',
@@ -248,12 +350,22 @@
       statusMessage = event.payload.message;
       appendLog(`[COMPLETE] ${event.payload.message}`);
     });
+
+    // Document click listener to close dropdown when clicking outside
+    docClickHandler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.city-multiselect-container')) {
+        showCityDropdown = false;
+      }
+    };
+    document.addEventListener('click', docClickHandler);
   });
 
   onDestroy(() => {
     if (unlistenProgress) unlistenProgress();
     if (unlistenLog) unlistenLog();
     if (unlistenComplete) unlistenComplete();
+    if (docClickHandler) document.removeEventListener('click', docClickHandler);
   });
 </script>
 
@@ -360,23 +472,72 @@
           {:else}
             <!-- Deep Scan Configuration -->
             <div class="deep-scan-config animate-slide-down">
-              <div class="input-group">
-                <label for="deep-city-select">Target City</label>
-                <select 
-                  id="deep-city-select" 
-                  bind:value={selectedCity} 
-                  disabled={isScraping}
-                  onchange={() => { selectedDistricts = []; selectedWards = []; }}
-                >
-                  <option value="hcm">TP. Hồ Chí Minh</option>
-                  <option value="hanoi">Hà Nội</option>
-                </select>
+              <div class="input-group" style="position: relative;">
+                <label for="city-search-input">Target Cities / Provinces</label>
+                <div class="city-multiselect-container">
+                  <div class="search-wrapper">
+                    <span class="search-icon"><Search size={14} /></span>
+                    <input 
+                      id="city-search-input"
+                      type="text" 
+                      placeholder="Search & add cities..." 
+                      bind:value={citySearchQuery}
+                      onfocus={() => showCityDropdown = true}
+                      disabled={isScraping}
+                    />
+                    {#if selectedCities.length > 0}
+                      <button type="button" class="btn-clear-tags" onclick={clearAllCities} disabled={isScraping}>Clear All ({selectedCities.length})</button>
+                    {/if}
+                  </div>
+                  
+                  {#if selectedCities.length > 0}
+                    <div class="selected-tags-container">
+                      {#each selectedCities as cityCodename}
+                        {@const cityName = divisions.find(p => p.codename === cityCodename)?.name}
+                        <span class="city-tag">
+                          {cityName}
+                          <button type="button" class="tag-close" onclick={() => toggleCity(cityCodename)} disabled={isScraping}><X size={12} /></button>
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
+                  
+                  {#if showCityDropdown}
+                    <div class="city-dropdown-list">
+                      {#if filteredCities.length === 0}
+                        <div class="no-results-item">No provinces/cities found</div>
+                      {:else}
+                        {#each filteredCities as city}
+                          {@const isSelected = selectedCities.includes(city.codename)}
+                          <button 
+                            type="button" 
+                            class="city-dropdown-item {isSelected ? 'selected' : ''}"
+                            onclick={() => toggleCity(city.codename)}
+                          >
+                            <span>{city.name}</span>
+                            {#if isSelected}
+                              <span class="check-icon"><Check size={14} /></span>
+                            {/if}
+                          </button>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
               </div>
 
               <div class="input-group" style="margin-top: var(--spacing-sm);">
                 <div class="districts-header">
                   <span class="districts-label">Select Districts to Scan ({selectedDistricts.length} selected)</span>
                   <div class="districts-actions">
+                    <input 
+                      type="text" 
+                      placeholder="Filter districts..." 
+                      class="ward-filter-input" 
+                      bind:value={districtFilter} 
+                      disabled={isScraping}
+                    />
+                    <span class="divider">|</span>
                     <button type="button" class="btn-text" onclick={selectAllDistricts} disabled={isScraping}>Select All</button>
                     <span class="divider">|</span>
                     <button type="button" class="btn-text" onclick={deselectAllDistricts} disabled={isScraping}>Clear</button>
@@ -384,19 +545,19 @@
                 </div>
                 
                 <div class="districts-grid">
-                  {#each CITY_DISTRICTS[selectedCity] as district}
-                    <label class="district-checkbox-label">
+                  {#each filteredDistricts as district}
+                    <label class="district-checkbox-label" title={`${district.name} (${district.provinceName})`}>
                       <input 
                         type="checkbox" 
-                        value={district} 
+                        value={district.code} 
                         disabled={isScraping}
-                        checked={selectedDistricts.includes(district)}
+                        checked={selectedDistricts.includes(district.code)}
                         onchange={(e) => {
                           const checked = (e.target as HTMLInputElement).checked;
-                          toggleDistrict(district, checked);
+                          toggleDistrict(district.code, checked);
                         }}
                       />
-                      <span>{district}</span>
+                      <span class="ward-text">{district.name} <small class="district-suffix">({district.provinceName.replace('Thành phố ', 'TP. ').replace('Tỉnh ', 'T.')})</small></span>
                     </label>
                   {/each}
                 </div>
@@ -405,8 +566,16 @@
               {#if selectedDistricts.length > 0}
                 <div class="input-group animate-slide-down" style="margin-top: var(--spacing-sm);">
                   <div class="districts-header">
-                    <span class="districts-label">Select Wards to Scan ({selectedWards.length} selected / {availableWards.length} available)</span>
+                    <span class="districts-label">Select Wards to Scan ({selectedWards.length} selected)</span>
                     <div class="districts-actions">
+                      <input 
+                        type="text" 
+                        placeholder="Filter wards..." 
+                        class="ward-filter-input" 
+                        bind:value={wardFilter} 
+                        disabled={isScraping}
+                      />
+                      <span class="divider">|</span>
                       <button type="button" class="btn-text" onclick={selectAllWards} disabled={isScraping}>Select All</button>
                       <span class="divider">|</span>
                       <button type="button" class="btn-text" onclick={deselectAllWards} disabled={isScraping}>Clear</button>
@@ -414,24 +583,23 @@
                   </div>
                   
                   <div class="districts-grid">
-                    {#each availableWards as ward}
-                      <label class="district-checkbox-label" title={`${ward.name} (${ward.district})`}>
+                    {#each filteredWards as ward}
+                      <label class="district-checkbox-label" title={`${ward.name} (${ward.districtName})`}>
                         <input 
                           type="checkbox" 
-                          value={`${ward.name}, ${ward.district}`} 
+                          value={ward.code} 
                           disabled={isScraping}
-                          checked={selectedWards.includes(`${ward.name}, ${ward.district}`)}
+                          checked={selectedWards.includes(ward.code)}
                           onchange={(e) => {
                             const checked = (e.target as HTMLInputElement).checked;
-                            const val = `${ward.name}, ${ward.district}`;
                             if (checked) {
-                              selectedWards = [...selectedWards, val];
+                              selectedWards = [...selectedWards, ward.code];
                             } else {
-                              selectedWards = selectedWards.filter(w => w !== val);
+                              selectedWards = selectedWards.filter(w => w !== ward.code);
                             }
                           }}
                         />
-                        <span class="ward-text">{ward.name} <small class="district-suffix">({ward.district.replace('Quận ', 'Q.').replace('Huyện ', 'H.')})</small></span>
+                        <span class="ward-text">{ward.name} <small class="district-suffix">({ward.districtName.replace('Quận ', 'Q.').replace('Huyện ', 'H.')})</small></span>
                       </label>
                     {/each}
                   </div>
@@ -1164,27 +1332,15 @@
   }
 
   .deep-scan-config {
+    position: relative;
+    z-index: 10;
     background: var(--color-surface-container-low);
     padding: var(--spacing-md);
     border-radius: var(--rounded-md);
     border: 1px solid var(--color-outline-variant);
     margin-bottom: var(--spacing-sm);
   }
-  .deep-scan-config select {
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-size: 13px;
-    height: 38px;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-  .deep-scan-config select:focus {
-    border-color: var(--color-success);
-  }
+
   .districts-header {
     display: flex;
     justify-content: space-between;
@@ -1254,7 +1410,7 @@
   }
   .ward-text {
     display: inline-block;
-    max-width: 100px;
+    max-width: 140px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1296,5 +1452,151 @@
   .segmented-btn:focus-visible {
     outline: 2px solid var(--color-success);
     outline-offset: -2px;
+  }
+  .ward-filter-input {
+    padding: 3px var(--spacing-sm);
+    font-size: 11px;
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-sm);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    outline: none;
+    width: 110px;
+    transition: var(--transition-fast);
+  }
+  .ward-filter-input:focus {
+    border-color: var(--color-success);
+    width: 150px;
+  }
+  
+  /* City Multiselect Styles */
+  .city-multiselect-container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    width: 100%;
+  }
+  .search-wrapper {
+    display: flex;
+    align-items: center;
+    border: 1px solid var(--color-outline);
+    border-radius: var(--rounded-md);
+    background: var(--color-surface-container-lowest);
+    padding: 0 var(--spacing-sm);
+    height: 38px;
+    transition: var(--transition-fast);
+  }
+  .search-wrapper:focus-within {
+    border-color: var(--color-success);
+  }
+  .search-icon {
+    font-size: 14px;
+    margin-right: var(--spacing-xs);
+    opacity: 0.7;
+  }
+  .search-wrapper input {
+    border: none !important;
+    background: transparent !important;
+    outline: none !important;
+    font-size: 13px !important;
+    color: var(--color-on-surface) !important;
+    width: 100% !important;
+    height: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .btn-clear-tags {
+    background: none;
+    border: none;
+    color: var(--color-error);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: var(--transition-fast);
+  }
+  .btn-clear-tags:hover {
+    text-decoration: underline;
+  }
+  .selected-tags-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+    margin-top: 4px;
+  }
+  .city-tag {
+    display: inline-flex;
+    align-items: center;
+    background: var(--color-surface-container-high);
+    border: 1px solid var(--color-outline-variant);
+    color: var(--color-on-surface);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: var(--rounded-sm);
+    gap: 4px;
+  }
+  .tag-close {
+    background: none;
+    border: none;
+    color: var(--color-on-surface-variant);
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+  }
+  .tag-close:hover {
+    color: var(--color-error);
+  }
+  .city-dropdown-list {
+    position: absolute;
+    top: 65px;
+    left: 0;
+    right: 0;
+    background: var(--color-surface-container-lowest);
+    border: 1px solid var(--color-outline);
+    border-radius: var(--rounded-md);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 100;
+  }
+  .city-dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--color-outline-variant);
+    color: var(--color-on-surface);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    transition: var(--transition-fast);
+  }
+  .city-dropdown-item:last-child {
+    border-bottom: none;
+  }
+  .city-dropdown-item:hover {
+    background: var(--color-surface-container-low);
+  }
+  .city-dropdown-item.selected {
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--color-success);
+    font-weight: 600;
+  }
+  .check-icon {
+    font-weight: bold;
+    font-size: 12px;
+  }
+  .no-results-item {
+    padding: var(--spacing-md);
+    font-size: 13px;
+    color: var(--color-on-surface-variant);
+    text-align: center;
+    font-style: italic;
   }
 </style>

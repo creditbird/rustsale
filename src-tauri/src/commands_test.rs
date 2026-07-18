@@ -109,7 +109,7 @@ mod tests {
                         } else if request.contains("/maps/place/Scraped+Cafe") {
                             let body = r#"<html><body>
                               <h1>Scraped Cafe</h1>
-                              <button data-item-id="phone:tel:+84111222333">Phone</button>
+                              <button data-item-id="phone:tel:+84911222333">Phone</button>
                               <button data-item-id="address">789 Dong Khoi St, HCMC</button>
                               <a data-item-id="authority" href="https://scrapedcafe.com">Website</a>
                               <a href="https://facebook.com/scrapedcafe">Facebook</a>
@@ -163,7 +163,7 @@ mod tests {
         let scraped_lead = leads.iter().find(|l| l.name == "Scraped Cafe");
         assert!(scraped_lead.is_some(), "Scraped Cafe not found in database");
         let lead = scraped_lead.unwrap();
-        assert_eq!(lead.phone, "+84111222333");
+        assert_eq!(lead.phone, "+84911222333");
         assert_eq!(lead.company, "Scraped Cafe");
         assert_eq!(lead.status, "New");
 
@@ -409,7 +409,7 @@ mod tests {
                         } else if request.contains("/maps/place/Scraped+Cafe") {
                             let body = r#"<html><body>
                               <h1>Scraped Cafe</h1>
-                              <button data-item-id="phone:tel:+84111222333">Phone</button>
+                              <button data-item-id="phone:tel:+84911222333">Phone</button>
                               <button data-item-id="address">789 Dong Khoi St, HCMC</button>
                               <a data-item-id="authority" href="https://scrapedcafe.com">Website</a>
                               <a href="https://facebook.com/scrapedcafe">Facebook</a>

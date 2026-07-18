@@ -17,7 +17,7 @@ pub fn get_leads(state: tauri::State<DbState>) -> Result<Vec<Lead>, String> {
 
 pub fn get_leads_internal(conn: &Connection) -> Result<Vec<Lead>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached FROM leads")
+        .prepare("SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, zalo_uid, zalo_status, relationship_status, last_lookup_attempt FROM leads")
         .map_err(|e| format!("Database query error: {}", e))?;
 
     let rows = stmt
@@ -36,6 +36,10 @@ pub fn get_leads_internal(conn: &Connection) -> Result<Vec<Lead>, String> {
                 address: row.get(10)?,
                 has_zalo: row.get(11)?,
                 zalo_reached: row.get(12)?,
+                zalo_uid: row.get(13)?,
+                zalo_status: row.get(14)?,
+                relationship_status: row.get(15)?,
+                last_lookup_attempt: row.get(16)?,
             })
         })
         .map_err(|e| format!("Database query error: {}", e))?;
@@ -58,7 +62,7 @@ pub fn get_lead_details(id: i32, state: tauri::State<DbState>) -> Result<Lead, S
 
 pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, String> {
     conn.query_row(
-        "SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached FROM leads WHERE id = ?1",
+        "SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, zalo_uid, zalo_status, relationship_status, last_lookup_attempt FROM leads WHERE id = ?1",
         [id],
         |row| {
             Ok(Lead {
@@ -75,6 +79,10 @@ pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, Str
                 address: row.get(10)?,
                 has_zalo: row.get(11)?,
                 zalo_reached: row.get(12)?,
+                zalo_uid: row.get(13)?,
+                zalo_status: row.get(14)?,
+                relationship_status: row.get(15)?,
+                last_lookup_attempt: row.get(16)?,
             })
         }
     ).map_err(|e| format!("Database query error: {}", e))
@@ -592,18 +600,28 @@ pub async fn run_google_maps_scrape_task(
                 .map_err(|e| format!("Database query error: {}", e))?;
 
             for biz in &final_businesses {
-                if !biz.phone.trim().is_empty() {
-                    let exists: i64 = tx
-                        .query_row(
-                            "SELECT COUNT(*) FROM leads WHERE phone = ?1",
-                            [&biz.phone],
-                            |row| row.get(0),
-                        )
-                        .unwrap_or(0);
+                let is_mobile = is_vn_mobile(&biz.phone);
+                // Currently, Google Maps scraper does not extract email (always empty).
+                // If email extraction is added in the future, we can check: let has_email = !biz.email.is_empty();
+                let has_email = false;
+                
+                // Lead must have either a mobile number or an email.
+                // If it only has a landline and no email, it is discarded.
+                if !is_mobile && !has_email {
+                    continue;
+                }
 
-                    if exists > 0 {
-                        continue;
-                    }
+                // Since it is a valid mobile number, check for duplicates in the database
+                let exists: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM leads WHERE phone = ?1",
+                        [&biz.phone],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+
+                if exists > 0 {
+                    continue;
                 }
 
                 let mut about_parts = Vec::new();
@@ -709,6 +727,7 @@ pub async fn start_google_maps_scrape(
     bbox: Option<[f64; 4]>,
     step_km: Option<f64>,
     districts: Option<Vec<String>>,
+    headless: Option<bool>,
 ) -> Result<(), String> {
     let app_handle_clone = app_handle.clone();
 
@@ -717,6 +736,7 @@ pub async fn start_google_maps_scrape(
         let browser_state = app_handle_clone.state::<BrowserState>();
 
         let manager = browser_state.manager.clone();
+        let is_headless = headless.unwrap_or(true);
 
         let _ = app_handle_clone.emit(
             "scrape-log",
@@ -725,27 +745,26 @@ pub async fn start_google_maps_scrape(
             },
         );
 
-        // 1. Start browser if not running
+        // 1. Start browser (always close the existing one first to guarantee correct headless mode & clean session pool)
         {
             let _guard = browser_state.start_lock.lock().await;
-            if manager.process_id().await.is_none() {
-                if let Err(e) = manager.start(true).await {
-                    let _ = app_handle_clone.emit(
-                        "scrape-log",
-                        ScrapeLogPayload {
-                            message: format!("Failed to start browser: {}", e),
-                        },
-                    );
-                    let _ = app_handle_clone.emit(
-                        "scrape-progress",
-                        ScrapeProgressPayload {
-                            progress: 100.0,
-                            status: "failed".to_string(),
-                            message: format!("Failed to start browser: {}", e),
-                        },
-                    );
-                    return;
-                }
+            let _ = manager.close().await;
+            if let Err(e) = manager.start(is_headless).await {
+                let _ = app_handle_clone.emit(
+                    "scrape-log",
+                    ScrapeLogPayload {
+                        message: format!("Failed to start browser: {}", e),
+                    },
+                );
+                let _ = app_handle_clone.emit(
+                    "scrape-progress",
+                    ScrapeProgressPayload {
+                        progress: 100.0,
+                        status: "failed".to_string(),
+                        message: format!("Failed to start browser: {}", e),
+                    },
+                );
+                return;
             }
         }
 
@@ -788,6 +807,113 @@ pub async fn start_google_maps_scrape(
     });
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_google_maps_scrape(
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let browser_state = app_handle.state::<BrowserState>();
+    let manager = browser_state.manager.clone();
+
+    // Close the browser to immediately abort any active scrape sessions
+    let _ = manager.close().await;
+
+    let _ = app_handle.emit(
+        "scrape-log",
+        ScrapeLogPayload {
+            message: "Scrape campaign stopped by user.".to_string(),
+        },
+    );
+
+    let _ = app_handle.emit(
+        "scrape-progress",
+        ScrapeProgressPayload {
+            progress: 100.0,
+            status: "failed".to_string(),
+            message: "Campaign stopped by user.".to_string(),
+        },
+    );
+
+    let _ = app_handle.emit(
+        "scrape-complete",
+        ScrapeCompletePayload {
+            total_scraped: 0,
+            message: "Campaign stopped by user.".to_string(),
+        },
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_preset_provinces() -> Result<serde_json::Value, String> {
+    let json_data = serde_json::json!({
+        "Thành phố Cần Thơ": { "minLat": 9.9, "maxLat": 10.3, "minLng": 105.3, "maxLng": 105.9 },
+        "Thành phố Đà Nẵng": { "minLat": 15.9, "maxLat": 16.3, "minLng": 107.9, "maxLng": 108.3 },
+        "Thành phố Hà Nội": { "minLat": 20.58, "maxLat": 21.36, "minLng": 105.28, "maxLng": 106.03 },
+        "Thành phố Hải Phòng": { "minLat": 20.68, "maxLat": 21.03, "minLng": 106.52, "maxLng": 106.9 },
+        "Thành phố Hồ Chí Minh": { "minLat": 10.37, "maxLat": 11.16, "minLng": 106.36, "maxLng": 107.03 },
+        "Thành phố Huế": { "minLat": 15.9949, "maxLat": 17.1109, "minLng": 107.0343, "maxLng": 108.4806 },
+        "Tỉnh An Giang": { "minLat": 8.9946, "maxLat": 10.9623, "minLng": 103.0522, "maxLng": 105.5756 },
+        "Tỉnh Bà Rịa - Vũng Tàu": { "minLat": 10.3, "maxLat": 10.8, "minLng": 107, "maxLng": 107.6 },
+        "Tỉnh Bạc Liêu": { "minLat": 8.2912, "maxLat": 9.6375, "minLng": 105.2324, "maxLng": 106.0553 },
+        "Tỉnh Bắc Giang": { "minLat": 21.122, "maxLat": 21.6263, "minLng": 105.8806, "maxLng": 107.0336 },
+        "Tỉnh Bắc Kạn": { "minLat": 21.8043, "maxLat": 22.7414, "minLng": 105.4311, "maxLng": 106.247 },
+        "Tỉnh Bắc Ninh": { "minLat": 20.9693, "maxLat": 21.6263, "minLng": 105.8806, "maxLng": 107.0336 },
+        "Tỉnh Bến Tre": { "minLat": 9.4273, "maxLat": 10.3403, "minLng": 106.0275, "maxLng": 106.9934 },
+        "Tỉnh Bình Dương": { "minLat": 10.85, "maxLat": 11.52, "minLng": 106.38, "maxLng": 106.91 },
+        "Tỉnh Bình Định": { "minLat": 13.5152, "maxLat": 14.7032, "minLng": 108.6011, "maxLng": 109.5849 },
+        "Tỉnh Bình Phước": { "minLat": 11.3016, "maxLat": 12.2985, "minLng": 106.4116, "maxLng": 107.4271 },
+        "Tỉnh Bình Thuận": { "minLat": 9.378, "maxLat": 11.5561, "minLng": 107.3942, "maxLng": 109.4019 },
+        "Tỉnh Cà Mau": { "minLat": 8.1791, "maxLat": 9.6375, "minLng": 103.4821, "maxLng": 106.0553 },
+        "Tỉnh Cao Bằng": { "minLat": 22.3569, "maxLat": 23.1188, "minLng": 105.2667, "maxLng": 106.8376 },
+        "Tỉnh Đắk Lắk": { "minLat": 12.1605, "maxLat": 13.6953, "minLng": 107.4842, "maxLng": 109.6665 },
+        "Tỉnh Đắk Nông": { "minLat": 11.7489, "maxLat": 12.8125, "minLng": 107.2061, "maxLng": 108.1164 },
+        "Tỉnh Điện Biên": { "minLat": 20.8927, "maxLat": 22.5479, "minLng": 102.1439, "maxLng": 103.5988 },
+        "Tỉnh Đồng Nai": { "minLat": 10.73, "maxLat": 11.45, "minLng": 106.75, "maxLng": 107.58 },
+        "Tỉnh Đồng Tháp": { "minLat": 10.1348, "maxLat": 10.9735, "minLng": 105.1856, "maxLng": 106.9934 },
+        "Tỉnh Gia Lai": { "minLat": 12.9962, "maxLat": 14.7032, "minLng": 107.4508, "maxLng": 109.5849 },
+        "Tỉnh Hà Giang": { "minLat": 22.1656, "maxLat": 23.3927, "minLng": 104.3343, "maxLng": 105.5741 },
+        "Tỉnh Hà Nam": { "minLat": 20.3629, "maxLat": 20.7044, "minLng": 105.769, "maxLng": 106.1832 },
+        "Tỉnh Hà Tĩnh": { "minLat": 17.9096, "maxLat": 18.767, "minLng": 105.1035, "maxLng": 106.7537 },
+        "Tỉnh Hải Dương": { "minLat": 20.6836, "maxLat": 21.237, "minLng": 106.1242, "maxLng": 106.611 },
+        "Tỉnh Hậu Giang": { "minLat": 9.5822, "maxLat": 9.9942, "minLng": 105.3285, "maxLng": 105.8968 },
+        "Tỉnh Hoà Bình": { "minLat": 20.3054, "maxLat": 21.1128, "minLng": 104.8365, "maxLng": 105.8571 },
+        "Tỉnh Hưng Yên": { "minLat": 20.0772, "maxLat": 21.007, "minLng": 105.8953, "maxLng": 107.1193 },
+        "Tỉnh Khánh Hòa": { "minLat": 11.72, "maxLat": 12.87, "minLng": 108.68, "maxLng": 109.35 },
+        "Tỉnh Kiên Giang": { "minLat": 9.3, "maxLat": 10.5, "minLng": 103.4, "maxLng": 105.4 },
+        "Tỉnh Kon Tum": { "minLat": 13.9217, "maxLat": 15.4176, "minLng": 107.3354, "maxLng": 108.5472 },
+        "Tỉnh Lai Châu": { "minLat": 21.6861, "maxLat": 22.8139, "minLng": 102.3205, "maxLng": 103.9858 },
+        "Tỉnh Lạng Sơn": { "minLat": 21.3252, "maxLat": 22.4615, "minLng": 106.0954, "maxLng": 107.3641 },
+        "Tỉnh Lào Cai": { "minLat": 21.3259, "maxLat": 22.8449, "minLng": 103.5294, "maxLng": 105.1004 },
+        "Tỉnh Lâm Đồng": { "minLat": 11.18, "maxLat": 12.3, "minLng": 107.27, "maxLng": 108.78 },
+        "Tỉnh Long An": { "minLat": 10.2, "maxLat": 11.03, "minLng": 105.5, "maxLng": 106.68 },
+        "Tỉnh Nam Định": { "minLat": 19.49, "maxLat": 20.4992, "minLng": 105.924, "maxLng": 106.9524 },
+        "Tỉnh Nghệ An": { "minLat": 18.5521, "maxLat": 20.0024, "minLng": 103.8746, "maxLng": 106.2645 },
+        "Tỉnh Ninh Bình": { "minLat": 19.4111, "maxLat": 20.7044, "minLng": 105.5417, "maxLng": 106.9524 },
+        "Tỉnh Ninh Thuận": { "minLat": 10.7631, "maxLat": 12.1648, "minLng": 108.5515, "maxLng": 109.5374 },
+        "Tỉnh Phú Thọ": { "minLat": 20.3054, "maxLat": 21.7196, "minLng": 104.8143, "maxLng": 105.8571 },
+        "Tỉnh Phú Yên": { "minLat": 12.7048, "maxLat": 13.6953, "minLng": 108.6725, "maxLng": 109.6665 },
+        "Tỉnh Quảng Bình": { "minLat": 16.921, "maxLat": 18.1316, "minLng": 105.6077, "maxLng": 107.2961 },
+        "Tỉnh Quảng Nam": { "minLat": 14.9514, "maxLat": 16.1663, "minLng": 107.2109, "maxLng": 109.0236 },
+        "Tỉnh Quảng Ngãi": { "minLat": 13.9217, "maxLat": 15.7973, "minLng": 107.3354, "maxLng": 109.4632 },
+        "Tỉnh Quảng Ninh": { "minLat": 20.4646, "maxLat": 21.6635, "minLng": 106.4392, "maxLng": 108.2086 },
+        "Tỉnh Quảng Trị": { "minLat": 16.3022, "maxLat": 18.1316, "minLng": 105.6077, "maxLng": 107.692 },
+        "Tỉnh Sóc Trăng": { "minLat": 8.7025, "maxLat": 9.9381, "minLng": 105.544, "maxLng": 106.4538 },
+        "Tỉnh Sơn La": { "minLat": 20.573, "maxLat": 22.0307, "minLng": 103.2123, "maxLng": 105.0253 },
+        "Tỉnh Tây Ninh": { "minLat": 10.3948, "maxLat": 11.7829, "minLng": 105.5004, "maxLng": 106.7472 },
+        "Tỉnh Thái Bình": { "minLat": 20.0772, "maxLat": 20.729, "minLng": 106.1097, "maxLng": 107.1193 },
+        "Tỉnh Thái Nguyên": { "minLat": 21.3265, "maxLat": 22.7414, "minLng": 105.4311, "maxLng": 106.247 },
+        "Tỉnh Thanh Hóa": { "minLat": 19.1875, "maxLat": 20.67, "minLng": 104.376, "maxLng": 106.2691 },
+        "Tỉnh Tiền Giang": { "minLat": 10.1399, "maxLat": 10.587, "minLng": 105.8158, "maxLng": 106.9934 },
+        "Tỉnh Trà Vinh": { "minLat": 9.0801, "maxLat": 10.0822, "minLng": 105.9531, "maxLng": 106.8723 },
+        "Tỉnh Tuyên Quang": { "minLat": 21.4976, "maxLat": 23.3927, "minLng": 104.3343, "maxLng": 105.5983 },
+        "Tỉnh Vĩnh Long": { "minLat": 9.0801, "maxLat": 10.3403, "minLng": 105.6819, "maxLng": 106.9934 },
+        "Tỉnh Vĩnh Phúc": { "minLat": 21.1556, "maxLat": 21.5738, "minLng": 105.3225, "maxLng": 105.7866 },
+        "Tỉnh Yên Bái": { "minLat": 21.3259, "maxLat": 22.2919, "minLng": 103.8862, "maxLng": 105.1004 }
+    });
+    Ok(json_data)
 }
 
 #[derive(Clone, serde::Serialize)]

@@ -15,6 +15,27 @@ pub struct Lead {
     pub address: Option<String>,
     pub has_zalo: Option<i32>,
     pub zalo_reached: i32,
+    pub zalo_uid: Option<String>,
+    pub zalo_status: Option<String>,
+    pub relationship_status: Option<String>,
+    pub last_lookup_attempt: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Category {
+    pub id: Option<i32>,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OutreachHistory {
+    pub id: Option<i32>,
+    pub lead_id: i32,
+    pub template_id: i32,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub sent_at: String,
+    pub session_imei: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
