@@ -1,4 +1,4 @@
-use crate::models::{Activity, Deal, Lead};
+use crate::models::{Activity, Category, Deal, Lead};
 use rusqlite::Connection;
 use std::sync::Mutex;
 
@@ -1831,3 +1831,91 @@ pub async fn send_zalo_outreach_internal(
 
     Ok(())
 }
+
+#[tauri::command]
+pub fn get_categories(state: tauri::State<'_, DbState>) -> Result<Vec<Category>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_categories(&conn).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn create_category(state: tauri::State<'_, DbState>, name: String) -> Result<i32, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::create_category(&conn, &name).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_category(state: tauri::State<'_, DbState>, id: i32) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::delete_category(&conn, id).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn add_leads_to_category(
+    state: tauri::State<'_, DbState>,
+    lead_ids: Vec<i32>,
+    category_id: i32,
+) -> Result<(), String> {
+    let mut conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Transaction error: {}", e))?;
+
+    for lead_id in lead_ids {
+        crate::db::add_lead_to_category(&tx, lead_id, category_id)
+            .map_err(|e| format!("Database error: {}", e))?;
+    }
+
+    tx.commit().map_err(|e| format!("Transaction commit error: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_leads_from_category(
+    state: tauri::State<'_, DbState>,
+    lead_ids: Vec<i32>,
+    category_id: i32,
+) -> Result<(), String> {
+    let mut conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Transaction error: {}", e))?;
+
+    for lead_id in lead_ids {
+        crate::db::remove_lead_from_category(&tx, lead_id, category_id)
+            .map_err(|e| format!("Database error: {}", e))?;
+    }
+
+    tx.commit().map_err(|e| format!("Transaction commit error: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_leads_by_category(
+    state: tauri::State<'_, DbState>,
+    category_id: i32,
+) -> Result<Vec<Lead>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_leads_by_category(&conn, category_id).map_err(|e| format!("Database error: {}", e))
+}
+

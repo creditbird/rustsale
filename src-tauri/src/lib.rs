@@ -71,7 +71,13 @@ pub fn run() {
             commands::create_outreach_template,
             commands::update_outreach_template,
             commands::delete_outreach_template,
-            commands::send_zalo_outreach
+            commands::send_zalo_outreach,
+            commands::get_categories,
+            commands::create_category,
+            commands::delete_category,
+            commands::add_leads_to_category,
+            commands::remove_leads_from_category,
+            commands::get_leads_by_category
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

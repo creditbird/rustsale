@@ -462,4 +462,66 @@ mod tests {
         let scraped_lead = leads.iter().find(|l| l.name == "Scraped Cafe");
         assert!(scraped_lead.is_some(), "Scraped Cafe not found in database");
     }
+
+    #[test]
+    fn test_category_commands() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri::Manager;
+
+        let conn = db::init_db(":memory:").unwrap();
+        let mut conn = conn;
+        db::seed_data(&mut conn).unwrap();
+
+        let db_state = commands::DbState {
+            conn: std::sync::Mutex::new(conn),
+        };
+
+        let app = mock_builder()
+            .manage(db_state)
+            .build(mock_context(noop_assets()))
+            .unwrap();
+
+        let state = app.state::<commands::DbState>();
+
+        // 1. Initially categories list should be empty
+        let initial_categories = commands::get_categories(state.clone()).unwrap();
+        assert!(initial_categories.is_empty());
+
+        // 2. Create a category
+        let category_id = commands::create_category(state.clone(), "Partners".to_string()).unwrap();
+        assert!(category_id > 0);
+
+        // 3. Verify get_categories now returns the category
+        let categories2 = commands::get_categories(state.clone()).unwrap();
+        assert_eq!(categories2.len(), 1);
+        assert_eq!(categories2[0].name, "Partners");
+        assert_eq!(categories2[0].id, Some(category_id));
+
+        // 4. Add leads to category (leads 1 and 2 exist in seed data)
+        let res_add = commands::add_leads_to_category(state.clone(), vec![1, 2], category_id);
+        assert!(res_add.is_ok());
+
+        // 5. Verify get_leads_by_category returns 2 leads
+        let category_leads = commands::get_leads_by_category(state.clone(), category_id).unwrap();
+        assert_eq!(category_leads.len(), 2);
+        assert!(category_leads.iter().any(|l| l.name == "Sarah Harrington"));
+        assert!(category_leads.iter().any(|l| l.name == "Jordan Smith"));
+
+        // 6. Remove lead 1 from category
+        let res_remove = commands::remove_leads_from_category(state.clone(), vec![1], category_id);
+        assert!(res_remove.is_ok());
+
+        // Verify get_leads_by_category now returns 1 lead (Jordan Smith)
+        let category_leads2 = commands::get_leads_by_category(state.clone(), category_id).unwrap();
+        assert_eq!(category_leads2.len(), 1);
+        assert_eq!(category_leads2[0].name, "Jordan Smith");
+
+        // 7. Delete category
+        let res_delete = commands::delete_category(state.clone(), category_id);
+        assert!(res_delete.is_ok());
+
+        // Verify get_categories is empty again
+        let final_categories = commands::get_categories(state.clone()).unwrap();
+        assert!(final_categories.is_empty());
+    }
 }
