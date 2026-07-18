@@ -2485,57 +2485,59 @@ pub async fn get_campaign_leads(
         }
     };
 
-    let mut stmt = conn.prepare(query_str).map_err(|e| e.to_string())?;
-    
-    let lead_rows = if segmentation == "template_success" {
-        stmt.query_map(rusqlite::params![category_id, filter_template_id.unwrap()], |row| {
-            Ok(crate::models::Lead {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                company: row.get(2)?,
-                status: row.get(3)?,
-                value: row.get(4)?,
-                last_activity: row.get(5)?,
-                owner: row.get(6)?,
-                email: row.get(7)?,
-                phone: row.get(8)?,
-                about: row.get(9)?,
-                address: row.get(10)?,
-                has_zalo: row.get(11)?,
-                zalo_reached: row.get(12)?,
-                zalo_uid: row.get(13)?,
-                zalo_status: row.get(14)?,
-                relationship_status: row.get(15)?,
-                last_lookup_attempt: row.get(16)?,
-            })
-        }).map_err(|e| e.to_string())?
-    } else {
-        stmt.query_map([category_id], |row| {
-            Ok(crate::models::Lead {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                company: row.get(2)?,
-                status: row.get(3)?,
-                value: row.get(4)?,
-                last_activity: row.get(5)?,
-                owner: row.get(6)?,
-                email: row.get(7)?,
-                phone: row.get(8)?,
-                about: row.get(9)?,
-                address: row.get(10)?,
-                has_zalo: row.get(11)?,
-                zalo_reached: row.get(12)?,
-                zalo_uid: row.get(13)?,
-                zalo_status: row.get(14)?,
-                relationship_status: row.get(15)?,
-                last_lookup_attempt: row.get(16)?,
-            })
-        }).map_err(|e| e.to_string())?
-    };
-
     let mut leads = Vec::new();
-    for row in lead_rows {
-        leads.push(row.map_err(|e| e.to_string())?);
+    if segmentation == "template_success" {
+        let mut stmt = conn.prepare(query_str).map_err(|e| e.to_string())?;
+        let lead_rows = stmt.query_map(rusqlite::params![category_id, filter_template_id.unwrap()], |row| {
+            Ok(crate::models::Lead {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                company: row.get(2)?,
+                status: row.get(3)?,
+                value: row.get(4)?,
+                last_activity: row.get(5)?,
+                owner: row.get(6)?,
+                email: row.get(7)?,
+                phone: row.get(8)?,
+                about: row.get(9)?,
+                address: row.get(10)?,
+                has_zalo: row.get(11)?,
+                zalo_reached: row.get(12)?,
+                zalo_uid: row.get(13)?,
+                zalo_status: row.get(14)?,
+                relationship_status: row.get(15)?,
+                last_lookup_attempt: row.get(16)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        for row in lead_rows {
+            leads.push(row.map_err(|e| e.to_string())?);
+        }
+    } else {
+        let mut stmt = conn.prepare(query_str).map_err(|e| e.to_string())?;
+        let lead_rows = stmt.query_map([category_id], |row| {
+            Ok(crate::models::Lead {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                company: row.get(2)?,
+                status: row.get(3)?,
+                value: row.get(4)?,
+                last_activity: row.get(5)?,
+                owner: row.get(6)?,
+                email: row.get(7)?,
+                phone: row.get(8)?,
+                about: row.get(9)?,
+                address: row.get(10)?,
+                has_zalo: row.get(11)?,
+                zalo_reached: row.get(12)?,
+                zalo_uid: row.get(13)?,
+                zalo_status: row.get(14)?,
+                relationship_status: row.get(15)?,
+                last_lookup_attempt: row.get(16)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        for row in lead_rows {
+            leads.push(row.map_err(|e| e.to_string())?);
+        }
     }
     
     Ok(leads)
