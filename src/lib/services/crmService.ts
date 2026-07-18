@@ -125,3 +125,32 @@ export async function updateLead(
 export async function deleteLead(id: number): Promise<void> {
   return invoke<void>('delete_lead', { id });
 }
+
+export interface Category {
+  id?: number;
+  name: string;
+}
+
+export async function getCategories(): Promise<Category[]> {
+  return invoke<Category[]>('get_categories');
+}
+
+export async function createCategory(name: string): Promise<number> {
+  return invoke<number>('create_category', { name });
+}
+
+export async function deleteCategory(id: number): Promise<void> {
+  return invoke<void>('delete_category', { id });
+}
+
+export async function addLeadsToCategory(leadIds: number[], categoryId: number): Promise<void> {
+  return invoke<void>('add_leads_to_category', { leadIds, categoryId });
+}
+
+export async function removeLeadsFromCategory(leadIds: number[], categoryId: number): Promise<void> {
+  return invoke<void>('remove_leads_from_category', { leadIds, categoryId });
+}
+
+export async function getLeadsByCategory(categoryId: number): Promise<Lead[]> {
+  return invoke<Lead[]>('get_leads_by_category', { categoryId });
+}

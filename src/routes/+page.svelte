@@ -6,6 +6,7 @@
   import KanbanBoard from '$lib/components/KanbanBoard.svelte';
   import GoogleMapsScraper from '$lib/components/GoogleMapsScraper.svelte';
   import ZaloOutreach from '$lib/components/ZaloOutreach.svelte';
+  import CategoryManager from '$lib/components/CategoryManager.svelte';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
 
@@ -50,6 +51,8 @@
         <LeadsList leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} />
       {:else if activeTab === 'contacts'}
         <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} />
+      {:else if activeTab === 'categories'}
+        <CategoryManager />
       {:else if activeTab === 'pipeline'}
         <KanbanBoard />
       {/if}

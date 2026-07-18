@@ -6,6 +6,17 @@
   let { leads = [], onRefresh } = $props<{ leads: Lead[]; onRefresh?: () => void }>();
   let selectedLeadId = $state<number | null>(null);
 
+  // Multiselect state
+  let selectedRows = $state<Set<number>>(new Set());
+  
+  // Category assign modal states
+  let showCategoryModal = $state(false);
+  let categories = $state<crmService.Category[]>([]);
+  let selectedCategoryId = $state<number | null>(null);
+  let assigningCategory = $state(false);
+  let assignErrorMsg = $state<string | null>(null);
+  let assignSuccessMsg = $state<string | null>(null);
+
   // Lead creation modal states
   let showAddModal = $state(false);
   let name = $state('');
@@ -139,16 +150,73 @@
       saving = false;
     }
   }
+
+  async function openCategoryModal() {
+    if (selectedRows.size === 0) return;
+    try {
+      categories = await crmService.getCategories();
+      selectedCategoryId = categories.length > 0 ? categories[0].id! : null;
+      assignErrorMsg = null;
+      assignSuccessMsg = null;
+      showCategoryModal = true;
+    } catch (err) {
+      console.error('Failed to load categories', err);
+    }
+  }
+
+  async function handleAssignCategory() {
+    if (!selectedCategoryId || selectedRows.size === 0) return;
+    assigningCategory = true;
+    assignErrorMsg = null;
+    try {
+      await crmService.addLeadsToCategory(Array.from(selectedRows), selectedCategoryId);
+      assignSuccessMsg = 'Successfully assigned leads to category.';
+      setTimeout(() => {
+        showCategoryModal = false;
+        selectedRows.clear();
+        selectedRows = new Set(selectedRows);
+        if (onRefresh) onRefresh();
+      }, 1500);
+    } catch (err) {
+      assignErrorMsg = err instanceof Error ? err.message : String(err);
+    } finally {
+      assigningCategory = false;
+    }
+  }
+
+  function toggleRowSelection(id: number) {
+    if (selectedRows.has(id)) selectedRows.delete(id);
+    else selectedRows.add(id);
+    selectedRows = new Set(selectedRows);
+  }
+
+  function toggleAllRows(e: Event) {
+    const checked = (e.target as HTMLInputElement).checked;
+    if (checked) {
+      paginatedLeads.forEach(l => { if (l.id) selectedRows.add(l.id); });
+    } else {
+      paginatedLeads.forEach(l => { if (l.id) selectedRows.delete(l.id); });
+    }
+    selectedRows = new Set(selectedRows);
+  }
 </script>
 
 <div class="leads-container">
   <div class="list-header">
     <div class="header-row">
       <h2>Leads & Contacts</h2>
-      <button class="add-lead-btn" onclick={() => { showAddModal = true; modalErrorMsg = null; }}>
-        <span class="material-icons">add</span>
-        <span>Add Lead</span>
-      </button>
+      <div class="header-actions">
+        {#if selectedRows.size > 0}
+          <button class="assign-category-btn" onclick={openCategoryModal}>
+            <span class="material-icons">folder_special</span>
+            <span>Assign to Category ({selectedRows.size})</span>
+          </button>
+        {/if}
+        <button class="add-lead-btn" onclick={() => { showAddModal = true; modalErrorMsg = null; }}>
+          <span class="material-icons">add</span>
+          <span>Add Lead</span>
+        </button>
+      </div>
     </div>
     <p class="subtitle">Select a lead row to view details, notes, and activity history.</p>
   </div>
@@ -215,6 +283,14 @@
     <table class="leads-table">
       <thead>
         <tr>
+          <th class="checkbox-col">
+            <input 
+              type="checkbox" 
+              checked={paginatedLeads.length > 0 && paginatedLeads.every(l => l.id && selectedRows.has(l.id))}
+              indeterminate={paginatedLeads.some(l => l.id && selectedRows.has(l.id)) && !paginatedLeads.every(l => l.id && selectedRows.has(l.id))}
+              onchange={toggleAllRows}
+            />
+          </th>
           <th>Name</th>
           <th>Company</th>
           <th>Phone</th>
@@ -229,7 +305,7 @@
       <tbody>
         {#if paginatedLeads.length === 0}
           <tr>
-            <td colspan="9" class="empty-state">No matching records found.</td>
+            <td colspan="10" class="empty-state">No matching records found.</td>
           </tr>
         {:else}
           {#each paginatedLeads as lead}
@@ -242,7 +318,15 @@
                   if (lead.id !== undefined) selectedLeadId = lead.id;
                 }
               }}
+              class:selected={lead.id && selectedRows.has(lead.id)}
             >
+              <td class="checkbox-col" onclick={(e) => e.stopPropagation()}>
+                <input 
+                  type="checkbox" 
+                  checked={lead.id ? selectedRows.has(lead.id) : false}
+                  onchange={() => lead.id && toggleRowSelection(lead.id)}
+                />
+              </td>
               <td>
                 <div class="lead-name-cell">
                   <div class="avatar-sm">
@@ -397,6 +481,51 @@
         </button>
       </div>
     </form>
+  </div>
+{/if}
+
+{#if showCategoryModal}
+  <div class="modal-backdrop" onclick={() => !assigningCategory && (showCategoryModal = false)} role="presentation"></div>
+  <div class="modal-container small-modal" role="dialog" aria-modal="true">
+    <header class="modal-header">
+      <h3>Assign to Category</h3>
+      <button class="close-btn" onclick={() => showCategoryModal = false} disabled={assigningCategory}>
+        <span class="material-icons">close</span>
+      </button>
+    </header>
+
+    {#if assignErrorMsg}
+      <div class="error-banner" style="margin: var(--spacing-md)">
+        <span class="material-icons">error_outline</span> {assignErrorMsg}
+      </div>
+    {/if}
+    {#if assignSuccessMsg}
+      <div class="success-banner" style="margin: var(--spacing-md)">
+        <span class="material-icons">check_circle</span> {assignSuccessMsg}
+      </div>
+    {/if}
+
+    <div class="modal-body">
+      <p>Assign {selectedRows.size} selected lead(s) to:</p>
+      {#if categories.length === 0}
+        <div class="empty-state" style="padding: var(--spacing-md) 0">
+          No categories available. Please create one in the Category Manager first.
+        </div>
+      {:else}
+        <select bind:value={selectedCategoryId} class="full-width-select">
+          {#each categories as cat}
+            <option value={cat.id}>{cat.name}</option>
+          {/each}
+        </select>
+      {/if}
+    </div>
+
+    <div class="modal-actions" style="padding: var(--spacing-md)">
+      <button class="cancel-btn" onclick={() => showCategoryModal = false} disabled={assigningCategory}>Cancel</button>
+      <button class="save-btn" onclick={handleAssignCategory} disabled={assigningCategory || categories.length === 0}>
+        {assigningCategory ? 'Assigning...' : 'Assign Leads'}
+      </button>
+    </div>
   </div>
 {/if}
 
@@ -576,6 +705,8 @@
     font-size: 13px;
     font-weight: 600;
     transition: var(--transition-fast);
+    border: none;
+    cursor: pointer;
   }
 
   .add-lead-btn:hover {
@@ -584,6 +715,36 @@
   }
 
   .add-lead-btn .material-icons {
+    font-size: 16px;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    align-items: center;
+  }
+
+  .assign-category-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--color-success);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--rounded-md);
+    font-size: 13px;
+    font-weight: 600;
+    transition: var(--transition-fast);
+    border: 1px solid var(--color-success);
+    cursor: pointer;
+  }
+
+  .assign-category-btn:hover {
+    background: var(--color-success);
+    color: #fff;
+  }
+
+  .assign-category-btn .material-icons {
     font-size: 16px;
   }
 
@@ -636,6 +797,16 @@
 
   .leads-table tbody tr:last-child td {
     border-bottom: none;
+  }
+
+  .leads-table tbody tr.selected {
+    background: rgba(16, 185, 129, 0.05);
+  }
+
+  .checkbox-col {
+    width: 40px;
+    text-align: center;
+    cursor: default;
   }
 
   .lead-name-cell {
@@ -870,5 +1041,44 @@
     color: var(--color-danger);
     font-size: 13px;
     margin-bottom: var(--spacing-md);
+  }
+
+  .success-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md);
+    background-color: rgba(16, 185, 129, 0.08);
+    border: 1px solid var(--color-success);
+    border-radius: var(--rounded-md);
+    color: var(--color-success);
+    font-size: 13px;
+    margin-bottom: var(--spacing-md);
+  }
+
+  .small-modal {
+    width: 400px;
+  }
+
+  .modal-body {
+    padding: var(--spacing-md) var(--spacing-lg);
+    font-size: 14px;
+    color: var(--color-on-surface);
+  }
+
+  .full-width-select {
+    width: 100%;
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    border-radius: var(--rounded-md);
+    border: 1px solid var(--color-outline-variant);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-family: var(--font-family);
+    font-size: 14px;
+    outline: none;
+  }
+  .full-width-select:focus {
+    border-color: var(--color-primary);
   }
 </style>
