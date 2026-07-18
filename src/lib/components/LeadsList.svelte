@@ -105,6 +105,21 @@
     currentPage = 1;
   });
 
+  $effect(() => {
+    // track filters and pagination
+    const _s = searchQuery;
+    const _st = filterStatus;
+    const _o = filterOwner;
+    const _v = filterValueRange;
+    const _z = filterZaloStatus;
+    const _or = filterOutreachStatus;
+    const _p = pageSize;
+    const _cp = currentPage;
+    
+    // Reset selection
+    selectedRows = new Set();
+  });
+
   let paginatedLeads = $derived(
     filteredLeads.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   );
@@ -193,9 +208,9 @@
   function toggleAllRows(e: Event) {
     const checked = (e.target as HTMLInputElement).checked;
     if (checked) {
-      paginatedLeads.forEach(l => { if (l.id) selectedRows.add(l.id); });
+      paginatedLeads.forEach((l: Lead) => { if (l.id) selectedRows.add(l.id); });
     } else {
-      paginatedLeads.forEach(l => { if (l.id) selectedRows.delete(l.id); });
+      paginatedLeads.forEach((l: Lead) => { if (l.id) selectedRows.delete(l.id); });
     }
     selectedRows = new Set(selectedRows);
   }
@@ -286,8 +301,8 @@
           <th class="checkbox-col">
             <input 
               type="checkbox" 
-              checked={paginatedLeads.length > 0 && paginatedLeads.every(l => l.id && selectedRows.has(l.id))}
-              indeterminate={paginatedLeads.some(l => l.id && selectedRows.has(l.id)) && !paginatedLeads.every(l => l.id && selectedRows.has(l.id))}
+              checked={paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id && selectedRows.has(l.id))}
+              indeterminate={paginatedLeads.some((l: Lead) => l.id && selectedRows.has(l.id)) && !paginatedLeads.every((l: Lead) => l.id && selectedRows.has(l.id))}
               onchange={toggleAllRows}
             />
           </th>

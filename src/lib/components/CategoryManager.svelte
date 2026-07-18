@@ -47,8 +47,8 @@
     try {
       loading = true;
       categoryLeads = await crmService.getLeadsByCategory(categoryId);
-      selectedToRemove.clear();
-      selectedToAdd.clear();
+      selectedToRemove = new Set();
+      selectedToAdd = new Set();
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
     } finally {
@@ -69,8 +69,8 @@
   let availableLeads = $derived(
     allLeads.filter(lead => 
       !categoryLeads.some(cl => cl.id === lead.id) &&
-      (addLeadsSearch ? lead.name.toLowerCase().includes(addLeadsSearch.toLowerCase()) || 
-       lead.company.toLowerCase().includes(addLeadsSearch.toLowerCase()) : true)
+      (addLeadsSearch ? (lead.name || '').toLowerCase().includes(addLeadsSearch.toLowerCase()) || 
+       (lead.company || '').toLowerCase().includes(addLeadsSearch.toLowerCase()) : true)
     )
   );
 
@@ -113,6 +113,7 @@
     try {
       await crmService.removeLeadsFromCategory(Array.from(selectedToRemove), activeCategoryId);
       await loadCategoryLeads(activeCategoryId);
+      await loadAllLeads();
       showMessage('Leads removed from category.');
     } catch (err) {
       showMessage(err instanceof Error ? err.message : String(err), true);
@@ -124,6 +125,7 @@
     try {
       await crmService.addLeadsToCategory(Array.from(selectedToAdd), activeCategoryId);
       await loadCategoryLeads(activeCategoryId);
+      await loadAllLeads();
       showMessage('Leads added to category.');
     } catch (err) {
       showMessage(err instanceof Error ? err.message : String(err), true);
