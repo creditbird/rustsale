@@ -5,8 +5,9 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
+  import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Table from '$lib/components/ui/table';
-  import { Folder, Plus, Trash2, Search, X, FolderMinus, AlertCircle, CheckCircle2 } from 'lucide-svelte';
+  import { Folder, Plus, Trash2, Search, FolderMinus, AlertCircle, CheckCircle2 } from 'lucide-svelte';
 
   let categories = $state<Category[]>([]);
   let activeCategoryId = $state<number | null>(null);
@@ -178,8 +179,7 @@
     selectedToRemove = new Set(selectedToRemove);
   }
 
-  function toggleRemoveAll(e: Event) {
-    const checked = (e.target as HTMLInputElement).checked;
+  function toggleRemoveAll(checked: boolean) {
     if (checked) {
       filteredCategoryLeads.forEach(l => { if (l.id) selectedToRemove.add(l.id); });
     } else {
@@ -194,8 +194,7 @@
     selectedToAdd = new Set(selectedToAdd);
   }
 
-  function toggleAddAll(e: Event) {
-    const checked = (e.target as HTMLInputElement).checked;
+  function toggleAddAll(checked: boolean) {
     if (checked) {
       availableLeads.forEach(l => { if (l.id) selectedToAdd.add(l.id); });
     } else {
@@ -205,16 +204,16 @@
   }
 </script>
 
-<div class="space-y-4">
+<div class="flex flex-col gap-4">
   {#if errorMsg}
     <div class="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-destructive text-xs flex items-center gap-2">
-      <AlertCircle class="w-4 h-4 shrink-0" />
+      <AlertCircle class="size-4 shrink-0" />
       <span>{errorMsg}</span>
     </div>
   {/if}
   {#if successMsg}
     <div class="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 text-xs flex items-center gap-2">
-      <CheckCircle2 class="w-4 h-4 shrink-0" />
+      <CheckCircle2 class="size-4 shrink-0" />
       <span>{successMsg}</span>
     </div>
   {/if}
@@ -235,21 +234,21 @@
           class="h-8 text-xs flex-1"
           onkeydown={(e) => { if (e.key === 'Enter') handleCreateCategory(); }}
         />
-        <Button size="sm" class="h-8 w-8 p-0 shrink-0" onclick={handleCreateCategory}>
-          <Plus class="w-4 h-4" />
+        <Button size="sm" class="size-8 p-0 shrink-0" onclick={handleCreateCategory}>
+          <Plus class="size-4" />
         </Button>
       </div>
 
-      <div class="flex-1 overflow-y-auto p-2 space-y-1">
-        {#each categories as category}
+      <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
+        {#each categories as category (category.id)}
           {@const isActive = activeCategoryId === category.id}
           <div class="group flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all {isActive ? 'bg-primary/10 text-primary font-semibold' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}">
-            <button class="flex-1 flex items-center gap-2.5 text-left truncate" onclick={() => activeCategoryId = category.id!}>
-              <Folder class="w-4 h-4 shrink-0 {isActive ? 'text-primary' : 'text-muted-foreground'}" />
+            <button type="button" class="flex-1 flex items-center gap-2.5 text-left truncate cursor-pointer" onclick={() => activeCategoryId = category.id!}>
+              <Folder class="size-4 shrink-0 {isActive ? 'text-primary' : 'text-muted-foreground'}" />
               <span class="truncate">{category.name}</span>
             </button>
-            <Button variant="ghost" size="sm" onclick={() => handleDeleteCategory(category.id!)} class="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity">
-              <Trash2 class="w-3.5 h-3.5" />
+            <Button variant="ghost" size="sm" onclick={() => handleDeleteCategory(category.id!)} class="size-6 p-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity">
+              <Trash2 class="size-3.5" />
             </Button>
           </div>
         {/each}
@@ -269,9 +268,9 @@
           </div>
         </div>
 
-        <div class="flex-1 overflow-y-auto space-y-4 pr-1">
+        <div class="flex-1 overflow-y-auto flex flex-col gap-4 pr-1">
           <!-- Leads in Category Table -->
-          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs space-y-3">
+          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3">
             <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
               <div class="flex items-center gap-2">
                 <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Leads in Category</h3>
@@ -279,7 +278,7 @@
               </div>
               {#if selectedToRemove.size > 0}
                 <Button variant="destructive" size="sm" class="h-7 text-xs gap-1.5" onclick={handleRemoveLeads}>
-                  <FolderMinus class="w-3.5 h-3.5" />
+                  <FolderMinus class="size-3.5" />
                   Remove Selected ({selectedToRemove.size})
                 </Button>
               {/if}
@@ -288,12 +287,12 @@
             <!-- Toolbar -->
             <div class="px-4 flex items-center gap-3">
               <div class="relative flex-1">
-                <Search class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+                <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
                 <Input type="text" bind:value={categoryLeadsSearch} placeholder="Search lead name, company, phone..." class="h-8 pl-8 text-xs" />
               </div>
-              <select bind:value={filterCategoryStatus} class="h-8 px-2.5 text-xs rounded-md border border-input bg-background">
+              <select bind:value={filterCategoryStatus} class="h-8 px-2.5 text-xs rounded-md border border-input bg-background cursor-pointer">
                 <option value="">All Statuses</option>
-                {#each uniqueCategoryStatuses as st}
+                {#each uniqueCategoryStatuses as st (st)}
                   <option value={st}>{st}</option>
                 {/each}
               </select>
@@ -303,12 +302,12 @@
               <Table.Header class="bg-muted/20">
                 <Table.Row>
                   <Table.Head class="w-10 text-center">
-                    <input 
-                      type="checkbox" 
-                      class="rounded border-input text-primary"
-                      checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
-                      onchange={toggleRemoveAll}
-                    />
+                    <div class="flex items-center justify-center">
+                      <Checkbox 
+                        checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
+                        onCheckedChange={(checked) => toggleRemoveAll(Boolean(checked))}
+                      />
+                    </div>
                   </Table.Head>
                   <Table.Head>Name</Table.Head>
                   <Table.Head>Company</Table.Head>
@@ -317,15 +316,15 @@
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {#each filteredCategoryLeads as lead}
+                {#each filteredCategoryLeads as lead (lead.id)}
                   <Table.Row class="hover:bg-muted/40">
                     <Table.Cell class="text-center">
-                      <input 
-                        type="checkbox" 
-                        class="rounded border-input text-primary"
-                        checked={selectedToRemove.has(lead.id!)}
-                        onchange={() => toggleRemoveSelection(lead.id!)}
-                      />
+                      <div class="flex items-center justify-center">
+                        <Checkbox 
+                          checked={lead.id ? selectedToRemove.has(lead.id) : false}
+                          onCheckedChange={() => lead.id && toggleRemoveSelection(lead.id)}
+                        />
+                      </div>
                     </Table.Cell>
                     <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
                     <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
@@ -347,12 +346,12 @@
           </div>
 
           <!-- Available Leads to Add Table -->
-          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs space-y-3">
+          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3">
             <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
               <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Available Leads to Add</h3>
               {#if selectedToAdd.size > 0}
                 <Button size="sm" class="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white" onclick={handleAddLeads}>
-                  <Plus class="w-3.5 h-3.5" />
+                  <Plus class="size-3.5" />
                   Add Selected ({selectedToAdd.size})
                 </Button>
               {/if}
@@ -360,7 +359,7 @@
 
             <div class="px-4">
               <div class="relative">
-                <Search class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+                <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
                 <Input type="text" bind:value={addLeadsSearch} placeholder="Search leads to add..." class="h-8 pl-8 text-xs" />
               </div>
             </div>
@@ -369,12 +368,12 @@
               <Table.Header class="bg-muted/20">
                 <Table.Row>
                   <Table.Head class="w-10 text-center">
-                    <input 
-                      type="checkbox" 
-                      class="rounded border-input text-primary"
-                      checked={availableLeads.length > 0 && selectedToAdd.size === availableLeads.length}
-                      onchange={toggleAddAll}
-                    />
+                    <div class="flex items-center justify-center">
+                      <Checkbox 
+                        checked={availableLeads.length > 0 && selectedToAdd.size === availableLeads.length}
+                        onCheckedChange={(checked) => toggleAddAll(Boolean(checked))}
+                      />
+                    </div>
                   </Table.Head>
                   <Table.Head>Name</Table.Head>
                   <Table.Head>Company</Table.Head>
@@ -382,15 +381,15 @@
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {#each availableLeads as lead}
+                {#each availableLeads as lead (lead.id)}
                   <Table.Row class="hover:bg-muted/40">
                     <Table.Cell class="text-center">
-                      <input 
-                        type="checkbox" 
-                        class="rounded border-input text-primary"
-                        checked={selectedToAdd.has(lead.id!)}
-                        onchange={() => toggleAddSelection(lead.id!)}
-                      />
+                      <div class="flex items-center justify-center">
+                        <Checkbox 
+                          checked={lead.id ? selectedToAdd.has(lead.id) : false}
+                          onCheckedChange={() => lead.id && toggleAddSelection(lead.id)}
+                        />
+                      </div>
                     </Table.Cell>
                     <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
                     <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
@@ -412,7 +411,7 @@
         </div>
       {:else}
         <div class="flex-1 rounded-xl border border-border bg-card flex flex-col items-center justify-center p-8 text-center text-muted-foreground">
-          <Folder class="w-12 h-12 stroke-1 text-muted-foreground/50 mb-3" />
+          <Folder class="size-12 stroke-1 text-muted-foreground/50 mb-3" />
           <h3 class="text-sm font-bold text-foreground">Select a Category</h3>
           <p class="text-xs mt-1">Choose a category from the left sidebar to manage its leads</p>
         </div>

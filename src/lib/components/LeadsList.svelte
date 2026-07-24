@@ -6,8 +6,8 @@
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
-  import * as Dialog from '$lib/components/ui/dialog';
-  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, Filter, X, ChevronLeft, ChevronRight } from 'lucide-svelte';
+  import { Checkbox } from '$lib/components/ui/checkbox';
+  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight } from 'lucide-svelte';
 
   let { leads = [], onRefresh } = $props<{ leads: Lead[]; onRefresh?: () => void }>();
   let selectedLeadId = $state<number | null>(null);
@@ -180,8 +180,7 @@
     selectedRows = new Set(selectedRows);
   }
 
-  function toggleAllRows(e: Event) {
-    const checked = (e.target as HTMLInputElement).checked;
+  function toggleAllRows(checked: boolean) {
     if (checked) {
       paginatedLeads.forEach((l: Lead) => { if (l.id) selectedRows.add(l.id); });
     } else {
@@ -191,7 +190,7 @@
   }
 </script>
 
-<div class="space-y-4">
+<div class="flex flex-col gap-4">
   <!-- Top Action Header -->
   <div class="flex items-center justify-between">
     <div>
@@ -201,12 +200,12 @@
     <div class="flex items-center gap-2">
       {#if selectedRows.size > 0}
         <Button variant="outline" size="sm" onclick={openCategoryModal} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10">
-          <FolderPlus class="w-4 h-4" />
+          <FolderPlus class="size-4" />
           Assign to Category ({selectedRows.size})
         </Button>
       {/if}
       <Button size="sm" onclick={() => { showAddModal = true; modalErrorMsg = null; }} class="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
-        <Plus class="w-4 h-4" />
+        <Plus class="size-4" />
         Add Lead
       </Button>
     </div>
@@ -216,7 +215,7 @@
   <div class="p-3 rounded-lg border border-border bg-card flex flex-wrap items-center justify-between gap-3">
     <!-- Search Bar -->
     <div class="relative flex-1 min-w-[220px] max-w-md">
-      <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+      <Search class="size-4 absolute left-3 top-2.5 text-muted-foreground" />
       <Input
         type="text"
         placeholder="Search name, company, email, owner..."
@@ -228,29 +227,29 @@
     <!-- Filter Dropdowns -->
     <div class="flex flex-wrap items-center gap-2">
       {#if uniqueStatuses.length > 1}
-        <select bind:value={filterStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
+        <select bind:value={filterStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
           <option value="">All Statuses</option>
-          {#each uniqueStatuses as status}
+          {#each uniqueStatuses as status (status)}
             <option value={status}>{status}</option>
           {/each}
         </select>
       {/if}
 
-      <select bind:value={filterOwner} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
+      <select bind:value={filterOwner} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
         <option value="">All Owners</option>
-        {#each uniqueOwners as owner}
+        {#each uniqueOwners as owner (owner)}
           <option value={owner}>{owner}</option>
         {/each}
       </select>
 
-      <select bind:value={filterValueRange} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
+      <select bind:value={filterValueRange} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
         <option value="">All Values</option>
         <option value="under_10k">Under $10k</option>
         <option value="10k_to_50k">$10k - $50k</option>
         <option value="above_50k">Above $50k</option>
       </select>
 
-      <select bind:value={filterZaloStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
+      <select bind:value={filterZaloStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
         <option value="">All Zalo Statuses</option>
         <option value="verified">Verified Zalo</option>
         <option value="no_zalo">No Zalo</option>
@@ -264,7 +263,7 @@
           onclick={() => { searchQuery = ''; filterStatus = ''; filterOwner = ''; filterValueRange = ''; filterZaloStatus = ''; filterOutreachStatus = ''; }}
           class="h-9 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
         >
-          <X class="w-3.5 h-3.5" /> Clear
+          <X class="size-3.5" /> Clear
         </Button>
       {/if}
     </div>
@@ -276,12 +275,12 @@
       <Table.Header class="bg-muted/40">
         <Table.Row>
           <Table.Head class="w-10 text-center">
-            <input 
-              type="checkbox" 
-              class="rounded border-input text-primary focus:ring-primary"
-              checked={paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id && selectedRows.has(l.id))}
-              onchange={toggleAllRows}
-            />
+            <div class="flex items-center justify-center">
+              <Checkbox 
+                checked={paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id && selectedRows.has(l.id))}
+                onCheckedChange={(checked) => toggleAllRows(Boolean(checked))}
+              />
+            </div>
           </Table.Head>
           <Table.Head>Name</Table.Head>
           <Table.Head>Company</Table.Head>
@@ -301,23 +300,23 @@
             </Table.Cell>
           </Table.Row>
         {:else}
-          {#each paginatedLeads as lead}
+          {#each paginatedLeads as lead (lead.id)}
             {@const isSelected = lead.id && selectedRows.has(lead.id)}
             <Table.Row 
               class="cursor-pointer hover:bg-muted/50 transition-colors {isSelected ? 'bg-primary/5' : ''}"
               onclick={() => { if (lead.id !== undefined) selectedLeadId = lead.id; }}
             >
               <Table.Cell class="text-center" onclick={(e: Event) => e.stopPropagation()}>
-                <input 
-                  type="checkbox" 
-                  class="rounded border-input text-primary"
-                  checked={lead.id ? selectedRows.has(lead.id) : false}
-                  onchange={() => lead.id && toggleRowSelection(lead.id)}
-                />
+                <div class="flex items-center justify-center">
+                  <Checkbox 
+                    checked={lead.id ? selectedRows.has(lead.id) : false}
+                    onCheckedChange={() => lead.id && toggleRowSelection(lead.id)}
+                  />
+                </div>
               </Table.Cell>
               <Table.Cell class="font-medium text-foreground">
                 <div class="flex items-center gap-2.5">
-                  <div class="w-7 h-7 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
+                  <div class="size-7 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
                     {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
                   </div>
                   <span class="font-semibold text-xs text-foreground">{lead.name}</span>
@@ -329,11 +328,11 @@
               <Table.Cell>
                 {#if lead.has_zalo === 1}
                   <Badge variant="outline" class="gap-1 border-sky-500/30 text-sky-600 bg-sky-500/10 text-[10px] py-0">
-                    <CheckCircle2 class="w-3 h-3 text-sky-500" /> Verified
+                    <CheckCircle2 class="size-3 text-sky-500" /> Verified
                   </Badge>
                 {:else if lead.has_zalo === 0}
                   <Badge variant="outline" class="gap-1 border-slate-300 text-slate-500 bg-slate-100 text-[10px] py-0">
-                    <XCircle class="w-3 h-3 text-slate-400" /> No Zalo
+                    <XCircle class="size-3 text-slate-400" /> No Zalo
                   </Badge>
                 {:else}
                   <span class="text-xs text-muted-foreground/50">—</span>
@@ -361,18 +360,18 @@
       <span>Showing {showingStart} to {showingEnd} of {totalEntries} entries</span>
       
       <div class="flex items-center gap-2">
-        <select bind:value={pageSize} class="h-8 px-2 text-xs rounded border border-input bg-background">
+        <select bind:value={pageSize} class="h-8 px-2 text-xs rounded border border-input bg-background cursor-pointer">
           <option value={5}>5 / page</option>
           <option value={10}>10 / page</option>
           <option value={25}>25 / page</option>
         </select>
 
-        <Button variant="outline" size="sm" class="h-8 w-8 p-0" disabled={currentPage === 1} onclick={() => currentPage--}>
-          <ChevronLeft class="w-4 h-4" />
+        <Button variant="outline" size="sm" class="size-8 p-0" disabled={currentPage === 1} onclick={() => currentPage--}>
+          <ChevronLeft class="size-4" />
         </Button>
         <span class="font-medium text-foreground px-1">{currentPage} / {totalPages}</span>
-        <Button variant="outline" size="sm" class="h-8 w-8 p-0" disabled={currentPage === totalPages} onclick={() => currentPage++}>
-          <ChevronRight class="w-4 h-4" />
+        <Button variant="outline" size="sm" class="size-8 p-0" disabled={currentPage === totalPages} onclick={() => currentPage++}>
+          <ChevronRight class="size-4" />
         </Button>
       </div>
     </div>
@@ -387,11 +386,11 @@
 <!-- Add Lead Modal -->
 {#if showAddModal}
   <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg space-y-4">
+    <div class="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg flex flex-col gap-4">
       <div class="flex items-center justify-between border-b border-border pb-3">
         <h3 class="text-base font-bold text-foreground">Create New Lead</h3>
-        <Button variant="ghost" size="sm" onclick={() => showAddModal = false} class="h-8 w-8 p-0">
-          <X class="w-4 h-4" />
+        <Button variant="ghost" size="sm" onclick={() => showAddModal = false} class="size-8 p-0">
+          <X class="size-4" />
         </Button>
       </div>
 
@@ -401,35 +400,35 @@
         </div>
       {/if}
 
-      <form onsubmit={handleAddLead} class="space-y-4 text-xs">
+      <form onsubmit={handleAddLead} class="flex flex-col gap-4 text-xs">
         <div class="grid grid-cols-2 gap-3">
-          <div class="space-y-1">
+          <div class="flex flex-col gap-1">
             <label for="lead-name" class="font-medium text-foreground">Name *</label>
             <Input id="lead-name" bind:value={name} required placeholder="Full Name" />
           </div>
-          <div class="space-y-1">
+          <div class="flex flex-col gap-1">
             <label for="lead-company" class="font-medium text-foreground">Company *</label>
             <Input id="lead-company" bind:value={company} required placeholder="Company Name" />
           </div>
-          <div class="space-y-1">
+          <div class="flex flex-col gap-1">
             <label for="lead-email" class="font-medium text-foreground">Email *</label>
             <Input id="lead-email" type="email" bind:value={email} required placeholder="email@example.com" />
           </div>
-          <div class="space-y-1">
+          <div class="flex flex-col gap-1">
             <label for="lead-phone" class="font-medium text-foreground">Phone</label>
             <Input id="lead-phone" bind:value={phone} placeholder="Phone number" />
           </div>
-          <div class="space-y-1">
+          <div class="flex flex-col gap-1">
             <label for="lead-value" class="font-medium text-foreground">Value ($)</label>
             <Input id="lead-value" type="number" bind:value={value} min="0" />
           </div>
-          <div class="space-y-1">
+          <div class="flex flex-col gap-1">
             <label for="lead-owner" class="font-medium text-foreground">Owner</label>
             <Input id="lead-owner" bind:value={owner} placeholder="Owner Name" />
           </div>
         </div>
 
-        <div class="space-y-1">
+        <div class="flex flex-col gap-1">
           <label for="lead-about" class="font-medium text-foreground">Description</label>
           <textarea 
             id="lead-about" 
@@ -454,11 +453,11 @@
 <!-- Assign Category Modal -->
 {#if showCategoryModal}
   <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-lg space-y-4">
+    <div class="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-lg flex flex-col gap-4">
       <div class="flex items-center justify-between border-b border-border pb-3">
         <h3 class="text-sm font-bold text-foreground">Assign to Category</h3>
-        <Button variant="ghost" size="sm" onclick={() => showCategoryModal = false} class="h-7 w-7 p-0">
-          <X class="w-4 h-4" />
+        <Button variant="ghost" size="sm" onclick={() => showCategoryModal = false} class="size-7 p-0">
+          <X class="size-4" />
         </Button>
       </div>
 
@@ -468,10 +467,10 @@
         </div>
       {/if}
 
-      <div class="space-y-3 text-xs">
+      <div class="flex flex-col gap-3 text-xs">
         <p class="text-muted-foreground">Assign {selectedRows.size} selected lead(s) to:</p>
-        <select bind:value={selectedCategoryId} class="w-full h-9 px-3 rounded-md border border-input bg-background text-foreground">
-          {#each categories as cat}
+        <select bind:value={selectedCategoryId} class="w-full h-9 px-3 rounded-md border border-input bg-background text-foreground cursor-pointer">
+          {#each categories as cat (cat.id)}
             <option value={cat.id}>{cat.name}</option>
           {/each}
         </select>
