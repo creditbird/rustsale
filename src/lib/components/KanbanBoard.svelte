@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
   import * as crmService from '$lib/services/crmService';
   import type { Deal } from '$lib/services/crmService';
+  import * as Card from '$lib/components/ui/card';
+  import { Badge } from '$lib/components/ui/badge';
+  import { GripVertical, Inbox, AlertCircle, Calendar, DollarSign } from 'lucide-svelte';
 
   let deals = $state<Deal[]>([]);
   let errorMsg = $state<string | null>(null);
@@ -67,68 +70,80 @@
   onMount(loadDeals);
 </script>
 
-<div class="kanban-container">
-  <div class="kanban-header">
-    <h2>Deal Pipeline</h2>
-    <p class="subtitle">Drag and drop deal cards to change their stage in real-time.</p>
+<div class="space-y-4 h-full flex flex-col">
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-xl font-bold text-foreground tracking-tight">Deal Pipeline</h2>
+      <p class="text-xs text-muted-foreground mt-0.5">Drag and drop deal cards across stages to update status in real-time</p>
+    </div>
   </div>
 
   {#if errorMsg}
-    <div class="error-banner">
-      <span class="material-icons">error_outline</span>
+    <div class="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-destructive text-xs flex items-center gap-2">
+      <AlertCircle class="w-4 h-4 shrink-0" />
       <span>{errorMsg}</span>
     </div>
   {/if}
 
-  <div class="kanban-grid">
+  <!-- Kanban Column Grid -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 flex-1 overflow-x-auto min-h-0">
     {#each stages as stage}
       {@const stageDeals = deals.filter(d => d.stage === stage)}
       {@const totalValue = stageDeals.reduce((sum, d) => sum + (d.value || 0), 0)}
+      {@const isOver = dragOverColumn === stage}
 
       <div 
-        class="kanban-column"
-        class:drag-over={dragOverColumn === stage}
+        class="rounded-xl border border-border bg-card/60 p-3 flex flex-col gap-3 min-w-[200px] transition-all duration-150 {isOver ? 'bg-accent/40 border-primary/40 shadow-md ring-1 ring-primary/20' : ''}"
         ondragover={(e) => handleDragOver(e, stage)}
         ondragleave={(e) => handleDragLeave(e, stage)}
         ondrop={(e) => handleDrop(e, stage)}
         role="region"
         aria-label="{stage} stage column"
       >
-        <div class="column-header">
-          <h3>{stage}</h3>
-          <div class="column-badge">
-            <span class="deal-count">{stageDeals.length}</span>
-            <span class="deal-value">${totalValue.toLocaleString()}</span>
+        <!-- Column Header -->
+        <div class="border-b border-border pb-2.5 flex flex-col gap-1">
+          <div class="flex items-center justify-between">
+            <h3 class="text-xs font-bold uppercase tracking-wider text-foreground">{stage}</h3>
+            <Badge variant="secondary" class="text-[10px] px-2 py-0 font-bold">{stageDeals.length}</Badge>
           </div>
+          <span class="text-[11px] font-bold text-emerald-600">${totalValue.toLocaleString()}</span>
         </div>
 
-        <div class="card-list" class:empty={stageDeals.length === 0} role="list" aria-label="{stage} deals">
+        <!-- Deal Cards List -->
+        <div class="flex-1 overflow-y-auto space-y-2.5 pr-0.5" role="list">
           {#if stageDeals.length === 0}
-            <div class="column-empty-state">
-              <span class="material-icons empty-icon">inbox</span>
-              <p>Drag deals here</p>
+            <div class="h-32 border border-dashed border-border rounded-lg flex flex-col items-center justify-center text-muted-foreground/60 p-4 text-center">
+              <Inbox class="w-6 h-6 stroke-1 mb-1" />
+              <span class="text-[11px] italic">Drag deals here</span>
             </div>
           {:else}
             {#each stageDeals as deal}
-              <div 
-                class="deal-card"
-                class:dragging={activeDragId === deal.id}
+              {@const isDragging = activeDragId === deal.id}
+              <Card.Root 
+                class="cursor-grab active:cursor-grabbing hover:border-border transition-all duration-150 shadow-2xs select-none {isDragging ? 'opacity-40 scale-95' : ''}"
                 draggable="true"
-                ondragstart={(e) => handleDragStart(e, deal.id!)}
+                ondragstart={(e: DragEvent) => handleDragStart(e, deal.id!)}
                 ondragend={handleDragEnd}
                 role="listitem"
               >
-                <div class="deal-card-header">
-                  <h4>{deal.title}</h4>
-                  <span class="material-icons drag-handle">drag_indicator</span>
-                </div>
-                <div class="deal-card-footer">
-                  <span class="deal-value-text">${deal.value.toLocaleString()}</span>
-                  {#if deal.created_at}
-                    <span class="deal-date">{new Date(deal.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                  {/if}
-                </div>
-              </div>
+                <Card.Content class="p-3 space-y-2">
+                  <div class="flex items-start justify-between gap-2">
+                    <h4 class="text-xs font-semibold text-foreground leading-snug">{deal.title}</h4>
+                    <GripVertical class="w-3.5 h-3.5 text-muted-foreground/50 shrink-0 mt-0.5" />
+                  </div>
+                  <div class="flex items-center justify-between pt-1 border-t border-border/40 text-[11px]">
+                    <span class="font-bold text-emerald-600 flex items-center gap-0.5">
+                      ${deal.value.toLocaleString()}
+                    </span>
+                    {#if deal.created_at}
+                      <span class="text-muted-foreground text-[10px] flex items-center gap-1">
+                        <Calendar class="w-3 h-3 text-muted-foreground/60" />
+                        {new Date(deal.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </span>
+                    {/if}
+                  </div>
+                </Card.Content>
+              </Card.Root>
             {/each}
           {/if}
         </div>
@@ -136,202 +151,3 @@
     {/each}
   </div>
 </div>
-
-<style>
-  .kanban-container {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    block-size: 100%;
-    overflow: hidden;
-  }
-
-  .kanban-header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  .kanban-header h2 {
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: var(--color-on-surface-variant);
-  }
-
-  .error-banner {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-md);
-    background-color: rgba(244, 63, 94, 0.08);
-    border: 1px solid var(--color-danger);
-    border-radius: var(--rounded-md);
-    color: var(--color-danger);
-    font-size: 13px;
-  }
-
-  .kanban-grid {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: var(--spacing-md);
-    flex: 1;
-    overflow-x: auto;
-    padding-bottom: var(--spacing-md);
-  }
-
-  .kanban-column {
-    background: var(--color-surface-container-low);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    padding: var(--spacing-md);
-    min-inline-size: 200px;
-    transition: background-color var(--transition-fast), border-color var(--transition-fast);
-  }
-
-  .kanban-column.drag-over {
-    background: var(--color-surface-container);
-    border-color: var(--color-outline);
-  }
-
-  .column-header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-    border-bottom: 1px solid var(--color-outline-variant);
-    padding-bottom: var(--spacing-sm);
-  }
-
-  .column-header h3 {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .column-badge {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 11px;
-    color: var(--color-on-surface-variant);
-  }
-
-  .deal-count {
-    background: var(--color-surface-container-highest);
-    padding: 1px 6px;
-    border-radius: var(--rounded-sm);
-    font-weight: 700;
-  }
-
-  .deal-value {
-    font-weight: 600;
-    color: var(--color-success);
-  }
-
-  .card-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    flex: 1;
-    overflow-y: auto;
-  }
-
-  .card-list.empty {
-    justify-content: center;
-  }
-
-  .column-empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-on-surface-variant);
-    opacity: 0.5;
-    padding-block: var(--spacing-lg);
-    gap: var(--spacing-xs);
-  }
-
-  .empty-icon {
-    font-size: 24px;
-  }
-
-  .column-empty-state p {
-    font-size: 11px;
-    font-style: italic;
-  }
-
-  .deal-card {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    padding: var(--spacing-md);
-    box-shadow: var(--shadow-soft);
-    cursor: grab;
-    transition: transform var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
-  .deal-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.05);
-    border-color: var(--color-outline);
-  }
-
-  .deal-card:active {
-    cursor: grabbing;
-  }
-
-  .deal-card.dragging {
-    opacity: 0.4;
-    transform: scale(0.98);
-  }
-
-  .deal-card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: var(--spacing-xs);
-  }
-
-  .deal-card h4 {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--color-on-surface);
-    line-height: 1.4;
-  }
-
-  .drag-handle {
-    font-size: 16px;
-    color: var(--color-on-surface-variant);
-    opacity: 0.4;
-    cursor: grab;
-  }
-
-  .deal-card-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 11px;
-    margin-top: var(--spacing-xs);
-  }
-
-  .deal-value-text {
-    color: var(--color-success);
-    font-weight: 700;
-  }
-
-  .deal-date {
-    color: var(--color-on-surface-variant);
-  }
-</style>

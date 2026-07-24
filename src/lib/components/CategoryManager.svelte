@@ -2,6 +2,11 @@
   import { onMount } from 'svelte';
   import * as crmService from '$lib/services/crmService';
   import type { Category, Lead } from '$lib/services/crmService';
+  import { Button } from '$lib/components/ui/button';
+  import { Input } from '$lib/components/ui/input';
+  import { Badge } from '$lib/components/ui/badge';
+  import * as Table from '$lib/components/ui/table';
+  import { Folder, Plus, Trash2, Search, X, FolderMinus, AlertCircle, CheckCircle2 } from 'lucide-svelte';
 
   let categories = $state<Category[]>([]);
   let activeCategoryId = $state<number | null>(null);
@@ -11,7 +16,6 @@
   let allLeads = $state<Lead[]>([]);
   let addLeadsSearch = $state('');
 
-  // Category Leads Search & Filter state
   let categoryLeadsSearch = $state('');
   let filterCategoryStatus = $state('');
   let filterCategoryZalo = $state('');
@@ -23,7 +27,6 @@
   let errorMsg = $state<string | null>(null);
   let successMsg = $state<string | null>(null);
 
-  // Load all categories on mount
   async function loadCategories() {
     try {
       loading = true;
@@ -80,7 +83,6 @@
 
   let filteredCategoryLeads = $derived(
     categoryLeads.filter(lead => {
-      // 1. Search Query
       if (categoryLeadsSearch.trim()) {
         const query = categoryLeadsSearch.toLowerCase().trim();
         const matchesName = (lead.name || '').toLowerCase().includes(query);
@@ -92,12 +94,8 @@
         }
       }
 
-      // 2. Status Filter
-      if (filterCategoryStatus && lead.status !== filterCategoryStatus) {
-        return false;
-      }
+      if (filterCategoryStatus && lead.status !== filterCategoryStatus) return false;
 
-      // 3. Zalo Status Filter
       if (filterCategoryZalo) {
         if (filterCategoryZalo === 'verified' && lead.has_zalo !== 1) return false;
         if (filterCategoryZalo === 'no_zalo' && lead.has_zalo !== 0) return false;
@@ -190,15 +188,6 @@
     selectedToRemove = new Set(selectedToRemove);
   }
 
-  function selectAllFilteredToRemove() {
-    filteredCategoryLeads.forEach(l => { if (l.id) selectedToRemove.add(l.id); });
-    selectedToRemove = new Set(selectedToRemove);
-  }
-
-  function clearRemoveSelection() {
-    selectedToRemove = new Set();
-  }
-
   function toggleAddSelection(id: number) {
     if (selectedToAdd.has(id)) selectedToAdd.delete(id);
     else selectedToAdd.add(id);
@@ -216,668 +205,218 @@
   }
 </script>
 
-<div class="category-manager">
+<div class="space-y-4">
   {#if errorMsg}
-    <div class="alert alert-error">
-      <span class="material-icons">error_outline</span> {errorMsg}
+    <div class="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-destructive text-xs flex items-center gap-2">
+      <AlertCircle class="w-4 h-4 shrink-0" />
+      <span>{errorMsg}</span>
     </div>
   {/if}
   {#if successMsg}
-    <div class="alert alert-success">
-      <span class="material-icons">check_circle</span> {successMsg}
+    <div class="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 text-xs flex items-center gap-2">
+      <CheckCircle2 class="w-4 h-4 shrink-0" />
+      <span>{successMsg}</span>
     </div>
   {/if}
 
-  <div class="layout">
-    <!-- LEFT PANEL: Category List -->
-    <aside class="sidebar-panel glass-panel">
-      <div class="panel-header">
-        <h3>Categories</h3>
+  <div class="flex gap-4 h-[calc(100vh-140px)] overflow-hidden">
+    <!-- LEFT PANEL: Category Sidebar -->
+    <aside class="w-72 rounded-xl border border-border bg-card flex flex-col shrink-0 overflow-hidden shadow-2xs">
+      <div class="h-12 px-4 border-b border-border flex items-center justify-between font-bold text-xs uppercase tracking-wider text-foreground">
+        <span>Categories</span>
+        <Badge variant="secondary" class="text-[10px]">{categories.length}</Badge>
       </div>
-      
-      <div class="add-category">
-        <input 
+
+      <div class="p-3 border-b border-border flex gap-2">
+        <Input 
           type="text" 
           bind:value={newCategoryName} 
           placeholder="New Category..." 
+          class="h-8 text-xs flex-1"
           onkeydown={(e) => { if (e.key === 'Enter') handleCreateCategory(); }}
         />
-        <button class="icon-btn primary" onclick={handleCreateCategory} aria-label="Add Category">
-          <span class="material-icons">add</span>
-        </button>
+        <Button size="sm" class="h-8 w-8 p-0 shrink-0" onclick={handleCreateCategory}>
+          <Plus class="w-4 h-4" />
+        </Button>
       </div>
 
-      <ul class="category-list">
+      <div class="flex-1 overflow-y-auto p-2 space-y-1">
         {#each categories as category}
-          <li class="category-item" class:active={activeCategoryId === category.id}>
-            <button class="category-btn" onclick={() => activeCategoryId = category.id!}>
-              <span class="material-icons">folder</span>
-              <span class="name">{category.name}</span>
+          {@const isActive = activeCategoryId === category.id}
+          <div class="group flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all {isActive ? 'bg-primary/10 text-primary font-semibold' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}">
+            <button class="flex-1 flex items-center gap-2.5 text-left truncate" onclick={() => activeCategoryId = category.id!}>
+              <Folder class="w-4 h-4 shrink-0 {isActive ? 'text-primary' : 'text-muted-foreground'}" />
+              <span class="truncate">{category.name}</span>
             </button>
-            <button class="icon-btn danger delete-btn" onclick={() => handleDeleteCategory(category.id!)}>
-              <span class="material-icons">delete</span>
-            </button>
-          </li>
+            <Button variant="ghost" size="sm" onclick={() => handleDeleteCategory(category.id!)} class="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity">
+              <Trash2 class="w-3.5 h-3.5" />
+            </Button>
+          </div>
         {/each}
         {#if categories.length === 0 && !loading}
-          <div class="empty-state">No categories found.</div>
+          <div class="p-4 text-center text-xs text-muted-foreground">No categories yet.</div>
         {/if}
-      </ul>
+      </div>
     </aside>
 
     <!-- RIGHT PANEL: Category Details -->
-    <main class="main-panel">
+    <main class="flex-1 flex flex-col gap-4 overflow-hidden min-w-0">
       {#if activeCategoryId && activeCategory}
-        <div class="panel-header glass-panel">
-          <h2>{activeCategory.name}</h2>
-          <span class="subtitle">{categoryLeads.length} lead(s) in this category</span>
+        <div class="p-4 rounded-xl border border-border bg-card flex items-center justify-between shrink-0 shadow-2xs">
+          <div>
+            <h2 class="text-base font-bold text-foreground">{activeCategory.name}</h2>
+            <p class="text-xs text-muted-foreground">{categoryLeads.length} lead(s) categorized</p>
+          </div>
         </div>
 
-        <div class="tables-container">
-          <!-- Current Leads Table -->
-          <div class="table-section glass-panel">
-            <div class="section-header">
-              <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
-                <h3>Leads in Category</h3>
-                <span class="badge">{filteredCategoryLeads.length} / {categoryLeads.length}</span>
+        <div class="flex-1 overflow-y-auto space-y-4 pr-1">
+          <!-- Leads in Category Table -->
+          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs space-y-3">
+            <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Leads in Category</h3>
+                <Badge variant="secondary" class="text-[10px]">{filteredCategoryLeads.length} / {categoryLeads.length}</Badge>
               </div>
-              <div style="display: flex; gap: var(--spacing-xs); align-items: center; flex-wrap: wrap;">
-                {#if filteredCategoryLeads.length > 0}
-                  <button class="action-btn secondary btn-sm" onclick={selectAllFilteredToRemove}>
-                    Select All Filtered ({filteredCategoryLeads.length})
-                  </button>
-                {/if}
-                {#if selectedToRemove.size > 0}
-                  <button class="action-btn secondary btn-sm" onclick={clearRemoveSelection}>
-                    Clear Selection
-                  </button>
-                  <button class="action-btn danger btn-sm" onclick={handleRemoveLeads}>
-                    <span class="material-icons">remove_circle</span>
-                    Remove Selected ({selectedToRemove.size})
-                  </button>
-                {/if}
-              </div>
-            </div>
-            
-            <!-- Search & Filters Toolbar for Category Leads -->
-            <div class="filters-toolbar">
-              <div class="search-box flex-1">
-                <span class="material-icons search-icon">search</span>
-                <input 
-                  type="text" 
-                  bind:value={categoryLeadsSearch} 
-                  placeholder="Search in category (name, company, phone, email)..." 
-                />
-                {#if categoryLeadsSearch}
-                  <button class="clear-search-btn" onclick={() => categoryLeadsSearch = ''} title="Clear search">
-                    <span class="material-icons">close</span>
-                  </button>
-                {/if}
-              </div>
-
-              <div class="filter-select-wrapper">
-                <select bind:value={filterCategoryStatus} aria-label="Filter by status">
-                  <option value="">-- All Statuses --</option>
-                  {#each uniqueCategoryStatuses as st}
-                    <option value={st}>{st}</option>
-                  {/each}
-                </select>
-              </div>
-
-              <div class="filter-select-wrapper">
-                <select bind:value={filterCategoryZalo} aria-label="Filter by Zalo status">
-                  <option value="">-- All Zalo --</option>
-                  <option value="verified">Verified Zalo</option>
-                  <option value="no_zalo">No Zalo</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th class="checkbox-col">
-                      <input 
-                        type="checkbox" 
-                        checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
-                        indeterminate={selectedToRemove.size > 0 && !filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
-                        onchange={toggleRemoveAll}
-                      />
-                    </th>
-                    <th>Name</th>
-                    <th>Company</th>
-                    <th>Phone</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each filteredCategoryLeads as lead}
-                    <tr class:selected={selectedToRemove.has(lead.id!)}>
-                      <td class="checkbox-col">
-                        <input 
-                          type="checkbox" 
-                          checked={selectedToRemove.has(lead.id!)}
-                          onchange={() => toggleRemoveSelection(lead.id!)}
-                        />
-                      </td>
-                      <td class="primary-cell">{lead.name}</td>
-                      <td>{lead.company}</td>
-                      <td>{lead.phone || '-'}</td>
-                      <td><span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span></td>
-                    </tr>
-                  {/each}
-                  {#if filteredCategoryLeads.length === 0}
-                    <tr>
-                      <td colspan="5" class="empty-state">
-                        {#if categoryLeadsSearch || filterCategoryStatus || filterCategoryZalo}
-                          No leads match your search/filter criteria.
-                        {:else}
-                          No leads in this category.
-                        {/if}
-                      </td>
-                    </tr>
-                  {/if}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Add Leads Table -->
-          <div class="table-section glass-panel">
-            <div class="section-header">
-              <h3>Add Leads to Category</h3>
-              {#if selectedToAdd.size > 0}
-                <button class="action-btn success" onclick={handleAddLeads}>
-                  <span class="material-icons">add_circle</span>
-                  Add Selected ({selectedToAdd.size})
-                </button>
+              {#if selectedToRemove.size > 0}
+                <Button variant="destructive" size="sm" class="h-7 text-xs gap-1.5" onclick={handleRemoveLeads}>
+                  <FolderMinus class="w-3.5 h-3.5" />
+                  Remove Selected ({selectedToRemove.size})
+                </Button>
               {/if}
             </div>
-            
-            <div class="search-box">
-              <span class="material-icons search-icon">search</span>
-              <input type="text" bind:value={addLeadsSearch} placeholder="Search leads to add..." />
+
+            <!-- Toolbar -->
+            <div class="px-4 flex items-center gap-3">
+              <div class="relative flex-1">
+                <Search class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+                <Input type="text" bind:value={categoryLeadsSearch} placeholder="Search lead name, company, phone..." class="h-8 pl-8 text-xs" />
+              </div>
+              <select bind:value={filterCategoryStatus} class="h-8 px-2.5 text-xs rounded-md border border-input bg-background">
+                <option value="">All Statuses</option>
+                {#each uniqueCategoryStatuses as st}
+                  <option value={st}>{st}</option>
+                {/each}
+              </select>
             </div>
 
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th class="checkbox-col">
+            <Table.Root>
+              <Table.Header class="bg-muted/20">
+                <Table.Row>
+                  <Table.Head class="w-10 text-center">
+                    <input 
+                      type="checkbox" 
+                      class="rounded border-input text-primary"
+                      checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
+                      onchange={toggleRemoveAll}
+                    />
+                  </Table.Head>
+                  <Table.Head>Name</Table.Head>
+                  <Table.Head>Company</Table.Head>
+                  <Table.Head>Phone</Table.Head>
+                  <Table.Head>Status</Table.Head>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {#each filteredCategoryLeads as lead}
+                  <Table.Row class="hover:bg-muted/40">
+                    <Table.Cell class="text-center">
                       <input 
                         type="checkbox" 
-                        checked={availableLeads.length > 0 && selectedToAdd.size === availableLeads.length}
-                        indeterminate={selectedToAdd.size > 0 && selectedToAdd.size < availableLeads.length}
-                        onchange={toggleAddAll}
+                        class="rounded border-input text-primary"
+                        checked={selectedToRemove.has(lead.id!)}
+                        onchange={() => toggleRemoveSelection(lead.id!)}
                       />
-                    </th>
-                    <th>Name</th>
-                    <th>Company</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each availableLeads as lead}
-                    <tr class:selected={selectedToAdd.has(lead.id!)}>
-                      <td class="checkbox-col">
-                        <input 
-                          type="checkbox" 
-                          checked={selectedToAdd.has(lead.id!)}
-                          onchange={() => toggleAddSelection(lead.id!)}
-                        />
-                      </td>
-                      <td class="primary-cell">{lead.name}</td>
-                      <td>{lead.company}</td>
-                      <td><span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span></td>
-                    </tr>
-                  {/each}
-                  {#if availableLeads.length === 0}
-                    <tr><td colspan="4" class="empty-state">No available leads to add.</td></tr>
-                  {/if}
-                </tbody>
-              </table>
+                    </Table.Cell>
+                    <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
+                    <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
+                    <Table.Cell class="text-xs text-muted-foreground">{lead.phone || '—'}</Table.Cell>
+                    <Table.Cell>
+                      <Badge variant="secondary" class="text-[10px] py-0">{lead.status}</Badge>
+                    </Table.Cell>
+                  </Table.Row>
+                {/each}
+                {#if filteredCategoryLeads.length === 0}
+                  <Table.Row>
+                    <Table.Cell colspan={5} class="text-center py-6 text-xs text-muted-foreground">
+                      No leads in this category.
+                    </Table.Cell>
+                  </Table.Row>
+                {/if}
+              </Table.Body>
+            </Table.Root>
+          </div>
+
+          <!-- Available Leads to Add Table -->
+          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs space-y-3">
+            <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
+              <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Available Leads to Add</h3>
+              {#if selectedToAdd.size > 0}
+                <Button size="sm" class="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white" onclick={handleAddLeads}>
+                  <Plus class="w-3.5 h-3.5" />
+                  Add Selected ({selectedToAdd.size})
+                </Button>
+              {/if}
             </div>
+
+            <div class="px-4">
+              <div class="relative">
+                <Search class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+                <Input type="text" bind:value={addLeadsSearch} placeholder="Search leads to add..." class="h-8 pl-8 text-xs" />
+              </div>
+            </div>
+
+            <Table.Root>
+              <Table.Header class="bg-muted/20">
+                <Table.Row>
+                  <Table.Head class="w-10 text-center">
+                    <input 
+                      type="checkbox" 
+                      class="rounded border-input text-primary"
+                      checked={availableLeads.length > 0 && selectedToAdd.size === availableLeads.length}
+                      onchange={toggleAddAll}
+                    />
+                  </Table.Head>
+                  <Table.Head>Name</Table.Head>
+                  <Table.Head>Company</Table.Head>
+                  <Table.Head>Status</Table.Head>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {#each availableLeads as lead}
+                  <Table.Row class="hover:bg-muted/40">
+                    <Table.Cell class="text-center">
+                      <input 
+                        type="checkbox" 
+                        class="rounded border-input text-primary"
+                        checked={selectedToAdd.has(lead.id!)}
+                        onchange={() => toggleAddSelection(lead.id!)}
+                      />
+                    </Table.Cell>
+                    <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
+                    <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
+                    <Table.Cell>
+                      <Badge variant="outline" class="text-[10px] py-0">{lead.status}</Badge>
+                    </Table.Cell>
+                  </Table.Row>
+                {/each}
+                {#if availableLeads.length === 0}
+                  <Table.Row>
+                    <Table.Cell colspan={4} class="text-center py-6 text-xs text-muted-foreground">
+                      No available leads to add.
+                    </Table.Cell>
+                  </Table.Row>
+                {/if}
+              </Table.Body>
+            </Table.Root>
           </div>
         </div>
       {:else}
-        <div class="glass-panel empty-selection">
-          <span class="material-icons huge-icon">folder_open</span>
-          <h2>Select a category</h2>
-          <p>Choose a category from the left panel to manage its leads.</p>
+        <div class="flex-1 rounded-xl border border-border bg-card flex flex-col items-center justify-center p-8 text-center text-muted-foreground">
+          <Folder class="w-12 h-12 stroke-1 text-muted-foreground/50 mb-3" />
+          <h3 class="text-sm font-bold text-foreground">Select a Category</h3>
+          <p class="text-xs mt-1">Choose a category from the left sidebar to manage its leads</p>
         </div>
       {/if}
     </main>
   </div>
 </div>
-
-<style>
-  .category-manager {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    height: 100%;
-  }
-
-  .layout {
-    display: flex;
-    gap: var(--spacing-md);
-    height: calc(100vh - 120px);
-    overflow: hidden;
-  }
-
-  .glass-panel {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-lg);
-    box-shadow: var(--shadow-soft);
-  }
-
-  .sidebar-panel {
-    width: 320px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .main-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    overflow: hidden;
-  }
-
-  .panel-header {
-    padding: var(--spacing-md) var(--spacing-lg);
-    border-bottom: 1px solid var(--color-outline-variant);
-  }
-
-  .panel-header h2 {
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .panel-header h3 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--color-on-surface);
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: var(--color-on-surface-variant);
-  }
-
-  .add-category {
-    display: flex;
-    padding: var(--spacing-md);
-    gap: var(--spacing-xs);
-    border-bottom: 1px solid var(--color-outline-variant);
-  }
-
-  .add-category input {
-    flex: 1;
-    padding: var(--spacing-sm);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface);
-    outline: none;
-    font-size: 13px;
-  }
-  
-  .add-category input:focus {
-    border-color: var(--color-primary);
-  }
-
-  .icon-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    border: none;
-    border-radius: var(--rounded-md);
-    cursor: pointer;
-    transition: var(--transition-fast);
-  }
-  
-  .icon-btn.primary {
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-  }
-  .icon-btn.primary:hover {
-    background: var(--color-primary-container);
-  }
-
-  .icon-btn.danger {
-    background: transparent;
-    color: var(--color-on-surface-variant);
-  }
-  .icon-btn.danger:hover {
-    background: rgba(244, 63, 94, 0.1);
-    color: var(--color-danger);
-  }
-
-  .category-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    overflow-y: auto;
-    flex: 1;
-  }
-
-  .category-item {
-    display: flex;
-    align-items: center;
-    border-bottom: 1px solid var(--color-outline-variant);
-    transition: var(--transition-fast);
-  }
-  
-  .category-item:hover {
-    background: var(--color-surface-container-low);
-  }
-  
-  .category-item.active {
-    background: var(--color-primary-container);
-    border-left: 4px solid var(--color-primary);
-  }
-  .category-item.active .name, .category-item.active .material-icons {
-    color: var(--color-on-primary-container);
-  }
-
-  .category-btn {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-md);
-    background: none;
-    border: none;
-    text-align: left;
-    cursor: pointer;
-    color: var(--color-on-surface-variant);
-  }
-
-  .category-btn .name {
-    font-weight: 500;
-    font-size: 14px;
-  }
-  
-  .delete-btn {
-    margin-right: var(--spacing-xs);
-    opacity: 0;
-  }
-  .category-item:hover .delete-btn {
-    opacity: 1;
-  }
-
-  .tables-container {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    flex: 1;
-    overflow-y: auto;
-    padding-bottom: var(--spacing-md);
-  }
-
-  .table-section {
-    display: flex;
-    flex-direction: column;
-    max-height: 400px;
-  }
-
-  .section-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-sm) var(--spacing-lg);
-    border-bottom: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-low);
-  }
-
-  .action-btn {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border: none;
-    border-radius: var(--rounded-md);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: var(--transition-fast);
-  }
-  .action-btn.danger {
-    background: rgba(244, 63, 94, 0.1);
-    color: var(--color-danger);
-  }
-  .action-btn.danger:hover {
-    background: var(--color-danger);
-    color: #fff;
-  }
-  .action-btn.success {
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-  }
-  .action-btn.success:hover {
-    background: var(--color-success);
-    color: #fff;
-  }
-  
-  .action-btn .material-icons {
-    font-size: 16px;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: var(--rounded-sm);
-    background: var(--color-surface-container-high);
-    color: var(--color-on-surface-variant);
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .btn-sm {
-    padding: 4px 8px !important;
-    font-size: 11px !important;
-  }
-
-  .action-btn.secondary {
-    background: var(--color-surface-container-high);
-    color: var(--color-on-surface);
-    border: 1px solid var(--color-outline-variant);
-  }
-  .action-btn.secondary:hover {
-    background: var(--color-surface-container-highest);
-  }
-
-  .filters-toolbar {
-    display: flex;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-xs) var(--spacing-md);
-    background: var(--color-surface-container-lowest);
-    border-bottom: 1px solid var(--color-outline-variant);
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
-  .flex-1 {
-    flex: 1;
-    min-width: 200px;
-  }
-
-  .filter-select-wrapper select {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-size: 12px;
-    outline: none;
-    cursor: pointer;
-  }
-  .filter-select-wrapper select:focus {
-    border-color: var(--color-primary);
-  }
-
-  .clear-search-btn {
-    position: absolute;
-    right: calc(var(--spacing-md) + 4px);
-    top: 50%;
-    transform: translateY(-50%);
-    background: none;
-    border: none;
-    color: var(--color-on-surface-variant);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2px;
-    border-radius: 50%;
-  }
-  .clear-search-btn:hover {
-    background: var(--color-surface-container-high);
-  }
-  .clear-search-btn .material-icons {
-    font-size: 14px;
-  }
-
-  .search-box {
-    position: relative;
-    padding: var(--spacing-xs) 0;
-  }
-
-  .search-box input {
-    width: 100%;
-    padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-xs) 32px;
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-size: 13px;
-    outline: none;
-  }
-
-  .search-box input:focus {
-    border-color: var(--color-primary);
-  }
-
-  .search-icon {
-    position: absolute;
-    left: calc(var(--spacing-md) + 8px);
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 16px;
-    color: var(--color-on-surface-variant);
-    pointer-events: none;
-  }
-
-  .table-wrapper {
-    overflow-y: auto;
-    flex: 1;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    text-align: left;
-  }
-
-  th {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface-variant);
-    font-weight: 600;
-    padding: var(--spacing-sm) var(--spacing-md);
-    position: sticky;
-    top: 0;
-    z-index: 10;
-  }
-
-  td {
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-bottom: 1px solid var(--color-outline-variant);
-    color: var(--color-on-surface);
-  }
-
-  tr:hover {
-    background: var(--color-surface-container-low);
-  }
-
-  tr.selected {
-    background: rgba(16, 185, 129, 0.05);
-  }
-
-  .checkbox-col {
-    width: 40px;
-    text-align: center;
-  }
-
-  .primary-cell {
-    font-weight: 500;
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: var(--spacing-xl);
-    color: var(--color-on-surface-variant);
-    font-style: italic;
-  }
-
-  .empty-selection {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--color-on-surface-variant);
-  }
-
-  .huge-icon {
-    font-size: 64px;
-    margin-bottom: var(--spacing-md);
-    opacity: 0.5;
-  }
-
-  .alert {
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    font-size: 14px;
-    font-weight: 500;
-  }
-
-  .alert-error {
-    background: rgba(244, 63, 94, 0.1);
-    color: var(--color-danger);
-    border: 1px solid var(--color-danger);
-  }
-
-  .alert-success {
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-    border: 1px solid var(--color-success);
-  }
-
-  .status-badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: var(--rounded-full);
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-  }
-
-  .status-badge.new { background: #e0f2fe; color: #0369a1; }
-  .status-badge.contacted { background: #fef3c7; color: #b45309; }
-  .status-badge.qualified { background: rgba(16, 185, 129, 0.1); color: var(--color-success); }
-  .status-badge.lost { background: rgba(244, 63, 94, 0.1); color: var(--color-danger); }
-  .status-badge.converted { background: #e0e7ff; color: #4338ca; }
-</style>
