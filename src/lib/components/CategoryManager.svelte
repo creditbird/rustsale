@@ -282,10 +282,10 @@
         </div>
 
         <div class="flex-1 overflow-y-auto flex flex-col gap-4 pr-1">
-          <!-- Leads in Category Table (Hidden if no records, min-h-[220px] shrink-0 when visible) -->
+          <!-- Leads in Category Table (Hidden if no records, max-h-[350px] with internal scroll) -->
           {#if categoryLeads.length > 0}
-            <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 shrink-0 min-h-[220px]">
-              <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
+            <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 shrink-0 max-h-[350px]">
+              <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between shrink-0">
                 <div class="flex items-center gap-2">
                   <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Leads in Category</h3>
                   <Badge variant="secondary" class="text-[10px]">{filteredCategoryLeads.length} / {categoryLeads.length}</Badge>
@@ -299,7 +299,7 @@
               </div>
 
               <!-- Toolbar -->
-              <div class="px-4 flex items-center gap-3">
+              <div class="px-4 flex items-center gap-3 shrink-0">
                 <div class="relative flex-1">
                   <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
                   <Input type="text" bind:value={categoryLeadsSearch} placeholder="Search lead name, company, phone..." class="h-8 pl-8 text-xs" />
@@ -315,9 +315,9 @@
                 </select>
               </div>
 
-              <div class="overflow-x-auto">
+              <div class="overflow-y-auto flex-1 min-h-0">
                 <Table.Root>
-                  <Table.Header class="bg-muted/20">
+                  <Table.Header class="bg-muted/20 sticky top-0 z-10">
                     <Table.Row>
                       <Table.Head class="w-10 text-center">
                         <div class="flex items-center justify-center">
@@ -370,9 +370,12 @@
           {/if}
 
           <!-- Available Leads to Add Table -->
-          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3">
-            <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
-              <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Available Leads to Add</h3>
+          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 shrink-0 max-h-[350px]">
+            <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between shrink-0">
+              <div class="flex items-center gap-2">
+                <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Available Leads to Add</h3>
+                <Badge variant="secondary" class="text-[10px]">{availableLeads.length}</Badge>
+              </div>
               {#if selectedToAdd.size > 0}
                 <Button size="sm" class="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white" onclick={handleAddLeads}>
                   <Plus class="size-3.5" />
@@ -381,60 +384,62 @@
               {/if}
             </div>
 
-            <div class="px-4">
+            <div class="px-4 shrink-0">
               <div class="relative">
                 <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
                 <Input type="text" bind:value={addLeadsSearch} placeholder="Search leads to add..." class="h-8 pl-8 text-xs" />
               </div>
             </div>
 
-            <Table.Root>
-              <Table.Header class="bg-muted/20">
-                <Table.Row>
-                  <Table.Head class="w-10 text-center">
-                    <div class="flex items-center justify-center">
-                      <Checkbox 
-                        checked={availableLeads.length > 0 && availableLeads.every(l => l.id != null && selectedToAdd.has(l.id))}
-                        onCheckedChange={(checked) => toggleAddAll(Boolean(checked))}
-                      />
-                    </div>
-                  </Table.Head>
-                  <Table.Head>Name</Table.Head>
-                  <Table.Head>Company</Table.Head>
-                  <Table.Head>Status</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each availableLeads as lead, index (lead.id ?? `avail-lead-${index}`)}
-                  {@const isSelected = lead.id != null ? selectedToAdd.has(lead.id) : false}
-                  <Table.Row 
-                    class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
-                    onclick={() => lead.id != null && toggleAddSelection(lead.id)}
-                  >
-                    <Table.Cell class="text-center">
-                      <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
+            <div class="overflow-y-auto flex-1 min-h-0">
+              <Table.Root>
+                <Table.Header class="bg-muted/20 sticky top-0 z-10">
+                  <Table.Row>
+                    <Table.Head class="w-10 text-center">
+                      <div class="flex items-center justify-center">
                         <Checkbox 
-                          checked={isSelected}
-                          onCheckedChange={() => lead.id && toggleAddSelection(lead.id)}
+                          checked={availableLeads.length > 0 && availableLeads.every(l => l.id != null && selectedToAdd.has(l.id))}
+                          onCheckedChange={(checked) => toggleAddAll(Boolean(checked))}
                         />
                       </div>
-                    </Table.Cell>
-                    <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
-                    <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
-                    <Table.Cell>
-                      <Badge variant="outline" class="text-[10px] py-0">{lead.status}</Badge>
-                    </Table.Cell>
+                    </Table.Head>
+                    <Table.Head>Name</Table.Head>
+                    <Table.Head>Company</Table.Head>
+                    <Table.Head>Status</Table.Head>
                   </Table.Row>
-                {/each}
-                {#if availableLeads.length === 0}
-                  <Table.Row>
-                    <Table.Cell colspan={4} class="text-center py-6 text-xs text-muted-foreground">
-                      No available leads to add.
-                    </Table.Cell>
-                  </Table.Row>
-                {/if}
-              </Table.Body>
-            </Table.Root>
+                </Table.Header>
+                <Table.Body>
+                  {#each availableLeads as lead, index (lead.id ?? `avail-lead-${index}`)}
+                    {@const isSelected = lead.id != null ? selectedToAdd.has(lead.id) : false}
+                    <Table.Row 
+                      class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
+                      onclick={() => lead.id != null && toggleAddSelection(lead.id)}
+                    >
+                      <Table.Cell class="text-center">
+                        <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
+                          <Checkbox 
+                            checked={isSelected}
+                            onCheckedChange={() => lead.id != null && toggleAddSelection(lead.id)}
+                          />
+                        </div>
+                      </Table.Cell>
+                      <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
+                      <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
+                      <Table.Cell>
+                        <Badge variant="outline" class="text-[10px] py-0">{lead.status}</Badge>
+                      </Table.Cell>
+                    </Table.Row>
+                  {/each}
+                  {#if availableLeads.length === 0}
+                    <Table.Row>
+                      <Table.Cell colspan={4} class="text-center py-6 text-xs text-muted-foreground">
+                        {allLeads.length > 0 && categoryLeads.length === allLeads.length ? 'All leads in your CRM have been added to this category.' : 'No available leads to add.'}
+                      </Table.Cell>
+                    </Table.Row>
+                  {/if}
+                </Table.Body>
+              </Table.Root>
+            </div>
           </div>
         </div>
       {:else}
