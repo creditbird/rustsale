@@ -1,95 +1,71 @@
 <script lang="ts">
+  import {
+    LayoutDashboard,
+    MapPin,
+    Users,
+    Tags,
+    MessageSquare,
+    Mail,
+    Kanban,
+    UserCheck,
+    Flame
+  } from 'lucide-svelte';
+
   let { activeTab = $bindable() } = $props();
 
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
-    { id: 'scraper', label: 'Google Maps Scraper', icon: 'map' },
-    { id: 'leads', label: 'Leads', icon: 'person_search' },
-    { id: 'categories', label: 'Category Manager', icon: 'category' },
-    { id: 'outreach', label: 'Zalo Outreach', icon: 'campaign' },
-    { id: 'email_outreach', label: 'Email Outreach', icon: 'mail' },
-    { id: 'pipeline', label: 'Deal Pipeline', icon: 'view_kanban' },
-    { id: 'contacts', label: 'Contacts', icon: 'contacts' }
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'scraper', label: 'Google Maps Scraper', icon: MapPin },
+    { id: 'leads', label: 'Leads', icon: Users },
+    { id: 'categories', label: 'Category Manager', icon: Tags },
+    { id: 'outreach', label: 'Zalo Outreach', icon: MessageSquare },
+    { id: 'email_outreach', label: 'Email Outreach', icon: Mail },
+    { id: 'pipeline', label: 'Deal Pipeline', icon: Kanban },
+    { id: 'contacts', label: 'Contacts', icon: UserCheck }
   ];
 </script>
 
-<aside class="sidebar">
-  <div class="logo-container">
-    <span class="material-icons logo-icon">insights</span>
-    <span class="logo-text">RustSale Pro</span>
+<aside class="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col text-sidebar-foreground select-none shrink-0">
+  <!-- Brand Header -->
+  <div class="h-16 px-5 border-b border-sidebar-border flex items-center gap-3">
+    <div class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center font-bold">
+      <Flame class="w-5 h-5 text-emerald-600" />
+    </div>
+    <div class="flex flex-col">
+      <span class="font-bold text-base tracking-tight text-foreground">RustSale</span>
+      <span class="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">CRM & Outreach Pro</span>
+    </div>
   </div>
-  <nav class="sidebar-nav">
+
+  <!-- Navigation Links -->
+  <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
     {#each menuItems as item}
+      {@const Icon = item.icon}
+      {@const isActive = activeTab === item.id}
       <button 
-        class="nav-item" 
-        class:active={activeTab === item.id} 
+        type="button"
+        class="w-full h-10 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-all duration-150 relative group {isActive ? 'bg-sidebar-accent text-sidebar-accent-foreground font-semibold shadow-sm' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground'}" 
         onclick={() => activeTab = item.id}
       >
-        <span class="material-icons">{item.icon}</span>
-        <span class="nav-label">{item.label}</span>
+        <Icon class="w-4 h-4 transition-colors {isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'}" />
+        <span class="truncate">{item.label}</span>
+        {#if isActive}
+          <div class="absolute left-0 top-2 bottom-2 w-1 bg-primary rounded-r-full"></div>
+        {/if}
       </button>
     {/each}
   </nav>
-</aside>
 
-<style>
-  .sidebar {
-    inline-size: 240px;
-    block-size: 100vh;
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface-variant);
-    display: flex;
-    flex-direction: column;
-    border-inline-end: 1px solid var(--color-outline-variant);
-  }
-  .logo-container {
-    padding-block: var(--spacing-lg);
-    padding-inline: var(--spacing-md);
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    border-block-end: 1px solid var(--color-outline-variant);
-  }
-  .logo-icon {
-    color: var(--color-success);
-    font-size: 24px;
-  }
-  .logo-text {
-    font-family: var(--font-family);
-    font-weight: 700;
-    font-size: 16px;
-    color: var(--color-primary);
-  }
-  .sidebar-nav {
-    display: flex;
-    flex-direction: column;
-    padding-block: var(--spacing-md);
-    padding-inline: 0;
-    gap: var(--spacing-xs);
-    flex: 1;
-  }
-  .nav-item {
-    background: none;
-    border: none;
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-md);
-    padding: var(--spacing-md);
-    color: var(--color-on-surface-variant);
-    cursor: pointer;
-    text-align: left;
-    transition: var(--transition-fast);
-    font-family: var(--font-family);
-    font-size: 14px;
-    inline-size: 100%;
-  }
-  .nav-item:hover {
-    background: var(--color-surface-container-high);
-    color: var(--color-primary);
-  }
-  .nav-item.active {
-    background: var(--color-surface-container-highest);
-    color: var(--color-primary);
-    border-inline-start: 4px solid var(--color-success);
-  }
-</style>
+  <!-- User / Status Footer -->
+  <div class="p-4 border-t border-sidebar-border flex items-center gap-3 bg-sidebar-accent/20">
+    <div class="w-8 h-8 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center justify-center text-xs font-bold">
+      RS
+    </div>
+    <div class="flex flex-col overflow-hidden">
+      <span class="text-xs font-semibold truncate text-foreground">Admin Workspace</span>
+      <span class="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> System Active
+      </span>
+    </div>
+  </div>
+</aside>
