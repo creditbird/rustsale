@@ -30,6 +30,75 @@ pub struct UpdateProfileBiz {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ZaloAccountProfile {
+    pub name: Option<String>,
+    pub phone: Option<String>,
+    pub avatar: Option<String>,
+}
+
+impl ZaloAccountProfile {
+    pub fn from_value(val: &Value) -> Self {
+        let mut targets = vec![val];
+        if let Some(d) = val.get("data") {
+            targets.push(d);
+        }
+        if let Some(u) = val.get("userInfo") {
+            targets.push(u);
+        }
+        if let Some(u) = val.get("data").and_then(|d| d.get("userInfo")) {
+            targets.push(u);
+        }
+        if let Some(p) = val.get("profile") {
+            targets.push(p);
+        }
+
+        let mut name = None;
+        let mut phone = None;
+        let mut avatar = None;
+
+        for t in targets {
+            if name.is_none() {
+                name = t.get("zName")
+                    .or_else(|| t.get("dpName"))
+                    .or_else(|| t.get("zaloName"))
+                    .or_else(|| t.get("displayName"))
+                    .or_else(|| t.get("name"))
+                    .or_else(|| t.get("display_name"))
+                    .or_else(|| t.get("username"))
+                    .or_else(|| t.get("user_name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+            }
+
+            if phone.is_none() {
+                phone = t.get("phone")
+                    .or_else(|| t.get("phoneNumber"))
+                    .or_else(|| t.get("phone_number"))
+                    .or_else(|| t.get("mobile"))
+                    .or_else(|| t.get("sdT"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+            }
+
+            if avatar.is_none() {
+                avatar = t.get("avatar_240")
+                    .or_else(|| t.get("avatar_120"))
+                    .or_else(|| t.get("avatar"))
+                    .or_else(|| t.get("avatarUrl"))
+                    .or_else(|| t.get("avatar_url"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+            }
+        }
+
+        Self { name, phone, avatar }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteAvatarResponse {
     pub del_photo_ids: Vec<String>,
@@ -323,6 +392,18 @@ impl Zalo {
             true,
         )
         .await
+    }
+
+    /// Fetch own account profile with automatic fallback parsing for name, phone, and avatar
+    pub async fn fetch_account_profile(&self) -> Result<ZaloAccountProfile, ZaloError> {
+        let val = match self.fetch_account_info().await {
+            Ok(v) => v,
+            Err(_) => {
+                let li_guard = self.ctx.login_info.lock().unwrap_or_else(|e| e.into_inner());
+                li_guard.clone()
+            }
+        };
+        Ok(ZaloAccountProfile::from_value(&val))
     }
 
     /// Get avatar list

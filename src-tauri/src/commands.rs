@@ -1218,32 +1218,61 @@ pub async fn verify_zalo_session(
 }
 
 fn extract_zalo_profile_info(val: &serde_json::Value) -> (Option<String>, Option<String>, Option<String>) {
-    let target = val.get("data").unwrap_or(val);
+    let mut targets = vec![val];
+    if let Some(d) = val.get("data") {
+        targets.push(d);
+    }
+    if let Some(u) = val.get("userInfo") {
+        targets.push(u);
+    }
+    if let Some(u) = val.get("data").and_then(|d| d.get("userInfo")) {
+        targets.push(u);
+    }
+    if let Some(p) = val.get("profile") {
+        targets.push(p);
+    }
 
-    let name = target.get("zName")
-        .or_else(|| target.get("dpName"))
-        .or_else(|| target.get("name"))
-        .or_else(|| target.get("display_name"))
-        .or_else(|| target.get("username"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let mut name = None;
+    let mut phone = None;
+    let mut avatar = None;
 
-    let phone = target.get("phone")
-        .or_else(|| target.get("phoneNumber"))
-        .or_else(|| target.get("mobile"))
-        .or_else(|| target.get("sdT"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    for t in targets {
+        if name.is_none() {
+            name = t.get("zName")
+                .or_else(|| t.get("dpName"))
+                .or_else(|| t.get("zaloName"))
+                .or_else(|| t.get("displayName"))
+                .or_else(|| t.get("name"))
+                .or_else(|| t.get("display_name"))
+                .or_else(|| t.get("username"))
+                .or_else(|| t.get("user_name"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
 
-    let avatar = target.get("avatar_240")
-        .or_else(|| target.get("avatar_120"))
-        .or_else(|| target.get("avatar"))
-        .or_else(|| target.get("avatarUrl"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        if phone.is_none() {
+            phone = t.get("phone")
+                .or_else(|| t.get("phoneNumber"))
+                .or_else(|| t.get("phone_number"))
+                .or_else(|| t.get("mobile"))
+                .or_else(|| t.get("sdT"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
+
+        if avatar.is_none() {
+            avatar = t.get("avatar_240")
+                .or_else(|| t.get("avatar_120"))
+                .or_else(|| t.get("avatar"))
+                .or_else(|| t.get("avatarUrl"))
+                .or_else(|| t.get("avatar_url"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
+    }
 
     (name, phone, avatar)
 }
@@ -1267,13 +1296,25 @@ pub async fn verify_zalo_session_internal(
     let options = zca_rs::Options::default();
     match zca_rs::Zalo::login(session.imei.clone(), session.user_agent.clone(), cookies, options).await {
         Ok(zalo) => {
-            let (name, phone, avatar) = match zalo.fetch_account_info().await {
-                Ok(info) => extract_zalo_profile_info(&info),
+            let (mut name, mut phone, mut avatar) = match zalo.fetch_account_info().await {
+                Ok(info) => {
+                    eprintln!("Zalo fetch_account_info SUCCESS: {:?}", info);
+                    extract_zalo_profile_info(&info)
+                }
                 Err(e) => {
                     eprintln!("fetch_account_info error for IMEI {}: {:?}", session.imei, e);
                     (None, None, None)
                 }
             };
+
+            if name.is_none() && phone.is_none() && avatar.is_none() {
+                let li_guard = zalo.ctx.login_info.lock().unwrap_or_else(|e| e.into_inner());
+                eprintln!("Zalo ctx.login_info fallback: {:?}", *li_guard);
+                let (n2, p2, a2) = extract_zalo_profile_info(&li_guard);
+                name = n2;
+                phone = p2;
+                avatar = a2;
+            }
 
             let display_name = name.or(phone).or(session.display_name);
             let avatar = avatar.or(session.avatar);
