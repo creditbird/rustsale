@@ -478,9 +478,10 @@ impl Zalo {
 
             match att.file_type.as_str() {
                 "image" => {
+                    let photo_id_val = att.photo_id.clone().unwrap_or_default();
                     params
                         .as_object_mut()
-                        .map(|m| m.insert("photoId".to_string(), serde_json::json!(att.photo_id)));
+                        .map(|m| m.insert("photoId".to_string(), serde_json::json!(photo_id_val)));
                     params.as_object_mut().map(|m| {
                         m.insert(
                             "clientId".to_string(),

@@ -259,26 +259,47 @@ impl Zalo {
                     .unwrap_or(chunk_idx as u64 + 1) as u32;
 
                 if file_type == "image" {
+                    println!("Zalo upload photo response: {:?}", res_json);
                     let normal_url = inner_data
                         .get("normalUrl")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+                        .or_else(|| inner_data.get("url"))
+                        .or_else(|| inner_data.get("fileUrl"))
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            _ => "".to_string(),
+                        })
+                        .unwrap_or_default();
                     let hd_url = inner_data
                         .get("hdUrl")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+                        .or_else(|| inner_data.get("normalUrl"))
+                        .or_else(|| inner_data.get("url"))
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            _ => "".to_string(),
+                        })
+                        .unwrap_or_default();
                     let thumb_url = inner_data
                         .get("thumbUrl")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+                        .or_else(|| inner_data.get("normalUrl"))
+                        .or_else(|| inner_data.get("url"))
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            _ => "".to_string(),
+                        })
+                        .unwrap_or_default();
                     let photo_id = inner_data
                         .get("photoId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+                        .or_else(|| inner_data.get("photo_id"))
+                        .or_else(|| inner_data.get("id"))
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            _ => "".to_string(),
+                        })
+                        .unwrap_or_default();
 
                     // Calculate width/height from metadata or bytes
                     let mut width = metadata.width.unwrap_or(0);
