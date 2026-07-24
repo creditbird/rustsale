@@ -3,25 +3,26 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import divisions from '$lib/constants/vietnam-divisions.json';
-  import { Search, Check, X } from 'lucide-svelte';
+  import { Button } from '$lib/components/ui/button';
+  import { Input } from '$lib/components/ui/input';
+  import { Badge } from '$lib/components/ui/badge';
+  import * as Card from '$lib/components/ui/card';
+  import { Progress } from '$lib/components/ui/progress';
+  import { Search, MapPin, Play, Square, Terminal, Check, X, Building, Filter, Layers } from 'lucide-svelte';
 
-  // State runes
   let mode = $state<'keyword' | 'grid'>('keyword');
   let keyword = $state('');
   let location = $state('');
 
-  // Grid coordinates default to HCM City coordinates
   let minLat = $state(10.7);
   let maxLat = $state(10.8);
   let minLng = $state(106.6);
   let maxLng = $state(106.7);
   let stepKm = $state(2.0);
 
-
   let geocodeQuery = $state('');
   let isGeocoding = $state(false);
 
-  // Deep Scan states
   let deepScan = $state(true);
   let selectedCities = $state<string[]>(['thanh_pho_ho_chi_minh']);
   let selectedDistricts = $state<number[]>([]);
@@ -31,14 +32,12 @@
   let districtFilter = $state('');
   let wardFilter = $state('');
 
-  // Derived state to get filtered cities based on search query
   let filteredCities = $derived.by(() => {
     const q = citySearchQuery.trim().toLowerCase();
     if (!q) return divisions;
     return divisions.filter(p => p.name.toLowerCase().includes(q));
   });
 
-  // Derived state to get available districts in the selected provinces
   let availableDistricts = $derived.by(() => {
     let list: { name: string; code: number; provinceName: string; provinceCodename: string; wards: any[] }[] = [];
     for (const cityCodename of selectedCities) {
@@ -56,18 +55,15 @@
         }
       }
     }
-    // Sort districts by city, then by name
     return list.sort((a, b) => a.provinceName.localeCompare(b.provinceName) || a.name.localeCompare(b.name));
   });
 
-  // Filtered districts for display
   let filteredDistricts = $derived.by(() => {
     const q = districtFilter.trim().toLowerCase();
     if (!q) return availableDistricts;
     return availableDistricts.filter(d => d.name.toLowerCase().includes(q) || d.provinceName.toLowerCase().includes(q));
   });
 
-  // Derived state to get the list of wards under selected districts
   let availableWards = $derived.by(() => {
     let list: { name: string; code: number; districtName: string; districtCode: number; provinceName: string }[] = [];
     for (const districtCode of selectedDistricts) {
@@ -88,7 +84,6 @@
     return list;
   });
 
-  // Filtered wards for display
   let filteredWards = $derived.by(() => {
     const q = wardFilter.trim().toLowerCase();
     if (!q) return availableWards;
@@ -98,12 +93,10 @@
   function toggleCity(cityCodename: string) {
     if (selectedCities.includes(cityCodename)) {
       selectedCities = selectedCities.filter(c => c !== cityCodename);
-      // Clean up districts and wards belonging to this city
       const province = divisions.find(p => p.codename === cityCodename);
       if (province) {
         const districtCodes = (province.districts || []).map(d => d.code);
         selectedDistricts = selectedDistricts.filter(code => !districtCodes.includes(code));
-        
         let wardCodes: number[] = [];
         for (const d of province.districts || []) {
           const wards = d.wards || [];
@@ -151,10 +144,8 @@
     if (checked) {
       selectedDistricts = [...selectedDistricts, districtCode];
     } else {
-      // Find wards to remove BEFORE updating selectedDistricts
       const dist = availableDistricts.find(d => d.code === districtCode);
       const wardCodesToRemove = dist ? (dist.wards || []).map(w => w.code) : [];
-      
       selectedDistricts = selectedDistricts.filter(c => c !== districtCode);
       selectedWards = selectedWards.filter(code => !wardCodesToRemove.includes(code));
     }
@@ -169,26 +160,18 @@
     appendLog(`Geocoding coordinates for: "${geocodeQuery}"...`);
     try {
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(geocodeQuery + ", Vietnam")}&format=json&limit=1`;
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'RustSale-CRM-v2-Client'
-        }
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      const response = await fetch(url, { headers: { 'User-Agent': 'RustSale-CRM-v2-Client' } });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       if (data && data.length > 0) {
-        const bbox = data[0].boundingbox; // [minlat, maxlat, minlng, maxlng]
+        const bbox = data[0].boundingbox;
         minLat = parseFloat(bbox[0]);
         maxLat = parseFloat(bbox[1]);
         minLng = parseFloat(bbox[2]);
         maxLng = parseFloat(bbox[3]);
-        appendLog(`Successfully detected coordinates for "${data[0].display_name}":`);
-        appendLog(`-> Latitude: ${minLat} to ${maxLat}`);
-        appendLog(`-> Longitude: ${minLng} to ${maxLng}`);
+        appendLog(`Successfully detected coordinates for "${data[0].display_name}": Lat: ${minLat}-${maxLat}, Lng: ${minLng}-${maxLng}`);
       } else {
-        appendLog(`Error: Could not find coordinates for "${geocodeQuery}". Try a broader name.`);
+        appendLog(`Error: Could not find coordinates for "${geocodeQuery}".`);
       }
     } catch (err) {
       appendLog(`Geocoding failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -197,7 +180,6 @@
     }
   }
 
-  // Scrape running states
   let isScraping = $state(false);
   let progress = $state(0);
   let statusMessage = $state('Ready');
@@ -213,12 +195,8 @@
   function appendLog(msg: string) {
     const timestamp = new Date().toLocaleTimeString();
     logs = [...logs, `[${timestamp}] ${msg}`];
-    
-    // Auto-scroll to bottom of console
     setTimeout(() => {
-      if (consoleElement) {
-        consoleElement.scrollTop = consoleElement.scrollHeight;
-      }
+      if (consoleElement) consoleElement.scrollTop = consoleElement.scrollHeight;
     }, 50);
   }
 
@@ -238,37 +216,6 @@
       return;
     }
 
-    if (mode === 'grid') {
-      const latMin = Number(minLat);
-      const latMax = Number(maxLat);
-      const lngMin = Number(minLng);
-      const lngMax = Number(maxLng);
-      const step = Number(stepKm);
-
-      if (isNaN(latMin) || isNaN(latMax) || isNaN(lngMin) || isNaN(lngMax) || isNaN(step)) {
-        appendLog("Error: Bounding box coordinates and step size must be valid numbers.");
-        return;
-      }
-      if (latMin < -90 || latMin > 90 || latMax < -90 || latMax > 90 ||
-          lngMin < -180 || lngMin > 180 || lngMax < -180 || lngMax > 180) {
-        appendLog("Error: Latitude must be between -90 and 90, Longitude must be between -180 and 180.");
-        return;
-      }
-      if (latMin >= latMax) {
-        appendLog("Error: Min Latitude must be less than Max Latitude.");
-        return;
-      }
-      if (lngMin >= lngMax) {
-        appendLog("Error: Min Longitude must be less than Max Longitude.");
-        return;
-      }
-      if (step <= 0) {
-        appendLog("Error: Step size must be greater than 0.");
-        return;
-      }
-    }
-
-    // If deepScan is true, validate and build targets list
     let districtsVal: string[] | null = null;
     let locationVal = mode === 'keyword' ? location : null;
     if (mode === 'keyword' && deepScan) {
@@ -297,14 +244,6 @@
     statusMessage = 'Initializing scrape...';
     logs = [];
     appendLog(`Starting Google Maps Scraper in ${mode} mode...`);
-    appendLog(`Keyword: "${keyword}"`);
-    if (deepScan && districtsVal) {
-      if (selectedWards.length > 0) {
-        appendLog(`Deep Scan active across ${selectedCities.length} cities/provinces (${districtsVal.length} wards selected)`);
-      } else {
-        appendLog(`Deep Scan active across ${selectedCities.length} cities/provinces (${districtsVal.length} districts selected)`);
-      }
-    }
 
     try {
       const bbox = mode === 'grid' ? [Number(minLat), Number(maxLat), Number(minLng), Number(maxLng)] : null;
@@ -319,11 +258,11 @@
         districts: districtsVal,
         headless
       });
-      appendLog('Tauri scrape command invoked successfully. Awaiting browser startup...');
+      appendLog('Scrape command invoked successfully.');
     } catch (err) {
       isScraping = false;
       statusMessage = 'Failed to start scrape';
-      appendLog(`Error invoking scrape: ${err}`);
+      appendLog(`Error: ${err}`);
     }
   }
 
@@ -358,7 +297,6 @@
       appendLog(`[COMPLETE] ${event.payload.message}`);
     });
 
-    // Document click listener to close dropdown when clicking outside
     docClickHandler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest('.city-multiselect-container')) {
@@ -376,1298 +314,160 @@
   });
 </script>
 
-<div class="container animate-fade-in">
-  <header class="header">
-    <div class="title-section">
-      <span class="material-icons scraper-icon">map</span>
-      <div>
-        <h1>Google Maps Scraper</h1>
-        <p class="subtitle">Extract local business leads dynamically with high precision</p>
-      </div>
+<div class="space-y-4">
+  <!-- Top Header Bar -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-xl font-bold text-foreground tracking-tight">Google Maps Scraper</h2>
+      <p class="text-xs text-muted-foreground mt-0.5">Extract local business lead data dynamically across regions</p>
     </div>
-  </header>
+  </div>
 
-  <div class="layout-grid">
-    <!-- Left Configuration Panel -->
-    <div class="card config-card">
-      <div class="card-header">
-        <h2>Scraper Configuration</h2>
-      </div>
-
-      <div class="tabs">
-        <button 
-          type="button"
-          class="tab-btn" 
-          class:active={mode === 'keyword'} 
-          onclick={() => mode = 'keyword'}
-          disabled={isScraping}
-        >
-          <span class="material-icons">search</span>
-          Keyword Search
-        </button>
-        <button 
-          type="button"
-          class="tab-btn" 
-          class:active={mode === 'grid'} 
-          onclick={() => mode = 'grid'}
-          disabled={isScraping}
-        >
-          <span class="material-icons">grid_on</span>
-          Grid Crawl
-        </button>
-      </div>
-
-      <div class="form-content">
-        <div class="input-group">
-          <label for="keyword-input">Search Keyword <span class="required">*</span></label>
-          <div class="input-wrapper">
-            <span class="material-icons input-icon">storefront</span>
-            <input 
-              id="keyword-input"
-              type="text" 
-              bind:value={keyword} 
-              placeholder="e.g. Cafe, Spa, Dental Clinic..." 
-              disabled={isScraping} 
-            />
+  <!-- Main Grid -->
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+    <!-- Left Form Configuration Panel -->
+    <Card.Root class="lg:col-span-7 flex flex-col justify-between">
+      <Card.Header class="pb-3 border-b border-border">
+        <Card.Title class="text-base font-bold flex items-center gap-2">
+          <Building class="w-4 h-4 text-emerald-600" />
+          Scraper Configuration
+        </Card.Title>
+      </Card.Header>
+      <Card.Content class="p-5 space-y-4 text-xs">
+        <!-- Search Keyword -->
+        <div class="space-y-1">
+          <label for="keyword-input" class="font-semibold text-foreground">Search Keyword *</label>
+          <div class="relative">
+            <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+            <Input id="keyword-input" bind:value={keyword} placeholder="e.g. Cafe, Spa, Dental Clinic..." class="pl-9 text-xs" disabled={isScraping} />
           </div>
         </div>
 
-        {#if mode === 'keyword'}
-          <div class="input-group">
-            <span class="segmented-label">Location Targeting Mode</span>
-            <div class="segmented-control" role="tablist" aria-label="Location targeting options">
-              <button 
-                type="button" 
-                class="segmented-btn" 
-                class:active={!deepScan} 
-                onclick={() => deepScan = false}
-                disabled={isScraping}
-                role="tab"
-                aria-selected={!deepScan}
-              >
-                Text Search (Simple)
-              </button>
-              <button 
-                type="button" 
-                class="segmented-btn" 
-                class:active={deepScan} 
-                onclick={() => deepScan = true}
-                disabled={isScraping}
-                role="tab"
-                aria-selected={deepScan}
-              >
-                Select by District/Ward (Deep Scan)
-              </button>
-            </div>
+        <!-- Target Cities / Provinces -->
+        <div class="space-y-2 relative city-multiselect-container">
+          <label for="city-search" class="font-semibold text-foreground">Target Cities / Provinces</label>
+          <div class="relative">
+            <Search class="w-3.5 h-3.5 absolute left-3 top-2.5 text-muted-foreground" />
+            <Input
+              id="city-search"
+              type="text"
+              placeholder="Search & add cities..."
+              bind:value={citySearchQuery}
+              onfocus={() => showCityDropdown = true}
+              disabled={isScraping}
+              class="pl-8 text-xs h-9"
+            />
           </div>
 
-          {#if !deepScan}
-            <div class="input-group animate-slide-down">
-              <label for="location-input">Location / Area</label>
-              <div class="input-wrapper">
-                <span class="material-icons input-icon">place</span>
-                <input 
-                  id="location-input"
-                  type="text" 
-                  bind:value={location} 
-                  placeholder="e.g. Quận 1, Ho Chi Minh City" 
-                  disabled={isScraping} 
-                />
-              </div>
-              <p class="input-desc">Focuses search on a specific neighborhood or town name.</p>
-            </div>
-          {:else}
-            <!-- Deep Scan Configuration -->
-            <div class="deep-scan-config animate-slide-down">
-              <div class="input-group" style="position: relative;">
-                <label for="city-search-input">Target Cities / Provinces</label>
-                <div class="city-multiselect-container">
-                  <div class="search-wrapper">
-                    <span class="search-icon"><Search size={14} /></span>
-                    <input 
-                      id="city-search-input"
-                      type="text" 
-                      placeholder="Search & add cities..." 
-                      bind:value={citySearchQuery}
-                      onfocus={() => showCityDropdown = true}
-                      disabled={isScraping}
-                    />
-                    {#if selectedCities.length > 0}
-                      <button type="button" class="btn-clear-tags" onclick={clearAllCities} disabled={isScraping}>Clear All ({selectedCities.length})</button>
-                    {/if}
-                  </div>
-                  
-                  {#if selectedCities.length > 0}
-                    <div class="selected-tags-container">
-                      {#each selectedCities as cityCodename}
-                        {@const cityName = divisions.find(p => p.codename === cityCodename)?.name}
-                        <span class="city-tag">
-                          {cityName}
-                          <button type="button" class="tag-close" onclick={() => toggleCity(cityCodename)} disabled={isScraping}><X size={12} /></button>
-                        </span>
-                      {/each}
-                    </div>
-                  {/if}
-                  
-                  {#if showCityDropdown}
-                    <div class="city-dropdown-list">
-                      {#if filteredCities.length === 0}
-                        <div class="no-results-item">No provinces/cities found</div>
-                      {:else}
-                        {#each filteredCities as city}
-                          {@const isSelected = selectedCities.includes(city.codename)}
-                          <button 
-                            type="button" 
-                            class="city-dropdown-item {isSelected ? 'selected' : ''}"
-                            onclick={() => toggleCity(city.codename)}
-                          >
-                            <span>{city.name}</span>
-                            {#if isSelected}
-                              <span class="check-icon"><Check size={14} /></span>
-                            {/if}
-                          </button>
-                        {/each}
-                      {/if}
-                    </div>
-                  {/if}
-                </div>
-              </div>
-
-              <div class="input-group" style="margin-top: var(--spacing-sm);">
-                <div class="districts-header">
-                  <span class="districts-label">Select Districts to Scan ({selectedDistricts.length} selected)</span>
-                  <div class="districts-actions">
-                    <input 
-                      type="text" 
-                      placeholder="Filter districts..." 
-                      class="ward-filter-input" 
-                      bind:value={districtFilter} 
-                      disabled={isScraping}
-                    />
-                    <span class="divider">|</span>
-                    <button type="button" class="btn-text" onclick={selectAllDistricts} disabled={isScraping}>Select All</button>
-                    <span class="divider">|</span>
-                    <button type="button" class="btn-text" onclick={deselectAllDistricts} disabled={isScraping}>Clear</button>
-                  </div>
-                </div>
-                
-                <div class="districts-grid">
-                  {#each filteredDistricts as district}
-                    <label class="district-checkbox-label" title={`${district.name} (${district.provinceName})`}>
-                      <input 
-                        type="checkbox" 
-                        value={district.code} 
-                        disabled={isScraping}
-                        checked={selectedDistricts.includes(district.code)}
-                        onchange={(e) => {
-                          const checked = (e.target as HTMLInputElement).checked;
-                          toggleDistrict(district.code, checked);
-                        }}
-                      />
-                      <span class="ward-text">{district.name} <small class="district-suffix">({district.provinceName.replace('Thành phố ', 'TP. ').replace('Tỉnh ', 'T.')})</small></span>
-                    </label>
-                  {/each}
-                </div>
-              </div>
-
-              {#if selectedDistricts.length > 0}
-                <div class="input-group animate-slide-down" style="margin-top: var(--spacing-sm);">
-                  <div class="districts-header">
-                    <span class="districts-label">Select Wards to Scan ({selectedWards.length} selected)</span>
-                    <div class="districts-actions">
-                      <input 
-                        type="text" 
-                        placeholder="Filter wards..." 
-                        class="ward-filter-input" 
-                        bind:value={wardFilter} 
-                        disabled={isScraping}
-                      />
-                      <span class="divider">|</span>
-                      <button type="button" class="btn-text" onclick={selectAllWards} disabled={isScraping}>Select All</button>
-                      <span class="divider">|</span>
-                      <button type="button" class="btn-text" onclick={deselectAllWards} disabled={isScraping}>Clear</button>
-                    </div>
-                  </div>
-                  
-                  <div class="districts-grid">
-                    {#each filteredWards as ward}
-                      <label class="district-checkbox-label" title={`${ward.name} (${ward.districtName})`}>
-                        <input 
-                          type="checkbox" 
-                          value={ward.code} 
-                          disabled={isScraping}
-                          checked={selectedWards.includes(ward.code)}
-                          onchange={(e) => {
-                            const checked = (e.target as HTMLInputElement).checked;
-                            if (checked) {
-                              selectedWards = [...selectedWards, ward.code];
-                            } else {
-                              selectedWards = selectedWards.filter(w => w !== ward.code);
-                            }
-                          }}
-                        />
-                        <span class="ward-text">{ward.name} <small class="district-suffix">({ward.districtName.replace('Quận ', 'Q.').replace('Huyện ', 'H.')})</small></span>
-                      </label>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
+          {#if selectedCities.length > 0}
+            <div class="flex flex-wrap gap-1.5 pt-1">
+              {#each selectedCities as cityCodename}
+                {@const cityName = divisions.find(p => p.codename === cityCodename)?.name}
+                <Badge variant="secondary" class="gap-1 text-[11px]">
+                  {cityName}
+                  <button type="button" onclick={() => toggleCity(cityCodename)} class="hover:text-destructive">
+                    <X class="w-3 h-3" />
+                  </button>
+                </Badge>
+              {/each}
+              <Button variant="ghost" size="sm" onclick={clearAllCities} class="h-6 text-[10px] px-2 text-muted-foreground">Clear All</Button>
             </div>
           {/if}
 
-          {:else}
-          <div class="grid-inputs animate-slide-down">
-            <div class="helper-section">
-              <div class="input-group">
-                <label for="preset-select">Quick Select Province / City</label>
-                 <select 
-                  id="preset-select" 
-                  disabled={isScraping}
-                  onchange={(e) => {
-                    const val = (e.target as HTMLSelectElement).value;
-                    if (val && presetProvinces[val]) {
-                      const coords = presetProvinces[val];
-                      minLat = coords.minLat;
-                      maxLat = coords.maxLat;
-                      minLng = coords.minLng;
-                      maxLng = coords.maxLng;
-                      appendLog(`Applied coordinates for preset: ${val}`);
-                    }
-                  }}
+          {#if showCityDropdown}
+            <div class="absolute left-0 right-0 top-full mt-1 z-30 max-h-48 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md text-xs space-y-0.5">
+              {#each filteredCities as city}
+                {@const isSelected = selectedCities.includes(city.codename)}
+                <button
+                  type="button"
+                  class="w-full px-3 py-1.5 rounded flex items-center justify-between text-left hover:bg-accent transition-colors {isSelected ? 'bg-primary/10 text-primary font-semibold' : ''}"
+                  onclick={() => toggleCity(city.codename)}
                 >
-                  <option value="">-- Select a Province / City --</option>
-                  {#each Object.keys(presetProvinces) as prov}
-                    <option value={prov}>{prov}</option>
-                  {/each}
-                </select>
-              </div>
-
-              <div class="input-group">
-                <label for="geocode-query">Search Administrative Area (District/Ward/Address)</label>
-                <div style="display: flex; gap: var(--spacing-sm);">
-                  <input 
-                    id="geocode-query"
-                    type="text" 
-                    placeholder="e.g. Quận 1, TP. HCM" 
-                    bind:value={geocodeQuery}
-                    disabled={isScraping || isGeocoding}
-                    onkeydown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        detectCoordinates();
-                      }
-                    }}
-                  />
-                  <button 
-                    type="button" 
-                    class="btn-secondary" 
-                    onclick={detectCoordinates}
-                    disabled={isScraping || isGeocoding}
-                  >
-                    {#if isGeocoding}Detecting...{:else}Detect{/if}
-                  </button>
-                </div>
-              </div>
+                  <span>{city.name}</span>
+                  {#if isSelected}<Check class="w-3.5 h-3.5 text-primary" />{/if}
+                </button>
+              {/each}
             </div>
+          {/if}
+        </div>
 
-            <div class="coordinates-title">Bounding Box Coordinates (Lat/Lng)</div>
-            
-            <div class="coord-grid">
-              <div class="input-group">
-                <label for="min-lat">Min Latitude</label>
-                <input 
-                  id="min-lat"
-                  type="number" 
-                  step="0.0001" 
-                  bind:value={minLat} 
-                  disabled={isScraping} 
-                />
-              </div>
-              <div class="input-group">
-                <label for="max-lat">Max Latitude</label>
-                <input 
-                  id="max-lat"
-                  type="number" 
-                  step="0.0001" 
-                  bind:value={maxLat} 
-                  disabled={isScraping} 
-                />
-              </div>
-              <div class="input-group">
-                <label for="min-lng">Min Longitude</label>
-                <input 
-                  id="min-lng"
-                  type="number" 
-                  step="0.0001" 
-                  bind:value={minLng} 
-                  disabled={isScraping} 
-                />
-              </div>
-              <div class="input-group">
-                <label for="max-lng">Max Longitude</label>
-                <input 
-                  id="max-lng"
-                  type="number" 
-                  step="0.0001" 
-                  bind:value={maxLng} 
-                  disabled={isScraping} 
-                />
-              </div>
-            </div>
-
-            <div class="input-group step-size-group">
-              <div class="slider-header">
-                <label for="step-km">Grid Step Size: <strong>{stepKm.toFixed(1)} km</strong></label>
-              </div>
-              <input 
-                id="step-km"
-                type="range" 
-                min="0.5" 
-                max="10.0" 
-                step="0.5" 
-                bind:value={stepKm} 
-                disabled={isScraping} 
-                class="slider"
-              />
-              <p class="input-desc">Smaller steps increase accuracy but require more search grid points.</p>
+        <!-- Districts Selection Grid -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-semibold text-foreground">Districts ({selectedDistricts.length} selected)</span>
+            <div class="flex items-center gap-2">
+              <Input type="text" placeholder="Filter..." bind:value={districtFilter} class="h-7 w-28 text-[11px]" disabled={isScraping} />
+              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={selectAllDistricts} disabled={isScraping}>Select All</Button>
+              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2 text-muted-foreground" onclick={deselectAllDistricts} disabled={isScraping}>Clear</Button>
             </div>
           </div>
-        {/if}
+          <div class="max-h-40 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
+            {#each filteredDistricts as district}
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate">
+                <input
+                  type="checkbox"
+                  class="rounded border-input text-primary"
+                  checked={selectedDistricts.includes(district.code)}
+                  disabled={isScraping}
+                  onchange={(e) => toggleDistrict(district.code, (e.target as HTMLInputElement).checked)}
+                />
+                <span class="truncate">{district.name}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
 
-        <!-- Headless Option Checkbox -->
-        <div class="headless-option-group">
-          <label class="headless-checkbox-label" for="headless-checkbox">
-            <input 
-              id="headless-checkbox"
-              type="checkbox" 
-              bind:checked={headless} 
-              disabled={isScraping}
-            />
-            <span class="checkbox-text">Run Headless (Hide browser window)</span>
+        <!-- Headless Option & Action Button -->
+        <div class="flex items-center justify-between pt-2 border-t border-border">
+          <label class="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+            <input type="checkbox" bind:checked={headless} disabled={isScraping} class="rounded border-input text-primary" />
+            <span>Headless Mode (Hide browser)</span>
           </label>
+
+          {#if isScraping}
+            <Button variant="destructive" size="sm" onclick={stopScrape} class="gap-2">
+              <Square class="w-4 h-4" /> Stop Scrape
+            </Button>
+          {:else}
+            <Button size="sm" onclick={startScrape} disabled={!keyword.trim()} class="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white">
+              <Play class="w-4 h-4 fill-white" /> Start Scrape Campaign
+            </Button>
+          {/if}
+        </div>
+      </Card.Content>
+    </Card.Root>
+
+    <!-- Right Execution Console Panel -->
+    <Card.Root class="lg:col-span-5 flex flex-col justify-between">
+      <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
+        <Card.Title class="text-base font-bold flex items-center gap-2">
+          <Terminal class="w-4 h-4 text-emerald-600" /> Execution Logs
+        </Card.Title>
+        <Badge variant={isScraping ? "default" : "outline"} class="text-[10px]">
+          {isScraping ? 'Scraping Active' : 'Idle'}
+        </Badge>
+      </Card.Header>
+      <Card.Content class="p-5 flex-1 flex flex-col space-y-4">
+        <!-- Progress Bar -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-medium text-foreground">{statusMessage}</span>
+            <span class="font-bold text-emerald-600">{Math.round(progress)}%</span>
+          </div>
+          <Progress value={progress} class="h-2" />
         </div>
 
-        {#if isScraping}
-          <button 
-            type="button"
-            class="stop-btn" 
-            onclick={stopScrape}
-          >
-            <span class="material-icons">stop</span>
-            Stop Scrape Campaign
-          </button>
-        {:else}
-          <button 
-            type="button"
-            class="start-btn" 
-            onclick={startScrape} 
-            disabled={!keyword.trim()}
-          >
-            <span class="material-icons">play_arrow</span>
-            Start Scrape Campaign
-          </button>
-        {/if}
-      </div>
-    </div>
-
-    <!-- Right Console & Progress Panel -->
-    <div class="card status-card">
-      <div class="card-header">
-        <h2>Execution & Progress</h2>
-        <span class="status-indicator" class:active={isScraping}>
-          {isScraping ? 'Running' : 'Idle'}
-        </span>
-      </div>
-
-      <div class="progress-section">
-        <div class="progress-labels">
-          <span class="status-msg">{statusMessage}</span>
-          <span class="percentage">{Math.round(progress)}%</span>
-        </div>
-        <div class="progress-bar-container">
-          <div class="progress-bar-fill" style="width: {progress}%" class:animated={isScraping}></div>
-        </div>
-      </div>
-
-      <div class="console-section">
-        <div class="console-header">
-          <span class="material-icons console-icon">terminal</span>
-          <h3>Console Output</h3>
-          <button type="button" class="clear-btn" onclick={() => logs = []} disabled={logs.length === 0}>
-            Clear
-          </button>
-        </div>
-        <div class="console-body" bind:this={consoleElement}>
+        <!-- Console Log Output -->
+        <div class="flex-1 min-h-[260px] max-h-[360px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto space-y-1 border border-slate-800" bind:this={consoleElement}>
           {#if logs.length === 0}
-            <div class="console-placeholder">
-              <span class="material-icons">insights</span>
-              <p>Logs will appear here once scraping starts.</p>
-            </div>
+            <div class="text-slate-500 italic">Console output logs will stream here...</div>
           {:else}
             {#each logs as log}
-              <div class="log-line">{log}</div>
+              <div class="leading-relaxed border-b border-slate-900/60 pb-0.5">{log}</div>
             {/each}
           {/if}
         </div>
-      </div>
-    </div>
+      </Card.Content>
+    </Card.Root>
   </div>
 </div>
-
-<style>
-  .container {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
-    block-size: 100%;
-  }
-
-  .header {
-    background: linear-gradient(135deg, var(--color-surface-container) 0%, var(--color-surface-container-low) 100%);
-    padding: var(--spacing-md) var(--spacing-lg);
-    border-radius: var(--rounded-lg);
-    border: 1px solid var(--color-outline-variant);
-    box-shadow: var(--shadow-soft);
-  }
-
-  .title-section {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-md);
-  }
-
-  .scraper-icon {
-    font-size: 36px;
-    color: var(--color-success);
-    background: rgba(16, 185, 129, 0.1);
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-md);
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: var(--color-on-surface-variant);
-    margin-top: 2px;
-  }
-
-  .layout-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--spacing-lg);
-    flex: 1;
-    min-block-size: 0; /* Important for flex child scrolling */
-  }
-
-  @media (max-width: 1024px) {
-    .layout-grid {
-      grid-template-columns: 1fr;
-      overflow-y: auto;
-    }
-  }
-
-  .card {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-xl);
-    box-shadow: var(--shadow-soft);
-    display: flex;
-    flex-direction: column;
-    padding: var(--spacing-lg);
-    min-block-size: 0;
-  }
-
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--spacing-md);
-    border-bottom: 1px solid var(--color-outline-variant);
-    padding-bottom: var(--spacing-sm);
-  }
-
-  .card-header h2 {
-    font-size: 16px;
-    font-weight: 600;
-  }
-
-  .tabs {
-    display: flex;
-    gap: var(--spacing-xs);
-    background: var(--color-surface-container-low);
-    padding: 4px;
-    border-radius: var(--rounded-md);
-    margin-bottom: var(--spacing-md);
-  }
-
-  button:focus-visible {
-    outline: 2px solid var(--color-success);
-    outline-offset: 2px;
-  }
-
-  .tab-btn {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: 13px;
-    font-weight: 500;
-    border-radius: var(--rounded-md);
-    transition: var(--transition-fast);
-    color: var(--color-on-surface-variant);
-  }
-
-  .tab-btn:hover:not(:disabled) {
-    background: var(--color-surface-container);
-    color: var(--color-primary);
-  }
-
-  .tab-btn.active {
-    background: var(--color-surface-container-lowest);
-    color: var(--color-primary);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  }
-
-  .tab-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .form-content {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    flex: 1;
-  }
-
-  .input-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  .input-group label,
-  .input-group .segmented-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-on-surface-variant);
-  }
-
-  .required {
-    color: var(--color-danger);
-  }
-
-  .input-wrapper {
-    position: relative;
-    display: flex;
-    align-items: center;
-  }
-
-  .input-icon {
-    position: absolute;
-    left: 12px;
-    color: var(--color-neutral-slate);
-    font-size: 18px;
-    pointer-events: none;
-  }
-
-  .input-wrapper input {
-    width: 100%;
-    padding: 10px 10px 10px 38px;
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: inherit;
-    font-size: 14px;
-    transition: var(--transition-fast);
-  }
-
-  .input-wrapper input:focus {
-    border-color: var(--color-success);
-    outline: none;
-    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
-  }
-
-  .input-wrapper input:disabled {
-    background: var(--color-surface-container-low);
-    color: var(--color-neutral-slate);
-    cursor: not-allowed;
-  }
-
-  .input-desc {
-    font-size: 11px;
-    color: var(--color-neutral-slate);
-    margin-top: 2px;
-  }
-
-  .grid-inputs {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    background: var(--color-surface-container-low);
-    padding: var(--spacing-md);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-  }
-
-  .coordinates-title {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-    margin-bottom: var(--spacing-xs);
-  }
-
-  .coord-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--spacing-sm);
-  }
-
-  .coord-grid input {
-    width: 100%;
-    padding: var(--spacing-sm);
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-sm);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-size: 13px;
-  }
-
-  .coord-grid input:focus {
-    border-color: var(--color-success);
-    outline: none;
-  }
-
-  .step-size-group {
-    margin-top: var(--spacing-xs);
-  }
-
-  .slider-header {
-    display: flex;
-    justify-content: space-between;
-    font-size: 12px;
-  }
-
-  .slider {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 6px;
-    border-radius: var(--rounded-full);
-    background: var(--color-outline-variant);
-    outline: none;
-    margin-block: var(--spacing-sm);
-  }
-
-  .slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: var(--color-success);
-    cursor: pointer;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-    transition: transform var(--transition-fast);
-  }
-
-  .slider::-webkit-slider-thumb:hover {
-    transform: scale(1.15);
-  }
-
-  .slider:disabled::-webkit-slider-thumb {
-    background: var(--color-neutral-slate);
-    cursor: not-allowed;
-  }
-
-  .start-btn {
-    margin-top: auto;
-    width: 100%;
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    padding: var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-weight: 600;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-sm);
-    transition: var(--transition-fast);
-  }
-
-  .start-btn:hover:not(:disabled) {
-    background: var(--color-primary-container);
-    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.15);
-  }
-
-  .start-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .stop-btn {
-    margin-top: auto;
-    width: 100%;
-    background: var(--color-error, #ef4444);
-    color: #fff;
-    padding: var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-weight: 600;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-sm);
-    transition: var(--transition-fast);
-    border: none;
-    cursor: pointer;
-  }
-
-  .stop-btn:hover {
-    background: #dc2626;
-    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.15);
-  }
-
-  /* Status Card & Execution elements */
-  .status-indicator {
-    font-size: 12px;
-    font-weight: 600;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--rounded-full);
-    background: var(--color-surface-container-low);
-    color: var(--color-neutral-slate);
-    transition: var(--transition-fast);
-  }
-
-  .status-indicator.active {
-    background: rgba(16, 185, 129, 0.15);
-    color: var(--color-success);
-  }
-
-  .progress-section {
-    background: var(--color-surface-container-low);
-    border: 1px solid var(--color-outline-variant);
-    padding: var(--spacing-md);
-    border-radius: var(--rounded-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    margin-bottom: var(--spacing-lg);
-  }
-
-  .progress-labels {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .status-msg {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-on-surface);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 80%;
-  }
-
-  .percentage {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--color-success);
-  }
-
-  .progress-bar-container {
-    height: 10px;
-    background: var(--color-surface-container-highest);
-    border-radius: var(--rounded-full);
-    overflow: hidden;
-    position: relative;
-  }
-
-  .progress-bar-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--color-success) 0%, #34d399 100%);
-    border-radius: var(--rounded-full);
-    transition: width var(--transition-fast) ease-out;
-  }
-
-  .progress-bar-fill.animated {
-    background-image: linear-gradient(
-      45deg,
-      rgba(255, 255, 255, 0.15) 25%,
-      transparent 25%,
-      transparent 50%,
-      rgba(255, 255, 255, 0.15) 50%,
-      rgba(255, 255, 255, 0.15) 75%,
-      transparent 75%,
-      transparent
-    );
-    background-size: 1rem 1rem;
-    animation: progress-bar-stripes 1s linear infinite;
-  }
-
-  @keyframes progress-bar-stripes {
-    from { background-position: 1rem 0; }
-    to { background-position: 0 0; }
-  }
-
-  /* Console Styling */
-  .console-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-block-size: 0;
-    background: #0f172a; /* Slate 900 for dark retro console */
-    border-radius: var(--rounded-md);
-    overflow: hidden;
-    border: 1px solid #1e293b;
-    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
-  .console-header {
-    background: #1e293b;
-    padding: var(--spacing-sm) var(--spacing-md);
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    border-bottom: 1px solid #334155;
-  }
-
-  .console-icon {
-    font-size: 18px;
-    color: #38bdf8;
-  }
-
-  .console-header h3 {
-    font-size: 12px;
-    font-weight: 700;
-    color: #e2e8f0;
-    margin: 0;
-    flex: 1;
-  }
-
-  .clear-btn {
-    font-size: 11px;
-    font-weight: 600;
-    color: #94a3b8;
-    background: #334155;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--rounded-sm);
-    transition: var(--transition-fast);
-  }
-
-  .clear-btn:hover:not(:disabled) {
-    color: #f1f5f9;
-    background: #475569;
-  }
-
-  .clear-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .console-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--spacing-md);
-    font-family: Menlo, Monaco, Consolas, "Fira Code", monospace;
-    font-size: 12px;
-    line-height: 1.5;
-    color: #34d399; /* Green text */
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  .console-placeholder {
-    margin: auto;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--spacing-sm);
-    color: #64748b;
-    text-align: center;
-  }
-
-  .console-placeholder .material-icons {
-    font-size: 32px;
-  }
-
-  .log-line {
-    word-break: break-all;
-    white-space: pre-wrap;
-  }
-
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: var(--color-on-primary);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  /* Transition animations */
-  .animate-fade-in {
-    animation: fadeIn 0.3s ease-out forwards;
-  }
-
-  .animate-slide-down {
-    animation: slideDown 0.25s ease-out forwards;
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @keyframes slideDown {
-    from { opacity: 0; transform: translateY(-8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  .helper-section {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--spacing-md);
-    margin-bottom: var(--spacing-sm);
-    padding-bottom: var(--spacing-md);
-    border-bottom: 1px dashed var(--color-outline-variant);
-  }
-  .helper-section select,
-  .helper-section input {
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-size: 13px;
-    height: 38px;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-  .helper-section select:focus,
-  .helper-section input:focus {
-    border-color: var(--color-success);
-    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.1);
-  }
-  .btn-secondary {
-    background: var(--color-surface-container-high);
-    color: var(--color-on-surface);
-    border: 1px solid var(--color-outline);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    border-radius: var(--rounded-md);
-    transition: var(--transition-fast);
-    height: 38px;
-    padding: 0 var(--spacing-md);
-  }
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--color-surface-container-highest);
-  }
-  .btn-secondary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .deep-scan-config {
-    position: relative;
-    z-index: 10;
-    background: var(--color-surface-container-low);
-    padding: var(--spacing-md);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    margin-bottom: var(--spacing-sm);
-  }
-
-  .districts-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--spacing-xs);
-  }
-  .districts-label {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-  .districts-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-  }
-  .btn-text {
-    background: none;
-    border: none;
-    color: var(--color-success);
-    font-size: 11px;
-    font-weight: 700;
-    cursor: pointer;
-    padding: 0;
-    transition: var(--transition-fast);
-  }
-  .btn-text:hover:not(:disabled) {
-    text-decoration: underline;
-  }
-  .btn-text:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .divider {
-    color: var(--color-outline);
-    font-size: 11px;
-  }
-  .districts-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-    gap: var(--spacing-xs);
-    max-height: 180px;
-    overflow-y: auto;
-    border: 1px solid var(--color-outline-variant);
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-sm);
-    background: var(--color-surface-container-lowest);
-  }
-  .district-checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--color-on-surface-variant);
-    cursor: pointer;
-    user-select: none;
-  }
-  .district-checkbox-label input[type="checkbox"] {
-    width: auto;
-    height: auto;
-    cursor: pointer;
-  }
-  .district-suffix {
-    color: var(--color-on-surface-variant);
-    font-size: 10px;
-    opacity: 0.8;
-  }
-  .ward-text {
-    display: inline-block;
-    max-width: 140px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .segmented-control {
-    display: flex;
-    background: var(--color-surface-container-low);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    padding: 3px;
-    margin-bottom: var(--spacing-sm);
-  }
-  .segmented-btn {
-    flex: 1;
-    background: none;
-    border: none;
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--color-on-surface-variant);
-    cursor: pointer;
-    border-radius: var(--rounded-sm);
-    transition: var(--transition-fast);
-    outline: none;
-  }
-  .segmented-btn.active {
-    background: var(--color-success);
-    color: white;
-    box-shadow: var(--shadow-sm);
-  }
-  .segmented-btn:hover:not(.active):not(:disabled) {
-    background: var(--color-surface-container-high);
-    color: var(--color-on-surface);
-  }
-  .segmented-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .segmented-btn:focus-visible {
-    outline: 2px solid var(--color-success);
-    outline-offset: -2px;
-  }
-  .ward-filter-input {
-    padding: 3px var(--spacing-sm);
-    font-size: 11px;
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-sm);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    outline: none;
-    width: 110px;
-    transition: var(--transition-fast);
-  }
-  .ward-filter-input:focus {
-    border-color: var(--color-success);
-    width: 150px;
-  }
-  
-  /* City Multiselect Styles */
-  .city-multiselect-container {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-    width: 100%;
-  }
-  .search-wrapper {
-    display: flex;
-    align-items: center;
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    padding: 0 var(--spacing-sm);
-    height: 38px;
-    transition: var(--transition-fast);
-  }
-  .search-wrapper:focus-within {
-    border-color: var(--color-success);
-  }
-  .search-icon {
-    font-size: 14px;
-    margin-right: var(--spacing-xs);
-    opacity: 0.7;
-  }
-  .search-wrapper input {
-    border: none !important;
-    background: transparent !important;
-    outline: none !important;
-    font-size: 13px !important;
-    color: var(--color-on-surface) !important;
-    width: 100% !important;
-    height: 100% !important;
-    padding: 0 !important;
-    margin: 0 !important;
-  }
-  .btn-clear-tags {
-    background: none;
-    border: none;
-    color: var(--color-error);
-    font-size: 11px;
-    font-weight: 700;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: var(--transition-fast);
-  }
-  .btn-clear-tags:hover {
-    text-decoration: underline;
-  }
-  .selected-tags-container {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-xs);
-    margin-top: 4px;
-  }
-  .city-tag {
-    display: inline-flex;
-    align-items: center;
-    background: var(--color-surface-container-high);
-    border: 1px solid var(--color-outline-variant);
-    color: var(--color-on-surface);
-    font-size: 12px;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: var(--rounded-sm);
-    gap: 4px;
-  }
-  .tag-close {
-    background: none;
-    border: none;
-    color: var(--color-on-surface-variant);
-    font-size: 14px;
-    font-weight: bold;
-    cursor: pointer;
-    padding: 0;
-    line-height: 1;
-  }
-  .tag-close:hover {
-    color: var(--color-error);
-  }
-  .city-dropdown-list {
-    position: absolute;
-    top: 65px;
-    left: 0;
-    right: 0;
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    max-height: 220px;
-    overflow-y: auto;
-    z-index: 100;
-  }
-  .city-dropdown-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: none;
-    border: none;
-    border-bottom: 1px solid var(--color-outline-variant);
-    color: var(--color-on-surface);
-    font-size: 13px;
-    text-align: left;
-    cursor: pointer;
-    transition: var(--transition-fast);
-  }
-  .city-dropdown-item:last-child {
-    border-bottom: none;
-  }
-  .city-dropdown-item:hover {
-    background: var(--color-surface-container-low);
-  }
-  .city-dropdown-item.selected {
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-    font-weight: 600;
-  }
-  .check-icon {
-    font-weight: bold;
-    font-size: 12px;
-  }
-  .no-results-item {
-    padding: var(--spacing-md);
-    font-size: 13px;
-    color: var(--color-on-surface-variant);
-    text-align: center;
-    font-style: italic;
-  }
-  .headless-option-group {
-    margin: var(--spacing-md) 0;
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: var(--color-surface-container-low);
-    border: 1px dashed var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-  }
-  .headless-checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: var(--color-on-surface);
-    cursor: pointer;
-    user-select: none;
-  }
-  .headless-checkbox-label input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    cursor: pointer;
-    accent-color: var(--color-primary);
-  }
-</style>

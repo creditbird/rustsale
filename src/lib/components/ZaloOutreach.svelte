@@ -2,7 +2,14 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { getLeads, type Lead } from '$lib/services/crmService';
+  import { getLeads, getCategories, getCampaignLeads, type Lead, type Category } from '$lib/services/crmService';
+  import { Button } from '$lib/components/ui/button';
+  import { Input } from '$lib/components/ui/input';
+  import { Badge } from '$lib/components/ui/badge';
+  import * as Card from '$lib/components/ui/card';
+  import * as Dialog from '$lib/components/ui/dialog';
+  import { Progress } from '$lib/components/ui/progress';
+  import { MessageSquare, Plus, RefreshCw, Trash2, Edit, QrCode, Send, Terminal, CheckCircle, AlertCircle, User, Filter, Check, X } from 'lucide-svelte';
 
   interface ZaloSession {
     imei: string;
@@ -34,7 +41,6 @@
     created_at?: string;
   }
 
-  // Reactive states
   let sessions = $state<ZaloSession[]>([]);
   let templates = $state<OutreachTemplate[]>([]);
   let leads = $state<Lead[]>([]);
@@ -43,45 +49,36 @@
   let sessionStatuses = $state<Record<string, SessionStatusInfo>>({});
   let isVerifyingAll = $state(false);
 
-  // Selected campaign parameters
   let selectedImeis = $state<string[]>([]);
   let selectedTemplateId = $state<number | null>(null);
   let selectedLeadIds = $state<number[]>([]);
 
-  // Category and Segmentation targeting
-  import { getCategories, getCampaignLeads, type Category } from '$lib/services/crmService';
   let categories = $state<Category[]>([]);
   let selectedCategoryId = $state<number | null>(null);
   let segmentationFilter = $state('all');
   let filterTemplateId = $state<number | null>(null);
 
-
-  // QR Modal flow states
   let isQrModalOpen = $state(false);
   let qrImage = $state<string | null>(null);
   let qrUser = $state<{ avatar: string; display_name: string } | null>(null);
   let qrStatus = $state('Initializing login...');
   let qrError = $state<string | null>(null);
 
-  // Template Modal flow states
   let isTemplateModalOpen = $state(false);
   let editingTemplateId = $state<number | null>(null);
   let templateName = $state('');
   let templateContent = $state('');
   let templateError = $state<string | null>(null);
 
-  // Campaign execution states
   let isCampaignRunning = $state(false);
   let campaignProgress = $state(0);
   let campaignStatus = $state('Idle');
   let campaignLogs = $state<string[]>([]);
   let campaignConsoleElement: HTMLDivElement | null = null;
 
-  // Tauri event listeners
   let qrUnlistens: UnlistenFn[] = [];
   let campaignUnlistens: UnlistenFn[] = [];
 
-  // Computed / filtered leads
   let filteredLeads = $derived(
     leads.filter(lead => 
       (lead.name || '').toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
@@ -95,7 +92,6 @@
     filteredLeads.every(lead => lead.id && selectedLeadIds.includes(lead.id))
   );
 
-  // Fetch initial data
   async function loadSessions(): Promise<boolean> {
     try {
       sessions = await invoke<ZaloSession[]>('get_zalo_sessions');
@@ -128,7 +124,6 @@
     }
   }
 
-  
   async function loadCategories() {
     try {
       categories = await getCategories();
@@ -137,28 +132,18 @@
     }
   }
 
-  
   $effect(() => {
     if (selectedCategoryId !== null) {
       getCampaignLeads(selectedCategoryId, segmentationFilter, filterTemplateId)
-        .then(res => {
-          leads = res;
-        })
-        .catch(err => {
-          console.error('Error fetching campaign leads', err);
-          leads = [];
-        });
+        .then(res => { leads = res; })
+        .catch(err => { console.error('Error fetching campaign leads', err); leads = []; });
     } else {
       leads = [];
     }
   });
 
   async function verifySession(imei: string) {
-    sessionStatuses[imei] = {
-      ...sessionStatuses[imei],
-      checking: true,
-      valid: null
-    };
+    sessionStatuses[imei] = { ...sessionStatuses[imei], checking: true, valid: null };
     try {
       const res = await invoke<ZaloSessionStatus>('verify_zalo_session', { imei });
       sessionStatuses[imei] = {
@@ -169,11 +154,7 @@
         error: res?.error_message
       };
     } catch (e) {
-      sessionStatuses[imei] = {
-        checking: false,
-        valid: false,
-        error: String(e)
-      };
+      sessionStatuses[imei] = { checking: false, valid: false, error: String(e) };
     }
   }
 
@@ -181,10 +162,7 @@
     if (sessions.length === 0) return;
     isVerifyingAll = true;
     for (const s of sessions) {
-      sessionStatuses[s.imei] = {
-        ...sessionStatuses[s.imei],
-        checking: true
-      };
+      sessionStatuses[s.imei] = { ...sessionStatuses[s.imei], checking: true };
     }
     try {
       const results = await invoke<ZaloSessionStatus[]>('verify_all_zalo_sessions') || [];
@@ -201,11 +179,6 @@
       }
     } catch (e) {
       console.error('Error verifying all sessions:', e);
-      for (const s of sessions) {
-        if (sessionStatuses[s.imei]?.checking) {
-          sessionStatuses[s.imei] = { checking: false, valid: false, error: 'Verification failed' };
-        }
-      }
     } finally {
       isVerifyingAll = false;
     }
@@ -224,133 +197,54 @@
     cleanupCampaignListeners();
   });
 
-  // Helper cleanups
-  function cleanupQrListeners() {
-    qrUnlistens.forEach(u => u());
-    qrUnlistens = [];
-  }
+  function cleanupQrListeners() { qrUnlistens.forEach(u => u()); qrUnlistens = []; }
+  function cleanupCampaignListeners() { campaignUnlistens.forEach(u => u()); campaignUnlistens = []; }
 
-  function cleanupCampaignListeners() {
-    campaignUnlistens.forEach(u => u());
-    campaignUnlistens = [];
-  }
-
-  // QR Login Actions
   async function openQrLogin() {
     isQrModalOpen = true;
     qrImage = null;
     qrUser = null;
     qrStatus = 'Connecting to Zalo...';
     qrError = null;
-
     cleanupQrListeners();
 
     try {
-      // Setup QR event listeners first
-      const codeUnlisten = await listen<{ image_base64: string; token: string; code: string }>(
-        'zalo-qr-code',
-        (event) => {
-          qrImage = event.payload.image_base64;
-          qrStatus = 'Scan the QR code with your Zalo app to login.';
-        }
-      );
+      const codeUnlisten = await listen<{ image_base64: string }>('zalo-qr-code', (event) => {
+        qrImage = event.payload.image_base64;
+        qrStatus = 'Scan the QR code with your Zalo app to login.';
+      });
       qrUnlistens.push(codeUnlisten);
 
-      const scannedUnlisten = await listen<{ avatar: string; display_name: string }>(
-        'zalo-qr-scanned',
-        (event) => {
-          qrUser = {
-            avatar: event.payload.avatar,
-            display_name: event.payload.display_name
-          };
-          qrStatus = 'QR Code Scanned! Please confirm on your mobile app.';
-        }
-      );
+      const scannedUnlisten = await listen<{ avatar: string; display_name: string }>('zalo-qr-scanned', (event) => {
+        qrUser = { avatar: event.payload.avatar, display_name: event.payload.display_name };
+        qrStatus = 'QR Code Scanned! Confirm on phone.';
+      });
       qrUnlistens.push(scannedUnlisten);
 
-      const successUnlisten = await listen<{ imei: string }>('zalo-qr-success', async (event) => {
-        qrStatus = 'Login successful. Loading your session...';
-        qrImage = null;
-        const sessionsLoaded = await loadSessions();
-        const sessionSaved = sessions.some((session) => session.imei === event.payload.imei);
-
-        if (!sessionsLoaded || !sessionSaved) {
-          qrStatus = 'Session unavailable';
-          qrError = 'Zalo confirmed the scan, but the session could not be loaded. Please try again.';
-          return;
-        }
-
+      const successUnlisten = await listen<{ imei: string }>('zalo-qr-success', async () => {
+        qrStatus = 'Login successful!';
+        await loadSessions();
         closeQrModal();
       });
       qrUnlistens.push(successUnlisten);
 
-      const errorUnlisten = await listen<{ message: string }>('zalo-qr-error', (event) => {
-        qrImage = null;
-        qrStatus = 'Login failed';
-        qrError = event.payload.message;
-        cleanupQrListeners();
-      });
-      qrUnlistens.push(errorUnlisten);
-
-      const expiredUnlisten = await listen('zalo-qr-expired', () => {
-        qrStatus = 'QR Code expired. Retrying...';
-        qrImage = null;
-      });
-      qrUnlistens.push(expiredUnlisten);
-
-      const declinedUnlisten = await listen('zalo-qr-declined', () => {
-        qrError = 'Login request declined on phone.';
-        qrStatus = 'Declined';
-        cleanupQrListeners();
-      });
-      qrUnlistens.push(declinedUnlisten);
-
-      // Trigger the Tauri start command
       await invoke('start_zalo_qr_login');
     } catch (e) {
-      qrError = `Failed to start login: ${e}`;
-      qrStatus = 'Error';
+      qrError = `Failed: ${e}`;
     }
   }
 
-  function closeQrModal() {
-    isQrModalOpen = false;
-    cleanupQrListeners();
-  }
+  function closeQrModal() { isQrModalOpen = false; cleanupQrListeners(); }
 
   async function deleteSession(imei: string) {
-    if (!confirm('Are you sure you want to log out and delete this session?')) return;
+    if (!confirm('Logout and delete session?')) return;
     try {
       await invoke('delete_zalo_session', { imei });
       selectedImeis = selectedImeis.filter(i => i !== imei);
       await loadSessions();
-    } catch (e) {
-      alert(`Failed to delete session: ${e}`);
-    }
+    } catch (e) { alert(`Error: ${e}`); }
   }
 
-  let hasExpiredSessions = $derived(
-    sessions.some(s => sessionStatuses[s.imei]?.valid === false)
-  );
-
-  async function deleteInactiveSessions() {
-    const expiredSessions = sessions.filter(s => sessionStatuses[s.imei]?.valid === false);
-    if (expiredSessions.length === 0) return;
-    if (!confirm(`Bạn có chắc muốn xóa ${expiredSessions.length} phiên Zalo không hoạt động/đã hết hạn?`)) return;
-
-    for (const s of expiredSessions) {
-      try {
-        await invoke('delete_zalo_session', { imei: s.imei });
-        selectedImeis = selectedImeis.filter(i => i !== s.imei);
-      } catch (e) {
-        console.error(`Failed to delete session ${s.imei}:`, e);
-      }
-    }
-    await loadSessions();
-  }
-
-
-  // Template CRUD actions
   function openCreateTemplate() {
     editingTemplateId = null;
     templateName = '';
@@ -369,188 +263,77 @@
 
   async function saveTemplate() {
     if (!templateName.trim() || !templateContent.trim()) {
-      templateError = 'Name and Content are required.';
+      templateError = 'Name and content are required.';
       return;
     }
-
     try {
       if (editingTemplateId !== null) {
-        await invoke('update_outreach_template', {
-          id: editingTemplateId,
-          name: templateName,
-          content: templateContent
-        });
+        await invoke('update_outreach_template', { id: editingTemplateId, name: templateName, content: templateContent });
       } else {
-        await invoke('create_outreach_template', {
-          name: templateName,
-          content: templateContent
-        });
+        await invoke('create_outreach_template', { name: templateName, content: templateContent });
       }
       isTemplateModalOpen = false;
       await loadTemplates();
-    } catch (e) {
-      templateError = `Failed to save template: ${e}`;
-    }
+    } catch (e) { templateError = String(e); }
   }
 
   async function deleteTemplate(id: number) {
-    if (!confirm('Are you sure you want to delete this template?')) return;
+    if (!confirm('Delete template?')) return;
     try {
       await invoke('delete_outreach_template', { id });
-      if (selectedTemplateId === id) {
-        selectedTemplateId = null;
-      }
+      if (selectedTemplateId === id) selectedTemplateId = null;
       await loadTemplates();
-    } catch (e) {
-      alert(`Failed to delete template: ${e}`);
-    }
+    } catch (e) { alert(String(e)); }
   }
 
-  // Leads checkbox toggle helpers
   function toggleLead(id: number) {
-    if (selectedLeadIds.includes(id)) {
-      selectedLeadIds = selectedLeadIds.filter(x => x !== id);
-    } else {
-      selectedLeadIds = [...selectedLeadIds, id];
-    }
+    if (selectedLeadIds.includes(id)) selectedLeadIds = selectedLeadIds.filter(x => x !== id);
+    else selectedLeadIds = [...selectedLeadIds, id];
   }
 
   function toggleSelectAll() {
-    const currentFilteredIds = filteredLeads.map(l => l.id).filter((id): id is number => !!id);
-    const allSelected = currentFilteredIds.every(id => selectedLeadIds.includes(id));
-
-    if (allSelected) {
-      // Unselect all filtered leads
-      selectedLeadIds = selectedLeadIds.filter(id => !currentFilteredIds.includes(id));
+    const ids = filteredLeads.map(l => l.id).filter((id): id is number => !!id);
+    if (ids.every(id => selectedLeadIds.includes(id))) {
+      selectedLeadIds = selectedLeadIds.filter(id => !ids.includes(id));
     } else {
-      // Select all filtered leads (avoid duplicate inserts)
-      const otherSelectedIds = selectedLeadIds.filter(id => !currentFilteredIds.includes(id));
-      selectedLeadIds = [...otherSelectedIds, ...currentFilteredIds];
+      const rest = selectedLeadIds.filter(id => !ids.includes(id));
+      selectedLeadIds = [...rest, ...ids];
     }
   }
 
-  function selectVerifiedZalo() {
-    const verifiedIds = filteredLeads
-      .filter(l => l.has_zalo === 1)
-      .map(l => l.id)
-      .filter((id): id is number => !!id);
-    
-    // Add all verified lead IDs to selectedLeadIds without duplicates
-    const otherSelectedIds = selectedLeadIds.filter(id => !verifiedIds.includes(id));
-    selectedLeadIds = [...otherSelectedIds, ...verifiedIds];
-  }
-
-  // selectUnreached filters for leads with zalo_reached === 0 (or null/undefined)
-  function selectUnreached() {
-    const unreachedIds = filteredLeads
-      .filter(l => l.zalo_reached === 0 || l.zalo_reached === null || l.zalo_reached === undefined)
-      .map(l => l.id)
-      .filter((id): id is number => !!id);
-
-    // Add all unreached lead IDs to selectedLeadIds without duplicates
-    const otherSelectedIds = selectedLeadIds.filter(id => !unreachedIds.includes(id));
-    selectedLeadIds = [...otherSelectedIds, ...unreachedIds];
-  }
-
-  function isVnMobile(phone: string | null | undefined): boolean {
-    if (!phone) return false;
-    // Isolate number from any trailing alphabetic or non-standard comments
-    const match = phone.match(/[^0-9\s+\-().,\[\]]/);
-    const phonePart = match && match.index !== undefined ? phone.substring(0, match.index) : phone;
-
-    // 1. Strip all non-digit characters
-    const digits = phonePart.replace(/\D/g, '');
-    
-    // 2. Normalize leading "0084" or "84" to "0"
-    let normalized = digits;
-    if (digits.startsWith('0084')) {
-      normalized = '0' + digits.slice(4);
-    } else if (digits.startsWith('84')) {
-      normalized = '0' + digits.slice(2);
-    }
-    
-    // 3. Match against Vietnamese mobile blocks: 03, 05, 07, 08, 09
-    // and total length must be exactly 10 digits
-    if (normalized.length !== 10) return false;
-    
-    const prefix = normalized.slice(0, 2);
-    return ['03', '05', '07', '08', '09'].includes(prefix);
-  }
-
-  function selectMobileOnly() {
-    const mobileIds = filteredLeads
-      .filter(l => isVnMobile(l.phone))
-      .map(l => l.id)
-      .filter((id): id is number => !!id);
-    
-    // Add all mobile lead IDs to selectedLeadIds without duplicates
-    const otherSelectedIds = selectedLeadIds.filter(id => !mobileIds.includes(id));
-    selectedLeadIds = [...otherSelectedIds, ...mobileIds];
-  }
-
-  // Campaign Execution
   function appendCampaignLog(msg: string) {
     const timestamp = new Date().toLocaleTimeString();
     campaignLogs = [...campaignLogs, `[${timestamp}] ${msg}`];
-    
-    setTimeout(() => {
-      if (campaignConsoleElement) {
-        campaignConsoleElement.scrollTop = campaignConsoleElement.scrollHeight;
-      }
-    }, 50);
+    setTimeout(() => { if (campaignConsoleElement) campaignConsoleElement.scrollTop = campaignConsoleElement.scrollHeight; }, 50);
   }
 
   async function startCampaign() {
-    if (selectedImeis.length === 0) {
-      alert('Please select at least one active Zalo session first.');
-      return;
-    }
-    if (selectedCategoryId === null) {
-      alert('Please select a target category first.');
-      return;
-    }
-    if (selectedTemplateId === null) {
-      alert('Please select an outreach template first.');
-      return;
-    }
-    if (selectedLeadIds.length === 0) {
-      alert('Please select at least one lead to receive the outreach.');
-      return;
-    }
+    if (selectedImeis.length === 0 || selectedCategoryId === null || selectedTemplateId === null || selectedLeadIds.length === 0) return;
 
     isCampaignRunning = true;
     campaignProgress = 0;
-    campaignStatus = 'Starting...';
+    campaignStatus = 'Starting Zalo campaign...';
     campaignLogs = [];
-    appendCampaignLog(`Starting outreach campaign to ${selectedLeadIds.length} leads...`);
+    appendCampaignLog(`Starting Zalo campaign to ${selectedLeadIds.length} leads...`);
 
     cleanupCampaignListeners();
 
     try {
-      const progressUnlisten = await listen<{ progress: number; status: string; message: string }>(
-        'campaign-progress',
-        (event) => {
-          campaignProgress = event.payload.progress;
-          campaignStatus = event.payload.message;
-          if (event.payload.status === 'failed') {
-            isCampaignRunning = false;
-            cleanupCampaignListeners();
-          }
-        }
-      );
+      const progressUnlisten = await listen<{ progress: number; status: string; message: string }>('campaign-progress', (event) => {
+        campaignProgress = event.payload.progress;
+        campaignStatus = event.payload.message;
+        if (event.payload.status === 'failed') isCampaignRunning = false;
+      });
       campaignUnlistens.push(progressUnlisten);
 
-      const logUnlisten = await listen<{ message: string }>('campaign-log', (event) => {
-        appendCampaignLog(event.payload.message);
-      });
+      const logUnlisten = await listen<{ message: string }>('campaign-log', (e) => appendCampaignLog(e.payload.message));
       campaignUnlistens.push(logUnlisten);
 
-      const completeUnlisten = await listen<{ total_sent: number; message: string }>('campaign-complete', (event) => {
+      const completeUnlisten = await listen<{ total_sent: number; message: string }>('campaign-complete', (e) => {
         isCampaignRunning = false;
         campaignProgress = 100;
-        campaignStatus = event.payload.message;
-        appendCampaignLog(`[SUCCESS] ${event.payload.message}`);
-        cleanupCampaignListeners();
+        campaignStatus = e.payload.message;
+        appendCampaignLog(`[COMPLETE] ${e.payload.message}`);
       });
       campaignUnlistens.push(completeUnlisten);
 
@@ -559,1354 +342,233 @@
         sessionImeis: selectedImeis,
         templateId: selectedTemplateId
       });
-      appendCampaignLog('Outreach campaign invoked successfully.');
     } catch (e) {
       isCampaignRunning = false;
-      campaignStatus = 'Failed';
-      appendCampaignLog(`Error starting outreach campaign: ${e}`);
+      appendCampaignLog(`Error: ${e}`);
     }
   }
 </script>
 
-<div class="container animate-fade-in">
-  <header class="header">
-    <div class="title-section">
-      <span class="material-icons outreach-icon">campaign</span>
-      <div>
-        <h1>Zalo Outreach Manager</h1>
-        <p class="subtitle">Authenticate sessions, customize outreach templates, and launch campaign flows</p>
-      </div>
-    </div>
-  </header>
-
-  <div class="layout-grid">
-    <!-- Left Column: Sessions and Templates -->
-    <div class="left-col">
-      <!-- Zalo Sessions Card -->
-      <div class="card session-card">
-        <div class="card-header">
-          <h2>Zalo Sessions</h2>
-          <div style="display: flex; gap: var(--spacing-xs); align-items: center; flex-wrap: wrap;">
-            {#if hasExpiredSessions}
-              <button type="button" class="add-session-btn delete-invalid-btn" onclick={deleteInactiveSessions} title="Xóa tất cả phiên không hoạt động">
-                <span class="material-icons">delete_sweep</span>
-                Xóa phiên lỗi
-              </button>
-            {/if}
-            <button type="button" class="add-session-btn" onclick={verifyAllSessions} disabled={isVerifyingAll || sessions.length === 0} title="Kiểm tra tất cả">
-              <span class="material-icons" class:spinning={isVerifyingAll}>sync</span>
-              Kiểm tra tất cả
-            </button>
-            <button type="button" class="add-session-btn" onclick={openQrLogin}>
-              <span class="material-icons">qr_code_scanner</span>
-              Add Session
-            </button>
-          </div>
-        </div>
-
-        <div class="sessions-list">
-          {#if sessions.length === 0}
-            <div class="empty-state">
-              <p>No active Zalo sessions. Click "Add Session" to scan and link your Zalo account.</p>
-            </div>
-          {:else}
-            {#each sessions as s}
-              <div class="session-item" class:selected={selectedImeis.includes(s.imei)}>
-                <button type="button" class="session-info" onclick={() => { if (selectedImeis.includes(s.imei)) selectedImeis = selectedImeis.filter(i => i !== s.imei); else selectedImeis = [...selectedImeis, s.imei]; }}>
-                  {#if sessionStatuses[s.imei]?.checking}
-                    <span class="material-icons status-icon spinning" title="Đang kiểm tra...">sync</span>
-                  {:else if sessionStatuses[s.imei]?.valid === true}
-                    <span class="material-icons status-icon active" style="color: var(--color-success);" title="Phiên đang hoạt động">check_circle</span>
-                  {:else if sessionStatuses[s.imei]?.valid === false}
-                    <span class="material-icons status-icon" style="color: var(--color-danger);" title="Phiên đã hết hạn hoặc lỗi: {sessionStatuses[s.imei]?.error || 'Phiên không hợp lệ'}">error</span>
-                  {:else}
-                    <span class="material-icons status-icon">account_circle</span>
-                  {/if}
-                  <span class="session-details">
-                    <span class="session-name">
-                      {#if sessionStatuses[s.imei]?.displayName}
-                        {sessionStatuses[s.imei].displayName} <span style="font-weight: normal; opacity: 0.8; font-size: 11px;">({s.imei})</span>
-                      {:else}
-                        IMEI: {s.imei}
-                      {/if}
-                    </span>
-                    <span class="session-ua">{(s.user_agent || '').substring(0, 40)}...</span>
-                  </span>
-                </button>
-                <div class="session-actions">
-                  <button type="button" class="action-btn" onclick={() => verifySession(s.imei)} title="Kiểm tra phiên" disabled={sessionStatuses[s.imei]?.checking}>
-                    <span class="material-icons" class:spinning={sessionStatuses[s.imei]?.checking}>refresh</span>
-                  </button>
-                  <button type="button" class="delete-btn" onclick={() => deleteSession(s.imei)} title="Xóa phiên">
-                    <span class="material-icons">delete</span>
-                  </button>
-                </div>
-              </div>
-            {/each}
-          {/if}
-        </div>
-      </div>
-
-      <!-- Templates Card -->
-      <div class="card template-card">
-        <div class="card-header">
-          <h2>Outreach Templates</h2>
-          <button type="button" class="add-template-btn" onclick={openCreateTemplate}>
-            <span class="material-icons">add</span>
-            Create Template
-          </button>
-        </div>
-
-        <div class="templates-list">
-          {#if templates.length === 0}
-            <div class="empty-state">
-              <p>No outreach templates. Create one to standardise your messaging.</p>
-            </div>
-          {:else}
-            {#each templates as t}
-              <div class="template-item" class:selected={selectedTemplateId === t.id}>
-                <button type="button" class="template-info" onclick={() => { if (t.id) selectedTemplateId = t.id; }}>
-                  <span class="template-name">{t.name}</span>
-                  <span class="template-preview">{t.content}</span>
-                </button>
-                <div class="template-actions">
-                  <button type="button" class="action-btn" onclick={() => openEditTemplate(t)} title="Edit Template">
-                    <span class="material-icons">edit</span>
-                  </button>
-                  <button type="button" class="action-btn delete" onclick={() => t.id && deleteTemplate(t.id)} title="Delete Template">
-                    <span class="material-icons">delete</span>
-                  </button>
-                </div>
-              </div>
-            {/each}
-          {/if}
-        </div>
-      </div>
-    </div>
-
-    <!-- Right Column: Campaign Execution & Progress -->
-    <div class="right-col">
-      <div class="card campaign-card">
-        <div class="card-header">
-          <h2>Campaign Execution</h2>
-          <span class="step-indicator">Steps 1-3</span>
-        </div>
-
-        <div class="campaign-form">
-          <!-- Step 1: Select Session(s) -->
-          <div class="input-group">
-            <label>Step 1: Select Active Zalo Session(s)</label>
-            <div class="checkbox-group" style="display: flex; gap: 10px; flex-wrap: wrap;">
-              {#each sessions as s}
-                <label style="display: flex; align-items: center; gap: 5px;">
-                  <input type="checkbox" value={s.imei} bind:group={selectedImeis} disabled={isCampaignRunning} />
-                  IMEI: {s.imei}
-                </label>
-              {/each}
-            </div>
-          </div>
-          
-          <!-- Category Selection -->
-          <div class="input-group">
-            <label for="campaign-category">Target Category</label>
-            <div class="select-wrapper">
-              <select id="campaign-category" bind:value={selectedCategoryId} disabled={isCampaignRunning}>
-                <option value={null} disabled>-- Choose Category --</option>
-                {#each categories as cat}
-                  <option value={cat.id}>{cat.name}</option>
-                {/each}
-              </select>
-            </div>
-          </div>
-          
-          <!-- Segmentation Filters -->
-          <div class="input-group">
-            <label>Campaign Segmentation Filter</label>
-            <div class="radio-group" style="display: flex; flex-direction: column; gap: 5px;">
-              <label><input type="radio" value="all" bind:group={segmentationFilter} disabled={isCampaignRunning} /> All Leads in Category</label>
-              <label><input type="radio" value="never_sent" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Never Sent Successfully</label>
-              <label><input type="radio" value="last_failed" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Last Attempt Failed</label>
-              <label><input type="radio" value="template_success" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Successful Template Match</label>
-            </div>
-          </div>
-          
-          {#if segmentationFilter === 'template_success'}
-          <div class="input-group" style="margin-left: 20px;">
-            <label for="filter-template">Filter by Success Template</label>
-            <div class="select-wrapper">
-              <select id="filter-template" bind:value={filterTemplateId} disabled={isCampaignRunning}>
-                <option value={null} disabled>-- Choose Template --</option>
-                {#each templates as t}
-                  <option value={t.id}>{t.name}</option>
-                {/each}
-              </select>
-            </div>
-          </div>
-          {/if}
-
-
-          <!-- Step 2: Select Template -->
-          <div class="input-group">
-            <label for="campaign-template">Step 2: Select Template</label>
-            <div class="select-wrapper">
-              <select id="campaign-template" bind:value={selectedTemplateId} disabled={isCampaignRunning}>
-                <option value={null} disabled>-- Choose Template --</option>
-                {#each templates as t}
-                  <option value={t.id}>{t.name}</option>
-                {/each}
-              </select>
-            </div>
-          </div>
-
-          <!-- Step 3: Select Leads -->
-          <div class="leads-selector-section">
-            <div class="leads-header">
-              <span class="leads-title">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
-              <div class="leads-actions">
-                <input 
-                  type="text" 
-                  class="search-bar" 
-                  placeholder="Filter leads..." 
-                  bind:value={leadSearchQuery} 
-                />
-                <button 
-                  type="button" 
-                  class="select-all-btn" 
-                  onclick={toggleSelectAll}
-                  disabled={filteredLeads.length === 0}
-                >
-                  {isAllLeadsSelected ? 'Deselect All' : 'Select All'}
-                </button>
-              </div>
-            </div>
-
-            <!-- Quick selection helpers -->
-            <div class="quick-select-helpers" style="display: flex; gap: var(--spacing-sm); margin-top: var(--spacing-xs); justify-content: flex-end;">
-              <button 
-                type="button" 
-                class="select-all-btn" 
-                onclick={selectVerifiedZalo}
-                disabled={filteredLeads.filter(l => l.has_zalo === 1).length === 0}
-                style="font-size: 10px; padding: 2px var(--spacing-xs);"
-              >
-                Select Verified Zalo
-              </button>
-              <button 
-                type="button" 
-                class="select-all-btn" 
-                onclick={selectUnreached}
-                disabled={filteredLeads.filter(l => l.zalo_reached === 0 || l.zalo_reached === null || l.zalo_reached === undefined).length === 0}
-                style="font-size: 10px; padding: 2px var(--spacing-xs);"
-              >
-                Select Unreached
-              </button>
-              <button 
-                type="button" 
-                class="select-all-btn" 
-                onclick={selectMobileOnly}
-                disabled={filteredLeads.filter(l => isVnMobile(l.phone)).length === 0}
-                style="font-size: 10px; padding: 2px var(--spacing-xs);"
-              >
-                Select Mobile Leads Only
-              </button>
-            </div>
-
-            <div class="leads-list-box">
-              {#if filteredLeads.length === 0}
-                <div class="empty-state">
-                  <p>No leads found matching query.</p>
-                </div>
-              {:else}
-                {#each filteredLeads as lead}
-                  {#if lead.id}
-                    <label class="lead-checkbox-item">
-                      <input 
-                        type="checkbox" 
-                        checked={selectedLeadIds.includes(lead.id)} 
-                        onchange={() => lead.id && toggleLead(lead.id)}
-                        disabled={isCampaignRunning}
-                      />
-                      <span class="lead-label-info">
-                        <span class="lead-lbl-name">
-                          {lead.name}
-                          {#if lead.has_zalo === 1}
-                            <span class="zalo-badge verified" title="Zalo Verified" style="color: #0284c7; margin-left: 4px; display: inline-flex; align-items: center; vertical-align: middle;">
-                              <span class="material-icons" style="font-size: 14px;">check_circle</span>
-                            </span>
-                          {:else if lead.has_zalo === 0}
-                            <span class="zalo-badge unverified" title="No Zalo" style="color: #94a3b8; margin-left: 4px; display: inline-flex; align-items: center; vertical-align: middle;">
-                              <span class="material-icons" style="font-size: 14px;">cancel</span>
-                            </span>
-                          {/if}
-                        </span>
-                        <span class="lead-lbl-details">
-                          {lead.phone}
-                          {#if !lead.phone || lead.phone.trim() === ''}
-                            <span class="phone-badge missing" style="color: var(--color-danger); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-danger); border-radius: 4px; display: inline-block;">Missing</span>
-                          {:else if isVnMobile(lead.phone)}
-                            <span class="phone-badge mobile" style="color: var(--color-success); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-success); border-radius: 4px; display: inline-block;">Mobile</span>
-                          {:else}
-                            <span class="phone-badge landline" style="color: var(--color-on-surface-variant); font-size: 10px; margin-left: 4px; padding: 1px 4px; border: 1px solid var(--color-outline-variant); border-radius: 4px; display: inline-block;">Landline</span>
-                          {/if}
-                          • {lead.company}
-                        </span>
-                      </span>
-                    </label>
-                  {/if}
-                {/each}
-              {/if}
-            </div>
-          </div>
-
-          <button 
-            type="button"
-            class="start-campaign-btn" 
-            onclick={startCampaign} 
-            disabled={isCampaignRunning || selectedImeis.length === 0 || selectedTemplateId === null || selectedCategoryId === null || selectedLeadIds.length === 0}
-          >
-            {#if isCampaignRunning}
-              <span class="spinner"></span>
-              Outreach Sending...
-            {:else}
-              <span class="material-icons">send</span>
-              Launch Zalo Campaign
-            {/if}
-          </button>
-        </div>
-
-        <!-- Real-time progress bar and log console -->
-        <div class="campaign-progress-section">
-          <div class="progress-labels">
-            <span class="status-msg">{campaignStatus}</span>
-            <span class="percentage">{Math.round(campaignProgress)}%</span>
-          </div>
-          <div class="progress-bar-container">
-            <div class="progress-bar-fill" style="width: {campaignProgress}%" class:animated={isCampaignRunning}></div>
-          </div>
-
-          <div class="console-section">
-            <div class="console-header">
-              <span class="material-icons console-icon">terminal</span>
-              <h3>Outreach Console Logs</h3>
-              <button type="button" class="clear-btn" onclick={() => campaignLogs = []} disabled={campaignLogs.length === 0}>
-                Clear
-              </button>
-            </div>
-            <div class="console-body" bind:this={campaignConsoleElement}>
-              {#if campaignLogs.length === 0}
-                <div class="console-placeholder">
-                  <span class="material-icons">insights</span>
-                  <p>Campaign logs will show here dynamically.</p>
-                </div>
-              {:else}
-                {#each campaignLogs as log}
-                  <div class="log-line">{log}</div>
-                {/each}
-              {/if}
-            </div>
-          </div>
-        </div>
-      </div>
+<div class="space-y-4">
+  <!-- Header Bar -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-xl font-bold text-foreground tracking-tight">Zalo Outreach Manager</h2>
+      <p class="text-xs text-muted-foreground mt-0.5">Manage session tokens, templates, and automated Zalo messaging</p>
     </div>
   </div>
 
-  <!-- QR LOGIN MODAL -->
-  {#if isQrModalOpen}
-    <div class="modal-backdrop">
-      <div class="modal-card qr-modal animate-slide-down">
-        <div class="modal-header">
-          <h2>Zalo QR Login</h2>
-          <button type="button" class="modal-close" onclick={closeQrModal}>
-            <span class="material-icons">close</span>
-          </button>
-        </div>
-
-        <div class="modal-body qr-body">
-          <div class="qr-container">
-            {#if qrImage}
-              <img 
-                src={qrImage.startsWith('data:image/') ? qrImage : `data:image/png;base64,${qrImage}`} 
-                alt="Zalo QR Login Code" 
-                class="qr-code-img"
-              />
-            {:else if qrUser}
-              <div class="user-scanned animate-scale-up">
-                <img src={qrUser.avatar} alt="User Avatar" class="user-avatar" />
-                <h3>{qrUser.display_name}</h3>
-              </div>
-            {:else}
-              <div class="qr-spinner-box">
-                <div class="large-spinner"></div>
-              </div>
-            {/if}
+  <!-- Layout Grid -->
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+    <!-- Left Column: Sessions & Templates -->
+    <div class="lg:col-span-5 space-y-4">
+      <!-- Sessions Card -->
+      <Card.Root>
+        <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
+          <Card.Title class="text-sm font-bold flex items-center gap-2">
+            <MessageSquare class="w-4 h-4 text-emerald-600" /> Zalo Sessions
+          </Card.Title>
+          <div class="flex items-center gap-1.5">
+            <Button variant="outline" size="sm" class="h-7 text-[11px] px-2 gap-1" onclick={verifyAllSessions} disabled={isVerifyingAll}>
+              <RefreshCw class="w-3 h-3 {isVerifyingAll ? 'animate-spin' : ''}" /> Check All
+            </Button>
+            <Button size="sm" class="h-7 text-[11px] px-2 gap-1 bg-emerald-600 hover:bg-emerald-700 text-white" onclick={openQrLogin}>
+              <QrCode class="w-3 h-3" /> Add Session
+            </Button>
           </div>
-
-          <div class="qr-status-box">
-            <p class="qr-status">{qrStatus}</p>
-            {#if qrError}
-              <p class="qr-error-msg">{qrError}</p>
-            {/if}
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  <!-- TEMPLATE MODAL -->
-  {#if isTemplateModalOpen}
-    <div class="modal-backdrop">
-      <div class="modal-card template-form-modal animate-slide-down">
-        <div class="modal-header">
-          <h2>{editingTemplateId ? 'Edit Outreach Template' : 'Create Outreach Template'}</h2>
-          <button type="button" class="modal-close" onclick={() => isTemplateModalOpen = false}>
-            <span class="material-icons">close</span>
-          </button>
-        </div>
-
-        <div class="modal-body">
-          {#if templateError}
-            <div class="modal-error-banner">{templateError}</div>
+        </Card.Header>
+        <Card.Content class="p-3 space-y-2 text-xs max-h-56 overflow-y-auto">
+          {#if sessions.length === 0}
+            <div class="text-muted-foreground text-center py-4 italic">No Zalo sessions logged in.</div>
+          {:else}
+            {#each sessions as s}
+              <div class="flex items-center justify-between p-2 rounded-lg border border-border bg-card hover:bg-accent/40 transition-colors">
+                <div class="flex items-center gap-2 truncate">
+                  {#if sessionStatuses[s.imei]?.valid === true}
+                    <CheckCircle class="w-4 h-4 text-emerald-500 shrink-0" />
+                  {:else if sessionStatuses[s.imei]?.valid === false}
+                    <AlertCircle class="w-4 h-4 text-rose-500 shrink-0" />
+                  {:else}
+                    <User class="w-4 h-4 text-muted-foreground shrink-0" />
+                  {/if}
+                  <div class="truncate">
+                    <div class="font-semibold text-foreground truncate">{sessionStatuses[s.imei]?.displayName || `IMEI: ${s.imei}`}</div>
+                    <div class="text-[10px] text-muted-foreground truncate">{s.user_agent}</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-1">
+                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0" onclick={() => verifySession(s.imei)}>
+                    <RefreshCw class="w-3 h-3 {sessionStatuses[s.imei]?.checking ? 'animate-spin' : ''}" />
+                  </Button>
+                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-destructive" onclick={() => deleteSession(s.imei)}>
+                    <Trash2 class="w-3 h-3" />
+                  </Button>
+                </div>
+              </div>
+            {/each}
           {/if}
+        </Card.Content>
+      </Card.Root>
 
-          <div class="input-group">
-            <label for="template-name-input">Template Name</label>
-            <input 
-              id="template-name-input"
-              type="text" 
-              bind:value={templateName} 
-              placeholder="e.g. Cafe Welcome Promo" 
-            />
+      <!-- Templates Card -->
+      <Card.Root>
+        <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
+          <Card.Title class="text-sm font-bold flex items-center gap-2">
+            <Edit class="w-4 h-4 text-emerald-600" /> Outreach Templates
+          </Card.Title>
+          <Button size="sm" variant="outline" class="h-7 text-[11px] px-2 gap-1" onclick={openCreateTemplate}>
+            <Plus class="w-3 h-3" /> New Template
+          </Button>
+        </Card.Header>
+        <Card.Content class="p-3 space-y-2 text-xs max-h-64 overflow-y-auto">
+          {#if templates.length === 0}
+            <div class="text-muted-foreground text-center py-4 italic">No templates created.</div>
+          {:else}
+            {#each templates as t}
+              <div
+                class="p-2.5 rounded-lg border cursor-pointer transition-colors flex items-center justify-between {selectedTemplateId === t.id ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-accent/40'}"
+                onclick={() => { if (t.id) selectedTemplateId = t.id; }}
+              >
+                <div class="truncate space-y-0.5">
+                  <div class="font-semibold text-foreground">{t.name}</div>
+                  <div class="text-[11px] text-muted-foreground truncate">{t.content}</div>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0" onclick={() => openEditTemplate(t)}>
+                    <Edit class="w-3 h-3" />
+                  </Button>
+                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-destructive" onclick={() => t.id && deleteTemplate(t.id)}>
+                    <Trash2 class="w-3 h-3" />
+                  </Button>
+                </div>
+              </div>
+            {/each}
+          {/if}
+        </Card.Content>
+      </Card.Root>
+    </div>
+
+    <!-- Right Column: Campaign Flow & Terminal -->
+    <Card.Root class="lg:col-span-7 flex flex-col justify-between">
+      <Card.Header class="pb-3 border-b border-border">
+        <Card.Title class="text-base font-bold flex items-center gap-2">
+          <Send class="w-4 h-4 text-emerald-600" /> Campaign Execution
+        </Card.Title>
+      </Card.Header>
+      <Card.Content class="p-5 space-y-4 text-xs">
+        <!-- Target Category -->
+        <div class="space-y-1">
+          <label for="category-select" class="font-semibold text-foreground">Target Category</label>
+          <select id="category-select" bind:value={selectedCategoryId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+            <option value={null}>-- Select Category --</option>
+            {#each categories as cat}
+              <option value={cat.id}>{cat.name}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Leads Selection Box -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-semibold text-foreground">Target Leads ({selectedLeadIds.length} selected)</span>
+            <div class="flex items-center gap-2">
+              <Input type="text" placeholder="Search lead..." bind:value={leadSearchQuery} class="h-7 w-36 text-[11px]" />
+              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAll}>Toggle All</Button>
+            </div>
           </div>
-
-          <div class="input-group">
-            <label for="template-content-input">Message Content</label>
-            <textarea 
-              id="template-content-input"
-              rows="6" 
-              bind:value={templateContent} 
-              placeholder="Write your message here... Use [name] as placeholder."
-            ></textarea>
-          </div>
-
-          <div class="modal-footer">
-            <button type="button" class="secondary-btn" onclick={() => isTemplateModalOpen = false}>
-              Cancel
-            </button>
-            <button type="button" class="primary-btn" onclick={saveTemplate}>
-              Save Template
-            </button>
+          <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 space-y-1">
+            {#each filteredLeads as lead}
+              {#if lead.id}
+                <label class="flex items-center justify-between p-1.5 rounded hover:bg-muted/50 cursor-pointer text-xs">
+                  <div class="flex items-center gap-2">
+                    <input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onchange={() => lead.id && toggleLead(lead.id)} disabled={isCampaignRunning} class="rounded border-input text-primary" />
+                    <span class="font-medium text-foreground">{lead.name}</span>
+                    <span class="text-muted-foreground">({lead.company || 'N/A'})</span>
+                  </div>
+                  <span class="text-[11px] text-muted-foreground">{lead.phone || 'No phone'}</span>
+                </label>
+              {/if}
+            {/each}
           </div>
         </div>
-      </div>
-    </div>
-  {/if}
+
+        <!-- Progress & Execution Button -->
+        <div class="space-y-3 pt-2 border-t border-border">
+          <div class="flex items-center justify-between text-xs font-semibold">
+            <span class="text-foreground">{campaignStatus}</span>
+            <span class="text-emerald-600">{Math.round(campaignProgress)}%</span>
+          </div>
+          <Progress value={campaignProgress} class="h-2" />
+
+          <Button
+            size="sm"
+            onclick={startCampaign}
+            disabled={isCampaignRunning || selectedImeis.length === 0 || selectedCategoryId === null || selectedTemplateId === null || selectedLeadIds.length === 0}
+            class="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
+            <Send class="w-4 h-4" /> {isCampaignRunning ? 'Running Campaign...' : 'Launch Zalo Campaign'}
+          </Button>
+        </div>
+
+        <!-- Terminal Logs -->
+        <div class="min-h-[160px] max-h-[220px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto space-y-1 border border-slate-800" bind:this={campaignConsoleElement}>
+          {#if campaignLogs.length === 0}
+            <div class="text-slate-500 italic">Logs will stream here...</div>
+          {:else}
+            {#each campaignLogs as log}
+              <div class="leading-relaxed border-b border-slate-900/60 pb-0.5">{log}</div>
+            {/each}
+          {/if}
+        </div>
+      </Card.Content>
+    </Card.Root>
+  </div>
 </div>
 
-<style>
-  .container {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
-    block-size: 100%;
-  }
-
-  .header {
-    background: linear-gradient(135deg, var(--color-surface-container) 0%, var(--color-surface-container-low) 100%);
-    padding: var(--spacing-md) var(--spacing-lg);
-    border-radius: var(--rounded-lg);
-    border: 1px solid var(--color-outline-variant);
-    box-shadow: var(--shadow-soft);
-  }
-
-  .title-section {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-md);
-  }
-
-  .outreach-icon {
-    font-size: 36px;
-    color: var(--color-success);
-    background: rgba(16, 185, 129, 0.1);
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-md);
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: var(--color-on-surface-variant);
-    margin-top: 2px;
-  }
-
-  .layout-grid {
-    display: grid;
-    grid-template-columns: 280px 1fr;
-    gap: var(--spacing-lg);
-    flex: 1;
-    min-block-size: 0;
-  }
-
-  @media (max-width: 1024px) {
-    .layout-grid {
-      grid-template-columns: 1fr;
-      overflow-y: auto;
-    }
-  }
-
-  .left-col {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
-    min-block-size: 0;
-  }
-
-  .right-col {
-    display: flex;
-    flex-direction: column;
-    min-block-size: 0;
-  }
-
-  .card {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-xl);
-    box-shadow: var(--shadow-soft);
-    display: flex;
-    flex-direction: column;
-    padding: var(--spacing-md);
-    min-block-size: 0;
-  }
-
-  .session-card {
-    flex: 1;
-  }
-
-  .template-card {
-    flex: 1.2;
-  }
-
-  .campaign-card {
-    flex: 1;
-  }
-
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--spacing-md);
-    border-bottom: 1px solid var(--color-outline-variant);
-    padding-bottom: var(--spacing-sm);
-  }
-
-  .card-header h2 {
-    font-size: 14px;
-    font-weight: 700;
-  }
-
-  /* Sessions and Templates Lists */
-  .sessions-list, .templates-list {
-    flex: 1;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
-  .empty-state {
-    margin: auto;
-    text-align: center;
-    color: var(--color-neutral-slate);
-    font-size: 12px;
-    padding: var(--spacing-md);
-  }
-
-  .session-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--spacing-sm);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    transition: var(--transition-fast);
-    background: var(--color-surface-container-lowest);
-    min-width: 0;
-  }
-
-  .session-item:hover {
-    border-color: var(--color-success);
-    background: var(--color-surface-container-low);
-  }
-
-  .session-item.selected {
-    border-color: var(--color-success);
-    background: rgba(16, 185, 129, 0.05);
-    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.1);
-  }
-
-  .session-item:focus-within,
-  .template-item:focus-within,
-  .lead-checkbox-item:focus-within {
-    border-color: var(--color-success);
-    background: var(--color-surface-container-low);
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
-  }
-
-  .session-info {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    cursor: pointer;
-    background: none;
-    border: none;
-    text-align: left;
-    padding: 0;
-    font-family: inherit;
-    color: inherit;
-    min-width: 0;
-  }
-
-  .status-icon {
-    font-size: 18px;
-    color: var(--color-neutral-slate);
-    flex-shrink: 0;
-  }
-
-  .status-icon.active {
-    color: var(--color-success);
-  }
-
-  .session-details {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .session-name {
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .session-ua {
-    font-size: 11px;
-    color: var(--color-neutral-slate);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .session-actions {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    flex-shrink: 0;
-    margin-left: var(--spacing-xs);
-  }
-
-  .delete-invalid-btn {
-    background: rgba(244, 63, 94, 0.1) !important;
-    color: var(--color-danger) !important;
-    border-color: rgba(244, 63, 94, 0.3) !important;
-  }
-  .delete-invalid-btn:hover {
-    background: rgba(244, 63, 94, 0.2) !important;
-  }
-
-  .delete-btn {
-    color: var(--color-neutral-slate);
-    transition: var(--transition-fast);
-    display: flex;
-    align-items: center;
-    padding: var(--spacing-xs);
-    border-radius: var(--rounded-sm);
-    flex-shrink: 0;
-  }
-
-  .delete-btn:hover {
-    color: var(--color-danger);
-    background: rgba(244, 63, 94, 0.1);
-  }
-
-  /* Template Item Styling */
-  .template-item {
-    display: flex;
-    align-items: start;
-    justify-content: space-between;
-    padding: var(--spacing-sm);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    transition: var(--transition-fast);
-    cursor: pointer;
-  }
-
-  .template-item:hover {
-    border-color: var(--color-success);
-    background: var(--color-surface-container-low);
-  }
-
-  .template-item.selected {
-    border-color: var(--color-success);
-    background: rgba(16, 185, 129, 0.05);
-  }
-
-  .template-info {
-    flex: 1;
-    min-width: 0;
-    background: none;
-    border: none;
-    text-align: left;
-    padding: 0;
-    font-family: inherit;
-    color: inherit;
-  }
-
-  .template-name {
-    font-size: 13px;
-    font-weight: 600;
-    display: block;
-    margin-bottom: 2px;
-  }
-
-  .template-preview {
-    font-size: 11px;
-    color: var(--color-neutral-slate);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .template-actions {
-    display: flex;
-    gap: var(--spacing-xs);
-  }
-
-  .action-btn {
-    color: var(--color-neutral-slate);
-    padding: var(--spacing-xs);
-    border-radius: var(--rounded-sm);
-    display: flex;
-    align-items: center;
-    transition: var(--transition-fast);
-  }
-
-  .action-btn:hover {
-    color: var(--color-primary);
-    background: var(--color-surface-container);
-  }
-
-  .action-btn.delete:hover {
-    color: var(--color-danger);
-    background: rgba(244, 63, 94, 0.1);
-  }
-
-  button:focus-visible {
-    outline: 2px solid var(--color-success);
-    outline-offset: 2px;
-  }
-
-  /* Buttons */
-  .add-session-btn, .add-template-btn {
-    font-size: 12px;
-    font-weight: 600;
-    background: var(--color-surface-container-low);
-    color: var(--color-primary);
-    border: 1px solid var(--color-outline);
-    padding: 6px 12px;
-    border-radius: var(--rounded-md);
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-    transition: var(--transition-fast);
-  }
-
-  .add-session-btn:hover, .add-template-btn:hover {
-    background: var(--color-surface-container);
-    border-color: var(--color-primary);
-  }
-
-  /* Campaign Form & Selection */
-  .campaign-form {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--spacing-md);
-    margin-bottom: var(--spacing-lg);
-  }
-
-  @media (max-width: 768px) {
-    .campaign-form {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .input-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  .input-group label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-on-surface-variant);
-  }
-
-  .select-wrapper {
-    position: relative;
-  }
-
-  .select-wrapper select {
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-size: 13px;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-
-  .select-wrapper select:focus {
-    border-color: var(--color-success);
-  }
-
-  /* Step 3: Leads checkbox selector block */
-  .leads-selector-section {
-    grid-column: span 2;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  @media (max-width: 768px) {
-    .leads-selector-section {
-      grid-column: span 1;
-    }
-  }
-
-  .leads-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-on-surface-variant);
-  }
-
-  .leads-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-  }
-
-  .search-bar {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-sm);
-    font-size: 11px;
-    outline: none;
-    width: 150px;
-  }
-
-  .search-bar:focus {
-    border-color: var(--color-success);
-  }
-
-  .select-all-btn {
-    font-size: 11px;
-    font-weight: 600;
-    background: var(--color-surface-container-low);
-    color: var(--color-primary);
-    border: 1px solid var(--color-outline);
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--rounded-sm);
-    transition: var(--transition-fast);
-  }
-
-  .select-all-btn:hover:not(:disabled) {
-    background: var(--color-surface-container);
-  }
-
-  .select-all-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .leads-list-box {
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    max-block-size: 200px;
-    overflow-y: auto;
-    padding: var(--spacing-xs);
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .lead-checkbox-item {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-md);
-    padding: 6px var(--spacing-sm);
-    border-radius: var(--rounded-sm);
-    cursor: pointer;
-    transition: var(--transition-fast);
-  }
-
-  .lead-checkbox-item:hover {
-    background: var(--color-surface-container-low);
-  }
-
-  .lead-checkbox-item input[type="checkbox"] {
-    accent-color: var(--color-success);
-    width: 16px;
-    height: 16px;
-    cursor: pointer;
-  }
-
-  .lead-label-info {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .lead-lbl-name {
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .lead-lbl-details {
-    font-size: 10px;
-    color: var(--color-neutral-slate);
-  }
-
-  .start-campaign-btn {
-    grid-column: span 2;
-    background: var(--color-success);
-    color: var(--color-on-secondary);
-    padding: var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-weight: 600;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-sm);
-    transition: var(--transition-fast);
-  }
-
-  @media (max-width: 768px) {
-    .start-campaign-btn {
-      grid-column: span 1;
-    }
-  }
-
-  .start-campaign-btn:hover:not(:disabled) {
-    background: #0d9668;
-    box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);
-  }
-
-  .start-campaign-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  /* Progress & Console */
-  .campaign-progress-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    flex: 1;
-    min-block-size: 0;
-  }
-
-  .progress-labels {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: var(--spacing-md);
-  }
-
-  .status-msg {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-on-surface);
-  }
-
-  .percentage {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--color-success);
-  }
-
-  .progress-bar-container {
-    height: 10px;
-    background: var(--color-surface-container-highest);
-    border-radius: var(--rounded-full);
-    overflow: hidden;
-    position: relative;
-    margin-bottom: var(--spacing-md);
-  }
-
-  .progress-bar-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--color-success) 0%, #34d399 100%);
-    border-radius: var(--rounded-full);
-    transition: width var(--transition-fast) ease-out;
-  }
-
-  .progress-bar-fill.animated {
-    background-image: linear-gradient(
-      45deg,
-      rgba(255, 255, 255, 0.15) 25%,
-      transparent 25%,
-      transparent 50%,
-      rgba(255, 255, 255, 0.15) 50%,
-      rgba(255, 255, 255, 0.15) 75%,
-      transparent 75%,
-      transparent
-    );
-    background-size: 1rem 1rem;
-    animation: progress-bar-stripes 1s linear infinite;
-  }
-
-  /* Console section */
-  .console-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-block-size: 200px;
-    background: #0f172a;
-    border-radius: var(--rounded-md);
-    overflow: hidden;
-    border: 1px solid #1e293b;
-    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
-  .console-header {
-    background: #1e293b;
-    padding: var(--spacing-sm) var(--spacing-md);
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    border-bottom: 1px solid #334155;
-  }
-
-  .console-icon {
-    font-size: 18px;
-    color: #38bdf8;
-  }
-
-  .console-header h3 {
-    font-size: 12px;
-    font-weight: 700;
-    color: #e2e8f0;
-    margin: 0;
-    flex: 1;
-  }
-
-  .clear-btn {
-    font-size: 11px;
-    font-weight: 600;
-    color: #94a3b8;
-    background: #334155;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--rounded-sm);
-    transition: var(--transition-fast);
-  }
-
-  .clear-btn:hover:not(:disabled) {
-    color: #f1f5f9;
-    background: #475569;
-  }
-
-  .console-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--spacing-md);
-    font-family: Menlo, Monaco, Consolas, "Fira Code", monospace;
-    font-size: 11px;
-    line-height: 1.5;
-    color: #34d399;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  .console-placeholder {
-    margin: auto;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--spacing-sm);
-    color: #64748b;
-    text-align: center;
-  }
-
-  .console-placeholder .material-icons {
-    font-size: 32px;
-  }
-
-  .log-line {
-    word-break: break-all;
-    white-space: pre-wrap;
-  }
-
-  /* Modals Overlay */
-  .modal-backdrop {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    background: rgba(15, 23, 42, 0.4);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal-card {
-    background: var(--color-surface-container-lowest);
-    border-radius: var(--rounded-xl);
-    border: 1px solid var(--color-outline-variant);
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .qr-modal {
-    width: 320px;
-  }
-
-  .template-form-modal {
-    width: 480px;
-  }
-
-  .modal-header {
-    background: var(--color-surface-container-low);
-    padding: var(--spacing-md);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid var(--color-outline-variant);
-  }
-
-  .modal-header h2 {
-    font-size: 14px;
-    font-weight: 700;
-  }
-
-  .modal-close {
-    color: var(--color-neutral-slate);
-    display: flex;
-    align-items: center;
-    padding: var(--spacing-xs);
-    border-radius: var(--rounded-sm);
-    transition: var(--transition-fast);
-  }
-
-  .modal-close:hover {
-    color: var(--color-danger);
-    background: rgba(244, 63, 94, 0.1);
-  }
-
-  .modal-body {
-    padding: var(--spacing-lg);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-  }
-
-  /* QR Login Internal styling */
-  .qr-body {
-    align-items: center;
-    text-align: center;
-  }
-
-  .qr-container {
-    width: 200px;
-    height: 200px;
-    background: var(--color-surface-container-low);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-lg);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .qr-code-img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-  }
-
-  .user-scanned {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--spacing-sm);
-  }
-
-  .user-avatar {
-    width: 80px;
-    height: 80px;
-    border-radius: var(--rounded-full);
-    border: 3px solid var(--color-success);
-    box-shadow: var(--shadow-soft);
-  }
-
-  .user-scanned h3 {
-    font-size: 14px;
-    margin: 0;
-  }
-
-  .qr-spinner-box {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .large-spinner {
-    width: 40px;
-    height: 40px;
-    border: 4px solid rgba(16, 185, 129, 0.1);
-    border-top-color: var(--color-success);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .qr-status-box {
-    margin-top: var(--spacing-sm);
-  }
-
-  .qr-status {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-on-surface);
-  }
-
-  .qr-error-msg {
-    font-size: 12px;
-    color: var(--color-danger);
-    margin-top: var(--spacing-xs);
-  }
-
-  /* Template Form Modal Elements */
-  .modal-error-banner {
-    background: rgba(244, 63, 94, 0.08);
-    border: 1px solid var(--color-danger);
-    padding: var(--spacing-sm);
-    color: var(--color-danger);
-    font-size: 12px;
-    border-radius: var(--rounded-md);
-  }
-
-  .template-form-modal input, .template-form-modal textarea {
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: inherit;
-    font-size: 13px;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-
-  .template-form-modal input:focus, .template-form-modal textarea:focus {
-    border-color: var(--color-success);
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: end;
-    gap: var(--spacing-sm);
-    margin-top: var(--spacing-sm);
-  }
-
-  .primary-btn {
-    background: var(--color-success);
-    color: var(--color-on-secondary);
-    font-weight: 600;
-    font-size: 13px;
-    padding: 8px 16px;
-    border-radius: var(--rounded-md);
-    transition: var(--transition-fast);
-  }
-
-  .primary-btn:hover {
-    background: #0d9668;
-  }
-
-  .secondary-btn {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface-variant);
-    border: 1px solid var(--color-outline);
-    font-weight: 600;
-    font-size: 13px;
-    padding: 8px 16px;
-    border-radius: var(--rounded-md);
-    transition: var(--transition-fast);
-  }
-
-  .secondary-btn:hover {
-    background: var(--color-surface-container);
-  }
-
-  /* Spinners */
-  .spinning {
-    animation: spin 0.8s linear infinite;
-  }
-
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #ffffff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  /* Animations */
-  .animate-fade-in {
-    animation: fadeIn 0.3s ease-out forwards;
-  }
-
-  .animate-slide-down {
-    animation: slideDown 0.25s ease-out forwards;
-  }
-
-  .animate-scale-up {
-    animation: scaleUp 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @keyframes slideDown {
-    from { opacity: 0; transform: translateY(-12px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @keyframes scaleUp {
-    from { opacity: 0; transform: scale(0.9); }
-    to { opacity: 1; transform: scale(1); }
-  }
-</style>
+<!-- QR Login Dialog -->
+<Dialog.Root bind:open={isQrModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>Zalo QR Login</Dialog.Title>
+    </Dialog.Header>
+    <div class="flex flex-col items-center justify-center p-6 space-y-4">
+      {#if qrImage}
+        <img src={qrImage.startsWith('data:image/') ? qrImage : `data:image/png;base64,${qrImage}`} alt="Zalo QR Code" class="w-56 h-56 rounded-lg border border-border shadow-sm" />
+      {:else if qrUser}
+        <div class="text-center space-y-2">
+          <img src={qrUser.avatar} alt="User Avatar" class="w-16 h-16 rounded-full mx-auto border border-border" />
+          <h3 class="font-bold text-foreground">{qrUser.display_name}</h3>
+        </div>
+      {:else}
+        <div class="w-12 h-12 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+      {/if}
+      <p class="text-xs text-muted-foreground font-medium text-center">{qrStatus}</p>
+    </div>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Template Modal Dialog -->
+<Dialog.Root bind:open={isTemplateModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>{editingTemplateId ? 'Edit Outreach Template' : 'Create Outreach Template'}</Dialog.Title>
+    </Dialog.Header>
+    <div class="space-y-4 py-2 text-xs">
+      {#if templateError}
+        <div class="p-2 rounded bg-destructive/10 text-destructive text-xs">{templateError}</div>
+      {/if}
+      <div class="space-y-1">
+        <label for="tpl-name" class="font-semibold text-foreground">Template Name</label>
+        <Input id="tpl-name" bind:value={templateName} placeholder="e.g. Welcome Intro" class="text-xs" />
+      </div>
+      <div class="space-y-1">
+        <label for="tpl-content" class="font-semibold text-foreground">Message Content</label>
+        <textarea id="tpl-content" rows="5" bind:value={templateContent} placeholder="Write template content..." class="w-full rounded-md border border-input bg-background p-2 text-xs"></textarea>
+      </div>
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" size="sm" onclick={() => isTemplateModalOpen = false}>Cancel</Button>
+      <Button size="sm" onclick={saveTemplate}>Save Template</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
