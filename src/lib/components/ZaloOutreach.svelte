@@ -862,22 +862,60 @@
 
 <!-- Template Modal Dialog -->
 <Dialog.Root bind:open={isTemplateModalOpen}>
-  <Dialog.Content class="sm:max-w-md">
+  <Dialog.Content class="sm:max-w-2xl w-full">
     <Dialog.Header>
-      <Dialog.Title>{editingTemplateId ? 'Edit Outreach Template' : 'Create Outreach Template'}</Dialog.Title>
+      <Dialog.Title class="text-base font-bold">{editingTemplateId ? 'Edit Outreach Template' : 'Create Outreach Template'}</Dialog.Title>
     </Dialog.Header>
     <div class="flex flex-col gap-4 py-2 text-xs">
       {#if templateError}
-        <div class="p-2 rounded bg-destructive/10 text-destructive text-xs">{templateError}</div>
+        <div class="p-2.5 rounded-lg bg-destructive/10 text-destructive text-xs font-medium">{templateError}</div>
       {/if}
-      <div class="flex flex-col gap-1">
+
+      <div class="flex flex-col gap-1.5">
         <label for="tpl-name" class="font-semibold text-foreground">Template Name</label>
-        <Input id="tpl-name" bind:value={templateName} placeholder="e.g. Welcome Intro" class="text-xs" />
+        <Input id="tpl-name" bind:value={templateName} placeholder="e.g. Welcome Intro / Promotion Outreach" class="text-xs h-9" />
       </div>
-      <div class="flex flex-col gap-1">
-        <label for="tpl-content" class="font-semibold text-foreground">Message Content</label>
-        <textarea id="tpl-content" rows="4" bind:value={templateContent} placeholder="Write template content..." class="w-full rounded-md border border-input bg-background p-2 text-xs"></textarea>
+
+      <div class="flex flex-col gap-1.5">
+        <div class="flex items-center justify-between">
+          <label for="tpl-content" class="font-semibold text-foreground">Message Content</label>
+          <div class="flex items-center gap-1.5">
+            <span class="text-[11px] text-muted-foreground font-medium">Quick Tags:</span>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors"
+              onclick={() => templateContent += ' [name]'}
+            >
+              + [name]
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors"
+              onclick={() => templateContent += ' [company]'}
+            >
+              + [company]
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors"
+              onclick={() => templateContent += ' [phone]'}
+            >
+              + [phone]
+            </Button>
+          </div>
+        </div>
+        <textarea
+          id="tpl-content"
+          rows="7"
+          bind:value={templateContent}
+          placeholder="Write template content here... e.g. Chào [name], bên mình chuyên cung cấp giải pháp..."
+          class="w-full rounded-md border border-input bg-background p-3 text-xs leading-relaxed focus:outline-hidden focus:ring-1 focus:ring-ring min-h-[160px] resize-y"
+        ></textarea>
       </div>
+
       <div class="flex flex-col gap-1.5">
         <div class="flex items-center justify-between">
           <label for="tpl-image" class="font-semibold text-foreground">Image Attachment</label>
@@ -893,42 +931,42 @@
         />
 
         {#if templateImageUrl.trim()}
-          <div class="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-border bg-card shadow-xs">
-            <div class="flex items-center gap-2.5 min-w-0">
+          <div class="flex items-center justify-between gap-3 p-3 rounded-lg border border-border bg-card shadow-xs">
+            <div class="flex items-center gap-3 min-w-0">
               <img
                 src={templateImageUrl}
                 alt="Template attachment preview"
-                class="size-14 rounded-md object-cover border border-border shrink-0 shadow-xs"
+                class="size-16 rounded-md object-cover border border-border shrink-0 shadow-xs"
                 onerror={(e: Event) => ((e.currentTarget as HTMLElement).style.display = 'none')}
               />
-              <div class="flex flex-col gap-0.5 truncate text-xs">
-                <span class="font-medium text-foreground truncate flex items-center gap-1">
-                  <FileImage class="size-3.5 text-emerald-600 shrink-0" />
-                  Image attached
+              <div class="flex flex-col gap-1 truncate text-xs">
+                <span class="font-semibold text-foreground truncate flex items-center gap-1.5">
+                  <FileImage class="size-4 text-emerald-600 shrink-0" />
+                  Image attached successfully
                 </span>
-                <span class="text-[10px] text-muted-foreground truncate">
-                  {templateImageUrl.startsWith('data:image/') ? 'Uploaded from computer' : templateImageUrl}
+                <span class="text-[11px] text-muted-foreground truncate max-w-[400px]">
+                  {templateImageUrl.startsWith('data:image/') ? 'Uploaded local image file' : templateImageUrl}
                 </span>
               </div>
             </div>
-            <Button variant="ghost" size="sm" class="size-7 p-0 text-destructive hover:bg-destructive/10 shrink-0" onclick={removeImageAttachment}>
+            <Button variant="ghost" size="sm" class="size-8 p-0 text-destructive hover:bg-destructive/10 shrink-0" onclick={removeImageAttachment}>
               <X class="size-4" />
             </Button>
           </div>
         {:else}
-          <div class="flex flex-col gap-2 p-3 rounded-lg border border-dashed border-border bg-accent/20 text-center items-center justify-center">
-            <Button type="button" variant="outline" size="sm" class="h-8 text-xs gap-1.5 bg-background shadow-xs" onclick={triggerFileInput}>
+          <div class="flex flex-col gap-2.5 p-4 rounded-lg border border-dashed border-border bg-accent/20 text-center items-center justify-center">
+            <Button type="button" variant="outline" size="sm" class="h-8 text-xs gap-2 bg-background shadow-xs px-4" onclick={triggerFileInput}>
               <Upload class="size-3.5 text-emerald-600" /> Upload Image from Computer
             </Button>
-            <div class="text-[10px] text-muted-foreground">or enter image URL / local path</div>
-            <Input id="tpl-image" bind:value={templateImageUrl} placeholder="https://example.com/photo.jpg or /path/to/image.jpg" class="text-xs h-8 bg-background" />
+            <div class="text-[11px] text-muted-foreground">or enter image URL / local file path below</div>
+            <Input id="tpl-image" bind:value={templateImageUrl} placeholder="https://example.com/photo.jpg or /path/to/image.jpg" class="text-xs h-8 bg-background max-w-lg" />
           </div>
         {/if}
       </div>
     </div>
-    <Dialog.Footer class="gap-2">
+    <Dialog.Footer class="gap-2 pt-2 border-t border-border">
       <Button variant="outline" size="sm" onclick={() => isTemplateModalOpen = false}>Cancel</Button>
-      <Button size="sm" onclick={saveTemplate}>Save Template</Button>
+      <Button size="sm" onclick={saveTemplate} class="px-5">Save Template</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
