@@ -246,9 +246,22 @@ impl Zalo {
                     });
                 }
 
-                let inner_data = res_json.get("data").ok_or_else(|| {
+                let data_val = res_json.get("data").ok_or_else(|| {
                     ZaloError::PayloadFormat("Upload response missing data".to_string())
                 })?;
+
+                let inner_data: Value = match data_val {
+                    Value::String(encrypted_str) if !encrypted_str.trim().is_empty() => {
+                        let secret_key = self
+                            .ctx
+                            .get_secret_key()
+                            .ok_or_else(|| ZaloError::Crypto("Context missing secret_key".to_string()))?;
+                        let decrypted_str = crate::crypto::aes::decode_aes(&secret_key, encrypted_str)?;
+                        serde_json::from_str(&decrypted_str).unwrap_or(data_val.clone())
+                    }
+                    _ => data_val.clone(),
+                };
+
                 let finished = inner_data
                     .get("finished")
                     .cloned()
@@ -259,7 +272,7 @@ impl Zalo {
                     .unwrap_or(chunk_idx as u64 + 1) as u32;
 
                 if file_type == "image" {
-                    println!("Zalo upload photo response: {:?}", res_json);
+                    println!("Zalo upload photo decrypted inner_data: {:?}", inner_data);
                     let normal_url = inner_data
                         .get("normalUrl")
                         .or_else(|| inner_data.get("url"))
