@@ -429,3 +429,163 @@ pub fn get_leads_by_category(conn: &Connection, category_id: i32) -> Result<Vec<
     }
     Ok(leads)
 }
+
+pub fn save_smtp_server(conn: &Connection, server: &crate::models::SmtpServer) -> Result<i32> {
+    let now = if server.created_at.is_empty() {
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| row.get(0))?
+    } else {
+        server.created_at.clone()
+    };
+
+    if let Some(id) = server.id {
+        if id > 0 {
+            conn.execute(
+                "UPDATE smtp_servers SET name = ?1, host = ?2, port = ?3, username = ?4, password = ?5, from_email = ?6, from_name = ?7, security = ?8 WHERE id = ?9",
+                rusqlite::params![
+                    server.name,
+                    server.host,
+                    server.port,
+                    server.username,
+                    server.password,
+                    server.from_email,
+                    server.from_name,
+                    server.security,
+                    id,
+                ],
+            )?;
+            return Ok(id);
+        }
+    }
+
+    conn.execute(
+        "INSERT INTO smtp_servers (name, host, port, username, password, from_email, from_name, security, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            server.name,
+            server.host,
+            server.port,
+            server.username,
+            server.password,
+            server.from_email,
+            server.from_name,
+            server.security,
+            now,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid() as i32)
+}
+
+pub fn get_smtp_servers(conn: &Connection) -> Result<Vec<crate::models::SmtpServer>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, host, port, username, password, from_email, from_name, security, created_at FROM smtp_servers ORDER BY id ASC"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(crate::models::SmtpServer {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            host: row.get(2)?,
+            port: row.get(3)?,
+            username: row.get(4)?,
+            password: row.get(5)?,
+            from_email: row.get(6)?,
+            from_name: row.get(7)?,
+            security: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    })?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+pub fn get_smtp_server_by_id(conn: &Connection, id: i32) -> Result<Option<crate::models::SmtpServer>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, host, port, username, password, from_email, from_name, security, created_at FROM smtp_servers WHERE id = ?1"
+    )?;
+    let mut rows = stmt.query_map([id], |row| {
+        Ok(crate::models::SmtpServer {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            host: row.get(2)?,
+            port: row.get(3)?,
+            username: row.get(4)?,
+            password: row.get(5)?,
+            from_email: row.get(6)?,
+            from_name: row.get(7)?,
+            security: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    })?;
+    if let Some(row) = rows.next() {
+        Ok(Some(row?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn delete_smtp_server(conn: &Connection, id: i32) -> Result<()> {
+    conn.execute("DELETE FROM smtp_servers WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn create_email_template(conn: &Connection, name: &str, subject: &str, content: &str) -> Result<i32> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO email_templates (name, subject, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![name, subject, content, now],
+    )?;
+    Ok(conn.last_insert_rowid() as i32)
+}
+
+pub fn update_email_template(conn: &Connection, id: i32, name: &str, subject: &str, content: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE email_templates SET name = ?1, subject = ?2, content = ?3 WHERE id = ?4",
+        rusqlite::params![name, subject, content, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_email_template(conn: &Connection, id: i32) -> Result<()> {
+    conn.execute("DELETE FROM email_templates WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn get_email_templates(conn: &Connection) -> Result<Vec<crate::models::EmailTemplate>> {
+    let mut stmt = conn.prepare("SELECT id, name, subject, content, created_at FROM email_templates ORDER BY id ASC")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(crate::models::EmailTemplate {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            subject: row.get(2)?,
+            content: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    let mut templates = Vec::new();
+    for r in rows {
+        templates.push(r?);
+    }
+    Ok(templates)
+}
+
+pub fn log_email_outreach_attempt(conn: &Connection, history: &crate::models::EmailOutreachHistory) -> Result<()> {
+    conn.execute(
+        "INSERT INTO email_outreach_history (lead_id, template_id, smtp_id, status, error_message, sent_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            history.lead_id,
+            history.template_id,
+            history.smtp_id,
+            history.status,
+            history.error_message,
+            history.sent_at,
+        ],
+    )?;
+    Ok(())
+}
+

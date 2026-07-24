@@ -85,3 +85,38 @@ pub struct ZaloSessionStatus {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SmtpServer {
+    pub id: Option<i32>,
+    pub name: String,
+    pub host: String,
+    pub port: i32,
+    pub username: String,
+    pub password: String,
+    pub from_email: String,
+    pub from_name: String,
+    pub security: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EmailTemplate {
+    pub id: Option<i32>,
+    pub name: String,
+    pub subject: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EmailOutreachHistory {
+    pub id: Option<i32>,
+    pub lead_id: i32,
+    pub template_id: i32,
+    pub smtp_id: i32,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub sent_at: String,
+}
+
+

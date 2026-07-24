@@ -388,4 +388,86 @@ mod tests {
         assert!(tables.contains(&"email_templates".to_string()));
         assert!(tables.contains(&"email_outreach_history".to_string()));
     }
+
+    #[test]
+    fn test_smtp_and_email_template_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // 1. Initially empty SMTP servers
+        let smtp_servers = db::get_smtp_servers(&conn).unwrap();
+        assert!(smtp_servers.is_empty());
+
+        // 2. Create SMTP server
+        let smtp = crate::models::SmtpServer {
+            id: None,
+            name: "Gmail SMTP".to_string(),
+            host: "smtp.gmail.com".to_string(),
+            port: 587,
+            username: "user@gmail.com".to_string(),
+            password: "password123".to_string(),
+            from_email: "user@gmail.com".to_string(),
+            from_name: "Sender".to_string(),
+            security: "STARTTLS".to_string(),
+            created_at: "".to_string(),
+        };
+        let smtp_id = db::save_smtp_server(&conn, &smtp).unwrap();
+        assert!(smtp_id > 0);
+
+        // 3. Get SMTP server by ID and list all
+        let retrieved = db::get_smtp_server_by_id(&conn, smtp_id).unwrap().unwrap();
+        assert_eq!(retrieved.name, "Gmail SMTP");
+        assert_eq!(retrieved.host, "smtp.gmail.com");
+
+        let all_smtp = db::get_smtp_servers(&conn).unwrap();
+        assert_eq!(all_smtp.len(), 1);
+
+        // 4. Create and CRUD Email Template
+        let templates = db::get_email_templates(&conn).unwrap();
+        assert!(templates.is_empty());
+
+        let template_id = db::create_email_template(&conn, "Promo", "Special Offer", "Hello {{name}}").unwrap();
+        assert!(template_id > 0);
+
+        let templates = db::get_email_templates(&conn).unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].subject, "Special Offer");
+
+        db::update_email_template(&conn, template_id, "Promo Updated", "Updated Subject", "Hello {{name}} updated").unwrap();
+        let templates = db::get_email_templates(&conn).unwrap();
+        assert_eq!(templates[0].subject, "Updated Subject");
+
+        // 5. Test logging email outreach attempt
+        conn.execute(
+            "INSERT INTO leads (name, company, status, last_activity, owner, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                "Test Lead",
+                "Test Co",
+                "New",
+                "2026-07-24T12:00:00Z",
+                "Owner",
+                "lead@example.com",
+                "123456789",
+            ],
+        ).unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        let history = crate::models::EmailOutreachHistory {
+            id: None,
+            lead_id,
+            template_id,
+            smtp_id,
+            status: "SUCCESS".to_string(),
+            error_message: None,
+            sent_at: "2026-07-24T12:00:00Z".to_string(),
+        };
+        db::log_email_outreach_attempt(&conn, &history).unwrap();
+
+        // 6. Delete SMTP & Template
+        db::delete_email_template(&conn, template_id).unwrap();
+        assert!(db::get_email_templates(&conn).unwrap().is_empty());
+
+        db::delete_smtp_server(&conn, smtp_id).unwrap();
+        assert!(db::get_smtp_servers(&conn).unwrap().is_empty());
+        assert!(db::get_smtp_server_by_id(&conn, smtp_id).unwrap().is_none());
+    }
 }
