@@ -11,6 +11,11 @@
   let allLeads = $state<Lead[]>([]);
   let addLeadsSearch = $state('');
 
+  // Category Leads Search & Filter state
+  let categoryLeadsSearch = $state('');
+  let filterCategoryStatus = $state('');
+  let filterCategoryZalo = $state('');
+
   let selectedToRemove = $state<Set<number>>(new Set());
   let selectedToAdd = $state<Set<number>>(new Set());
 
@@ -49,6 +54,9 @@
       categoryLeads = await crmService.getLeadsByCategory(categoryId);
       selectedToRemove = new Set();
       selectedToAdd = new Set();
+      categoryLeadsSearch = '';
+      filterCategoryStatus = '';
+      filterCategoryZalo = '';
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
     } finally {
@@ -66,11 +74,45 @@
 
   let activeCategory = $derived(categories.find(c => c.id === activeCategoryId));
 
+  let uniqueCategoryStatuses = $derived(
+    Array.from(new Set(categoryLeads.map(l => l.status).filter(Boolean)))
+  );
+
+  let filteredCategoryLeads = $derived(
+    categoryLeads.filter(lead => {
+      // 1. Search Query
+      if (categoryLeadsSearch.trim()) {
+        const query = categoryLeadsSearch.toLowerCase().trim();
+        const matchesName = (lead.name || '').toLowerCase().includes(query);
+        const matchesCompany = (lead.company || '').toLowerCase().includes(query);
+        const matchesPhone = (lead.phone || '').includes(query);
+        const matchesEmail = (lead.email || '').toLowerCase().includes(query);
+        if (!matchesName && !matchesCompany && !matchesPhone && !matchesEmail) {
+          return false;
+        }
+      }
+
+      // 2. Status Filter
+      if (filterCategoryStatus && lead.status !== filterCategoryStatus) {
+        return false;
+      }
+
+      // 3. Zalo Status Filter
+      if (filterCategoryZalo) {
+        if (filterCategoryZalo === 'verified' && lead.has_zalo !== 1) return false;
+        if (filterCategoryZalo === 'no_zalo' && lead.has_zalo !== 0) return false;
+      }
+
+      return true;
+    })
+  );
+
   let availableLeads = $derived(
     allLeads.filter(lead => 
       !categoryLeads.some(cl => cl.id === lead.id) &&
       (addLeadsSearch ? (lead.name || '').toLowerCase().includes(addLeadsSearch.toLowerCase()) || 
-       (lead.company || '').toLowerCase().includes(addLeadsSearch.toLowerCase()) : true)
+       (lead.company || '').toLowerCase().includes(addLeadsSearch.toLowerCase()) ||
+       (lead.phone || '').includes(addLeadsSearch) : true)
     )
   );
 
@@ -141,11 +183,20 @@
   function toggleRemoveAll(e: Event) {
     const checked = (e.target as HTMLInputElement).checked;
     if (checked) {
-      categoryLeads.forEach(l => { if (l.id) selectedToRemove.add(l.id); });
+      filteredCategoryLeads.forEach(l => { if (l.id) selectedToRemove.add(l.id); });
     } else {
-      selectedToRemove.clear();
+      filteredCategoryLeads.forEach(l => { if (l.id) selectedToRemove.delete(l.id); });
     }
     selectedToRemove = new Set(selectedToRemove);
+  }
+
+  function selectAllFilteredToRemove() {
+    filteredCategoryLeads.forEach(l => { if (l.id) selectedToRemove.add(l.id); });
+    selectedToRemove = new Set(selectedToRemove);
+  }
+
+  function clearRemoveSelection() {
+    selectedToRemove = new Set();
   }
 
   function toggleAddSelection(id: number) {
@@ -226,15 +277,62 @@
           <!-- Current Leads Table -->
           <div class="table-section glass-panel">
             <div class="section-header">
-              <h3>Leads in Category</h3>
-              {#if selectedToRemove.size > 0}
-                <button class="action-btn danger" onclick={handleRemoveLeads}>
-                  <span class="material-icons">remove_circle</span>
-                  Remove Selected ({selectedToRemove.size})
-                </button>
-              {/if}
+              <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+                <h3>Leads in Category</h3>
+                <span class="badge">{filteredCategoryLeads.length} / {categoryLeads.length}</span>
+              </div>
+              <div style="display: flex; gap: var(--spacing-xs); align-items: center; flex-wrap: wrap;">
+                {#if filteredCategoryLeads.length > 0}
+                  <button class="action-btn secondary btn-sm" onclick={selectAllFilteredToRemove}>
+                    Select All Filtered ({filteredCategoryLeads.length})
+                  </button>
+                {/if}
+                {#if selectedToRemove.size > 0}
+                  <button class="action-btn secondary btn-sm" onclick={clearRemoveSelection}>
+                    Clear Selection
+                  </button>
+                  <button class="action-btn danger btn-sm" onclick={handleRemoveLeads}>
+                    <span class="material-icons">remove_circle</span>
+                    Remove Selected ({selectedToRemove.size})
+                  </button>
+                {/if}
+              </div>
             </div>
             
+            <!-- Search & Filters Toolbar for Category Leads -->
+            <div class="filters-toolbar">
+              <div class="search-box flex-1">
+                <span class="material-icons search-icon">search</span>
+                <input 
+                  type="text" 
+                  bind:value={categoryLeadsSearch} 
+                  placeholder="Search in category (name, company, phone, email)..." 
+                />
+                {#if categoryLeadsSearch}
+                  <button class="clear-search-btn" onclick={() => categoryLeadsSearch = ''} title="Clear search">
+                    <span class="material-icons">close</span>
+                  </button>
+                {/if}
+              </div>
+
+              <div class="filter-select-wrapper">
+                <select bind:value={filterCategoryStatus} aria-label="Filter by status">
+                  <option value="">-- All Statuses --</option>
+                  {#each uniqueCategoryStatuses as st}
+                    <option value={st}>{st}</option>
+                  {/each}
+                </select>
+              </div>
+
+              <div class="filter-select-wrapper">
+                <select bind:value={filterCategoryZalo} aria-label="Filter by Zalo status">
+                  <option value="">-- All Zalo --</option>
+                  <option value="verified">Verified Zalo</option>
+                  <option value="no_zalo">No Zalo</option>
+                </select>
+              </div>
+            </div>
+
             <div class="table-wrapper">
               <table>
                 <thead>
@@ -242,18 +340,19 @@
                     <th class="checkbox-col">
                       <input 
                         type="checkbox" 
-                        checked={categoryLeads.length > 0 && selectedToRemove.size === categoryLeads.length}
-                        indeterminate={selectedToRemove.size > 0 && selectedToRemove.size < categoryLeads.length}
+                        checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
+                        indeterminate={selectedToRemove.size > 0 && !filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
                         onchange={toggleRemoveAll}
                       />
                     </th>
                     <th>Name</th>
                     <th>Company</th>
+                    <th>Phone</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {#each categoryLeads as lead}
+                  {#each filteredCategoryLeads as lead}
                     <tr class:selected={selectedToRemove.has(lead.id!)}>
                       <td class="checkbox-col">
                         <input 
@@ -264,11 +363,20 @@
                       </td>
                       <td class="primary-cell">{lead.name}</td>
                       <td>{lead.company}</td>
+                      <td>{lead.phone || '-'}</td>
                       <td><span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span></td>
                     </tr>
                   {/each}
-                  {#if categoryLeads.length === 0}
-                    <tr><td colspan="4" class="empty-state">No leads in this category.</td></tr>
+                  {#if filteredCategoryLeads.length === 0}
+                    <tr>
+                      <td colspan="5" class="empty-state">
+                        {#if categoryLeadsSearch || filterCategoryStatus || filterCategoryZalo}
+                          No leads match your search/filter criteria.
+                        {:else}
+                          No leads in this category.
+                        {/if}
+                      </td>
+                    </tr>
                   {/if}
                 </tbody>
               </table>
@@ -563,15 +671,90 @@
     font-size: 16px;
   }
 
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--rounded-sm);
+    background: var(--color-surface-container-high);
+    color: var(--color-on-surface-variant);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .btn-sm {
+    padding: 4px 8px !important;
+    font-size: 11px !important;
+  }
+
+  .action-btn.secondary {
+    background: var(--color-surface-container-high);
+    color: var(--color-on-surface);
+    border: 1px solid var(--color-outline-variant);
+  }
+  .action-btn.secondary:hover {
+    background: var(--color-surface-container-highest);
+  }
+
+  .filters-toolbar {
+    display: flex;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-xs) var(--spacing-md);
+    background: var(--color-surface-container-lowest);
+    border-bottom: 1px solid var(--color-outline-variant);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .flex-1 {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .filter-select-wrapper select {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-md);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+  }
+  .filter-select-wrapper select:focus {
+    border-color: var(--color-primary);
+  }
+
+  .clear-search-btn {
+    position: absolute;
+    right: calc(var(--spacing-md) + 4px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--color-on-surface-variant);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    border-radius: 50%;
+  }
+  .clear-search-btn:hover {
+    background: var(--color-surface-container-high);
+  }
+  .clear-search-btn .material-icons {
+    font-size: 14px;
+  }
+
   .search-box {
     position: relative;
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-bottom: 1px solid var(--color-outline-variant);
+    padding: var(--spacing-xs) 0;
   }
 
   .search-box input {
     width: 100%;
-    padding: var(--spacing-sm) var(--spacing-sm) var(--spacing-sm) 32px;
+    padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-xs) 32px;
     border: 1px solid var(--color-outline-variant);
     border-radius: var(--rounded-md);
     background: var(--color-surface-container-lowest);
