@@ -6,10 +6,11 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
+  import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Card from '$lib/components/ui/card';
   import * as Dialog from '$lib/components/ui/dialog';
   import { Progress } from '$lib/components/ui/progress';
-  import { MessageSquare, Plus, RefreshCw, Trash2, Edit, QrCode, Send, Terminal, CheckCircle, AlertCircle, User, Filter, Check, X } from 'lucide-svelte';
+  import { MessageSquare, Plus, RefreshCw, Trash2, Edit, QrCode, Send, CheckCircle, AlertCircle, User } from 'lucide-svelte';
 
   interface ZaloSession {
     imei: string;
@@ -495,8 +496,21 @@
           <span class="font-semibold text-foreground">Step 1: Select Active Zalo Session(s)</span>
           <div class="flex flex-wrap gap-2 pt-1">
             {#each sessions as s (s.imei)}
-              <label class="flex items-center gap-1.5 p-1.5 rounded border border-border bg-card hover:bg-accent/30 cursor-pointer text-xs">
-                <input type="checkbox" value={s.imei} bind:group={selectedImeis} disabled={isCampaignRunning} class="rounded border-input text-primary" />
+              {@const isSelected = selectedImeis.includes(s.imei)}
+              <label 
+                class="flex items-center gap-2 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}"
+              >
+                <Checkbox 
+                  checked={isSelected}
+                  disabled={isCampaignRunning}
+                  onCheckedChange={(checked) => {
+                    if (checked) {
+                      if (!selectedImeis.includes(s.imei)) selectedImeis = [...selectedImeis, s.imei];
+                    } else {
+                      selectedImeis = selectedImeis.filter(i => i !== s.imei);
+                    }
+                  }}
+                />
                 <span class="font-medium text-foreground">IMEI: {s.imei}</span>
               </label>
             {/each}
@@ -506,7 +520,7 @@
         <!-- Target Category -->
         <div class="flex flex-col gap-1">
           <label for="category-select" class="font-semibold text-foreground">Target Category</label>
-          <select id="category-select" bind:value={selectedCategoryId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+          <select id="category-select" bind:value={selectedCategoryId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
             <option value={null}>-- Select Category --</option>
             {#each categories as cat (cat.id)}
               <option value={cat.id}>{cat.name}</option>
@@ -540,7 +554,7 @@
         {#if segmentationFilter === 'template_success'}
           <div class="flex flex-col gap-1 pl-4 border-l-2 border-primary/30">
             <label for="filter-template" class="font-semibold text-foreground">Filter by Success Template</label>
-            <select id="filter-template" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+            <select id="filter-template" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
               <option value={null}>-- Choose Template --</option>
               {#each templates as t (t.id)}
                 <option value={t.id}>{t.name}</option>
@@ -552,7 +566,7 @@
         <!-- Step 2: Select Template -->
         <div class="flex flex-col gap-1">
           <label for="campaign-template" class="font-semibold text-foreground">Step 2: Select Template</label>
-          <select id="campaign-template" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+          <select id="campaign-template" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
             <option value={null}>-- Choose Template --</option>
             {#each templates as t (t.id)}
               <option value={t.id}>{t.name}</option>
@@ -588,9 +602,22 @@
           <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 flex flex-col gap-1">
             {#each filteredLeads as lead (lead.id)}
               {#if lead.id}
-                <label class="flex items-center justify-between p-1.5 rounded hover:bg-muted/50 cursor-pointer text-xs">
+                {@const isSelected = selectedLeadIds.includes(lead.id)}
+                <div 
+                  class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5' : ''}"
+                  onclick={() => lead.id && toggleLead(lead.id)}
+                  role="button"
+                  tabindex="0"
+                  onkeydown={(e) => e.key === 'Enter' && lead.id && toggleLead(lead.id)}
+                >
                   <div class="flex items-center gap-2 truncate">
-                    <input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onchange={() => lead.id && toggleLead(lead.id)} disabled={isCampaignRunning} class="rounded border-input text-primary shrink-0" />
+                    <div onclick={(e) => e.stopPropagation()} role="none">
+                      <Checkbox 
+                        checked={isSelected} 
+                        disabled={isCampaignRunning}
+                        onCheckedChange={() => lead.id && toggleLead(lead.id)}
+                      />
+                    </div>
                     <span class="font-medium text-foreground truncate">{lead.name}</span>
                     {#if lead.has_zalo === 1}
                       <Badge variant="secondary" class="text-[9px] px-1 py-0 bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300">Zalo Verified</Badge>
@@ -609,7 +636,7 @@
                     {/if}
                     <span>• {lead.company || 'N/A'}</span>
                   </div>
-                </label>
+                </div>
               {/if}
             {/each}
           </div>

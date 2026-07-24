@@ -6,6 +6,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
+  import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Card from '$lib/components/ui/card';
   import { Progress } from '$lib/components/ui/progress';
   import { Search, MapPin, Play, Square, Terminal, Check, X, Building, Grid, Locate } from 'lucide-svelte';
@@ -368,7 +369,7 @@
         <div class="flex items-center gap-1 p-1 bg-muted rounded-lg w-full">
           <button
             type="button"
-            class="flex-1 py-1.5 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-2 transition-all {mode === 'keyword' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
+            class="flex-1 py-1.5 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer {mode === 'keyword' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => mode = 'keyword'}
             disabled={isScraping}
           >
@@ -376,7 +377,7 @@
           </button>
           <button
             type="button"
-            class="flex-1 py-1.5 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-2 transition-all {mode === 'grid' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
+            class="flex-1 py-1.5 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer {mode === 'grid' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => mode = 'grid'}
             disabled={isScraping}
           >
@@ -400,7 +401,7 @@
             <div class="flex items-center gap-1 p-1 bg-muted/60 rounded-md">
               <button
                 type="button"
-                class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all {!deepScan ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all cursor-pointer {!deepScan ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
                 onclick={() => deepScan = false}
                 disabled={isScraping}
               >
@@ -408,7 +409,7 @@
               </button>
               <button
                 type="button"
-                class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all {deepScan ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all cursor-pointer {deepScan ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
                 onclick={() => deepScan = true}
                 disabled={isScraping}
               >
@@ -452,7 +453,7 @@
                       {@const cityName = divisions.find(p => p.codename === cityCodename)?.name}
                       <Badge variant="secondary" class="gap-1 text-[11px]">
                         {cityName}
-                        <button type="button" onclick={() => toggleCity(cityCodename)} class="hover:text-destructive">
+                        <button type="button" onclick={() => toggleCity(cityCodename)} class="hover:text-destructive cursor-pointer">
                           <X class="size-3" />
                         </button>
                       </Badge>
@@ -467,7 +468,7 @@
                       {@const isSelected = selectedCities.includes(city.codename)}
                       <button
                         type="button"
-                        class="w-full px-3 py-1.5 rounded flex items-center justify-between text-left hover:bg-accent transition-colors {isSelected ? 'bg-primary/10 text-primary font-semibold' : ''}"
+                        class="w-full px-3 py-1.5 rounded flex items-center justify-between text-left hover:bg-accent transition-colors cursor-pointer {isSelected ? 'bg-primary/10 text-primary font-semibold' : ''}"
                         onclick={() => toggleCity(city.codename)}
                       >
                         <span>{city.name}</span>
@@ -490,14 +491,18 @@
                 </div>
                 <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
                   {#each filteredDistricts as district (district.code)}
-                    <label class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate">
-                      <input
-                        type="checkbox"
-                        class="rounded border-input text-primary"
-                        checked={selectedDistricts.includes(district.code)}
-                        disabled={isScraping}
-                        onchange={(e) => toggleDistrict(district.code, (e.target as HTMLInputElement).checked)}
-                      />
+                    {@const isChecked = selectedDistricts.includes(district.code)}
+                    <label 
+                      class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5' : ''}"
+                      onclick={() => toggleDistrict(district.code, !isChecked)}
+                    >
+                      <div onclick={(e) => e.stopPropagation()} role="none">
+                        <Checkbox
+                          checked={isChecked}
+                          disabled={isScraping}
+                          onCheckedChange={(checked) => toggleDistrict(district.code, Boolean(checked))}
+                        />
+                      </div>
                       <span class="truncate">{district.name} <small class="text-muted-foreground">({district.provinceName.replace('Thành phố ', 'TP. ').replace('Tỉnh ', 'T.')})</small></span>
                     </label>
                   {/each}
@@ -517,18 +522,24 @@
                   </div>
                   <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
                     {#each filteredWards as ward (ward.code)}
-                      <label class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate">
-                        <input
-                          type="checkbox"
-                          class="rounded border-input text-primary"
-                          checked={selectedWards.includes(ward.code)}
-                          disabled={isScraping}
-                          onchange={(e) => {
-                            const checked = (e.target as HTMLInputElement).checked;
-                            if (checked) selectedWards = [...selectedWards, ward.code];
-                            else selectedWards = selectedWards.filter(w => w !== ward.code);
-                          }}
-                        />
+                      {@const isChecked = selectedWards.includes(ward.code)}
+                      <label 
+                        class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5' : ''}"
+                        onclick={() => {
+                          if (isChecked) selectedWards = selectedWards.filter(w => w !== ward.code);
+                          else selectedWards = [...selectedWards, ward.code];
+                        }}
+                      >
+                        <div onclick={(e) => e.stopPropagation()} role="none">
+                          <Checkbox
+                            checked={isChecked}
+                            disabled={isScraping}
+                            onCheckedChange={(checked) => {
+                              if (checked) selectedWards = [...selectedWards, ward.code];
+                              else selectedWards = selectedWards.filter(w => w !== ward.code);
+                            }}
+                          />
+                        </div>
                         <span class="truncate">{ward.name} <small class="text-muted-foreground">({ward.districtName.replace('Quận ', 'Q.').replace('Huyện ', 'H.')})</small></span>
                       </label>
                     {/each}
@@ -547,7 +558,7 @@
                 <select
                   id="preset-select"
                   disabled={isScraping}
-                  class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs"
+                  class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer"
                   onchange={(e) => {
                     const val = (e.target as HTMLSelectElement).value;
                     if (val && presetProvinces[val]) {
@@ -605,7 +616,7 @@
                 <label for="step-km" class="font-semibold text-foreground">Grid Step Size</label>
                 <span class="font-bold text-emerald-600">{stepKm.toFixed(1)} km</span>
               </div>
-              <input id="step-km" type="range" min="0.5" max="10.0" step="0.5" bind:value={stepKm} disabled={isScraping} class="w-full accent-emerald-600" />
+              <input id="step-km" type="range" min="0.5" max="10.0" step="0.5" bind:value={stepKm} disabled={isScraping} class="w-full accent-emerald-600 cursor-pointer" />
               <p class="text-[11px] text-muted-foreground">Smaller steps increase accuracy but require more search grid points.</p>
             </div>
           </div>
@@ -614,7 +625,7 @@
         <!-- Headless Option & Action Button -->
         <div class="flex items-center justify-between pt-2 border-t border-border">
           <label class="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
-            <input type="checkbox" bind:checked={headless} disabled={isScraping} class="rounded border-input text-primary" />
+            <Checkbox bind:checked={headless} disabled={isScraping} />
             <span>Headless Mode (Hide browser)</span>
           </label>
 

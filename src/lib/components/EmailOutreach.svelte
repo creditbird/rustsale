@@ -6,10 +6,11 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
+  import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Card from '$lib/components/ui/card';
   import * as Dialog from '$lib/components/ui/dialog';
   import { Progress } from '$lib/components/ui/progress';
-  import { Mail, Plus, Server, Edit, Trash2, Send, Terminal, FileText, RefreshCw } from 'lucide-svelte';
+  import { Mail, Plus, Server, Edit, Trash2, Send, FileText, RefreshCw } from 'lucide-svelte';
 
   interface SmtpServer {
     id?: number;
@@ -410,8 +411,19 @@
             {:else}
               {#each smtpServers as s (s.id)}
                 {#if s.id}
-                  <label class="flex items-center gap-1.5 p-1.5 rounded border border-border bg-card hover:bg-accent/30 cursor-pointer text-xs">
-                    <input type="checkbox" value={s.id} bind:group={selectedSmtpIds} disabled={isCampaignRunning} class="rounded border-input text-primary" />
+                  {@const isSelected = selectedSmtpIds.includes(s.id)}
+                  <label class="flex items-center gap-2 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}">
+                    <Checkbox 
+                      checked={isSelected}
+                      disabled={isCampaignRunning}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          if (s.id && !selectedSmtpIds.includes(s.id)) selectedSmtpIds = [...selectedSmtpIds, s.id];
+                        } else {
+                          selectedSmtpIds = selectedSmtpIds.filter(id => id !== s.id);
+                        }
+                      }}
+                    />
                     <span class="font-medium text-foreground">{s.name} ({s.host})</span>
                   </label>
                 {/if}
@@ -423,7 +435,7 @@
         <!-- Target Category -->
         <div class="flex flex-col gap-1">
           <label for="category-select-email" class="font-semibold text-foreground">Target Category</label>
-          <select id="category-select-email" bind:value={selectedCategoryId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+          <select id="category-select-email" bind:value={selectedCategoryId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
             <option value={null}>-- Select Category --</option>
             {#each categories as cat (cat.id)}
               <option value={cat.id}>{cat.name}</option>
@@ -457,7 +469,7 @@
         {#if segmentationFilter === 'template_success'}
           <div class="flex flex-col gap-1 pl-4 border-l-2 border-primary/30">
             <label for="filter-template-email" class="font-semibold text-foreground">Filter by Success Template</label>
-            <select id="filter-template-email" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+            <select id="filter-template-email" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
               <option value={null}>-- Choose Template --</option>
               {#each templates as t (t.id)}
                 <option value={t.id}>{t.name}</option>
@@ -469,7 +481,7 @@
         <!-- Step 2: Select Template -->
         <div class="flex flex-col gap-1">
           <label for="campaign-template-email" class="font-semibold text-foreground">Step 2: Select Template</label>
-          <select id="campaign-template-email" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+          <select id="campaign-template-email" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
             <option value={null}>-- Choose Template --</option>
             {#each templates as t (t.id)}
               <option value={t.id}>{t.name}</option>
@@ -502,13 +514,26 @@
           <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 flex flex-col gap-1">
             {#each filteredLeads as lead (lead.id)}
               {#if lead.id}
-                <label class="flex items-center justify-between p-1.5 rounded hover:bg-muted/50 cursor-pointer text-xs">
+                {@const isSelected = selectedLeadIds.includes(lead.id)}
+                <div 
+                  class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5' : ''}"
+                  onclick={() => lead.id && toggleLead(lead.id)}
+                  role="button"
+                  tabindex="0"
+                  onkeydown={(e) => e.key === 'Enter' && lead.id && toggleLead(lead.id)}
+                >
                   <div class="flex items-center gap-2 truncate">
-                    <input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onchange={() => lead.id && toggleLead(lead.id)} disabled={isCampaignRunning} class="rounded border-input text-primary shrink-0" />
+                    <div onclick={(e) => e.stopPropagation()} role="none">
+                      <Checkbox 
+                        checked={isSelected}
+                        disabled={isCampaignRunning}
+                        onCheckedChange={() => lead.id && toggleLead(lead.id)}
+                      />
+                    </div>
                     <span class="font-medium text-foreground truncate">{lead.name} ({lead.company || 'N/A'})</span>
                   </div>
                   <span class="text-[11px] text-muted-foreground shrink-0">{lead.email || 'No email'}</span>
-                </label>
+                </div>
               {/if}
             {/each}
           </div>
