@@ -1408,7 +1408,7 @@
     left: 0;
     width: 100vw;
     height: 100vh;
-    background: rgba(0, 0, 0, 0.65);
+    background: rgba(15, 23, 42, 0.4);
     backdrop-filter: blur(4px);
     display: flex;
     justify-content: center;
@@ -1417,20 +1417,21 @@
   }
 
   .modal-card {
-    background: #1e293b;
-    border: 1px solid var(--color-outline);
+    background: var(--color-surface-container-lowest);
+    border: 1px solid var(--color-outline-variant);
     border-radius: var(--rounded-lg);
     width: 90%;
     max-width: 560px;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
 
   .modal-header {
+    background: var(--color-surface-container-low);
     padding: var(--spacing-md);
-    border-bottom: 1px solid var(--color-outline);
+    border-bottom: 1px solid var(--color-outline-variant);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -1440,6 +1441,7 @@
     margin: 0;
     font-size: 16px;
     font-weight: 600;
+    color: var(--color-on-surface);
   }
 
   .close-btn {
@@ -1447,6 +1449,17 @@
     border: none;
     color: var(--color-on-surface-variant);
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    border-radius: var(--rounded-sm);
+    transition: var(--transition-fast);
+  }
+
+  .close-btn:hover {
+    color: var(--color-danger);
+    background: rgba(244, 63, 94, 0.1);
   }
 
   .modal-body {
@@ -1483,7 +1496,7 @@
 
   .form-group input, .form-group select, .form-group textarea {
     background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline);
+    border: 1px solid var(--color-outline-variant);
     border-radius: var(--rounded-md);
     padding: 8px 12px;
     color: var(--color-on-surface);
@@ -1513,9 +1526,9 @@
   }
 
   .var-badge {
-    background: rgba(59, 130, 246, 0.15);
-    color: #60a5fa;
-    border: 1px solid rgba(59, 130, 246, 0.3);
+    background: var(--color-surface-container-low);
+    color: var(--color-primary);
+    border: 1px solid var(--color-outline-variant);
     border-radius: var(--rounded-full);
     padding: 2px 8px;
     font-size: 11px;
@@ -1525,13 +1538,13 @@
   }
 
   .var-badge:hover {
-    background: rgba(59, 130, 246, 0.3);
+    background: var(--color-surface-container-high);
   }
 
   .modal-error-banner {
-    background: rgba(239, 68, 68, 0.15);
+    background: rgba(244, 63, 94, 0.1);
     border: 1px solid var(--color-danger);
-    color: #fca5a5;
+    color: var(--color-danger);
     padding: var(--spacing-sm) var(--spacing-md);
     border-radius: var(--rounded-md);
     font-size: 12px;
@@ -1546,20 +1559,21 @@
   }
 
   .test-result-banner.success {
-    background: rgba(16, 185, 129, 0.15);
+    background: rgba(16, 185, 129, 0.1);
     border: 1px solid var(--color-success);
-    color: #6ee7b7;
+    color: var(--color-success);
   }
 
   .test-result-banner.failure {
-    background: rgba(239, 68, 68, 0.15);
+    background: rgba(244, 63, 94, 0.1);
     border: 1px solid var(--color-danger);
-    color: #fca5a5;
+    color: var(--color-danger);
   }
 
   .modal-footer {
+    background: var(--color-surface-container-low);
     padding: var(--spacing-md);
-    border-top: 1px solid var(--color-outline);
+    border-top: 1px solid var(--color-outline-variant);
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-sm);
@@ -1567,7 +1581,7 @@
 
   .primary-btn {
     background: var(--color-primary);
-    color: #ffffff;
+    color: var(--color-on-primary);
     border: none;
     padding: 8px 16px;
     border-radius: var(--rounded-md);
@@ -1577,13 +1591,13 @@
   }
 
   .primary-btn:hover {
-    background: #2563eb;
+    opacity: 0.9;
   }
 
   .secondary-btn {
-    background: transparent;
+    background: var(--color-surface-container-lowest);
     color: var(--color-on-surface);
-    border: 1px solid var(--color-outline);
+    border: 1px solid var(--color-outline-variant);
     padding: 8px 16px;
     border-radius: var(--rounded-md);
     font-weight: 600;
@@ -1595,7 +1609,7 @@
   }
 
   .secondary-btn:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--color-surface-container-low);
   }
 
   .spinning {
