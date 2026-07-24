@@ -38,11 +38,11 @@
 
   // Search, filter, and pagination states
   let searchQuery = $state('');
-  let filterStatus = $state('');
-  let filterOwner = $state('');
-  let filterValueRange = $state('');
-  let filterZaloStatus = $state('');
-  let filterOutreachStatus = $state('');
+  let filterStatus = $state('all');
+  let filterOwner = $state('all');
+  let filterValueRange = $state('all');
+  let filterZaloStatus = $state('all');
+  let filterOutreachStatus = $state('all');
   let currentPage = $state(1);
   let pageSize = $state(10);
 
@@ -63,23 +63,23 @@
         }
       }
       
-      if (filterStatus && lead.status !== filterStatus) return false;
-      if (filterOwner && lead.owner !== filterOwner) return false;
+      if (filterStatus && filterStatus !== 'all' && lead.status !== filterStatus) return false;
+      if (filterOwner && filterOwner !== 'all' && lead.owner !== filterOwner) return false;
       
-      if (filterValueRange) {
+      if (filterValueRange && filterValueRange !== 'all') {
         const val = lead.value || 0;
         if (filterValueRange === 'under_10k' && val >= 10000) return false;
         if (filterValueRange === '10k_to_50k' && (val < 10000 || val > 50000)) return false;
         if (filterValueRange === 'above_50k' && val <= 50000) return false;
       }
 
-      if (filterZaloStatus) {
+      if (filterZaloStatus && filterZaloStatus !== 'all') {
         if (filterZaloStatus === 'verified' && lead.has_zalo !== 1) return false;
         if (filterZaloStatus === 'no_zalo' && lead.has_zalo !== 0) return false;
         if (filterZaloStatus === 'unchecked' && lead.has_zalo !== null && lead.has_zalo !== undefined) return false;
       }
 
-      if (filterOutreachStatus) {
+      if (filterOutreachStatus && filterOutreachStatus !== 'all') {
         if (filterOutreachStatus === 'reached' && lead.zalo_reached !== 1) return false;
         if (filterOutreachStatus === 'not_reached' && lead.zalo_reached === 1) return false;
       }
@@ -230,10 +230,10 @@
       {#if uniqueStatuses.length > 1}
         <Select.Root type="single" bind:value={filterStatus}>
           <Select.Trigger class="h-9 text-xs min-w-[120px]">
-            {filterStatus || 'All Statuses'}
+            {filterStatus === 'all' || !filterStatus ? 'All Statuses' : filterStatus}
           </Select.Trigger>
           <Select.Content>
-            <Select.Item value="">All Statuses</Select.Item>
+            <Select.Item value="all">All Statuses</Select.Item>
             {#each uniqueStatuses as status (status)}
               <Select.Item value={status}>{status}</Select.Item>
             {/each}
@@ -243,10 +243,10 @@
 
       <Select.Root type="single" bind:value={filterOwner}>
         <Select.Trigger class="h-9 text-xs min-w-[120px]">
-          {filterOwner || 'All Owners'}
+          {filterOwner === 'all' || !filterOwner ? 'All Owners' : filterOwner}
         </Select.Trigger>
         <Select.Content>
-          <Select.Item value="">All Owners</Select.Item>
+          <Select.Item value="all">All Owners</Select.Item>
           {#each uniqueOwners as owner (owner)}
             <Select.Item value={owner}>{owner}</Select.Item>
           {/each}
@@ -258,7 +258,7 @@
           {filterValueRange === 'under_10k' ? 'Under $10k' : filterValueRange === '10k_to_50k' ? '$10k - $50k' : filterValueRange === 'above_50k' ? 'Above $50k' : 'All Values'}
         </Select.Trigger>
         <Select.Content>
-          <Select.Item value="">All Values</Select.Item>
+          <Select.Item value="all">All Values</Select.Item>
           <Select.Item value="under_10k">Under $10k</Select.Item>
           <Select.Item value="10k_to_50k">$10k - $50k</Select.Item>
           <Select.Item value="above_50k">Above $50k</Select.Item>
@@ -270,18 +270,18 @@
           {filterZaloStatus === 'verified' ? 'Verified Zalo' : filterZaloStatus === 'no_zalo' ? 'No Zalo' : filterZaloStatus === 'unchecked' ? 'Unchecked' : 'All Zalo Statuses'}
         </Select.Trigger>
         <Select.Content>
-          <Select.Item value="">All Zalo Statuses</Select.Item>
+          <Select.Item value="all">All Zalo Statuses</Select.Item>
           <Select.Item value="verified">Verified Zalo</Select.Item>
           <Select.Item value="no_zalo">No Zalo</Select.Item>
           <Select.Item value="unchecked">Unchecked</Select.Item>
         </Select.Content>
       </Select.Root>
 
-      {#if searchQuery || filterStatus || filterOwner || filterValueRange || filterZaloStatus || filterOutreachStatus}
+      {#if searchQuery || (filterStatus && filterStatus !== 'all') || (filterOwner && filterOwner !== 'all') || (filterValueRange && filterValueRange !== 'all') || (filterZaloStatus && filterZaloStatus !== 'all') || (filterOutreachStatus && filterOutreachStatus !== 'all')}
         <Button
           variant="ghost"
           size="sm"
-          onclick={() => { searchQuery = ''; filterStatus = ''; filterOwner = ''; filterValueRange = ''; filterZaloStatus = ''; filterOutreachStatus = ''; }}
+          onclick={() => { searchQuery = ''; filterStatus = 'all'; filterOwner = 'all'; filterValueRange = 'all'; filterZaloStatus = 'all'; filterOutreachStatus = 'all'; }}
           class="h-9 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
         >
           <X class="size-3.5" /> Clear

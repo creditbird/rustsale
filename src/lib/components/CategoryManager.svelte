@@ -21,8 +21,8 @@
   let addLeadsSearch = $state('');
 
   let categoryLeadsSearch = $state('');
-  let filterCategoryStatus = $state('');
-  let filterCategoryZalo = $state('');
+  let filterCategoryStatus = $state('all');
+  let filterCategoryZalo = $state('all');
 
   let selectedToRemove = $state<Set<number>>(new Set());
   let selectedToAdd = $state<Set<number>>(new Set());
@@ -62,8 +62,8 @@
       selectedToRemove = new Set();
       selectedToAdd = new Set();
       categoryLeadsSearch = '';
-      filterCategoryStatus = '';
-      filterCategoryZalo = '';
+      filterCategoryStatus = 'all';
+      filterCategoryZalo = 'all';
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
     } finally {
@@ -98,9 +98,9 @@
         }
       }
 
-      if (filterCategoryStatus && lead.status !== filterCategoryStatus) return false;
+      if (filterCategoryStatus && filterCategoryStatus !== 'all' && lead.status !== filterCategoryStatus) return false;
 
-      if (filterCategoryZalo) {
+      if (filterCategoryZalo && filterCategoryZalo !== 'all') {
         if (filterCategoryZalo === 'verified' && lead.has_zalo !== 1) return false;
         if (filterCategoryZalo === 'no_zalo' && lead.has_zalo !== 0) return false;
       }
@@ -305,10 +305,10 @@
               </div>
               <Select.Root type="single" bind:value={filterCategoryStatus}>
                 <Select.Trigger class="h-8 text-xs min-w-[130px]">
-                  {filterCategoryStatus || 'All Statuses'}
+                  {filterCategoryStatus === 'all' || !filterCategoryStatus ? 'All Statuses' : filterCategoryStatus}
                 </Select.Trigger>
                 <Select.Content>
-                  <Select.Item value="">All Statuses</Select.Item>
+                  <Select.Item value="all">All Statuses</Select.Item>
                   {#each uniqueCategoryStatuses as st (st)}
                     <Select.Item value={st}>{st}</Select.Item>
                   {/each}
