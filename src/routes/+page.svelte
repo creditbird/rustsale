@@ -17,14 +17,14 @@
   let errorMsg = $state<string | null>(null);
 
   const tabTitles: Record<string, { title: string; subtitle: string }> = {
-    dashboard: { title: 'Tổng Quan Hệ Thống', subtitle: 'Thống kê tổng quan KPI và hoạt động gần đây' },
-    scraper: { title: 'Google Maps Scraper', subtitle: 'Thu thập và trích xuất dữ liệu doanh nghiệp' },
-    leads: { title: 'Quản Lý Leads', subtitle: 'Danh sách khách hàng tiềm năng và trạng thái xử lý' },
-    categories: { title: 'Phân Loại Danh Mục', subtitle: 'Quản lý thẻ tag và nhóm phân loại khách hàng' },
-    outreach: { title: 'Zalo Outreach', subtitle: 'Tự động hóa gửi tin nhắn Zalo hàng loạt' },
-    email_outreach: { title: 'Email Outreach', subtitle: 'Quản lý chiến dịch và gửi email tự động' },
-    pipeline: { title: 'Deal Pipeline', subtitle: 'Theo dõi tiến trình cơ hội kinh doanh dạng Kanban' },
-    contacts: { title: 'Danh Bạ Khách Hàng', subtitle: 'Khách hàng chính thức đã chuyển đổi' }
+    dashboard: { title: 'Dashboard System', subtitle: 'Overview KPI statistics and recent lead activity' },
+    scraper: { title: 'Google Maps Scraper', subtitle: 'Extract local business lead data dynamically across regions' },
+    leads: { title: 'Lead Management', subtitle: 'Potential lead contacts, acquisition details and verification status' },
+    categories: { title: 'Category Manager', subtitle: 'Organize, tag and structure lead segments' },
+    outreach: { title: 'Zalo Outreach Manager', subtitle: 'Authenticate sessions, customize templates, and launch Zalo flows' },
+    email_outreach: { title: 'Email Outreach Manager', subtitle: 'Configure SMTP servers, HTML templates, and targeted email broadcasts' },
+    pipeline: { title: 'Deal Pipeline', subtitle: 'Kanban view for deal stages and sales conversion workflow' },
+    contacts: { title: 'Converted Contacts', subtitle: 'Official converted customer database' }
   };
 
   async function loadLeads() {
@@ -68,7 +68,7 @@
           <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Tìm kiếm nhanh..."
+            placeholder="Quick search..."
             class="w-full h-9 pl-9 pr-4 rounded-md border border-input bg-background text-xs text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring transition-all"
           />
         </div>
@@ -77,7 +77,7 @@
         <button
           type="button"
           class="w-9 h-9 rounded-md border border-input bg-background flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors relative"
-          title="Thông báo"
+          title="Notifications"
         >
           <Bell class="w-4 h-4" />
           <span class="w-2 h-2 rounded-full bg-emerald-500 absolute top-2 right-2"></span>
@@ -96,25 +96,21 @@
 
       {#if activeTab === 'dashboard'}
         <Dashboard />
+      {:else if activeTab === 'scraper'}
+        <GoogleMapsScraper />
       {:else if activeTab === 'leads'}
         <LeadsList leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} />
       {:else if activeTab === 'contacts'}
         <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} />
       {:else if activeTab === 'categories'}
         <CategoryManager />
+      {:else if activeTab === 'outreach'}
+        <ZaloOutreach />
+      {:else if activeTab === 'email_outreach'}
+        <EmailOutreach />
       {:else if activeTab === 'pipeline'}
         <KanbanBoard />
       {/if}
-
-      <div class={activeTab !== 'scraper' ? 'hidden' : ''}>
-        <GoogleMapsScraper />
-      </div>
-      <div class={activeTab !== 'outreach' ? 'hidden' : ''}>
-        <ZaloOutreach />
-      </div>
-      <div class={activeTab !== 'email_outreach' ? 'hidden' : ''}>
-        <EmailOutreach />
-      </div>
     </div>
   </main>
 </div>
