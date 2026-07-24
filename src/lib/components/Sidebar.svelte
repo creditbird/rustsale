@@ -7,8 +7,7 @@
     MessageSquare,
     Mail,
     Kanban,
-    UserCheck,
-    Flame
+    UserCheck
   } from 'lucide-svelte';
 
   let { activeTab = $bindable() } = $props();
@@ -27,10 +26,8 @@
 
 <aside class="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col text-sidebar-foreground select-none shrink-0">
   <!-- Brand Header -->
-  <div class="h-16 px-5 border-b border-sidebar-border flex items-center gap-3">
-    <div class="size-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center font-bold">
-      <Flame class="size-5 text-emerald-600" />
-    </div>
+  <div class="h-16 px-4 border-b border-sidebar-border flex items-center gap-3">
+    <img src="/logo.png" alt="RustSale Logo" class="size-10 rounded-lg object-contain shrink-0 shadow-2xs" />
     <div class="flex flex-col">
       <span class="font-bold text-base tracking-tight text-foreground">RustSale</span>
       <span class="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">CRM & Outreach Pro</span>
