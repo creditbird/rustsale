@@ -466,11 +466,11 @@
                   <div class="font-semibold text-foreground">{t.name}</div>
                   <div class="text-[11px] text-muted-foreground truncate">{t.content}</div>
                 </div>
-                <div class="flex items-center gap-1 shrink-0" onclick={(e) => e.stopPropagation()} role="group" aria-label="Template actions">
-                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => openEditTemplate(t)}>
+                <div class="flex items-center gap-1 shrink-0">
+                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditTemplate(t); }}>
                     <Edit class="size-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => t.id && deleteTemplate(t.id)}>
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); t.id && deleteTemplate(t.id); }}>
                     <Trash2 class="size-3" />
                   </Button>
                 </div>

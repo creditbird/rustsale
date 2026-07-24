@@ -7,7 +7,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
   import { Checkbox } from '$lib/components/ui/checkbox';
-  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight } from 'lucide-svelte';
+  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-svelte';
 
   let { leads = [], onRefresh } = $props<{ leads: Lead[]; onRefresh?: () => void }>();
   let selectedLeadId = $state<number | null>(null);
@@ -195,7 +195,7 @@
   <div class="flex items-center justify-between">
     <div>
       <h2 class="text-xl font-bold text-foreground tracking-tight">Leads & Contacts</h2>
-      <p class="text-xs text-muted-foreground mt-0.5">Click any row to open lead profile, notes, and activity timeline</p>
+      <p class="text-xs text-muted-foreground mt-0.5">Click any row to toggle selection, or click lead name to view profile timeline</p>
     </div>
     <div class="flex items-center gap-2">
       {#if selectedRows.size > 0}
@@ -301,25 +301,36 @@
           </Table.Row>
         {:else}
           {#each paginatedLeads as lead (lead.id)}
-            {@const isSelected = lead.id && selectedRows.has(lead.id)}
+            {@const isSelected = lead.id ? selectedRows.has(lead.id) : false}
             <Table.Row 
               class="cursor-pointer hover:bg-muted/50 transition-colors {isSelected ? 'bg-primary/5' : ''}"
-              onclick={() => { if (lead.id !== undefined) selectedLeadId = lead.id; }}
+              onclick={() => { if (lead.id !== undefined) toggleRowSelection(lead.id); }}
             >
-              <Table.Cell class="text-center" onclick={(e: Event) => e.stopPropagation()}>
-                <div class="flex items-center justify-center">
+              <Table.Cell class="text-center">
+                <div class="flex items-center justify-center" onclick={(e: Event) => e.stopPropagation()} role="none">
                   <Checkbox 
-                    checked={lead.id ? selectedRows.has(lead.id) : false}
+                    checked={isSelected}
                     onCheckedChange={() => lead.id && toggleRowSelection(lead.id)}
                   />
                 </div>
               </Table.Cell>
               <Table.Cell class="font-medium text-foreground">
-                <div class="flex items-center gap-2.5">
-                  <div class="size-7 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
-                    {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2.5">
+                    <div class="size-7 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
+                      {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
+                    </div>
+                    <span class="font-semibold text-xs text-foreground">{lead.name}</span>
                   </div>
-                  <span class="font-semibold text-xs text-foreground">{lead.name}</span>
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    class="size-6 p-0 text-muted-foreground hover:text-foreground"
+                    title="View Lead Details"
+                    onclick={(e: Event) => { e.stopPropagation(); if (lead.id !== undefined) selectedLeadId = lead.id; }}
+                  >
+                    <ExternalLink class="size-3" />
+                  </Button>
                 </div>
               </Table.Cell>
               <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>

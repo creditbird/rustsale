@@ -337,11 +337,11 @@
                   </div>
                   <div class="text-[10px] text-muted-foreground truncate">{server.host}:{server.port} • {server.from_email}</div>
                 </div>
-                <div class="flex items-center gap-1 shrink-0" onclick={(e) => e.stopPropagation()} role="group" aria-label="Server actions">
-                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => openEditSmtpModal(server)}>
+                <div class="flex items-center gap-1 shrink-0">
+                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditSmtpModal(server); }}>
                     <Edit class="size-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => server.id && handleDeleteSmtpServer(server.id)}>
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); server.id && handleDeleteSmtpServer(server.id); }}>
                     <Trash2 class="size-3" />
                   </Button>
                 </div>
@@ -377,11 +377,11 @@
                   <div class="font-semibold text-foreground">{tpl.name}</div>
                   <div class="text-[11px] text-muted-foreground truncate">Subject: {tpl.subject}</div>
                 </div>
-                <div class="flex items-center gap-1 shrink-0" onclick={(e) => e.stopPropagation()} role="group" aria-label="Template actions">
-                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => openEditTemplateModal(tpl)}>
+                <div class="flex items-center gap-1 shrink-0">
+                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditTemplateModal(tpl); }}>
                     <Edit class="size-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => tpl.id && handleDeleteTemplate(tpl.id)}>
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); tpl.id && handleDeleteTemplate(tpl.id); }}>
                     <Trash2 class="size-3" />
                   </Button>
                 </div>

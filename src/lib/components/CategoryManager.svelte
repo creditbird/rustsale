@@ -317,11 +317,15 @@
               </Table.Header>
               <Table.Body>
                 {#each filteredCategoryLeads as lead (lead.id)}
-                  <Table.Row class="hover:bg-muted/40">
+                  {@const isSelected = lead.id ? selectedToRemove.has(lead.id) : false}
+                  <Table.Row 
+                    class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
+                    onclick={() => lead.id && toggleRemoveSelection(lead.id)}
+                  >
                     <Table.Cell class="text-center">
-                      <div class="flex items-center justify-center">
+                      <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
                         <Checkbox 
-                          checked={lead.id ? selectedToRemove.has(lead.id) : false}
+                          checked={isSelected}
                           onCheckedChange={() => lead.id && toggleRemoveSelection(lead.id)}
                         />
                       </div>
@@ -382,11 +386,15 @@
               </Table.Header>
               <Table.Body>
                 {#each availableLeads as lead (lead.id)}
-                  <Table.Row class="hover:bg-muted/40">
+                  {@const isSelected = lead.id ? selectedToAdd.has(lead.id) : false}
+                  <Table.Row 
+                    class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
+                    onclick={() => lead.id && toggleAddSelection(lead.id)}
+                  >
                     <Table.Cell class="text-center">
-                      <div class="flex items-center justify-center">
+                      <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
                         <Checkbox 
-                          checked={lead.id ? selectedToAdd.has(lead.id) : false}
+                          checked={isSelected}
                           onCheckedChange={() => lead.id && toggleAddSelection(lead.id)}
                         />
                       </div>
