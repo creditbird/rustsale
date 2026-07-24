@@ -163,7 +163,7 @@ mod tests {
         let scraped_lead = leads.iter().find(|l| l.name == "Scraped Cafe");
         assert!(scraped_lead.is_some(), "Scraped Cafe not found in database");
         let lead = scraped_lead.unwrap();
-        assert_eq!(lead.phone, "+84911222333");
+        assert_eq!(lead.phone, "0911222333");
         assert_eq!(lead.company, "Scraped Cafe");
         assert_eq!(lead.status, "New");
 
@@ -174,6 +174,15 @@ mod tests {
         assert!(about.contains("Zalo: https://zalo.me/scrapedcafe"));
 
         let _ = manager.close().await;
+    }
+
+    #[test]
+    fn test_normalize_phone_digits_and_deduplication() {
+        use crate::commands::normalize_phone_digits;
+        assert_eq!(normalize_phone_digits("+84933001673"), "0933001673");
+        assert_eq!(normalize_phone_digits("0933 001 673"), "0933001673");
+        assert_eq!(normalize_phone_digits("0084933001673"), "0933001673");
+        assert_eq!(normalize_phone_digits("0933-001-673"), "0933001673");
     }
 
     #[test]

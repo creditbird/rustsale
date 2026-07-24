@@ -599,6 +599,18 @@ pub async fn run_google_maps_scrape_task(
                 })
                 .map_err(|e| format!("Database query error: {}", e))?;
 
+            let mut existing_normalized_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
+            if let Ok(mut stmt) = tx.prepare("SELECT phone FROM leads") {
+                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                    for p in rows.flatten() {
+                        let norm = normalize_phone_digits(&p);
+                        if !norm.is_empty() {
+                            existing_normalized_phones.insert(norm);
+                        }
+                    }
+                }
+            }
+
             for biz in &final_businesses {
                 let is_mobile = is_vn_mobile(&biz.phone);
                 // Currently, Google Maps scraper does not extract email (always empty).
@@ -611,16 +623,10 @@ pub async fn run_google_maps_scrape_task(
                     continue;
                 }
 
-                // Since it is a valid mobile number, check for duplicates in the database
-                let exists: i64 = tx
-                    .query_row(
-                        "SELECT COUNT(*) FROM leads WHERE phone = ?1",
-                        [&biz.phone],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
+                let norm_phone = normalize_phone_digits(&biz.phone);
 
-                if exists > 0 {
+                // Check if normalized phone already exists in the database (Leads or Contacts)
+                if norm_phone.is_empty() || existing_normalized_phones.contains(&norm_phone) {
                     continue;
                 }
 
@@ -655,7 +661,7 @@ pub async fn run_google_maps_scrape_task(
                         &now,
                         "System",
                         "",
-                        biz.phone,
+                        &norm_phone,
                         about_str,
                         biz.address,
                         has_zalo_val
@@ -663,6 +669,7 @@ pub async fn run_google_maps_scrape_task(
                 );
                 if insert_res.is_ok() {
                     count += 1;
+                    existing_normalized_phones.insert(norm_phone);
                 }
             }
             tx.commit().map_err(|e| format!("Transaction commit error: {}", e))?;
@@ -1339,8 +1346,7 @@ pub async fn send_zalo_outreach(
     Ok(())
 }
 
-fn is_vn_mobile(phone: &str) -> bool {
-    // Isolate the phone number part by truncating at the first character that is not a standard phone character
+pub fn normalize_phone_digits(phone: &str) -> String {
     let phone_part = match phone.find(|c: char| {
         !c.is_ascii_digit() && c != ' ' && c != '+' && c != '-' && c != '(' && c != ')' && c != '.' && c != ',' && c != '[' && c != ']'
     }) {
@@ -1348,20 +1354,18 @@ fn is_vn_mobile(phone: &str) -> bool {
         None => phone,
     };
 
-    // 1. Strip all non-digit characters
     let digits: String = phone_part.chars().filter(|c| c.is_ascii_digit()).collect();
-    
-    // 2. Normalize leading "0084" or "84" to "0"
-    let normalized = if digits.starts_with("0084") {
+    if digits.starts_with("0084") {
         format!("0{}", &digits[4..])
     } else if digits.starts_with("84") {
         format!("0{}", &digits[2..])
     } else {
         digits
-    };
-    
-    // 3. Match against Vietnamese mobile blocks: 03, 05, 07, 08, 09
-    // and total length must be exactly 10 digits
+    }
+}
+
+fn is_vn_mobile(phone: &str) -> bool {
+    let normalized = normalize_phone_digits(phone);
     if normalized.len() != 10 {
         return false;
     }
