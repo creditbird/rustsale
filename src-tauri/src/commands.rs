@@ -1471,6 +1471,30 @@ pub async fn send_zalo_outreach(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn start_zalo_outreach(
+    app_handle: tauri::AppHandle,
+    imeis: Vec<String>,
+    template_id: i32,
+    lead_ids: Vec<i32>,
+) -> Result<(), String> {
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        let db_state = app_handle_clone.state::<DbState>();
+        for imei in imeis {
+            let _ = send_zalo_outreach_internal(
+                Some(&app_handle_clone),
+                &db_state.conn,
+                imei,
+                lead_ids.clone(),
+                template_id,
+            )
+            .await;
+        }
+    });
+    Ok(())
+}
+
 pub fn normalize_phone_digits(phone: &str) -> String {
     let phone_part = match phone.find(|c: char| {
         !c.is_ascii_digit() && c != ' ' && c != '+' && c != '-' && c != '(' && c != ')' && c != '.' && c != ',' && c != '[' && c != ']'

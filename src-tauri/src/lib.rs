@@ -74,6 +74,7 @@ pub fn run() {
             commands::update_outreach_template,
             commands::delete_outreach_template,
             commands::send_zalo_outreach,
+            commands::start_zalo_outreach,
             commands::get_categories,
             commands::create_category,
             commands::delete_category,
