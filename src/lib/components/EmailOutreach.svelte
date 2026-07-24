@@ -9,7 +9,7 @@
   import * as Card from '$lib/components/ui/card';
   import * as Dialog from '$lib/components/ui/dialog';
   import { Progress } from '$lib/components/ui/progress';
-  import { Mail, Plus, Server, Edit, Trash2, Send, Terminal, FileText, Check, X } from 'lucide-svelte';
+  import { Mail, Plus, Server, Edit, Trash2, Send, Terminal, FileText, Check, X, Shield, RefreshCw } from 'lucide-svelte';
 
   interface SmtpServer {
     id?: number;
@@ -120,6 +120,20 @@
     try { categories = await getCategories(); } catch (e) { console.error(e); }
   }
 
+  function selectValidEmail() {
+    const emailLeads = filteredLeads.filter(l => l.email && l.email.includes('@'));
+    const newIds = new Set(selectedLeadIds);
+    emailLeads.forEach(l => { if (l.id != null) newIds.add(l.id); });
+    selectedLeadIds = Array.from(newIds);
+  }
+
+  function selectUnreached() {
+    const unreached = filteredLeads.filter(l => !(l as any).email_reached);
+    const newIds = new Set(selectedLeadIds);
+    unreached.forEach(l => { if (l.id != null) newIds.add(l.id); });
+    selectedLeadIds = Array.from(newIds);
+  }
+
   $effect(() => {
     if (selectedCategoryId !== null && selectedCategoryId !== undefined) {
       getCampaignLeads(Number(selectedCategoryId), segmentationFilter, filterTemplateId)
@@ -194,12 +208,19 @@
 
   function openAddTemplateModal() {
     editingTemplateId = null; templateName = ''; templateSubject = ''; templateContent = ''; templateError = null;
+    activeInputField = 'content';
     isTemplateModalOpen = true;
   }
 
   function openEditTemplateModal(tpl: EmailTemplate) {
     editingTemplateId = tpl.id || null; templateName = tpl.name; templateSubject = tpl.subject; templateContent = tpl.content; templateError = null;
+    activeInputField = 'content';
     isTemplateModalOpen = true;
+  }
+
+  function insertVariableBadge(tag: string) {
+    if (activeInputField === 'subject') templateSubject += tag;
+    else templateContent += tag;
   }
 
   async function handleSaveTemplate() {
@@ -367,12 +388,32 @@
 
     <!-- Right Column: Campaign Execution -->
     <Card.Root class="lg:col-span-7 flex flex-col justify-between">
-      <Card.Header class="pb-3 border-b border-border">
+      <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
         <Card.Title class="text-base font-bold flex items-center gap-2">
           <Send class="w-4 h-4 text-emerald-600" /> Campaign Execution
         </Card.Title>
+        <Badge variant="outline" class="text-[10px]">Steps 1-3</Badge>
       </Card.Header>
       <Card.Content class="p-5 space-y-4 text-xs">
+        <!-- Step 1: Select Session(s) -->
+        <div class="space-y-1.5">
+          <span class="font-semibold text-foreground">Step 1: Select Active SMTP Server(s)</span>
+          <div class="flex flex-wrap gap-2 pt-1">
+            {#if smtpServers.length === 0}
+              <span class="text-xs text-muted-foreground">No active SMTP servers configured.</span>
+            {:else}
+              {#each smtpServers as s}
+                {#if s.id}
+                  <label class="flex items-center gap-1.5 p-1.5 rounded border border-border bg-card hover:bg-accent/30 cursor-pointer text-xs">
+                    <input type="checkbox" value={s.id} bind:group={selectedSmtpIds} disabled={isCampaignRunning} class="rounded border-input text-primary" />
+                    <span class="font-medium text-foreground">{s.name} ({s.host})</span>
+                  </label>
+                {/if}
+              {/each}
+            {/if}
+          </div>
+        </div>
+
         <!-- Target Category -->
         <div class="space-y-1">
           <label for="category-select-email" class="font-semibold text-foreground">Target Category</label>
@@ -384,25 +425,83 @@
           </select>
         </div>
 
-        <!-- Leads Box -->
+        <!-- Campaign Segmentation Filter -->
+        <div class="space-y-1.5">
+          <span class="font-semibold text-foreground">Campaign Segmentation Filter</span>
+          <div class="space-y-1 text-xs">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="all" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>All Leads in Category</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="never_sent" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>Never Sent Successfully</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="last_failed" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>Last Attempt Failed</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="template_success" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>Successful Template Match</span>
+            </label>
+          </div>
+        </div>
+
+        {#if segmentationFilter === 'template_success'}
+          <div class="space-y-1 pl-4 border-l-2 border-primary/30">
+            <label for="filter-template-email" class="font-semibold text-foreground">Filter by Success Template</label>
+            <select id="filter-template-email" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+              <option value={null}>-- Choose Template --</option>
+              {#each templates as t}
+                <option value={t.id}>{t.name}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+
+        <!-- Step 2: Select Template -->
+        <div class="space-y-1">
+          <label for="campaign-template-email" class="font-semibold text-foreground">Step 2: Select Template</label>
+          <select id="campaign-template-email" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+            <option value={null}>-- Choose Template --</option>
+            {#each templates as t}
+              <option value={t.id}>{t.name}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Step 3: Select Leads Box -->
         <div class="space-y-2">
           <div class="flex items-center justify-between text-xs">
-            <span class="font-semibold text-foreground">Recipient Leads ({selectedLeadIds.length} selected)</span>
+            <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
             <div class="flex items-center gap-2">
-              <Input type="text" placeholder="Search lead..." bind:value={leadSearchQuery} class="h-7 w-36 text-[11px]" />
-              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAll}>Toggle All</Button>
+              <Input type="text" placeholder="Search lead..." bind:value={leadSearchQuery} class="h-7 w-32 text-[11px]" />
+              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAll}>
+                {isAllLeadsSelected ? 'Deselect All' : 'Select All'}
+              </Button>
             </div>
           </div>
+
+          <!-- Quick Helpers -->
+          <div class="flex items-center justify-end gap-1.5">
+            <Button variant="outline" size="sm" onclick={selectValidEmail} disabled={filteredLeads.filter(l => l.email && l.email.includes('@')).length === 0} class="h-6 text-[10px] px-2">
+              Valid Email Only
+            </Button>
+            <Button variant="outline" size="sm" onclick={selectUnreached} disabled={filteredLeads.length === 0} class="h-6 text-[10px] px-2">
+              Unreached Only
+            </Button>
+          </div>
+
           <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 space-y-1">
             {#each filteredLeads as lead}
               {#if lead.id}
                 <label class="flex items-center justify-between p-1.5 rounded hover:bg-muted/50 cursor-pointer text-xs">
-                  <div class="flex items-center gap-2">
-                    <input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onchange={() => lead.id && toggleLead(lead.id)} disabled={isCampaignRunning} class="rounded border-input text-primary" />
-                    <span class="font-medium text-foreground">{lead.name}</span>
-                    <span class="text-muted-foreground">({lead.company || 'N/A'})</span>
+                  <div class="flex items-center gap-2 truncate">
+                    <input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onchange={() => lead.id && toggleLead(lead.id)} disabled={isCampaignRunning} class="rounded border-input text-primary shrink-0" />
+                    <span class="font-medium text-foreground truncate">{lead.name} ({lead.company || 'N/A'})</span>
                   </div>
-                  <span class="text-[11px] text-muted-foreground">{lead.email || 'No email'}</span>
+                  <span class="text-[11px] text-muted-foreground shrink-0">{lead.email || 'No email'}</span>
                 </label>
               {/if}
             {/each}
@@ -420,7 +519,7 @@
           <Button
             size="sm"
             onclick={startCampaign}
-            disabled={isCampaignRunning || !selectedSmtpId || !selectedTemplateId || selectedLeadIds.length === 0}
+            disabled={isCampaignRunning || (selectedSmtpIds.length === 0 && !selectedSmtpId) || !selectedTemplateId || selectedLeadIds.length === 0}
             class="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
           >
             <Mail class="w-4 h-4" /> {isCampaignRunning ? 'Sending Email Campaign...' : 'Launch Email Campaign'}
@@ -468,6 +567,16 @@
       </div>
       <div class="grid grid-cols-2 gap-2">
         <div class="space-y-1">
+          <label for="smtp-username" class="font-semibold text-foreground">Username</label>
+          <Input id="smtp-username" bind:value={smtpUsername} placeholder="Username" class="text-xs" />
+        </div>
+        <div class="space-y-1">
+          <label for="smtp-password" class="font-semibold text-foreground">Password</label>
+          <Input id="smtp-password" type="password" bind:value={smtpPassword} placeholder="Password" class="text-xs" />
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div class="space-y-1">
           <label for="smtp-from-name" class="font-semibold text-foreground">From Name</label>
           <Input id="smtp-from-name" bind:value={smtpFromName} placeholder="Sales Team" class="text-xs" />
         </div>
@@ -475,6 +584,18 @@
           <label for="smtp-from-email" class="font-semibold text-foreground">From Email</label>
           <Input id="smtp-from-email" bind:value={smtpFromEmail} placeholder="sales@company.com" class="text-xs" />
         </div>
+      </div>
+
+      <!-- Test Connection Button -->
+      <div class="pt-2 border-t border-border flex items-center justify-between">
+        <Button variant="outline" size="sm" onclick={handleTestSmtpConnection} disabled={smtpTesting || !smtpHost.trim()} class="h-8 text-xs gap-1">
+          <RefreshCw class="w-3 h-3 {smtpTesting ? 'animate-spin' : ''}" /> Test Connection
+        </Button>
+        {#if smtpTestResult}
+          <span class="text-[11px] font-medium {smtpTestResult.success ? 'text-emerald-600' : 'text-rose-500'}">
+            {smtpTestResult.message}
+          </span>
+        {/if}
       </div>
     </div>
     <Dialog.Footer class="gap-2">
@@ -495,16 +616,28 @@
         <div class="p-2 rounded bg-destructive/10 text-destructive text-xs">{templateError}</div>
       {/if}
       <div class="space-y-1">
-        <label for="tpl-name" class="font-semibold text-foreground">Template Name *</label>
-        <Input id="tpl-name" bind:value={templateName} placeholder="e.g. Intro Sequence" class="text-xs" />
+        <label for="tpl-name-email" class="font-semibold text-foreground">Template Name *</label>
+        <Input id="tpl-name-email" bind:value={templateName} placeholder="e.g. Intro Sequence" class="text-xs" />
       </div>
       <div class="space-y-1">
-        <label for="tpl-subject" class="font-semibold text-foreground">Subject Line *</label>
-        <Input id="tpl-subject" bind:value={templateSubject} placeholder="e.g. Partnership Proposal" class="text-xs" />
+        <label for="tpl-subject-email" class="font-semibold text-foreground">Subject Line *</label>
+        <Input id="tpl-subject-email" bind:value={templateSubject} placeholder="e.g. Partnership Proposal" class="text-xs" onfocus={() => activeInputField = 'subject'} />
       </div>
+
+      <!-- Variable Insertion Badges -->
       <div class="space-y-1">
-        <label for="tpl-content" class="font-semibold text-foreground">Content</label>
-        <textarea id="tpl-content" rows="6" bind:value={templateContent} placeholder="Hi {{name}}..." class="w-full rounded-md border border-input bg-background p-2 text-xs"></textarea>
+        <span class="text-[11px] text-muted-foreground">Click to insert variable into active field ({activeInputField}):</span>
+        <div class="flex flex-wrap gap-1">
+          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{name}}')}>+ {'{{name}}'}</Badge>
+          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{company}}')}>+ {'{{company}}'}</Badge>
+          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{email}}')}>+ {'{{email}}'}</Badge>
+          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{phone}}')}>+ {'{{phone}}'}</Badge>
+        </div>
+      </div>
+
+      <div class="space-y-1">
+        <label for="tpl-content-email" class="font-semibold text-foreground">Content</label>
+        <textarea id="tpl-content-email" rows="6" bind:value={templateContent} placeholder="Hi {{name}}..." class="w-full rounded-md border border-input bg-background p-2 text-xs" onfocus={() => activeInputField = 'content'}></textarea>
       </div>
     </div>
     <Dialog.Footer class="gap-2">

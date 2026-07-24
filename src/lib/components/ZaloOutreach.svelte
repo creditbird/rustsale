@@ -301,6 +301,36 @@
     }
   }
 
+  function selectVerifiedZalo() {
+    const verifiedIds = filteredLeads.filter(l => l.has_zalo === 1).map(l => l.id).filter((id): id is number => !!id);
+    const otherSelected = selectedLeadIds.filter(id => !verifiedIds.includes(id));
+    selectedLeadIds = [...otherSelected, ...verifiedIds];
+  }
+
+  function selectUnreached() {
+    const unreachedIds = filteredLeads.filter(l => l.zalo_reached === 0 || l.zalo_reached === null || l.zalo_reached === undefined).map(l => l.id).filter((id): id is number => !!id);
+    const otherSelected = selectedLeadIds.filter(id => !unreachedIds.includes(id));
+    selectedLeadIds = [...otherSelected, ...unreachedIds];
+  }
+
+  function isVnMobile(phone: string | null | undefined): boolean {
+    if (!phone) return false;
+    const match = phone.match(/[^0-9\s+\-().,\[\]]/);
+    const phonePart = match && match.index !== undefined ? phone.substring(0, match.index) : phone;
+    const digits = phonePart.replace(/\D/g, '');
+    let normalized = digits;
+    if (digits.startsWith('0084')) normalized = '0' + digits.slice(4);
+    else if (digits.startsWith('84')) normalized = '0' + digits.slice(2);
+    if (normalized.length !== 10) return false;
+    return ['03', '05', '07', '08', '09'].includes(normalized.slice(0, 2));
+  }
+
+  function selectMobileOnly() {
+    const mobileIds = filteredLeads.filter(l => isVnMobile(l.phone)).map(l => l.id).filter((id): id is number => !!id);
+    const otherSelected = selectedLeadIds.filter(id => !mobileIds.includes(id));
+    selectedLeadIds = [...otherSelected, ...mobileIds];
+  }
+
   function appendCampaignLog(msg: string) {
     const timestamp = new Date().toLocaleTimeString();
     campaignLogs = [...campaignLogs, `[${timestamp}] ${msg}`];
@@ -354,7 +384,7 @@
   <div class="flex items-center justify-between">
     <div>
       <h2 class="text-xl font-bold text-foreground tracking-tight">Zalo Outreach Manager</h2>
-      <p class="text-xs text-muted-foreground mt-0.5">Manage session tokens, templates, and automated Zalo messaging</p>
+      <p class="text-xs text-muted-foreground mt-0.5">Authenticate sessions, customize templates, and launch campaign flows</p>
     </div>
   </div>
 
@@ -450,12 +480,26 @@
 
     <!-- Right Column: Campaign Flow & Terminal -->
     <Card.Root class="lg:col-span-7 flex flex-col justify-between">
-      <Card.Header class="pb-3 border-b border-border">
+      <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
         <Card.Title class="text-base font-bold flex items-center gap-2">
           <Send class="w-4 h-4 text-emerald-600" /> Campaign Execution
         </Card.Title>
+        <Badge variant="outline" class="text-[10px]">Steps 1-3</Badge>
       </Card.Header>
       <Card.Content class="p-5 space-y-4 text-xs">
+        <!-- Step 1: Select Session(s) -->
+        <div class="space-y-1.5">
+          <span class="font-semibold text-foreground">Step 1: Select Active Zalo Session(s)</span>
+          <div class="flex flex-wrap gap-2 pt-1">
+            {#each sessions as s}
+              <label class="flex items-center gap-1.5 p-1.5 rounded border border-border bg-card hover:bg-accent/30 cursor-pointer text-xs">
+                <input type="checkbox" value={s.imei} bind:group={selectedImeis} disabled={isCampaignRunning} class="rounded border-input text-primary" />
+                <span class="font-medium text-foreground">IMEI: {s.imei}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
+
         <!-- Target Category -->
         <div class="space-y-1">
           <label for="category-select" class="font-semibold text-foreground">Target Category</label>
@@ -467,25 +511,101 @@
           </select>
         </div>
 
-        <!-- Leads Selection Box -->
+        <!-- Campaign Segmentation Filters -->
+        <div class="space-y-1.5">
+          <span class="font-semibold text-foreground">Campaign Segmentation Filter</span>
+          <div class="space-y-1 text-xs">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="all" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>All Leads in Category</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="never_sent" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>Never Sent Successfully</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="last_failed" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>Last Attempt Failed</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" value="template_success" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
+              <span>Successful Template Match</span>
+            </label>
+          </div>
+        </div>
+
+        {#if segmentationFilter === 'template_success'}
+          <div class="space-y-1 pl-4 border-l-2 border-primary/30">
+            <label for="filter-template" class="font-semibold text-foreground">Filter by Success Template</label>
+            <select id="filter-template" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+              <option value={null}>-- Choose Template --</option>
+              {#each templates as t}
+                <option value={t.id}>{t.name}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+
+        <!-- Step 2: Select Template -->
+        <div class="space-y-1">
+          <label for="campaign-template" class="font-semibold text-foreground">Step 2: Select Template</label>
+          <select id="campaign-template" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
+            <option value={null}>-- Choose Template --</option>
+            {#each templates as t}
+              <option value={t.id}>{t.name}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Step 3: Select Leads Box -->
         <div class="space-y-2">
           <div class="flex items-center justify-between text-xs">
-            <span class="font-semibold text-foreground">Target Leads ({selectedLeadIds.length} selected)</span>
+            <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
             <div class="flex items-center gap-2">
-              <Input type="text" placeholder="Search lead..." bind:value={leadSearchQuery} class="h-7 w-36 text-[11px]" />
-              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAll}>Toggle All</Button>
+              <Input type="text" placeholder="Filter leads..." bind:value={leadSearchQuery} class="h-7 w-32 text-[11px]" />
+              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAll}>
+                {isAllLeadsSelected ? 'Deselect All' : 'Select All'}
+              </Button>
             </div>
           </div>
+
+          <!-- Quick Selection Helpers -->
+          <div class="flex items-center justify-end gap-1.5">
+            <Button variant="outline" size="sm" onclick={selectVerifiedZalo} disabled={filteredLeads.filter(l => l.has_zalo === 1).length === 0} class="h-6 text-[10px] px-2">
+              Verified Zalo
+            </Button>
+            <Button variant="outline" size="sm" onclick={selectUnreached} disabled={filteredLeads.filter(l => l.zalo_reached === 0 || l.zalo_reached == null).length === 0} class="h-6 text-[10px] px-2">
+              Unreached
+            </Button>
+            <Button variant="outline" size="sm" onclick={selectMobileOnly} disabled={filteredLeads.filter(l => isVnMobile(l.phone)).length === 0} class="h-6 text-[10px] px-2">
+              Mobile Only
+            </Button>
+          </div>
+
           <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 space-y-1">
             {#each filteredLeads as lead}
               {#if lead.id}
                 <label class="flex items-center justify-between p-1.5 rounded hover:bg-muted/50 cursor-pointer text-xs">
-                  <div class="flex items-center gap-2">
-                    <input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onchange={() => lead.id && toggleLead(lead.id)} disabled={isCampaignRunning} class="rounded border-input text-primary" />
-                    <span class="font-medium text-foreground">{lead.name}</span>
-                    <span class="text-muted-foreground">({lead.company || 'N/A'})</span>
+                  <div class="flex items-center gap-2 truncate">
+                    <input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onchange={() => lead.id && toggleLead(lead.id)} disabled={isCampaignRunning} class="rounded border-input text-primary shrink-0" />
+                    <span class="font-medium text-foreground truncate">{lead.name}</span>
+                    {#if lead.has_zalo === 1}
+                      <Badge variant="secondary" class="text-[9px] px-1 py-0 bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300">Zalo Verified</Badge>
+                    {:else if lead.has_zalo === 0}
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 text-slate-400">No Zalo</Badge>
+                    {/if}
                   </div>
-                  <span class="text-[11px] text-muted-foreground">{lead.phone || 'No phone'}</span>
+                  <div class="flex items-center gap-2 shrink-0 text-[11px] text-muted-foreground">
+                    <span>{lead.phone || 'No phone'}</span>
+                    {#if !lead.phone || lead.phone.trim() === ''}
+                      <Badge variant="destructive" class="text-[9px] px-1 py-0">Missing</Badge>
+                    {:else if isVnMobile(lead.phone)}
+                      <Badge variant="default" class="text-[9px] px-1 py-0 bg-emerald-600">Mobile</Badge>
+                    {:else}
+                      <Badge variant="outline" class="text-[9px] px-1 py-0">Landline</Badge>
+                    {/if}
+                    <span>• {lead.company || 'N/A'}</span>
+                  </div>
                 </label>
               {/if}
             {/each}
@@ -513,7 +633,7 @@
         <!-- Terminal Logs -->
         <div class="min-h-[160px] max-h-[220px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto space-y-1 border border-slate-800" bind:this={campaignConsoleElement}>
           {#if campaignLogs.length === 0}
-            <div class="text-slate-500 italic">Logs will stream here...</div>
+            <div class="text-slate-500 italic">Outreach console logs will show here dynamically...</div>
           {:else}
             {#each campaignLogs as log}
               <div class="leading-relaxed border-b border-slate-900/60 pb-0.5">{log}</div>
