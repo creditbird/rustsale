@@ -282,88 +282,92 @@
         </div>
 
         <div class="flex-1 overflow-y-auto flex flex-col gap-4 pr-1">
-          <!-- Leads in Category Table -->
-          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3">
-            <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Leads in Category</h3>
-                <Badge variant="secondary" class="text-[10px]">{filteredCategoryLeads.length} / {categoryLeads.length}</Badge>
-              </div>
-              {#if selectedToRemove.size > 0}
-                <Button variant="destructive" size="sm" class="h-7 text-xs gap-1.5" onclick={handleRemoveLeads}>
-                  <FolderMinus class="size-3.5" />
-                  Remove Selected ({selectedToRemove.size})
-                </Button>
-              {/if}
-            </div>
-
-            <!-- Toolbar -->
-            <div class="px-4 flex items-center gap-3">
-              <div class="relative flex-1">
-                <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
-                <Input type="text" bind:value={categoryLeadsSearch} placeholder="Search lead name, company, phone..." class="h-8 pl-8 text-xs" />
-              </div>
-              <select
-                bind:value={filterCategoryStatus}
-                class="h-8 text-xs border border-input bg-background rounded-lg px-2.5 py-1 text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
-              >
-                <option value="all">All Statuses</option>
-                {#each uniqueCategoryStatuses as st (st)}
-                  <option value={st}>{st}</option>
-                {/each}
-              </select>
-            </div>
-
-            <Table.Root>
-              <Table.Header class="bg-muted/20">
-                <Table.Row>
-                  <Table.Head class="w-10 text-center">
-                    <div class="flex items-center justify-center">
-                      <Checkbox 
-                        checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id != null && selectedToRemove.has(l.id))}
-                        onCheckedChange={(checked) => toggleRemoveAll(Boolean(checked))}
-                      />
-                    </div>
-                  </Table.Head>
-                  <Table.Head>Name</Table.Head>
-                  <Table.Head>Company</Table.Head>
-                  <Table.Head>Phone</Table.Head>
-                  <Table.Head>Status</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each filteredCategoryLeads as lead, index (lead.id ?? `cat-lead-${index}`)}
-                  {@const isSelected = lead.id != null ? selectedToRemove.has(lead.id) : false}
-                  <Table.Row 
-                    class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
-                    onclick={() => lead.id != null && toggleRemoveSelection(lead.id)}
-                  >
-                    <Table.Cell class="text-center">
-                      <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
-                        <Checkbox 
-                          checked={isSelected}
-                          onCheckedChange={() => lead.id != null && toggleRemoveSelection(lead.id)}
-                        />
-                      </div>
-                    </Table.Cell>
-                    <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
-                    <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
-                    <Table.Cell class="text-xs text-muted-foreground">{lead.phone || '—'}</Table.Cell>
-                    <Table.Cell>
-                      <Badge variant="secondary" class="text-[10px] py-0">{lead.status}</Badge>
-                    </Table.Cell>
-                  </Table.Row>
-                {/each}
-                {#if filteredCategoryLeads.length === 0}
-                  <Table.Row>
-                    <Table.Cell colspan={5} class="text-center py-6 text-xs text-muted-foreground">
-                      No leads in this category.
-                    </Table.Cell>
-                  </Table.Row>
+          <!-- Leads in Category Table (Hidden if no records, min-h-[220px] shrink-0 when visible) -->
+          {#if categoryLeads.length > 0}
+            <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 shrink-0 min-h-[220px]">
+              <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Leads in Category</h3>
+                  <Badge variant="secondary" class="text-[10px]">{filteredCategoryLeads.length} / {categoryLeads.length}</Badge>
+                </div>
+                {#if selectedToRemove.size > 0}
+                  <Button variant="destructive" size="sm" class="h-7 text-xs gap-1.5" onclick={handleRemoveLeads}>
+                    <FolderMinus class="size-3.5" />
+                    Remove Selected ({selectedToRemove.size})
+                  </Button>
                 {/if}
-              </Table.Body>
-            </Table.Root>
-          </div>
+              </div>
+
+              <!-- Toolbar -->
+              <div class="px-4 flex items-center gap-3">
+                <div class="relative flex-1">
+                  <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+                  <Input type="text" bind:value={categoryLeadsSearch} placeholder="Search lead name, company, phone..." class="h-8 pl-8 text-xs" />
+                </div>
+                <select
+                  bind:value={filterCategoryStatus}
+                  class="h-8 text-xs border border-input bg-background rounded-lg px-2.5 py-1 text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
+                >
+                  <option value="all">All Statuses</option>
+                  {#each uniqueCategoryStatuses as st (st)}
+                    <option value={st}>{st}</option>
+                  {/each}
+                </select>
+              </div>
+
+              <div class="overflow-x-auto">
+                <Table.Root>
+                  <Table.Header class="bg-muted/20">
+                    <Table.Row>
+                      <Table.Head class="w-10 text-center">
+                        <div class="flex items-center justify-center">
+                          <Checkbox 
+                            checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id != null && selectedToRemove.has(l.id))}
+                            onCheckedChange={(checked) => toggleRemoveAll(Boolean(checked))}
+                          />
+                        </div>
+                      </Table.Head>
+                      <Table.Head>Name</Table.Head>
+                      <Table.Head>Company</Table.Head>
+                      <Table.Head>Phone</Table.Head>
+                      <Table.Head>Status</Table.Head>
+                    </Table.Row>
+                  </Table.Header>
+                  <Table.Body>
+                    {#each filteredCategoryLeads as lead, index (lead.id ?? `cat-lead-${index}`)}
+                      {@const isSelected = lead.id != null ? selectedToRemove.has(lead.id) : false}
+                      <Table.Row 
+                        class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
+                        onclick={() => lead.id != null && toggleRemoveSelection(lead.id)}
+                      >
+                        <Table.Cell class="text-center">
+                          <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
+                            <Checkbox 
+                              checked={isSelected}
+                              onCheckedChange={() => lead.id != null && toggleRemoveSelection(lead.id)}
+                            />
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell class="font-semibold text-xs text-foreground">{lead.name}</Table.Cell>
+                        <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
+                        <Table.Cell class="text-xs text-muted-foreground">{lead.phone || '—'}</Table.Cell>
+                        <Table.Cell>
+                          <Badge variant="secondary" class="text-[10px] py-0">{lead.status}</Badge>
+                        </Table.Cell>
+                      </Table.Row>
+                    {/each}
+                    {#if filteredCategoryLeads.length === 0}
+                      <Table.Row>
+                        <Table.Cell colspan={5} class="text-center py-6 text-xs text-muted-foreground">
+                          No leads matching filter.
+                        </Table.Cell>
+                      </Table.Row>
+                    {/if}
+                  </Table.Body>
+                </Table.Root>
+              </div>
+            </div>
+          {/if}
 
           <!-- Available Leads to Add Table -->
           <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3">
