@@ -8,6 +8,7 @@
   import { Badge } from '$lib/components/ui/badge';
   import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Card from '$lib/components/ui/card';
+  import * as Select from '$lib/components/ui/select';
   import { Progress } from '$lib/components/ui/progress';
   import { Search, MapPin, Play, Square, Terminal, Check, X, Building, Grid, Locate } from 'lucide-svelte';
 
@@ -560,12 +561,10 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div class="flex flex-col gap-1">
                 <label for="preset-select" class="font-semibold text-foreground">Quick Select Province / City</label>
-                <select
-                  id="preset-select"
+                <Select.Root
+                  type="single"
                   disabled={isScraping}
-                  class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer"
-                  onchange={(e) => {
-                    const val = (e.target as HTMLSelectElement).value;
+                  onValueChange={(val) => {
                     if (val && presetProvinces[val]) {
                       const coords = presetProvinces[val];
                       minLat = coords.minLat;
@@ -576,11 +575,15 @@
                     }
                   }}
                 >
-                  <option value="">-- Select Province / City --</option>
-                  {#each Object.keys(presetProvinces) as prov (prov)}
-                    <option value={prov}>{prov}</option>
-                  {/each}
-                </select>
+                  <Select.Trigger class="w-full h-9 text-xs">
+                    -- Select Province / City --
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each Object.keys(presetProvinces) as prov (prov)}
+                      <Select.Item value={prov}>{prov}</Select.Item>
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
               </div>
 
               <div class="flex flex-col gap-1">

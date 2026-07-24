@@ -6,7 +6,10 @@
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
   import { Checkbox } from '$lib/components/ui/checkbox';
+  import * as Card from '$lib/components/ui/card';
   import * as Table from '$lib/components/ui/table';
+  import * as Dialog from '$lib/components/ui/dialog';
+  import * as Select from '$lib/components/ui/select';
   import { Folder, Plus, Trash2, Search, FolderMinus, AlertCircle, CheckCircle2 } from 'lucide-svelte';
 
   let categories = $state<Category[]>([]);
@@ -79,7 +82,7 @@
   let activeCategory = $derived(categories.find(c => c.id === activeCategoryId));
 
   let uniqueCategoryStatuses = $derived(
-    Array.from(new Set(categoryLeads.map(l => l.status).filter(Boolean)))
+    Array.from(new Set(categoryLeads.map(l => l.status).filter(Boolean))) as string[]
   );
 
   let filteredCategoryLeads = $derived(
@@ -290,12 +293,17 @@
                 <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
                 <Input type="text" bind:value={categoryLeadsSearch} placeholder="Search lead name, company, phone..." class="h-8 pl-8 text-xs" />
               </div>
-              <select bind:value={filterCategoryStatus} class="h-8 px-2.5 text-xs rounded-md border border-input bg-background cursor-pointer">
-                <option value="">All Statuses</option>
-                {#each uniqueCategoryStatuses as st (st)}
-                  <option value={st}>{st}</option>
-                {/each}
-              </select>
+              <Select.Root type="single" bind:value={filterCategoryStatus}>
+                <Select.Trigger class="h-8 text-xs min-w-[130px]">
+                  {filterCategoryStatus || 'All Statuses'}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="">All Statuses</Select.Item>
+                  {#each uniqueCategoryStatuses as st (st)}
+                    <Select.Item value={st}>{st}</Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
             </div>
 
             <Table.Root>

@@ -5,6 +5,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
+  import * as Select from '$lib/components/ui/select';
   import { 
     X, Edit2, Trash2, Save, Phone, Mail, Users, CheckCircle2, XCircle, 
     AlertCircle, Calendar, MessageSquare, Clock, MapPin, Building
@@ -250,13 +251,18 @@
           </div>
           <div class="space-y-1">
             <label for="edit-status" class="font-medium text-foreground">Status</label>
-            <select id="edit-status" bind:value={editStatus} class="w-full h-9 px-3 rounded-md border border-input bg-background">
-              <option value="New">New</option>
-              <option value="Contacted">Contacted</option>
-              <option value="Qualified">Qualified</option>
-              <option value="Lost">Lost</option>
-              <option value="Converted">Converted (Contact)</option>
-            </select>
+            <Select.Root type="single" bind:value={editStatus}>
+              <Select.Trigger class="w-full h-9">
+                {editStatus}
+              </Select.Trigger>
+              <Select.Content>
+                <Select.Item value="New">New</Select.Item>
+                <Select.Item value="Contacted">Contacted</Select.Item>
+                <Select.Item value="Qualified">Qualified</Select.Item>
+                <Select.Item value="Lost">Lost</Select.Item>
+                <Select.Item value="Converted">Converted (Contact)</Select.Item>
+              </Select.Content>
+            </Select.Root>
           </div>
           <div class="space-y-1">
             <label for="edit-value" class="font-medium text-foreground">Est. Value ($)</label>
@@ -335,11 +341,16 @@
         <div class="space-y-3 pt-2">
           <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Log Activity</h5>
           <form onsubmit={handleLogActivity} class="space-y-2.5 text-xs">
-            <select bind:value={activityType} class="w-full h-8 px-2.5 rounded-md border border-input bg-background text-foreground">
-              <option value="Call">Call</option>
-              <option value="Email">Email</option>
-              <option value="Meeting">Meeting</option>
-            </select>
+            <Select.Root type="single" bind:value={activityType}>
+              <Select.Trigger class="w-full h-8 text-xs">
+                {activityType}
+              </Select.Trigger>
+              <Select.Content>
+                <Select.Item value="Call">Call</Select.Item>
+                <Select.Item value="Email">Email</Select.Item>
+                <Select.Item value="Meeting">Meeting</Select.Item>
+              </Select.Content>
+            </Select.Root>
             <textarea
               bind:value={activityContent}
               placeholder="What did you discuss? Enter notes here..."

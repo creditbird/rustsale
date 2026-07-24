@@ -9,6 +9,7 @@
   import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Card from '$lib/components/ui/card';
   import * as Dialog from '$lib/components/ui/dialog';
+  import * as Select from '$lib/components/ui/select';
   import { Progress } from '$lib/components/ui/progress';
   import { MessageSquare, Plus, RefreshCw, Trash2, Edit, QrCode, Send, CheckCircle, AlertCircle, User } from 'lucide-svelte';
 
@@ -539,12 +540,21 @@
         <!-- Target Category -->
         <div class="flex flex-col gap-1">
           <label for="category-select" class="font-semibold text-foreground">Target Category</label>
-          <select id="category-select" bind:value={selectedCategoryId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
-            <option value={null}>-- Select Category --</option>
-            {#each categories as cat (cat.id)}
-              <option value={cat.id}>{cat.name}</option>
-            {/each}
-          </select>
+          <Select.Root
+            type="single"
+            disabled={isCampaignRunning}
+            value={selectedCategoryId != null ? String(selectedCategoryId) : ""}
+            onValueChange={(val) => selectedCategoryId = val ? Number(val) : null}
+          >
+            <Select.Trigger class="w-full h-9 text-xs">
+              {categories.find(c => String(c.id) === String(selectedCategoryId))?.name || "-- Select Category --"}
+            </Select.Trigger>
+            <Select.Content>
+              {#each categories as cat (cat.id)}
+                <Select.Item value={String(cat.id)}>{cat.name}</Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
         </div>
 
         <!-- Campaign Segmentation Filters -->
@@ -573,24 +583,42 @@
         {#if segmentationFilter === 'template_success'}
           <div class="flex flex-col gap-1 pl-4 border-l-2 border-primary/30">
             <label for="filter-template" class="font-semibold text-foreground">Filter by Success Template</label>
-            <select id="filter-template" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
-              <option value={null}>-- Choose Template --</option>
-              {#each templates as t (t.id)}
-                <option value={t.id}>{t.name}</option>
-              {/each}
-            </select>
+            <Select.Root
+              type="single"
+              disabled={isCampaignRunning}
+              value={filterTemplateId != null ? String(filterTemplateId) : ""}
+              onValueChange={(val) => filterTemplateId = val ? Number(val) : null}
+            >
+              <Select.Trigger class="w-full h-8 text-xs">
+                {templates.find(t => String(t.id) === String(filterTemplateId))?.name || "-- Choose Template --"}
+              </Select.Trigger>
+              <Select.Content>
+                {#each templates as t (t.id)}
+                  <Select.Item value={String(t.id)}>{t.name}</Select.Item>
+                {/each}
+              </Select.Content>
+            </Select.Root>
           </div>
         {/if}
 
         <!-- Step 2: Select Template -->
         <div class="flex flex-col gap-1">
           <label for="campaign-template" class="font-semibold text-foreground">Step 2: Select Template</label>
-          <select id="campaign-template" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs cursor-pointer" disabled={isCampaignRunning}>
-            <option value={null}>-- Choose Template --</option>
-            {#each templates as t (t.id)}
-              <option value={t.id}>{t.name}</option>
-            {/each}
-          </select>
+          <Select.Root
+            type="single"
+            disabled={isCampaignRunning}
+            value={selectedTemplateId != null ? String(selectedTemplateId) : ""}
+            onValueChange={(val) => selectedTemplateId = val ? Number(val) : null}
+          >
+            <Select.Trigger class="w-full h-9 text-xs">
+              {templates.find(t => String(t.id) === String(selectedTemplateId))?.name || "-- Choose Template --"}
+            </Select.Trigger>
+            <Select.Content>
+              {#each templates as t (t.id)}
+                <Select.Item value={String(t.id)}>{t.name}</Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
         </div>
 
         <!-- Step 3: Select Leads Box -->

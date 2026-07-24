@@ -7,6 +7,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
   import { Checkbox } from '$lib/components/ui/checkbox';
+  import * as Select from '$lib/components/ui/select';
   import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-svelte';
 
   let { leads = [], onRefresh } = $props<{ leads: Lead[]; onRefresh?: () => void }>();
@@ -46,7 +47,7 @@
   let pageSize = $state(10);
 
   // Derived variables
-  let uniqueStatuses = $derived(Array.from(new Set(leads.map((l: Lead) => l.status))));
+  let uniqueStatuses = $derived(Array.from(new Set(leads.map((l: Lead) => l.status))) as string[]);
   let uniqueOwners = $derived(Array.from(new Set(leads.map((l: Lead) => l.owner).filter(Boolean))) as string[]);
 
   let filteredLeads = $derived(
@@ -227,34 +228,54 @@
     <!-- Filter Dropdowns -->
     <div class="flex flex-wrap items-center gap-2">
       {#if uniqueStatuses.length > 1}
-        <select bind:value={filterStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
-          <option value="">All Statuses</option>
-          {#each uniqueStatuses as status (status)}
-            <option value={status}>{status}</option>
-          {/each}
-        </select>
+        <Select.Root type="single" bind:value={filterStatus}>
+          <Select.Trigger class="h-9 text-xs min-w-[120px]">
+            {filterStatus || 'All Statuses'}
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value="">All Statuses</Select.Item>
+            {#each uniqueStatuses as status (status)}
+              <Select.Item value={status}>{status}</Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
       {/if}
 
-      <select bind:value={filterOwner} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
-        <option value="">All Owners</option>
-        {#each uniqueOwners as owner (owner)}
-          <option value={owner}>{owner}</option>
-        {/each}
-      </select>
+      <Select.Root type="single" bind:value={filterOwner}>
+        <Select.Trigger class="h-9 text-xs min-w-[120px]">
+          {filterOwner || 'All Owners'}
+        </Select.Trigger>
+        <Select.Content>
+          <Select.Item value="">All Owners</Select.Item>
+          {#each uniqueOwners as owner (owner)}
+            <Select.Item value={owner}>{owner}</Select.Item>
+          {/each}
+        </Select.Content>
+      </Select.Root>
 
-      <select bind:value={filterValueRange} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
-        <option value="">All Values</option>
-        <option value="under_10k">Under $10k</option>
-        <option value="10k_to_50k">$10k - $50k</option>
-        <option value="above_50k">Above $50k</option>
-      </select>
+      <Select.Root type="single" bind:value={filterValueRange}>
+        <Select.Trigger class="h-9 text-xs min-w-[120px]">
+          {filterValueRange === 'under_10k' ? 'Under $10k' : filterValueRange === '10k_to_50k' ? '$10k - $50k' : filterValueRange === 'above_50k' ? 'Above $50k' : 'All Values'}
+        </Select.Trigger>
+        <Select.Content>
+          <Select.Item value="">All Values</Select.Item>
+          <Select.Item value="under_10k">Under $10k</Select.Item>
+          <Select.Item value="10k_to_50k">$10k - $50k</Select.Item>
+          <Select.Item value="above_50k">Above $50k</Select.Item>
+        </Select.Content>
+      </Select.Root>
 
-      <select bind:value={filterZaloStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden cursor-pointer">
-        <option value="">All Zalo Statuses</option>
-        <option value="verified">Verified Zalo</option>
-        <option value="no_zalo">No Zalo</option>
-        <option value="unchecked">Unchecked</option>
-      </select>
+      <Select.Root type="single" bind:value={filterZaloStatus}>
+        <Select.Trigger class="h-9 text-xs min-w-[130px]">
+          {filterZaloStatus === 'verified' ? 'Verified Zalo' : filterZaloStatus === 'no_zalo' ? 'No Zalo' : filterZaloStatus === 'unchecked' ? 'Unchecked' : 'All Zalo Statuses'}
+        </Select.Trigger>
+        <Select.Content>
+          <Select.Item value="">All Zalo Statuses</Select.Item>
+          <Select.Item value="verified">Verified Zalo</Select.Item>
+          <Select.Item value="no_zalo">No Zalo</Select.Item>
+          <Select.Item value="unchecked">Unchecked</Select.Item>
+        </Select.Content>
+      </Select.Root>
 
       {#if searchQuery || filterStatus || filterOwner || filterValueRange || filterZaloStatus || filterOutreachStatus}
         <Button
@@ -360,11 +381,20 @@
       <span>Showing {showingStart} to {showingEnd} of {totalEntries} entries</span>
       
       <div class="flex items-center gap-2">
-        <select bind:value={pageSize} class="h-8 px-2 text-xs rounded border border-input bg-background cursor-pointer">
-          <option value={5}>5 / page</option>
-          <option value={10}>10 / page</option>
-          <option value={25}>25 / page</option>
-        </select>
+        <Select.Root
+          type="single"
+          value={String(pageSize)}
+          onValueChange={(val) => val && (pageSize = Number(val))}
+        >
+          <Select.Trigger class="h-8 text-xs min-w-[90px]">
+            {pageSize} / page
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value="5">5 / page</Select.Item>
+            <Select.Item value="10">10 / page</Select.Item>
+            <Select.Item value="25">25 / page</Select.Item>
+          </Select.Content>
+        </Select.Root>
 
         <Button variant="outline" size="sm" class="size-8 p-0" disabled={currentPage === 1} onclick={() => currentPage--}>
           <ChevronLeft class="size-4" />
@@ -469,11 +499,20 @@
 
       <div class="flex flex-col gap-3 text-xs">
         <p class="text-muted-foreground">Assign {selectedRows.size} selected lead(s) to:</p>
-        <select bind:value={selectedCategoryId} class="w-full h-9 px-3 rounded-md border border-input bg-background text-foreground cursor-pointer">
-          {#each categories as cat (cat.id)}
-            <option value={cat.id}>{cat.name}</option>
-          {/each}
-        </select>
+        <Select.Root
+          type="single"
+          value={selectedCategoryId != null ? String(selectedCategoryId) : ""}
+          onValueChange={(val) => selectedCategoryId = val ? Number(val) : null}
+        >
+          <Select.Trigger class="w-full h-9 text-xs">
+            {categories.find(c => String(c.id) === String(selectedCategoryId))?.name || "-- Select Category --"}
+          </Select.Trigger>
+          <Select.Content>
+            {#each categories as cat (cat.id)}
+              <Select.Item value={String(cat.id)}>{cat.name}</Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
       </div>
 
       <div class="flex items-center justify-end gap-2 pt-2">
