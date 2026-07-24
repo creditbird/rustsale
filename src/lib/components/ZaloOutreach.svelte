@@ -94,6 +94,14 @@
     filteredLeads.every(lead => lead.id && selectedLeadIds.includes(lead.id))
   );
 
+  function getSessionDisplayName(imei: string): string {
+    const status = sessionStatuses[imei];
+    if (status?.displayName && status.displayName.trim()) {
+      return status.displayName;
+    }
+    return `Zalo (${imei.slice(0, 8)}...)`;
+  }
+
   async function loadSessions(): Promise<boolean> {
     try {
       sessions = await invoke<ZaloSession[]>('get_zalo_sessions');
@@ -433,23 +441,32 @@
             <div class="text-muted-foreground text-center py-4 italic">No Zalo sessions logged in.</div>
           {:else}
             {#each sessions as s (s.imei)}
+              {@const status = sessionStatuses[s.imei]}
+              {@const displayName = getSessionDisplayName(s.imei)}
               <div class="flex items-center justify-between p-2 rounded-lg border border-border bg-card hover:bg-accent/40 transition-colors">
-                <div class="flex items-center gap-2 truncate">
-                  {#if sessionStatuses[s.imei]?.valid === true}
-                    <CheckCircle class="size-4 text-emerald-500 shrink-0" />
-                  {:else if sessionStatuses[s.imei]?.valid === false}
-                    <AlertCircle class="size-4 text-rose-500 shrink-0" />
+                <div class="flex items-center gap-2.5 truncate">
+                  {#if status?.avatar}
+                    <img src={status.avatar} alt={displayName} class="size-8 rounded-full object-cover border border-emerald-500/30 shrink-0" />
                   {:else}
-                    <User class="size-4 text-muted-foreground shrink-0" />
+                    <div class="size-8 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20 shrink-0">
+                      {displayName[0].toUpperCase()}
+                    </div>
                   {/if}
-                  <div class="truncate flex flex-col">
-                    <div class="font-semibold text-foreground truncate">{sessionStatuses[s.imei]?.displayName || `IMEI: ${s.imei}`}</div>
-                    <div class="text-[10px] text-muted-foreground truncate">{s.user_agent}</div>
+                  <div class="truncate flex flex-col gap-0.5">
+                    <div class="font-semibold text-foreground truncate flex items-center gap-1.5">
+                      {displayName}
+                      {#if status?.valid === true}
+                        <Badge variant="outline" class="text-[9px] px-1 py-0 border-emerald-500/30 text-emerald-600 bg-emerald-500/10">Active</Badge>
+                      {:else if status?.valid === false}
+                        <Badge variant="outline" class="text-[9px] px-1 py-0 border-rose-500/30 text-rose-600 bg-rose-500/10">Expired</Badge>
+                      {/if}
+                    </div>
+                    <div class="text-[10px] text-muted-foreground truncate">IMEI: {s.imei.slice(0, 16)}...</div>
                   </div>
                 </div>
-                <div class="flex items-center gap-1">
+                <div class="flex items-center gap-1 shrink-0">
                   <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => verifySession(s.imei)}>
-                    <RefreshCw class="size-3 {sessionStatuses[s.imei]?.checking ? 'animate-spin' : ''}" />
+                    <RefreshCw class="size-3 {status?.checking ? 'animate-spin' : ''}" />
                   </Button>
                   <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => deleteSession(s.imei)}>
                     <Trash2 class="size-3" />
@@ -517,8 +534,10 @@
           <div class="flex flex-wrap gap-2 pt-1">
             {#each sessions as s (s.imei)}
               {@const isSelected = selectedImeis.includes(s.imei)}
+              {@const status = sessionStatuses[s.imei]}
+              {@const displayName = getSessionDisplayName(s.imei)}
               <label 
-                class="flex items-center gap-2 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}"
+                class="flex items-center gap-2.5 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}"
               >
                 <Checkbox 
                   checked={isSelected}
@@ -531,7 +550,14 @@
                     }
                   }}
                 />
-                <span class="font-medium text-foreground">IMEI: {s.imei}</span>
+                {#if status?.avatar}
+                  <img src={status.avatar} alt={displayName} class="size-6 rounded-full object-cover border border-emerald-500/30 shrink-0" />
+                {:else}
+                  <div class="size-6 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-[10px] flex items-center justify-center border border-emerald-500/20 shrink-0">
+                    {displayName[0].toUpperCase()}
+                  </div>
+                {/if}
+                <span class="font-medium text-foreground">{displayName}</span>
               </label>
             {/each}
           </div>
