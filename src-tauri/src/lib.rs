@@ -81,7 +81,15 @@ pub fn run() {
             commands::remove_leads_from_category,
             commands::get_leads_by_category,
             commands::send_zalo_campaign,
-            commands::get_campaign_leads
+            commands::get_campaign_leads,
+            commands::get_smtp_servers,
+            commands::save_smtp_server,
+            commands::delete_smtp_server,
+            commands::test_smtp_connection,
+            commands::get_email_templates,
+            commands::create_email_template,
+            commands::update_email_template,
+            commands::delete_email_template
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1029,4 +1029,127 @@ mod tests {
         ).unwrap();
         assert_eq!(h2_count, 0);
     }
+
+    #[tokio::test]
+    async fn test_smtp_and_email_template_commands() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri::Manager;
+        use crate::models::SmtpServer;
+        use tokio::net::TcpListener;
+
+        let conn = db::init_db(":memory:").unwrap();
+        let db_state = commands::DbState {
+            conn: std::sync::Mutex::new(conn),
+        };
+
+        let app = mock_builder()
+            .manage(db_state)
+            .build(mock_context(noop_assets()))
+            .unwrap();
+
+        let state = app.state::<commands::DbState>();
+
+        // 1. Initially get_smtp_servers should be empty
+        let initial_servers = commands::get_smtp_servers(state.clone()).unwrap();
+        assert!(initial_servers.is_empty());
+
+        // 2. Save a new SMTP server
+        let new_server = SmtpServer {
+            id: None,
+            name: "Gmail SMTP".to_string(),
+            host: "smtp.gmail.com".to_string(),
+            port: 587,
+            username: "test@gmail.com".to_string(),
+            password: "password123".to_string(),
+            from_email: "test@gmail.com".to_string(),
+            from_name: "Test Sender".to_string(),
+            security: "STARTTLS".to_string(),
+            created_at: "".to_string(),
+        };
+
+        let server_id = commands::save_smtp_server(new_server, state.clone()).unwrap();
+        assert!(server_id > 0);
+
+        // 3. Verify get_smtp_servers returns the saved server
+        let servers = commands::get_smtp_servers(state.clone()).unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, Some(server_id));
+        assert_eq!(servers[0].name, "Gmail SMTP");
+        assert_eq!(servers[0].host, "smtp.gmail.com");
+
+        // 4. Update the SMTP server
+        let mut updated_server = servers[0].clone();
+        updated_server.name = "Gmail Updated".to_string();
+        updated_server.port = 465;
+
+        let updated_id = commands::save_smtp_server(updated_server, state.clone()).unwrap();
+        assert_eq!(updated_id, server_id);
+
+        let servers_after_update = commands::get_smtp_servers(state.clone()).unwrap();
+        assert_eq!(servers_after_update.len(), 1);
+        assert_eq!(servers_after_update[0].name, "Gmail Updated");
+        assert_eq!(servers_after_update[0].port, 465);
+
+        // 5. Test SMTP connection to a mock TCP listener
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port() as i32;
+
+        let test_res = commands::test_smtp_connection("127.0.0.1".to_string(), port).await;
+        assert!(test_res.is_ok(), "Expected connection success to local listener: {:?}", test_res);
+
+        // Test SMTP connection to unreachable port
+        let fail_res = commands::test_smtp_connection("127.0.0.1".to_string(), 1).await;
+        assert!(fail_res.is_err(), "Expected connection failure to port 1");
+
+        // 6. Delete SMTP server
+        let del_res = commands::delete_smtp_server(server_id, state.clone());
+        assert!(del_res.is_ok());
+
+        let servers_final = commands::get_smtp_servers(state.clone()).unwrap();
+        assert!(servers_final.is_empty());
+
+        // 7. Initially get_email_templates should be empty
+        let initial_templates = commands::get_email_templates(state.clone()).unwrap();
+        assert!(initial_templates.is_empty());
+
+        // 8. Create Email Template
+        let tpl_id = commands::create_email_template(
+            "Welcome Email".to_string(),
+            "Welcome {{name}}".to_string(),
+            "Hello {{name}}, welcome to our platform!".to_string(),
+            state.clone(),
+        )
+        .unwrap();
+        assert!(tpl_id > 0);
+
+        // 9. Verify get_email_templates
+        let templates = commands::get_email_templates(state.clone()).unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].id, Some(tpl_id));
+        assert_eq!(templates[0].name, "Welcome Email");
+        assert_eq!(templates[0].subject, "Welcome {{name}}");
+
+        // 10. Update Email Template
+        let update_tpl_res = commands::update_email_template(
+            tpl_id,
+            "Updated Welcome Email".to_string(),
+            "Welcome aboard {{name}}".to_string(),
+            "New content".to_string(),
+            state.clone(),
+        );
+        assert!(update_tpl_res.is_ok());
+
+        let templates_updated = commands::get_email_templates(state.clone()).unwrap();
+        assert_eq!(templates_updated.len(), 1);
+        assert_eq!(templates_updated[0].name, "Updated Welcome Email");
+        assert_eq!(templates_updated[0].subject, "Welcome aboard {{name}}");
+        assert_eq!(templates_updated[0].content, "New content");
+
+        // 11. Delete Email Template
+        let del_tpl_res = commands::delete_email_template(tpl_id, state.clone());
+        assert!(del_tpl_res.is_ok());
+
+        let templates_final = commands::get_email_templates(state.clone()).unwrap();
+        assert!(templates_final.is_empty());
+    }
 }

@@ -1,4 +1,4 @@
-use crate::models::{Activity, Category, Deal, Lead, ZaloSessionStatus};
+use crate::models::{Activity, Category, Deal, EmailTemplate, Lead, SmtpServer, ZaloSessionStatus};
 use rusqlite::Connection;
 use std::sync::Mutex;
 
@@ -2771,4 +2771,97 @@ pub async fn get_campaign_leads(
     }
     
     Ok(leads)
+}
+
+#[tauri::command]
+pub fn get_smtp_servers(state: tauri::State<DbState>) -> Result<Vec<SmtpServer>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_smtp_servers(&conn).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn save_smtp_server(
+    server: SmtpServer,
+    state: tauri::State<DbState>,
+) -> Result<i32, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::save_smtp_server(&conn, &server).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_smtp_server(id: i32, state: tauri::State<DbState>) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::delete_smtp_server(&conn, id).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub async fn test_smtp_connection(host: String, port: i32) -> Result<String, String> {
+    if port <= 0 || port > 65535 {
+        return Err("Invalid port number".to_string());
+    }
+    let addr = format!("{}:{}", host, port);
+    let connect_timeout = std::time::Duration::from_secs(5);
+    match tokio::time::timeout(connect_timeout, tokio::net::TcpStream::connect(&addr)).await {
+        Ok(Ok(_stream)) => Ok(format!("Successfully connected to {}:{}", host, port)),
+        Ok(Err(e)) => Err(format!("Failed to connect to {}:{}: {}", host, port, e)),
+        Err(_) => Err(format!("Connection to {}:{} timed out", host, port)),
+    }
+}
+
+#[tauri::command]
+pub fn get_email_templates(state: tauri::State<DbState>) -> Result<Vec<EmailTemplate>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_email_templates(&conn).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn create_email_template(
+    name: String,
+    subject: String,
+    content: String,
+    state: tauri::State<DbState>,
+) -> Result<i32, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::create_email_template(&conn, &name, &subject, &content)
+        .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn update_email_template(
+    id: i32,
+    name: String,
+    subject: String,
+    content: String,
+    state: tauri::State<DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::update_email_template(&conn, id, &name, &subject, &content)
+        .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_email_template(id: i32, state: tauri::State<DbState>) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::delete_email_template(&conn, id).map_err(|e| format!("Database error: {}", e))
 }
