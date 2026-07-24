@@ -950,25 +950,6 @@
 {/if}
 
 <style>
-  :global(:root) {
-    --spacing-xs: 4px;
-    --spacing-sm: 8px;
-    --spacing-md: 16px;
-    --spacing-lg: 24px;
-    --color-surface-container-lowest: rgba(15, 23, 42, 0.6);
-    --color-surface-container-low: rgba(30, 41, 59, 0.7);
-    --color-surface-container: rgba(30, 41, 59, 0.9);
-    --color-on-surface: #f8fafc;
-    --color-on-surface-variant: #94a3b8;
-    --color-outline: rgba(255, 255, 255, 0.1);
-    --color-primary: #3b82f6;
-    --color-success: #10b981;
-    --color-danger: #ef4444;
-    --rounded-md: 8px;
-    --rounded-lg: 12px;
-    --rounded-full: 9999px;
-    --transition-fast: all 0.15s ease-in-out;
-  }
 
   .container {
     padding: var(--spacing-lg);
