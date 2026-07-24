@@ -134,12 +134,31 @@
   }
 
   $effect(() => {
+    if (segmentationFilter === 'template_success' && !filterTemplateId && templates.length > 0) {
+      filterTemplateId = templates[0].id || null;
+    }
+  });
+
+  $effect(() => {
     if (selectedCategoryId !== null) {
+      if (segmentationFilter === 'template_success' && !filterTemplateId) {
+        leads = [];
+        selectedLeadIds = [];
+        return;
+      }
       getCampaignLeads(selectedCategoryId, segmentationFilter, filterTemplateId)
-        .then(res => { leads = res; })
-        .catch(err => { console.error('Error fetching campaign leads', err); leads = []; });
+        .then(res => {
+          leads = res;
+          selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
+        })
+        .catch(err => {
+          console.error('Error fetching campaign leads:', err);
+          leads = [];
+          selectedLeadIds = [];
+        });
     } else {
       leads = [];
+      selectedLeadIds = [];
     }
   });
 

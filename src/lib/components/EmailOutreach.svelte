@@ -136,13 +136,28 @@
   }
 
   $effect(() => {
+    if (segmentationFilter === 'template_success' && !filterTemplateId && templates.length > 0) {
+      filterTemplateId = templates[0].id || null;
+    }
+  });
+
+  $effect(() => {
     if (selectedCategoryId !== null && selectedCategoryId !== undefined) {
+      if (segmentationFilter === 'template_success' && !filterTemplateId) {
+        leads = [];
+        selectedLeadIds = [];
+        return;
+      }
       getCampaignLeads(Number(selectedCategoryId), segmentationFilter, filterTemplateId)
         .then(res => {
           leads = res;
-          selectedLeadIds = leads.filter(l => l.id != null).map(l => l.id as number);
+          selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
         })
-        .catch(err => { console.error(err); leads = []; });
+        .catch(err => {
+          console.error(err);
+          leads = [];
+          selectedLeadIds = [];
+        });
     }
   });
 
