@@ -146,6 +146,54 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS smtp_servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL,
+                from_email TEXT NOT NULL,
+                from_name TEXT NOT NULL,
+                security TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS email_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS email_outreach_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                template_id INTEGER NOT NULL,
+                smtp_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                sent_at TEXT NOT NULL,
+                FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+                FOREIGN KEY(template_id) REFERENCES email_templates(id) ON DELETE CASCADE,
+                FOREIGN KEY(smtp_id) REFERENCES smtp_servers(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_email_outreach_history_lead ON email_outreach_history(lead_id)",
+            [],
+        )?;
+
         tx.commit()?;
     }
 

@@ -370,4 +370,22 @@ mod tests {
         assert_eq!(row.get::<_, String>(4).unwrap(), "2026-07-18T10:00:00Z");
         assert_eq!(row.get::<_, String>(5).unwrap(), "imei-12345");
     }
+
+    #[test]
+    fn test_email_outreach_tables_exist() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row: &rusqlite::Row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r: Result<String, rusqlite::Error>| r.unwrap())
+            .collect();
+
+        assert!(tables.contains(&"smtp_servers".to_string()));
+        assert!(tables.contains(&"email_templates".to_string()));
+        assert!(tables.contains(&"email_outreach_history".to_string()));
+    }
 }

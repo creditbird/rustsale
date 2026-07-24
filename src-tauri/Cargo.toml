@@ -27,13 +27,13 @@ cdp-lite = "0.1"
 rand = "0.8"
 urlencoding = "2.1"
 chrono = { version = "0.4", features = ["serde"] }
-zca-rs = { path = "../../zca-rs" }
+zca-rs = { path = "vendor/zca-rs" }
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-
 
 
