@@ -281,10 +281,10 @@
           </div>
         </div>
 
-        <div class="flex-1 overflow-y-auto flex flex-col gap-4 pr-1">
-          <!-- Leads in Category Table (Hidden if no records, max-h-[350px] with internal scroll) -->
+        <div class="flex-1 min-h-0 flex flex-col gap-4">
+          <!-- Leads in Category Table (Hidden if no records, max-h-[280px] with internal scroll) -->
           {#if categoryLeads.length > 0}
-            <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 shrink-0 max-h-[350px]">
+            <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 shrink-0 max-h-[280px]">
               <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between shrink-0">
                 <div class="flex items-center gap-2">
                   <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Leads in Category</h3>
@@ -369,8 +369,8 @@
             </div>
           {/if}
 
-          <!-- Available Leads to Add Table -->
-          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 shrink-0 max-h-[350px]">
+          <!-- Available Leads to Add Table (flex-1 min-h-0 to fill remaining height completely) -->
+          <div class="rounded-xl border border-border bg-card overflow-hidden shadow-2xs flex flex-col gap-3 flex-1 min-h-0">
             <div class="h-11 px-4 border-b border-border bg-muted/30 flex items-center justify-between shrink-0">
               <div class="flex items-center gap-2">
                 <h3 class="text-xs font-bold text-foreground uppercase tracking-wider">Available Leads to Add</h3>
