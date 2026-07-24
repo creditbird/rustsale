@@ -74,6 +74,8 @@ pub struct ZaloSession {
     pub user_agent: String,
     pub cookies_json: String,
     pub language: String,
+    pub display_name: Option<String>,
+    pub avatar: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

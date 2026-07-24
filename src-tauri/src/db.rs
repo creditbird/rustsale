@@ -88,10 +88,14 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 imei TEXT PRIMARY KEY,
                 user_agent TEXT NOT NULL,
                 cookies_json TEXT NOT NULL,
-                language TEXT NOT NULL
+                language TEXT NOT NULL,
+                display_name TEXT,
+                avatar TEXT
             )",
             [],
         )?;
+        let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN display_name TEXT", []);
+        let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN avatar TEXT", []);
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS outreach_templates (
@@ -242,13 +246,26 @@ pub fn save_zalo_session(
     Ok(())
 }
 
+pub fn update_zalo_session_profile(
+    conn: &Connection,
+    imei: &str,
+    display_name: Option<&str>,
+    avatar: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE zalo_sessions SET display_name = ?1, avatar = ?2 WHERE imei = ?3",
+        rusqlite::params![display_name, avatar, imei],
+    )?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn get_zalo_session(
     conn: &Connection,
     imei: &str,
 ) -> Result<Option<crate::models::ZaloSession>> {
     let mut stmt = conn.prepare(
-        "SELECT imei, user_agent, cookies_json, language FROM zalo_sessions WHERE imei = ?1",
+        "SELECT imei, user_agent, cookies_json, language, display_name, avatar FROM zalo_sessions WHERE imei = ?1",
     )?;
     let mut rows = stmt.query([imei])?;
     if let Some(row) = rows.next()? {
@@ -257,6 +274,8 @@ pub fn get_zalo_session(
             user_agent: row.get(1)?,
             cookies_json: row.get(2)?,
             language: row.get(3)?,
+            display_name: row.get(4)?,
+            avatar: row.get(5)?,
         }))
     } else {
         Ok(None)
@@ -265,13 +284,15 @@ pub fn get_zalo_session(
 
 pub fn get_all_zalo_sessions(conn: &Connection) -> Result<Vec<crate::models::ZaloSession>> {
     let mut stmt =
-        conn.prepare("SELECT imei, user_agent, cookies_json, language FROM zalo_sessions")?;
+        conn.prepare("SELECT imei, user_agent, cookies_json, language, display_name, avatar FROM zalo_sessions")?;
     let rows = stmt.query_map([], |row| {
         Ok(crate::models::ZaloSession {
             imei: row.get(0)?,
             user_agent: row.get(1)?,
             cookies_json: row.get(2)?,
             language: row.get(3)?,
+            display_name: row.get(4)?,
+            avatar: row.get(5)?,
         })
     })?;
     let mut sessions = Vec::new();

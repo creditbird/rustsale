@@ -71,6 +71,11 @@
   let templateError = $state<string | null>(null);
   let activeInputField = $state<'subject' | 'content'>('content');
 
+  let isDeleteSmtpModalOpen = $state(false);
+  let smtpToDeleteId = $state<number | null>(null);
+  let isDeleteTemplateModalOpen = $state(false);
+  let templateToDeleteId = $state<number | null>(null);
+
   let isCampaignRunning = $state(false);
   let campaignProgress = $state(0);
   let campaignStatus = $state('Idle');
@@ -214,12 +219,19 @@
     } catch (e) { smtpError = String(e); }
   }
 
-  async function handleDeleteSmtpServer(id: number) {
-    if (!confirm('Delete SMTP server?')) return;
+  function promptDeleteSmtp(id: number) {
+    smtpToDeleteId = id;
+    isDeleteSmtpModalOpen = true;
+  }
+
+  async function confirmDeleteSmtp() {
+    if (!smtpToDeleteId) return;
     try {
-      await invoke('delete_smtp_server', { id });
-      if (selectedSmtpId === id) selectedSmtpId = null;
+      await invoke('delete_smtp_server', { id: smtpToDeleteId });
+      if (selectedSmtpId === smtpToDeleteId) selectedSmtpId = null;
       await loadSmtpServers();
+      isDeleteSmtpModalOpen = false;
+      smtpToDeleteId = null;
     } catch (e) { alert(String(e)); }
   }
 
@@ -254,12 +266,19 @@
     } catch (e) { templateError = String(e); }
   }
 
-  async function handleDeleteTemplate(id: number) {
-    if (!confirm('Delete template?')) return;
+  function promptDeleteTemplate(id: number) {
+    templateToDeleteId = id;
+    isDeleteTemplateModalOpen = true;
+  }
+
+  async function confirmDeleteTemplate() {
+    if (!templateToDeleteId) return;
     try {
-      await invoke('delete_email_template', { id });
-      if (selectedTemplateId === id) selectedTemplateId = null;
+      await invoke('delete_email_template', { id: templateToDeleteId });
+      if (selectedTemplateId === templateToDeleteId) selectedTemplateId = null;
       await loadTemplates();
+      isDeleteTemplateModalOpen = false;
+      templateToDeleteId = null;
     } catch (e) { alert(String(e)); }
   }
 
@@ -358,7 +377,7 @@
                   <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditSmtpModal(server); }}>
                     <Edit class="size-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); server.id && handleDeleteSmtpServer(server.id); }}>
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); server.id && promptDeleteSmtp(server.id); }}>
                     <Trash2 class="size-3" />
                   </Button>
                 </div>
@@ -398,7 +417,7 @@
                   <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditTemplateModal(tpl); }}>
                     <Edit class="size-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); tpl.id && handleDeleteTemplate(tpl.id); }}>
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); tpl.id && promptDeleteTemplate(tpl.id); }}>
                     <Trash2 class="size-3" />
                   </Button>
                 </div>
@@ -716,7 +735,39 @@
     </div>
     <Dialog.Footer class="gap-2">
       <Button variant="outline" size="sm" onclick={() => isTemplateModalOpen = false}>Cancel</Button>
-      <Button size="sm" onclick={handleSaveTemplate}>Save Server</Button>
+      <Button size="sm" onclick={handleSaveTemplate}>Save Template</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Delete SMTP Confirmation Dialog -->
+<Dialog.Root bind:open={isDeleteSmtpModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>Delete SMTP Server</Dialog.Title>
+    </Dialog.Header>
+    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
+      Are you sure you want to delete this SMTP server configuration? This action cannot be undone.
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" size="sm" onclick={() => isDeleteSmtpModalOpen = false}>Cancel</Button>
+      <Button variant="destructive" size="sm" onclick={confirmDeleteSmtp}>Delete SMTP Server</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Delete Template Confirmation Dialog -->
+<Dialog.Root bind:open={isDeleteTemplateModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>Delete Email Template</Dialog.Title>
+    </Dialog.Header>
+    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
+      Are you sure you want to delete this email template? This action cannot be undone.
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" size="sm" onclick={() => isDeleteTemplateModalOpen = false}>Cancel</Button>
+      <Button variant="destructive" size="sm" onclick={confirmDeleteTemplate}>Delete Template</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

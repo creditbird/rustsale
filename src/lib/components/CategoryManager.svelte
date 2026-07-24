@@ -140,13 +140,23 @@
     }
   }
 
-  async function handleDeleteCategory(id: number) {
-    if (!confirm('Are you sure you want to delete this category?')) return;
+  let isDeleteCategoryModalOpen = $state(false);
+  let categoryToDeleteId = $state<number | null>(null);
+
+  function promptDeleteCategory(id: number) {
+    categoryToDeleteId = id;
+    isDeleteCategoryModalOpen = true;
+  }
+
+  async function confirmDeleteCategory() {
+    if (!categoryToDeleteId) return;
     try {
-      await crmService.deleteCategory(id);
-      if (activeCategoryId === id) activeCategoryId = null;
+      await crmService.deleteCategory(categoryToDeleteId);
+      if (activeCategoryId === categoryToDeleteId) activeCategoryId = null;
       await loadCategories();
       showMessage('Category deleted.');
+      isDeleteCategoryModalOpen = false;
+      categoryToDeleteId = null;
     } catch (err) {
       showMessage(err instanceof Error ? err.message : String(err), true);
     }
@@ -250,7 +260,7 @@
               <Folder class="size-4 shrink-0 {isActive ? 'text-primary' : 'text-muted-foreground'}" />
               <span class="truncate">{category.name}</span>
             </button>
-            <Button variant="ghost" size="sm" onclick={() => handleDeleteCategory(category.id!)} class="size-6 p-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity">
+            <Button variant="ghost" size="sm" onclick={() => promptDeleteCategory(category.id!)} class="size-6 p-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity">
               <Trash2 class="size-3.5" />
             </Button>
           </div>
@@ -435,3 +445,19 @@
     </main>
   </div>
 </div>
+
+<!-- Delete Category Confirmation Dialog -->
+<Dialog.Root bind:open={isDeleteCategoryModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>Delete Category</Dialog.Title>
+    </Dialog.Header>
+    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
+      Are you sure you want to delete this category? Leads assigned to this category will not be deleted from your database, but they will be unassigned from this category.
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" size="sm" onclick={() => isDeleteCategoryModalOpen = false}>Cancel</Button>
+      <Button variant="destructive" size="sm" onclick={confirmDeleteCategory}>Delete Category</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

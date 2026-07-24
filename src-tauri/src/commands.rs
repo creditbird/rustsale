@@ -1184,7 +1184,18 @@ pub async fn verify_zalo_session(
             .ok_or_else(|| format!("Session with IMEI {} not found", imei))?
     };
 
-    verify_zalo_session_internal(session).await
+    let status = verify_zalo_session_internal(session).await?;
+    if status.is_valid {
+        if let Ok(conn) = state.conn.lock() {
+            let _ = crate::db::update_zalo_session_profile(
+                &conn,
+                &imei,
+                status.display_name.as_deref(),
+                status.avatar.as_deref(),
+            );
+        }
+    }
+    Ok(status)
 }
 
 pub async fn verify_zalo_session_internal(
@@ -1196,8 +1207,8 @@ pub async fn verify_zalo_session_internal(
             return Ok(ZaloSessionStatus {
                 imei: session.imei,
                 is_valid: false,
-                display_name: None,
-                avatar: None,
+                display_name: session.display_name,
+                avatar: session.avatar,
                 error_message: Some(format!("Invalid cookies format: {}", e)),
             });
         }
@@ -1207,8 +1218,8 @@ pub async fn verify_zalo_session_internal(
     match zca_rs::Zalo::login(session.imei.clone(), session.user_agent.clone(), cookies, options).await {
         Ok(zalo) => match zalo.fetch_account_info().await {
             Ok(info) => {
-                let name = info.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let avatar = info.get("avatar").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let name = info.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).or(session.display_name);
+                let avatar = info.get("avatar").and_then(|v| v.as_str()).map(|s| s.to_string()).or(session.avatar);
                 Ok(ZaloSessionStatus {
                     imei: session.imei,
                     is_valid: true,
@@ -1220,16 +1231,16 @@ pub async fn verify_zalo_session_internal(
             Err(e) => Ok(ZaloSessionStatus {
                 imei: session.imei,
                 is_valid: false,
-                display_name: None,
-                avatar: None,
+                display_name: session.display_name,
+                avatar: session.avatar,
                 error_message: Some(format!("Failed to fetch account profile: {}", e)),
             }),
         },
         Err(e) => Ok(ZaloSessionStatus {
             imei: session.imei,
             is_valid: false,
-            display_name: None,
-            avatar: None,
+            display_name: session.display_name,
+            avatar: session.avatar,
             error_message: Some(format!("Login failed: {}", e)),
         }),
     }
@@ -1249,9 +1260,30 @@ pub async fn verify_all_zalo_sessions(
 
     let mut results = Vec::new();
     for session in sessions {
+        let imei = session.imei.clone();
         match verify_zalo_session_internal(session).await {
-            Ok(status) => results.push(status),
-            Err(e) => eprintln!("Session verification error: {}", e),
+            Ok(status) => {
+                if status.is_valid {
+                    if let Ok(conn) = state.conn.lock() {
+                        let _ = crate::db::update_zalo_session_profile(
+                            &conn,
+                            &imei,
+                            status.display_name.as_deref(),
+                            status.avatar.as_deref(),
+                        );
+                    }
+                }
+                results.push(status);
+            }
+            Err(e) => {
+                results.push(ZaloSessionStatus {
+                    imei: imei.clone(),
+                    is_valid: false,
+                    display_name: None,
+                    avatar: None,
+                    error_message: Some(e),
+                });
+            }
         }
     }
     Ok(results)

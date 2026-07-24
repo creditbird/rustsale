@@ -18,6 +18,8 @@
     user_agent: string;
     cookies_json: string;
     language: string;
+    display_name?: string | null;
+    avatar?: string | null;
   }
 
   interface ZaloSessionStatus {
@@ -28,14 +30,6 @@
     error_message?: string;
   }
 
-  interface SessionStatusInfo {
-    checking: boolean;
-    valid: boolean | null;
-    displayName?: string;
-    avatar?: string;
-    error?: string;
-  }
-
   interface OutreachTemplate {
     id?: number;
     name: string;
@@ -44,26 +38,30 @@
   }
 
   let sessions = $state<ZaloSession[]>([]);
-  let templates = $state<OutreachTemplate[]>([]);
-  let leads = $state<Lead[]>([]);
-  let leadSearchQuery = $state('');
-
-  let sessionStatuses = $state<Record<string, SessionStatusInfo>>({});
+  let sessionStatuses = $state<Record<string, { valid: boolean | null; checking: boolean; displayName?: string; avatar?: string; error?: string }>>({});
+  let selectedImeis = $state<string[]>([]);
   let isVerifyingAll = $state(false);
 
-  let selectedImeis = $state<string[]>([]);
+  let templates = $state<OutreachTemplate[]>([]);
   let selectedTemplateId = $state<number | null>(null);
-  let selectedLeadIds = $state<number[]>([]);
 
+  let leads = $state<Lead[]>([]);
   let categories = $state<Category[]>([]);
   let selectedCategoryId = $state<number | null>(null);
+  let selectedLeadIds = $state<number[]>([]);
+
   let segmentationFilter = $state('all');
   let filterTemplateId = $state<number | null>(null);
+
+  let leadSearchQuery = $state('');
+  let filterVerifiedZalo = $state(false);
+  let filterUnreached = $state(false);
+  let filterMobileOnly = $state(false);
 
   let isQrModalOpen = $state(false);
   let qrImage = $state<string | null>(null);
   let qrUser = $state<{ avatar: string; display_name: string } | null>(null);
-  let qrStatus = $state('Initializing login...');
+  let qrStatus = $state('Initializing Zalo QR code...');
   let qrError = $state<string | null>(null);
 
   let isTemplateModalOpen = $state(false);
@@ -72,21 +70,37 @@
   let templateContent = $state('');
   let templateError = $state<string | null>(null);
 
+  let isDeleteSessionModalOpen = $state(false);
+  let sessionToDelete = $state<ZaloSession | null>(null);
+  let isDeletingSession = $state(false);
+
+  let isDeleteTemplateModalOpen = $state(false);
+  let templateToDelete = $state<OutreachTemplate | null>(null);
+  let isDeletingTemplate = $state(false);
+
   let isCampaignRunning = $state(false);
   let campaignProgress = $state(0);
   let campaignStatus = $state('Idle');
   let campaignLogs = $state<string[]>([]);
-  let campaignConsoleElement: HTMLDivElement | null = null;
+  let consoleElement: HTMLDivElement | null = null;
 
   let qrUnlistens: UnlistenFn[] = [];
   let campaignUnlistens: UnlistenFn[] = [];
 
   let filteredLeads = $derived(
-    leads.filter(lead => 
-      (lead.name || '').toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
-      (lead.company || '').toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
-      (lead.phone || '').includes(leadSearchQuery)
-    )
+    leads.filter(lead => {
+      const q = leadSearchQuery.toLowerCase().trim();
+      if (q) {
+        const matchesName = (lead.name || '').toLowerCase().includes(q);
+        const matchesCompany = (lead.company || '').toLowerCase().includes(q);
+        const matchesPhone = (lead.phone || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesCompany && !matchesPhone) return false;
+      }
+      if (filterVerifiedZalo && lead.has_zalo !== 1) return false;
+      if (filterUnreached && lead.zalo_reached === 1) return false;
+      if (filterMobileOnly && !lead.phone) return false;
+      return true;
+    })
   );
 
   let isAllLeadsSelected = $derived(
@@ -94,12 +108,20 @@
     filteredLeads.every(lead => lead.id && selectedLeadIds.includes(lead.id))
   );
 
-  function getSessionDisplayName(imei: string): string {
-    const status = sessionStatuses[imei];
+  function getSessionDisplayName(s: { imei: string; display_name?: string | null }): string {
+    const status = sessionStatuses[s.imei];
     if (status?.displayName && status.displayName.trim()) {
       return status.displayName;
     }
-    return `Zalo (${imei.slice(0, 8)}...)`;
+    if (s.display_name && s.display_name.trim()) {
+      return s.display_name;
+    }
+    return `Zalo (${s.imei.slice(0, 8)}...)`;
+  }
+
+  function getSessionAvatar(s: { imei: string; avatar?: string | null }): string | null | undefined {
+    const status = sessionStatuses[s.imei];
+    return status?.avatar || s.avatar;
   }
 
   async function loadSessions(): Promise<boolean> {
@@ -182,6 +204,7 @@
         avatar: res?.avatar,
         error: res?.error_message
       };
+      await loadSessions();
     } catch (e) {
       sessionStatuses[imei] = { checking: false, valid: false, error: String(e) };
     }
@@ -206,6 +229,7 @@
           };
         }
       }
+      await loadSessions();
     } catch (e) {
       console.error('Error verifying all sessions:', e);
     } finally {
@@ -246,32 +270,55 @@
 
       const scannedUnlisten = await listen<{ avatar: string; display_name: string }>('zalo-qr-scanned', (event) => {
         qrUser = { avatar: event.payload.avatar, display_name: event.payload.display_name };
-        qrStatus = 'QR Code Scanned! Confirm on phone.';
+        qrStatus = `Scanned by ${event.payload.display_name}! Confirm on phone...`;
       });
       qrUnlistens.push(scannedUnlisten);
 
-      const successUnlisten = await listen<{ imei: string }>('zalo-qr-success', async () => {
+      const successUnlisten = await listen<{ imei: string }>('zalo-qr-success', async (event) => {
         qrStatus = 'Login successful!';
-        await loadSessions();
-        closeQrModal();
+        setTimeout(async () => {
+          isQrModalOpen = false;
+          cleanupQrListeners();
+          await loadSessions();
+          verifySession(event.payload.imei);
+        }, 1000);
       });
       qrUnlistens.push(successUnlisten);
 
+      const errorUnlisten = await listen<{ message: string }>('zalo-qr-error', (event) => {
+        qrError = event.payload.message;
+        qrStatus = 'Login failed.';
+      });
+      qrUnlistens.push(errorUnlisten);
+
       await invoke('start_zalo_qr_login');
     } catch (e) {
-      qrError = `Failed: ${e}`;
+      qrError = String(e);
+      qrStatus = 'Failed to start QR login.';
     }
   }
 
   function closeQrModal() { isQrModalOpen = false; cleanupQrListeners(); }
 
-  async function deleteSession(imei: string) {
-    if (!confirm('Logout and delete session?')) return;
+  function promptDeleteSession(session: ZaloSession) {
+    sessionToDelete = session;
+    isDeleteSessionModalOpen = true;
+  }
+
+  async function confirmDeleteSession() {
+    if (!sessionToDelete) return;
+    isDeletingSession = true;
     try {
-      await invoke('delete_zalo_session', { imei });
-      selectedImeis = selectedImeis.filter(i => i !== imei);
+      await invoke('delete_zalo_session', { imei: sessionToDelete.imei });
+      selectedImeis = selectedImeis.filter(i => i !== sessionToDelete?.imei);
       await loadSessions();
-    } catch (e) { alert(`Error: ${e}`); }
+      isDeleteSessionModalOpen = false;
+      sessionToDelete = null;
+    } catch (e) {
+      alert(`Error deleting session: ${e}`);
+    } finally {
+      isDeletingSession = false;
+    }
   }
 
   function openCreateTemplate() {
@@ -306,13 +353,25 @@
     } catch (e) { templateError = String(e); }
   }
 
-  async function deleteTemplate(id: number) {
-    if (!confirm('Delete template?')) return;
+  function promptDeleteTemplate(template: OutreachTemplate) {
+    templateToDelete = template;
+    isDeleteTemplateModalOpen = true;
+  }
+
+  async function confirmDeleteTemplate() {
+    if (!templateToDelete || !templateToDelete.id) return;
+    isDeletingTemplate = true;
     try {
-      await invoke('delete_outreach_template', { id });
-      if (selectedTemplateId === id) selectedTemplateId = null;
+      await invoke('delete_outreach_template', { id: templateToDelete.id });
+      if (selectedTemplateId === templateToDelete.id) selectedTemplateId = null;
       await loadTemplates();
-    } catch (e) { alert(String(e)); }
+      isDeleteTemplateModalOpen = false;
+      templateToDelete = null;
+    } catch (e) {
+      alert(`Error deleting template: ${e}`);
+    } finally {
+      isDeletingTemplate = false;
+    }
   }
 
   function toggleLead(id: number) {
@@ -320,86 +379,61 @@
     else selectedLeadIds = [...selectedLeadIds, id];
   }
 
-  function toggleSelectAll() {
-    const ids = filteredLeads.map(l => l.id).filter((id): id is number => !!id);
-    if (ids.every(id => selectedLeadIds.includes(id))) {
-      selectedLeadIds = selectedLeadIds.filter(id => !ids.includes(id));
+  function toggleSelectAllLeads() {
+    if (isAllLeadsSelected) {
+      const filteredIds = new Set(filteredLeads.map(l => l.id));
+      selectedLeadIds = selectedLeadIds.filter(id => !filteredIds.has(id));
     } else {
-      const rest = selectedLeadIds.filter(id => !ids.includes(id));
-      selectedLeadIds = [...rest, ...ids];
+      const newIds = new Set(selectedLeadIds);
+      filteredLeads.forEach(l => { if (l.id != null) newIds.add(l.id); });
+      selectedLeadIds = Array.from(newIds);
     }
-  }
-
-  function selectVerifiedZalo() {
-    const verifiedIds = filteredLeads.filter(l => l.has_zalo === 1).map(l => l.id).filter((id): id is number => !!id);
-    const otherSelected = selectedLeadIds.filter(id => !verifiedIds.includes(id));
-    selectedLeadIds = [...otherSelected, ...verifiedIds];
-  }
-
-  function selectUnreached() {
-    const unreachedIds = filteredLeads.filter(l => l.zalo_reached === 0 || l.zalo_reached === null || l.zalo_reached === undefined).map(l => l.id).filter((id): id is number => !!id);
-    const otherSelected = selectedLeadIds.filter(id => !unreachedIds.includes(id));
-    selectedLeadIds = [...otherSelected, ...unreachedIds];
-  }
-
-  function isVnMobile(phone: string | null | undefined): boolean {
-    if (!phone) return false;
-    const match = phone.match(/[^0-9\s+\-().,\[\]]/);
-    const phonePart = match && match.index !== undefined ? phone.substring(0, match.index) : phone;
-    const digits = phonePart.replace(/\D/g, '');
-    let normalized = digits;
-    if (digits.startsWith('0084')) normalized = '0' + digits.slice(4);
-    else if (digits.startsWith('84')) normalized = '0' + digits.slice(2);
-    if (normalized.length !== 10) return false;
-    return ['03', '05', '07', '08', '09'].includes(normalized.slice(0, 2));
-  }
-
-  function selectMobileOnly() {
-    const mobileIds = filteredLeads.filter(l => isVnMobile(l.phone)).map(l => l.id).filter((id): id is number => !!id);
-    const otherSelected = selectedLeadIds.filter(id => !mobileIds.includes(id));
-    selectedLeadIds = [...otherSelected, ...mobileIds];
   }
 
   function appendCampaignLog(msg: string) {
     const timestamp = new Date().toLocaleTimeString();
     campaignLogs = [...campaignLogs, `[${timestamp}] ${msg}`];
-    setTimeout(() => { if (campaignConsoleElement) campaignConsoleElement.scrollTop = campaignConsoleElement.scrollHeight; }, 50);
+    setTimeout(() => {
+      if (consoleElement) consoleElement.scrollTop = consoleElement.scrollHeight;
+    }, 50);
   }
 
   async function startCampaign() {
-    if (selectedImeis.length === 0 || selectedCategoryId === null || selectedTemplateId === null || selectedLeadIds.length === 0) return;
+    if (selectedImeis.length === 0 || !selectedTemplateId || selectedLeadIds.length === 0) return;
 
     isCampaignRunning = true;
     campaignProgress = 0;
-    campaignStatus = 'Starting Zalo campaign...';
+    campaignStatus = 'Starting Zalo outreach campaign...';
     campaignLogs = [];
-    appendCampaignLog(`Starting Zalo campaign to ${selectedLeadIds.length} leads...`);
+    appendCampaignLog(`Starting Zalo Campaign to ${selectedLeadIds.length} leads using ${selectedImeis.length} session(s)...`);
 
     cleanupCampaignListeners();
 
     try {
-      const progressUnlisten = await listen<{ progress: number; status: string; message: string }>('campaign-progress', (event) => {
+      const progressUnlisten = await listen<{ progress: number; status: string; message: string }>('outreach-progress', (event) => {
         campaignProgress = event.payload.progress;
         campaignStatus = event.payload.message;
         if (event.payload.status === 'failed') isCampaignRunning = false;
       });
       campaignUnlistens.push(progressUnlisten);
 
-      const logUnlisten = await listen<{ message: string }>('campaign-log', (e) => appendCampaignLog(e.payload.message));
+      const logUnlisten = await listen<{ message: string }>('outreach-log', (event) => {
+        appendCampaignLog(event.payload.message);
+      });
       campaignUnlistens.push(logUnlisten);
 
-      const completeUnlisten = await listen<{ total_sent: number; message: string }>('campaign-complete', (e) => {
+      const completeUnlisten = await listen<{ total_sent: number; message: string }>('outreach-complete', (event) => {
         isCampaignRunning = false;
         campaignProgress = 100;
-        campaignStatus = e.payload.message;
-        appendCampaignLog(`[COMPLETE] ${e.payload.message}`);
+        campaignStatus = event.payload.message;
+        appendCampaignLog(`[COMPLETE] ${event.payload.message}`);
       });
       campaignUnlistens.push(completeUnlisten);
 
-      await invoke('send_zalo_campaign', {
-        categoryId: selectedCategoryId,
-        sessionImeis: selectedImeis,
-        templateId: selectedTemplateId
+      await invoke('start_zalo_outreach', {
+        imeis: selectedImeis,
+        templateId: selectedTemplateId,
+        leadIds: selectedLeadIds
       });
     } catch (e) {
       isCampaignRunning = false;
@@ -409,7 +443,7 @@
 </script>
 
 <div class="flex flex-col gap-4">
-  <!-- Header Bar -->
+  <!-- Top Header Bar -->
   <div class="flex items-center justify-between">
     <div class="flex flex-col">
       <h2 class="text-xl font-bold text-foreground tracking-tight">Zalo Outreach Manager</h2>
@@ -417,7 +451,7 @@
     </div>
   </div>
 
-  <!-- Layout Grid -->
+  <!-- Main Grid -->
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
     <!-- Left Column: Sessions & Templates -->
     <div class="lg:col-span-5 flex flex-col gap-4">
@@ -442,11 +476,12 @@
           {:else}
             {#each sessions as s (s.imei)}
               {@const status = sessionStatuses[s.imei]}
-              {@const displayName = getSessionDisplayName(s.imei)}
+              {@const displayName = getSessionDisplayName(s)}
+              {@const avatarUrl = getSessionAvatar(s)}
               <div class="flex items-center justify-between p-2 rounded-lg border border-border bg-card hover:bg-accent/40 transition-colors">
                 <div class="flex items-center gap-2.5 truncate">
-                  {#if status?.avatar}
-                    <img src={status.avatar} alt={displayName} class="size-8 rounded-full object-cover border border-emerald-500/30 shrink-0" />
+                  {#if avatarUrl}
+                    <img src={avatarUrl} alt={displayName} class="size-8 rounded-full object-cover border border-emerald-500/30 shrink-0" />
                   {:else}
                     <div class="size-8 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20 shrink-0">
                       {displayName[0].toUpperCase()}
@@ -468,7 +503,7 @@
                   <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => verifySession(s.imei)}>
                     <RefreshCw class="size-3 {status?.checking ? 'animate-spin' : ''}" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => deleteSession(s.imei)}>
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => promptDeleteSession(s)}>
                     <Trash2 class="size-3" />
                   </Button>
                 </div>
@@ -508,7 +543,7 @@
                   <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditTemplate(t); }}>
                     <Edit class="size-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); t.id && deleteTemplate(t.id); }}>
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); promptDeleteTemplate(t); }}>
                     <Trash2 class="size-3" />
                   </Button>
                 </div>
@@ -534,8 +569,8 @@
           <div class="flex flex-wrap gap-2 pt-1">
             {#each sessions as s (s.imei)}
               {@const isSelected = selectedImeis.includes(s.imei)}
-              {@const status = sessionStatuses[s.imei]}
-              {@const displayName = getSessionDisplayName(s.imei)}
+              {@const displayName = getSessionDisplayName(s)}
+              {@const avatarUrl = getSessionAvatar(s)}
               <label 
                 class="flex items-center gap-2.5 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}"
               >
@@ -550,8 +585,8 @@
                     }
                   }}
                 />
-                {#if status?.avatar}
-                  <img src={status.avatar} alt={displayName} class="size-6 rounded-full object-cover border border-emerald-500/30 shrink-0" />
+                {#if avatarUrl}
+                  <img src={avatarUrl} alt={displayName} class="size-6 rounded-full object-cover border border-emerald-500/30 shrink-0" />
                 {:else}
                   <div class="size-6 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-[10px] flex items-center justify-center border border-emerald-500/20 shrink-0">
                     {displayName[0].toUpperCase()}
@@ -653,21 +688,36 @@
             <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
             <div class="flex items-center gap-2">
               <Input type="text" placeholder="Filter leads..." bind:value={leadSearchQuery} class="h-7 w-32 text-[11px]" />
-              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAll}>
+              <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAllLeads}>
                 {isAllLeadsSelected ? 'Deselect All' : 'Select All'}
               </Button>
             </div>
           </div>
 
-          <!-- Quick Selection Helpers -->
+          <!-- Quick Helpers -->
           <div class="flex items-center justify-end gap-1.5">
-            <Button variant="outline" size="sm" onclick={selectVerifiedZalo} disabled={filteredLeads.filter(l => l.has_zalo === 1).length === 0} class="h-6 text-[10px] px-2">
+            <Button
+              variant={filterVerifiedZalo ? "default" : "outline"}
+              size="sm"
+              onclick={() => filterVerifiedZalo = !filterVerifiedZalo}
+              class="h-6 text-[10px] px-2"
+            >
               Verified Zalo
             </Button>
-            <Button variant="outline" size="sm" onclick={selectUnreached} disabled={filteredLeads.filter(l => l.zalo_reached === 0 || l.zalo_reached == null).length === 0} class="h-6 text-[10px] px-2">
+            <Button
+              variant={filterUnreached ? "default" : "outline"}
+              size="sm"
+              onclick={() => filterUnreached = !filterUnreached}
+              class="h-6 text-[10px] px-2"
+            >
               Unreached
             </Button>
-            <Button variant="outline" size="sm" onclick={selectMobileOnly} disabled={filteredLeads.filter(l => isVnMobile(l.phone)).length === 0} class="h-6 text-[10px] px-2">
+            <Button
+              variant={filterMobileOnly ? "default" : "outline"}
+              size="sm"
+              onclick={() => filterMobileOnly = !filterMobileOnly}
+              class="h-6 text-[10px] px-2"
+            >
               Mobile Only
             </Button>
           </div>
@@ -677,37 +727,28 @@
               {#if lead.id}
                 {@const isSelected = selectedLeadIds.includes(lead.id)}
                 <div 
-                  class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5' : ''}"
+                  class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5 font-semibold' : ''}"
                   onclick={() => lead.id && toggleLead(lead.id)}
                   role="button"
                   tabindex="0"
                   onkeydown={(e) => e.key === 'Enter' && lead.id && toggleLead(lead.id)}
                 >
                   <div class="flex items-center gap-2 truncate">
-                    <div onclick={(e) => e.stopPropagation()} role="none">
-                      <Checkbox 
-                        checked={isSelected} 
-                        disabled={isCampaignRunning}
-                        onCheckedChange={() => lead.id && toggleLead(lead.id)}
-                      />
-                    </div>
+                    <Checkbox 
+                      checked={isSelected}
+                      disabled={isCampaignRunning}
+                    />
                     <span class="font-medium text-foreground truncate">{lead.name}</span>
                     {#if lead.has_zalo === 1}
-                      <Badge variant="secondary" class="text-[9px] px-1 py-0 bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300">Zalo Verified</Badge>
-                    {:else if lead.has_zalo === 0}
-                      <Badge variant="outline" class="text-[9px] px-1 py-0 text-slate-400">No Zalo</Badge>
+                      <Badge variant="secondary" class="text-[9px] px-1 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/20">Zalo Verified</Badge>
                     {/if}
                   </div>
-                  <div class="flex items-center gap-2 shrink-0 text-[11px] text-muted-foreground">
-                    <span>{lead.phone || 'No phone'}</span>
-                    {#if !lead.phone || lead.phone.trim() === ''}
-                      <Badge variant="destructive" class="text-[9px] px-1 py-0">Missing</Badge>
-                    {:else if isVnMobile(lead.phone)}
-                      <Badge variant="default" class="text-[9px] px-1 py-0 bg-emerald-600">Mobile</Badge>
-                    {:else}
-                      <Badge variant="outline" class="text-[9px] px-1 py-0">Landline</Badge>
+                  <div class="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
+                    <span>{lead.phone}</span>
+                    {#if lead.phone && (lead.phone.startsWith('09') || lead.phone.startsWith('03') || lead.phone.startsWith('07') || lead.phone.startsWith('08') || lead.phone.startsWith('05'))}
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20">Mobile</Badge>
                     {/if}
-                    <span>• {lead.company || 'N/A'}</span>
+                    <span class="truncate max-w-[120px]">{lead.company}</span>
                   </div>
                 </div>
               {/if}
@@ -715,7 +756,7 @@
           </div>
         </div>
 
-        <!-- Progress & Execution Button -->
+        <!-- Action Button & Progress -->
         <div class="flex flex-col gap-3 pt-2 border-t border-border">
           <div class="flex items-center justify-between text-xs font-semibold">
             <span class="text-foreground">{campaignStatus}</span>
@@ -726,17 +767,17 @@
           <Button
             size="sm"
             onclick={startCampaign}
-            disabled={isCampaignRunning || selectedImeis.length === 0 || selectedCategoryId === null || selectedTemplateId === null || selectedLeadIds.length === 0}
+            disabled={isCampaignRunning || selectedImeis.length === 0 || !selectedTemplateId || selectedLeadIds.length === 0}
             class="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
           >
-            <Send class="size-4" /> {isCampaignRunning ? 'Running Campaign...' : 'Launch Zalo Campaign'}
+            <Send class="size-4" /> {isCampaignRunning ? 'Running Zalo Campaign...' : 'Launch Zalo Campaign'}
           </Button>
         </div>
 
-        <!-- Terminal Logs -->
-        <div class="min-h-[160px] max-h-[220px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto flex flex-col gap-1 border border-slate-800" bind:this={campaignConsoleElement}>
+        <!-- Terminal Output -->
+        <div class="min-h-[160px] max-h-[220px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto flex flex-col gap-1 border border-slate-800" bind:this={consoleElement}>
           {#if campaignLogs.length === 0}
-            <div class="text-slate-500 italic">Outreach console logs will show here dynamically...</div>
+            <div class="text-slate-500 italic">Outreach console logs will stream here dynamically...</div>
           {:else}
             {#each campaignLogs as log, index (index)}
               <div class="leading-relaxed border-b border-slate-900/60 pb-0.5">{log}</div>
@@ -792,6 +833,49 @@
     <Dialog.Footer class="gap-2">
       <Button variant="outline" size="sm" onclick={() => isTemplateModalOpen = false}>Cancel</Button>
       <Button size="sm" onclick={saveTemplate}>Save Template</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Delete Session Confirmation Dialog -->
+<Dialog.Root bind:open={isDeleteSessionModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>Logout & Delete Zalo Session</Dialog.Title>
+    </Dialog.Header>
+    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
+      Are you sure you want to log out and delete the session for
+      <strong class="text-foreground">{sessionToDelete ? getSessionDisplayName(sessionToDelete) : ''}</strong>?
+      This action will remove saved credentials from your system.
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" size="sm" onclick={() => isDeleteSessionModalOpen = false} disabled={isDeletingSession}>
+        Cancel
+      </Button>
+      <Button variant="destructive" size="sm" onclick={confirmDeleteSession} disabled={isDeletingSession}>
+        {isDeletingSession ? 'Deleting...' : 'Delete Session'}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Delete Template Confirmation Dialog -->
+<Dialog.Root bind:open={isDeleteTemplateModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>Delete Outreach Template</Dialog.Title>
+    </Dialog.Header>
+    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
+      Are you sure you want to delete template <strong class="text-foreground">{templateToDelete?.name}</strong>?
+      This action cannot be undone.
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" size="sm" onclick={() => isDeleteTemplateModalOpen = false} disabled={isDeletingTemplate}>
+        Cancel
+      </Button>
+      <Button variant="destructive" size="sm" onclick={confirmDeleteTemplate} disabled={isDeletingTemplate}>
+        {isDeletingTemplate ? 'Deleting...' : 'Delete Template'}
+      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

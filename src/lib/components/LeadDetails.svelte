@@ -6,6 +6,7 @@
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
   import * as Select from '$lib/components/ui/select';
+  import * as Dialog from '$lib/components/ui/dialog';
   import { 
     X, Edit2, Trash2, Save, Phone, Mail, Users, CheckCircle2, XCircle, 
     AlertCircle, Calendar, MessageSquare, Clock, MapPin, Building
@@ -75,15 +76,19 @@
     }
   }
 
-  async function handleDeleteLead() {
-    if (!lead) return;
-    const confirmDelete = confirm(`Are you sure you want to delete ${lead.name}?`);
-    if (!confirmDelete) return;
+  let isDeleteLeadModalOpen = $state(false);
 
+  function promptDeleteLead() {
+    isDeleteLeadModalOpen = true;
+  }
+
+  async function confirmDeleteLead() {
+    if (!lead) return;
     deletingLead = true;
     errorMsg = null;
     try {
       await crmService.deleteLead(leadId);
+      isDeleteLeadModalOpen = false;
       if (onRefresh) onRefresh();
       onClose();
     } catch (err) {
@@ -290,7 +295,7 @@
           </div>
 
           <div class="flex items-center justify-between pt-3 border-t border-border">
-            <Button type="button" variant="destructive" size="sm" onclick={handleDeleteLead} disabled={deletingLead} class="gap-1.5">
+            <Button type="button" variant="destructive" size="sm" onclick={promptDeleteLead} disabled={deletingLead} class="gap-1.5">
               <Trash2 class="w-3.5 h-3.5" />
               {deletingLead ? 'Deleting...' : 'Delete'}
             </Button>
@@ -393,3 +398,22 @@
     </div>
   {/if}
 </aside>
+
+<!-- Delete Lead Confirmation Dialog -->
+<Dialog.Root bind:open={isDeleteLeadModalOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>Delete Lead</Dialog.Title>
+    </Dialog.Header>
+    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
+      Are you sure you want to delete lead <strong class="text-foreground">{lead?.name}</strong>?
+      This action will remove the lead and all associated activity records permanently.
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" size="sm" onclick={() => isDeleteLeadModalOpen = false} disabled={deletingLead}>Cancel</Button>
+      <Button variant="destructive" size="sm" onclick={confirmDeleteLead} disabled={deletingLead}>
+        {deletingLead ? 'Deleting...' : 'Delete Lead'}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
