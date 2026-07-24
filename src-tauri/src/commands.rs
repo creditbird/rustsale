@@ -1038,24 +1038,43 @@ pub async fn start_zalo_qr_login(
                 };
 
                 let cookies = zalo.ctx.cookie_jar.to_vec();
+
+                let mut display_name = None;
+                let mut avatar = None;
+                if let Ok(info) = zalo.fetch_account_info().await {
+                    let (n, p, a) = extract_zalo_profile_info(&info);
+                    display_name = n.or(p);
+                    avatar = a;
+                }
+
                 match persist_authenticated_zalo_session(
                     &conn,
                     &zalo.ctx.imei,
                     &zalo.ctx.user_agent,
                     &cookies,
                 ) {
-                    Ok(payload) => match serde_json::to_value(payload) {
-                        Ok(payload) => {
-                            let _ = app_handle_clone.emit("zalo-qr-success", payload);
-                        }
-                        Err(error) => {
-                            eprintln!("Failed to serialize Zalo QR success event: {}", error);
-                            emit_zalo_qr_error(
-                                &app_handle_clone,
-                                "Zalo login succeeded, but the session could not be saved. Please try again.",
+                    Ok(payload) => {
+                        if display_name.is_some() || avatar.is_some() {
+                            let _ = crate::db::update_zalo_session_profile(
+                                &conn,
+                                &zalo.ctx.imei,
+                                display_name.as_deref(),
+                                avatar.as_deref(),
                             );
                         }
-                    },
+                        match serde_json::to_value(payload) {
+                            Ok(payload) => {
+                                let _ = app_handle_clone.emit("zalo-qr-success", payload);
+                            }
+                            Err(error) => {
+                                eprintln!("Failed to serialize Zalo QR success event: {}", error);
+                                emit_zalo_qr_error(
+                                    &app_handle_clone,
+                                    "Zalo login succeeded, but the session could not be saved. Please try again.",
+                                );
+                            }
+                        }
+                    }
                     Err(error) => {
                         eprintln!("Failed to persist Zalo session: {}", error);
                         emit_zalo_qr_error(
@@ -1198,6 +1217,37 @@ pub async fn verify_zalo_session(
     Ok(status)
 }
 
+fn extract_zalo_profile_info(val: &serde_json::Value) -> (Option<String>, Option<String>, Option<String>) {
+    let target = val.get("data").unwrap_or(val);
+
+    let name = target.get("zName")
+        .or_else(|| target.get("dpName"))
+        .or_else(|| target.get("name"))
+        .or_else(|| target.get("display_name"))
+        .or_else(|| target.get("username"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let phone = target.get("phone")
+        .or_else(|| target.get("phoneNumber"))
+        .or_else(|| target.get("mobile"))
+        .or_else(|| target.get("sdT"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let avatar = target.get("avatar_240")
+        .or_else(|| target.get("avatar_120"))
+        .or_else(|| target.get("avatar"))
+        .or_else(|| target.get("avatarUrl"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    (name, phone, avatar)
+}
+
 pub async fn verify_zalo_session_internal(
     session: crate::models::ZaloSession,
 ) -> Result<ZaloSessionStatus, String> {
@@ -1218,12 +1268,14 @@ pub async fn verify_zalo_session_internal(
     match zca_rs::Zalo::login(session.imei.clone(), session.user_agent.clone(), cookies, options).await {
         Ok(zalo) => match zalo.fetch_account_info().await {
             Ok(info) => {
-                let name = info.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).or(session.display_name);
-                let avatar = info.get("avatar").and_then(|v| v.as_str()).map(|s| s.to_string()).or(session.avatar);
+                let (name, phone, avatar) = extract_zalo_profile_info(&info);
+                let display_name = name.or(phone).or(session.display_name);
+                let avatar = avatar.or(session.avatar);
+
                 Ok(ZaloSessionStatus {
                     imei: session.imei,
                     is_valid: true,
-                    display_name: name,
+                    display_name,
                     avatar,
                     error_message: None,
                 })
