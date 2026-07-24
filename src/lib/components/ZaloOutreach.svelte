@@ -11,6 +11,22 @@
     language: string;
   }
 
+  interface ZaloSessionStatus {
+    imei: string;
+    is_valid: boolean;
+    display_name?: string;
+    avatar?: string;
+    error_message?: string;
+  }
+
+  interface SessionStatusInfo {
+    checking: boolean;
+    valid: boolean | null;
+    displayName?: string;
+    avatar?: string;
+    error?: string;
+  }
+
   interface OutreachTemplate {
     id?: number;
     name: string;
@@ -23,6 +39,9 @@
   let templates = $state<OutreachTemplate[]>([]);
   let leads = $state<Lead[]>([]);
   let leadSearchQuery = $state('');
+
+  let sessionStatuses = $state<Record<string, SessionStatusInfo>>({});
+  let isVerifyingAll = $state(false);
 
   // Selected campaign parameters
   let selectedImeis = $state<string[]>([]);
@@ -77,14 +96,16 @@
   );
 
   // Fetch initial data
-  async function loadSessions() {
+  async function loadSessions(): Promise<boolean> {
     try {
       sessions = await invoke<ZaloSession[]>('get_zalo_sessions');
       if (sessions.length > 0 && selectedImeis.length === 0) {
         selectedImeis = [sessions[0].imei];
       }
+      return true;
     } catch (e) {
       console.error('Error loading Zalo sessions:', e);
+      return false;
     }
   }
 
@@ -132,9 +153,68 @@
     }
   });
 
-  onMount(() => {
+  async function verifySession(imei: string) {
+    sessionStatuses[imei] = {
+      ...sessionStatuses[imei],
+      checking: true,
+      valid: null
+    };
+    try {
+      const res = await invoke<ZaloSessionStatus>('verify_zalo_session', { imei });
+      sessionStatuses[imei] = {
+        checking: false,
+        valid: res ? res.is_valid : false,
+        displayName: res?.display_name,
+        avatar: res?.avatar,
+        error: res?.error_message
+      };
+    } catch (e) {
+      sessionStatuses[imei] = {
+        checking: false,
+        valid: false,
+        error: String(e)
+      };
+    }
+  }
+
+  async function verifyAllSessions() {
+    if (sessions.length === 0) return;
+    isVerifyingAll = true;
+    for (const s of sessions) {
+      sessionStatuses[s.imei] = {
+        ...sessionStatuses[s.imei],
+        checking: true
+      };
+    }
+    try {
+      const results = await invoke<ZaloSessionStatus[]>('verify_all_zalo_sessions') || [];
+      if (Array.isArray(results)) {
+        for (const res of results) {
+          sessionStatuses[res.imei] = {
+            checking: false,
+            valid: res.is_valid,
+            displayName: res.display_name,
+            avatar: res.avatar,
+            error: res.error_message
+          };
+        }
+      }
+    } catch (e) {
+      console.error('Error verifying all sessions:', e);
+      for (const s of sessions) {
+        if (sessionStatuses[s.imei]?.checking) {
+          sessionStatuses[s.imei] = { checking: false, valid: false, error: 'Verification failed' };
+        }
+      }
+    } finally {
+      isVerifyingAll = false;
+    }
+  }
+
+  onMount(async () => {
     loadCategories();
-    loadSessions();
+    await loadSessions();
+    verifyAllSessions();
     loadTemplates();
     loadLeadsData();
   });
@@ -189,14 +269,28 @@
       qrUnlistens.push(scannedUnlisten);
 
       const successUnlisten = await listen<{ imei: string }>('zalo-qr-success', async (event) => {
-        qrStatus = 'Login successful!';
+        qrStatus = 'Login successful. Loading your session...';
         qrImage = null;
-        await loadSessions();
-        setTimeout(() => {
-          closeQrModal();
-        }, 1500);
+        const sessionsLoaded = await loadSessions();
+        const sessionSaved = sessions.some((session) => session.imei === event.payload.imei);
+
+        if (!sessionsLoaded || !sessionSaved) {
+          qrStatus = 'Session unavailable';
+          qrError = 'Zalo confirmed the scan, but the session could not be loaded. Please try again.';
+          return;
+        }
+
+        closeQrModal();
       });
       qrUnlistens.push(successUnlisten);
+
+      const errorUnlisten = await listen<{ message: string }>('zalo-qr-error', (event) => {
+        qrImage = null;
+        qrStatus = 'Login failed';
+        qrError = event.payload.message;
+        cleanupQrListeners();
+      });
+      qrUnlistens.push(errorUnlisten);
 
       const expiredUnlisten = await listen('zalo-qr-expired', () => {
         qrStatus = 'QR Code expired. Retrying...';
@@ -471,10 +565,16 @@
       <div class="card session-card">
         <div class="card-header">
           <h2>Zalo Sessions</h2>
-          <button type="button" class="add-session-btn" onclick={openQrLogin}>
-            <span class="material-icons">qr_code_scanner</span>
-            Add Session
-          </button>
+          <div style="display: flex; gap: var(--spacing-xs); align-items: center;">
+            <button type="button" class="add-session-btn" onclick={verifyAllSessions} disabled={isVerifyingAll || sessions.length === 0} title="Kiểm tra tất cả">
+              <span class="material-icons" class:spinning={isVerifyingAll}>sync</span>
+              Kiểm tra tất cả
+            </button>
+            <button type="button" class="add-session-btn" onclick={openQrLogin}>
+              <span class="material-icons">qr_code_scanner</span>
+              Add Session
+            </button>
+          </div>
         </div>
 
         <div class="sessions-list">
@@ -486,15 +586,34 @@
             {#each sessions as s}
               <div class="session-item" class:selected={selectedImeis.includes(s.imei)}>
                 <button type="button" class="session-info" onclick={() => { if (selectedImeis.includes(s.imei)) selectedImeis = selectedImeis.filter(i => i !== s.imei); else selectedImeis = [...selectedImeis, s.imei]; }}>
-                  <span class="material-icons status-icon active">check_circle</span>
+                  {#if sessionStatuses[s.imei]?.checking}
+                    <span class="material-icons status-icon spinning" title="Đang kiểm tra...">sync</span>
+                  {:else if sessionStatuses[s.imei]?.valid === true}
+                    <span class="material-icons status-icon active" style="color: var(--color-success);" title="Phiên đang hoạt động">check_circle</span>
+                  {:else if sessionStatuses[s.imei]?.valid === false}
+                    <span class="material-icons status-icon" style="color: var(--color-danger);" title="Phiên đã hết hạn hoặc lỗi: {sessionStatuses[s.imei]?.error || 'Phiên không hợp lệ'}">error</span>
+                  {:else}
+                    <span class="material-icons status-icon">account_circle</span>
+                  {/if}
                   <span class="session-details">
-                    <span class="session-name">IMEI: {s.imei}</span>
+                    <span class="session-name">
+                      {#if sessionStatuses[s.imei]?.displayName}
+                        {sessionStatuses[s.imei].displayName} <span style="font-weight: normal; opacity: 0.8; font-size: 11px;">({s.imei})</span>
+                      {:else}
+                        IMEI: {s.imei}
+                      {/if}
+                    </span>
                     <span class="session-ua">{(s.user_agent || '').substring(0, 40)}...</span>
                   </span>
                 </button>
-                <button type="button" class="delete-btn" onclick={() => deleteSession(s.imei)} title="Delete Session">
-                  <span class="material-icons">delete</span>
-                </button>
+                <div style="display: flex; gap: 2px;">
+                  <button type="button" class="action-btn" onclick={() => verifySession(s.imei)} title="Kiểm tra phiên" disabled={sessionStatuses[s.imei]?.checking}>
+                    <span class="material-icons" class:spinning={sessionStatuses[s.imei]?.checking}>refresh</span>
+                  </button>
+                  <button type="button" class="delete-btn" onclick={() => deleteSession(s.imei)} title="Delete Session">
+                    <span class="material-icons">delete</span>
+                  </button>
+                </div>
               </div>
             {/each}
           {/if}
@@ -1690,6 +1809,10 @@
   }
 
   /* Spinners */
+  .spinning {
+    animation: spin 0.8s linear infinite;
+  }
+
   .spinner {
     width: 16px;
     height: 16px;
