@@ -6,6 +6,7 @@
   import KanbanBoard from '$lib/components/KanbanBoard.svelte';
   import GoogleMapsScraper from '$lib/components/GoogleMapsScraper.svelte';
   import ZaloOutreach from '$lib/components/ZaloOutreach.svelte';
+  import EmailOutreach from '$lib/components/EmailOutreach.svelte';
   import CategoryManager from '$lib/components/CategoryManager.svelte';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
@@ -62,6 +63,9 @@
       </div>
       <div class:hidden={activeTab !== 'outreach'}>
         <ZaloOutreach />
+      </div>
+      <div class:hidden={activeTab !== 'email_outreach'}>
+        <EmailOutreach />
       </div>
     </div>
   </main>

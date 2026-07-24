@@ -7,6 +7,7 @@
     { id: 'leads', label: 'Leads', icon: 'person_search' },
     { id: 'categories', label: 'Category Manager', icon: 'category' },
     { id: 'outreach', label: 'Zalo Outreach', icon: 'campaign' },
+    { id: 'email_outreach', label: 'Email Outreach', icon: 'mail' },
     { id: 'pipeline', label: 'Deal Pipeline', icon: 'view_kanban' },
     { id: 'contacts', label: 'Contacts', icon: 'contacts' }
   ];

@@ -7,6 +7,7 @@ test('renders Sidebar with CRM logo and options', () => {
   render(Sidebar, { props: { activeTab: 'dashboard' } });
   expect(screen.getByText('RustSale Pro')).toBeTruthy();
   expect(screen.getByText('Dashboard')).toBeTruthy();
+  expect(screen.getByText('Email Outreach')).toBeTruthy();
 });
 
 test('updates activeTab on navigation item click', async () => {
@@ -18,7 +19,7 @@ test('updates activeTab on navigation item click', async () => {
     }
   });
 
-  const leadsButton = screen.getByText('Leads');
-  await fireEvent.click(leadsButton);
-  expect(activeTab).toBe('leads');
+  const emailButton = screen.getByText('Email Outreach');
+  await fireEvent.click(emailButton);
+  expect(activeTab).toBe('email_outreach');
 });
