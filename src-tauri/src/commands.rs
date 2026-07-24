@@ -1024,6 +1024,16 @@ pub async fn start_zalo_qr_login(
         let options = zca_rs::Options::default();
         match zca_rs::Zalo::login_qr(options, callback).await {
             Ok(zalo) => {
+                let cookies = zalo.ctx.cookie_jar.to_vec();
+
+                let mut display_name = None;
+                let mut avatar = None;
+                if let Ok(info) = zalo.fetch_account_info().await {
+                    let (n, p, a) = extract_zalo_profile_info(&info);
+                    display_name = n.or(p);
+                    avatar = a;
+                }
+
                 let db_state = app_handle_clone.state::<DbState>();
                 let conn = match db_state.conn.lock() {
                     Ok(conn) => conn,
@@ -1036,16 +1046,6 @@ pub async fn start_zalo_qr_login(
                         return;
                     }
                 };
-
-                let cookies = zalo.ctx.cookie_jar.to_vec();
-
-                let mut display_name = None;
-                let mut avatar = None;
-                if let Ok(info) = zalo.fetch_account_info().await {
-                    let (n, p, a) = extract_zalo_profile_info(&info);
-                    display_name = n.or(p);
-                    avatar = a;
-                }
 
                 match persist_authenticated_zalo_session(
                     &conn,
@@ -1266,28 +1266,26 @@ pub async fn verify_zalo_session_internal(
 
     let options = zca_rs::Options::default();
     match zca_rs::Zalo::login(session.imei.clone(), session.user_agent.clone(), cookies, options).await {
-        Ok(zalo) => match zalo.fetch_account_info().await {
-            Ok(info) => {
-                let (name, phone, avatar) = extract_zalo_profile_info(&info);
-                let display_name = name.or(phone).or(session.display_name);
-                let avatar = avatar.or(session.avatar);
+        Ok(zalo) => {
+            let (name, phone, avatar) = match zalo.fetch_account_info().await {
+                Ok(info) => extract_zalo_profile_info(&info),
+                Err(e) => {
+                    eprintln!("fetch_account_info error for IMEI {}: {:?}", session.imei, e);
+                    (None, None, None)
+                }
+            };
 
-                Ok(ZaloSessionStatus {
-                    imei: session.imei,
-                    is_valid: true,
-                    display_name,
-                    avatar,
-                    error_message: None,
-                })
-            }
-            Err(e) => Ok(ZaloSessionStatus {
+            let display_name = name.or(phone).or(session.display_name);
+            let avatar = avatar.or(session.avatar);
+
+            Ok(ZaloSessionStatus {
                 imei: session.imei,
-                is_valid: false,
-                display_name: session.display_name,
-                avatar: session.avatar,
-                error_message: Some(format!("Failed to fetch account profile: {}", e)),
-            }),
-        },
+                is_valid: true,
+                display_name,
+                avatar,
+                error_message: None,
+            })
+        }
         Err(e) => Ok(ZaloSessionStatus {
             imei: session.imei,
             is_valid: false,
