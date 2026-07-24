@@ -253,7 +253,7 @@
       </div>
 
       <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
-        {#each categories as category (category.id)}
+        {#each categories as category, index (category.id ?? `cat-${index}`)}
           {@const isActive = activeCategoryId === category.id}
           <div class="group flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all {isActive ? 'bg-primary/10 text-primary font-semibold' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}">
             <button type="button" class="flex-1 flex items-center gap-2.5 text-left truncate cursor-pointer" onclick={() => activeCategoryId = category.id!}>
@@ -303,17 +303,15 @@
                 <Search class="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
                 <Input type="text" bind:value={categoryLeadsSearch} placeholder="Search lead name, company, phone..." class="h-8 pl-8 text-xs" />
               </div>
-              <Select.Root type="single" bind:value={filterCategoryStatus}>
-                <Select.Trigger class="h-8 text-xs min-w-[130px]">
-                  {filterCategoryStatus === 'all' || !filterCategoryStatus ? 'All Statuses' : filterCategoryStatus}
-                </Select.Trigger>
-                <Select.Content>
-                  <Select.Item value="all">All Statuses</Select.Item>
-                  {#each uniqueCategoryStatuses as st (st)}
-                    <Select.Item value={st}>{st}</Select.Item>
-                  {/each}
-                </Select.Content>
-              </Select.Root>
+              <select
+                bind:value={filterCategoryStatus}
+                class="h-8 text-xs border border-input bg-background rounded-lg px-2.5 py-1 text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
+              >
+                <option value="all">All Statuses</option>
+                {#each uniqueCategoryStatuses as st (st)}
+                  <option value={st}>{st}</option>
+                {/each}
+              </select>
             </div>
 
             <Table.Root>
@@ -322,7 +320,7 @@
                   <Table.Head class="w-10 text-center">
                     <div class="flex items-center justify-center">
                       <Checkbox 
-                        checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id && selectedToRemove.has(l.id))}
+                        checked={filteredCategoryLeads.length > 0 && filteredCategoryLeads.every(l => l.id != null && selectedToRemove.has(l.id))}
                         onCheckedChange={(checked) => toggleRemoveAll(Boolean(checked))}
                       />
                     </div>
@@ -334,17 +332,17 @@
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {#each filteredCategoryLeads as lead (lead.id)}
-                  {@const isSelected = lead.id ? selectedToRemove.has(lead.id) : false}
+                {#each filteredCategoryLeads as lead, index (lead.id ?? `cat-lead-${index}`)}
+                  {@const isSelected = lead.id != null ? selectedToRemove.has(lead.id) : false}
                   <Table.Row 
                     class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
-                    onclick={() => lead.id && toggleRemoveSelection(lead.id)}
+                    onclick={() => lead.id != null && toggleRemoveSelection(lead.id)}
                   >
                     <Table.Cell class="text-center">
                       <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
                         <Checkbox 
                           checked={isSelected}
-                          onCheckedChange={() => lead.id && toggleRemoveSelection(lead.id)}
+                          onCheckedChange={() => lead.id != null && toggleRemoveSelection(lead.id)}
                         />
                       </div>
                     </Table.Cell>
@@ -392,7 +390,7 @@
                   <Table.Head class="w-10 text-center">
                     <div class="flex items-center justify-center">
                       <Checkbox 
-                        checked={availableLeads.length > 0 && selectedToAdd.size === availableLeads.length}
+                        checked={availableLeads.length > 0 && availableLeads.every(l => l.id != null && selectedToAdd.has(l.id))}
                         onCheckedChange={(checked) => toggleAddAll(Boolean(checked))}
                       />
                     </div>
@@ -403,11 +401,11 @@
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {#each availableLeads as lead (lead.id)}
-                  {@const isSelected = lead.id ? selectedToAdd.has(lead.id) : false}
+                {#each availableLeads as lead, index (lead.id ?? `avail-lead-${index}`)}
+                  {@const isSelected = lead.id != null ? selectedToAdd.has(lead.id) : false}
                   <Table.Row 
                     class="hover:bg-muted/40 cursor-pointer transition-colors {isSelected ? 'bg-primary/5' : ''}"
-                    onclick={() => lead.id && toggleAddSelection(lead.id)}
+                    onclick={() => lead.id != null && toggleAddSelection(lead.id)}
                   >
                     <Table.Cell class="text-center">
                       <div class="flex items-center justify-center" onclick={(e) => e.stopPropagation()} role="none">
