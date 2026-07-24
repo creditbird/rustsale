@@ -44,7 +44,7 @@
       {@const isActive = activeTab === item.id}
       <button 
         type="button"
-        class="w-full h-10 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-all duration-150 relative group {isActive ? 'bg-sidebar-accent text-sidebar-accent-foreground font-semibold shadow-xs' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground'}" 
+        class="w-full h-10 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-all duration-150 relative group cursor-pointer {isActive ? 'bg-sidebar-accent text-sidebar-accent-foreground font-semibold shadow-xs' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground'}" 
         onclick={() => activeTab = item.id}
       >
         <Icon class="size-4 transition-colors {isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'}" />
