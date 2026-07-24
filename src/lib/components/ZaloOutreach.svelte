@@ -379,10 +379,10 @@
   }
 </script>
 
-<div class="space-y-4">
+<div class="flex flex-col gap-4">
   <!-- Header Bar -->
   <div class="flex items-center justify-between">
-    <div>
+    <div class="flex flex-col">
       <h2 class="text-xl font-bold text-foreground tracking-tight">Zalo Outreach Manager</h2>
       <p class="text-xs text-muted-foreground mt-0.5">Authenticate sessions, customize templates, and launch campaign flows</p>
     </div>
@@ -391,47 +391,47 @@
   <!-- Layout Grid -->
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
     <!-- Left Column: Sessions & Templates -->
-    <div class="lg:col-span-5 space-y-4">
+    <div class="lg:col-span-5 flex flex-col gap-4">
       <!-- Sessions Card -->
       <Card.Root>
         <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
           <Card.Title class="text-sm font-bold flex items-center gap-2">
-            <MessageSquare class="w-4 h-4 text-emerald-600" /> Zalo Sessions
+            <MessageSquare class="size-4 text-emerald-600" /> Zalo Sessions
           </Card.Title>
           <div class="flex items-center gap-1.5">
             <Button variant="outline" size="sm" class="h-7 text-[11px] px-2 gap-1" onclick={verifyAllSessions} disabled={isVerifyingAll}>
-              <RefreshCw class="w-3 h-3 {isVerifyingAll ? 'animate-spin' : ''}" /> Check All
+              <RefreshCw class="size-3 {isVerifyingAll ? 'animate-spin' : ''}" /> Check All
             </Button>
             <Button size="sm" class="h-7 text-[11px] px-2 gap-1 bg-emerald-600 hover:bg-emerald-700 text-white" onclick={openQrLogin}>
-              <QrCode class="w-3 h-3" /> Add Session
+              <QrCode class="size-3" /> Add Session
             </Button>
           </div>
         </Card.Header>
-        <Card.Content class="p-3 space-y-2 text-xs max-h-56 overflow-y-auto">
+        <Card.Content class="p-3 flex flex-col gap-2 text-xs max-h-56 overflow-y-auto">
           {#if sessions.length === 0}
             <div class="text-muted-foreground text-center py-4 italic">No Zalo sessions logged in.</div>
           {:else}
-            {#each sessions as s}
+            {#each sessions as s (s.imei)}
               <div class="flex items-center justify-between p-2 rounded-lg border border-border bg-card hover:bg-accent/40 transition-colors">
                 <div class="flex items-center gap-2 truncate">
                   {#if sessionStatuses[s.imei]?.valid === true}
-                    <CheckCircle class="w-4 h-4 text-emerald-500 shrink-0" />
+                    <CheckCircle class="size-4 text-emerald-500 shrink-0" />
                   {:else if sessionStatuses[s.imei]?.valid === false}
-                    <AlertCircle class="w-4 h-4 text-rose-500 shrink-0" />
+                    <AlertCircle class="size-4 text-rose-500 shrink-0" />
                   {:else}
-                    <User class="w-4 h-4 text-muted-foreground shrink-0" />
+                    <User class="size-4 text-muted-foreground shrink-0" />
                   {/if}
-                  <div class="truncate">
+                  <div class="truncate flex flex-col">
                     <div class="font-semibold text-foreground truncate">{sessionStatuses[s.imei]?.displayName || `IMEI: ${s.imei}`}</div>
                     <div class="text-[10px] text-muted-foreground truncate">{s.user_agent}</div>
                   </div>
                 </div>
                 <div class="flex items-center gap-1">
-                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0" onclick={() => verifySession(s.imei)}>
-                    <RefreshCw class="w-3 h-3 {sessionStatuses[s.imei]?.checking ? 'animate-spin' : ''}" />
+                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => verifySession(s.imei)}>
+                    <RefreshCw class="size-3 {sessionStatuses[s.imei]?.checking ? 'animate-spin' : ''}" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-destructive" onclick={() => deleteSession(s.imei)}>
-                    <Trash2 class="w-3 h-3" />
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => deleteSession(s.imei)}>
+                    <Trash2 class="size-3" />
                   </Button>
                 </div>
               </div>
@@ -444,31 +444,34 @@
       <Card.Root>
         <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
           <Card.Title class="text-sm font-bold flex items-center gap-2">
-            <Edit class="w-4 h-4 text-emerald-600" /> Outreach Templates
+            <Edit class="size-4 text-emerald-600" /> Outreach Templates
           </Card.Title>
           <Button size="sm" variant="outline" class="h-7 text-[11px] px-2 gap-1" onclick={openCreateTemplate}>
-            <Plus class="w-3 h-3" /> New Template
+            <Plus class="size-3" /> New Template
           </Button>
         </Card.Header>
-        <Card.Content class="p-3 space-y-2 text-xs max-h-64 overflow-y-auto">
+        <Card.Content class="p-3 flex flex-col gap-2 text-xs max-h-64 overflow-y-auto">
           {#if templates.length === 0}
             <div class="text-muted-foreground text-center py-4 italic">No templates created.</div>
           {:else}
-            {#each templates as t}
+            {#each templates as t, index (t.id ?? index)}
               <div
                 class="p-2.5 rounded-lg border cursor-pointer transition-colors flex items-center justify-between {selectedTemplateId === t.id ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-accent/40'}"
                 onclick={() => { if (t.id) selectedTemplateId = t.id; }}
+                role="button"
+                tabindex="0"
+                onkeydown={(e) => e.key === 'Enter' && t.id && (selectedTemplateId = t.id)}
               >
-                <div class="truncate space-y-0.5">
+                <div class="truncate flex flex-col gap-0.5">
                   <div class="font-semibold text-foreground">{t.name}</div>
                   <div class="text-[11px] text-muted-foreground truncate">{t.content}</div>
                 </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0" onclick={() => openEditTemplate(t)}>
-                    <Edit class="w-3 h-3" />
+                <div class="flex items-center gap-1 shrink-0" onclick={(e) => e.stopPropagation()} role="group" aria-label="Template actions">
+                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => openEditTemplate(t)}>
+                    <Edit class="size-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-destructive" onclick={() => t.id && deleteTemplate(t.id)}>
-                    <Trash2 class="w-3 h-3" />
+                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => t.id && deleteTemplate(t.id)}>
+                    <Trash2 class="size-3" />
                   </Button>
                 </div>
               </div>
@@ -482,16 +485,16 @@
     <Card.Root class="lg:col-span-7 flex flex-col justify-between">
       <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
         <Card.Title class="text-base font-bold flex items-center gap-2">
-          <Send class="w-4 h-4 text-emerald-600" /> Campaign Execution
+          <Send class="size-4 text-emerald-600" /> Campaign Execution
         </Card.Title>
         <Badge variant="outline" class="text-[10px]">Steps 1-3</Badge>
       </Card.Header>
-      <Card.Content class="p-5 space-y-4 text-xs">
+      <Card.Content class="p-5 flex flex-col gap-4 text-xs">
         <!-- Step 1: Select Session(s) -->
-        <div class="space-y-1.5">
+        <div class="flex flex-col gap-1.5">
           <span class="font-semibold text-foreground">Step 1: Select Active Zalo Session(s)</span>
           <div class="flex flex-wrap gap-2 pt-1">
-            {#each sessions as s}
+            {#each sessions as s (s.imei)}
               <label class="flex items-center gap-1.5 p-1.5 rounded border border-border bg-card hover:bg-accent/30 cursor-pointer text-xs">
                 <input type="checkbox" value={s.imei} bind:group={selectedImeis} disabled={isCampaignRunning} class="rounded border-input text-primary" />
                 <span class="font-medium text-foreground">IMEI: {s.imei}</span>
@@ -501,20 +504,20 @@
         </div>
 
         <!-- Target Category -->
-        <div class="space-y-1">
+        <div class="flex flex-col gap-1">
           <label for="category-select" class="font-semibold text-foreground">Target Category</label>
           <select id="category-select" bind:value={selectedCategoryId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
             <option value={null}>-- Select Category --</option>
-            {#each categories as cat}
+            {#each categories as cat (cat.id)}
               <option value={cat.id}>{cat.name}</option>
             {/each}
           </select>
         </div>
 
         <!-- Campaign Segmentation Filters -->
-        <div class="space-y-1.5">
+        <div class="flex flex-col gap-1.5">
           <span class="font-semibold text-foreground">Campaign Segmentation Filter</span>
-          <div class="space-y-1 text-xs">
+          <div class="flex flex-col gap-1 text-xs">
             <label class="flex items-center gap-2 cursor-pointer">
               <input type="radio" value="all" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
               <span>All Leads in Category</span>
@@ -535,11 +538,11 @@
         </div>
 
         {#if segmentationFilter === 'template_success'}
-          <div class="space-y-1 pl-4 border-l-2 border-primary/30">
+          <div class="flex flex-col gap-1 pl-4 border-l-2 border-primary/30">
             <label for="filter-template" class="font-semibold text-foreground">Filter by Success Template</label>
             <select id="filter-template" bind:value={filterTemplateId} class="w-full h-8 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
               <option value={null}>-- Choose Template --</option>
-              {#each templates as t}
+              {#each templates as t (t.id)}
                 <option value={t.id}>{t.name}</option>
               {/each}
             </select>
@@ -547,18 +550,18 @@
         {/if}
 
         <!-- Step 2: Select Template -->
-        <div class="space-y-1">
+        <div class="flex flex-col gap-1">
           <label for="campaign-template" class="font-semibold text-foreground">Step 2: Select Template</label>
           <select id="campaign-template" bind:value={selectedTemplateId} class="w-full h-9 rounded-md border border-input bg-background px-3 text-xs" disabled={isCampaignRunning}>
             <option value={null}>-- Choose Template --</option>
-            {#each templates as t}
+            {#each templates as t (t.id)}
               <option value={t.id}>{t.name}</option>
             {/each}
           </select>
         </div>
 
         <!-- Step 3: Select Leads Box -->
-        <div class="space-y-2">
+        <div class="flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs">
             <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
             <div class="flex items-center gap-2">
@@ -582,8 +585,8 @@
             </Button>
           </div>
 
-          <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 space-y-1">
-            {#each filteredLeads as lead}
+          <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 flex flex-col gap-1">
+            {#each filteredLeads as lead (lead.id)}
               {#if lead.id}
                 <label class="flex items-center justify-between p-1.5 rounded hover:bg-muted/50 cursor-pointer text-xs">
                   <div class="flex items-center gap-2 truncate">
@@ -613,7 +616,7 @@
         </div>
 
         <!-- Progress & Execution Button -->
-        <div class="space-y-3 pt-2 border-t border-border">
+        <div class="flex flex-col gap-3 pt-2 border-t border-border">
           <div class="flex items-center justify-between text-xs font-semibold">
             <span class="text-foreground">{campaignStatus}</span>
             <span class="text-emerald-600">{Math.round(campaignProgress)}%</span>
@@ -626,16 +629,16 @@
             disabled={isCampaignRunning || selectedImeis.length === 0 || selectedCategoryId === null || selectedTemplateId === null || selectedLeadIds.length === 0}
             class="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
           >
-            <Send class="w-4 h-4" /> {isCampaignRunning ? 'Running Campaign...' : 'Launch Zalo Campaign'}
+            <Send class="size-4" /> {isCampaignRunning ? 'Running Campaign...' : 'Launch Zalo Campaign'}
           </Button>
         </div>
 
         <!-- Terminal Logs -->
-        <div class="min-h-[160px] max-h-[220px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto space-y-1 border border-slate-800" bind:this={campaignConsoleElement}>
+        <div class="min-h-[160px] max-h-[220px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto flex flex-col gap-1 border border-slate-800" bind:this={campaignConsoleElement}>
           {#if campaignLogs.length === 0}
             <div class="text-slate-500 italic">Outreach console logs will show here dynamically...</div>
           {:else}
-            {#each campaignLogs as log}
+            {#each campaignLogs as log, index (index)}
               <div class="leading-relaxed border-b border-slate-900/60 pb-0.5">{log}</div>
             {/each}
           {/if}
@@ -651,16 +654,16 @@
     <Dialog.Header>
       <Dialog.Title>Zalo QR Login</Dialog.Title>
     </Dialog.Header>
-    <div class="flex flex-col items-center justify-center p-6 space-y-4">
+    <div class="flex flex-col items-center justify-center p-6 gap-4">
       {#if qrImage}
-        <img src={qrImage.startsWith('data:image/') ? qrImage : `data:image/png;base64,${qrImage}`} alt="Zalo QR Code" class="w-56 h-56 rounded-lg border border-border shadow-sm" />
+        <img src={qrImage.startsWith('data:image/') ? qrImage : `data:image/png;base64,${qrImage}`} alt="Zalo QR Code" class="size-56 rounded-lg border border-border shadow-xs" />
       {:else if qrUser}
-        <div class="text-center space-y-2">
-          <img src={qrUser.avatar} alt="User Avatar" class="w-16 h-16 rounded-full mx-auto border border-border" />
+        <div class="text-center flex flex-col gap-2">
+          <img src={qrUser.avatar} alt="User Avatar" class="size-16 rounded-full mx-auto border border-border" />
           <h3 class="font-bold text-foreground">{qrUser.display_name}</h3>
         </div>
       {:else}
-        <div class="w-12 h-12 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+        <div class="size-12 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
       {/if}
       <p class="text-xs text-muted-foreground font-medium text-center">{qrStatus}</p>
     </div>
@@ -673,15 +676,15 @@
     <Dialog.Header>
       <Dialog.Title>{editingTemplateId ? 'Edit Outreach Template' : 'Create Outreach Template'}</Dialog.Title>
     </Dialog.Header>
-    <div class="space-y-4 py-2 text-xs">
+    <div class="flex flex-col gap-4 py-2 text-xs">
       {#if templateError}
         <div class="p-2 rounded bg-destructive/10 text-destructive text-xs">{templateError}</div>
       {/if}
-      <div class="space-y-1">
+      <div class="flex flex-col gap-1">
         <label for="tpl-name" class="font-semibold text-foreground">Template Name</label>
         <Input id="tpl-name" bind:value={templateName} placeholder="e.g. Welcome Intro" class="text-xs" />
       </div>
-      <div class="space-y-1">
+      <div class="flex flex-col gap-1">
         <label for="tpl-content" class="font-semibold text-foreground">Message Content</label>
         <textarea id="tpl-content" rows="5" bind:value={templateContent} placeholder="Write template content..." class="w-full rounded-md border border-input bg-background p-2 text-xs"></textarea>
       </div>

@@ -8,14 +8,12 @@
   import { Badge } from '$lib/components/ui/badge';
   import * as Card from '$lib/components/ui/card';
   import { Progress } from '$lib/components/ui/progress';
-  import { Search, MapPin, Play, Square, Terminal, Check, X, Building, Grid, Layers, Locate } from 'lucide-svelte';
+  import { Search, MapPin, Play, Square, Terminal, Check, X, Building, Grid, Locate } from 'lucide-svelte';
 
-  // State runes
   let mode = $state<'keyword' | 'grid'>('keyword');
   let keyword = $state('');
   let location = $state('');
 
-  // Grid coordinates default to HCM City coordinates
   let minLat = $state(10.7);
   let maxLat = $state(10.8);
   let minLng = $state(106.6);
@@ -25,7 +23,6 @@
   let geocodeQuery = $state('');
   let isGeocoding = $state(false);
 
-  // Deep Scan states
   let deepScan = $state(true);
   let selectedCities = $state<string[]>(['thanh_pho_ho_chi_minh']);
   let selectedDistricts = $state<number[]>([]);
@@ -35,14 +32,12 @@
   let districtFilter = $state('');
   let wardFilter = $state('');
 
-  // Derived state to get filtered cities based on search query
   let filteredCities = $derived.by(() => {
     const q = citySearchQuery.trim().toLowerCase();
     if (!q) return divisions;
     return divisions.filter(p => p.name.toLowerCase().includes(q));
   });
 
-  // Derived state to get available districts in the selected provinces
   let availableDistricts = $derived.by(() => {
     let list: { name: string; code: number; provinceName: string; provinceCodename: string; wards: any[] }[] = [];
     for (const cityCodename of selectedCities) {
@@ -349,10 +344,10 @@
   });
 </script>
 
-<div class="space-y-4">
+<div class="flex flex-col gap-4">
   <!-- Top Header Bar -->
   <div class="flex items-center justify-between">
-    <div>
+    <div class="flex flex-col">
       <h2 class="text-xl font-bold text-foreground tracking-tight">Google Maps Scraper</h2>
       <p class="text-xs text-muted-foreground mt-0.5">Extract local business lead data dynamically across regions</p>
     </div>
@@ -364,11 +359,11 @@
     <Card.Root class="lg:col-span-7 flex flex-col justify-between">
       <Card.Header class="pb-3 border-b border-border">
         <Card.Title class="text-base font-bold flex items-center gap-2">
-          <Building class="w-4 h-4 text-emerald-600" />
+          <Building class="size-4 text-emerald-600" />
           Scraper Configuration
         </Card.Title>
       </Card.Header>
-      <Card.Content class="p-5 space-y-4 text-xs">
+      <Card.Content class="p-5 flex flex-col gap-4 text-xs">
         <!-- Mode Switcher Tabs -->
         <div class="flex items-center gap-1 p-1 bg-muted rounded-lg w-full">
           <button
@@ -377,7 +372,7 @@
             onclick={() => mode = 'keyword'}
             disabled={isScraping}
           >
-            <Search class="w-3.5 h-3.5" /> Keyword Search
+            <Search class="size-3.5" /> Keyword Search
           </button>
           <button
             type="button"
@@ -385,22 +380,22 @@
             onclick={() => mode = 'grid'}
             disabled={isScraping}
           >
-            <Grid class="w-3.5 h-3.5" /> Grid Crawl
+            <Grid class="size-3.5" /> Grid Crawl
           </button>
         </div>
 
         <!-- Search Keyword -->
-        <div class="space-y-1">
+        <div class="flex flex-col gap-1">
           <label for="keyword-input" class="font-semibold text-foreground">Search Keyword *</label>
           <div class="relative">
-            <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+            <Search class="size-4 absolute left-3 top-2.5 text-muted-foreground" />
             <Input id="keyword-input" bind:value={keyword} placeholder="e.g. Cafe, Spa, Dental Clinic..." class="pl-9 text-xs" disabled={isScraping} />
           </div>
         </div>
 
         {#if mode === 'keyword'}
           <!-- Location Targeting Mode Switcher -->
-          <div class="space-y-1.5">
+          <div class="flex flex-col gap-1.5">
             <span class="font-semibold text-foreground">Location Targeting Mode</span>
             <div class="flex items-center gap-1 p-1 bg-muted/60 rounded-md">
               <button
@@ -424,22 +419,22 @@
 
           {#if !deepScan}
             <!-- Simple Location Input -->
-            <div class="space-y-1">
+            <div class="flex flex-col gap-1">
               <label for="location-input" class="font-semibold text-foreground">Location / Area</label>
               <div class="relative">
-                <MapPin class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                <MapPin class="size-4 absolute left-3 top-2.5 text-muted-foreground" />
                 <Input id="location-input" bind:value={location} placeholder="e.g. Quận 1, Ho Chi Minh City" class="pl-9 text-xs" disabled={isScraping} />
               </div>
               <p class="text-[11px] text-muted-foreground">Focuses search on a specific neighborhood or town name.</p>
             </div>
           {:else}
             <!-- Deep Scan Configurations -->
-            <div class="space-y-3 border-t border-border pt-3">
+            <div class="flex flex-col gap-3 border-t border-border pt-3">
               <!-- Target Cities / Provinces -->
-              <div class="space-y-2 relative city-multiselect-container">
+              <div class="flex flex-col gap-2 relative city-multiselect-container">
                 <label for="city-search" class="font-semibold text-foreground">Target Cities / Provinces</label>
                 <div class="relative">
-                  <Search class="w-3.5 h-3.5 absolute left-3 top-2.5 text-muted-foreground" />
+                  <Search class="size-3.5 absolute left-3 top-2.5 text-muted-foreground" />
                   <Input
                     id="city-search"
                     type="text"
@@ -453,12 +448,12 @@
 
                 {#if selectedCities.length > 0}
                   <div class="flex flex-wrap gap-1.5 pt-1">
-                    {#each selectedCities as cityCodename}
+                    {#each selectedCities as cityCodename (cityCodename)}
                       {@const cityName = divisions.find(p => p.codename === cityCodename)?.name}
                       <Badge variant="secondary" class="gap-1 text-[11px]">
                         {cityName}
                         <button type="button" onclick={() => toggleCity(cityCodename)} class="hover:text-destructive">
-                          <X class="w-3 h-3" />
+                          <X class="size-3" />
                         </button>
                       </Badge>
                     {/each}
@@ -467,8 +462,8 @@
                 {/if}
 
                 {#if showCityDropdown}
-                  <div class="absolute left-0 right-0 top-full mt-1 z-30 max-h-48 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md text-xs space-y-0.5">
-                    {#each filteredCities as city}
+                  <div class="absolute left-0 right-0 top-full mt-1 z-30 max-h-48 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md text-xs flex flex-col gap-0.5">
+                    {#each filteredCities as city (city.codename)}
                       {@const isSelected = selectedCities.includes(city.codename)}
                       <button
                         type="button"
@@ -476,7 +471,7 @@
                         onclick={() => toggleCity(city.codename)}
                       >
                         <span>{city.name}</span>
-                        {#if isSelected}<Check class="w-3.5 h-3.5 text-primary" />{/if}
+                        {#if isSelected}<Check class="size-3.5 text-primary" />{/if}
                       </button>
                     {/each}
                   </div>
@@ -484,7 +479,7 @@
               </div>
 
               <!-- Districts Selection Grid -->
-              <div class="space-y-2">
+              <div class="flex flex-col gap-2">
                 <div class="flex items-center justify-between text-xs">
                   <span class="font-semibold text-foreground">Select Districts ({selectedDistricts.length} selected)</span>
                   <div class="flex items-center gap-2">
@@ -494,7 +489,7 @@
                   </div>
                 </div>
                 <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
-                  {#each filteredDistricts as district}
+                  {#each filteredDistricts as district (district.code)}
                     <label class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate">
                       <input
                         type="checkbox"
@@ -509,9 +504,9 @@
                 </div>
               </div>
 
-              <!-- Wards Selection Grid (If districts selected) -->
+              <!-- Wards Selection Grid -->
               {#if selectedDistricts.length > 0}
-                <div class="space-y-2 border-t border-border/50 pt-2">
+                <div class="flex flex-col gap-2 border-t border-border/50 pt-2">
                   <div class="flex items-center justify-between text-xs">
                     <span class="font-semibold text-foreground">Select Wards ({selectedWards.length} selected)</span>
                     <div class="flex items-center gap-2">
@@ -521,7 +516,7 @@
                     </div>
                   </div>
                   <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
-                    {#each filteredWards as ward}
+                    {#each filteredWards as ward (ward.code)}
                       <label class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate">
                         <input
                           type="checkbox"
@@ -545,10 +540,9 @@
 
         {:else}
           <!-- Grid Mode Settings -->
-          <div class="space-y-3 border-t border-border pt-3">
+          <div class="flex flex-col gap-3 border-t border-border pt-3">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <!-- Preset Select -->
-              <div class="space-y-1">
+              <div class="flex flex-col gap-1">
                 <label for="preset-select" class="font-semibold text-foreground">Quick Select Province / City</label>
                 <select
                   id="preset-select"
@@ -567,49 +561,46 @@
                   }}
                 >
                   <option value="">-- Select Province / City --</option>
-                  {#each Object.keys(presetProvinces) as prov}
+                  {#each Object.keys(presetProvinces) as prov (prov)}
                     <option value={prov}>{prov}</option>
                   {/each}
                 </select>
               </div>
 
-              <!-- Geocode Query -->
-              <div class="space-y-1">
+              <div class="flex flex-col gap-1">
                 <label for="geocode-query" class="font-semibold text-foreground">Search Administrative Area</label>
                 <div class="flex gap-2">
                   <Input id="geocode-query" bind:value={geocodeQuery} placeholder="e.g. Quận 1, TP. HCM" class="text-xs h-9" disabled={isScraping || isGeocoding} />
                   <Button variant="outline" size="sm" onclick={detectCoordinates} disabled={isScraping || isGeocoding} class="h-9 px-3 gap-1 shrink-0">
-                    <Locate class="w-3.5 h-3.5" /> {isGeocoding ? 'Detecting...' : 'Detect'}
+                    <Locate class="size-3.5" /> {isGeocoding ? 'Detecting...' : 'Detect'}
                   </Button>
                 </div>
               </div>
             </div>
 
-            <!-- Bounding Box Coordinates -->
-            <div class="space-y-1.5">
+            <div class="flex flex-col gap-1.5">
               <span class="font-semibold text-foreground">Bounding Box Coordinates (Lat/Lng)</span>
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <div class="space-y-1">
+                <div class="flex flex-col gap-1">
                   <label for="min-lat" class="text-[10px] text-muted-foreground">Min Lat</label>
                   <Input id="min-lat" type="number" step="0.0001" bind:value={minLat} disabled={isScraping} class="h-8 text-xs" />
                 </div>
-                <div class="space-y-1">
+                <div class="flex flex-col gap-1">
                   <label for="max-lat" class="text-[10px] text-muted-foreground">Max Lat</label>
                   <Input id="max-lat" type="number" step="0.0001" bind:value={maxLat} disabled={isScraping} class="h-8 text-xs" />
                 </div>
-                <div class="space-y-1">
+                <div class="flex flex-col gap-1">
                   <label for="min-lng" class="text-[10px] text-muted-foreground">Min Lng</label>
                   <Input id="min-lng" type="number" step="0.0001" bind:value={minLng} disabled={isScraping} class="h-8 text-xs" />
                 </div>
-                <div class="space-y-1">
+                <div class="flex flex-col gap-1">
                   <label for="max-lng" class="text-[10px] text-muted-foreground">Max Lng</label>
                   <Input id="max-lng" type="number" step="0.0001" bind:value={maxLng} disabled={isScraping} class="h-8 text-xs" />
                 </div>
               </div>
             </div>
 
-            <!-- Grid Step Size Slider -->
-            <div class="space-y-1">
+            <div class="flex flex-col gap-1">
               <div class="flex justify-between items-center text-xs">
                 <label for="step-km" class="font-semibold text-foreground">Grid Step Size</label>
                 <span class="font-bold text-emerald-600">{stepKm.toFixed(1)} km</span>
@@ -629,11 +620,11 @@
 
           {#if isScraping}
             <Button variant="destructive" size="sm" onclick={stopScrape} class="gap-2">
-              <Square class="w-4 h-4" /> Stop Scrape
+              <Square class="size-4" /> Stop Scrape
             </Button>
           {:else}
             <Button size="sm" onclick={startScrape} disabled={!keyword.trim()} class="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white">
-              <Play class="w-4 h-4 fill-white" /> Start Scrape Campaign
+              <Play class="size-4 fill-white" /> Start Scrape Campaign
             </Button>
           {/if}
         </div>
@@ -644,15 +635,15 @@
     <Card.Root class="lg:col-span-5 flex flex-col justify-between">
       <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
         <Card.Title class="text-base font-bold flex items-center gap-2">
-          <Terminal class="w-4 h-4 text-emerald-600" /> Execution Logs
+          <Terminal class="size-4 text-emerald-600" /> Execution Logs
         </Card.Title>
         <Badge variant={isScraping ? "default" : "outline"} class="text-[10px]">
           {isScraping ? 'Running' : 'Idle'}
         </Badge>
       </Card.Header>
-      <Card.Content class="p-5 flex-1 flex flex-col space-y-4">
+      <Card.Content class="p-5 flex-1 flex flex-col gap-4">
         <!-- Progress Bar -->
-        <div class="space-y-1.5">
+        <div class="flex flex-col gap-1.5">
           <div class="flex items-center justify-between text-xs">
             <span class="font-medium text-foreground">{statusMessage}</span>
             <span class="font-bold text-emerald-600">{Math.round(progress)}%</span>
@@ -661,11 +652,11 @@
         </div>
 
         <!-- Console Log Output -->
-        <div class="flex-1 min-h-[260px] max-h-[460px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto space-y-1 border border-slate-800" bind:this={consoleElement}>
+        <div class="flex-1 min-h-[260px] max-h-[460px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto flex flex-col gap-1 border border-slate-800" bind:this={consoleElement}>
           {#if logs.length === 0}
             <div class="text-slate-500 italic">Console output logs will stream here...</div>
           {:else}
-            {#each logs as log}
+            {#each logs as log, index (index)}
               <div class="leading-relaxed border-b border-slate-900/60 pb-0.5">{log}</div>
             {/each}
           {/if}
