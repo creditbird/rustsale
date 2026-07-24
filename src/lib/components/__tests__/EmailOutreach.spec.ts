@@ -169,8 +169,7 @@ test('renders EmailOutreach section headings and initial state', async () => {
 
   expect(await screen.findByRole('heading', { name: 'SMTP Configuration' })).toBeTruthy();
   expect(await screen.findByRole('heading', { name: 'Email Templates' })).toBeTruthy();
-  expect(await screen.findByRole('heading', { name: 'Target Lead Selection' })).toBeTruthy();
-  expect(await screen.findByRole('heading', { name: 'Live Execution Console' })).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: 'Campaign Execution' })).toBeTruthy();
 });
 
 test('SMTP server modal controls - opens modal, saves new SMTP server and tests connection', async () => {
@@ -285,7 +284,7 @@ test('Lead selection and triggers Email Campaign execution with logs and progres
   await fireEvent.click(tplCards[0]);
 
   // Trigger Campaign
-  const startCampaignBtn = await screen.findByRole('button', { name: /Start Email Campaign/i });
+  const startCampaignBtn = await screen.findByRole('button', { name: /Launch Email Campaign/i });
   await fireEvent.click(startCampaignBtn);
   await new Promise((r) => setTimeout(r, 300));
 

@@ -32,6 +32,7 @@
   let categories = $state<Category[]>([]);
 
   let selectedSmtpId = $state<number | null>(null);
+  let selectedSmtpIds = $state<number[]>([]);
   let selectedTemplateId = $state<number | null>(null);
   let selectedLeadIds = $state<number[]>([]);
 
@@ -76,7 +77,7 @@
   let campaignUnlistens: UnlistenFn[] = [];
 
   let isButtonDisabled = $derived(
-    isCampaignRunning || !selectedSmtpId || !selectedTemplateId || selectedLeadIds.length === 0
+    isCampaignRunning || (selectedSmtpIds.length === 0 && !selectedSmtpId) || !selectedTemplateId || selectedLeadIds.length === 0
   );
 
   let filteredLeads = $derived(
@@ -94,7 +95,7 @@
   );
 
   let selectedSmtpServer = $derived(
-    smtpServers.find(s => s.id === selectedSmtpId) || null
+    smtpServers.find(s => s.id === (selectedSmtpIds[0] || selectedSmtpId)) || null
   );
 
   let selectedTemplate = $derived(
@@ -105,8 +106,13 @@
     try {
       const res = await invoke<SmtpServer[]>('get_smtp_servers');
       smtpServers = [...res];
-      if (smtpServers.length > 0 && selectedSmtpId === null) {
-        selectedSmtpId = smtpServers[0].id || null;
+      if (smtpServers.length > 0) {
+        if (selectedSmtpId === null && smtpServers[0].id) {
+          selectedSmtpId = smtpServers[0].id;
+        }
+        if (selectedSmtpIds.length === 0 && smtpServers[0].id) {
+          selectedSmtpIds = [smtpServers[0].id];
+        }
       }
     } catch (e) {
       console.error('Failed to load SMTP servers:', e);
@@ -139,6 +145,32 @@
       categories = await getCategories();
     } catch (e) {
       console.error('Error loading categories:', e);
+    }
+  }
+
+  function selectValidEmail() {
+    const emailLeads = filteredLeads.filter(l => l.email && l.email.includes('@'));
+    const newIds = new Set(selectedLeadIds);
+    emailLeads.forEach(l => {
+      if (l.id != null) newIds.add(l.id);
+    });
+    selectedLeadIds = Array.from(newIds);
+  }
+
+  function selectUnreached() {
+    const unreached = filteredLeads.filter(l => !(l as any).email_reached);
+    const newIds = new Set(selectedLeadIds);
+    unreached.forEach(l => {
+      if (l.id != null) newIds.add(l.id);
+    });
+    selectedLeadIds = Array.from(newIds);
+  }
+
+  function toggleLead(leadId: number) {
+    if (selectedLeadIds.includes(leadId)) {
+      selectedLeadIds = selectedLeadIds.filter(id => id !== leadId);
+    } else {
+      selectedLeadIds = [...selectedLeadIds, leadId];
     }
   }
 
@@ -380,7 +412,8 @@
   }
 
   async function startCampaign() {
-    if (!selectedSmtpId) {
+    const activeSmtpId = selectedSmtpIds[0] || selectedSmtpId;
+    if (!activeSmtpId) {
       alert('Please select an active SMTP server configuration first.');
       return;
     }
@@ -431,7 +464,7 @@
       campaignUnlistens.push(progressUnlisten, logUnlisten, completeUnlisten);
 
       await invoke('send_email_outreach', {
-        smtp_id: selectedSmtpId,
+        smtp_id: activeSmtpId,
         template_id: selectedTemplateId,
         lead_ids: selectedLeadIds
       });
@@ -585,149 +618,184 @@
       </div>
     </div>
 
-    <!-- Right Column: Lead Selection & Live Console -->
+    <!-- Right Column: Campaign Execution & Progress -->
     <div class="right-col">
-      <!-- Target Lead Selection Card -->
-      <div class="card section-card">
+      <div class="card campaign-card">
         <div class="card-header">
-          <h2>Target Lead Selection</h2>
-          <span class="selected-count-badge">
-            {selectedLeadIds.length} / {leads.length} Leads Selected
-          </span>
+          <h2>Campaign Execution</h2>
+          <span class="step-indicator">Steps 1-3</span>
         </div>
 
-        <div class="card-body">
-          <!-- Filters Toolbar -->
-          <div class="filters-toolbar">
-            <div class="filter-group">
-              <label for="category-select">Category:</label>
-              <select id="category-select" bind:value={selectedCategoryId}>
-                <option value={null}>All Categories</option>
-                {#each categories as cat (cat.id)}
+        <div class="campaign-form">
+          <!-- Step 1: Select Session(s) -->
+          <div class="input-group">
+            <label>Step 1: Select Active SMTP Server(s)</label>
+            <div class="checkbox-group" style="display: flex; gap: 10px; flex-wrap: wrap;">
+              {#if smtpServers.length === 0}
+                <span style="font-size: 12px; color: var(--color-on-surface-variant);">No active SMTP servers. Click "Add SMTP Server" to configure.</span>
+              {:else}
+                {#each smtpServers as s}
+                  {#if s.id}
+                    <label style="display: flex; align-items: center; gap: 5px;">
+                      <input type="checkbox" value={s.id} bind:group={selectedSmtpIds} disabled={isCampaignRunning} />
+                      {s.name} ({s.host})
+                    </label>
+                  {/if}
+                {/each}
+              {/if}
+            </div>
+          </div>
+          
+          <!-- Category Selection -->
+          <div class="input-group">
+            <label for="campaign-category">Target Category</label>
+            <div class="select-wrapper">
+              <select id="campaign-category" bind:value={selectedCategoryId} disabled={isCampaignRunning}>
+                <option value={null} disabled>-- Choose Category --</option>
+                {#each categories as cat}
                   <option value={cat.id}>{cat.name}</option>
                 {/each}
               </select>
             </div>
-
-            <div class="filter-group">
-              <label for="segmentation-select">Filter:</label>
-              <select id="segmentation-select" bind:value={segmentationFilter}>
-                <option value="all">All Leads</option>
-                <option value="not_reached">Not Reached</option>
-                <option value="reached">Reached</option>
+          </div>
+          
+          <!-- Segmentation Filters -->
+          <div class="input-group">
+            <label>Campaign Segmentation Filter</label>
+            <div class="radio-group" style="display: flex; flex-direction: column; gap: 5px;">
+              <label><input type="radio" value="all" bind:group={segmentationFilter} disabled={isCampaignRunning} /> All Leads in Category</label>
+              <label><input type="radio" value="never_sent" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Never Sent Successfully</label>
+              <label><input type="radio" value="last_failed" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Last Attempt Failed</label>
+              <label><input type="radio" value="template_success" bind:group={segmentationFilter} disabled={isCampaignRunning} /> Successful Template Match</label>
+            </div>
+          </div>
+          
+          {#if segmentationFilter === 'template_success'}
+          <div class="input-group" style="margin-left: 20px;">
+            <label for="filter-template">Filter by Success Template</label>
+            <div class="select-wrapper">
+              <select id="filter-template" bind:value={filterTemplateId} disabled={isCampaignRunning}>
+                <option value={null} disabled>-- Choose Template --</option>
+                {#each templates as t}
+                  <option value={t.id}>{t.name}</option>
+                {/each}
               </select>
             </div>
+          </div>
+          {/if}
 
-            <div class="search-group">
-              <span class="material-icons search-icon">search</span>
-              <input
-                type="text"
-                placeholder="Search leads..."
-                bind:value={leadSearchQuery}
-              />
+          <!-- Step 2: Select Template -->
+          <div class="input-group">
+            <label for="campaign-template">Step 2: Select Template</label>
+            <div class="select-wrapper">
+              <select id="campaign-template" bind:value={selectedTemplateId} disabled={isCampaignRunning}>
+                <option value={null} disabled>-- Choose Template --</option>
+                {#each templates as t}
+                  <option value={t.id}>{t.name}</option>
+                {/each}
+              </select>
             </div>
           </div>
 
-          <!-- Leads Table -->
-          <div class="table-container">
-            <table class="leads-table">
-              <thead>
-                <tr>
-                  <th style="width: 40px; text-align: center;">
-                    <input
-                      type="checkbox"
-                      aria-label="Select all leads"
-                      checked={isAllLeadsSelected}
-                      onclick={toggleSelectAll}
-                    />
-                  </th>
-                  <th>Name</th>
-                  <th>Company</th>
-                  <th>Email</th>
-                  <th>Phone</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#if filteredLeads.length === 0}
-                  <tr>
-                    <td colspan="6" class="empty-table-cell">No leads match the selected criteria.</td>
-                  </tr>
-                {:else}
-                  {#each filteredLeads as lead (lead.id)}
-                    <tr class:selected-row={lead.id && selectedLeadIds.includes(lead.id)}>
-                      <td style="text-align: center;">
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${lead.name}`}
-                          checked={lead.id ? selectedLeadIds.includes(lead.id) : false}
-                          onclick={() => lead.id && toggleLeadSelection(lead.id)}
-                        />
-                      </td>
-                      <td class="cell-primary">{lead.name}</td>
-                      <td>{lead.company}</td>
-                      <td>{lead.email || '-'}</td>
-                      <td>{lead.phone || '-'}</td>
-                      <td><span class="status-badge">{lead.status}</span></td>
-                    </tr>
-                  {/each}
-                {/if}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+          <!-- Step 3: Select Leads -->
+          <div class="leads-selector-section">
+            <div class="leads-header">
+              <span class="leads-title">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
+              <div class="leads-actions">
+                <input 
+                  type="text" 
+                  class="search-bar" 
+                  placeholder="Filter leads..." 
+                  bind:value={leadSearchQuery} 
+                />
+                <button 
+                  type="button" 
+                  class="select-all-btn" 
+                  onclick={toggleSelectAll}
+                  disabled={filteredLeads.length === 0}
+                >
+                  {isAllLeadsSelected ? 'Deselect All' : 'Select All'}
+                </button>
+              </div>
+            </div>
 
-      <!-- Live Execution Console Card -->
-      <div class="card section-card console-card">
-        <div class="card-header">
-          <h2>Live Execution Console</h2>
-          <button
-            type="button"
-            class="action-btn campaign-btn"
-            disabled={(isCampaignRunning || !selectedSmtpId || !selectedTemplateId || selectedLeadIds.length === 0) || undefined}
+            <!-- Quick selection helpers -->
+            <div class="quick-select-helpers" style="display: flex; gap: var(--spacing-sm); margin-top: var(--spacing-xs); justify-content: flex-end;">
+              <button 
+                type="button" 
+                class="select-all-btn" 
+                onclick={selectValidEmail}
+                disabled={filteredLeads.filter(l => l.email && l.email.includes('@')).length === 0}
+                style="font-size: 10px; padding: 2px var(--spacing-xs);"
+              >
+                Select Valid Email
+              </button>
+              <button 
+                type="button" 
+                class="select-all-btn" 
+                onclick={selectUnreached}
+                disabled={filteredLeads.length === 0}
+                style="font-size: 10px; padding: 2px var(--spacing-xs);"
+              >
+                Select Unreached
+              </button>
+            </div>
+
+            <div class="leads-list-box">
+              {#if filteredLeads.length === 0}
+                <div class="empty-state">
+                  <p>No leads found matching query.</p>
+                </div>
+              {:else}
+                {#each filteredLeads as lead}
+                  {#if lead.id}
+                    <label class="lead-checkbox-item">
+                      <input 
+                        type="checkbox" 
+                        checked={selectedLeadIds.includes(lead.id)} 
+                        onchange={() => lead.id && toggleLead(lead.id)}
+                        disabled={isCampaignRunning}
+                      />
+                      <span class="lead-label-info">
+                        <span class="lead-lbl-name">{lead.name} ({lead.company})</span>
+                        <span class="lead-lbl-details">Email: {lead.email || 'N/A'} | Phone: {lead.phone || 'N/A'}</span>
+                      </span>
+                    </label>
+                  {/if}
+                {/each}
+              {/if}
+            </div>
+          </div>
+
+          <!-- Launch Button -->
+          <button 
+            type="button" 
+            class="start-campaign-btn" 
             onclick={startCampaign}
+            disabled={isCampaignRunning || (selectedSmtpIds.length === 0 && !selectedSmtpId) || !selectedTemplateId || selectedLeadIds.length === 0}
           >
             <span class="material-icons" class:spinning={isCampaignRunning}>send</span>
-            {isCampaignRunning ? 'Running Campaign...' : 'Start Email Campaign'}
+            {isCampaignRunning ? 'Running Email Campaign...' : 'Launch Email Campaign'}
           </button>
         </div>
 
-        <div class="card-body">
-          <div class="campaign-summary-bar">
-            <div class="summary-item">
-              <span class="summary-label">Selected SMTP:</span>
-              <span class="summary-value">{selectedSmtpServer ? selectedSmtpServer.name : 'None'}</span>
-            </div>
-            <div class="summary-item">
-              <span class="summary-label">Selected Template:</span>
-              <span class="summary-value">{selectedTemplate ? selectedTemplate.name : 'None'}</span>
-            </div>
-            <div class="summary-item">
-              <span class="summary-label">Status:</span>
-              <span class="summary-value status-text">{campaignStatus}</span>
-            </div>
-          </div>
+        <div class="progress-bar-container" style="margin-top: var(--spacing-md);">
+          <div class="progress-bar-fill" style="width: {campaignProgress}%;"></div>
+          <span class="progress-text">{Math.round(campaignProgress)}%</span>
+        </div>
 
-          <!-- Progress Bar -->
-          <div class="progress-bar-container">
-            <div class="progress-bar-fill" style="width: {campaignProgress}%;"></div>
-            <span class="progress-text">{Math.round(campaignProgress)}%</span>
-          </div>
-
-          <!-- Log Terminal Output -->
-          <div class="terminal-container" bind:this={campaignConsoleElement}>
-            {#if campaignLogs.length === 0}
-              <div class="terminal-placeholder">
-                <span class="material-icons">terminal</span>
-                <span>Console output ready. Click "Start Email Campaign" to begin.</span>
-              </div>
-            {:else}
-              {#each campaignLogs as logLine}
-                <div class="log-line">{logLine}</div>
-              {/each}
-            {/if}
-          </div>
+        <!-- Log Terminal Output -->
+        <div class="terminal-container" bind:this={campaignConsoleElement} style="margin-top: var(--spacing-md);">
+          {#if campaignLogs.length === 0}
+            <div class="terminal-placeholder">
+              <span class="material-icons">terminal</span>
+              <span>Campaign logs will show here dynamically.</span>
+            </div>
+          {:else}
+            {#each campaignLogs as logLine}
+              <div class="log-line">{logLine}</div>
+            {/each}
+          {/if}
         </div>
       </div>
     </div>
@@ -1262,61 +1330,205 @@
     font-weight: 500;
   }
 
-  /* Table */
-  .table-container {
-    overflow-x: auto;
-    border: 1px solid var(--color-outline);
-    border-radius: var(--rounded-md);
-    max-height: 280px;
-    overflow-y: auto;
-  }
-
-  .leads-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    text-align: left;
-  }
-
-  .leads-table th {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface-variant);
-    padding: 8px 12px;
-    font-weight: 600;
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    border-bottom: 1px solid var(--color-outline);
-  }
-
-  .leads-table td {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--color-outline);
-  }
-
-  .leads-table tr:hover {
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .leads-table tr.selected-row {
-    background: rgba(59, 130, 246, 0.08);
-  }
-
-  .cell-primary {
-    font-weight: 600;
-  }
-
-  .status-badge {
+  /* Campaign Form & 3-Step Selection */
+  .step-indicator {
     font-size: 11px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.08);
+    font-weight: 600;
+    color: var(--color-primary);
+    background: var(--color-surface-container-low);
+    padding: 2px 8px;
+    border-radius: var(--rounded-full);
   }
 
-  .empty-table-cell {
-    text-align: center;
+  .campaign-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
+  }
+
+  @media (max-width: 768px) {
+    .campaign-form {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+  }
+
+  .input-group label {
+    font-size: 12px;
+    font-weight: 600;
     color: var(--color-on-surface-variant);
-    padding: var(--spacing-lg);
+  }
+
+  .select-wrapper {
+    position: relative;
+  }
+
+  .select-wrapper select {
+    width: 100%;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-md);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-size: 13px;
+    outline: none;
+    transition: var(--transition-fast);
+  }
+
+  .select-wrapper select:focus {
+    border-color: var(--color-primary);
+  }
+
+  .leads-selector-section {
+    grid-column: span 2;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+  }
+
+  @media (max-width: 768px) {
+    .leads-selector-section {
+      grid-column: span 1;
+    }
+  }
+
+  .leads-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-on-surface-variant);
+  }
+
+  .leads-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+  }
+
+  .search-bar {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-sm);
+    background: var(--color-surface-container-lowest);
+    color: var(--color-on-surface);
+    font-size: 11px;
+    outline: none;
+    width: 150px;
+  }
+
+  .search-bar:focus {
+    border-color: var(--color-primary);
+  }
+
+  .select-all-btn {
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--color-surface-container-low);
+    color: var(--color-primary);
+    border: 1px solid var(--color-outline-variant);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--rounded-sm);
+    transition: var(--transition-fast);
+    cursor: pointer;
+  }
+
+  .select-all-btn:hover:not(:disabled) {
+    background: var(--color-surface-container-high);
+  }
+
+  .select-all-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .leads-list-box {
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--rounded-md);
+    background: var(--color-surface-container-lowest);
+    max-block-size: 200px;
+    overflow-y: auto;
+    padding: var(--spacing-xs);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .lead-checkbox-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    padding: 6px var(--spacing-sm);
+    border-radius: var(--rounded-sm);
+    cursor: pointer;
+    transition: var(--transition-fast);
+  }
+
+  .lead-checkbox-item:hover {
+    background: var(--color-surface-container-low);
+  }
+
+  .lead-checkbox-item input[type="checkbox"] {
+    accent-color: var(--color-primary);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+  }
+
+  .lead-label-info {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .lead-lbl-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-on-surface);
+  }
+
+  .lead-lbl-details {
+    font-size: 10px;
+    color: var(--color-on-surface-variant);
+  }
+
+  .start-campaign-btn {
+    grid-column: span 2;
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    padding: var(--spacing-md);
+    border: none;
+    border-radius: var(--rounded-md);
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-sm);
+    cursor: pointer;
+    transition: var(--transition-fast);
+  }
+
+  @media (max-width: 768px) {
+    .start-campaign-btn {
+      grid-column: span 1;
+    }
+  }
+
+  .start-campaign-btn:hover:not(:disabled) {
+    opacity: 0.9;
+    box-shadow: 0 4px 6px rgba(59, 130, 246, 0.2);
+  }
+
+  .start-campaign-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   /* Console & Logs */
