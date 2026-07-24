@@ -329,6 +329,27 @@
     }
   }
 
+  let hasExpiredSessions = $derived(
+    sessions.some(s => sessionStatuses[s.imei]?.valid === false)
+  );
+
+  async function deleteInactiveSessions() {
+    const expiredSessions = sessions.filter(s => sessionStatuses[s.imei]?.valid === false);
+    if (expiredSessions.length === 0) return;
+    if (!confirm(`Bạn có chắc muốn xóa ${expiredSessions.length} phiên Zalo không hoạt động/đã hết hạn?`)) return;
+
+    for (const s of expiredSessions) {
+      try {
+        await invoke('delete_zalo_session', { imei: s.imei });
+        selectedImeis = selectedImeis.filter(i => i !== s.imei);
+      } catch (e) {
+        console.error(`Failed to delete session ${s.imei}:`, e);
+      }
+    }
+    await loadSessions();
+  }
+
+
   // Template CRUD actions
   function openCreateTemplate() {
     editingTemplateId = null;
@@ -565,7 +586,13 @@
       <div class="card session-card">
         <div class="card-header">
           <h2>Zalo Sessions</h2>
-          <div style="display: flex; gap: var(--spacing-xs); align-items: center;">
+          <div style="display: flex; gap: var(--spacing-xs); align-items: center; flex-wrap: wrap;">
+            {#if hasExpiredSessions}
+              <button type="button" class="add-session-btn delete-invalid-btn" onclick={deleteInactiveSessions} title="Xóa tất cả phiên không hoạt động">
+                <span class="material-icons">delete_sweep</span>
+                Xóa phiên lỗi
+              </button>
+            {/if}
             <button type="button" class="add-session-btn" onclick={verifyAllSessions} disabled={isVerifyingAll || sessions.length === 0} title="Kiểm tra tất cả">
               <span class="material-icons" class:spinning={isVerifyingAll}>sync</span>
               Kiểm tra tất cả
@@ -606,11 +633,11 @@
                     <span class="session-ua">{(s.user_agent || '').substring(0, 40)}...</span>
                   </span>
                 </button>
-                <div style="display: flex; gap: 2px;">
+                <div class="session-actions">
                   <button type="button" class="action-btn" onclick={() => verifySession(s.imei)} title="Kiểm tra phiên" disabled={sessionStatuses[s.imei]?.checking}>
                     <span class="material-icons" class:spinning={sessionStatuses[s.imei]?.checking}>refresh</span>
                   </button>
-                  <button type="button" class="delete-btn" onclick={() => deleteSession(s.imei)} title="Delete Session">
+                  <button type="button" class="delete-btn" onclick={() => deleteSession(s.imei)} title="Xóa phiên">
                     <span class="material-icons">delete</span>
                   </button>
                 </div>
@@ -1102,6 +1129,7 @@
     border-radius: var(--rounded-md);
     transition: var(--transition-fast);
     background: var(--color-surface-container-lowest);
+    min-width: 0;
   }
 
   .session-item:hover {
@@ -1136,11 +1164,13 @@
     padding: 0;
     font-family: inherit;
     color: inherit;
+    min-width: 0;
   }
 
   .status-icon {
     font-size: 18px;
     color: var(--color-neutral-slate);
+    flex-shrink: 0;
   }
 
   .status-icon.active {
@@ -1150,16 +1180,41 @@
   .session-details {
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .session-name {
     font-size: 13px;
     font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .session-ua {
     font-size: 11px;
     color: var(--color-neutral-slate);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .session-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: var(--spacing-xs);
+  }
+
+  .delete-invalid-btn {
+    background: rgba(244, 63, 94, 0.1) !important;
+    color: var(--color-danger) !important;
+    border-color: rgba(244, 63, 94, 0.3) !important;
+  }
+  .delete-invalid-btn:hover {
+    background: rgba(244, 63, 94, 0.2) !important;
   }
 
   .delete-btn {
@@ -1169,6 +1224,7 @@
     align-items: center;
     padding: var(--spacing-xs);
     border-radius: var(--rounded-sm);
+    flex-shrink: 0;
   }
 
   .delete-btn:hover {
