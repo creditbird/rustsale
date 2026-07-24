@@ -11,7 +11,7 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import * as Select from '$lib/components/ui/select';
   import { Progress } from '$lib/components/ui/progress';
-  import { MessageSquare, Plus, RefreshCw, Trash2, Edit, QrCode, Send, CheckCircle, AlertCircle, User } from 'lucide-svelte';
+  import { MessageSquare, Plus, RefreshCw, Trash2, Edit, QrCode, Send, CheckCircle, AlertCircle, User, Upload, Image, X, FileImage } from 'lucide-svelte';
 
   interface ZaloSession {
     imei: string;
@@ -71,6 +71,7 @@
   let templateContent = $state('');
   let templateImageUrl = $state('');
   let templateError = $state<string | null>(null);
+  let fileInputRef = $state<HTMLInputElement | null>(null);
 
   let isDeleteSessionModalOpen = $state(false);
   let sessionToDelete = $state<ZaloSession | null>(null);
@@ -323,12 +324,36 @@
     }
   }
 
+  function triggerFileInput() {
+    fileInputRef?.click();
+  }
+
+  function handleFileSelect(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (input.files && input.files[0]) {
+      const file = input.files[0];
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          templateImageUrl = event.target.result as string;
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function removeImageAttachment() {
+    templateImageUrl = '';
+    if (fileInputRef) fileInputRef.value = '';
+  }
+
   function openCreateTemplate() {
     editingTemplateId = null;
     templateName = '';
     templateContent = '';
     templateImageUrl = '';
     templateError = null;
+    if (fileInputRef) fileInputRef.value = '';
     isTemplateModalOpen = true;
   }
 
@@ -853,16 +878,50 @@
         <label for="tpl-content" class="font-semibold text-foreground">Message Content</label>
         <textarea id="tpl-content" rows="4" bind:value={templateContent} placeholder="Write template content..." class="w-full rounded-md border border-input bg-background p-2 text-xs"></textarea>
       </div>
-      <div class="flex flex-col gap-1">
-        <label for="tpl-image" class="font-semibold text-foreground flex items-center justify-between">
-          <span>Image Attachment (URL or Local Path)</span>
+      <div class="flex flex-col gap-1.5">
+        <div class="flex items-center justify-between">
+          <label for="tpl-image" class="font-semibold text-foreground">Image Attachment</label>
           <span class="text-[10px] text-muted-foreground font-normal">Optional</span>
-        </label>
-        <Input id="tpl-image" bind:value={templateImageUrl} placeholder="https://example.com/photo.jpg or /path/to/image.jpg" class="text-xs" />
+        </div>
+
+        <input
+          type="file"
+          accept="image/*"
+          bind:this={fileInputRef}
+          onchange={handleFileSelect}
+          class="hidden"
+        />
+
         {#if templateImageUrl.trim()}
-          <div class="mt-1 flex items-center gap-2 p-1.5 rounded bg-muted/30 border border-border">
-            <img src={templateImageUrl} alt="Preview" class="size-12 rounded object-cover border border-border shrink-0" onerror={(e: Event) => ((e.currentTarget as HTMLElement).style.display = 'none')} />
-            <span class="text-[10px] text-muted-foreground truncate">{templateImageUrl}</span>
+          <div class="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-border bg-card shadow-xs">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <img
+                src={templateImageUrl}
+                alt="Template attachment preview"
+                class="size-14 rounded-md object-cover border border-border shrink-0 shadow-xs"
+                onerror={(e: Event) => ((e.currentTarget as HTMLElement).style.display = 'none')}
+              />
+              <div class="flex flex-col gap-0.5 truncate text-xs">
+                <span class="font-medium text-foreground truncate flex items-center gap-1">
+                  <FileImage class="size-3.5 text-emerald-600 shrink-0" />
+                  Image attached
+                </span>
+                <span class="text-[10px] text-muted-foreground truncate">
+                  {templateImageUrl.startsWith('data:image/') ? 'Uploaded from computer' : templateImageUrl}
+                </span>
+              </div>
+            </div>
+            <Button variant="ghost" size="sm" class="size-7 p-0 text-destructive hover:bg-destructive/10 shrink-0" onclick={removeImageAttachment}>
+              <X class="size-4" />
+            </Button>
+          </div>
+        {:else}
+          <div class="flex flex-col gap-2 p-3 rounded-lg border border-dashed border-border bg-accent/20 text-center items-center justify-center">
+            <Button type="button" variant="outline" size="sm" class="h-8 text-xs gap-1.5 bg-background shadow-xs" onclick={triggerFileInput}>
+              <Upload class="size-3.5 text-emerald-600" /> Upload Image from Computer
+            </Button>
+            <div class="text-[10px] text-muted-foreground">or enter image URL / local path</div>
+            <Input id="tpl-image" bind:value={templateImageUrl} placeholder="https://example.com/photo.jpg or /path/to/image.jpg" class="text-xs h-8 bg-background" />
           </div>
         {/if}
       </div>

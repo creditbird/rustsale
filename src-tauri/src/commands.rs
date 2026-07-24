@@ -2011,7 +2011,32 @@ pub async fn send_zalo_outreach_internal(
             let formatted_content = render_zalo_template(&template_content, &lead_name);
 
             let attachments = template_image_url.as_ref().filter(|s| !s.trim().is_empty()).map(|url| {
-                if url.starts_with("http://") || url.starts_with("https://") {
+                if url.starts_with("data:image/") {
+                    use base64::Engine;
+                    let parts: Vec<&str> = url.split(',').collect();
+                    let base64_str = parts.get(1).copied().unwrap_or("");
+                    let data = base64::engine::general_purpose::STANDARD
+                        .decode(base64_str)
+                        .unwrap_or_default();
+                    let ext = if url.contains("image/png") {
+                        "png"
+                    } else if url.contains("image/webp") {
+                        "webp"
+                    } else if url.contains("image/gif") {
+                        "gif"
+                    } else {
+                        "jpg"
+                    };
+                    vec![zca_rs::models::AttachmentSource::Buffer {
+                        data: data.clone(),
+                        filename: format!("attachment.{}", ext),
+                        metadata: zca_rs::models::AttachmentMetadata {
+                            total_size: data.len() as u64,
+                            width: None,
+                            height: None,
+                        },
+                    }]
+                } else if url.starts_with("http://") || url.starts_with("https://") {
                     vec![zca_rs::models::AttachmentSource::Url(url.clone())]
                 } else {
                     vec![zca_rs::models::AttachmentSource::Buffer {
