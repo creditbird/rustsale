@@ -1413,13 +1413,14 @@ pub fn get_outreach_templates(
 pub fn create_outreach_template(
     name: String,
     content: String,
+    image_url: Option<String>,
     state: tauri::State<DbState>,
 ) -> Result<i32, String> {
     let conn = state
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::create_outreach_template(&conn, &name, &content)
+    crate::db::create_outreach_template(&conn, &name, &content, image_url.as_deref())
         .map_err(|e| format!("Database error: {}", e))
 }
 
@@ -1428,13 +1429,14 @@ pub fn update_outreach_template(
     id: i32,
     name: String,
     content: String,
+    image_url: Option<String>,
     state: tauri::State<DbState>,
 ) -> Result<(), String> {
     let conn = state
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::update_outreach_template(&conn, id, &name, &content)
+    crate::db::update_outreach_template(&conn, id, &name, &content, image_url.as_deref())
         .map_err(|e| format!("Database error: {}", e))
 }
 
@@ -1826,12 +1828,12 @@ pub async fn send_zalo_outreach_internal(
             }
         };
 
-    let template_content = {
+    let (template_content, template_image_url) = {
         let conn_guard = conn_mutex.lock().unwrap();
         let res = conn_guard.query_row(
-            "SELECT content FROM outreach_templates WHERE id = ?1",
+            "SELECT content, image_url FROM outreach_templates WHERE id = ?1",
             [template_id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
         );
         match res {
             Ok(c) => c,
@@ -2008,13 +2010,33 @@ pub async fn send_zalo_outreach_internal(
         if let Some(user) = user_opt {
             let formatted_content = render_zalo_template(&template_content, &lead_name);
 
+            let attachments = template_image_url.as_ref().filter(|s| !s.trim().is_empty()).map(|url| {
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    vec![zca_rs::models::AttachmentSource::Url(url.clone())]
+                } else {
+                    vec![zca_rs::models::AttachmentSource::Buffer {
+                        data: std::fs::read(url).unwrap_or_default(),
+                        filename: std::path::Path::new(url)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("image.jpg")
+                            .to_string(),
+                        metadata: zca_rs::models::AttachmentMetadata {
+                            total_size: std::fs::metadata(url).map(|m| m.len()).unwrap_or(0),
+                            width: None,
+                            height: None,
+                        },
+                    }]
+                }
+            });
+
             let msg_content = zca_rs::models::MessageContent {
                 msg: formatted_content.clone(),
                 styles: None,
                 urgency: None,
                 quote: None,
                 mentions: None,
-                attachments: None,
+                attachments,
                 ttl: None,
             };
 

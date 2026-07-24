@@ -64,6 +64,7 @@ pub struct OutreachTemplate {
     pub id: Option<i32>,
     pub name: String,
     pub content: String,
+    pub image_url: Option<String>,
     pub created_at: String,
 }
 

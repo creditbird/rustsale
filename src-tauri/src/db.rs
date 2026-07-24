@@ -102,10 +102,12 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 content TEXT NOT NULL,
+                image_url TEXT,
                 created_at TEXT NOT NULL
             )",
             [],
         )?;
+        let _ = tx.execute("ALTER TABLE outreach_templates ADD COLUMN image_url TEXT", []);
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS categories (
@@ -308,13 +310,14 @@ pub fn delete_zalo_session(conn: &Connection, imei: &str) -> Result<()> {
 }
 
 pub fn get_outreach_templates(conn: &Connection) -> Result<Vec<crate::models::OutreachTemplate>> {
-    let mut stmt = conn.prepare("SELECT id, name, content, created_at FROM outreach_templates")?;
+    let mut stmt = conn.prepare("SELECT id, name, content, image_url, created_at FROM outreach_templates")?;
     let rows = stmt.query_map([], |row| {
         Ok(crate::models::OutreachTemplate {
             id: Some(row.get(0)?),
             name: row.get(1)?,
             content: row.get(2)?,
-            created_at: row.get(3)?,
+            image_url: row.get(3)?,
+            created_at: row.get(4)?,
         })
     })?;
     let mut templates = Vec::new();
@@ -324,14 +327,19 @@ pub fn get_outreach_templates(conn: &Connection) -> Result<Vec<crate::models::Ou
     Ok(templates)
 }
 
-pub fn create_outreach_template(conn: &Connection, name: &str, content: &str) -> Result<i32> {
+pub fn create_outreach_template(
+    conn: &Connection,
+    name: &str,
+    content: &str,
+    image_url: Option<&str>,
+) -> Result<i32> {
     let now: String =
         conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
             row.get(0)
         })?;
     conn.execute(
-        "INSERT INTO outreach_templates (name, content, created_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params![name, content, now],
+        "INSERT INTO outreach_templates (name, content, image_url, created_at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![name, content, image_url, now],
     )?;
     let last_id = conn.last_insert_rowid() as i32;
     Ok(last_id)
@@ -342,10 +350,11 @@ pub fn update_outreach_template(
     id: i32,
     name: &str,
     content: &str,
+    image_url: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE outreach_templates SET name = ?1, content = ?2 WHERE id = ?3",
-        rusqlite::params![name, content, id],
+        "UPDATE outreach_templates SET name = ?1, content = ?2, image_url = ?3 WHERE id = ?4",
+        rusqlite::params![name, content, image_url, id],
     )?;
     Ok(())
 }

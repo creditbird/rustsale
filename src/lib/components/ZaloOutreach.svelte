@@ -34,6 +34,7 @@
     id?: number;
     name: string;
     content: string;
+    image_url?: string | null;
     created_at?: string;
   }
 
@@ -68,6 +69,7 @@
   let editingTemplateId = $state<number | null>(null);
   let templateName = $state('');
   let templateContent = $state('');
+  let templateImageUrl = $state('');
   let templateError = $state<string | null>(null);
 
   let isDeleteSessionModalOpen = $state(false);
@@ -325,6 +327,7 @@
     editingTemplateId = null;
     templateName = '';
     templateContent = '';
+    templateImageUrl = '';
     templateError = null;
     isTemplateModalOpen = true;
   }
@@ -333,6 +336,7 @@
     editingTemplateId = template.id || null;
     templateName = template.name;
     templateContent = template.content;
+    templateImageUrl = template.image_url || '';
     templateError = null;
     isTemplateModalOpen = true;
   }
@@ -343,10 +347,20 @@
       return;
     }
     try {
+      const imageUrlParam = templateImageUrl.trim() ? templateImageUrl.trim() : null;
       if (editingTemplateId !== null) {
-        await invoke('update_outreach_template', { id: editingTemplateId, name: templateName, content: templateContent });
+        await invoke('update_outreach_template', {
+          id: editingTemplateId,
+          name: templateName,
+          content: templateContent,
+          imageUrl: imageUrlParam,
+        });
       } else {
-        await invoke('create_outreach_template', { name: templateName, content: templateContent });
+        await invoke('create_outreach_template', {
+          name: templateName,
+          content: templateContent,
+          imageUrl: imageUrlParam,
+        });
       }
       isTemplateModalOpen = false;
       await loadTemplates();
@@ -535,9 +549,19 @@
                 tabindex="0"
                 onkeydown={(e) => e.key === 'Enter' && t.id && (selectedTemplateId = t.id)}
               >
-                <div class="truncate flex flex-col gap-0.5">
-                  <div class="font-semibold text-foreground">{t.name}</div>
-                  <div class="text-[11px] text-muted-foreground truncate">{t.content}</div>
+                <div class="truncate flex items-center gap-2 min-w-0">
+                  {#if t.image_url}
+                    <img src={t.image_url} alt="Attachment" class="size-8 rounded object-cover border border-border shrink-0" onerror={(e: Event) => ((e.currentTarget as HTMLElement).style.display = 'none')} />
+                  {/if}
+                  <div class="truncate flex flex-col gap-0.5 min-w-0">
+                    <div class="font-semibold text-foreground flex items-center gap-1.5">
+                      <span class="truncate">{t.name}</span>
+                      {#if t.image_url}
+                        <Badge variant="secondary" class="text-[9px] px-1 py-0 h-4 shrink-0 font-normal">📷 Image</Badge>
+                      {/if}
+                    </div>
+                    <div class="text-[11px] text-muted-foreground truncate">{t.content}</div>
+                  </div>
                 </div>
                 <div class="flex items-center gap-1 shrink-0">
                   <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditTemplate(t); }}>
@@ -827,7 +851,20 @@
       </div>
       <div class="flex flex-col gap-1">
         <label for="tpl-content" class="font-semibold text-foreground">Message Content</label>
-        <textarea id="tpl-content" rows="5" bind:value={templateContent} placeholder="Write template content..." class="w-full rounded-md border border-input bg-background p-2 text-xs"></textarea>
+        <textarea id="tpl-content" rows="4" bind:value={templateContent} placeholder="Write template content..." class="w-full rounded-md border border-input bg-background p-2 text-xs"></textarea>
+      </div>
+      <div class="flex flex-col gap-1">
+        <label for="tpl-image" class="font-semibold text-foreground flex items-center justify-between">
+          <span>Image Attachment (URL or Local Path)</span>
+          <span class="text-[10px] text-muted-foreground font-normal">Optional</span>
+        </label>
+        <Input id="tpl-image" bind:value={templateImageUrl} placeholder="https://example.com/photo.jpg or /path/to/image.jpg" class="text-xs" />
+        {#if templateImageUrl.trim()}
+          <div class="mt-1 flex items-center gap-2 p-1.5 rounded bg-muted/30 border border-border">
+            <img src={templateImageUrl} alt="Preview" class="size-12 rounded object-cover border border-border shrink-0" onerror={(e: Event) => ((e.currentTarget as HTMLElement).style.display = 'none')} />
+            <span class="text-[10px] text-muted-foreground truncate">{templateImageUrl}</span>
+          </div>
+        {/if}
       </div>
     </div>
     <Dialog.Footer class="gap-2">
