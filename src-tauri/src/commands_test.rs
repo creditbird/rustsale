@@ -254,6 +254,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_zalo_session_status_serialization_and_verification_internal() {
+        use crate::models::ZaloSessionStatus;
+        use crate::models::ZaloSession;
+
+        // Test serialization / deserialization
+        let status = ZaloSessionStatus {
+            imei: "imei-123".to_string(),
+            is_valid: true,
+            display_name: Some("Test User".to_string()),
+            avatar: Some("https://avatar.url".to_string()),
+            error_message: None,
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""imei":"imei-123""#));
+        assert!(json.contains(r#""is_valid":true"#));
+        assert!(json.contains(r#""display_name":"Test User""#));
+
+        let deserialized: ZaloSessionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(status, deserialized);
+
+        // Test invalid cookies JSON in verify_zalo_session_internal
+        let invalid_session = ZaloSession {
+            imei: "imei-bad-cookies".to_string(),
+            user_agent: "MockUA".to_string(),
+            cookies_json: "not valid json".to_string(),
+            language: "vi".to_string(),
+        };
+
+        let verify_res = commands::verify_zalo_session_internal(invalid_session).await.unwrap();
+        assert_eq!(verify_res.imei, "imei-bad-cookies");
+        assert!(!verify_res.is_valid);
+        assert!(verify_res.error_message.unwrap().contains("Invalid cookies format"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_zalo_session_commands_with_state() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri::Manager;
+
+        let conn = db::init_db(":memory:").unwrap();
+        let db_state = commands::DbState {
+            conn: std::sync::Mutex::new(conn),
+        };
+
+        let app = mock_builder()
+            .manage(db_state)
+            .build(mock_context(noop_assets()))
+            .unwrap();
+
+        let state = app.state::<commands::DbState>();
+
+        // Test verify_all_zalo_sessions on empty DB
+        let all_statuses = commands::verify_all_zalo_sessions(state.clone()).await.unwrap();
+        assert!(all_statuses.is_empty());
+
+        // Test verify_zalo_session with non-existent IMEI
+        let err = commands::verify_zalo_session("non-existent-imei".to_string(), state.clone())
+            .await
+            .unwrap_err();
+        assert!(err.contains("Session with IMEI non-existent-imei not found"));
+    }
+
+    #[test]
+    fn test_zalo_qr_session_rejects_callback_without_device_imei() {
+        let conn = db::init_db(":memory:").unwrap();
+        let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".to_string();
+        let event = zca_rs::apis::auth::LoginQREvent::GotLoginInfo {
+            cookie: vec![zca_rs::context::ZaloCookie {
+                name: "zpw_sek".to_string(),
+                value: "sek-123456".to_string(),
+                domain: "zalo.me".to_string(),
+                path: "/".to_string(),
+            }],
+            imei: String::new(),
+            user_agent,
+        };
+
+        let error = commands::handle_zalo_qr_event(event, Some(&conn)).unwrap_err();
+        assert_eq!(error, "Zalo returned a session without a device IMEI");
+
+        let sessions = commands::get_zalo_sessions_internal(&conn).unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn test_persist_authenticated_zalo_session() {
+        let conn = db::init_db(":memory:").unwrap();
+        let cookies = vec![zca_rs::context::ZaloCookie {
+            name: "zpw_sek".to_string(),
+            value: "sek-123456".to_string(),
+            domain: "zalo.me".to_string(),
+            path: "/".to_string(),
+        }];
+
+        let payload = commands::persist_authenticated_zalo_session(
+            &conn,
+            "imei-final",
+            "Mozilla/FinalUA",
+            &cookies,
+        )
+        .unwrap();
+
+        assert_eq!(payload.imei, "imei-final");
+        let sessions = commands::get_zalo_sessions_internal(&conn).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].imei, "imei-final");
+        assert_eq!(sessions[0].user_agent, "Mozilla/FinalUA");
+    }
+
+    #[tokio::test]
     async fn test_send_zalo_outreach_mock() {
         use std::sync::Mutex;
 
@@ -263,7 +374,7 @@ mod tests {
 
         // 1. Create a template
         let template_id =
-            db::create_outreach_template(&conn, "Template Welcome", "Hello {name}!").unwrap();
+            db::create_outreach_template(&conn, "Template Welcome", "Hello [name]!").unwrap();
 
         // 2. Add some leads
         // Lead 1: valid phone
@@ -669,6 +780,107 @@ mod tests {
         assert_eq!(l4.zalo_reached, 1);
         let h4: i64 = conn_locked.query_row("SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'SUCCESS'", [lead_4], |row| row.get(0)).unwrap();
         assert_eq!(h4, 1);
+    }
+
+    #[tokio::test]
+    async fn test_send_zalo_campaign_continues_after_lead_send_failure() {
+        use std::sync::Mutex;
+
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+        let template_id =
+            db::create_outreach_template(&conn, "Campaign Template", "Hello [name]!").unwrap();
+        let category_id = db::create_category(&conn, "Campaign Category").unwrap();
+
+        let lead_1 = commands::add_lead_internal(
+            &mut conn,
+            "First Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "0912345678".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        let lead_2 = commands::add_lead_internal(
+            &mut conn,
+            "Failing Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "mock-send-fail".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        let lead_3 = commands::add_lead_internal(
+            &mut conn,
+            "Last Lead".to_string(),
+            "Inc".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            "".to_string(),
+            "0987654321".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        for lead_id in [lead_1, lead_2, lead_3] {
+            db::add_lead_to_category(&conn, lead_id, category_id).unwrap();
+            conn.execute(
+                "UPDATE leads SET zalo_uid = ?1 WHERE id = ?2",
+                rusqlite::params![format!("uid-{lead_id}"), lead_id],
+            )
+            .unwrap();
+        }
+
+        let db_mutex = Mutex::new(conn);
+        commands::send_zalo_campaign_internal(
+            None,
+            &db_mutex,
+            category_id,
+            template_id,
+            vec!["mock-success-imei".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let conn = db_mutex.lock().unwrap();
+        assert_eq!(
+            commands::get_lead_details_internal(&conn, lead_1)
+                .unwrap()
+                .zalo_reached,
+            1
+        );
+        assert_eq!(
+            commands::get_lead_details_internal(&conn, lead_2)
+                .unwrap()
+                .zalo_reached,
+            0
+        );
+        assert_eq!(
+            commands::get_lead_details_internal(&conn, lead_3)
+                .unwrap()
+                .zalo_reached,
+            1
+        );
+
+        let failure: (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(error_message), '') FROM outreach_history WHERE lead_id = ?1 AND status = 'FAILED'",
+                [lead_2],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(failure.0, 1);
+        assert!(failure.1.contains("Mock lead send failure"));
     }
 
     #[tokio::test]

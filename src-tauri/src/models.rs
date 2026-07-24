@@ -75,3 +75,13 @@ pub struct ZaloSession {
     pub cookies_json: String,
     pub language: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ZaloSessionStatus {
+    pub imei: String,
+    pub is_valid: bool,
+    pub display_name: Option<String>,
+    pub avatar: Option<String>,
+    pub error_message: Option<String>,
+}
+

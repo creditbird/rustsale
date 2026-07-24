@@ -67,6 +67,8 @@ pub fn run() {
             commands::start_zalo_qr_login,
             commands::get_zalo_sessions,
             commands::delete_zalo_session,
+            commands::verify_zalo_session,
+            commands::verify_all_zalo_sessions,
             commands::get_outreach_templates,
             commands::create_outreach_template,
             commands::update_outreach_template,

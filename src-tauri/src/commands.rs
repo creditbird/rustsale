@@ -1,4 +1,4 @@
-use crate::models::{Activity, Category, Deal, Lead};
+use crate::models::{Activity, Category, Deal, Lead, ZaloSessionStatus};
 use rusqlite::Connection;
 use std::sync::Mutex;
 
@@ -934,6 +934,42 @@ pub struct ZaloQRSuccessPayload {
     pub imei: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct ZaloQRErrorPayload {
+    pub message: String,
+}
+
+fn emit_zalo_qr_error(app_handle: &tauri::AppHandle, message: &str) {
+    if let Err(error) = app_handle.emit(
+        "zalo-qr-error",
+        ZaloQRErrorPayload {
+            message: message.to_string(),
+        },
+    ) {
+        eprintln!("Failed to emit Zalo QR error event: {}", error);
+    }
+}
+
+pub fn persist_authenticated_zalo_session(
+    conn: &Connection,
+    imei: &str,
+    user_agent: &str,
+    cookies: &[zca_rs::context::ZaloCookie],
+) -> Result<ZaloQRSuccessPayload, String> {
+    let imei = imei.trim();
+    if imei.is_empty() {
+        return Err("Zalo returned a session without a device IMEI".to_string());
+    }
+
+    let cookies_json = serde_json::to_string(cookies).map_err(|error| error.to_string())?;
+    crate::db::save_zalo_session(conn, imei, user_agent, &cookies_json, "vi")
+        .map_err(|error| error.to_string())?;
+
+    Ok(ZaloQRSuccessPayload {
+        imei: imei.to_string(),
+    })
+}
+
 #[tauri::command]
 pub async fn start_zalo_qr_login(
     app_handle: tauri::AppHandle,
@@ -946,40 +982,28 @@ pub async fn start_zalo_qr_login(
 
         let callback =
             move |event: zca_rs::apis::auth::LoginQREvent| -> zca_rs::apis::auth::QRCallbackResult {
-                let is_got_login_info =
-                    matches!(event, zca_rs::apis::auth::LoginQREvent::GotLoginInfo { .. });
-                let is_declined = matches!(event, zca_rs::apis::auth::LoginQREvent::QRCodeDeclined);
+                let is_declined = matches!(
+                    &event,
+                    zca_rs::apis::auth::LoginQREvent::QRCodeDeclined
+                );
 
-                let db_state;
-                let mut conn_guard = None;
-                let mut lock_err = None;
-
-                if is_got_login_info {
-                    db_state = callback_app_handle.state::<DbState>();
-                    match db_state.conn.lock() {
-                        Ok(guard) => {
-                            conn_guard = Some(guard);
-                        }
-                        Err(e) => {
-                            lock_err =
-                                Some(format!("Failed to lock database for Zalo session: {}", e));
-                        }
-                    }
+                if matches!(
+                    &event,
+                    zca_rs::apis::auth::LoginQREvent::GotLoginInfo { .. }
+                ) {
+                    return zca_rs::apis::auth::QRCallbackResult::Continue;
                 }
 
-                let handle_res = if let Some(err) = lock_err {
-                    Err(err)
-                } else {
-                    let conn_ref = conn_guard.as_deref();
-                    handle_zalo_qr_event(event, conn_ref)
-                };
-
-                match handle_res {
+                match handle_zalo_qr_event(event, None) {
                     Ok((event_name, payload)) => {
                         let _ = callback_app_handle.emit(&event_name, payload);
                     }
                     Err(e) => {
                         eprintln!("Error handling Zalo QR event: {}", e);
+                        emit_zalo_qr_error(
+                            &callback_app_handle,
+                            "Zalo confirmed the scan but did not create a usable session. Please try again.",
+                        );
                     }
                 }
 
@@ -991,8 +1015,61 @@ pub async fn start_zalo_qr_login(
             };
 
         let options = zca_rs::Options::default();
-        if let Err(e) = zca_rs::Zalo::login_qr(options, callback).await {
-            eprintln!("Zalo QR login failed or cancelled: {:?}", e);
+        match zca_rs::Zalo::login_qr(options, callback).await {
+            Ok(zalo) => {
+                let db_state = app_handle_clone.state::<DbState>();
+                let conn = match db_state.conn.lock() {
+                    Ok(conn) => conn,
+                    Err(error) => {
+                        eprintln!("Failed to lock database for Zalo session: {}", error);
+                        emit_zalo_qr_error(
+                            &app_handle_clone,
+                            "Zalo login succeeded, but the session could not be saved. Please try again.",
+                        );
+                        return;
+                    }
+                };
+
+                let cookies = zalo.ctx.cookie_jar.to_vec();
+                match persist_authenticated_zalo_session(
+                    &conn,
+                    &zalo.ctx.imei,
+                    &zalo.ctx.user_agent,
+                    &cookies,
+                ) {
+                    Ok(payload) => match serde_json::to_value(payload) {
+                        Ok(payload) => {
+                            let _ = app_handle_clone.emit("zalo-qr-success", payload);
+                        }
+                        Err(error) => {
+                            eprintln!("Failed to serialize Zalo QR success event: {}", error);
+                            emit_zalo_qr_error(
+                                &app_handle_clone,
+                                "Zalo login succeeded, but the session could not be saved. Please try again.",
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("Failed to persist Zalo session: {}", error);
+                        emit_zalo_qr_error(
+                            &app_handle_clone,
+                            "Zalo login succeeded, but the session could not be saved. Please try again.",
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("Zalo QR login failed or cancelled: {:?}", error);
+                if !matches!(
+                    error,
+                    zca_rs::ZaloError::LoginQRAborted | zca_rs::ZaloError::LoginQRDeclined
+                ) {
+                    emit_zalo_qr_error(
+                        &app_handle_clone,
+                        "Zalo could not complete the login session. No session was saved. Please try again.",
+                    );
+                }
+            }
         }
     });
 
@@ -1039,14 +1116,17 @@ pub fn handle_zalo_qr_event(
             imei,
             user_agent,
         } => {
-            let cookies_json = serde_json::to_string(&cookie).map_err(|e| e.to_string())?;
             if let Some(c) = conn {
-                crate::db::save_zalo_session(c, &imei, &user_agent, &cookies_json, "vi")
-                    .map_err(|e| e.to_string())?;
+                let payload = persist_authenticated_zalo_session(c, &imei, &user_agent, &cookie)?;
+                return serde_json::to_value(payload)
+                    .map(|payload| ("zalo-qr-success".to_string(), payload))
+                    .map_err(|error| error.to_string());
             }
 
-            let payload =
-                serde_json::to_value(ZaloQRSuccessPayload { imei }).map_err(|e| e.to_string())?;
+            let payload = serde_json::to_value(ZaloQRSuccessPayload {
+                imei,
+            })
+            .map_err(|e| e.to_string())?;
             Ok(("zalo-qr-success".to_string(), payload))
         }
     }
@@ -1080,6 +1160,94 @@ pub fn delete_zalo_session(imei: String, state: tauri::State<DbState>) -> Result
 
 pub fn delete_zalo_session_internal(conn: &Connection, imei: &str) -> Result<(), String> {
     crate::db::delete_zalo_session(conn, imei).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub async fn verify_zalo_session(
+    imei: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<ZaloSessionStatus, String> {
+    let session = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|e| format!("Database lock error: {}", e))?;
+        crate::db::get_zalo_session(&conn, &imei)
+            .map_err(|e| format!("Database error: {}", e))?
+            .ok_or_else(|| format!("Session with IMEI {} not found", imei))?
+    };
+
+    verify_zalo_session_internal(session).await
+}
+
+pub async fn verify_zalo_session_internal(
+    session: crate::models::ZaloSession,
+) -> Result<ZaloSessionStatus, String> {
+    let cookies: Vec<zca_rs::context::ZaloCookie> = match serde_json::from_str(&session.cookies_json) {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(ZaloSessionStatus {
+                imei: session.imei,
+                is_valid: false,
+                display_name: None,
+                avatar: None,
+                error_message: Some(format!("Invalid cookies format: {}", e)),
+            });
+        }
+    };
+
+    let options = zca_rs::Options::default();
+    match zca_rs::Zalo::login(session.imei.clone(), session.user_agent.clone(), cookies, options).await {
+        Ok(zalo) => match zalo.fetch_account_info().await {
+            Ok(info) => {
+                let name = info.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let avatar = info.get("avatar").and_then(|v| v.as_str()).map(|s| s.to_string());
+                Ok(ZaloSessionStatus {
+                    imei: session.imei,
+                    is_valid: true,
+                    display_name: name,
+                    avatar,
+                    error_message: None,
+                })
+            }
+            Err(e) => Ok(ZaloSessionStatus {
+                imei: session.imei,
+                is_valid: false,
+                display_name: None,
+                avatar: None,
+                error_message: Some(format!("Failed to fetch account profile: {}", e)),
+            }),
+        },
+        Err(e) => Ok(ZaloSessionStatus {
+            imei: session.imei,
+            is_valid: false,
+            display_name: None,
+            avatar: None,
+            error_message: Some(format!("Login failed: {}", e)),
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn verify_all_zalo_sessions(
+    state: tauri::State<'_, DbState>,
+) -> Result<Vec<ZaloSessionStatus>, String> {
+    let sessions = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|e| format!("Database lock error: {}", e))?;
+        crate::db::get_all_zalo_sessions(&conn).map_err(|e| format!("Database error: {}", e))?
+    };
+
+    let mut results = Vec::new();
+    for session in sessions {
+        match verify_zalo_session_internal(session).await {
+            Ok(status) => results.push(status),
+            Err(e) => eprintln!("Session verification error: {}", e),
+        }
+    }
+    Ok(results)
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1200,6 +1368,40 @@ fn is_vn_mobile(phone: &str) -> bool {
     
     let prefix = &normalized[0..2];
     matches!(prefix, "03" | "05" | "07" | "08" | "09")
+}
+
+fn render_zalo_template(template: &str, lead_name: &str) -> String {
+    template
+        .replace("[name]", lead_name)
+        .replace("{name}", lead_name)
+}
+
+fn should_rotate_zalo_session(error: &zca_rs::ZaloError) -> bool {
+    match error {
+        zca_rs::ZaloError::ApiError { message, code } => {
+            if matches!(code, Some(102 | 401 | 403 | 429)) {
+                return true;
+            }
+
+            let message = message.to_ascii_lowercase();
+            [
+                "rate limit",
+                "too many request",
+                "session",
+                "login",
+                "unauthorized",
+                "forbidden",
+                "expired",
+            ]
+            .iter()
+            .any(|needle| message.contains(needle))
+        }
+        zca_rs::ZaloError::Crypto(message) => {
+            let message = message.to_ascii_lowercase();
+            message.contains("secret key") || message.contains("session")
+        }
+        _ => false,
+    }
 }
 
 pub async fn send_zalo_outreach_internal(
@@ -1326,7 +1528,7 @@ pub async fn send_zalo_outreach_internal(
                 continue;
             }
 
-            let formatted_content = template_content.replace("{name}", &lead_name);
+            let formatted_content = render_zalo_template(&template_content, &lead_name);
             total_sent += 1;
             let log_msg = format!("Message sent to {} ({}) (Mock)", lead_name, sanitized_phone);
             if let Some(app) = app_handle {
@@ -1677,7 +1879,7 @@ pub async fn send_zalo_outreach_internal(
         };
 
         if let Some(user) = user_opt {
-            let formatted_content = template_content.replace("{name}", &lead_name);
+            let formatted_content = render_zalo_template(&template_content, &lead_name);
 
             let msg_content = zca_rs::models::MessageContent {
                 msg: formatted_content.clone(),
@@ -2038,7 +2240,10 @@ pub async fn send_zalo_campaign_internal(
     let mut eligible_leads = Vec::new();
     for lead in leads {
         let is_valid_phone = if is_mock {
-            lead.phone == "not-found" || lead.phone == "mock-rate-limit" || is_vn_mobile(&lead.phone)
+            lead.phone == "not-found"
+                || lead.phone == "mock-rate-limit"
+                || lead.phone == "mock-send-fail"
+                || is_vn_mobile(&lead.phone)
         } else {
             is_vn_mobile(&lead.phone)
         };
@@ -2164,7 +2369,7 @@ pub async fn send_zalo_campaign_internal(
         let current_imei = active_imeis[active_index].clone();
         
         let sanitized_phone: String = lead.phone.chars().filter(|c| c.is_ascii_digit()).collect();
-        let formatted_content = template_content.replace("{name}", &lead.name);
+        let formatted_content = render_zalo_template(&template_content, &lead.name);
         
         let mut uid = lead.zalo_uid.clone();
         
@@ -2287,13 +2492,18 @@ pub async fn send_zalo_campaign_internal(
             }
         }
         
-        let mut send_success = false;
-        
-        if is_mock {
+        let send_result: Result<(), zca_rs::ZaloError> = if is_mock {
             if current_imei == "mock-fail-imei" {
-                send_success = false;
+                Err(zca_rs::ZaloError::ApiError {
+                    message: "Mock session expired".to_string(),
+                    code: Some(102),
+                })
+            } else if lead.phone == "mock-send-fail" {
+                Err(zca_rs::ZaloError::PayloadFormat(
+                    "Mock lead send failure".to_string(),
+                ))
             } else {
-                send_success = true;
+                Ok(())
             }
         } else {
             let zalo = &active_clients[active_index];
@@ -2307,16 +2517,20 @@ pub async fn send_zalo_campaign_internal(
                 ttl: None,
             };
             if let Some(u) = &uid {
-                match zalo.send_message(msg_content, u, zca_rs::models::ThreadType::User).await {
-                    Ok(_) => send_success = true,
-                    Err(_) => send_success = false,
-                }
+                zalo
+                    .send_message(msg_content, u, zca_rs::models::ThreadType::User)
+                    .await
+                    .map(|_| ())
+            } else {
+                Err(zca_rs::ZaloError::PayloadFormat(
+                    "Missing Zalo UID for message send".to_string(),
+                ))
             }
-        }
+        };
         
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         
-        if send_success {
+        if send_result.is_ok() {
             total_sent += 1;
             let history = crate::models::OutreachHistory {
                 id: None,
@@ -2349,19 +2563,24 @@ pub async fn send_zalo_campaign_internal(
                 use rand::Rng;
                 let sleep_ms = {
                     let mut rng = rand::thread_rng();
-                    rng.gen_range(2000..=4000)
+                    rng.gen_range(8000..=12000)
                 };
                 tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
             } else {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             }
+
+            active_index = (active_index + 1) % active_imeis.len();
         } else {
+            let send_error = send_result.expect_err("send result checked as error");
+            let send_error_message = send_error.to_string();
+            let rotate_session = should_rotate_zalo_session(&send_error);
             let history = crate::models::OutreachHistory {
                 id: None,
                 lead_id: lead.id.unwrap(),
                 template_id,
                 status: "FAILED".to_string(),
-                error_message: Some("Failed to send message".to_string()),
+                error_message: Some(send_error_message.clone()),
                 sent_at: now,
                 session_imei: current_imei.clone(),
             };
@@ -2378,31 +2597,38 @@ pub async fn send_zalo_campaign_internal(
                 let _ = app.emit(
                     "campaign-log",
                     CampaignLogPayload {
-                        message: format!("Failed sending to {} using session {}. Rotating session.", lead.name, current_imei),
+                        message: format!(
+                            "Failed sending to {} using session {}: {}",
+                            lead.name, current_imei, send_error_message
+                        ),
                     },
                 );
             }
 
-            // Evict failed session
-            active_imeis.remove(active_index);
-            if !is_mock {
-                active_clients.remove(active_index);
-            }
-
-            if active_imeis.is_empty() {
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "campaign-log",
-                        CampaignLogPayload {
-                            message: "All sessions exhausted. Stopping campaign.".to_string(),
-                        },
-                    );
+            if rotate_session {
+                active_imeis.remove(active_index);
+                if !is_mock {
+                    active_clients.remove(active_index);
                 }
-                break;
-            }
-            active_index %= active_imeis.len();
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                if active_imeis.is_empty() {
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "campaign-log",
+                            CampaignLogPayload {
+                                message: "All sessions exhausted. Stopping campaign.".to_string(),
+                            },
+                        );
+                    }
+                    break;
+                }
+                active_index %= active_imeis.len();
+            } else {
+                active_index = (active_index + 1) % active_imeis.len();
+            }
+
+            let cooldown_ms = if is_mock { 10 } else { 5000 };
+            tokio::time::sleep(tokio::time::Duration::from_millis(cooldown_ms)).await;
         }
         
         if let Some(app) = app_handle {
@@ -2458,7 +2684,7 @@ pub async fn get_campaign_leads(
         },
         "template_success" => {
             if let Some(_) = filter_template_id {
-                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                "SELECT DISTINCT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  JOIN outreach_history oh ON l.id = oh.lead_id
                  WHERE lc.category_id = ?1
