@@ -1,6 +1,9 @@
 <script lang="ts">
   import * as crmService from '$lib/services/crmService';
   import type { Lead, Deal } from '$lib/services/crmService';
+  import * as Card from '$lib/components/ui/card';
+  import { Badge } from '$lib/components/ui/badge';
+  import { DollarSign, Trophy, Users, CheckCircle2, TrendingUp, TrendingDown, AlertCircle } from 'lucide-svelte';
 
   let leads = $state<Lead[]>([]);
   let deals = $state<Deal[]>([]);
@@ -40,9 +43,9 @@
   }
 
   const stats = $derived([
-    { label: 'Total Revenue Gen', value: formatCurrency(totalRevenue), change: '+12.4%', up: true, icon: 'payments' },
-    { label: 'Deals Won', value: String(dealsWon), change: '+2', up: true, icon: 'emoji_events' },
-    { label: 'Active Leads', value: String(activeLeadsCount), change: '-4%', up: false, icon: 'people' }
+    { label: 'Total Revenue Gen', value: formatCurrency(totalRevenue), change: '+12.4%', up: true, icon: DollarSign },
+    { label: 'Deals Won', value: String(dealsWon), change: '+2', up: true, icon: Trophy },
+    { label: 'Active Leads', value: String(activeLeadsCount), change: '-4%', up: false, icon: Users }
   ]);
 
   const schedule = [
@@ -52,255 +55,104 @@
   ];
 </script>
 
-<div class="dashboard-container">
+<div class="space-y-6">
   {#if errorMsg}
-    <div class="error-banner">
-      <span class="material-icons">error_outline</span>
-      <span class="error-text">Failed to load CRM data: {errorMsg}</span>
+    <div class="p-4 rounded-lg border border-destructive/30 bg-destructive/10 text-destructive text-sm flex items-center gap-3">
+      <AlertCircle class="w-5 h-5 shrink-0" />
+      <span>Failed to load CRM data: {errorMsg}</span>
     </div>
   {/if}
 
-  <header class="dashboard-header">
-    <div class="header-title-area">
-      <h1>Sales Performance</h1>
-      <p class="subtitle">Real-time overview of your CRM metrics, deals, and daily schedule</p>
+  <!-- Header -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-xl font-bold text-foreground tracking-tight">Sales Performance</h2>
+      <p class="text-xs text-muted-foreground mt-0.5">Real-time overview of CRM metrics, deals, and daily schedule</p>
     </div>
-  </header>
+  </div>
 
-  <div class="stats-grid">
+  <!-- KPI Metrics Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
     {#each stats as stat}
-      <div class="stat-card">
-        <div class="stat-header">
-          <span class="stat-label">{stat.label}</span>
-          <span class="material-icons stat-icon">{stat.icon}</span>
-        </div>
-        <div class="stat-value-container">
-          <span class="stat-value">{stat.value}</span>
-          <span class="stat-change" class:up={stat.up}>{stat.change}</span>
-        </div>
-      </div>
+      {@const Icon = stat.icon}
+      <Card.Root class="transition-all duration-150 hover:border-foreground/20">
+        <Card.Header class="flex flex-row items-center justify-between space-y-0 pb-2">
+          <Card.Title class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {stat.label}
+          </Card.Title>
+          <div class="w-8 h-8 rounded-md bg-muted flex items-center justify-center text-muted-foreground">
+            <Icon class="w-4 h-4" />
+          </div>
+        </Card.Header>
+        <Card.Content>
+          <div class="flex items-baseline justify-between">
+            <div class="text-2xl font-bold tracking-tight text-foreground">{stat.value}</div>
+            <Badge variant={stat.up ? "default" : "destructive"} class="gap-1 text-[11px] px-2 py-0.5">
+              {#if stat.up}
+                <TrendingUp class="w-3 h-3" />
+              {:else}
+                <TrendingDown class="w-3 h-3" />
+              {/if}
+              {stat.change}
+            </Badge>
+          </div>
+        </Card.Content>
+      </Card.Root>
     {/each}
   </div>
 
-  <div class="dashboard-grid">
-    <div class="dashboard-card">
-      <div class="card-header">
-        <h3>Revenue Target vs. Actual</h3>
-        <span class="badge-success">Active Quarter</span>
-      </div>
-      <div class="funnel-container">
-        <!-- SVG Chart mock for target vs actual -->
-        <svg viewBox="0 0 400 150" class="chart-svg">
-          <rect x="20" y="30" width="360" height="20" rx="10" fill="var(--color-surface-container-high)"></rect>
-          <rect x="20" y="30" width="{Math.min(360, (totalRevenue / 150000) * 360)}" height="20" rx="10" fill="var(--color-success)"></rect>
-          <text x="30" y="44" fill="var(--color-on-primary)" font-size="10" font-weight="700">
-            Actual: {formatCurrency(totalRevenue)} ({Math.min(100, Math.round((totalRevenue / 150000) * 100))}%)
-          </text>
-          <line x1="308" y1="35" x2="308" y2="65" stroke="var(--color-danger)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="308" y="22" text-anchor="middle" fill="var(--color-danger)" font-size="9" font-weight="700">Target: $120k (80%)</text>
-          
-          <line x1="380" y1="35" x2="380" y2="65" stroke="var(--color-primary)" stroke-width="2" stroke-dasharray="3 3"></line>
-          <text x="380" y="78" text-anchor="end" fill="var(--color-primary)" font-size="9" font-weight="700">Stretch: $150k</text>
-        </svg>
-      </div>
-    </div>
+  <!-- Secondary Grid (Revenue Target & Schedule) -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Revenue Target Chart Card -->
+    <Card.Root class="lg:col-span-2">
+      <Card.Header class="flex flex-row items-center justify-between pb-4">
+        <div>
+          <Card.Title class="text-base font-semibold">Revenue Target vs. Actual</Card.Title>
+          <p class="text-xs text-muted-foreground">Q3 Performance progress</p>
+        </div>
+        <Badge variant="outline" class="border-emerald-500/30 text-emerald-600 bg-emerald-500/10 uppercase text-[10px] tracking-wider">
+          Active Quarter
+        </Badge>
+      </Card.Header>
+      <Card.Content>
+        <div class="space-y-4">
+          <svg viewBox="0 0 400 130" class="w-full h-auto">
+            <!-- Background Bar -->
+            <rect x="10" y="30" width="380" height="24" rx="6" fill="var(--color-muted, #f1f5f9)"></rect>
+            <!-- Progress Bar -->
+            <rect x="10" y="30" width="{Math.min(380, (totalRevenue / 150000) * 380)}" height="24" rx="6" fill="#10b981"></rect>
+            <!-- Progress Label -->
+            <text x="20" y="46" fill="#ffffff" font-size="11" font-weight="700">
+              Actual: {formatCurrency(totalRevenue)} ({Math.min(100, Math.round((totalRevenue / 150000) * 100))}%)
+            </text>
+            <!-- Target Marker -->
+            <line x1="314" y1="20" x2="314" y2="60" stroke="#f43f5e" stroke-width="2" stroke-dasharray="3 3"></line>
+            <text x="314" y="14" text-anchor="middle" fill="#f43f5e" font-size="10" font-weight="700">Target: $120k</text>
+            <!-- Stretch Goal -->
+            <line x1="380" y1="20" x2="380" y2="60" stroke="#6366f1" stroke-width="2" stroke-dasharray="3 3"></line>
+            <text x="380" y="78" text-anchor="end" fill="#6366f1" font-size="10" font-weight="700">Stretch: $150k</text>
+          </svg>
+        </div>
+      </Card.Content>
+    </Card.Root>
 
-    <div class="dashboard-card">
-      <h3>Today's Schedule</h3>
-      <ul class="schedule-list">
+    <!-- Schedule Card -->
+    <Card.Root>
+      <Card.Header class="pb-3">
+        <Card.Title class="text-base font-semibold">Today's Schedule</Card.Title>
+        <p class="text-xs text-muted-foreground">Upcoming events and meetings</p>
+      </Card.Header>
+      <Card.Content class="space-y-3">
         {#each schedule as item}
-          <li class="schedule-item">
-            <span class="material-icons schedule-icon">check_circle</span>
-            <div class="schedule-details">
-              <strong>{item.title}</strong>
-              <p>{item.time}</p>
+          <div class="flex items-start gap-3 p-3 rounded-lg border border-border bg-muted/30 hover:bg-muted/60 transition-colors">
+            <CheckCircle2 class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+            <div class="space-y-0.5">
+              <p class="text-xs font-semibold text-foreground">{item.title}</p>
+              <span class="text-[11px] text-muted-foreground">{item.time}</span>
             </div>
-          </li>
+          </div>
         {/each}
-      </ul>
-    </div>
+      </Card.Content>
+    </Card.Root>
   </div>
 </div>
-
-<style>
-  .dashboard-container {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
-  }
-  .dashboard-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .dashboard-header h1 {
-    font-size: 24px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-  .subtitle {
-    font-size: 14px;
-    color: var(--color-on-surface-variant);
-    margin-top: var(--spacing-xs);
-  }
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: var(--spacing-md);
-  }
-  @media (max-width: 768px) {
-    .stats-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-  .stat-card {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    padding: var(--spacing-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    box-shadow: var(--shadow-soft);
-    transition: var(--transition-fast);
-  }
-  .stat-card:hover {
-    transform: translateY(-2px);
-    border-color: var(--color-outline);
-  }
-  .stat-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .stat-label {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--color-on-surface-variant);
-    font-weight: 700;
-  }
-  .stat-icon {
-    color: var(--color-on-surface-variant);
-    font-size: 20px;
-    opacity: 0.7;
-  }
-  .stat-value-container {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-  }
-  .stat-value {
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-  .stat-change {
-    font-size: 11px;
-    font-weight: bold;
-    color: var(--color-danger);
-    padding: 2px 6px;
-    background: rgba(244, 63, 94, 0.1);
-    border-radius: var(--rounded-sm);
-  }
-  .stat-change.up {
-    color: var(--color-success);
-    background: rgba(16, 185, 129, 0.1);
-  }
-  .dashboard-grid {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: var(--spacing-md);
-  }
-  @media (max-width: 900px) {
-    .dashboard-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-  .dashboard-card {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    padding: var(--spacing-md);
-    box-shadow: var(--shadow-soft);
-  }
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--spacing-md);
-  }
-  .dashboard-card h3 {
-    margin: 0;
-    margin-bottom: var(--spacing-md);
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--color-on-surface);
-  }
-  .card-header h3 {
-    margin-bottom: 0;
-  }
-  .badge-success {
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 8px;
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-    border-radius: var(--rounded-full);
-    text-transform: uppercase;
-  }
-  .chart-svg {
-    width: 100%;
-    height: auto;
-  }
-  .schedule-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-  .schedule-item {
-    display: flex;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm);
-    background: var(--color-surface-container-low);
-    border-radius: var(--rounded-md);
-    transition: var(--transition-fast);
-  }
-  .schedule-item:hover {
-    background: var(--color-surface-container);
-  }
-  .schedule-icon {
-    font-size: 20px;
-    color: var(--color-success);
-  }
-  .schedule-details strong {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--color-on-surface);
-    display: block;
-  }
-  .schedule-details p {
-    font-size: 11px;
-    color: var(--color-on-surface-variant);
-    margin: 0;
-    margin-top: 2px;
-  }
-  .error-banner {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-md);
-    background-color: rgba(244, 63, 94, 0.08);
-    border: 1px solid var(--color-danger);
-    border-radius: var(--rounded-md);
-    color: var(--color-danger);
-    font-size: 14px;
-    font-weight: 500;
-  }
-  .error-banner .material-icons {
-    font-size: 20px;
-  }
-</style>
