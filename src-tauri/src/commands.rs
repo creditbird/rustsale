@@ -2865,3 +2865,266 @@ pub fn delete_email_template(id: i32, state: tauri::State<DbState>) -> Result<()
         .map_err(|e| format!("Database lock error: {}", e))?;
     crate::db::delete_email_template(&conn, id).map_err(|e| format!("Database error: {}", e))
 }
+
+pub fn replace_email_template_variables(template: &str, lead: &Lead) -> String {
+    template
+        .replace("{{name}}", &lead.name)
+        .replace("{{company}}", &lead.company)
+        .replace("{{email}}", &lead.email)
+        .replace("{{phone}}", &lead.phone)
+}
+
+#[tauri::command]
+pub async fn send_email_outreach(
+    app_handle: tauri::AppHandle,
+    smtp_id: i32,
+    template_id: i32,
+    lead_ids: Vec<i32>,
+) -> Result<(), String> {
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        let db_state = app_handle_clone.state::<DbState>();
+        let _ = send_email_outreach_internal(
+            Some(&app_handle_clone),
+            &db_state.conn,
+            smtp_id,
+            template_id,
+            lead_ids,
+        )
+        .await;
+    });
+    Ok(())
+}
+
+pub async fn send_email_outreach_internal(
+    app_handle: Option<&tauri::AppHandle>,
+    conn_mutex: &std::sync::Mutex<Connection>,
+    smtp_id: i32,
+    template_id: i32,
+    lead_ids: Vec<i32>,
+) -> Result<(), String> {
+    use lettre::message::header::ContentType;
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+    use crate::models::{
+        EmailOutreachCompletePayload, EmailOutreachHistory, EmailOutreachLogPayload,
+        EmailOutreachProgressPayload,
+    };
+
+    if let Some(app) = app_handle {
+        let _ = app.emit(
+            "email-outreach-progress",
+            EmailOutreachProgressPayload {
+                progress: 0.0,
+                status: "running".to_string(),
+                message: "Starting email outreach...".to_string(),
+            },
+        );
+    }
+
+    let (smtp_server, template) = {
+        let conn_guard = conn_mutex
+            .lock()
+            .map_err(|e| format!("Database lock error: {}", e))?;
+        let smtp = crate::db::get_smtp_server_by_id(&conn_guard, smtp_id)
+            .map_err(|e| format!("Database error: {}", e))?
+            .ok_or_else(|| format!("SMTP server with ID {} not found", smtp_id))?;
+        let tpl = crate::db::get_email_template_by_id(&conn_guard, template_id)
+            .map_err(|e| format!("Database error: {}", e))?
+            .ok_or_else(|| format!("Email template with ID {} not found", template_id))?;
+        (smtp, tpl)
+    };
+
+    if lead_ids.is_empty() {
+        if let Some(app) = app_handle {
+            let _ = app.emit(
+                "email-outreach-progress",
+                EmailOutreachProgressPayload {
+                    progress: 100.0,
+                    status: "completed".to_string(),
+                    message: "No leads selected.".to_string(),
+                },
+            );
+        }
+        return Ok(());
+    }
+
+    let mut total_sent = 0;
+
+    for (idx, &lead_id) in lead_ids.iter().enumerate() {
+        let lead_res = {
+            let conn_guard = conn_mutex.lock().unwrap();
+            get_lead_details_internal(&conn_guard, lead_id)
+        };
+
+        let lead = match lead_res {
+            Ok(l) => l,
+            Err(e) => {
+                let err_msg = format!("Lead ID {} not found: {}", lead_id, e);
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "email-outreach-log",
+                        EmailOutreachLogPayload {
+                            message: err_msg.clone(),
+                        },
+                    );
+                }
+                continue;
+            }
+        };
+
+        let interpolated_subject = replace_email_template_variables(&template.subject, &lead);
+        let interpolated_body = replace_email_template_variables(&template.content, &lead);
+
+        let from_str = if smtp_server.from_name.trim().is_empty() {
+            smtp_server.from_email.clone()
+        } else {
+            format!("{} <{}>", smtp_server.from_name, smtp_server.from_email)
+        };
+
+        let to_str = if lead.name.trim().is_empty() {
+            lead.email.clone()
+        } else {
+            format!("{} <{}>", lead.name, lead.email)
+        };
+
+        let email_builder = Message::builder()
+            .from(from_str.parse().map_err(|e| format!("Invalid from header: {}", e))?)
+            .to(to_str.parse().unwrap_or_else(|_| lead.email.parse().unwrap()))
+            .subject(interpolated_subject)
+            .header(ContentType::TEXT_HTML)
+            .body(interpolated_body);
+
+        let send_result = match email_builder {
+            Ok(email_msg) => {
+                let security_upper = smtp_server.security.to_uppercase();
+                let creds = Credentials::new(smtp_server.username.clone(), smtp_server.password.clone());
+
+                let transport_res: Result<AsyncSmtpTransport<Tokio1Executor>, String> =
+                    if security_upper == "NONE" {
+                        Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_server.host)
+                            .port(smtp_server.port as u16)
+                            .credentials(creds)
+                            .build())
+                    } else if security_upper == "SSL_TLS" || security_upper == "SSL/TLS" || security_upper == "TLS" || security_upper == "SSL" {
+                        AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp_server.host)
+                            .map_err(|e| format!("SMTP TLS relay error: {}", e))
+                            .map(|b| b.port(smtp_server.port as u16).credentials(creds).build())
+                    } else {
+                        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_server.host)
+                            .map_err(|e| format!("SMTP STARTTLS relay error: {}", e))
+                            .map(|b| b.port(smtp_server.port as u16).credentials(creds).build())
+                    };
+
+                match transport_res {
+                    Ok(transport) => transport.send(email_msg).await.map_err(|e| e.to_string()),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(format!("Failed to build email message: {}", e)),
+        };
+
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        match send_result {
+            Ok(_) => {
+                total_sent += 1;
+                let history = EmailOutreachHistory {
+                    id: None,
+                    lead_id,
+                    template_id,
+                    smtp_id,
+                    status: "SUCCESS".to_string(),
+                    error_message: None,
+                    sent_at: now.clone(),
+                };
+                {
+                    let conn_guard = conn_mutex.lock().unwrap();
+                    let _ = crate::db::log_email_outreach_attempt(&conn_guard, &history);
+                    let _ = conn_guard.execute(
+                        "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            lead_id,
+                            "Email Outreach",
+                            format!("Sent email template '{}' to {}", template.name, lead.email),
+                            &now,
+                            "System"
+                        ],
+                    );
+                    let _ = conn_guard.execute(
+                        "UPDATE leads SET last_activity = ?1 WHERE id = ?2",
+                        rusqlite::params![&now, lead_id],
+                    );
+                }
+
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "email-outreach-log",
+                        EmailOutreachLogPayload {
+                            message: format!("Successfully sent email to {} ({})", lead.name, lead.email),
+                        },
+                    );
+                }
+            }
+            Err(err_msg) => {
+                let history = EmailOutreachHistory {
+                    id: None,
+                    lead_id,
+                    template_id,
+                    smtp_id,
+                    status: "FAILED".to_string(),
+                    error_message: Some(err_msg.clone()),
+                    sent_at: now.clone(),
+                };
+                {
+                    let conn_guard = conn_mutex.lock().unwrap();
+                    let _ = crate::db::log_email_outreach_attempt(&conn_guard, &history);
+                    let _ = conn_guard.execute(
+                        "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            lead_id,
+                            "Email Outreach",
+                            format!("Failed to send email to {}: {}", lead.email, err_msg),
+                            &now,
+                            "System"
+                        ],
+                    );
+                }
+
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "email-outreach-log",
+                        EmailOutreachLogPayload {
+                            message: format!("Failed sending email to {} ({}): {}", lead.name, lead.email, err_msg),
+                        },
+                    );
+                }
+            }
+        }
+
+        if let Some(app) = app_handle {
+            let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+            let _ = app.emit(
+                "email-outreach-progress",
+                EmailOutreachProgressPayload {
+                    progress: progress_val,
+                    status: "running".to_string(),
+                    message: format!("Processed {}/{} leads", idx + 1, lead_ids.len()),
+                },
+            );
+        }
+    }
+
+    if let Some(app) = app_handle {
+        let _ = app.emit(
+            "email-outreach-complete",
+            EmailOutreachCompletePayload {
+                total_sent,
+                message: format!("Email outreach completed. {} emails sent.", total_sent),
+            },
+        );
+    }
+
+    Ok(())
+}
+

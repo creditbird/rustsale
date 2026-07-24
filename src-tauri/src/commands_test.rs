@@ -1152,4 +1152,116 @@ mod tests {
         let templates_final = commands::get_email_templates(state.clone()).unwrap();
         assert!(templates_final.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_email_outreach_commands() {
+        use crate::models::{
+            EmailOutreachCompletePayload, EmailOutreachLogPayload, EmailOutreachProgressPayload,
+            Lead, SmtpServer,
+        };
+
+        // 1. Test replace_email_template_variables
+        let lead = Lead {
+            id: Some(1),
+            name: "Jane Smith".to_string(),
+            company: "Acme Corp".to_string(),
+            status: "New".to_string(),
+            value: 1000.0,
+            last_activity: "2026-07-24".to_string(),
+            owner: "Alice".to_string(),
+            email: "jane@acme.com".to_string(),
+            phone: "+15551234".to_string(),
+            about: None,
+            address: None,
+            has_zalo: None,
+            zalo_reached: 0,
+            zalo_uid: None,
+            zalo_status: None,
+            relationship_status: None,
+            last_lookup_attempt: None,
+        };
+        let tpl = "Hello {{name}} from {{company}}! Email: {{email}}, Phone: {{phone}}";
+        let replaced = commands::replace_email_template_variables(tpl, &lead);
+        assert_eq!(
+            replaced,
+            "Hello Jane Smith from Acme Corp! Email: jane@acme.com, Phone: +15551234"
+        );
+
+        // 2. Test payload serialization
+        let progress_payload = EmailOutreachProgressPayload {
+            progress: 50.0,
+            status: "running".to_string(),
+            message: "Processed 1/2 leads".to_string(),
+        };
+        let progress_json = serde_json::to_string(&progress_payload).unwrap();
+        assert!(progress_json.contains("\"progress\":50.0"));
+        assert!(progress_json.contains("\"status\":\"running\""));
+
+        let log_payload = EmailOutreachLogPayload {
+            message: "Sent email to jane@acme.com".to_string(),
+        };
+        let log_json = serde_json::to_string(&log_payload).unwrap();
+        assert!(log_json.contains("jane@acme.com"));
+
+        let complete_payload = EmailOutreachCompletePayload {
+            total_sent: 2,
+            message: "Email outreach completed. 2 emails sent.".to_string(),
+        };
+        let complete_json = serde_json::to_string(&complete_payload).unwrap();
+        assert!(complete_json.contains("\"total_sent\":2"));
+
+        // 3. Test send_email_outreach_internal with DB
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        let smtp = SmtpServer {
+            id: None,
+            name: "Test SMTP".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 1, // unreachable port to fail fast
+            username: "test@example.com".to_string(),
+            password: "password".to_string(),
+            from_email: "sender@example.com".to_string(),
+            from_name: "Test Sender".to_string(),
+            security: "STARTTLS".to_string(),
+            created_at: "".to_string(),
+        };
+        let smtp_id = db::save_smtp_server(&conn, &smtp).unwrap();
+        let tpl_id = db::create_email_template(
+            &conn,
+            "Welcome",
+            "Hello {{name}}",
+            "Welcome {{name}} to {{company}}",
+        )
+        .unwrap();
+
+        let conn_mutex = std::sync::Mutex::new(conn);
+        let res = commands::send_email_outreach_internal(
+            None,
+            &conn_mutex,
+            smtp_id,
+            tpl_id,
+            vec![1, 2],
+        )
+        .await;
+
+        assert!(res.is_ok());
+
+        // Check that history was logged for both leads
+        let conn_guard = conn_mutex.lock().unwrap();
+        let mut stmt = conn_guard
+            .prepare("SELECT lead_id, status, error_message FROM email_outreach_history")
+            .unwrap();
+        let history_rows: Vec<(i32, String, Option<String>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(history_rows.len(), 2);
+        assert_eq!(history_rows[0].0, 1);
+        assert_eq!(history_rows[0].1, "FAILED");
+        assert!(history_rows[0].2.is_some());
+    }
 }
+

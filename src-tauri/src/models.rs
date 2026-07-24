@@ -119,4 +119,23 @@ pub struct EmailOutreachHistory {
     pub sent_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct EmailOutreachProgressPayload {
+    pub progress: f64,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct EmailOutreachLogPayload {
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct EmailOutreachCompletePayload {
+    pub total_sent: i32,
+    pub message: String,
+}
+
+
 

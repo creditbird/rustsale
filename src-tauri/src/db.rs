@@ -573,7 +573,28 @@ pub fn get_email_templates(conn: &Connection) -> Result<Vec<crate::models::Email
     Ok(templates)
 }
 
+pub fn get_email_template_by_id(conn: &Connection, id: i32) -> Result<Option<crate::models::EmailTemplate>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, subject, content, created_at FROM email_templates WHERE id = ?1"
+    )?;
+    let mut rows = stmt.query_map([id], |row| {
+        Ok(crate::models::EmailTemplate {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            subject: row.get(2)?,
+            content: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    if let Some(row) = rows.next() {
+        Ok(Some(row?))
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn log_email_outreach_attempt(conn: &Connection, history: &crate::models::EmailOutreachHistory) -> Result<()> {
+
     conn.execute(
         "INSERT INTO email_outreach_history (lead_id, template_id, smtp_id, status, error_message, sent_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

@@ -89,8 +89,10 @@ pub fn run() {
             commands::get_email_templates,
             commands::create_email_template,
             commands::update_email_template,
-            commands::delete_email_template
+            commands::delete_email_template,
+            commands::send_email_outreach
         ])
+
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
