@@ -2,6 +2,12 @@
   import type { Lead } from '$lib/services/crmService';
   import * as crmService from '$lib/services/crmService';
   import LeadDetails from './LeadDetails.svelte';
+  import * as Table from '$lib/components/ui/table';
+  import { Input } from '$lib/components/ui/input';
+  import { Button } from '$lib/components/ui/button';
+  import { Badge } from '$lib/components/ui/badge';
+  import * as Dialog from '$lib/components/ui/dialog';
+  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, Filter, X, ChevronLeft, ChevronRight } from 'lucide-svelte';
 
   let { leads = [], onRefresh } = $props<{ leads: Lead[]; onRefresh?: () => void }>();
   let selectedLeadId = $state<number | null>(null);
@@ -33,9 +39,9 @@
   let searchQuery = $state('');
   let filterStatus = $state('');
   let filterOwner = $state('');
-  let filterValueRange = $state(''); // 'all', 'under_10k', '10k_to_50k', 'above_50k'
-  let filterZaloStatus = $state(''); // '', 'verified', 'no_zalo', 'unchecked'
-  let filterOutreachStatus = $state(''); // '', 'reached', 'not_reached'
+  let filterValueRange = $state('');
+  let filterZaloStatus = $state('');
+  let filterOutreachStatus = $state('');
   let currentPage = $state(1);
   let pageSize = $state(10);
 
@@ -45,7 +51,6 @@
 
   let filteredLeads = $derived(
     leads.filter((lead: Lead) => {
-      // 1. Search Query
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase().trim();
         const matchesName = lead.name.toLowerCase().includes(query);
@@ -57,17 +62,9 @@
         }
       }
       
-      // 2. Status Filter
-      if (filterStatus && lead.status !== filterStatus) {
-        return false;
-      }
+      if (filterStatus && lead.status !== filterStatus) return false;
+      if (filterOwner && lead.owner !== filterOwner) return false;
       
-      // 3. Owner Filter
-      if (filterOwner && lead.owner !== filterOwner) {
-        return false;
-      }
-      
-      // 4. Value Range Filter
       if (filterValueRange) {
         const val = lead.value || 0;
         if (filterValueRange === 'under_10k' && val >= 10000) return false;
@@ -75,14 +72,12 @@
         if (filterValueRange === 'above_50k' && val <= 50000) return false;
       }
 
-      // 5. Zalo Status Filter
       if (filterZaloStatus) {
         if (filterZaloStatus === 'verified' && lead.has_zalo !== 1) return false;
         if (filterZaloStatus === 'no_zalo' && lead.has_zalo !== 0) return false;
         if (filterZaloStatus === 'unchecked' && lead.has_zalo !== null && lead.has_zalo !== undefined) return false;
       }
 
-      // 6. Outreach Status Filter
       if (filterOutreachStatus) {
         if (filterOutreachStatus === 'reached' && lead.zalo_reached !== 1) return false;
         if (filterOutreachStatus === 'not_reached' && lead.zalo_reached === 1) return false;
@@ -92,9 +87,7 @@
     })
   );
 
-  // Reset to first page when filters change
   $effect(() => {
-    // track dependencies
     const _s = searchQuery;
     const _st = filterStatus;
     const _o = filterOwner;
@@ -103,20 +96,6 @@
     const _or = filterOutreachStatus;
     const _p = pageSize;
     currentPage = 1;
-  });
-
-  $effect(() => {
-    // track filters and pagination
-    const _s = searchQuery;
-    const _st = filterStatus;
-    const _o = filterOwner;
-    const _v = filterValueRange;
-    const _z = filterZaloStatus;
-    const _or = filterOutreachStatus;
-    const _p = pageSize;
-    const _cp = currentPage;
-    
-    // Reset selection
     selectedRows = new Set();
   });
 
@@ -146,7 +125,6 @@
         phone.trim(),
         about.trim()
       );
-      // Reset form
       name = '';
       company = '';
       value = 0;
@@ -155,10 +133,7 @@
       phone = '';
       about = '';
       showAddModal = false;
-      // Refresh list
-      if (onRefresh) {
-        onRefresh();
-      }
+      if (onRefresh) onRefresh();
     } catch (err) {
       modalErrorMsg = err instanceof Error ? err.message : String(err);
     } finally {
@@ -191,7 +166,7 @@
         selectedRows.clear();
         selectedRows = new Set(selectedRows);
         if (onRefresh) onRefresh();
-      }, 1500);
+      }, 1200);
     } catch (err) {
       assignErrorMsg = err instanceof Error ? err.message : String(err);
     } finally {
@@ -216,39 +191,44 @@
   }
 </script>
 
-<div class="leads-container">
-  <div class="list-header">
-    <div class="header-row">
-      <h2>Leads & Contacts</h2>
-      <div class="header-actions">
-        {#if selectedRows.size > 0}
-          <button class="assign-category-btn" onclick={openCategoryModal}>
-            <span class="material-icons">folder_special</span>
-            <span>Assign to Category ({selectedRows.size})</span>
-          </button>
-        {/if}
-        <button class="add-lead-btn" onclick={() => { showAddModal = true; modalErrorMsg = null; }}>
-          <span class="material-icons">add</span>
-          <span>Add Lead</span>
-        </button>
-      </div>
+<div class="space-y-4">
+  <!-- Top Action Header -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-xl font-bold text-foreground tracking-tight">Leads & Contacts</h2>
+      <p class="text-xs text-muted-foreground mt-0.5">Click any row to open lead profile, notes, and activity timeline</p>
     </div>
-    <p class="subtitle">Select a lead row to view details, notes, and activity history.</p>
+    <div class="flex items-center gap-2">
+      {#if selectedRows.size > 0}
+        <Button variant="outline" size="sm" onclick={openCategoryModal} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10">
+          <FolderPlus class="w-4 h-4" />
+          Assign to Category ({selectedRows.size})
+        </Button>
+      {/if}
+      <Button size="sm" onclick={() => { showAddModal = true; modalErrorMsg = null; }} class="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
+        <Plus class="w-4 h-4" />
+        Add Lead
+      </Button>
+    </div>
   </div>
 
-  <div class="controls-bar">
-    <div class="search-box">
-      <span class="material-icons search-icon">search</span>
-      <input 
-        type="text" 
-        bind:value={searchQuery} 
-        placeholder="Search by name, company, email, owner..." 
+  <!-- Search & Filter Controls -->
+  <div class="p-3 rounded-lg border border-border bg-card flex flex-wrap items-center justify-between gap-3">
+    <!-- Search Bar -->
+    <div class="relative flex-1 min-w-[220px] max-w-md">
+      <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+      <Input
+        type="text"
+        placeholder="Search name, company, email, owner..."
+        bind:value={searchQuery}
+        class="pl-9 text-xs h-9"
       />
     </div>
 
-    <div class="filters-box">
+    <!-- Filter Dropdowns -->
+    <div class="flex flex-wrap items-center gap-2">
       {#if uniqueStatuses.length > 1}
-        <select bind:value={filterStatus} class="filter-select">
+        <select bind:value={filterStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
           <option value="">All Statuses</option>
           {#each uniqueStatuses as status}
             <option value={status}>{status}</option>
@@ -256,844 +236,253 @@
         </select>
       {/if}
 
-      <select bind:value={filterOwner} class="filter-select">
+      <select bind:value={filterOwner} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
         <option value="">All Owners</option>
         {#each uniqueOwners as owner}
           <option value={owner}>{owner}</option>
         {/each}
       </select>
 
-      <select bind:value={filterValueRange} class="filter-select">
+      <select bind:value={filterValueRange} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
         <option value="">All Values</option>
         <option value="under_10k">Under $10k</option>
         <option value="10k_to_50k">$10k - $50k</option>
         <option value="above_50k">Above $50k</option>
       </select>
 
-      <select bind:value={filterZaloStatus} class="filter-select">
+      <select bind:value={filterZaloStatus} class="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden">
         <option value="">All Zalo Statuses</option>
         <option value="verified">Verified Zalo</option>
         <option value="no_zalo">No Zalo</option>
         <option value="unchecked">Unchecked</option>
       </select>
 
-      <select bind:value={filterOutreachStatus} class="filter-select">
-        <option value="">All Outreach Statuses</option>
-        <option value="reached">Reached</option>
-        <option value="not_reached">Not Reached</option>
-      </select>
-
       {#if searchQuery || filterStatus || filterOwner || filterValueRange || filterZaloStatus || filterOutreachStatus}
-        <button 
-          class="clear-filters-btn" 
+        <Button
+          variant="ghost"
+          size="sm"
           onclick={() => { searchQuery = ''; filterStatus = ''; filterOwner = ''; filterValueRange = ''; filterZaloStatus = ''; filterOutreachStatus = ''; }}
+          class="h-9 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
         >
-          Clear
-        </button>
+          <X class="w-3.5 h-3.5" /> Clear
+        </Button>
       {/if}
     </div>
   </div>
 
-  <div class="table-wrapper">
-    <table class="leads-table">
-      <thead>
-        <tr>
-          <th class="checkbox-col">
+  <!-- Data Table -->
+  <div class="rounded-md border border-border bg-card overflow-hidden">
+    <Table.Root>
+      <Table.Header class="bg-muted/40">
+        <Table.Row>
+          <Table.Head class="w-10 text-center">
             <input 
               type="checkbox" 
+              class="rounded border-input text-primary focus:ring-primary"
               checked={paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id && selectedRows.has(l.id))}
-              indeterminate={paginatedLeads.some((l: Lead) => l.id && selectedRows.has(l.id)) && !paginatedLeads.every((l: Lead) => l.id && selectedRows.has(l.id))}
               onchange={toggleAllRows}
             />
-          </th>
-          <th>Name</th>
-          <th>Company</th>
-          <th>Phone</th>
-          <th>Email</th>
-          <th>Zalo</th>
-          <th>Address</th>
-          <th>Status</th>
-          <th>Value</th>
-          <th>Owner</th>
-        </tr>
-      </thead>
-      <tbody>
+          </Table.Head>
+          <Table.Head>Name</Table.Head>
+          <Table.Head>Company</Table.Head>
+          <Table.Head>Phone</Table.Head>
+          <Table.Head>Email</Table.Head>
+          <Table.Head>Zalo</Table.Head>
+          <Table.Head>Status</Table.Head>
+          <Table.Head class="text-right">Value</Table.Head>
+          <Table.Head>Owner</Table.Head>
+        </Table.Row>
+      </Table.Header>
+      <Table.Body>
         {#if paginatedLeads.length === 0}
-          <tr>
-            <td colspan="10" class="empty-state">No matching records found.</td>
-          </tr>
+          <Table.Row>
+            <Table.Cell colspan={9} class="text-center py-8 text-xs text-muted-foreground">
+              No matching lead records found.
+            </Table.Cell>
+          </Table.Row>
         {:else}
           {#each paginatedLeads as lead}
-            <tr 
-              tabindex="0"
+            {@const isSelected = lead.id && selectedRows.has(lead.id)}
+            <Table.Row 
+              class="cursor-pointer hover:bg-muted/50 transition-colors {isSelected ? 'bg-primary/5' : ''}"
               onclick={() => { if (lead.id !== undefined) selectedLeadId = lead.id; }}
-              onkeydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  if (lead.id !== undefined) selectedLeadId = lead.id;
-                }
-              }}
-              class:selected={lead.id && selectedRows.has(lead.id)}
             >
-              <td class="checkbox-col" onclick={(e) => e.stopPropagation()}>
+              <Table.Cell class="text-center" onclick={(e: Event) => e.stopPropagation()}>
                 <input 
                   type="checkbox" 
+                  class="rounded border-input text-primary"
                   checked={lead.id ? selectedRows.has(lead.id) : false}
                   onchange={() => lead.id && toggleRowSelection(lead.id)}
                 />
-              </td>
-              <td>
-                <div class="lead-name-cell">
-                  <div class="avatar-sm">
+              </Table.Cell>
+              <Table.Cell class="font-medium text-foreground">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-7 h-7 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
                     {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
                   </div>
-                  <strong>{lead.name}</strong>
+                  <span class="font-semibold text-xs text-foreground">{lead.name}</span>
                 </div>
-              </td>
-              <td>{lead.company}</td>
-              <td>{lead.phone || '—'}</td>
-              <td>{lead.email || '—'}</td>
-              <td>
+              </Table.Cell>
+              <Table.Cell class="text-xs text-muted-foreground">{lead.company}</Table.Cell>
+              <Table.Cell class="text-xs text-muted-foreground">{lead.phone || '—'}</Table.Cell>
+              <Table.Cell class="text-xs text-muted-foreground">{lead.email || '—'}</Table.Cell>
+              <Table.Cell>
                 {#if lead.has_zalo === 1}
-                  <span class="zalo-badge verified" title="Zalo Verified" style="color: #0284c7; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; font-size: 11px;">
-                    <span class="material-icons" style="font-size: 14px;">check_circle</span> Yes
-                  </span>
+                  <Badge variant="outline" class="gap-1 border-sky-500/30 text-sky-600 bg-sky-500/10 text-[10px] py-0">
+                    <CheckCircle2 class="w-3 h-3 text-sky-500" /> Verified
+                  </Badge>
                 {:else if lead.has_zalo === 0}
-                  <span class="zalo-badge unverified" title="No Zalo" style="color: #94a3b8; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; font-size: 11px;">
-                    <span class="material-icons" style="font-size: 14px;">cancel</span> No
-                  </span>
+                  <Badge variant="outline" class="gap-1 border-slate-300 text-slate-500 bg-slate-100 text-[10px] py-0">
+                    <XCircle class="w-3 h-3 text-slate-400" /> No Zalo
+                  </Badge>
                 {:else}
-                  <span style="color: #cbd5e1; font-size: 11px;">—</span>
+                  <span class="text-xs text-muted-foreground/50">—</span>
                 {/if}
-              </td>
-              <td>{lead.address || '—'}</td>
-              <td>
-                <span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span>
-              </td>
-              <td class="value-cell">${(lead.value || 0).toLocaleString()}</td>
-              <td>{lead.owner || '—'}</td>
-            </tr>
+              </Table.Cell>
+              <Table.Cell>
+                <Badge variant={lead.status === 'Converted' ? 'default' : 'secondary'} class="text-[10px] py-0">
+                  {lead.status}
+                </Badge>
+              </Table.Cell>
+              <Table.Cell class="text-right font-bold text-xs text-foreground">
+                ${(lead.value || 0).toLocaleString()}
+              </Table.Cell>
+              <Table.Cell class="text-xs text-muted-foreground">{lead.owner || '—'}</Table.Cell>
+            </Table.Row>
           {/each}
         {/if}
-      </tbody>
-    </table>
+      </Table.Body>
+    </Table.Root>
   </div>
 
+  <!-- Pagination Controls -->
   {#if totalEntries > 0}
-    <div class="pagination-bar">
-      <div class="pagination-info">
-        Showing {showingStart} to {showingEnd} of {totalEntries} entries
-      </div>
+    <div class="flex items-center justify-between px-2 py-1 text-xs text-muted-foreground">
+      <span>Showing {showingStart} to {showingEnd} of {totalEntries} entries</span>
       
-      <div class="pagination-controls">
-        <label for="page-size-select" class="sr-only">Entries per page</label>
-        <select id="page-size-select" bind:value={pageSize} class="page-size-select">
-          <option value={5}>5 per page</option>
-          <option value={10}>10 per page</option>
-          <option value={25}>25 per page</option>
+      <div class="flex items-center gap-2">
+        <select bind:value={pageSize} class="h-8 px-2 text-xs rounded border border-input bg-background">
+          <option value={5}>5 / page</option>
+          <option value={10}>10 / page</option>
+          <option value={25}>25 / page</option>
         </select>
 
-        <button 
-          class="page-btn" 
-          disabled={currentPage === 1} 
-          onclick={() => currentPage--}
-        >
-          Previous
-        </button>
-        
-        {#each Array(totalPages) as _, i}
-          <button 
-            class="page-btn" 
-            class:active={currentPage === i + 1}
-            onclick={() => currentPage = i + 1}
-          >
-            {i + 1}
-          </button>
-        {/each}
-        
-        <button 
-          class="page-btn" 
-          disabled={currentPage === totalPages} 
-          onclick={() => currentPage++}
-        >
-          Next
-        </button>
+        <Button variant="outline" size="sm" class="h-8 w-8 p-0" disabled={currentPage === 1} onclick={() => currentPage--}>
+          <ChevronLeft class="w-4 h-4" />
+        </Button>
+        <span class="font-medium text-foreground px-1">{currentPage} / {totalPages}</span>
+        <Button variant="outline" size="sm" class="h-8 w-8 p-0" disabled={currentPage === totalPages} onclick={() => currentPage++}>
+          <ChevronRight class="w-4 h-4" />
+        </Button>
       </div>
     </div>
   {/if}
 
+  <!-- Lead Details Modal/Drawer -->
   {#if selectedLeadId !== null}
     <LeadDetails leadId={selectedLeadId} onClose={() => selectedLeadId = null} onRefresh={onRefresh} />
   {/if}
 </div>
 
+<!-- Add Lead Modal -->
 {#if showAddModal}
-  <!-- Modal Backdrop -->
-  <div 
-    class="modal-backdrop" 
-    onclick={() => showAddModal = false} 
-    role="presentation"
-  ></div>
-
-  <!-- Modal Dialog -->
-  <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <header class="modal-header">
-      <h3 id="modal-title">Create New Lead</h3>
-      <button class="close-btn" onclick={() => showAddModal = false} aria-label="Close modal">
-        <span class="material-icons">close</span>
-      </button>
-    </header>
-
-    {#if modalErrorMsg}
-      <div class="error-banner">
-        <span class="material-icons">error_outline</span>
-        <span>{modalErrorMsg}</span>
-      </div>
-    {/if}
-
-    <form onsubmit={handleAddLead} class="modal-form">
-      <div class="form-grid">
-        <div class="form-group">
-          <label for="lead-name">Name *</label>
-          <input type="text" id="lead-name" bind:value={name} required placeholder="Full Name" />
-        </div>
-
-        <div class="form-group">
-          <label for="lead-company">Company *</label>
-          <input type="text" id="lead-company" bind:value={company} required placeholder="Company Name" />
-        </div>
-
-        <div class="form-group">
-          <label for="lead-email">Email *</label>
-          <input type="email" id="lead-email" bind:value={email} required placeholder="email@example.com" />
-        </div>
-
-        <div class="form-group">
-          <label for="lead-phone">Phone</label>
-          <input type="text" id="lead-phone" bind:value={phone} placeholder="Phone number" />
-        </div>
-
-        <div class="form-group">
-          <label for="lead-value">Estimated Value ($)</label>
-          <input type="number" id="lead-value" bind:value={value} min="0" />
-        </div>
-
-        <div class="form-group">
-          <label for="lead-owner">Owner</label>
-          <input type="text" id="lead-owner" bind:value={owner} placeholder="Owner Name" />
-        </div>
+  <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg space-y-4">
+      <div class="flex items-center justify-between border-b border-border pb-3">
+        <h3 class="text-base font-bold text-foreground">Create New Lead</h3>
+        <Button variant="ghost" size="sm" onclick={() => showAddModal = false} class="h-8 w-8 p-0">
+          <X class="w-4 h-4" />
+        </Button>
       </div>
 
-      <div class="form-group full-width">
-        <label for="lead-about">About / Description</label>
-        <textarea id="lead-about" bind:value={about} rows="3" placeholder="Lead details..."></textarea>
-      </div>
+      {#if modalErrorMsg}
+        <div class="p-3 rounded bg-destructive/10 border border-destructive/30 text-destructive text-xs">
+          {modalErrorMsg}
+        </div>
+      {/if}
 
-      <div class="modal-actions">
-        <button type="button" class="cancel-btn" onclick={() => showAddModal = false}>Cancel</button>
-        <button type="submit" class="save-btn" disabled={saving}>
-          {#if saving}Saving...{:else}Save Lead{/if}
-        </button>
-      </div>
-    </form>
+      <form onsubmit={handleAddLead} class="space-y-4 text-xs">
+        <div class="grid grid-cols-2 gap-3">
+          <div class="space-y-1">
+            <label for="lead-name" class="font-medium text-foreground">Name *</label>
+            <Input id="lead-name" bind:value={name} required placeholder="Full Name" />
+          </div>
+          <div class="space-y-1">
+            <label for="lead-company" class="font-medium text-foreground">Company *</label>
+            <Input id="lead-company" bind:value={company} required placeholder="Company Name" />
+          </div>
+          <div class="space-y-1">
+            <label for="lead-email" class="font-medium text-foreground">Email *</label>
+            <Input id="lead-email" type="email" bind:value={email} required placeholder="email@example.com" />
+          </div>
+          <div class="space-y-1">
+            <label for="lead-phone" class="font-medium text-foreground">Phone</label>
+            <Input id="lead-phone" bind:value={phone} placeholder="Phone number" />
+          </div>
+          <div class="space-y-1">
+            <label for="lead-value" class="font-medium text-foreground">Value ($)</label>
+            <Input id="lead-value" type="number" bind:value={value} min="0" />
+          </div>
+          <div class="space-y-1">
+            <label for="lead-owner" class="font-medium text-foreground">Owner</label>
+            <Input id="lead-owner" bind:value={owner} placeholder="Owner Name" />
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <label for="lead-about" class="font-medium text-foreground">Description</label>
+          <textarea 
+            id="lead-about" 
+            bind:value={about} 
+            rows="3" 
+            placeholder="Lead background & details..." 
+            class="w-full p-2.5 rounded-md border border-input bg-background text-xs text-foreground focus:outline-hidden"
+          ></textarea>
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-border">
+          <Button type="button" variant="outline" size="sm" onclick={() => showAddModal = false}>Cancel</Button>
+          <Button type="submit" size="sm" disabled={saving}>
+            {saving ? 'Saving...' : 'Save Lead'}
+          </Button>
+        </div>
+      </form>
+    </div>
   </div>
 {/if}
 
+<!-- Assign Category Modal -->
 {#if showCategoryModal}
-  <div class="modal-backdrop" onclick={() => !assigningCategory && (showCategoryModal = false)} role="presentation"></div>
-  <div class="modal-container small-modal" role="dialog" aria-modal="true">
-    <header class="modal-header">
-      <h3>Assign to Category</h3>
-      <button class="close-btn" onclick={() => showCategoryModal = false} disabled={assigningCategory}>
-        <span class="material-icons">close</span>
-      </button>
-    </header>
-
-    {#if assignErrorMsg}
-      <div class="error-banner" style="margin: var(--spacing-md)">
-        <span class="material-icons">error_outline</span> {assignErrorMsg}
+  <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-lg space-y-4">
+      <div class="flex items-center justify-between border-b border-border pb-3">
+        <h3 class="text-sm font-bold text-foreground">Assign to Category</h3>
+        <Button variant="ghost" size="sm" onclick={() => showCategoryModal = false} class="h-7 w-7 p-0">
+          <X class="w-4 h-4" />
+        </Button>
       </div>
-    {/if}
-    {#if assignSuccessMsg}
-      <div class="success-banner" style="margin: var(--spacing-md)">
-        <span class="material-icons">check_circle</span> {assignSuccessMsg}
-      </div>
-    {/if}
 
-    <div class="modal-body">
-      <p>Assign {selectedRows.size} selected lead(s) to:</p>
-      {#if categories.length === 0}
-        <div class="empty-state" style="padding: var(--spacing-md) 0">
-          No categories available. Please create one in the Category Manager first.
+      {#if assignSuccessMsg}
+        <div class="p-2.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 text-xs">
+          {assignSuccessMsg}
         </div>
-      {:else}
-        <select bind:value={selectedCategoryId} class="full-width-select">
+      {/if}
+
+      <div class="space-y-3 text-xs">
+        <p class="text-muted-foreground">Assign {selectedRows.size} selected lead(s) to:</p>
+        <select bind:value={selectedCategoryId} class="w-full h-9 px-3 rounded-md border border-input bg-background text-foreground">
           {#each categories as cat}
             <option value={cat.id}>{cat.name}</option>
           {/each}
         </select>
-      {/if}
-    </div>
+      </div>
 
-    <div class="modal-actions" style="padding: var(--spacing-md)">
-      <button class="cancel-btn" onclick={() => showCategoryModal = false} disabled={assigningCategory}>Cancel</button>
-      <button class="save-btn" onclick={handleAssignCategory} disabled={assigningCategory || categories.length === 0}>
-        {assigningCategory ? 'Assigning...' : 'Assign Leads'}
-      </button>
+      <div class="flex items-center justify-end gap-2 pt-2">
+        <Button variant="outline" size="sm" onclick={() => showCategoryModal = false} disabled={assigningCategory}>Cancel</Button>
+        <Button size="sm" onclick={handleAssignCategory} disabled={assigningCategory || categories.length === 0}>
+          {assigningCategory ? 'Assigning...' : 'Assign Leads'}
+        </Button>
+      </div>
     </div>
   </div>
 {/if}
-
-<style>
-  .controls-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--spacing-md);
-    flex-wrap: wrap;
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    box-shadow: var(--shadow-soft);
-  }
-  .search-box {
-    position: relative;
-    flex: 1;
-    min-inline-size: 200px;
-    max-inline-size: 400px;
-    display: flex;
-    align-items: center;
-  }
-  .search-icon {
-    position: absolute;
-    left: var(--spacing-sm);
-    color: var(--color-on-surface-variant);
-    font-size: 18px;
-    pointer-events: none;
-    display: flex;
-    align-items: center;
-  }
-  .search-box input {
-    width: 100%;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    padding-left: calc(var(--spacing-sm) + 22px);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: var(--font-family);
-    font-size: 13px;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-  .search-box input:focus {
-    border-color: var(--color-outline);
-  }
-  .filters-box {
-    display: flex;
-    gap: var(--spacing-sm);
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .filter-select {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: var(--font-family);
-    font-size: 13px;
-    outline: none;
-    cursor: pointer;
-    transition: var(--transition-fast);
-  }
-  .filter-select:focus {
-    border-color: var(--color-outline);
-  }
-  .clear-filters-btn {
-    background: none;
-    border: 1px solid var(--color-outline-variant);
-    color: var(--color-on-surface-variant);
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: var(--transition-fast);
-  }
-  .clear-filters-btn:hover {
-    background: var(--color-surface-container-low);
-    color: var(--color-primary);
-  }
-  .pagination-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-md);
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    box-shadow: var(--shadow-soft);
-    font-size: 13px;
-    color: var(--color-on-surface-variant);
-    flex-wrap: wrap;
-    gap: var(--spacing-md);
-  }
-  .pagination-controls {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-  }
-  .page-size-select {
-    padding: 4px var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface-variant);
-    font-size: 12px;
-    margin-right: var(--spacing-sm);
-    cursor: pointer;
-    outline: none;
-  }
-  .page-btn {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    color: var(--color-on-surface-variant);
-    padding: 6px 12px;
-    border-radius: var(--rounded-md);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: var(--transition-fast);
-  }
-  .page-btn:hover:not(:disabled) {
-    background: var(--color-surface-container-low);
-    color: var(--color-primary);
-  }
-  .page-btn.active {
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    border-color: var(--color-primary);
-  }
-  .page-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .leads-container {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-  }
-
-  .list-header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  .header-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .list-header h2 {
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: var(--color-on-surface-variant);
-  }
-
-  .add-lead-btn {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-size: 13px;
-    font-weight: 600;
-    transition: var(--transition-fast);
-    border: none;
-    cursor: pointer;
-  }
-
-  .add-lead-btn:hover {
-    background: var(--color-primary-container);
-    color: var(--color-on-primary-container);
-  }
-
-  .add-lead-btn .material-icons {
-    font-size: 16px;
-  }
-
-  .header-actions {
-    display: flex;
-    gap: var(--spacing-sm);
-    align-items: center;
-  }
-
-  .assign-category-btn {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-size: 13px;
-    font-weight: 600;
-    transition: var(--transition-fast);
-    border: 1px solid var(--color-success);
-    cursor: pointer;
-  }
-
-  .assign-category-btn:hover {
-    background: var(--color-success);
-    color: #fff;
-  }
-
-  .assign-category-btn .material-icons {
-    font-size: 16px;
-  }
-
-  .table-wrapper {
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    overflow: hidden;
-    box-shadow: var(--shadow-soft);
-  }
-
-  .leads-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    text-align: left;
-  }
-
-  .leads-table th {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface-variant);
-    font-weight: 700;
-    text-transform: uppercase;
-    font-size: 10px;
-    letter-spacing: 0.05em;
-    padding: var(--spacing-md) var(--spacing-lg);
-    border-bottom: 1px solid var(--color-outline-variant);
-  }
-
-  .leads-table td {
-    padding: var(--spacing-md) var(--spacing-lg);
-    color: var(--color-on-surface);
-    border-bottom: 1px solid var(--color-outline-variant);
-  }
-
-  .leads-table tbody tr {
-    cursor: pointer;
-    transition: var(--transition-fast);
-    outline: none;
-  }
-
-  .leads-table tbody tr:focus {
-    background: var(--color-surface-container-low);
-    box-shadow: inset 3px 0 0 var(--color-success);
-  }
-
-  .leads-table tbody tr:hover {
-    background: var(--color-surface-container-low);
-  }
-
-  .leads-table tbody tr:last-child td {
-    border-bottom: none;
-  }
-
-  .leads-table tbody tr.selected {
-    background: rgba(16, 185, 129, 0.05);
-  }
-
-  .checkbox-col {
-    width: 40px;
-    text-align: center;
-    cursor: default;
-  }
-
-  .lead-name-cell {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-  }
-
-  .avatar-sm {
-    width: 28px;
-    height: 28px;
-    border-radius: var(--rounded-full);
-    background: var(--color-surface-dim);
-    color: var(--color-on-surface);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 10px;
-    border: 1px solid var(--color-outline-variant);
-  }
-
-  .lead-name-cell strong {
-    font-weight: 600;
-    color: var(--color-on-surface);
-  }
-
-  .status-badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: var(--rounded-full);
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-  }
-
-  .status-badge.new {
-    background: #e0f2fe;
-    color: #0369a1;
-  }
-
-  .status-badge.contacted {
-    background: #fef3c7;
-    color: #b45309;
-  }
-
-  .status-badge.qualified {
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-  }
-
-  .status-badge.lost {
-    background: rgba(244, 63, 94, 0.1);
-    color: var(--color-danger);
-  }
-
-  .status-badge.converted {
-    background: #e0e7ff;
-    color: #4338ca;
-  }
-
-  .value-cell {
-    font-weight: 600;
-    color: var(--color-success);
-  }
-
-  .empty-state {
-    text-align: center;
-    color: var(--color-on-surface-variant);
-    padding-block: var(--spacing-xl);
-    font-style: italic;
-  }
-
-  /* Modal Styles */
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(15, 23, 42, 0.15);
-    backdrop-filter: blur(2px);
-    z-index: 2000;
-  }
-
-  .modal-container {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 500px;
-    max-width: 90%;
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-lg);
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-    z-index: 2001;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-md) var(--spacing-lg);
-    border-bottom: 1px solid var(--color-outline-variant);
-  }
-
-  .modal-header h3 {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .close-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-on-surface-variant);
-    border-radius: var(--rounded-full);
-    padding: var(--spacing-xs);
-    transition: var(--transition-fast);
-  }
-
-  .close-btn:hover {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface);
-  }
-
-  .modal-form {
-    padding: var(--spacing-lg);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-  }
-
-  .form-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: var(--spacing-md);
-  }
-
-  @media (max-width: 480px) {
-    .form-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .form-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
-  .form-group.full-width {
-    grid-column: 1 / -1;
-  }
-
-  .form-group label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-on-surface-variant);
-  }
-
-  .form-group input, 
-  .form-group textarea {
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: var(--font-family);
-    font-size: 13px;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-
-  .form-group input:focus, 
-  .form-group textarea:focus {
-    border-color: var(--color-outline);
-  }
-
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--spacing-sm);
-    margin-top: var(--spacing-sm);
-  }
-
-  .cancel-btn {
-    background: none;
-    border: 1px solid var(--color-outline-variant);
-    color: var(--color-on-surface-variant);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-size: 13px;
-    font-weight: 600;
-    transition: var(--transition-fast);
-  }
-
-  .cancel-btn:hover {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface);
-  }
-
-  .save-btn {
-    background: var(--color-secondary);
-    color: var(--color-on-secondary);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-size: 13px;
-    font-weight: 600;
-    transition: var(--transition-fast);
-  }
-
-  .save-btn:hover:not(:disabled) {
-    background: var(--color-on-secondary-container);
-  }
-
-  .save-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .error-banner {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-md);
-    background-color: rgba(244, 63, 94, 0.08);
-    border: 1px solid var(--color-danger);
-    border-radius: var(--rounded-md);
-    color: var(--color-danger);
-    font-size: 13px;
-    margin-bottom: var(--spacing-md);
-  }
-
-  .success-banner {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-md);
-    background-color: rgba(16, 185, 129, 0.08);
-    border: 1px solid var(--color-success);
-    border-radius: var(--rounded-md);
-    color: var(--color-success);
-    font-size: 13px;
-    margin-bottom: var(--spacing-md);
-  }
-
-  .small-modal {
-    width: 400px;
-  }
-
-  .modal-body {
-    padding: var(--spacing-md) var(--spacing-lg);
-    font-size: 14px;
-    color: var(--color-on-surface);
-  }
-
-  .full-width-select {
-    width: 100%;
-    margin-top: var(--spacing-sm);
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: var(--font-family);
-    font-size: 14px;
-    outline: none;
-  }
-  .full-width-select:focus {
-    border-color: var(--color-primary);
-  }
-</style>

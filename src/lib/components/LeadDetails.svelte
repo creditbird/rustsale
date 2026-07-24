@@ -2,6 +2,13 @@
   import { fade, fly } from 'svelte/transition';
   import * as crmService from '$lib/services/crmService';
   import type { Lead, Activity } from '$lib/services/crmService';
+  import { Button } from '$lib/components/ui/button';
+  import { Input } from '$lib/components/ui/input';
+  import { Badge } from '$lib/components/ui/badge';
+  import { 
+    X, Edit2, Trash2, Save, Phone, Mail, Users, CheckCircle2, XCircle, 
+    AlertCircle, Calendar, MessageSquare, Clock, MapPin, Building
+  } from 'lucide-svelte';
 
   let { leadId, onClose, onRefresh } = $props<{ leadId: number; onClose: () => void; onRefresh?: () => void }>();
 
@@ -59,9 +66,7 @@
       );
       isEditing = false;
       await loadLeadDetails(leadId);
-      if (onRefresh) {
-        onRefresh();
-      }
+      if (onRefresh) onRefresh();
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
     } finally {
@@ -71,16 +76,14 @@
 
   async function handleDeleteLead() {
     if (!lead) return;
-    const confirmDelete = confirm(`Are you sure you want to delete ${lead.name}? This will also delete all associated activities and deals.`);
+    const confirmDelete = confirm(`Are you sure you want to delete ${lead.name}?`);
     if (!confirmDelete) return;
 
     deletingLead = true;
     errorMsg = null;
     try {
       await crmService.deleteLead(leadId);
-      if (onRefresh) {
-        onRefresh();
-      }
+      if (onRefresh) onRefresh();
       onClose();
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
@@ -94,11 +97,8 @@
   let activityContent = $state('');
   let logging = $state(false);
 
-  // Fetch details when leadId changes
   $effect(() => {
-    if (leadId) {
-      loadLeadDetails(leadId);
-    }
+    if (leadId) loadLeadDetails(leadId);
   });
 
   async function loadLeadDetails(id: number) {
@@ -111,7 +111,6 @@
       ]);
       if (id !== leadId) return;
       lead = leadData;
-      // Sort activities: newest first
       activities = activitiesData.sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
@@ -120,9 +119,7 @@
         errorMsg = err instanceof Error ? err.message : String(err);
       }
     } finally {
-      if (id === leadId) {
-        loading = false;
-      }
+      if (id === leadId) loading = false;
     }
   }
 
@@ -138,8 +135,6 @@
       await crmService.addActivity(currentLeadId, activityType, activityContent.trim(), performer);
       if (currentLeadId !== leadId) return;
       activityContent = '';
-      
-      // Refresh activity list
       const activitiesData = await crmService.getActivities(currentLeadId);
       if (currentLeadId !== leadId) return;
       activities = activitiesData.sort(
@@ -150,18 +145,7 @@
         errorMsg = err instanceof Error ? err.message : String(err);
       }
     } finally {
-      if (currentLeadId === leadId) {
-        logging = false;
-      }
-    }
-  }
-
-  function getActivityIcon(type: string) {
-    switch (type.toLowerCase()) {
-      case 'call': return 'call';
-      case 'email': return 'email';
-      case 'meeting': return 'groups';
-      default: return 'event_note';
+      if (currentLeadId === leadId) logging = false;
     }
   }
 
@@ -184,99 +168,89 @@
 
 <!-- Backdrop overlay -->
 <div 
-  class="drawer-backdrop" 
+  class="fixed inset-0 z-50 bg-background/80 backdrop-blur-xs" 
   transition:fade={{ duration: 150 }} 
   onclick={onClose}
   role="presentation"
 ></div>
 
 <!-- Drawer container -->
-<div 
-  class="drawer-container" 
+<aside 
+  class="fixed top-0 right-0 bottom-0 z-50 w-full max-w-md bg-card border-l border-border shadow-xl flex flex-col overflow-hidden text-card-foreground"
   transition:fly={{ x: 400, duration: 250 }}
 >
-  <header class="drawer-header">
-    <h3>Lead Details</h3>
-    <button class="close-btn" onclick={onClose} aria-label="Close details">
-      <span class="material-icons">close</span>
-    </button>
+  <!-- Drawer Header -->
+  <header class="h-14 px-5 border-b border-border flex items-center justify-between shrink-0">
+    <h3 class="text-sm font-bold text-foreground">Lead Profile Details</h3>
+    <Button variant="ghost" size="sm" onclick={onClose} class="h-8 w-8 p-0 text-muted-foreground hover:text-foreground">
+      <X class="w-4 h-4" />
+    </Button>
   </header>
 
   {#if loading && !lead}
-    <div class="drawer-state">
-      <span class="spinner"></span>
-      <p>Loading details...</p>
+    <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-xs gap-2">
+      <div class="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+      <p>Loading lead details...</p>
     </div>
   {:else if errorMsg && !lead}
-    <div class="drawer-state error">
-      <span class="material-icons">error_outline</span>
+    <div class="flex-1 flex flex-col items-center justify-center p-6 text-destructive text-xs gap-2">
+      <AlertCircle class="w-6 h-6" />
       <p>{errorMsg}</p>
     </div>
   {:else if lead}
-    <div class="drawer-content">
+    <div class="flex-1 overflow-y-auto p-5 space-y-6">
       {#if errorMsg}
-        <div class="error-banner">
-          <span class="material-icons">error_outline</span>
+        <div class="p-3 rounded bg-destructive/10 border border-destructive/30 text-destructive text-xs flex items-center gap-2">
+          <AlertCircle class="w-4 h-4 shrink-0" />
           <span>{errorMsg}</span>
         </div>
       {/if}
 
-      <!-- Profile Summary -->
-      <section class="profile-summary">
-        <div class="avatar">
-          {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
-        </div>
-        <div class="profile-info">
-          <h4>{lead.name}</h4>
-          <p class="company">{lead.company}</p>
-          <div class="badges-row" style="display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px;">
-            <span class="status-badge {lead.status.toLowerCase()}">{lead.status}</span>
-            
-            {#if lead.has_zalo === 1}
-              <span class="status-badge zalo-verified" style="background: #e0f2fe; color: #0369a1; display: inline-flex; align-items: center; gap: 2px;">
-                <span class="material-icons" style="font-size: 10px;">check_circle</span> Verified Zalo
-              </span>
-            {:else if lead.has_zalo === 0}
-              <span class="status-badge zalo-no" style="background: #f1f5f9; color: #64748b; display: inline-flex; align-items: center; gap: 2px;">
-                <span class="material-icons" style="font-size: 10px;">cancel</span> No Zalo
-              </span>
-            {:else}
-              <span class="status-badge zalo-unchecked" style="background: #f8fafc; color: #94a3b8; display: inline-flex; align-items: center; gap: 2px;">
-                <span class="material-icons" style="font-size: 10px;">help_outline</span> Zalo Unchecked
-              </span>
-            {/if}
-
-            {#if lead.zalo_reached === 1}
-              <span class="status-badge reached" style="background: #dcfce7; color: #15803d; display: inline-flex; align-items: center; gap: 2px;">
-                <span class="material-icons" style="font-size: 10px;">done</span> Reached
-              </span>
-            {:else}
-              <span class="status-badge not-reached" style="background: #fee2e2; color: #b91c1c; display: inline-flex; align-items: center; gap: 2px;">
-                <span class="material-icons" style="font-size: 10px;">hourglass_empty</span> Not Reached
-              </span>
-            {/if}
+      <!-- Profile Summary Card -->
+      <div class="p-4 rounded-xl border border-border bg-muted/20 relative space-y-3">
+        <div class="flex items-start gap-3">
+          <div class="w-12 h-12 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-sm flex items-center justify-center border border-emerald-500/20 shrink-0">
+            {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
           </div>
+          <div class="flex-1 min-w-0 pr-8">
+            <h4 class="text-base font-bold text-foreground truncate">{lead.name}</h4>
+            <p class="text-xs text-muted-foreground truncate">{lead.company}</p>
+            <div class="flex flex-wrap gap-1.5 mt-2">
+              <Badge variant="default" class="text-[10px] py-0">{lead.status}</Badge>
+              {#if lead.has_zalo === 1}
+                <Badge variant="outline" class="gap-1 border-sky-500/30 text-sky-600 bg-sky-500/10 text-[10px] py-0">
+                  <CheckCircle2 class="w-3 h-3 text-sky-500" /> Zalo Verified
+                </Badge>
+              {:else if lead.has_zalo === 0}
+                <Badge variant="outline" class="gap-1 border-slate-300 text-slate-500 bg-slate-100 text-[10px] py-0">
+                  <XCircle class="w-3 h-3 text-slate-400" /> No Zalo
+                </Badge>
+              {/if}
+            </div>
+          </div>
+          {#if !isEditing}
+            <Button variant="ghost" size="sm" onclick={startEditing} class="h-8 w-8 p-0 absolute top-3 right-3 text-muted-foreground hover:text-foreground">
+              <Edit2 class="w-4 h-4" />
+            </Button>
+          {/if}
         </div>
-        {#if !isEditing}
-          <button class="edit-toggle-btn" onclick={startEditing} aria-label="Edit details">
-            <span class="material-icons">edit</span>
-          </button>
-        {/if}
-      </section>
+      </div>
 
       {#if isEditing}
-        <form onsubmit={handleSaveLead} class="edit-lead-form">
-          <div class="form-group">
-            <label for="edit-name">Name *</label>
-            <input type="text" id="edit-name" bind:value={editName} required />
+        <!-- Edit Lead Form -->
+        <form onsubmit={handleSaveLead} class="space-y-3 text-xs border-t border-border pt-4">
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Edit Information</h5>
+          <div class="space-y-1">
+            <label for="edit-name" class="font-medium text-foreground">Name *</label>
+            <Input id="edit-name" bind:value={editName} required />
           </div>
-          <div class="form-group">
-            <label for="edit-company">Company *</label>
-            <input type="text" id="edit-company" bind:value={editCompany} required />
+          <div class="space-y-1">
+            <label for="edit-company" class="font-medium text-foreground">Company *</label>
+            <Input id="edit-company" bind:value={editCompany} required />
           </div>
-          <div class="form-group">
-            <label for="edit-status">Status</label>
-            <select id="edit-status" bind:value={editStatus}>
+          <div class="space-y-1">
+            <label for="edit-status" class="font-medium text-foreground">Status</label>
+            <select id="edit-status" bind:value={editStatus} class="w-full h-9 px-3 rounded-md border border-input bg-background">
               <option value="New">New</option>
               <option value="Contacted">Contacted</option>
               <option value="Qualified">Qualified</option>
@@ -284,655 +258,127 @@
               <option value="Converted">Converted (Contact)</option>
             </select>
           </div>
-          <div class="form-group">
-            <label for="edit-value">Est. Value ($)</label>
-            <input type="number" id="edit-value" bind:value={editValue} min="0" />
+          <div class="space-y-1">
+            <label for="edit-value" class="font-medium text-foreground">Est. Value ($)</label>
+            <Input id="edit-value" type="number" bind:value={editValue} min="0" />
           </div>
-          <div class="form-group">
-            <label for="edit-owner">Lead Owner</label>
-            <input type="text" id="edit-owner" bind:value={editOwner} />
+          <div class="space-y-1">
+            <label for="edit-owner" class="font-medium text-foreground">Owner</label>
+            <Input id="edit-owner" bind:value={editOwner} />
           </div>
-          <div class="form-group">
-            <label for="edit-email">Email *</label>
-            <input type="email" id="edit-email" bind:value={editEmail} required />
+          <div class="space-y-1">
+            <label for="edit-email" class="font-medium text-foreground">Email *</label>
+            <Input id="edit-email" type="email" bind:value={editEmail} required />
           </div>
-          <div class="form-group">
-            <label for="edit-phone">Phone</label>
-            <input type="text" id="edit-phone" bind:value={editPhone} />
+          <div class="space-y-1">
+            <label for="edit-phone" class="font-medium text-foreground">Phone</label>
+            <Input id="edit-phone" bind:value={editPhone} />
           </div>
-          <div class="form-group">
-            <label for="edit-address">Address</label>
-            <input type="text" id="edit-address" bind:value={editAddress} />
+          <div class="space-y-1">
+            <label for="edit-address" class="font-medium text-foreground">Address</label>
+            <Input id="edit-address" bind:value={editAddress} />
           </div>
-          <div class="form-group">
-            <label for="edit-about">About</label>
-            <textarea id="edit-about" bind:value={editAbout} rows="3"></textarea>
+          <div class="space-y-1">
+            <label for="edit-about" class="font-medium text-foreground">About</label>
+            <textarea id="edit-about" bind:value={editAbout} rows="3" class="w-full p-2.5 rounded border border-input bg-background"></textarea>
           </div>
 
-          <div class="edit-actions">
-            <button type="button" class="delete-btn-danger" onclick={handleDeleteLead} disabled={deletingLead}>
-              {#if deletingLead}Deleting...{:else}Delete{/if}
-            </button>
-            <div class="right-actions">
-              <button type="button" class="cancel-btn" onclick={() => isEditing = false}>Cancel</button>
-              <button type="submit" class="save-btn" disabled={savingLead}>
-                {#if savingLead}Saving...{:else}Save{/if}
-              </button>
+          <div class="flex items-center justify-between pt-3 border-t border-border">
+            <Button type="button" variant="destructive" size="sm" onclick={handleDeleteLead} disabled={deletingLead} class="gap-1.5">
+              <Trash2 class="w-3.5 h-3.5" />
+              {deletingLead ? 'Deleting...' : 'Delete'}
+            </Button>
+            <div class="flex items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onclick={() => isEditing = false}>Cancel</Button>
+              <Button type="submit" size="sm" disabled={savingLead} class="gap-1.5">
+                <Save class="w-3.5 h-3.5" />
+                {savingLead ? 'Saving...' : 'Save Changes'}
+              </Button>
             </div>
           </div>
         </form>
       {:else}
-        <!-- Details List -->
-        <section class="details-section">
-          <h5>Contact Details</h5>
-          <div class="detail-row">
-            <span class="detail-label">Email</span>
-            <span class="detail-value"><a href="mailto:{lead.email}">{lead.email}</a></span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Phone</span>
-            <span class="detail-value">{lead.phone || '—'}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Address</span>
-            <span class="detail-value">{lead.address || '—'}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Lead Owner</span>
-            <span class="detail-value">{lead.owner || '—'}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Est. Value</span>
-            <span class="detail-value value-text">${(lead.value || 0).toLocaleString()}</span>
-          </div>
-          {#if lead.about}
-            <div class="about-block">
-              <span class="detail-label">About</span>
-              <p>{lead.about}</p>
+        <!-- Contact Details -->
+        <div class="space-y-3">
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Contact Overview</h5>
+          <div class="space-y-2 text-xs">
+            <div class="flex justify-between py-1.5 border-b border-border/60">
+              <span class="text-muted-foreground flex items-center gap-1.5"><Mail class="w-3.5 h-3.5" /> Email</span>
+              <a href="mailto:{lead.email}" class="text-primary font-medium hover:underline truncate max-w-[200px]">{lead.email}</a>
             </div>
-          {/if}
-        </section>
+            <div class="flex justify-between py-1.5 border-b border-border/60">
+              <span class="text-muted-foreground flex items-center gap-1.5"><Phone class="w-3.5 h-3.5" /> Phone</span>
+              <span class="text-foreground font-medium">{lead.phone || '—'}</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-border/60">
+              <span class="text-muted-foreground flex items-center gap-1.5"><MapPin class="w-3.5 h-3.5" /> Address</span>
+              <span class="text-foreground font-medium truncate max-w-[200px]">{lead.address || '—'}</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-border/60">
+              <span class="text-muted-foreground flex items-center gap-1.5"><Users class="w-3.5 h-3.5" /> Owner</span>
+              <span class="text-foreground font-medium">{lead.owner || '—'}</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-border/60">
+              <span class="text-muted-foreground flex items-center gap-1.5"><Building class="w-3.5 h-3.5" /> Est. Value</span>
+              <span class="text-emerald-600 font-bold">${(lead.value || 0).toLocaleString()}</span>
+            </div>
+            {#if lead.about}
+              <div class="pt-2">
+                <span class="text-muted-foreground block mb-1">About</span>
+                <p class="p-2.5 rounded bg-muted/30 border border-border/60 text-foreground leading-relaxed">{lead.about}</p>
+              </div>
+            {/if}
+          </div>
+        </div>
 
-        <!-- Log Activity -->
-        <section class="log-activity-section">
-          <h5>Log Activity</h5>
-          <form onsubmit={handleLogActivity} class="activity-form">
-            <div class="form-row">
-              <label for="act-type" class="sr-only">Type</label>
-              <select id="act-type" bind:value={activityType} class="activity-select">
-                <option value="Call">Call</option>
-                <option value="Email">Email</option>
-                <option value="Meeting">Meeting</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label for="act-content" class="sr-only">Activity notes</label>
-              <textarea
-                id="act-content"
-                bind:value={activityContent}
-                placeholder="What did you discuss? Enter notes here..."
-                rows="3"
-                required
-              ></textarea>
-            </div>
-            <button type="submit" class="submit-btn" disabled={logging || !activityContent.trim()}>
-              {#if logging}
-                Logging...
-              {:else}
-                Log Activity
-              {/if}
-            </button>
+        <!-- Log Activity Form -->
+        <div class="space-y-3 pt-2">
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Log Activity</h5>
+          <form onsubmit={handleLogActivity} class="space-y-2.5 text-xs">
+            <select bind:value={activityType} class="w-full h-8 px-2.5 rounded-md border border-input bg-background text-foreground">
+              <option value="Call">Call</option>
+              <option value="Email">Email</option>
+              <option value="Meeting">Meeting</option>
+            </select>
+            <textarea
+              bind:value={activityContent}
+              placeholder="What did you discuss? Enter notes here..."
+              rows="3"
+              required
+              class="w-full p-2.5 rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground"
+            ></textarea>
+            <Button type="submit" size="sm" class="w-full h-8 text-xs" disabled={logging || !activityContent.trim()}>
+              {logging ? 'Logging...' : 'Log Activity'}
+            </Button>
           </form>
-        </section>
+        </div>
 
-        <!-- Activity History -->
-        <section class="activities-section">
-          <h5>Activity History</h5>
+        <!-- Activity Timeline -->
+        <div class="space-y-3 pt-2">
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Activity History</h5>
           {#if activities.length === 0}
-            <p class="no-activities">No activities logged yet.</p>
+            <p class="text-xs text-muted-foreground italic">No activities logged yet.</p>
           {:else}
-            <div class="timeline">
+            <div class="space-y-3 relative before:absolute before:left-3 before:top-2 before:bottom-2 before:w-0.5 before:bg-border">
               {#each activities as activity}
-                <div class="timeline-item">
-                  <div class="timeline-icon">
-                    <span class="material-icons">{getActivityIcon(activity.activity_type)}</span>
+                <div class="flex items-start gap-3 relative">
+                  <div class="w-6.5 h-6.5 rounded-full bg-background border border-border flex items-center justify-center text-primary z-10 text-[10px]">
+                    <Clock class="w-3 h-3 text-muted-foreground" />
                   </div>
-                  <div class="timeline-content">
-                    <div class="timeline-meta">
-                      <span class="activity-type">{activity.activity_type}</span>
-                      <span class="activity-time">{formatDateTime(activity.created_at)}</span>
+                  <div class="flex-1 p-2.5 rounded-lg border border-border/70 bg-muted/20 text-xs space-y-1">
+                    <div class="flex items-center justify-between font-semibold">
+                      <span class="text-foreground">{activity.activity_type}</span>
+                      <span class="text-[10px] text-muted-foreground font-normal">{formatDateTime(activity.created_at)}</span>
                     </div>
-                    <p class="activity-text">{activity.content}</p>
-                    <span class="activity-performer">Logged by {activity.performed_by}</span>
+                    <p class="text-muted-foreground leading-relaxed">{activity.content}</p>
+                    <span class="text-[10px] text-muted-foreground/70 block">Logged by {activity.performed_by}</span>
                   </div>
                 </div>
               {/each}
             </div>
           {/if}
-        </section>
+        </div>
       {/if}
     </div>
   {/if}
-</div>
-
-<style>
-  .profile-summary {
-    position: relative;
-  }
-  .edit-toggle-btn {
-    position: absolute;
-    top: var(--spacing-md);
-    right: var(--spacing-md);
-    background: none;
-    border: none;
-    color: var(--color-on-surface-variant);
-    cursor: pointer;
-    padding: var(--spacing-xs);
-    border-radius: var(--rounded-full);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: var(--transition-fast);
-  }
-  .edit-toggle-btn:hover {
-    background: var(--color-surface-container-high);
-    color: var(--color-primary);
-  }
-  .edit-lead-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-  .edit-lead-form .form-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .edit-lead-form .form-group label {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: var(--color-on-surface-variant);
-  }
-  .edit-lead-form input,
-  .edit-lead-form select,
-  .edit-lead-form textarea {
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: var(--font-family);
-    font-size: 13px;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-  .edit-lead-form input:focus,
-  .edit-lead-form select:focus,
-  .edit-lead-form textarea:focus {
-    border-color: var(--color-outline);
-  }
-  .edit-actions {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: var(--spacing-md);
-    padding-top: var(--spacing-md);
-    border-top: 1px solid var(--color-outline-variant);
-  }
-  .right-actions {
-    display: flex;
-    gap: var(--spacing-sm);
-  }
-  .delete-btn-danger {
-    background: rgba(244, 63, 94, 0.1);
-    color: var(--color-danger);
-    border: 1px solid rgba(244, 63, 94, 0.2);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-size: 13px;
-    font-weight: 600;
-    transition: var(--transition-fast);
-    cursor: pointer;
-  }
-  .delete-btn-danger:hover:not(:disabled) {
-    background: var(--color-danger);
-    color: var(--color-on-primary);
-  }
-  .cancel-btn {
-    background: none;
-    border: 1px solid var(--color-outline-variant);
-    color: var(--color-on-surface-variant);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-size: 13px;
-    font-weight: 600;
-    transition: var(--transition-fast);
-    cursor: pointer;
-  }
-  .cancel-btn:hover {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface);
-  }
-  .save-btn {
-    background: var(--color-secondary);
-    color: var(--color-on-secondary);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-size: 13px;
-    font-weight: 600;
-    transition: var(--transition-fast);
-    cursor: pointer;
-  }
-  .save-btn:hover:not(:disabled) {
-    background: var(--color-on-secondary-container);
-  }
-  .save-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .drawer-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(15, 23, 42, 0.15);
-    backdrop-filter: blur(2px);
-    z-index: 1000;
-  }
-
-  .drawer-container {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 400px;
-    max-width: 100%;
-    background: var(--color-surface-container-lowest);
-    border-left: 1px solid var(--color-outline-variant);
-    box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
-    z-index: 1001;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .drawer-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-md);
-    border-bottom: 1px solid var(--color-outline-variant);
-  }
-
-  .drawer-header h3 {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .close-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-on-surface-variant);
-    border-radius: var(--rounded-full);
-    padding: var(--spacing-xs);
-    transition: var(--transition-fast);
-  }
-
-  .close-btn:hover {
-    background: var(--color-surface-container-low);
-    color: var(--color-on-surface);
-  }
-
-  .drawer-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    padding: var(--spacing-lg);
-    gap: var(--spacing-md);
-    color: var(--color-on-surface-variant);
-  }
-
-  .drawer-state.error {
-    color: var(--color-danger);
-  }
-
-  .drawer-state .material-icons {
-    font-size: 32px;
-  }
-
-  .spinner {
-    width: 24px;
-    height: 24px;
-    border: 2px solid var(--color-outline-variant);
-    border-top-color: var(--color-success);
-    border-radius: var(--rounded-full);
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .drawer-content {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--spacing-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
-  }
-
-  .profile-summary {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-md);
-    padding: var(--spacing-md);
-    background: var(--color-surface-container-low);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-  }
-
-  .avatar {
-    width: 48px;
-    height: 48px;
-    border-radius: var(--rounded-full);
-    background: var(--color-surface-dim);
-    color: var(--color-on-surface);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 16px;
-    border: 1px solid var(--color-outline-variant);
-  }
-
-  .profile-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .profile-info h4 {
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .profile-info .company {
-    font-size: 12px;
-    color: var(--color-on-surface-variant);
-  }
-
-  .status-badge {
-    align-self: flex-start;
-    padding: 2px 8px;
-    border-radius: var(--rounded-full);
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    margin-top: 4px;
-  }
-
-  .status-badge.new {
-    background: #e0f2fe;
-    color: #0369a1;
-  }
-
-  .status-badge.contacted {
-    background: #fef3c7;
-    color: #b45309;
-  }
-
-  .status-badge.qualified {
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-  }
-
-  .status-badge.lost {
-    background: rgba(244, 63, 94, 0.1);
-    color: var(--color-danger);
-  }
-
-  .status-badge.converted {
-    background: #e0e7ff;
-    color: #4338ca;
-  }
-
-  .details-section h5, 
-  .log-activity-section h5, 
-  .activities-section h5 {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--color-on-surface-variant);
-    font-weight: 700;
-    margin-bottom: var(--spacing-sm);
-  }
-
-  .detail-row {
-    display: flex;
-    justify-content: space-between;
-    padding-block: var(--spacing-xs);
-    border-bottom: 1px dashed var(--color-outline-variant);
-    font-size: 13px;
-  }
-
-  .detail-label {
-    color: var(--color-on-surface-variant);
-  }
-
-  .detail-value {
-    color: var(--color-on-surface);
-    font-weight: 500;
-  }
-
-  .detail-value a {
-    color: var(--color-success);
-  }
-
-  .detail-value a:hover {
-    text-decoration: underline;
-  }
-
-  .value-text {
-    color: var(--color-success);
-    font-weight: 600;
-  }
-
-  .about-block {
-    margin-top: var(--spacing-sm);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 13px;
-  }
-
-  .about-block p {
-    background: var(--color-surface-container-low);
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    color: var(--color-on-surface);
-    border: 1px solid var(--color-outline-variant);
-    line-height: 1.4;
-  }
-
-  .activity-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-  }
-
-  .activity-select {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: var(--font-family);
-    font-size: 13px;
-    width: 100%;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-
-  .activity-select:focus {
-    border-color: var(--color-outline);
-  }
-
-  textarea {
-    width: 100%;
-    padding: var(--spacing-sm);
-    border-radius: var(--rounded-md);
-    border: 1px solid var(--color-outline-variant);
-    background: var(--color-surface-container-lowest);
-    color: var(--color-on-surface);
-    font-family: var(--font-family);
-    font-size: 13px;
-    resize: vertical;
-    outline: none;
-    transition: var(--transition-fast);
-  }
-
-  textarea:focus {
-    border-color: var(--color-outline);
-  }
-
-  .error-banner {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-md);
-    background-color: rgba(244, 63, 94, 0.08);
-    border: 1px solid var(--color-danger);
-    border-radius: var(--rounded-md);
-    color: var(--color-danger);
-    font-size: 13px;
-    margin-bottom: var(--spacing-md);
-  }
-
-  .submit-btn {
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--rounded-md);
-    font-weight: 600;
-    font-size: 13px;
-    text-align: center;
-    transition: var(--transition-fast);
-  }
-
-  .submit-btn:hover:not(:disabled) {
-    background: var(--color-primary-container);
-    color: var(--color-on-primary-container);
-  }
-
-  .submit-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .no-activities {
-    font-size: 12px;
-    color: var(--color-on-surface-variant);
-    font-style: italic;
-    text-align: center;
-    padding-block: var(--spacing-md);
-  }
-
-  .timeline {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    position: relative;
-    padding-left: 12px;
-  }
-
-  .timeline::before {
-    content: '';
-    position: absolute;
-    top: 8px;
-    bottom: 8px;
-    left: 20px;
-    width: 2px;
-    background: var(--color-outline-variant);
-  }
-
-  .timeline-item {
-    display: flex;
-    gap: var(--spacing-md);
-    position: relative;
-  }
-
-  .timeline-icon {
-    width: 24px;
-    height: 24px;
-    border-radius: var(--rounded-full);
-    background: var(--color-surface-container-lowest);
-    border: 2px solid var(--color-outline-variant);
-    color: var(--color-on-surface-variant);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1;
-  }
-
-  .timeline-icon .material-icons {
-    font-size: 14px;
-  }
-
-  .timeline-content {
-    flex: 1;
-    background: var(--color-surface-container-lowest);
-    border: 1px solid var(--color-outline-variant);
-    border-radius: var(--rounded-md);
-    padding: var(--spacing-sm);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    box-shadow: var(--shadow-soft);
-  }
-
-  .timeline-meta {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 11px;
-  }
-
-  .activity-type {
-    font-weight: 700;
-    color: var(--color-on-surface);
-  }
-
-  .activity-time {
-    color: var(--color-on-surface-variant);
-  }
-
-  .activity-text {
-    font-size: 13px;
-    color: var(--color-on-surface);
-    line-height: 1.4;
-    word-break: break-word;
-  }
-
-  .activity-performer {
-    font-size: 10px;
-    color: var(--color-on-surface-variant);
-    align-self: flex-end;
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-</style>
+</aside>
