@@ -72,6 +72,31 @@
   let templateImageUrl = $state('');
   let templateError = $state<string | null>(null);
   let fileInputRef = $state<HTMLInputElement | null>(null);
+  let templateTextareaRef = $state<HTMLTextAreaElement | null>(null);
+
+  function insertTagAtCursor(tag: string) {
+    const textToInsert = `[${tag}]`;
+    if (!templateTextareaRef) {
+      templateContent += textToInsert;
+      return;
+    }
+
+    const start = templateTextareaRef.selectionStart ?? templateContent.length;
+    const end = templateTextareaRef.selectionEnd ?? templateContent.length;
+
+    const before = templateContent.substring(0, start);
+    const after = templateContent.substring(end);
+
+    templateContent = before + textToInsert + after;
+
+    setTimeout(() => {
+      if (templateTextareaRef) {
+        templateTextareaRef.focus();
+        const newPos = start + textToInsert.length;
+        templateTextareaRef.setSelectionRange(newPos, newPos);
+      }
+    }, 0);
+  }
 
   let isDeleteSessionModalOpen = $state(false);
   let sessionToDelete = $state<ZaloSession | null>(null);
@@ -884,24 +909,24 @@
             <Button
               variant="outline"
               size="sm"
-              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors"
-              onclick={() => templateContent += ' [name]'}
+              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer"
+              onclick={() => insertTagAtCursor('name')}
             >
               + [name]
             </Button>
             <Button
               variant="outline"
               size="sm"
-              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors"
-              onclick={() => templateContent += ' [company]'}
+              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer"
+              onclick={() => insertTagAtCursor('company')}
             >
               + [company]
             </Button>
             <Button
               variant="outline"
               size="sm"
-              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors"
-              onclick={() => templateContent += ' [phone]'}
+              class="h-6 px-2 text-[10px] font-mono hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer"
+              onclick={() => insertTagAtCursor('phone')}
             >
               + [phone]
             </Button>
@@ -909,6 +934,7 @@
         </div>
         <textarea
           id="tpl-content"
+          bind:this={templateTextareaRef}
           rows="7"
           bind:value={templateContent}
           placeholder="Write template content here... e.g. Chào [name], bên mình chuyên cung cấp giải pháp..."
