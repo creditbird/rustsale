@@ -143,7 +143,9 @@
 
   function toggleDistrict(districtCode: number, checked: boolean) {
     if (checked) {
-      selectedDistricts = [...selectedDistricts, districtCode];
+      if (!selectedDistricts.includes(districtCode)) {
+        selectedDistricts = [...selectedDistricts, districtCode];
+      }
     } else {
       const dist = availableDistricts.find(d => d.code === districtCode);
       const wardCodesToRemove = dist ? (dist.wards || []).map(w => w.code) : [];
@@ -492,19 +494,19 @@
                 <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
                   {#each filteredDistricts as district (district.code)}
                     {@const isChecked = selectedDistricts.includes(district.code)}
-                    <label 
-                      class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5' : ''}"
-                      onclick={() => toggleDistrict(district.code, !isChecked)}
+                    <div 
+                      class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5 font-semibold' : ''}"
+                      onclick={() => !isScraping && toggleDistrict(district.code, !isChecked)}
+                      role="button"
+                      tabindex="0"
+                      onkeydown={(e) => e.key === 'Enter' && !isScraping && toggleDistrict(district.code, !isChecked)}
                     >
-                      <div onclick={(e) => e.stopPropagation()} role="none">
-                        <Checkbox
-                          checked={isChecked}
-                          disabled={isScraping}
-                          onCheckedChange={(checked) => toggleDistrict(district.code, Boolean(checked))}
-                        />
-                      </div>
+                      <Checkbox
+                        checked={isChecked}
+                        disabled={isScraping}
+                      />
                       <span class="truncate">{district.name} <small class="text-muted-foreground">({district.provinceName.replace('Thành phố ', 'TP. ').replace('Tỉnh ', 'T.')})</small></span>
-                    </label>
+                    </div>
                   {/each}
                 </div>
               </div>
@@ -523,25 +525,28 @@
                   <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
                     {#each filteredWards as ward (ward.code)}
                       {@const isChecked = selectedWards.includes(ward.code)}
-                      <label 
-                        class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5' : ''}"
+                      <div 
+                        class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5 font-semibold' : ''}"
                         onclick={() => {
+                          if (isScraping) return;
                           if (isChecked) selectedWards = selectedWards.filter(w => w !== ward.code);
                           else selectedWards = [...selectedWards, ward.code];
                         }}
+                        role="button"
+                        tabindex="0"
+                        onkeydown={(e) => {
+                          if (e.key === 'Enter' && !isScraping) {
+                            if (isChecked) selectedWards = selectedWards.filter(w => w !== ward.code);
+                            else selectedWards = [...selectedWards, ward.code];
+                          }
+                        }}
                       >
-                        <div onclick={(e) => e.stopPropagation()} role="none">
-                          <Checkbox
-                            checked={isChecked}
-                            disabled={isScraping}
-                            onCheckedChange={(checked) => {
-                              if (checked) selectedWards = [...selectedWards, ward.code];
-                              else selectedWards = selectedWards.filter(w => w !== ward.code);
-                            }}
-                          />
-                        </div>
+                        <Checkbox
+                          checked={isChecked}
+                          disabled={isScraping}
+                        />
                         <span class="truncate">{ward.name} <small class="text-muted-foreground">({ward.districtName.replace('Quận ', 'Q.').replace('Huyện ', 'H.')})</small></span>
-                      </label>
+                      </div>
                     {/each}
                   </div>
                 </div>
@@ -624,10 +629,16 @@
 
         <!-- Headless Option & Action Button -->
         <div class="flex items-center justify-between pt-2 border-t border-border">
-          <label class="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
-            <Checkbox bind:checked={headless} disabled={isScraping} />
+          <div 
+            class="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer"
+            onclick={() => !isScraping && (headless = !headless)}
+            role="button"
+            tabindex="0"
+            onkeydown={(e) => e.key === 'Enter' && !isScraping && (headless = !headless)}
+          >
+            <Checkbox checked={headless} disabled={isScraping} />
             <span>Headless Mode (Hide browser)</span>
-          </label>
+          </div>
 
           {#if isScraping}
             <Button variant="destructive" size="sm" onclick={stopScrape} class="gap-2">
