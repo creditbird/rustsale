@@ -307,6 +307,37 @@ pub fn get_activities_internal(conn: &Connection, lead_id: i32) -> Result<Vec<Ac
 }
 
 #[tauri::command]
+pub fn get_recent_activities(limit: Option<i32>, state: tauri::State<DbState>) -> Result<Vec<Activity>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    let limit_val = limit.unwrap_or(10);
+    let mut stmt = conn
+        .prepare("SELECT id, lead_id, activity_type, content, created_at, performed_by FROM activities ORDER BY id DESC LIMIT ?1")
+        .map_err(|e| format!("Database query error: {}", e))?;
+
+    let rows = stmt
+        .query_map([limit_val], |row| {
+            Ok(Activity {
+                id: Some(row.get(0)?),
+                lead_id: row.get(1)?,
+                activity_type: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+                performed_by: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("Database query error: {}", e))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|e| format!("Database query error: {}", e))?);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 pub fn add_activity(
     lead_id: i32,
     activity_type: String,

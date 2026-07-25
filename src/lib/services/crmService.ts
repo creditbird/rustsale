@@ -74,12 +74,34 @@ export async function getDeals(): Promise<Deal[]> {
   return invoke<Deal[]>('get_deals');
 }
 
+export async function createDeal(
+  leadId: number,
+  title: string,
+  value: number,
+  stage: string
+): Promise<Deal> {
+  return invoke<Deal>('create_deal', {
+    leadId,
+    title,
+    value,
+    stage
+  });
+}
+
 export async function updateDealStage(id: number, stage: string): Promise<void> {
   return invoke<void>('update_deal_stage', { id, stage });
 }
 
+export async function deleteDeal(id: number): Promise<void> {
+  return invoke<void>('delete_deal', { id });
+}
+
 export async function getActivities(leadId: number): Promise<Activity[]> {
   return invoke<Activity[]>('get_activities', { leadId });
+}
+
+export async function getRecentActivities(limit: number = 10): Promise<Activity[]> {
+  return invoke<Activity[]>('get_recent_activities', { limit });
 }
 
 export async function addActivity(
