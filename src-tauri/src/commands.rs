@@ -218,6 +218,61 @@ pub fn update_deal_stage_internal(conn: &Connection, id: i32, stage: String) -> 
 }
 
 #[tauri::command]
+pub fn create_deal(
+    lead_id: i32,
+    title: String,
+    value: f64,
+    stage: String,
+    state: tauri::State<DbState>,
+) -> Result<Deal, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    create_deal_internal(&conn, lead_id, title, value, stage)
+}
+
+pub fn create_deal_internal(
+    conn: &Connection,
+    lead_id: i32,
+    title: String,
+    value: f64,
+    stage: String,
+) -> Result<Deal, String> {
+    let created_at = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO deals (lead_id, title, value, stage, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![lead_id, title, value, stage, created_at],
+    )
+    .map_err(|e| format!("Database query error: {}", e))?;
+
+    let id = conn.last_insert_rowid() as i32;
+    Ok(Deal {
+        id: Some(id),
+        lead_id,
+        title,
+        value,
+        stage,
+        created_at,
+    })
+}
+
+#[tauri::command]
+pub fn delete_deal(id: i32, state: tauri::State<DbState>) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    delete_deal_internal(&conn, id)
+}
+
+pub fn delete_deal_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    conn.execute("DELETE FROM deals WHERE id = ?1", [id])
+        .map_err(|e| format!("Database query error: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_activities(lead_id: i32, state: tauri::State<DbState>) -> Result<Vec<Activity>, String> {
     let conn = state
         .conn
@@ -1465,6 +1520,10 @@ pub async fn send_zalo_outreach(
             imei,
             lead_ids,
             template_id,
+            false,
+            0,
+            0,
+            0,
         )
         .await;
     });
@@ -1477,7 +1536,16 @@ pub async fn start_zalo_outreach(
     imeis: Vec<String>,
     template_id: i32,
     lead_ids: Vec<i32>,
+    enable_burst_limit: Option<bool>,
+    burst_max_messages: Option<u32>,
+    burst_delay_seconds: Option<u64>,
+    inter_message_delay_seconds: Option<u64>,
 ) -> Result<(), String> {
+    let enable_burst = enable_burst_limit.unwrap_or(false);
+    let burst_max = burst_max_messages.unwrap_or(0);
+    let burst_delay = burst_delay_seconds.unwrap_or(0);
+    let inter_delay = inter_message_delay_seconds.unwrap_or(0);
+
     let app_handle_clone = app_handle.clone();
     tokio::spawn(async move {
         let db_state = app_handle_clone.state::<DbState>();
@@ -1488,6 +1556,10 @@ pub async fn start_zalo_outreach(
                 imei,
                 lead_ids.clone(),
                 template_id,
+                enable_burst,
+                burst_max,
+                burst_delay,
+                inter_delay,
             )
             .await;
         }
@@ -1563,6 +1635,10 @@ pub async fn send_zalo_outreach_internal(
     imei: String,
     lead_ids: Vec<i32>,
     template_id: i32,
+    enable_burst_limit: bool,
+    burst_max_messages: u32,
+    burst_delay_seconds: u64,
+    inter_message_delay_seconds: u64,
 ) -> Result<(), String> {
     // Mock flow helper
     if imei == "mock-imei" || imei.starts_with("mock-") {
@@ -1578,6 +1654,7 @@ pub async fn send_zalo_outreach_internal(
         };
 
         let mut total_sent = 0;
+        let mut burst_counter: u32 = 0;
         for (idx, lead_id) in lead_ids.iter().enumerate() {
             let (lead_name, phone) = {
                 let conn_guard = conn_mutex.lock().unwrap();
@@ -1683,6 +1760,7 @@ pub async fn send_zalo_outreach_internal(
 
             let formatted_content = render_zalo_template(&template_content, &lead_name);
             total_sent += 1;
+            burst_counter += 1;
             let log_msg = format!("Message sent to {} ({}) (Mock)", lead_name, sanitized_phone);
             if let Some(app) = app_handle {
                 let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
@@ -1747,8 +1825,22 @@ pub async fn send_zalo_outreach_internal(
                 );
             }
 
-            if idx + 1 < lead_ids.len() {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if enable_burst_limit && burst_max_messages > 0 && burst_counter >= burst_max_messages && (idx + 1) < lead_ids.len() {
+                let msg = format!(
+                    "[Burst Limit] Đã gửi {} tin. Tạm dừng {} giây để tránh khóa tài khoản Zalo...",
+                    burst_counter, burst_delay_seconds
+                );
+                if let Some(app) = app_handle {
+                    let _ = app.emit("outreach-log", OutreachLogPayload { message: msg });
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(burst_delay_seconds)).await;
+                burst_counter = 0;
+            } else if idx + 1 < lead_ids.len() {
+                if inter_message_delay_seconds > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(inter_message_delay_seconds)).await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             }
         }
 
@@ -1917,6 +2009,7 @@ pub async fn send_zalo_outreach_internal(
     };
 
     let mut total_sent = 0;
+    let mut burst_counter: u32 = 0;
     for (idx, lead_id) in lead_ids.iter().enumerate() {
         let (lead_name, phone) = {
             let conn_guard = conn_mutex.lock().unwrap();
@@ -2095,6 +2188,7 @@ pub async fn send_zalo_outreach_internal(
             {
                 Ok(_) => {
                     total_sent += 1;
+                    burst_counter += 1;
                     let log_msg = format!("Message sent to {} ({})", lead_name, sanitized_phone);
                     if let Some(app) = app_handle {
                         let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
@@ -2201,8 +2295,22 @@ pub async fn send_zalo_outreach_internal(
             );
         }
 
-        if idx + 1 < lead_ids.len() {
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        if enable_burst_limit && burst_max_messages > 0 && burst_counter >= burst_max_messages && (idx + 1) < lead_ids.len() {
+            let msg = format!(
+                "[Burst Limit] Đã gửi {} tin. Tạm dừng {} giây để tránh khóa tài khoản Zalo...",
+                burst_counter, burst_delay_seconds
+            );
+            if let Some(app) = app_handle {
+                let _ = app.emit("outreach-log", OutreachLogPayload { message: msg });
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(burst_delay_seconds)).await;
+            burst_counter = 0;
+        } else if idx + 1 < lead_ids.len() {
+            if inter_message_delay_seconds > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(inter_message_delay_seconds)).await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            }
         }
     }
 

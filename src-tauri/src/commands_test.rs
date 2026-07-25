@@ -290,6 +290,8 @@ mod tests {
             user_agent: "MockUA".to_string(),
             cookies_json: "not valid json".to_string(),
             language: "vi".to_string(),
+            avatar: None,
+            display_name: None,
         };
 
         let verify_res = commands::verify_zalo_session_internal(invalid_session).await.unwrap();
@@ -383,7 +385,7 @@ mod tests {
 
         // 1. Create a template
         let template_id =
-            db::create_outreach_template(&conn, "Template Welcome", "Hello [name]!").unwrap();
+            db::create_outreach_template(&conn, "Template Welcome", "Hello [name]!", None).unwrap();
 
         // 2. Add some leads
         // Lead 1: valid phone
@@ -455,6 +457,10 @@ mod tests {
             "mock-imei".to_string(),
             vec![lead_id_1, lead_id_2, lead_id_3, lead_id_4],
             template_id,
+            false,
+            0,
+            0,
+            0,
         )
         .await;
 
@@ -493,6 +499,84 @@ mod tests {
         let lead_4 = commands::get_lead_details_internal(&conn_locked, lead_id_4).unwrap();
         assert_eq!(lead_4.has_zalo, Some(0));
         assert_eq!(lead_4.zalo_reached, 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_zalo_outreach_burst_limit() {
+        use std::sync::Mutex;
+
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        let template_id =
+            db::create_outreach_template(&conn, "Template Burst", "Hello [name]!", None).unwrap();
+
+        let lead_id_1 = commands::add_lead_internal(
+            &mut conn,
+            "Lead One".to_string(),
+            "Company A".to_string(),
+            "New".to_string(),
+            1000.0,
+            "Alex".to_string(),
+            "lead1@example.com".to_string(),
+            "0912345678".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lead_id_2 = commands::add_lead_internal(
+            &mut conn,
+            "Lead Two".to_string(),
+            "Company B".to_string(),
+            "New".to_string(),
+            1000.0,
+            "Alex".to_string(),
+            "lead2@example.com".to_string(),
+            "0912345679".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lead_id_3 = commands::add_lead_internal(
+            &mut conn,
+            "Lead Three".to_string(),
+            "Company C".to_string(),
+            "New".to_string(),
+            1000.0,
+            "Alex".to_string(),
+            "lead3@example.com".to_string(),
+            "0912345680".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let db_mutex = Mutex::new(conn);
+
+        let res = commands::send_zalo_outreach_internal(
+            None,
+            &db_mutex,
+            "mock-imei".to_string(),
+            vec![lead_id_1, lead_id_2, lead_id_3],
+            template_id,
+            true,
+            2,
+            1,
+            0,
+        )
+        .await;
+
+        assert!(res.is_ok());
+
+        let conn_locked = db_mutex.lock().unwrap();
+        let activities_1 = commands::get_activities_internal(&conn_locked, lead_id_1).unwrap();
+        assert_eq!(activities_1.len(), 1);
+        let activities_2 = commands::get_activities_internal(&conn_locked, lead_id_2).unwrap();
+        assert_eq!(activities_2.len(), 1);
+        let activities_3 = commands::get_activities_internal(&conn_locked, lead_id_3).unwrap();
+        assert_eq!(activities_3.len(), 1);
     }
 
     #[tokio::test]
@@ -683,7 +767,7 @@ mod tests {
         db::seed_data(&mut conn).unwrap();
 
         let template_id =
-            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!").unwrap();
+            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!", None).unwrap();
 
         let category_id = db::create_category(&conn, "Campaign Category").unwrap();
 
@@ -798,7 +882,7 @@ mod tests {
         let mut conn = db::init_db(":memory:").unwrap();
         db::seed_data(&mut conn).unwrap();
         let template_id =
-            db::create_outreach_template(&conn, "Campaign Template", "Hello [name]!").unwrap();
+            db::create_outreach_template(&conn, "Campaign Template", "Hello [name]!", None).unwrap();
         let category_id = db::create_category(&conn, "Campaign Category").unwrap();
 
         let lead_1 = commands::add_lead_internal(
@@ -899,7 +983,7 @@ mod tests {
         db::seed_data(&mut conn).unwrap();
 
         let template_id =
-            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!").unwrap();
+            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!", None).unwrap();
         let category_id = db::create_category(&conn, "Campaign Category").unwrap();
 
         let lead_1 = commands::add_lead_internal(
@@ -969,7 +1053,7 @@ mod tests {
         db::seed_data(&mut conn).unwrap();
 
         let template_id =
-            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!").unwrap();
+            db::create_outreach_template(&conn, "Campaign Template", "Hello {name}!", None).unwrap();
         let category_id = db::create_category(&conn, "Campaign Category").unwrap();
 
         let lead_1 = commands::add_lead_internal(
