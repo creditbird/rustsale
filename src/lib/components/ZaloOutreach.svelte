@@ -112,6 +112,11 @@
   let campaignLogs = $state<string[]>([]);
   let consoleElement: HTMLDivElement | null = null;
 
+  let enableBurstLimit = $state(true);
+  let burstMaxMessages = $state(5);
+  let burstDelaySeconds = $state(30);
+  let interMessageDelaySeconds = $state(3);
+
   let qrUnlistens: UnlistenFn[] = [];
   let campaignUnlistens: UnlistenFn[] = [];
 
@@ -497,7 +502,11 @@
       await invoke('start_zalo_outreach', {
         imeis: selectedImeis,
         templateId: selectedTemplateId,
-        leadIds: selectedLeadIds
+        leadIds: selectedLeadIds,
+        enableBurstLimit,
+        burstMaxMessages: Number(burstMaxMessages) || 5,
+        burstDelaySeconds: Number(burstDelaySeconds) || 30,
+        interMessageDelaySeconds: Number(interMessageDelaySeconds) || 3,
       });
     } catch (e) {
       isCampaignRunning = false;
@@ -828,6 +837,64 @@
               {/if}
             {/each}
           </div>
+        </div>
+
+        <!-- Burst Limit Controls -->
+        <div class="flex flex-col gap-2.5 p-3 rounded-lg border border-border bg-muted/20">
+          <div class="flex items-center justify-between">
+            <label for="enable-burst-limit" class="flex items-center gap-2 font-semibold text-foreground cursor-pointer text-xs">
+              <Checkbox
+                id="enable-burst-limit"
+                checked={enableBurstLimit}
+                disabled={isCampaignRunning}
+                onCheckedChange={(checked) => enableBurstLimit = !!checked}
+              />
+              <span>Kích hoạt Burst Limit (Chống block Zalo)</span>
+            </label>
+            {#if enableBurstLimit}
+              <Badge variant="outline" class="text-[9px] px-1.5 py-0.5 border-emerald-500/30 text-emerald-600 bg-emerald-500/10 font-semibold">Đã bật bảo vệ</Badge>
+            {:else}
+              <Badge variant="outline" class="text-[9px] px-1.5 py-0.5 text-muted-foreground border-border">Đã tắt</Badge>
+            {/if}
+          </div>
+
+          {#if enableBurstLimit}
+            <div class="grid grid-cols-3 gap-2 pt-1 border-t border-border/50 text-xs">
+              <div class="flex flex-col gap-1">
+                <label for="burst-max-msg" class="text-[11px] text-muted-foreground font-medium">Messages / burst</label>
+                <Input
+                  id="burst-max-msg"
+                  type="number"
+                  min="1"
+                  disabled={isCampaignRunning}
+                  bind:value={burstMaxMessages}
+                  class="h-8 text-xs bg-background"
+                />
+              </div>
+              <div class="flex flex-col gap-1">
+                <label for="burst-delay-sec" class="text-[11px] text-muted-foreground font-medium">Burst delay (s)</label>
+                <Input
+                  id="burst-delay-sec"
+                  type="number"
+                  min="1"
+                  disabled={isCampaignRunning}
+                  bind:value={burstDelaySeconds}
+                  class="h-8 text-xs bg-background"
+                />
+              </div>
+              <div class="flex flex-col gap-1">
+                <label for="inter-msg-delay-sec" class="text-[11px] text-muted-foreground font-medium">Inter-msg delay (s)</label>
+                <Input
+                  id="inter-msg-delay-sec"
+                  type="number"
+                  min="0"
+                  disabled={isCampaignRunning}
+                  bind:value={interMessageDelaySeconds}
+                  class="h-8 text-xs bg-background"
+                />
+              </div>
+            </div>
+          {/if}
         </div>
 
         <!-- Action Button & Progress -->
