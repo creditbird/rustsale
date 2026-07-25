@@ -1604,7 +1604,7 @@ fn render_zalo_template(template: &str, lead_name: &str) -> String {
 fn should_rotate_zalo_session(error: &zca_rs::ZaloError) -> bool {
     match error {
         zca_rs::ZaloError::ApiError { message, code } => {
-            if matches!(code, Some(102 | 401 | 403 | 429)) {
+            if matches!(code, Some(102 | 221 | 401 | 403 | 429)) {
                 return true;
             }
 
@@ -1612,6 +1612,7 @@ fn should_rotate_zalo_session(error: &zca_rs::ZaloError) -> bool {
             [
                 "rate limit",
                 "too many request",
+                "vượt quá số request",
                 "session",
                 "login",
                 "unauthorized",
@@ -1794,6 +1795,12 @@ pub async fn send_zalo_outreach_internal(
                 tx.execute(
                     "UPDATE leads SET last_activity = ?1, has_zalo = 1, zalo_reached = 1 WHERE id = ?2",
                     rusqlite::params![&now, lead_id],
+                )
+                .map_err(|e| format!("Database query error: {}", e))?;
+
+                tx.execute(
+                    "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'SUCCESS', NULL, ?3, ?4)",
+                    rusqlite::params![lead_id, template_id, &now, &imei],
                 )
                 .map_err(|e| format!("Database query error: {}", e))?;
 
@@ -2103,6 +2110,17 @@ pub async fn send_zalo_outreach_internal(
                     "Failed to look up phone {} for {}: {:?}",
                     sanitized_phone, lead_name, e
                 );
+                let now: String = chrono::Utc::now().to_rfc3339();
+                let _ = {
+                    let conn_guard = conn_mutex.lock();
+                    if let Ok(conn) = conn_guard {
+                        let _ = conn.execute(
+                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                            rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
+                        );
+                    }
+                };
+
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "outreach-log",
@@ -2120,6 +2138,14 @@ pub async fn send_zalo_outreach_internal(
                         },
                     );
                 }
+
+                if should_rotate_zalo_session(&e) {
+                    let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần tra cứu/gửi tin ({:?}). Tạm dừng chiến dịch...", e);
+                    if let Some(app) = app_handle {
+                        let _ = app.emit("outreach-log", OutreachLogPayload { message: rate_msg });
+                    }
+                }
+
                 continue;
             }
         };
@@ -2225,6 +2251,12 @@ pub async fn send_zalo_outreach_internal(
                         )
                         .map_err(|e| format!("Database query error: {}", e))?;
 
+                        tx.execute(
+                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'SUCCESS', NULL, ?3, ?4)",
+                            rusqlite::params![lead_id, template_id, &now, &imei],
+                        )
+                        .map_err(|e| format!("Database query error: {}", e))?;
+
                         tx.commit()
                             .map_err(|e| format!("Database transaction commit error: {}", e))?;
                         Ok(())
@@ -2246,6 +2278,16 @@ pub async fn send_zalo_outreach_internal(
                         "Failed to send Zalo message to {} ({}): {:?}",
                         lead_name, sanitized_phone, e
                     );
+                    let now: String = chrono::Utc::now().to_rfc3339();
+                    let _ = {
+                        let conn_guard = conn_mutex.lock();
+                        if let Ok(conn) = conn_guard {
+                            let _ = conn.execute(
+                                "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                                rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
+                            );
+                        }
+                    };
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "outreach-log",
@@ -2261,6 +2303,7 @@ pub async fn send_zalo_outreach_internal(
                 "Phone number {} for {} not found on Zalo",
                 sanitized_phone, lead_name
             );
+            let now: String = chrono::Utc::now().to_rfc3339();
             let _ = {
                 let conn_guard = conn_mutex.lock();
                 match conn_guard {
@@ -2268,6 +2311,10 @@ pub async fn send_zalo_outreach_internal(
                         let _ = conn.execute(
                             "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
                             rusqlite::params![lead_id],
+                        );
+                        let _ = conn.execute(
+                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                            rusqlite::params![lead_id, template_id, "Phone number not found on Zalo", &now, &imei],
                         );
                     }
                     Err(_) => {}

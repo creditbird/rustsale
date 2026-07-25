@@ -498,6 +498,16 @@ mod tests {
 
         let lead_4 = commands::get_lead_details_internal(&conn_locked, lead_id_4).unwrap();
         assert_eq!(lead_4.has_zalo, Some(0));
+
+        // Verify outreach_history record exists for lead_id_1
+        let history_count: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'SUCCESS'",
+                [lead_id_1],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_count, 1);
         assert_eq!(lead_4.zalo_reached, 0);
     }
 
