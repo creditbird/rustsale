@@ -5,7 +5,8 @@ import { expect, test } from 'bun:test';
 
 test('renders Sidebar with CRM logo and options', () => {
   render(Sidebar, { props: { activeTab: 'dashboard' } });
-  expect(screen.getByText('RustSale Pro')).toBeTruthy();
+  expect(screen.getByText('RustSale')).toBeTruthy();
+  expect(screen.getByText('CRM & Outreach Pro')).toBeTruthy();
   expect(screen.getByText('Dashboard')).toBeTruthy();
   expect(screen.getByText('Email Outreach')).toBeTruthy();
 });

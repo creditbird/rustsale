@@ -9,3 +9,5 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .gitnexus
+/src-tauri/binaries/cloak-runtime-*
+!/src-tauri/binaries/.gitkeep

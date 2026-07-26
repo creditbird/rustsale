@@ -1,7 +1,9 @@
+use crate::google_maps_jobs::validation::{validate_and_estimate_grid, ScrapeError};
 use crate::scrapers::google_maps::{BusinessInfo, GoogleMapsScraper};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoundingBox {
     pub lat_min: f64,
     pub lat_max: f64,
@@ -9,14 +11,36 @@ pub struct BoundingBox {
     pub lng_max: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GridCell {
+    pub bbox: BoundingBox,
     pub center_lat: f64,
     pub center_lng: f64,
     pub step_lat_deg: f64,
     pub step_lng_deg: f64,
     pub radius_m: f64,
-    pub depth: usize,
+    pub depth: u8,
+    pub parent_unit_id: Option<String>,
+    pub consecutive_low_yield_levels: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GridLimits {
+    pub max_depth: u8,
+    pub min_cell_size_m: f64,
+    pub max_initial_cells: usize,
+    pub max_total_cells: usize,
+}
+
+impl Default for GridLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 6,
+            min_cell_size_m: 20.0,
+            max_initial_cells: 10_000,
+            max_total_cells: 25_000,
+        }
+    }
 }
 
 pub fn radius_to_zoom(radius_m: f64) -> u8 {
@@ -38,105 +62,188 @@ pub fn radius_to_zoom(radius_m: f64) -> u8 {
 }
 
 pub fn generate_grid(bbox: BoundingBox, step_km: f64) -> Vec<GridCell> {
-    let mut cells = Vec::new();
+    generate_initial_cells(bbox, step_km, GridLimits::default()).unwrap_or_default()
+}
+
+pub fn generate_initial_cells(
+    bbox: BoundingBox,
+    step_km: f64,
+    limits: GridLimits,
+) -> std::result::Result<Vec<GridCell>, ScrapeError> {
+    let estimate = validate_and_estimate_grid(bbox, step_km, limits)?;
+    if estimate.initial_cells > limits.max_initial_cells {
+        let recommended = estimate.recommended_min_step_km.unwrap_or(step_km);
+        return Err(ScrapeError {
+            kind: crate::google_maps_jobs::types::ScrapeErrorKind::InvalidInput,
+            message: format!(
+                "grid requires {} initial cells, exceeding cap {}; use step_km >= {:.3}",
+                estimate.initial_cells, limits.max_initial_cells, recommended
+            ),
+            retryable: false,
+        });
+    }
+
     let lat_step_deg = step_km / 111.0;
+    let rows = ((bbox.lat_max - bbox.lat_min) / lat_step_deg)
+        .ceil()
+        .max(1.0) as usize;
+    let mut cells = Vec::with_capacity(estimate.initial_cells);
 
-    let mut lat_curr = bbox.lat_min;
-    while lat_curr < bbox.lat_max {
-        let center_lat = lat_curr + lat_step_deg / 2.0;
-
-        let cos_lat = center_lat.to_radians().cos().abs();
-        let lng_step_deg = if cos_lat > 1e-6 {
-            step_km / (111.0 * cos_lat)
-        } else {
-            step_km / 111.0
-        };
-
-        let mut lng_curr = bbox.lng_min;
-        while lng_curr < bbox.lng_max {
-            let center_lng = lng_curr + lng_step_deg / 2.0;
-            let radius_m = step_km * 1000.0 * 0.70710678;
-
-            cells.push(GridCell {
-                center_lat,
-                center_lng,
-                step_lat_deg: lat_step_deg,
-                step_lng_deg: lng_step_deg,
-                radius_m,
-                depth: 0,
-            });
-
-            lng_curr += lng_step_deg;
+    for row in 0..rows {
+        let lat_min = bbox.lat_min + row as f64 * lat_step_deg;
+        if lat_min >= bbox.lat_max {
+            break;
         }
-
-        lat_curr += lat_step_deg;
-    }
-
-    if cells.is_empty() {
-        let center_lat = (bbox.lat_min + bbox.lat_max) / 2.0;
-        let center_lng = (bbox.lng_min + bbox.lng_max) / 2.0;
-        let lat_step_deg = (bbox.lat_max - bbox.lat_min).max(step_km / 111.0);
+        let lat_max = (lat_min + lat_step_deg).min(bbox.lat_max);
+        let center_lat = (lat_min + lat_max) / 2.0;
         let cos_lat = center_lat.to_radians().cos().abs();
-        let lng_step_deg = (bbox.lng_max - bbox.lng_min).max(if cos_lat > 1e-6 {
+        let lng_step_deg = if cos_lat > 1e-9 {
             step_km / (111.0 * cos_lat)
         } else {
-            step_km / 111.0
-        });
-        let radius_m = step_km * 1000.0 * 0.70710678;
-        cells.push(GridCell {
-            center_lat,
-            center_lng,
-            step_lat_deg: lat_step_deg,
-            step_lng_deg: lng_step_deg,
-            radius_m,
-            depth: 0,
-        });
+            bbox.lng_max - bbox.lng_min
+        };
+        let columns = ((bbox.lng_max - bbox.lng_min) / lng_step_deg)
+            .ceil()
+            .max(1.0) as usize;
+
+        for column in 0..columns {
+            if cells.len() >= limits.max_initial_cells {
+                return Err(ScrapeError {
+                    kind: crate::google_maps_jobs::types::ScrapeErrorKind::InvalidInput,
+                    message: "generated grid exceeded the validated initial cell cap".to_string(),
+                    retryable: false,
+                });
+            }
+            let lng_min = bbox.lng_min + column as f64 * lng_step_deg;
+            if lng_min >= bbox.lng_max {
+                break;
+            }
+            let lng_max = (lng_min + lng_step_deg).min(bbox.lng_max);
+            cells.push(grid_cell_from_bbox(
+                BoundingBox {
+                    lat_min,
+                    lat_max,
+                    lng_min,
+                    lng_max,
+                },
+                0,
+                None,
+                0,
+            ));
+        }
     }
 
-    cells
+    Ok(cells)
+}
+
+pub fn subdivide_cell(cell: &GridCell, new_unique_ratio: f64) -> Vec<GridCell> {
+    let lat_mid = (cell.bbox.lat_min + cell.bbox.lat_max) / 2.0;
+    let lng_mid = (cell.bbox.lng_min + cell.bbox.lng_max) / 2.0;
+    let low_yield_levels = if new_unique_ratio.is_finite() && new_unique_ratio < 0.05 {
+        cell.consecutive_low_yield_levels.saturating_add(1)
+    } else {
+        0
+    };
+    let depth = cell.depth.saturating_add(1);
+
+    [
+        BoundingBox {
+            lat_min: lat_mid,
+            lat_max: cell.bbox.lat_max,
+            lng_min: cell.bbox.lng_min,
+            lng_max: lng_mid,
+        },
+        BoundingBox {
+            lat_min: lat_mid,
+            lat_max: cell.bbox.lat_max,
+            lng_min: lng_mid,
+            lng_max: cell.bbox.lng_max,
+        },
+        BoundingBox {
+            lat_min: cell.bbox.lat_min,
+            lat_max: lat_mid,
+            lng_min: cell.bbox.lng_min,
+            lng_max: lng_mid,
+        },
+        BoundingBox {
+            lat_min: cell.bbox.lat_min,
+            lat_max: lat_mid,
+            lng_min: lng_mid,
+            lng_max: cell.bbox.lng_max,
+        },
+    ]
+    .into_iter()
+    .map(|bbox| grid_cell_from_bbox(bbox, depth, cell.parent_unit_id.clone(), low_yield_levels))
+    .collect()
+}
+
+pub fn should_subdivide(
+    cell: &GridCell,
+    raw_listing_count: usize,
+    saturation_threshold: usize,
+    reached_end: bool,
+    new_unique_ratio: f64,
+    total_cells: usize,
+    limits: GridLimits,
+) -> bool {
+    if reached_end && raw_listing_count < saturation_threshold {
+        return false;
+    }
+    if cell.depth >= limits.max_depth || total_cells.saturating_add(4) > limits.max_total_cells {
+        return false;
+    }
+    if cell_min_dimension_m(cell) <= limits.min_cell_size_m {
+        return false;
+    }
+    let low_yield_levels = if new_unique_ratio.is_finite() && new_unique_ratio < 0.05 {
+        cell.consecutive_low_yield_levels.saturating_add(1)
+    } else {
+        0
+    };
+    if low_yield_levels >= 2 {
+        return false;
+    }
+    let children = subdivide_cell(cell, new_unique_ratio);
+    children
+        .first()
+        .is_some_and(|child| radius_to_zoom(child.radius_m) > radius_to_zoom(cell.radius_m))
+}
+
+fn grid_cell_from_bbox(
+    bbox: BoundingBox,
+    depth: u8,
+    parent_unit_id: Option<String>,
+    consecutive_low_yield_levels: u8,
+) -> GridCell {
+    let center_lat = (bbox.lat_min + bbox.lat_max) / 2.0;
+    let center_lng = (bbox.lng_min + bbox.lng_max) / 2.0;
+    let step_lat_deg = bbox.lat_max - bbox.lat_min;
+    let step_lng_deg = bbox.lng_max - bbox.lng_min;
+    let height_m = step_lat_deg * 111_000.0;
+    let width_m = step_lng_deg * 111_000.0 * center_lat.to_radians().cos().abs();
+    let radius_m = (height_m / 2.0).hypot(width_m / 2.0);
+    GridCell {
+        bbox,
+        center_lat,
+        center_lng,
+        step_lat_deg,
+        step_lng_deg,
+        radius_m,
+        depth,
+        parent_unit_id,
+        consecutive_low_yield_levels,
+    }
+}
+
+fn cell_min_dimension_m(cell: &GridCell) -> f64 {
+    let height_m = cell.step_lat_deg * 111_000.0;
+    let width_m = cell.step_lng_deg * 111_000.0 * cell.center_lat.to_radians().cos().abs();
+    height_m.min(width_m)
 }
 
 impl GridCell {
     pub fn subdivide(&self) -> Vec<GridCell> {
-        let child_step_lat = self.step_lat_deg / 2.0;
-        let child_step_lng = self.step_lng_deg / 2.0;
-        let child_radius = self.radius_m / 2.0;
-        let child_depth = self.depth + 1;
-
-        vec![
-            GridCell {
-                center_lat: self.center_lat + child_step_lat / 2.0,
-                center_lng: self.center_lng - child_step_lng / 2.0,
-                step_lat_deg: child_step_lat,
-                step_lng_deg: child_step_lng,
-                radius_m: child_radius,
-                depth: child_depth,
-            },
-            GridCell {
-                center_lat: self.center_lat + child_step_lat / 2.0,
-                center_lng: self.center_lng + child_step_lng / 2.0,
-                step_lat_deg: child_step_lat,
-                step_lng_deg: child_step_lng,
-                radius_m: child_radius,
-                depth: child_depth,
-            },
-            GridCell {
-                center_lat: self.center_lat - child_step_lat / 2.0,
-                center_lng: self.center_lng - child_step_lng / 2.0,
-                step_lat_deg: child_step_lat,
-                step_lng_deg: child_step_lng,
-                radius_m: child_radius,
-                depth: child_depth,
-            },
-            GridCell {
-                center_lat: self.center_lat - child_step_lat / 2.0,
-                center_lng: self.center_lng + child_step_lng / 2.0,
-                step_lat_deg: child_step_lat,
-                step_lng_deg: child_step_lng,
-                radius_m: child_radius,
-                depth: child_depth,
-            },
-        ]
+        subdivide_cell(self, 1.0)
     }
 }
 
@@ -200,27 +307,41 @@ impl GridScraper {
                         unique_results.insert(key, item);
                     }
 
-                    if count >= self.saturation_threshold && cell.depth < 6 {
-                        if cell.radius_m >= 20.0 {
-                            let children = cell.subdivide();
-                            total_count += children.len();
-                            stack.extend(children);
+                    if should_subdivide(
+                        &cell,
+                        count,
+                        self.saturation_threshold,
+                        count < self.saturation_threshold,
+                        1.0,
+                        total_count,
+                        GridLimits::default(),
+                    ) {
+                        let children = cell.subdivide();
+                        total_count += children.len();
+                        stack.extend(children);
 
-                            let subdivide_msg =
-                                format!("Cell saturated ({} results). Subdivided.", count);
-                            on_progress(&cell, processed_count, total_count, &subdivide_msg);
-                        } else {
-                            let stop_msg = format!(
-                                "Cell saturated ({} results) but hit min radius limit (20m). Stopped subdivision.",
-                                count
-                            );
-                            on_progress(&cell, processed_count, total_count, &stop_msg);
-                        }
+                        let subdivide_msg =
+                            format!("Cell saturated ({} results). Subdivided.", count);
+                        on_progress(&cell, processed_count, total_count, &subdivide_msg);
+                    } else if count >= self.saturation_threshold {
+                        let stop_msg = format!(
+                            "Cell saturated ({} results) but reached a grid safety limit. Stopped subdivision.",
+                            count
+                        );
+                        on_progress(&cell, processed_count, total_count, &stop_msg);
                     }
                 }
                 Err(e) => {
                     let err_msg = format!("Failed to scrape cell: {}", e);
                     on_progress(&cell, processed_count, total_count, &err_msg);
+                    let err_s = e.to_string().to_lowercase();
+                    if err_s.contains("connection lost")
+                        || err_s.contains("disconnected")
+                        || err_s.contains("closed")
+                        || err_s.contains("timed out")
+                    {
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -301,7 +422,7 @@ mod tests {
                             let end_pos = request[pos..].find(' ').unwrap_or(request[pos..].len());
                             let place_name = &request[pos..pos + end_pos];
                             let num_str: String =
-                                place_name.chars().filter(|c| c.is_digit(10)).collect();
+                                place_name.chars().filter(|c| c.is_ascii_digit()).collect();
                             let phone = if num_str.is_empty() {
                                 "+84987654320".to_string()
                             } else {
@@ -354,10 +475,115 @@ mod tests {
 
         for child in sub_cells {
             assert_eq!(child.depth, cell.depth + 1);
-            assert_eq!(child.step_lat_deg, cell.step_lat_deg / 2.0);
-            assert_eq!(child.step_lng_deg, cell.step_lng_deg / 2.0);
+            assert!((child.step_lat_deg - cell.step_lat_deg / 2.0).abs() < 1e-12);
+            assert!((child.step_lng_deg - cell.step_lng_deg / 2.0).abs() < 1e-12);
             assert!(child.radius_m < cell.radius_m);
         }
+    }
+
+    #[test]
+    fn clips_last_cell_to_bbox_and_keeps_center_inside() {
+        let bbox = BoundingBox {
+            lat_min: 10.0,
+            lat_max: 10.025,
+            lng_min: 106.0,
+            lng_max: 106.025,
+        };
+        let cells = generate_initial_cells(
+            bbox,
+            2.0,
+            GridLimits {
+                max_depth: 6,
+                min_cell_size_m: 20.0,
+                max_initial_cells: 100,
+                max_total_cells: 1_000,
+            },
+        )
+        .unwrap();
+
+        assert!(cells.iter().any(|cell| cell.bbox.lat_max == bbox.lat_max));
+        assert!(cells.iter().any(|cell| cell.bbox.lng_max == bbox.lng_max));
+        for cell in cells {
+            assert!(cell.bbox.lat_min >= bbox.lat_min);
+            assert!(cell.bbox.lat_max <= bbox.lat_max);
+            assert!(cell.bbox.lng_min >= bbox.lng_min);
+            assert!(cell.bbox.lng_max <= bbox.lng_max);
+            assert!((cell.bbox.lat_min..=cell.bbox.lat_max).contains(&cell.center_lat));
+            assert!((cell.bbox.lng_min..=cell.bbox.lng_max).contains(&cell.center_lng));
+        }
+    }
+
+    #[test]
+    fn subdivision_stops_when_zoom_does_not_increase() {
+        let cell = generate_initial_cells(
+            BoundingBox {
+                lat_min: 10.0,
+                lat_max: 10.0001,
+                lng_min: 106.0,
+                lng_max: 106.0001,
+            },
+            1.0,
+            GridLimits {
+                max_depth: 6,
+                min_cell_size_m: 1.0,
+                max_initial_cells: 10,
+                max_total_cells: 100,
+            },
+        )
+        .unwrap()
+        .remove(0);
+
+        assert!(!should_subdivide(
+            &cell,
+            100,
+            55,
+            false,
+            1.0,
+            1,
+            GridLimits {
+                max_depth: 6,
+                min_cell_size_m: 1.0,
+                max_initial_cells: 10,
+                max_total_cells: 100,
+            },
+        ));
+    }
+
+    #[test]
+    fn subdivision_stops_after_two_low_yield_levels() {
+        let mut cell = generate_initial_cells(
+            BoundingBox {
+                lat_min: 10.0,
+                lat_max: 10.2,
+                lng_min: 106.0,
+                lng_max: 106.2,
+            },
+            10.0,
+            GridLimits {
+                max_depth: 6,
+                min_cell_size_m: 20.0,
+                max_initial_cells: 100,
+                max_total_cells: 1_000,
+            },
+        )
+        .unwrap()
+        .remove(0);
+        cell.consecutive_low_yield_levels = 1;
+
+        assert!(!should_subdivide(
+            &cell,
+            100,
+            55,
+            false,
+            0.01,
+            1,
+            GridLimits {
+                max_depth: 6,
+                min_cell_size_m: 20.0,
+                max_initial_cells: 100,
+                max_total_cells: 1_000,
+            },
+        ));
     }
 
     #[tokio::test]
@@ -379,12 +605,20 @@ mod tests {
 
         // Define a single cell centered at 10.1, 106.1 which will return 55 results and trigger subdivision
         let initial_cells = vec![GridCell {
+            bbox: BoundingBox {
+                lat_min: 10.05,
+                lat_max: 10.15,
+                lng_min: 106.05,
+                lng_max: 106.15,
+            },
             center_lat: 10.1,
             center_lng: 106.1,
             step_lat_deg: 0.1,
             step_lng_deg: 0.1,
             radius_m: 5000.0,
             depth: 0,
+            parent_unit_id: None,
+            consecutive_low_yield_levels: 0,
         }];
 
         let mut progress_calls = Vec::new();

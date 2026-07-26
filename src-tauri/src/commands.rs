@@ -89,6 +89,10 @@ pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, Str
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the existing Tauri add_lead IPC argument contract"
+)]
 pub fn add_lead(
     name: String,
     company: String,
@@ -110,6 +114,10 @@ pub fn add_lead(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the established CRM helper contract and its audited callers"
+)]
 pub fn add_lead_internal(
     conn: &mut Connection,
     name: String,
@@ -307,7 +315,10 @@ pub fn get_activities_internal(conn: &Connection, lead_id: i32) -> Result<Vec<Ac
 }
 
 #[tauri::command]
-pub fn get_recent_activities(limit: Option<i32>, state: tauri::State<DbState>) -> Result<Vec<Activity>, String> {
+pub fn get_recent_activities(
+    limit: Option<i32>,
+    state: tauri::State<DbState>,
+) -> Result<Vec<Activity>, String> {
     let conn = state
         .conn
         .lock()
@@ -385,6 +396,10 @@ pub fn add_activity_internal(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the existing Tauri update_lead IPC argument contract"
+)]
 pub fn update_lead(
     id: i32,
     name: String,
@@ -433,387 +448,92 @@ pub fn delete_lead(id: i32, state: tauri::State<DbState>) -> Result<(), String> 
     Ok(())
 }
 
-use crate::scrapers::browser::BrowserManager;
-use tauri::Emitter;
-use tauri::Manager;
+use crate::google_maps_jobs::commands::{GoogleMapsJobService, GoogleMapsJobState};
+use crate::google_maps_jobs::types::{
+    CreateScrapeJobRequest, ScrapeJob, ScrapeJobStatus, ScrapeMode,
+};
+use tauri::{Emitter, Manager};
 
-pub struct BrowserState {
-    pub manager: std::sync::Arc<BrowserManager>,
-    pub start_lock: tokio::sync::Mutex<()>,
+#[derive(Debug, Clone)]
+pub struct LegacyGoogleMapsScrapeRequest {
+    pub keyword: String,
+    pub mode: String,
+    pub location: Option<String>,
+    pub bbox: Option<[f64; 4]>,
+    pub step_km: Option<f64>,
+    pub districts: Option<Vec<String>>,
+    pub headless: Option<bool>,
 }
 
-#[derive(Clone, serde::Serialize)]
-pub struct ScrapeProgressPayload {
-    pub progress: f64,
-    pub status: String,
-    pub message: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct ScrapeLogPayload {
-    pub message: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct ScrapeCompletePayload {
-    pub total_scraped: usize,
-    pub message: String,
-}
-
-pub async fn run_google_maps_scrape_task(
-    app_handle: Option<&tauri::AppHandle>,
-    conn_mutex: &std::sync::Mutex<Connection>,
-    _manager: std::sync::Arc<BrowserManager>,
-    scraper: crate::scrapers::google_maps::GoogleMapsScraper,
-    keyword: String,
-    mode: String,
-    location: Option<String>,
-    bbox: Option<[f64; 4]>,
-    step_km: Option<f64>,
-    districts: Option<Vec<String>>,
-) -> Result<(), String> {
-    let final_businesses = if mode == "grid" {
-        let bbox_arr = match bbox {
-            Some(b) => b,
-            None => {
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "scrape-log",
-                        ScrapeLogPayload {
-                            message: "Error: Bounding box is required for grid mode".to_string(),
-                        },
-                    );
-                }
-                return Err("Bounding box is required for grid mode".to_string());
-            }
+impl LegacyGoogleMapsScrapeRequest {
+    fn into_durable_request(self) -> Result<CreateScrapeJobRequest, String> {
+        let mode = match self.mode.trim().to_ascii_lowercase().as_str() {
+            "text" | "keyword" => ScrapeMode::Keyword,
+            "grid" => ScrapeMode::Grid,
+            other => return Err(format!("unsupported Google Maps scrape mode: {other}")),
         };
-        let step = step_km.unwrap_or(2.0);
-
-        let grid_bbox = crate::scrapers::grid::BoundingBox {
-            lat_min: bbox_arr[0],
-            lat_max: bbox_arr[1],
-            lng_min: bbox_arr[2],
-            lng_max: bbox_arr[3],
-        };
-
-        let initial_cells = crate::scrapers::grid::generate_grid(grid_bbox, step);
-        let grid_scraper = crate::scrapers::grid::GridScraper::new(scraper);
-
-        let app_clone = app_handle.map(|a| a.clone());
-        let scrape_res = grid_scraper
-            .search_grid(
-                &keyword,
-                initial_cells,
-                move |_cell, processed, total, msg| {
-                    if let Some(app) = &app_clone {
-                        let progress_percent = if total > 0 {
-                            (processed as f64 / total as f64) * 100.0
-                        } else {
-                            0.0
-                        };
-                        let _ = app.emit(
-                            "scrape-progress",
-                            ScrapeProgressPayload {
-                                progress: progress_percent,
-                                status: "running".to_string(),
-                                message: msg.to_string(),
-                            },
-                        );
-                        let _ = app.emit(
-                            "scrape-log",
-                            ScrapeLogPayload {
-                                message: msg.to_string(),
-                            },
-                        );
-                    }
-                },
-            )
-            .await;
-
-        match scrape_res {
-            Ok(res) => res,
-            Err(e) => {
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "scrape-log",
-                        ScrapeLogPayload {
-                            message: format!("Grid scraping failed: {}", e),
-                        },
-                    );
-                }
-                return Err(format!("Grid scraping failed: {}", e));
-            }
-        }
-    } else if let Some(districts_list) = districts {
-        // Text mode with Deep Scan (Districts)
-        let total_districts = districts_list.len();
-        let mut all_results = Vec::new();
-        let mut seen_phones = std::collections::HashSet::new();
-        let base_loc = location.clone().unwrap_or_else(|| "Vietnam".to_string());
-
-        for (idx, district) in districts_list.iter().enumerate() {
-            let combined_loc = format!("{}, {}", district, base_loc);
-            
-            if let Some(app) = app_handle {
-                let progress_val = (idx as f64 / total_districts as f64) * 70.0 + 10.0;
-                let _ = app.emit(
-                    "scrape-progress",
-                    ScrapeProgressPayload {
-                        progress: progress_val,
-                        status: "running".to_string(),
-                        message: format!(
-                            "Deep Scan: Searching in {} ({}/{})",
-                            district,
-                            idx + 1,
-                            total_districts
-                        ),
-                    },
-                );
-                let _ = app.emit(
-                    "scrape-log",
-                    ScrapeLogPayload {
-                        message: format!("Searching for '{}' in '{}'...", keyword, combined_loc),
-                    },
-                );
-            }
-
-            match scraper.search(&keyword, Some(&combined_loc)).await {
-                Ok(res) => {
-                    let mut new_count = 0;
-                    for biz in res {
-                        if !biz.phone.trim().is_empty() {
-                            if seen_phones.insert(biz.phone.clone()) {
-                                all_results.push(biz);
-                                new_count += 1;
-                            }
-                        } else {
-                            all_results.push(biz);
-                        }
-                    }
-                    if let Some(app) = app_handle {
-                        let _ = app.emit(
-                            "scrape-log",
-                            ScrapeLogPayload {
-                                message: format!("District '{}' scan finished: found {} businesses ({} new).", district, all_results.len(), new_count),
-                            },
-                        );
-                    }
-                }
-                Err(e) => {
-                    if let Some(app) = app_handle {
-                        let _ = app.emit(
-                            "scrape-log",
-                            ScrapeLogPayload {
-                                message: format!("Failed to search in district '{}': {}. Continuing to next district...", district, e),
-                            },
-                        );
-                    }
-                }
-            }
-
-            // Sleep a small duration to be polite and avoid Google rate limit blocks
-            if idx + 1 < total_districts {
-                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-            }
-        }
-        all_results
-    } else {
-        // Text mode
-        let loc_str = location.as_deref();
-        if let Some(app) = app_handle {
-            let _ = app.emit(
-                "scrape-progress",
-                ScrapeProgressPayload {
-                    progress: 10.0,
-                    status: "running".to_string(),
-                    message: format!("Searching for '{}' in '{:?}'", keyword, location),
-                },
-            );
-            let _ = app.emit(
-                "scrape-log",
-                ScrapeLogPayload {
-                    message: format!("Navigating to Google Maps search page for '{}'...", keyword),
-                },
-            );
-        }
-
-        match scraper.search(&keyword, loc_str).await {
-            Ok(res) => {
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "scrape-progress",
-                        ScrapeProgressPayload {
-                            progress: 80.0,
-                            status: "running".to_string(),
-                            message: format!(
-                                "Search completed. Extracted {} businesses.",
-                                res.len()
-                            ),
-                        },
-                    );
-                }
-                res
-            }
-            Err(e) => {
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "scrape-log",
-                        ScrapeLogPayload {
-                            message: format!("Search scraping failed: {}", e),
-                        },
-                    );
-                }
-                return Err(format!("Search scraping failed: {}", e));
-            }
-        }
-    };
-
-    // 3. Write all extracted businesses to the SQLite database
-    let inserted_count = {
-        let conn_res: Result<usize, String> = (|| {
-            let mut conn_guard = conn_mutex
-                .lock()
-                .map_err(|e| format!("Database lock error: {}", e))?;
-            let tx = conn_guard
-                .transaction()
-                .map_err(|e| format!("Database transaction error: {}", e))?;
-
-            let mut count: usize = 0;
-            let now: String = tx
-                .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
-                    row.get(0)
-                })
-                .map_err(|e| format!("Database query error: {}", e))?;
-
-            let mut existing_normalized_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
-            if let Ok(mut stmt) = tx.prepare("SELECT phone FROM leads") {
-                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
-                    for p in rows.flatten() {
-                        let norm = normalize_phone_digits(&p);
-                        if !norm.is_empty() {
-                            existing_normalized_phones.insert(norm);
-                        }
-                    }
-                }
-            }
-
-            for biz in &final_businesses {
-                let is_mobile = is_vn_mobile(&biz.phone);
-                // Currently, Google Maps scraper does not extract email (always empty).
-                // If email extraction is added in the future, we can check: let has_email = !biz.email.is_empty();
-                let has_email = false;
-                
-                // Lead must have either a mobile number or an email.
-                // If it only has a landline and no email, it is discarded.
-                if !is_mobile && !has_email {
-                    continue;
-                }
-
-                let norm_phone = normalize_phone_digits(&biz.phone);
-
-                // Check if normalized phone already exists in the database (Leads or Contacts)
-                if norm_phone.is_empty() || existing_normalized_phones.contains(&norm_phone) {
-                    continue;
-                }
-
-                let mut about_parts = Vec::new();
-                if let Some(addr) = &biz.address {
-                    about_parts.push(format!("Address: {}", addr));
-                }
-                if let Some(web) = &biz.website {
-                    about_parts.push(format!("Website: {}", web));
-                }
-                if let Some(fb) = &biz.facebook {
-                    about_parts.push(format!("Facebook: {}", fb));
-                }
-                if let Some(zalo) = &biz.zalo {
-                    about_parts.push(format!("Zalo: {}", zalo));
-                }
-                let about_str = if about_parts.is_empty() {
-                    None
-                } else {
-                    Some(about_parts.join("\n"))
-                };
-
-                let has_zalo_val = if biz.zalo.is_some() { Some(1) } else { None };
-                let insert_res = tx.execute(
-                    "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo) 
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    rusqlite::params![
-                        biz.name,
-                        biz.name,
-                        "New",
-                        0.0,
-                        &now,
-                        "System",
-                        "",
-                        &norm_phone,
-                        about_str,
-                        biz.address,
-                        has_zalo_val
-                    ]
-                );
-                if insert_res.is_ok() {
-                    count += 1;
-                    existing_normalized_phones.insert(norm_phone);
-                }
-            }
-            tx.commit().map_err(|e| format!("Transaction commit error: {}", e))?;
-            Ok(count)
-        })();
-
-        match conn_res {
-            Ok(c) => c,
-            Err(e) => {
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "scrape-log",
-                        ScrapeLogPayload {
-                            message: format!("Database transaction failed: {}", e),
-                        },
-                    );
-                }
-                0
-            }
-        }
-    };
-
-    // 4. Emit complete event
-    let msg = format!(
-        "Scrape complete! {} new leads added out of {} unique scraped businesses.",
-        inserted_count,
-        final_businesses.len()
-    );
-    if let Some(app) = app_handle {
-        let _ = app.emit(
-            "scrape-progress",
-            ScrapeProgressPayload {
-                progress: 100.0,
-                status: "completed".to_string(),
-                message: msg.clone(),
-            },
-        );
-        let _ = app.emit(
-            "scrape-log",
-            ScrapeLogPayload {
-                message: msg.clone(),
-            },
-        );
-        let _ = app.emit(
-            "scrape-complete",
-            ScrapeCompletePayload {
-                total_scraped: inserted_count,
-                message: msg,
-            },
-        );
+        Ok(CreateScrapeJobRequest {
+            mode,
+            keyword: self.keyword,
+            location: self.location,
+            bbox: self.bbox,
+            step_km: self.step_km,
+            districts: self.districts.unwrap_or_default(),
+            headless: self.headless.unwrap_or(true),
+        })
     }
+}
 
-    Ok(())
+pub async fn legacy_start_google_maps_scrape(
+    service: &GoogleMapsJobService,
+    request: LegacyGoogleMapsScrapeRequest,
+) -> Result<ScrapeJob, String> {
+    let created = service
+        .create_job(request.into_durable_request()?)
+        .await
+        .map_err(|error| error.to_string())?;
+    service
+        .resume_job(&created.id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub async fn legacy_stop_google_maps_scrape(
+    service: &GoogleMapsJobService,
+) -> Result<Option<ScrapeJob>, String> {
+    let active = service
+        .list_jobs()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|job| {
+            matches!(
+                job.status,
+                ScrapeJobStatus::Queued
+                    | ScrapeJobStatus::Running
+                    | ScrapeJobStatus::Paused
+                    | ScrapeJobStatus::PausedRequiresAction
+                    | ScrapeJobStatus::PausedLimitReached
+                    | ScrapeJobStatus::Interrupted
+            )
+        });
+    match active {
+        Some(job) => service
+            .cancel_job(&job.id)
+            .await
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the legacy Google Maps scraper IPC compatibility contract"
+)]
 pub async fn start_google_maps_scrape(
-    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, GoogleMapsJobState>,
     keyword: String,
     mode: String,
     location: Option<String>,
@@ -822,121 +542,29 @@ pub async fn start_google_maps_scrape(
     districts: Option<Vec<String>>,
     headless: Option<bool>,
 ) -> Result<(), String> {
-    let app_handle_clone = app_handle.clone();
-
-    tokio::spawn(async move {
-        let db_state = app_handle_clone.state::<DbState>();
-        let browser_state = app_handle_clone.state::<BrowserState>();
-
-        let manager = browser_state.manager.clone();
-        let is_headless = headless.unwrap_or(true);
-
-        let _ = app_handle_clone.emit(
-            "scrape-log",
-            ScrapeLogPayload {
-                message: "Starting browser...".to_string(),
-            },
-        );
-
-        // 1. Start browser (always close the existing one first to guarantee correct headless mode & clean session pool)
-        {
-            let _guard = browser_state.start_lock.lock().await;
-            let _ = manager.close().await;
-            if let Err(e) = manager.start(is_headless).await {
-                let _ = app_handle_clone.emit(
-                    "scrape-log",
-                    ScrapeLogPayload {
-                        message: format!("Failed to start browser: {}", e),
-                    },
-                );
-                let _ = app_handle_clone.emit(
-                    "scrape-progress",
-                    ScrapeProgressPayload {
-                        progress: 100.0,
-                        status: "failed".to_string(),
-                        message: format!("Failed to start browser: {}", e),
-                    },
-                );
-                return;
-            }
-        }
-
-        // 2. Acquire session
-        let session = match manager.acquire().await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = app_handle_clone.emit(
-                    "scrape-log",
-                    ScrapeLogPayload {
-                        message: format!("Failed to acquire browser session: {}", e),
-                    },
-                );
-                let _ = app_handle_clone.emit(
-                    "scrape-progress",
-                    ScrapeProgressPayload {
-                        progress: 100.0,
-                        status: "failed".to_string(),
-                        message: format!("Failed to acquire browser session: {}", e),
-                    },
-                );
-                return;
-            }
-        };
-
-        let scraper = crate::scrapers::google_maps::GoogleMapsScraper::new(session);
-        let _ = run_google_maps_scrape_task(
-            Some(&app_handle_clone),
-            &db_state.conn,
-            manager,
-            scraper,
+    legacy_start_google_maps_scrape(
+        state.service.as_ref(),
+        LegacyGoogleMapsScrapeRequest {
             keyword,
             mode,
             location,
             bbox,
             step_km,
             districts,
-        )
-        .await;
-    });
-
-    Ok(())
+            headless,
+        },
+    )
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn stop_google_maps_scrape(
-    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, GoogleMapsJobState>,
 ) -> Result<(), String> {
-    let browser_state = app_handle.state::<BrowserState>();
-    let manager = browser_state.manager.clone();
-
-    // Close the browser to immediately abort any active scrape sessions
-    let _ = manager.close().await;
-
-    let _ = app_handle.emit(
-        "scrape-log",
-        ScrapeLogPayload {
-            message: "Scrape campaign stopped by user.".to_string(),
-        },
-    );
-
-    let _ = app_handle.emit(
-        "scrape-progress",
-        ScrapeProgressPayload {
-            progress: 100.0,
-            status: "failed".to_string(),
-            message: "Campaign stopped by user.".to_string(),
-        },
-    );
-
-    let _ = app_handle.emit(
-        "scrape-complete",
-        ScrapeCompletePayload {
-            total_scraped: 0,
-            message: "Campaign stopped by user.".to_string(),
-        },
-    );
-
-    Ok(())
+    legacy_stop_google_maps_scrape(state.service.as_ref())
+        .await
+        .map(|_| ())
 }
 
 #[tauri::command]
@@ -1075,10 +703,8 @@ pub async fn start_zalo_qr_login(
 
         let callback =
             move |event: zca_rs::apis::auth::LoginQREvent| -> zca_rs::apis::auth::QRCallbackResult {
-                let is_declined = matches!(
-                    &event,
-                    zca_rs::apis::auth::LoginQREvent::QRCodeDeclined
-                );
+                let is_declined =
+                    matches!(&event, zca_rs::apis::auth::LoginQREvent::QRCodeDeclined);
 
                 if matches!(
                     &event,
@@ -1235,10 +861,8 @@ pub fn handle_zalo_qr_event(
                     .map_err(|error| error.to_string());
             }
 
-            let payload = serde_json::to_value(ZaloQRSuccessPayload {
-                imei,
-            })
-            .map_err(|e| e.to_string())?;
+            let payload =
+                serde_json::to_value(ZaloQRSuccessPayload { imei }).map_err(|e| e.to_string())?;
             Ok(("zalo-qr-success".to_string(), payload))
         }
     }
@@ -1303,7 +927,9 @@ pub async fn verify_zalo_session(
     Ok(status)
 }
 
-fn extract_zalo_profile_info(val: &serde_json::Value) -> (Option<String>, Option<String>, Option<String>) {
+fn extract_zalo_profile_info(
+    val: &serde_json::Value,
+) -> (Option<String>, Option<String>, Option<String>) {
     let mut targets = vec![val];
     if let Some(d) = val.get("data") {
         targets.push(d);
@@ -1324,7 +950,8 @@ fn extract_zalo_profile_info(val: &serde_json::Value) -> (Option<String>, Option
 
     for t in targets {
         if name.is_none() {
-            name = t.get("zName")
+            name = t
+                .get("zName")
                 .or_else(|| t.get("dpName"))
                 .or_else(|| t.get("zaloName"))
                 .or_else(|| t.get("displayName"))
@@ -1338,7 +965,8 @@ fn extract_zalo_profile_info(val: &serde_json::Value) -> (Option<String>, Option
         }
 
         if phone.is_none() {
-            phone = t.get("phone")
+            phone = t
+                .get("phone")
                 .or_else(|| t.get("phoneNumber"))
                 .or_else(|| t.get("phone_number"))
                 .or_else(|| t.get("mobile"))
@@ -1349,7 +977,8 @@ fn extract_zalo_profile_info(val: &serde_json::Value) -> (Option<String>, Option
         }
 
         if avatar.is_none() {
-            avatar = t.get("avatar_240")
+            avatar = t
+                .get("avatar_240")
                 .or_else(|| t.get("avatar_120"))
                 .or_else(|| t.get("avatar"))
                 .or_else(|| t.get("avatarUrl"))
@@ -1366,21 +995,29 @@ fn extract_zalo_profile_info(val: &serde_json::Value) -> (Option<String>, Option
 pub async fn verify_zalo_session_internal(
     session: crate::models::ZaloSession,
 ) -> Result<ZaloSessionStatus, String> {
-    let cookies: Vec<zca_rs::context::ZaloCookie> = match serde_json::from_str(&session.cookies_json) {
-        Ok(c) => c,
-        Err(e) => {
-            return Ok(ZaloSessionStatus {
-                imei: session.imei,
-                is_valid: false,
-                display_name: session.display_name,
-                avatar: session.avatar,
-                error_message: Some(format!("Invalid cookies format: {}", e)),
-            });
-        }
-    };
+    let cookies: Vec<zca_rs::context::ZaloCookie> =
+        match serde_json::from_str(&session.cookies_json) {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(ZaloSessionStatus {
+                    imei: session.imei,
+                    is_valid: false,
+                    display_name: session.display_name,
+                    avatar: session.avatar,
+                    error_message: Some(format!("Invalid cookies format: {}", e)),
+                });
+            }
+        };
 
     let options = zca_rs::Options::default();
-    match zca_rs::Zalo::login(session.imei.clone(), session.user_agent.clone(), cookies, options).await {
+    match zca_rs::Zalo::login(
+        session.imei.clone(),
+        session.user_agent.clone(),
+        cookies,
+        options,
+    )
+    .await
+    {
         Ok(zalo) => {
             let (mut name, mut phone, mut avatar) = match zalo.fetch_account_info().await {
                 Ok(info) => {
@@ -1388,13 +1025,20 @@ pub async fn verify_zalo_session_internal(
                     extract_zalo_profile_info(&info)
                 }
                 Err(e) => {
-                    eprintln!("fetch_account_info error for IMEI {}: {:?}", session.imei, e);
+                    eprintln!(
+                        "fetch_account_info error for IMEI {}: {:?}",
+                        session.imei, e
+                    );
                     (None, None, None)
                 }
             };
 
             if name.is_none() && phone.is_none() && avatar.is_none() {
-                let li_guard = zalo.ctx.login_info.lock().unwrap_or_else(|e| e.into_inner());
+                let li_guard = zalo
+                    .ctx
+                    .login_info
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 eprintln!("Zalo ctx.login_info fallback: {:?}", *li_guard);
                 let (n2, p2, a2) = extract_zalo_profile_info(&li_guard);
                 name = n2;
@@ -1551,10 +1195,7 @@ pub async fn send_zalo_outreach(
             imei,
             lead_ids,
             template_id,
-            false,
-            0,
-            0,
-            0,
+            ZaloOutreachRunOptions::default(),
         )
         .await;
     });
@@ -1562,6 +1203,10 @@ pub async fn send_zalo_outreach(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the existing Tauri Zalo outreach IPC argument contract"
+)]
 pub async fn start_zalo_outreach(
     app_handle: tauri::AppHandle,
     imeis: Vec<String>,
@@ -1587,10 +1232,12 @@ pub async fn start_zalo_outreach(
                 imei,
                 lead_ids.clone(),
                 template_id,
-                enable_burst,
-                burst_max,
-                burst_delay,
-                inter_delay,
+                ZaloOutreachRunOptions {
+                    enable_burst_limit: enable_burst,
+                    burst_max_messages: burst_max,
+                    burst_delay_seconds: burst_delay,
+                    inter_message_delay_seconds: inter_delay,
+                },
             )
             .await;
         }
@@ -1600,17 +1247,26 @@ pub async fn start_zalo_outreach(
 
 pub fn normalize_phone_digits(phone: &str) -> String {
     let phone_part = match phone.find(|c: char| {
-        !c.is_ascii_digit() && c != ' ' && c != '+' && c != '-' && c != '(' && c != ')' && c != '.' && c != ',' && c != '[' && c != ']'
+        !c.is_ascii_digit()
+            && c != ' '
+            && c != '+'
+            && c != '-'
+            && c != '('
+            && c != ')'
+            && c != '.'
+            && c != ','
+            && c != '['
+            && c != ']'
     }) {
         Some(idx) => &phone[..idx],
         None => phone,
     };
 
     let digits: String = phone_part.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.starts_with("0084") {
-        format!("0{}", &digits[4..])
-    } else if digits.starts_with("84") {
-        format!("0{}", &digits[2..])
+    if let Some(rest) = digits.strip_prefix("0084") {
+        format!("0{rest}")
+    } else if let Some(rest) = digits.strip_prefix("84") {
+        format!("0{rest}")
     } else {
         digits
     }
@@ -1621,7 +1277,7 @@ fn is_vn_mobile(phone: &str) -> bool {
     if normalized.len() != 10 {
         return false;
     }
-    
+
     let prefix = &normalized[0..2];
     matches!(prefix, "03" | "05" | "07" | "08" | "09")
 }
@@ -1661,17 +1317,28 @@ fn should_rotate_zalo_session(error: &zca_rs::ZaloError) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ZaloOutreachRunOptions {
+    pub enable_burst_limit: bool,
+    pub burst_max_messages: u32,
+    pub burst_delay_seconds: u64,
+    pub inter_message_delay_seconds: u64,
+}
+
 pub async fn send_zalo_outreach_internal(
     app_handle: Option<&tauri::AppHandle>,
     conn_mutex: &std::sync::Mutex<Connection>,
     imei: String,
     lead_ids: Vec<i32>,
     template_id: i32,
-    enable_burst_limit: bool,
-    burst_max_messages: u32,
-    burst_delay_seconds: u64,
-    inter_message_delay_seconds: u64,
+    options: ZaloOutreachRunOptions,
 ) -> Result<(), String> {
+    let ZaloOutreachRunOptions {
+        enable_burst_limit,
+        burst_max_messages,
+        burst_delay_seconds,
+        inter_message_delay_seconds,
+    } = options;
     // Mock flow helper
     if imei == "mock-imei" || imei.starts_with("mock-") {
         let template_content = {
@@ -1863,7 +1530,11 @@ pub async fn send_zalo_outreach_internal(
                 );
             }
 
-            if enable_burst_limit && burst_max_messages > 0 && burst_counter >= burst_max_messages && (idx + 1) < lead_ids.len() {
+            if enable_burst_limit
+                && burst_max_messages > 0
+                && burst_counter >= burst_max_messages
+                && (idx + 1) < lead_ids.len()
+            {
                 let msg = format!(
                     "[Burst Limit] Đã gửi {} tin. Tạm dừng {} giây để tránh khóa tài khoản Zalo...",
                     burst_counter, burst_delay_seconds
@@ -1875,7 +1546,8 @@ pub async fn send_zalo_outreach_internal(
                 burst_counter = 0;
             } else if idx + 1 < lead_ids.len() {
                 if inter_message_delay_seconds > 0 {
-                    tokio::time::sleep(std::time::Duration::from_secs(inter_message_delay_seconds)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(inter_message_delay_seconds))
+                        .await;
                 } else {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
@@ -2142,15 +1814,13 @@ pub async fn send_zalo_outreach_internal(
                     sanitized_phone, lead_name, e
                 );
                 let now: String = chrono::Utc::now().to_rfc3339();
-                let _ = {
-                    let conn_guard = conn_mutex.lock();
-                    if let Ok(conn) = conn_guard {
-                        let _ = conn.execute(
-                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
-                            rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
-                        );
-                    }
-                };
+                let conn_guard = conn_mutex.lock();
+                if let Ok(conn) = conn_guard {
+                    let _ = conn.execute(
+                        "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                        rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
+                    );
+                }
 
                 if let Some(app) = app_handle {
                     let _ = app.emit(
@@ -2184,50 +1854,53 @@ pub async fn send_zalo_outreach_internal(
         if let Some(user) = user_opt {
             let formatted_content = render_zalo_template(&template_content, &lead_name);
 
-            let attachments = template_image_url.as_ref().filter(|s| !s.trim().is_empty()).map(|url| {
-                if url.starts_with("data:image/") {
-                    use base64::Engine;
-                    let parts: Vec<&str> = url.split(',').collect();
-                    let base64_str = parts.get(1).copied().unwrap_or("");
-                    let data = base64::engine::general_purpose::STANDARD
-                        .decode(base64_str)
-                        .unwrap_or_default();
-                    let ext = if url.contains("image/png") {
-                        "png"
-                    } else if url.contains("image/webp") {
-                        "webp"
-                    } else if url.contains("image/gif") {
-                        "gif"
+            let attachments = template_image_url
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|url| {
+                    if url.starts_with("data:image/") {
+                        use base64::Engine;
+                        let parts: Vec<&str> = url.split(',').collect();
+                        let base64_str = parts.get(1).copied().unwrap_or("");
+                        let data = base64::engine::general_purpose::STANDARD
+                            .decode(base64_str)
+                            .unwrap_or_default();
+                        let ext = if url.contains("image/png") {
+                            "png"
+                        } else if url.contains("image/webp") {
+                            "webp"
+                        } else if url.contains("image/gif") {
+                            "gif"
+                        } else {
+                            "jpg"
+                        };
+                        vec![zca_rs::models::AttachmentSource::Buffer {
+                            data: data.clone(),
+                            filename: format!("attachment.{}", ext),
+                            metadata: zca_rs::models::AttachmentMetadata {
+                                total_size: data.len() as u64,
+                                width: None,
+                                height: None,
+                            },
+                        }]
+                    } else if url.starts_with("http://") || url.starts_with("https://") {
+                        vec![zca_rs::models::AttachmentSource::Url(url.clone())]
                     } else {
-                        "jpg"
-                    };
-                    vec![zca_rs::models::AttachmentSource::Buffer {
-                        data: data.clone(),
-                        filename: format!("attachment.{}", ext),
-                        metadata: zca_rs::models::AttachmentMetadata {
-                            total_size: data.len() as u64,
-                            width: None,
-                            height: None,
-                        },
-                    }]
-                } else if url.starts_with("http://") || url.starts_with("https://") {
-                    vec![zca_rs::models::AttachmentSource::Url(url.clone())]
-                } else {
-                    vec![zca_rs::models::AttachmentSource::Buffer {
-                        data: std::fs::read(url).unwrap_or_default(),
-                        filename: std::path::Path::new(url)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("image.jpg")
-                            .to_string(),
-                        metadata: zca_rs::models::AttachmentMetadata {
-                            total_size: std::fs::metadata(url).map(|m| m.len()).unwrap_or(0),
-                            width: None,
-                            height: None,
-                        },
-                    }]
-                }
-            });
+                        vec![zca_rs::models::AttachmentSource::Buffer {
+                            data: std::fs::read(url).unwrap_or_default(),
+                            filename: std::path::Path::new(url)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("image.jpg")
+                                .to_string(),
+                            metadata: zca_rs::models::AttachmentMetadata {
+                                total_size: std::fs::metadata(url).map(|m| m.len()).unwrap_or(0),
+                                width: None,
+                                height: None,
+                            },
+                        }]
+                    }
+                });
 
             let msg_content = zca_rs::models::MessageContent {
                 msg: formatted_content.clone(),
@@ -2310,15 +1983,13 @@ pub async fn send_zalo_outreach_internal(
                         lead_name, sanitized_phone, e
                     );
                     let now: String = chrono::Utc::now().to_rfc3339();
-                    let _ = {
-                        let conn_guard = conn_mutex.lock();
-                        if let Ok(conn) = conn_guard {
-                            let _ = conn.execute(
-                                "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
-                                rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
-                            );
-                        }
-                    };
+                    let conn_guard = conn_mutex.lock();
+                    if let Ok(conn) = conn_guard {
+                        let _ = conn.execute(
+                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                            rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
+                        );
+                    }
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "outreach-log",
@@ -2335,22 +2006,17 @@ pub async fn send_zalo_outreach_internal(
                 sanitized_phone, lead_name
             );
             let now: String = chrono::Utc::now().to_rfc3339();
-            let _ = {
-                let conn_guard = conn_mutex.lock();
-                match conn_guard {
-                    Ok(conn) => {
-                        let _ = conn.execute(
-                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
-                            rusqlite::params![lead_id],
-                        );
-                        let _ = conn.execute(
-                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
-                            rusqlite::params![lead_id, template_id, "Phone number not found on Zalo", &now, &imei],
-                        );
-                    }
-                    Err(_) => {}
-                }
-            };
+            let conn_guard = conn_mutex.lock();
+            if let Ok(conn) = conn_guard {
+                let _ = conn.execute(
+                    "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                    rusqlite::params![lead_id],
+                );
+                let _ = conn.execute(
+                    "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                    rusqlite::params![lead_id, template_id, "Phone number not found on Zalo", &now, &imei],
+                );
+            }
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "outreach-log",
@@ -2373,7 +2039,11 @@ pub async fn send_zalo_outreach_internal(
             );
         }
 
-        if enable_burst_limit && burst_max_messages > 0 && burst_counter >= burst_max_messages && (idx + 1) < lead_ids.len() {
+        if enable_burst_limit
+            && burst_max_messages > 0
+            && burst_counter >= burst_max_messages
+            && (idx + 1) < lead_ids.len()
+        {
             let msg = format!(
                 "[Burst Limit] Đã gửi {} tin. Tạm dừng {} giây để tránh khóa tài khoản Zalo...",
                 burst_counter, burst_delay_seconds
@@ -2385,7 +2055,8 @@ pub async fn send_zalo_outreach_internal(
             burst_counter = 0;
         } else if idx + 1 < lead_ids.len() {
             if inter_message_delay_seconds > 0 {
-                tokio::time::sleep(std::time::Duration::from_secs(inter_message_delay_seconds)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(inter_message_delay_seconds))
+                    .await;
             } else {
                 tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
             }
@@ -2469,7 +2140,7 @@ pub fn add_leads_to_category(
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    
+
     let tx = conn
         .transaction()
         .map_err(|e| format!("Transaction error: {}", e))?;
@@ -2479,7 +2150,8 @@ pub fn add_leads_to_category(
             .map_err(|e| format!("Database error: {}", e))?;
     }
 
-    tx.commit().map_err(|e| format!("Transaction commit error: {}", e))?;
+    tx.commit()
+        .map_err(|e| format!("Transaction commit error: {}", e))?;
     Ok(())
 }
 
@@ -2499,7 +2171,7 @@ pub fn remove_leads_from_category(
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    
+
     let tx = conn
         .transaction()
         .map_err(|e| format!("Transaction error: {}", e))?;
@@ -2509,7 +2181,8 @@ pub fn remove_leads_from_category(
             .map_err(|e| format!("Database error: {}", e))?;
     }
 
-    tx.commit().map_err(|e| format!("Transaction commit error: {}", e))?;
+    tx.commit()
+        .map_err(|e| format!("Transaction commit error: {}", e))?;
     Ok(())
 }
 
@@ -2523,10 +2196,9 @@ pub fn get_leads_by_category(
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::get_leads_by_category(&conn, category_id).map_err(|e| format!("Database error: {}", e))
+    crate::db::get_leads_by_category(&conn, category_id)
+        .map_err(|e| format!("Database error: {}", e))
 }
-
-
 
 #[derive(Clone, serde::Serialize)]
 pub struct CampaignProgressPayload {
@@ -2640,7 +2312,9 @@ pub async fn send_zalo_campaign_internal(
             }
             if status == "RATE_LIMITED" {
                 if let Some(last_lookup) = &lead.last_lookup_attempt {
-                    let recent = if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(last_lookup) {
+                    let recent = if let Ok(parsed_time) =
+                        chrono::DateTime::parse_from_rfc3339(last_lookup)
+                    {
                         let now = chrono::Utc::now();
                         let diff = now - parsed_time.with_timezone(&chrono::Utc);
                         diff.num_seconds() < 3600
@@ -2701,7 +2375,14 @@ pub async fn send_zalo_campaign_internal(
         for session in sessions_to_login {
             if let Ok(cookies) = serde_json::from_str(&session.cookies_json) {
                 let options = zca_rs::Options::default();
-                if let Ok(zalo) = zca_rs::Zalo::login(session.imei.clone(), session.user_agent.clone(), cookies, options).await {
+                if let Ok(zalo) = zca_rs::Zalo::login(
+                    session.imei.clone(),
+                    session.user_agent.clone(),
+                    cookies,
+                    options,
+                )
+                .await
+                {
                     active_clients.push(zalo);
                     active_imeis.push(session.imei.clone());
                 }
@@ -2749,18 +2430,18 @@ pub async fn send_zalo_campaign_internal(
             break;
         }
 
-        active_index = active_index % active_imeis.len();
+        active_index %= active_imeis.len();
         let current_imei = active_imeis[active_index].clone();
-        
+
         let sanitized_phone: String = lead.phone.chars().filter(|c| c.is_ascii_digit()).collect();
         let formatted_content = render_zalo_template(&template_content, &lead.name);
-        
+
         let mut uid = lead.zalo_uid.clone();
-        
+
         if uid.is_none() || uid.as_deref() == Some("") {
             let mut found = false;
             let mut lookup_failed = false;
-            
+
             if is_mock {
                 if lead.phone == "not-found" {
                     found = false;
@@ -2776,10 +2457,10 @@ pub async fn send_zalo_campaign_internal(
                     Ok(Some(u)) => {
                         uid = Some(u.uid);
                         found = true;
-                    },
+                    }
                     Ok(None) => {
                         found = false;
-                    },
+                    }
                     Err(_) => {
                         lookup_failed = true;
                     }
@@ -2787,7 +2468,7 @@ pub async fn send_zalo_campaign_internal(
             }
 
             let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-            
+
             if lookup_failed {
                 let _ = {
                     let conn_guard = conn_mutex.lock().unwrap();
@@ -2809,7 +2490,7 @@ pub async fn send_zalo_campaign_internal(
                     let conn_guard = conn_mutex.lock().unwrap();
                     crate::db::log_outreach_attempt(&conn_guard, &history)
                 };
-                
+
                 // Evict failed session
                 active_imeis.remove(active_index);
                 if !is_mock {
@@ -2832,7 +2513,7 @@ pub async fn send_zalo_campaign_internal(
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
-            
+
             if found {
                 let _ = {
                     let conn_guard = conn_mutex.lock().unwrap();
@@ -2849,7 +2530,7 @@ pub async fn send_zalo_campaign_internal(
                         rusqlite::params![now, lead.id.unwrap()],
                     )
                 };
-                
+
                 let history = crate::models::OutreachHistory {
                     id: None,
                     lead_id: lead.id.unwrap(),
@@ -2863,7 +2544,7 @@ pub async fn send_zalo_campaign_internal(
                     let conn_guard = conn_mutex.lock().unwrap();
                     crate::db::log_outreach_attempt(&conn_guard, &history)
                 };
-                
+
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "campaign-log",
@@ -2875,7 +2556,7 @@ pub async fn send_zalo_campaign_internal(
                 continue;
             }
         }
-        
+
         let send_result: Result<(), zca_rs::ZaloError> = if is_mock {
             if current_imei == "mock-fail-imei" {
                 Err(zca_rs::ZaloError::ApiError {
@@ -2901,8 +2582,7 @@ pub async fn send_zalo_campaign_internal(
                 ttl: None,
             };
             if let Some(u) = &uid {
-                zalo
-                    .send_message(msg_content, u, zca_rs::models::ThreadType::User)
+                zalo.send_message(msg_content, u, zca_rs::models::ThreadType::User)
                     .await
                     .map(|_| ())
             } else {
@@ -2911,9 +2591,9 @@ pub async fn send_zalo_campaign_internal(
                 ))
             }
         };
-        
+
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        
+
         if send_result.is_ok() {
             total_sent += 1;
             let history = crate::models::OutreachHistory {
@@ -2925,15 +2605,15 @@ pub async fn send_zalo_campaign_internal(
                 sent_at: now.clone(),
                 session_imei: current_imei.clone(),
             };
-            let _ = {
+            {
                 let conn_guard = conn_mutex.lock().unwrap();
                 let _ = crate::db::log_outreach_attempt(&conn_guard, &history);
                 let _ = conn_guard.execute(
                     "UPDATE leads SET zalo_reached = 1, has_zalo = 1, last_activity = ?1 WHERE id = ?2",
                     rusqlite::params![now, lead.id.unwrap()],
                 );
-            };
-            
+            }
+
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "campaign-log",
@@ -2942,7 +2622,7 @@ pub async fn send_zalo_campaign_internal(
                     },
                 );
             }
-            
+
             if !is_mock {
                 use rand::Rng;
                 let sleep_ms = {
@@ -2968,15 +2648,15 @@ pub async fn send_zalo_campaign_internal(
                 sent_at: now,
                 session_imei: current_imei.clone(),
             };
-            let _ = {
+            {
                 let conn_guard = conn_mutex.lock().unwrap();
                 let _ = crate::db::log_outreach_attempt(&conn_guard, &history);
                 let _ = conn_guard.execute(
                     "UPDATE leads SET zalo_reached = 0 WHERE id = ?1",
                     rusqlite::params![lead.id.unwrap()],
                 );
-            };
-            
+            }
+
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "campaign-log",
@@ -3014,7 +2694,7 @@ pub async fn send_zalo_campaign_internal(
             let cooldown_ms = if is_mock { 10 } else { 5000 };
             tokio::time::sleep(tokio::time::Duration::from_millis(cooldown_ms)).await;
         }
-        
+
         if let Some(app) = app_handle {
             let progress_val = ((idx + 1) as f64 / eligible_leads.len() as f64) * 100.0;
             let _ = app.emit(
@@ -3027,7 +2707,7 @@ pub async fn send_zalo_campaign_internal(
             );
         }
     }
-    
+
     let final_msg = format!("Campaign completed. Total sent: {}", total_sent);
     if let Some(app) = app_handle {
         let _ = app.emit(
@@ -3056,37 +2736,66 @@ pub async fn get_campaign_leads(
     category_id: i32,
     segmentation: String,
     filter_template_id: Option<i32>,
+    channel: Option<String>,
 ) -> Result<Vec<crate::models::Lead>, String> {
     let conn = state.conn.lock().unwrap();
-    
+    let is_email = channel.as_deref() == Some("email");
+
     let query_str = match segmentation.as_str() {
         "never_sent" => {
-            "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
-             JOIN lead_categories lc ON l.id = lc.lead_id
-             WHERE lc.category_id = ?1
-               AND l.id NOT IN (SELECT DISTINCT lead_id FROM outreach_history WHERE status = 'SUCCESS')"
+            if is_email {
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                 JOIN lead_categories lc ON l.id = lc.lead_id
+                 WHERE lc.category_id = ?1
+                   AND l.id NOT IN (SELECT DISTINCT lead_id FROM email_outreach_history WHERE status = 'SUCCESS')"
+            } else {
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                 JOIN lead_categories lc ON l.id = lc.lead_id
+                 WHERE lc.category_id = ?1
+                   AND COALESCE(l.zalo_reached, 0) = 0
+                   AND l.id NOT IN (SELECT DISTINCT lead_id FROM outreach_history WHERE status = 'SUCCESS')"
+            }
         },
         "template_success" => {
-            if let Some(_) = filter_template_id {
+            if filter_template_id.is_none() {
+                return Err("Template ID is required for success filtering".to_string());
+            }
+            if is_email {
+                "SELECT DISTINCT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                 JOIN lead_categories lc ON l.id = lc.lead_id
+                 JOIN email_outreach_history oh ON l.id = oh.lead_id
+                 WHERE lc.category_id = ?1
+                   AND oh.template_id = ?2
+                   AND oh.status = 'SUCCESS'"
+            } else {
                 "SELECT DISTINCT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  JOIN outreach_history oh ON l.id = oh.lead_id
                  WHERE lc.category_id = ?1
                    AND oh.template_id = ?2
                    AND oh.status = 'SUCCESS'"
-            } else {
-                return Err("Template ID is required for success filtering".to_string());
             }
         },
         "last_failed" => {
-            "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
-             JOIN lead_categories lc ON l.id = lc.lead_id
-             WHERE lc.category_id = ?1
-               AND l.id IN (
-                   SELECT lead_id FROM (
-                       SELECT lead_id, status, MAX(sent_at) FROM outreach_history GROUP BY lead_id
-                   ) WHERE status = 'FAILED'
-               )"
+            if is_email {
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                 JOIN lead_categories lc ON l.id = lc.lead_id
+                 WHERE lc.category_id = ?1
+                   AND l.id IN (
+                       SELECT lead_id FROM (
+                           SELECT lead_id, status, MAX(sent_at) FROM email_outreach_history GROUP BY lead_id
+                       ) WHERE status = 'FAILED'
+                   )"
+            } else {
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                 JOIN lead_categories lc ON l.id = lc.lead_id
+                 WHERE lc.category_id = ?1
+                   AND l.id IN (
+                       SELECT lead_id FROM (
+                           SELECT lead_id, status, MAX(sent_at) FROM outreach_history GROUP BY lead_id
+                       ) WHERE status = 'FAILED'
+                   )"
+            }
         },
         _ => {
             "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
@@ -3098,58 +2807,65 @@ pub async fn get_campaign_leads(
     let mut leads = Vec::new();
     if segmentation == "template_success" {
         let mut stmt = conn.prepare(query_str).map_err(|e| e.to_string())?;
-        let lead_rows = stmt.query_map(rusqlite::params![category_id, filter_template_id.unwrap()], |row| {
-            Ok(crate::models::Lead {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                company: row.get(2)?,
-                status: row.get(3)?,
-                value: row.get(4)?,
-                last_activity: row.get(5)?,
-                owner: row.get(6)?,
-                email: row.get(7)?,
-                phone: row.get(8)?,
-                about: row.get(9)?,
-                address: row.get(10)?,
-                has_zalo: row.get(11)?,
-                zalo_reached: row.get(12)?,
-                zalo_uid: row.get(13)?,
-                zalo_status: row.get(14)?,
-                relationship_status: row.get(15)?,
-                last_lookup_attempt: row.get(16)?,
-            })
-        }).map_err(|e| e.to_string())?;
+        let lead_rows = stmt
+            .query_map(
+                rusqlite::params![category_id, filter_template_id.unwrap()],
+                |row| {
+                    Ok(crate::models::Lead {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        company: row.get(2)?,
+                        status: row.get(3)?,
+                        value: row.get(4)?,
+                        last_activity: row.get(5)?,
+                        owner: row.get(6)?,
+                        email: row.get(7)?,
+                        phone: row.get(8)?,
+                        about: row.get(9)?,
+                        address: row.get(10)?,
+                        has_zalo: row.get(11)?,
+                        zalo_reached: row.get(12)?,
+                        zalo_uid: row.get(13)?,
+                        zalo_status: row.get(14)?,
+                        relationship_status: row.get(15)?,
+                        last_lookup_attempt: row.get(16)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
         for row in lead_rows {
             leads.push(row.map_err(|e| e.to_string())?);
         }
     } else {
         let mut stmt = conn.prepare(query_str).map_err(|e| e.to_string())?;
-        let lead_rows = stmt.query_map([category_id], |row| {
-            Ok(crate::models::Lead {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                company: row.get(2)?,
-                status: row.get(3)?,
-                value: row.get(4)?,
-                last_activity: row.get(5)?,
-                owner: row.get(6)?,
-                email: row.get(7)?,
-                phone: row.get(8)?,
-                about: row.get(9)?,
-                address: row.get(10)?,
-                has_zalo: row.get(11)?,
-                zalo_reached: row.get(12)?,
-                zalo_uid: row.get(13)?,
-                zalo_status: row.get(14)?,
-                relationship_status: row.get(15)?,
-                last_lookup_attempt: row.get(16)?,
+        let lead_rows = stmt
+            .query_map([category_id], |row| {
+                Ok(crate::models::Lead {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    company: row.get(2)?,
+                    status: row.get(3)?,
+                    value: row.get(4)?,
+                    last_activity: row.get(5)?,
+                    owner: row.get(6)?,
+                    email: row.get(7)?,
+                    phone: row.get(8)?,
+                    about: row.get(9)?,
+                    address: row.get(10)?,
+                    has_zalo: row.get(11)?,
+                    zalo_reached: row.get(12)?,
+                    zalo_uid: row.get(13)?,
+                    zalo_status: row.get(14)?,
+                    relationship_status: row.get(15)?,
+                    last_lookup_attempt: row.get(16)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
         for row in lead_rows {
             leads.push(row.map_err(|e| e.to_string())?);
         }
     }
-    
+
     Ok(leads)
 }
 
@@ -3163,10 +2879,7 @@ pub fn get_smtp_servers(state: tauri::State<DbState>) -> Result<Vec<SmtpServer>,
 }
 
 #[tauri::command]
-pub fn save_smtp_server(
-    server: SmtpServer,
-    state: tauri::State<DbState>,
-) -> Result<i32, String> {
+pub fn save_smtp_server(server: SmtpServer, state: tauri::State<DbState>) -> Result<i32, String> {
     let conn = state
         .conn
         .lock()
@@ -3283,13 +2996,13 @@ pub async fn send_email_outreach_internal(
     template_id: i32,
     lead_ids: Vec<i32>,
 ) -> Result<(), String> {
-    use lettre::message::header::ContentType;
-    use lettre::transport::smtp::authentication::Credentials;
-    use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
     use crate::models::{
         EmailOutreachCompletePayload, EmailOutreachHistory, EmailOutreachLogPayload,
         EmailOutreachProgressPayload,
     };
+    use lettre::message::header::ContentType;
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
     if let Some(app) = app_handle {
         let _ = app.emit(
@@ -3369,8 +3082,14 @@ pub async fn send_email_outreach_internal(
         };
 
         let email_builder = Message::builder()
-            .from(from_str.parse().map_err(|e| format!("Invalid from header: {}", e))?)
-            .to(to_str.parse().unwrap_or_else(|_| lead.email.parse().unwrap()))
+            .from(
+                from_str
+                    .parse()
+                    .map_err(|e| format!("Invalid from header: {}", e))?,
+            )
+            .to(to_str
+                .parse()
+                .unwrap_or_else(|_| lead.email.parse().unwrap()))
             .subject(interpolated_subject)
             .header(ContentType::TEXT_HTML)
             .body(interpolated_body);
@@ -3378,15 +3097,22 @@ pub async fn send_email_outreach_internal(
         let send_result = match email_builder {
             Ok(email_msg) => {
                 let security_upper = smtp_server.security.to_uppercase();
-                let creds = Credentials::new(smtp_server.username.clone(), smtp_server.password.clone());
+                let creds =
+                    Credentials::new(smtp_server.username.clone(), smtp_server.password.clone());
 
                 let transport_res: Result<AsyncSmtpTransport<Tokio1Executor>, String> =
                     if security_upper == "NONE" {
-                        Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_server.host)
-                            .port(smtp_server.port as u16)
-                            .credentials(creds)
-                            .build())
-                    } else if security_upper == "SSL_TLS" || security_upper == "SSL/TLS" || security_upper == "TLS" || security_upper == "SSL" {
+                        Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(
+                            &smtp_server.host,
+                        )
+                        .port(smtp_server.port as u16)
+                        .credentials(creds)
+                        .build())
+                    } else if security_upper == "SSL_TLS"
+                        || security_upper == "SSL/TLS"
+                        || security_upper == "TLS"
+                        || security_upper == "SSL"
+                    {
                         AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp_server.host)
                             .map_err(|e| format!("SMTP TLS relay error: {}", e))
                             .map(|b| b.port(smtp_server.port as u16).credentials(creds).build())
@@ -3441,7 +3167,10 @@ pub async fn send_email_outreach_internal(
                     let _ = app.emit(
                         "email-outreach-log",
                         EmailOutreachLogPayload {
-                            message: format!("Successfully sent email to {} ({})", lead.name, lead.email),
+                            message: format!(
+                                "Successfully sent email to {} ({})",
+                                lead.name, lead.email
+                            ),
                         },
                     );
                 }
@@ -3475,7 +3204,10 @@ pub async fn send_email_outreach_internal(
                     let _ = app.emit(
                         "email-outreach-log",
                         EmailOutreachLogPayload {
-                            message: format!("Failed sending email to {} ({}): {}", lead.name, lead.email, err_msg),
+                            message: format!(
+                                "Failed sending email to {} ({}): {}",
+                                lead.name, lead.email, err_msg
+                            ),
                         },
                     );
                 }
@@ -3507,4 +3239,3 @@ pub async fn send_email_outreach_internal(
 
     Ok(())
 }
-

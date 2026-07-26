@@ -1,6 +1,12 @@
 use rusqlite::{Connection, Result};
+use std::time::Duration;
 
-fn add_column_if_missing(conn: &Connection, table: &str, col_name: &str, col_def: &str) -> Result<()> {
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    col_name: &str,
+    col_def: &str,
+) -> Result<()> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
     let mut rows = stmt.query([])?;
     let mut exists = false;
@@ -17,14 +23,20 @@ fn add_column_if_missing(conn: &Connection, table: &str, col_name: &str, col_def
     Ok(())
 }
 
+pub fn open_db_connection(db_path: &str) -> Result<Connection> {
+    let conn = Connection::open(db_path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    Ok(conn)
+}
+
 pub fn init_db(db_path: &str) -> Result<Connection> {
-    let mut conn = Connection::open(db_path)?;
-    conn.pragma_update(None, "journal_mode", &"WAL")?;
-    conn.pragma_update(None, "synchronous", &"NORMAL")?;
+    let mut conn = open_db_connection(db_path)?;
 
     {
         let tx = conn.transaction()?;
-        tx.execute("PRAGMA foreign_keys = ON;", [])?;
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS leads (
@@ -51,11 +63,31 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
 
         add_column_if_missing(&tx, "leads", "address", "address TEXT")?;
         add_column_if_missing(&tx, "leads", "has_zalo", "has_zalo INTEGER DEFAULT NULL")?;
-        add_column_if_missing(&tx, "leads", "zalo_reached", "zalo_reached INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(
+            &tx,
+            "leads",
+            "zalo_reached",
+            "zalo_reached INTEGER NOT NULL DEFAULT 0",
+        )?;
         add_column_if_missing(&tx, "leads", "zalo_uid", "zalo_uid TEXT")?;
-        add_column_if_missing(&tx, "leads", "zalo_status", "zalo_status TEXT DEFAULT 'UNTESTED'")?;
-        add_column_if_missing(&tx, "leads", "relationship_status", "relationship_status TEXT DEFAULT 'UNKNOWN'")?;
-        add_column_if_missing(&tx, "leads", "last_lookup_attempt", "last_lookup_attempt TEXT")?;
+        add_column_if_missing(
+            &tx,
+            "leads",
+            "zalo_status",
+            "zalo_status TEXT DEFAULT 'UNTESTED'",
+        )?;
+        add_column_if_missing(
+            &tx,
+            "leads",
+            "relationship_status",
+            "relationship_status TEXT DEFAULT 'UNKNOWN'",
+        )?;
+        add_column_if_missing(
+            &tx,
+            "leads",
+            "last_lookup_attempt",
+            "last_lookup_attempt TEXT",
+        )?;
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS activities (
@@ -107,7 +139,10 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             )",
             [],
         )?;
-        let _ = tx.execute("ALTER TABLE outreach_templates ADD COLUMN image_url TEXT", []);
+        let _ = tx.execute(
+            "ALTER TABLE outreach_templates ADD COLUMN image_url TEXT",
+            [],
+        );
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS categories (
@@ -200,6 +235,135 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS google_maps_scrape_jobs (
+                id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                location TEXT,
+                bbox_json TEXT,
+                step_km REAL,
+                headless INTEGER NOT NULL CHECK (headless IN (0, 1)),
+                profile_dir TEXT NOT NULL DEFAULT '',
+                blocked_url TEXT,
+                status TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                total_units INTEGER NOT NULL DEFAULT 0 CHECK (total_units >= 0),
+                processed_units INTEGER NOT NULL DEFAULT 0 CHECK (processed_units >= 0),
+                failed_units INTEGER NOT NULL DEFAULT 0 CHECK (failed_units >= 0),
+                businesses_discovered INTEGER NOT NULL DEFAULT 0 CHECK (businesses_discovered >= 0),
+                businesses_qualified INTEGER NOT NULL DEFAULT 0 CHECK (businesses_qualified >= 0),
+                leads_created INTEGER NOT NULL DEFAULT 0 CHECK (leads_created >= 0),
+                last_error_kind TEXT,
+                last_error_message TEXT,
+                action_required TEXT,
+                event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (event_sequence >= 0),
+                version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+                run_generation INTEGER NOT NULL DEFAULT 0 CHECK (run_generation >= 0),
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            )",
+            [],
+        )?;
+
+        add_column_if_missing(
+            &tx,
+            "google_maps_scrape_jobs",
+            "profile_dir",
+            "profile_dir TEXT NOT NULL DEFAULT ''",
+        )?;
+        add_column_if_missing(
+            &tx,
+            "google_maps_scrape_jobs",
+            "blocked_url",
+            "blocked_url TEXT",
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS google_maps_scrape_units (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                unit_key TEXT NOT NULL,
+                unit_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                depth INTEGER NOT NULL DEFAULT 0 CHECK (depth >= 0),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                next_retry_at TEXT,
+                last_error_kind TEXT,
+                last_error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                UNIQUE (job_id, unit_key),
+                UNIQUE (job_id, id),
+                FOREIGN KEY (job_id) REFERENCES google_maps_scrape_jobs(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS google_maps_scrape_results (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                source_unit_id TEXT NOT NULL,
+                place_id TEXT,
+                canonical_url TEXT,
+                dedup_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                phone TEXT,
+                normalized_phone TEXT,
+                email TEXT,
+                normalized_email TEXT,
+                address TEXT,
+                website TEXT,
+                facebook TEXT,
+                zalo TEXT,
+                latitude REAL,
+                longitude REAL,
+                inside_requested_area INTEGER CHECK (inside_requested_area IN (0, 1)),
+                detail_status TEXT NOT NULL,
+                enrichment_status TEXT NOT NULL,
+                import_status TEXT NOT NULL,
+                last_error_kind TEXT,
+                last_error_message TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                UNIQUE (job_id, dedup_key),
+                FOREIGN KEY (job_id) REFERENCES google_maps_scrape_jobs(id) ON DELETE CASCADE,
+                FOREIGN KEY (job_id, source_unit_id)
+                    REFERENCES google_maps_scrape_units(job_id, id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_google_maps_jobs_status
+             ON google_maps_scrape_jobs(status, updated_at)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_google_maps_units_job_status
+             ON google_maps_scrape_units(job_id, status, next_retry_at)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_google_maps_results_job_import
+             ON google_maps_scrape_results(job_id, import_status, enrichment_status)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads(phone)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_leads_email_normalized
+             ON leads(lower(trim(email)))",
+            [],
+        )?;
+
         tx.commit()?;
     }
 
@@ -285,8 +449,9 @@ pub fn get_zalo_session(
 }
 
 pub fn get_all_zalo_sessions(conn: &Connection) -> Result<Vec<crate::models::ZaloSession>> {
-    let mut stmt =
-        conn.prepare("SELECT imei, user_agent, cookies_json, language, display_name, avatar FROM zalo_sessions")?;
+    let mut stmt = conn.prepare(
+        "SELECT imei, user_agent, cookies_json, language, display_name, avatar FROM zalo_sessions",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok(crate::models::ZaloSession {
             imei: row.get(0)?,
@@ -310,7 +475,8 @@ pub fn delete_zalo_session(conn: &Connection, imei: &str) -> Result<()> {
 }
 
 pub fn get_outreach_templates(conn: &Connection) -> Result<Vec<crate::models::OutreachTemplate>> {
-    let mut stmt = conn.prepare("SELECT id, name, content, image_url, created_at FROM outreach_templates")?;
+    let mut stmt =
+        conn.prepare("SELECT id, name, content, image_url, created_at FROM outreach_templates")?;
     let rows = stmt.query_map([], |row| {
         Ok(crate::models::OutreachTemplate {
             id: Some(row.get(0)?),
@@ -365,10 +531,7 @@ pub fn delete_outreach_template(conn: &Connection, id: i32) -> Result<()> {
 }
 
 pub fn create_category(conn: &Connection, name: &str) -> Result<i32> {
-    conn.execute(
-        "INSERT INTO categories (name) VALUES (?1)",
-        [name],
-    )?;
+    conn.execute("INSERT INTO categories (name) VALUES (?1)", [name])?;
     Ok(conn.last_insert_rowid() as i32)
 }
 
@@ -394,7 +557,10 @@ pub fn remove_lead_from_category(conn: &Connection, lead_id: i32, category_id: i
     Ok(())
 }
 
-pub fn log_outreach_attempt(conn: &Connection, history: &crate::models::OutreachHistory) -> Result<()> {
+pub fn log_outreach_attempt(
+    conn: &Connection,
+    history: &crate::models::OutreachHistory,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -425,7 +591,10 @@ pub fn get_categories(conn: &Connection) -> Result<Vec<crate::models::Category>>
     Ok(categories)
 }
 
-pub fn get_leads_by_category(conn: &Connection, category_id: i32) -> Result<Vec<crate::models::Lead>> {
+pub fn get_leads_by_category(
+    conn: &Connection,
+    category_id: i32,
+) -> Result<Vec<crate::models::Lead>> {
     let mut stmt = conn.prepare(
         "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt
          FROM leads l
@@ -462,7 +631,9 @@ pub fn get_leads_by_category(conn: &Connection, category_id: i32) -> Result<Vec<
 
 pub fn save_smtp_server(conn: &Connection, server: &crate::models::SmtpServer) -> Result<i32> {
     let now = if server.created_at.is_empty() {
-        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| row.get(0))?
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?
     } else {
         server.created_at.clone()
     };
@@ -530,7 +701,10 @@ pub fn get_smtp_servers(conn: &Connection) -> Result<Vec<crate::models::SmtpServ
     Ok(list)
 }
 
-pub fn get_smtp_server_by_id(conn: &Connection, id: i32) -> Result<Option<crate::models::SmtpServer>> {
+pub fn get_smtp_server_by_id(
+    conn: &Connection,
+    id: i32,
+) -> Result<Option<crate::models::SmtpServer>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, host, port, username, password, from_email, from_name, security, created_at FROM smtp_servers WHERE id = ?1"
     )?;
@@ -560,7 +734,12 @@ pub fn delete_smtp_server(conn: &Connection, id: i32) -> Result<()> {
     Ok(())
 }
 
-pub fn create_email_template(conn: &Connection, name: &str, subject: &str, content: &str) -> Result<i32> {
+pub fn create_email_template(
+    conn: &Connection,
+    name: &str,
+    subject: &str,
+    content: &str,
+) -> Result<i32> {
     let now: String =
         conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
             row.get(0)
@@ -572,7 +751,13 @@ pub fn create_email_template(conn: &Connection, name: &str, subject: &str, conte
     Ok(conn.last_insert_rowid() as i32)
 }
 
-pub fn update_email_template(conn: &Connection, id: i32, name: &str, subject: &str, content: &str) -> Result<()> {
+pub fn update_email_template(
+    conn: &Connection,
+    id: i32,
+    name: &str,
+    subject: &str,
+    content: &str,
+) -> Result<()> {
     conn.execute(
         "UPDATE email_templates SET name = ?1, subject = ?2, content = ?3 WHERE id = ?4",
         rusqlite::params![name, subject, content, id],
@@ -586,7 +771,9 @@ pub fn delete_email_template(conn: &Connection, id: i32) -> Result<()> {
 }
 
 pub fn get_email_templates(conn: &Connection) -> Result<Vec<crate::models::EmailTemplate>> {
-    let mut stmt = conn.prepare("SELECT id, name, subject, content, created_at FROM email_templates ORDER BY id ASC")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, subject, content, created_at FROM email_templates ORDER BY id ASC",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok(crate::models::EmailTemplate {
             id: Some(row.get(0)?),
@@ -603,9 +790,12 @@ pub fn get_email_templates(conn: &Connection) -> Result<Vec<crate::models::Email
     Ok(templates)
 }
 
-pub fn get_email_template_by_id(conn: &Connection, id: i32) -> Result<Option<crate::models::EmailTemplate>> {
+pub fn get_email_template_by_id(
+    conn: &Connection,
+    id: i32,
+) -> Result<Option<crate::models::EmailTemplate>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, subject, content, created_at FROM email_templates WHERE id = ?1"
+        "SELECT id, name, subject, content, created_at FROM email_templates WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map([id], |row| {
         Ok(crate::models::EmailTemplate {
@@ -623,8 +813,10 @@ pub fn get_email_template_by_id(conn: &Connection, id: i32) -> Result<Option<cra
     }
 }
 
-pub fn log_email_outreach_attempt(conn: &Connection, history: &crate::models::EmailOutreachHistory) -> Result<()> {
-
+pub fn log_email_outreach_attempt(
+    conn: &Connection,
+    history: &crate::models::EmailOutreachHistory,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO email_outreach_history (lead_id, template_id, smtp_id, status, error_message, sent_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -639,4 +831,3 @@ pub fn log_email_outreach_attempt(conn: &Connection, history: &crate::models::Em
     )?;
     Ok(())
 }
-

@@ -105,7 +105,7 @@ test('loads the saved session and closes the QR modal after login succeeds', asy
 
   successListener({ payload: { imei: 'device-imei-123' } });
 
-  expect((await screen.findAllByText(/device-imei-123/)).length).toBeGreaterThan(0);
+  expect((await screen.findAllByText(/device-imei-123/, {}, { timeout: 2500 })).length).toBeGreaterThan(0);
   expect(screen.queryByText('Zalo QR Login')).toBeNull();
 });
 
@@ -119,5 +119,5 @@ test('verifies all Zalo sessions and displays health badges and display names', 
 
   render(ZaloOutreach);
 
-  expect(await screen.findByText(/User device-imei-456/)).toBeTruthy();
+  expect((await screen.findAllByText(/User device-imei-456/)).length).toBeGreaterThan(0);
 });

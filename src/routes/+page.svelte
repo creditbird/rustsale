@@ -94,23 +94,30 @@
         </div>
       {/if}
 
-      {#if activeTab === 'dashboard'}
+      <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
         <Dashboard />
-      {:else if activeTab === 'scraper'}
+      </div>
+      <div class={activeTab === 'scraper' ? '' : 'hidden'}>
         <GoogleMapsScraper />
-      {:else if activeTab === 'leads'}
+      </div>
+      <div class={activeTab === 'leads' ? '' : 'hidden'}>
         <LeadsList leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} />
-      {:else if activeTab === 'contacts'}
+      </div>
+      <div class={activeTab === 'contacts' ? '' : 'hidden'}>
         <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} />
-      {:else if activeTab === 'categories'}
+      </div>
+      <div class={activeTab === 'categories' ? '' : 'hidden'}>
         <CategoryManager />
-      {:else if activeTab === 'outreach'}
+      </div>
+      <div class={activeTab === 'outreach' ? '' : 'hidden'}>
         <ZaloOutreach />
-      {:else if activeTab === 'email_outreach'}
+      </div>
+      <div class={activeTab === 'email_outreach' ? '' : 'hidden'}>
         <EmailOutreach />
-      {:else if activeTab === 'pipeline'}
+      </div>
+      <div class={activeTab === 'pipeline' ? '' : 'hidden'}>
         <KanbanBoard />
-      {/if}
+      </div>
     </div>
   </main>
 </div>

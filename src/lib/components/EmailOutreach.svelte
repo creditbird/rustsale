@@ -147,24 +147,33 @@
     }
   });
 
-  $effect(() => {
+  async function reloadLeads() {
     if (selectedCategoryId !== null && selectedCategoryId !== undefined) {
       if (segmentationFilter === 'template_success' && !filterTemplateId) {
         leads = [];
         selectedLeadIds = [];
         return;
       }
-      getCampaignLeads(Number(selectedCategoryId), segmentationFilter, filterTemplateId)
-        .then(res => {
-          leads = res;
-          selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
-        })
-        .catch(err => {
-          console.error(err);
-          leads = [];
-          selectedLeadIds = [];
-        });
+      try {
+        const res = await getCampaignLeads(Number(selectedCategoryId), segmentationFilter, filterTemplateId, 'email');
+        leads = res;
+        selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
+      } catch (err) {
+        console.error(err);
+        leads = [];
+        selectedLeadIds = [];
+      }
+    } else {
+      leads = [];
+      selectedLeadIds = [];
     }
+  }
+
+  $effect(() => {
+    const cat = selectedCategoryId;
+    const seg = segmentationFilter;
+    const tmpl = filterTemplateId;
+    reloadLeads();
   });
 
   onMount(async () => {
@@ -242,7 +251,12 @@
   }
 
   function openEditTemplateModal(tpl: EmailTemplate) {
-    editingTemplateId = tpl.id || null; templateName = tpl.name; templateSubject = tpl.subject; templateContent = tpl.content; templateError = null;
+    editingTemplateId = tpl.id || null;
+    templateName = tpl.name || '';
+    templateSubject = tpl.subject || '';
+    const rawContent = typeof tpl.content === 'string' ? tpl.content : (tpl.content ? String(tpl.content) : '');
+    templateContent = rawContent.replace(/\[object Object\]/g, '');
+    templateError = null;
     activeInputField = 'content';
     isTemplateModalOpen = true;
   }
@@ -323,6 +337,7 @@
         listen<{ total_sent: number; message: string }>('email-outreach-complete', (e) => {
           isCampaignRunning = false; campaignProgress = 100; campaignStatus = e.payload.message;
           appendCampaignLog(`[COMPLETE] ${e.payload.message}`);
+          reloadLeads();
         })
       ]);
       campaignUnlistens.push(progressUnlisten, logUnlisten, completeUnlisten);
@@ -448,7 +463,7 @@
                 {#if s.id}
                   {@const isSelected = selectedSmtpIds.includes(s.id)}
                   <label class="flex items-center gap-2 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}">
-                    <Checkbox 
+                    <Checkbox
                       checked={isSelected}
                       disabled={isCampaignRunning}
                       onCheckedChange={(checked) => {
@@ -577,7 +592,7 @@
             {#each filteredLeads as lead (lead.id)}
               {#if lead.id}
                 {@const isSelected = selectedLeadIds.includes(lead.id)}
-                <div 
+                <div
                   class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5' : ''}"
                   onclick={() => lead.id && toggleLead(lead.id)}
                   role="button"
@@ -586,7 +601,7 @@
                 >
                   <div class="flex items-center gap-2 truncate">
                     <div onclick={(e) => e.stopPropagation()} role="none">
-                      <Checkbox 
+                      <Checkbox
                         checked={isSelected}
                         disabled={isCampaignRunning}
                         onCheckedChange={() => lead.id && toggleLead(lead.id)}
@@ -700,42 +715,86 @@
 
 <!-- Email Template Dialog -->
 <Dialog.Root bind:open={isTemplateModalOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
+  <Dialog.Content class="sm:max-w-4xl max-w-[95vw] w-full max-h-[90vh] flex flex-col overflow-hidden p-6 gap-4">
+    <Dialog.Header class="pb-2 border-b border-border">
       <Dialog.Title>{editingTemplateId ? 'Edit Email Template' : 'Create Email Template'}</Dialog.Title>
     </Dialog.Header>
-    <div class="flex flex-col gap-3 py-2 text-xs">
-      {#if templateError}
-        <div class="p-2 rounded bg-destructive/10 text-destructive text-xs">{templateError}</div>
-      {/if}
-      <div class="flex flex-col gap-1">
-        <label for="tpl-name-email" class="font-semibold text-foreground">Template Name *</label>
-        <Input id="tpl-name-email" bind:value={templateName} placeholder="e.g. Intro Sequence" class="text-xs" />
-      </div>
-      <div class="flex flex-col gap-1">
-        <label for="tpl-subject-email" class="font-semibold text-foreground">Subject Line *</label>
-        <Input id="tpl-subject-email" bind:value={templateSubject} placeholder="e.g. Partnership Proposal" class="text-xs" onfocus={() => activeInputField = 'subject'} />
-      </div>
 
-      <!-- Variable Insertion Badges -->
-      <div class="flex flex-col gap-1">
-        <span class="text-[11px] text-muted-foreground">Click to insert variable into active field ({activeInputField}):</span>
-        <div class="flex flex-wrap gap-1">
-          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{name}}')}>+ {'{{name}}'}</Badge>
-          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{company}}')}>+ {'{{company}}'}</Badge>
-          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{email}}')}>+ {'{{email}}'}</Badge>
-          <Badge variant="outline" class="cursor-pointer hover:bg-accent text-[10px]" onclick={() => insertVariableBadge('{{phone}}')}>+ {'{{phone}}'}</Badge>
+    <div class="flex flex-col gap-4 py-1 text-xs overflow-y-auto pr-1 flex-1">
+      {#if templateError}
+        <div class="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs font-semibold">
+          {templateError}
+        </div>
+      {/if}
+
+      <!-- Top Row: Name and Subject in 2 Columns -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="flex flex-col gap-1.5">
+          <label for="tpl-name-email" class="font-bold text-foreground flex items-center gap-1">
+            Template Name <span class="text-rose-500">*</span>
+          </label>
+          <Input
+            id="tpl-name-email"
+            bind:value={templateName}
+            placeholder="e.g. Intro Sequence - Cold Outreach"
+            class="text-xs h-9 rounded-xl font-semibold"
+          />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label for="tpl-subject-email" class="font-bold text-foreground flex items-center gap-1">
+            Subject Line <span class="text-rose-500">*</span>
+          </label>
+          <Input
+            id="tpl-subject-email"
+            bind:value={templateSubject}
+            placeholder="e.g. Strategic Partnership Proposal for &#123;&#123;company&#125;&#125;"
+            class="text-xs h-9 rounded-xl font-semibold"
+            onfocus={() => activeInputField = 'subject'}
+          />
         </div>
       </div>
 
-      <div class="flex flex-col gap-1">
-        <label for="tpl-content-email" class="font-semibold text-foreground">Content</label>
-        <textarea id="tpl-content-email" rows="6" bind:value={templateContent} placeholder="Hi {{name}}..." class="w-full rounded-md border border-input bg-background p-2 text-xs" onfocus={() => activeInputField = 'content'}></textarea>
+      <!-- Variable Insertion Toolbar -->
+      <div class="p-3 rounded-xl bg-muted/40 border border-border/70 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-[11px] font-bold text-muted-foreground">Chèn biến tự động:</span>
+          <div class="flex flex-wrap gap-1.5">
+            <Badge role="button" variant="outline" class="cursor-pointer hover:bg-accent text-[11px] font-mono px-2.5 py-1" onclick={() => insertVariableBadge('{{name}}')}>+ {'{{name}}'}</Badge>
+            <Badge role="button" variant="outline" class="cursor-pointer hover:bg-accent text-[11px] font-mono px-2.5 py-1" onclick={() => insertVariableBadge('{{company}}')}>+ {'{{company}}'}</Badge>
+            <Badge role="button" variant="outline" class="cursor-pointer hover:bg-accent text-[11px] font-mono px-2.5 py-1" onclick={() => insertVariableBadge('{{email}}')}>+ {'{{email}}'}</Badge>
+            <Badge role="button" variant="outline" class="cursor-pointer hover:bg-accent text-[11px] font-mono px-2.5 py-1" onclick={() => insertVariableBadge('{{phone}}')}>+ {'{{phone}}'}</Badge>
+          </div>
+        </div>
+        <Badge variant="secondary" class="text-[10px] font-mono">
+          Trạng thái: <span class="capitalize font-bold ml-1 text-emerald-600">{activeInputField === 'subject' ? 'Subject' : 'Body'}</span>
+        </Badge>
+      </div>
+
+      <!-- Content Area with Large Textarea & Live Preview -->
+      <div class="flex flex-col gap-2 flex-1">
+        <div class="flex items-center justify-between">
+          <label for="tpl-content-email" class="font-bold text-foreground">Content</label>
+          <span class="text-[11px] text-muted-foreground">Hỗ trợ plain text & HTML format</span>
+        </div>
+
+        <textarea
+          id="tpl-content-email"
+          rows="14"
+          bind:value={templateContent}
+          placeholder="Hi &#123;&#123;name&#125;&#125;,&#10;&#10;I hope this email finds you well...&#10;&#10;Best regards,&#10;Sales Team"
+          class="w-full min-h-[300px] md:min-h-[380px] rounded-xl border border-input bg-background p-3.5 text-xs md:text-sm font-mono leading-relaxed text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shadow-2xs resize-y"
+          onfocus={() => activeInputField = 'content'}
+        ></textarea>
       </div>
     </div>
-    <Dialog.Footer class="gap-2">
-      <Button variant="outline" size="sm" onclick={() => isTemplateModalOpen = false}>Cancel</Button>
-      <Button size="sm" onclick={handleSaveTemplate}>Save Template</Button>
+
+    <Dialog.Footer class="gap-2 pt-3 border-t border-border">
+      <Button variant="outline" size="sm" onclick={() => isTemplateModalOpen = false} class="h-9 px-4 rounded-xl font-semibold">
+        Cancel
+      </Button>
+      <Button size="sm" onclick={handleSaveTemplate} class="h-9 px-5 rounded-xl font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm">
+        Save Template
+      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

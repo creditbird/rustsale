@@ -167,24 +167,24 @@ afterEach(() => {
 test('renders EmailOutreach section headings and initial state', async () => {
   render(EmailOutreach);
 
-  expect(await screen.findByRole('heading', { name: 'SMTP Configuration' })).toBeTruthy();
-  expect(await screen.findByRole('heading', { name: 'Email Templates' })).toBeTruthy();
-  expect(await screen.findByRole('heading', { name: 'Campaign Execution' })).toBeTruthy();
+  expect(await screen.findByText('SMTP Configurations')).toBeTruthy();
+  expect(await screen.findByText('Email Templates')).toBeTruthy();
+  expect(await screen.findByText('Campaign Execution')).toBeTruthy();
 });
 
 test('SMTP server modal controls - opens modal, saves new SMTP server and tests connection', async () => {
   render(EmailOutreach);
 
   // Open Add SMTP Modal
-  const addSmtpBtn = await screen.findByRole('button', { name: /Add SMTP Server/i });
+  const addSmtpBtn = await screen.findByRole('button', { name: /Add Server/i });
   await fireEvent.click(addSmtpBtn);
 
-  expect(await screen.findByRole('heading', { level: 3, name: /Add SMTP Server/i })).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: /Add SMTP Configuration/i })).toBeTruthy();
 
   // Fill in form fields
   const nameInput = screen.getByLabelText(/Server Name/i);
-  const hostInput = screen.getByLabelText(/SMTP Host/i);
-  const portInput = screen.getByLabelText(/SMTP Port/i);
+  const hostInput = screen.getByLabelText(/^Host \*$/i);
+  const portInput = screen.getByLabelText(/^Port$/i);
   const usernameInput = screen.getByLabelText(/Username/i);
   const passwordInput = screen.getByLabelText(/Password/i);
   const fromEmailInput = screen.getByLabelText(/From Email/i);
@@ -219,14 +219,14 @@ test('SMTP server modal controls - opens modal, saves new SMTP server and tests 
 test('Email template modal controls - opens modal, inserts variable badges into subject and content, and creates template', async () => {
   render(EmailOutreach);
 
-  const addTplBtn = await screen.findByRole('button', { name: /Create Template/i });
+  const addTplBtn = await screen.findByRole('button', { name: /New Template/i });
   await fireEvent.click(addTplBtn);
 
   expect(await screen.findByText(/Create Email Template/i)).toBeTruthy();
 
   const nameInput = screen.getByLabelText(/Template Name/i);
   const subjectInput = screen.getByLabelText(/Subject Line/i);
-  const contentInput = screen.getByLabelText(/Email Content/i);
+  const contentInput = screen.getByLabelText(/^Content$/i);
 
   await fireEvent.input(nameInput, { target: { value: 'Welcome Email' } });
   await fireEvent.input(subjectInput, { target: { value: 'Hello ' } });

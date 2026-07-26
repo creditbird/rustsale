@@ -1,0 +1,127 @@
+name: Google Maps Scraper
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_runtime_smoke:
+        description: Download and launch the official CloakBrowser runtime on Linux
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-maps-scraper-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: ${{ matrix.os }} / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test CloakBrowser sidecar
+        run: bun run test:cloak-runtime
+
+      - name: Build host CloakBrowser sidecar
+        run: bun run build:cloak-runtime
+
+      - name: Build target CloakBrowser sidecar
+        run: bun run build:cloak-runtime
+        env:
+          TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
+
+      - name: Test frontend
+        run: bun run test
+
+      - name: Check frontend
+        run: bun run check
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Lint Rust
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Test Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Compile target Tauri application
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+
+  linux-runtime-smoke:
+    name: Linux official CloakBrowser runtime smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build CloakBrowser sidecar
+        run: bun run build:cloak-runtime
+
+      - name: Download, launch, and clean up official runtime
+        run: bun test sidecars/cloak-runtime/src --test-name-pattern smoke
+        env:
+          RUN_CLOAK_BROWSER_SMOKE: '1'

@@ -9,8 +9,9 @@ mod commands_test;
 mod db;
 #[cfg(test)]
 mod db_test;
+pub mod google_maps_jobs;
 mod models;
-mod scrapers;
+pub mod scrapers;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -20,6 +21,7 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app
@@ -27,6 +29,10 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to get app data directory");
             std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data directory");
+            let diagnostics =
+                google_maps_jobs::diagnostics::init_structured_logging(&app_data_dir.join("logs"))
+                    .expect("Failed to initialize structured logging");
+            app.manage(diagnostics);
             let db_path = app_data_dir.join("rustsale.db");
             let db_path_str = db_path.to_str().expect("Failed to convert path to string");
 
@@ -39,12 +45,77 @@ pub fn run() {
                 conn: std::sync::Mutex::new(conn),
             });
 
-            let port = find_free_port(9333);
-            let browser_manager =
-                std::sync::Arc::new(scrapers::browser::BrowserManager::new(2).with_port(port));
-            app.manage(commands::BrowserState {
-                manager: browser_manager,
-                start_lock: tokio::sync::Mutex::new(()),
+            let repository = std::sync::Arc::new(
+                google_maps_jobs::repository::ScrapeJobRepository::new(db_path_str.to_string())
+                    .expect("Failed to initialize Google Maps job repository"),
+            );
+            let events =
+                std::sync::Arc::new(google_maps_jobs::events::ScrapeEventPublisher::default());
+            let processor =
+                std::sync::Arc::new(google_maps_jobs::processor::GoogleMapsUnitProcessor::new(
+                    repository.clone(),
+                    events.clone(),
+                ));
+            let runner = std::sync::Arc::new(google_maps_jobs::runner::ScrapeJobRunner::new(
+                repository.clone(),
+                processor,
+                events.clone(),
+                google_maps_jobs::runner::RetryPolicy::default(),
+            ));
+            let service =
+                std::sync::Arc::new(google_maps_jobs::commands::GoogleMapsJobService::new(
+                    repository,
+                    runner,
+                    app_data_dir.join("google-maps-profiles"),
+                ));
+            let runtime = std::sync::Arc::new(scrapers::browser::BrowserManager::new(1));
+            app.manage(google_maps_jobs::commands::GoogleMapsJobState {
+                service: service.clone(),
+                runtime,
+            });
+            events.clone().spawn_tauri_forwarder(app.handle().clone());
+            let retention_service = service.clone();
+            let mut retention_events = events.subscribe();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match retention_events.recv().await {
+                        Ok(event) if event.status.is_terminal() => {
+                            if let Err(error) = retention_service.cleanup_retention().await {
+                                tracing::error!(
+                                    target: "google_maps_scraper",
+                                    event = "retention_cleanup_failed",
+                                    job_id = %event.job_id,
+                                    error = %error,
+                                );
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                target: "google_maps_scraper",
+                                event = "retention_listener_lagged",
+                                skipped,
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = service.recover_startup().await {
+                    tracing::error!(
+                        target: "google_maps_scraper",
+                        event = "startup_recovery_failed",
+                        error = %error,
+                    );
+                }
+                if let Err(error) = service.cleanup_retention().await {
+                    tracing::error!(
+                        target: "google_maps_scraper",
+                        event = "startup_retention_cleanup_failed",
+                        error = %error,
+                    );
+                }
             });
 
             Ok(())
@@ -67,6 +138,17 @@ pub fn run() {
             commands::start_google_maps_scrape,
             commands::stop_google_maps_scrape,
             commands::get_preset_provinces,
+            google_maps_jobs::commands::get_google_maps_runtime_status,
+            google_maps_jobs::commands::prepare_google_maps_runtime,
+            google_maps_jobs::commands::create_google_maps_scrape_job,
+            google_maps_jobs::commands::pause_google_maps_scrape_job,
+            google_maps_jobs::commands::resume_google_maps_scrape_job,
+            google_maps_jobs::commands::cancel_google_maps_scrape_job,
+            google_maps_jobs::commands::retry_google_maps_failed_units,
+            google_maps_jobs::commands::retry_google_maps_email_enrichment,
+            google_maps_jobs::commands::get_google_maps_scrape_job,
+            google_maps_jobs::commands::list_google_maps_scrape_jobs,
+            google_maps_jobs::commands::delete_google_maps_scrape_job,
             commands::start_zalo_qr_login,
             commands::get_zalo_sessions,
             commands::delete_zalo_session,
@@ -96,16 +178,6 @@ pub fn run() {
             commands::delete_email_template,
             commands::send_email_outreach
         ])
-
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-fn find_free_port(start_port: u16) -> u16 {
-    for port in start_port..65535 {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
-        }
-    }
-    start_port
 }

@@ -137,11 +137,11 @@ test('opens LeadDetails drawer when clicking a lead row in LeadsList', async () 
   await fireEvent.click(aliceRow);
 
   // LeadDetails is rendered
-  const drawerTitle = await screen.findByText('Lead Details');
+  const drawerTitle = await screen.findByText('Chi Tiết Hồ Sơ Khách Hàng');
   expect(drawerTitle).toBeTruthy();
 
   // Verify lead properties render in drawer
-  expect(screen.getByText('Contact Details')).toBeTruthy();
+  expect(screen.getByText('Tổng Quan Liên Hệ')).toBeTruthy();
   expect(screen.getAllByText('alice@acme.com').length).toBeGreaterThan(0);
   expect(screen.getByText('Interested in enterprise plan')).toBeTruthy();
 });
@@ -150,7 +150,7 @@ test('renders KanbanBoard with all pipeline stages and deals', async () => {
   render(KanbanBoard);
 
   // Verify pipeline header
-  expect(screen.getByText('Deal Pipeline')).toBeTruthy();
+  expect(screen.getByText('Tổng Giá Trị Pipeline')).toBeTruthy();
 
   // Verify columns render
   expect(screen.getByText('Prospecting')).toBeTruthy();
@@ -174,7 +174,7 @@ test('logs a new activity via LeadDetails', async () => {
 
   // Find form elements
   const select = screen.getByRole('combobox') as HTMLSelectElement;
-  const textarea = screen.getByPlaceholderText('What did you discuss? Enter notes here...') as HTMLTextAreaElement;
+  const textarea = screen.getByPlaceholderText('Nhập nội dung trao đổi, ghi chú cuộc gọi/cuộc họp...') as HTMLTextAreaElement;
 
   // Fill in form
   await fireEvent.change(select, { target: { value: 'Email' } });
@@ -199,30 +199,29 @@ test('edits a lead and saves changes', async () => {
   await screen.findByText('Alice Smith');
 
   // Trigger edit mode
-  const editBtn = screen.getByLabelText('Edit details');
+  const editBtn = screen.getByRole('button', { name: 'Sửa' });
   await fireEvent.click(editBtn);
 
   // Find inputs
-  const nameInput = screen.getByLabelText('Name *') as HTMLInputElement;
-  const statusSelect = screen.getByLabelText('Status') as HTMLSelectElement;
+  const nameInput = screen.getByLabelText('Họ và Tên *') as HTMLInputElement;
+  const statusSelect = screen.getByLabelText('Trạng Thái') as HTMLSelectElement;
 
   // Change values
   await fireEvent.input(nameInput, { target: { value: 'Alice Johnson' } });
   await fireEvent.change(statusSelect, { target: { value: 'Converted' } });
 
   // Save changes
-  const saveBtn = screen.getByText('Save');
+  const saveBtn = screen.getByRole('button', { name: 'Lưu Thay Đổi' });
   await fireEvent.click(saveBtn);
 
   // Check that new values are rendered in view mode
   const updatedName = await screen.findByText('Alice Johnson');
   expect(updatedName).toBeTruthy();
-  expect(screen.getByText('Converted')).toBeTruthy();
+  expect(screen.getAllByText('Converted').length).toBeGreaterThan(0);
 });
 
 test('deletes a lead with confirmation', async () => {
   let closed = false;
-  globalThis.confirm = () => true; // Mock confirm
 
   render(LeadDetails, { props: { leadId: 2, onClose: () => { closed = true; } } });
 
@@ -230,14 +229,15 @@ test('deletes a lead with confirmation', async () => {
   await screen.findByText('Bob Jones');
 
   // Trigger edit mode
-  const editBtn = screen.getByLabelText('Edit details');
+  const editBtn = screen.getByRole('button', { name: 'Sửa' });
   await fireEvent.click(editBtn);
 
   // Click Delete
-  const deleteBtn = screen.getByText('Delete');
+  const deleteBtn = screen.getByRole('button', { name: 'Xóa Lead' });
   await fireEvent.click(deleteBtn);
+  const confirmDeleteBtn = await screen.findByRole('button', { name: 'Xóa Khách Hàng' });
+  await fireEvent.click(confirmDeleteBtn);
 
   // Drawer should be closed
   expect(closed).toBe(true);
 });
-

@@ -139,6 +139,3 @@ pub struct EmailOutreachCompletePayload {
     pub total_sent: i32,
     pub message: String,
 }
-
-
-

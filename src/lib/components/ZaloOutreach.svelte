@@ -203,27 +203,34 @@
     }
   });
 
-  $effect(() => {
+  async function reloadLeads() {
     if (selectedCategoryId !== null) {
       if (segmentationFilter === 'template_success' && !filterTemplateId) {
         leads = [];
         selectedLeadIds = [];
         return;
       }
-      getCampaignLeads(selectedCategoryId, segmentationFilter, filterTemplateId)
-        .then(res => {
-          leads = res;
-          selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
-        })
-        .catch(err => {
-          console.error('Error fetching campaign leads:', err);
-          leads = [];
-          selectedLeadIds = [];
-        });
+      try {
+        const res = await getCampaignLeads(selectedCategoryId, segmentationFilter, filterTemplateId, 'zalo');
+        leads = res;
+        selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
+      } catch (err) {
+        console.error('Error fetching campaign leads:', err);
+        leads = [];
+        selectedLeadIds = [];
+      }
     } else {
       leads = [];
       selectedLeadIds = [];
     }
+  }
+
+  $effect(() => {
+    // track dependencies
+    const cat = selectedCategoryId;
+    const seg = segmentationFilter;
+    const tmpl = filterTemplateId;
+    reloadLeads();
   });
 
   async function verifySession(imei: string) {
@@ -320,14 +327,15 @@
 
       const errorUnlisten = await listen<{ message: string }>('zalo-qr-error', (event) => {
         qrError = event.payload.message;
-        qrStatus = 'Login failed.';
+        qrStatus = event.payload.message;
       });
       qrUnlistens.push(errorUnlisten);
 
       await invoke('start_zalo_qr_login');
     } catch (e) {
-      qrError = String(e);
-      qrStatus = 'Failed to start QR login.';
+      const message = String(e);
+      qrError = message;
+      qrStatus = message;
     }
   }
 
@@ -496,6 +504,7 @@
         campaignProgress = 100;
         campaignStatus = event.payload.message;
         appendCampaignLog(`[COMPLETE] ${event.payload.message}`);
+        reloadLeads();
       });
       campaignUnlistens.push(completeUnlisten);
 

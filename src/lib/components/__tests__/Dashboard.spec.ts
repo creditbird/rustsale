@@ -19,6 +19,9 @@ mock.module('@tauri-apps/api/core', () => {
           { id: 3, lead_id: 3, title: "Deal Three", value: 20000, stage: "Proposal", created_at: "2026-07-17" }
         ]);
       }
+      if (cmd === 'get_recent_activities') {
+        return Promise.resolve([]);
+      }
       return Promise.resolve();
     }
   };

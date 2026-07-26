@@ -20,6 +20,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
+async-trait = "0.1"
+futures-util = "0.3"
+percent-encoding = "2.3"
+psl = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+scraper = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
@@ -31,10 +39,13 @@ base64 = "0.22"
 zca-rs = { path = "vendor/zca-rs" }
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+url = "2.5"
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-
-

@@ -54,7 +54,8 @@ plugin({
 
 // Setup JSDOM environment
 const dom = new JSDOM("<!DOCTYPE html><html><body></body></html>", {
-  url: "http://localhost"
+  url: "http://localhost",
+  pretendToBeVisual: true
 });
 
 // Bind window and document to global scope

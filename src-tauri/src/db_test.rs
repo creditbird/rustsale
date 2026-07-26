@@ -43,33 +43,45 @@ mod tests {
 
         // Verify new fields on Sarah Harrington (id = 1)
         let address1: Option<String> = conn
-            .query_row("SELECT address FROM leads WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT address FROM leads WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(address1, Some("123 Main St, New York".to_string()));
 
         let has_zalo1: Option<i32> = conn
-            .query_row("SELECT has_zalo FROM leads WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT has_zalo FROM leads WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(has_zalo1, Some(1));
 
         let zalo_reached1: i32 = conn
-            .query_row("SELECT zalo_reached FROM leads WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT zalo_reached FROM leads WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(zalo_reached1, 0);
 
         // Verify new fields on Jordan Smith (id = 2)
         let address2: Option<String> = conn
-            .query_row("SELECT address FROM leads WHERE id = 2", [], |row| row.get(0))
+            .query_row("SELECT address FROM leads WHERE id = 2", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(address2, Some("456 Oak Ave, Boston".to_string()));
 
         let has_zalo2: Option<i32> = conn
-            .query_row("SELECT has_zalo FROM leads WHERE id = 2", [], |row| row.get(0))
+            .query_row("SELECT has_zalo FROM leads WHERE id = 2", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(has_zalo2, None); // NULL in database
 
         let zalo_reached2: i32 = conn
-            .query_row("SELECT zalo_reached FROM leads WHERE id = 2", [], |row| row.get(0))
+            .query_row("SELECT zalo_reached FROM leads WHERE id = 2", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(zalo_reached2, 0);
 
@@ -80,17 +92,23 @@ mod tests {
         assert_eq!(lead3_name, "lele");
 
         let address3: Option<String> = conn
-            .query_row("SELECT address FROM leads WHERE id = 3", [], |row| row.get(0))
+            .query_row("SELECT address FROM leads WHERE id = 3", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(address3, Some("789 Pine Rd, Seattle".to_string()));
 
         let has_zalo3: Option<i32> = conn
-            .query_row("SELECT has_zalo FROM leads WHERE id = 3", [], |row| row.get(0))
+            .query_row("SELECT has_zalo FROM leads WHERE id = 3", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(has_zalo3, Some(1));
 
         let zalo_reached3: i32 = conn
-            .query_row("SELECT zalo_reached FROM leads WHERE id = 3", [], |row| row.get(0))
+            .query_row("SELECT zalo_reached FROM leads WHERE id = 3", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(zalo_reached3, 1);
 
@@ -163,10 +181,11 @@ mod tests {
         assert!(templates.is_empty());
 
         // 2. Create template
-        let id1 = db::create_outreach_template(&conn, "Template One", "Hello {name}").unwrap();
+        let id1 =
+            db::create_outreach_template(&conn, "Template One", "Hello {name}", None).unwrap();
         assert!(id1 > 0);
 
-        let id2 = db::create_outreach_template(&conn, "Template Two", "Hi {name}").unwrap();
+        let id2 = db::create_outreach_template(&conn, "Template Two", "Hi {name}", None).unwrap();
         assert!(id2 > 0);
 
         // 3. Get all templates
@@ -176,7 +195,8 @@ mod tests {
         assert_eq!(templates[0].content, "Hello {name}");
 
         // 4. Update template
-        db::update_outreach_template(&conn, id1, "Template One Updated", "Hello {name}!").unwrap();
+        db::update_outreach_template(&conn, id1, "Template One Updated", "Hello {name}!", None)
+            .unwrap();
         let templates = db::get_outreach_templates(&conn).unwrap();
         let t1 = templates.iter().find(|t| t.id == Some(id1)).unwrap();
         assert_eq!(t1.name, "Template One Updated");
@@ -300,7 +320,8 @@ mod tests {
         db::add_lead_to_category(&conn, lead_id, cat_id).unwrap();
 
         // 2. Duplicate case: ON CONFLICT DO NOTHING should succeed and return Ok(())
-        db::add_lead_to_category(&conn, lead_id, cat_id).expect("Duplicate insert failed but should be ignored");
+        db::add_lead_to_category(&conn, lead_id, cat_id)
+            .expect("Duplicate insert failed but should be ignored");
 
         // 3. FK violation: non-existent lead_id should throw error
         assert!(db::add_lead_to_category(&conn, 99999, cat_id).is_err());
@@ -338,12 +359,9 @@ mod tests {
 
         conn.execute(
             "INSERT INTO outreach_templates (name, content, created_at) VALUES (?, ?, ?)",
-            [
-                "Template A",
-                "Hello",
-                "2026-07-17T20:00:00Z",
-            ],
-        ).unwrap();
+            ["Template A", "Hello", "2026-07-17T20:00:00Z"],
+        )
+        .unwrap();
         let template_id = conn.last_insert_rowid() as i32;
 
         let history = crate::models::OutreachHistory {
@@ -425,14 +443,22 @@ mod tests {
         let templates = db::get_email_templates(&conn).unwrap();
         assert!(templates.is_empty());
 
-        let template_id = db::create_email_template(&conn, "Promo", "Special Offer", "Hello {{name}}").unwrap();
+        let template_id =
+            db::create_email_template(&conn, "Promo", "Special Offer", "Hello {{name}}").unwrap();
         assert!(template_id > 0);
 
         let templates = db::get_email_templates(&conn).unwrap();
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].subject, "Special Offer");
 
-        db::update_email_template(&conn, template_id, "Promo Updated", "Updated Subject", "Hello {{name}} updated").unwrap();
+        db::update_email_template(
+            &conn,
+            template_id,
+            "Promo Updated",
+            "Updated Subject",
+            "Hello {{name}} updated",
+        )
+        .unwrap();
         let templates = db::get_email_templates(&conn).unwrap();
         assert_eq!(templates[0].subject, "Updated Subject");
 
@@ -469,5 +495,263 @@ mod tests {
         db::delete_smtp_server(&conn, smtp_id).unwrap();
         assert!(db::get_smtp_servers(&conn).unwrap().is_empty());
         assert!(db::get_smtp_server_by_id(&conn, smtp_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn google_maps_job_schema_is_idempotent_and_enforces_keys() {
+        let db_path = std::env::temp_dir().join(format!(
+            "rustsale-google-maps-schema-{}.db",
+            rand::random::<u64>()
+        ));
+        let db_path_str = db_path.to_str().unwrap();
+
+        let conn = db::init_db(db_path_str).unwrap();
+        drop(conn);
+        let conn = db::init_db(db_path_str).unwrap();
+
+        for table in [
+            "google_maps_scrape_jobs",
+            "google_maps_scrape_units",
+            "google_maps_scrape_results",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "missing table {table}");
+        }
+
+        let job_columns: Vec<String> = {
+            let mut statement = conn
+                .prepare("PRAGMA table_info(google_maps_scrape_jobs)")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(job_columns.contains(&"profile_dir".to_string()));
+        assert!(job_columns.contains(&"blocked_url".to_string()));
+
+        let foreign_keys_enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys_enabled, 1);
+
+        let busy_timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy_timeout_ms, 5_000);
+
+        for index in [
+            "idx_google_maps_jobs_status",
+            "idx_google_maps_units_job_status",
+            "idx_google_maps_results_job_import",
+            "idx_leads_phone",
+            "idx_leads_email_normalized",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "missing index {index}");
+        }
+
+        let orphan_unit = conn.execute(
+            "INSERT INTO google_maps_scrape_units (
+                id, job_id, unit_key, unit_type, payload_json, status, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "unit-orphan",
+                "missing-job",
+                "keyword:orphan",
+                "keyword",
+                "{}",
+                "pending",
+                "2026-07-26T00:00:00Z",
+                "2026-07-26T00:00:00Z"
+            ],
+        );
+        assert!(orphan_unit.is_err());
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn google_maps_job_profile_columns_migrate_from_previous_schema() {
+        let db_path = std::env::temp_dir().join(format!(
+            "rustsale-google-maps-profile-migration-{}.db",
+            rand::random::<u64>()
+        ));
+        let db_path_str = db_path.to_str().unwrap();
+        let legacy = rusqlite::Connection::open(db_path_str).unwrap();
+        legacy
+            .execute(
+                "CREATE TABLE google_maps_scrape_jobs (
+                    id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL,
+                    keyword TEXT NOT NULL,
+                    location TEXT,
+                    bbox_json TEXT,
+                    step_km REAL,
+                    headless INTEGER NOT NULL CHECK (headless IN (0, 1)),
+                    status TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    total_units INTEGER NOT NULL DEFAULT 0 CHECK (total_units >= 0),
+                    processed_units INTEGER NOT NULL DEFAULT 0 CHECK (processed_units >= 0),
+                    failed_units INTEGER NOT NULL DEFAULT 0 CHECK (failed_units >= 0),
+                    businesses_discovered INTEGER NOT NULL DEFAULT 0 CHECK (businesses_discovered >= 0),
+                    businesses_qualified INTEGER NOT NULL DEFAULT 0 CHECK (businesses_qualified >= 0),
+                    leads_created INTEGER NOT NULL DEFAULT 0 CHECK (leads_created >= 0),
+                    last_error_kind TEXT,
+                    last_error_message TEXT,
+                    action_required TEXT,
+                    event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (event_sequence >= 0),
+                    version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+                    run_generation INTEGER NOT NULL DEFAULT 0 CHECK (run_generation >= 0),
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                )",
+                [],
+            )
+            .unwrap();
+        drop(legacy);
+
+        let connection = db::init_db(db_path_str).unwrap();
+        drop(connection);
+        let connection = db::init_db(db_path_str).unwrap();
+        let columns: Vec<String> = {
+            let mut statement = connection
+                .prepare("PRAGMA table_info(google_maps_scrape_jobs)")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        assert!(columns.contains(&"profile_dir".to_string()));
+        assert!(columns.contains(&"blocked_url".to_string()));
+
+        drop(connection);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn google_maps_unit_key_is_unique_per_job() {
+        let conn = db::init_db(":memory:").unwrap();
+        conn.execute(
+            "INSERT INTO google_maps_scrape_jobs (
+                id, mode, keyword, headless, status, stage, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "job-1",
+                "keyword",
+                "coffee",
+                1,
+                "queued",
+                "planning",
+                "2026-07-26T00:00:00Z",
+                "2026-07-26T00:00:00Z"
+            ],
+        )
+        .unwrap();
+
+        let insert_unit = |id: &str| {
+            conn.execute(
+                "INSERT INTO google_maps_scrape_units (
+                    id, job_id, unit_key, unit_type, payload_json, status, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    id,
+                    "job-1",
+                    "keyword:coffee",
+                    "keyword",
+                    "{}",
+                    "pending",
+                    "2026-07-26T00:00:00Z",
+                    "2026-07-26T00:00:00Z"
+                ],
+            )
+        };
+
+        insert_unit("unit-1").unwrap();
+        assert!(insert_unit("unit-2").is_err());
+    }
+
+    #[test]
+    fn google_maps_result_dedup_key_is_unique_per_job() {
+        let conn = db::init_db(":memory:").unwrap();
+        conn.execute(
+            "INSERT INTO google_maps_scrape_jobs (
+                id, mode, keyword, headless, status, stage, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "job-1",
+                "keyword",
+                "coffee",
+                1,
+                "queued",
+                "planning",
+                "2026-07-26T00:00:00Z",
+                "2026-07-26T00:00:00Z"
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO google_maps_scrape_units (
+                id, job_id, unit_key, unit_type, payload_json, status, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "unit-1",
+                "job-1",
+                "keyword:coffee",
+                "keyword",
+                "{}",
+                "pending",
+                "2026-07-26T00:00:00Z",
+                "2026-07-26T00:00:00Z"
+            ],
+        )
+        .unwrap();
+
+        let insert_result = |id: &str| {
+            conn.execute(
+                "INSERT INTO google_maps_scrape_results (
+                    id, job_id, source_unit_id, dedup_key, name, detail_status,
+                    enrichment_status, import_status, first_seen_at, last_seen_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    id,
+                    "job-1",
+                    "unit-1",
+                    "place:abc",
+                    "Coffee Shop",
+                    "pending",
+                    "pending",
+                    "pending",
+                    "2026-07-26T00:00:00Z",
+                    "2026-07-26T00:00:00Z"
+                ],
+            )
+        };
+
+        insert_result("result-1").unwrap();
+        assert!(insert_result("result-2").is_err());
     }
 }

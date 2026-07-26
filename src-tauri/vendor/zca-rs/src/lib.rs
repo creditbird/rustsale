@@ -21,7 +21,7 @@ pub mod error;
 pub mod listener;
 pub mod models;
 
-pub use apis::Zalo;
 pub use apis::profile::ZaloAccountProfile;
+pub use apis::Zalo;
 pub use context::{Context, ImageMetadataGetter, ImageMetadataGetterResponse, Options};
 pub use error::ZaloError;

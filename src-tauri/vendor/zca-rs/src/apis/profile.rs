@@ -58,7 +58,8 @@ impl ZaloAccountProfile {
 
         for t in targets {
             if name.is_none() {
-                name = t.get("zName")
+                name = t
+                    .get("zName")
                     .or_else(|| t.get("dpName"))
                     .or_else(|| t.get("zaloName"))
                     .or_else(|| t.get("displayName"))
@@ -72,7 +73,8 @@ impl ZaloAccountProfile {
             }
 
             if phone.is_none() {
-                phone = t.get("phone")
+                phone = t
+                    .get("phone")
                     .or_else(|| t.get("phoneNumber"))
                     .or_else(|| t.get("phone_number"))
                     .or_else(|| t.get("mobile"))
@@ -83,7 +85,8 @@ impl ZaloAccountProfile {
             }
 
             if avatar.is_none() {
-                avatar = t.get("avatar_240")
+                avatar = t
+                    .get("avatar_240")
                     .or_else(|| t.get("avatar_120"))
                     .or_else(|| t.get("avatar"))
                     .or_else(|| t.get("avatarUrl"))
@@ -94,7 +97,11 @@ impl ZaloAccountProfile {
             }
         }
 
-        Self { name, phone, avatar }
+        Self {
+            name,
+            phone,
+            avatar,
+        }
     }
 }
 
@@ -399,7 +406,11 @@ impl Zalo {
         let val = match self.fetch_account_info().await {
             Ok(v) => v,
             Err(_) => {
-                let li_guard = self.ctx.login_info.lock().unwrap_or_else(|e| e.into_inner());
+                let li_guard = self
+                    .ctx
+                    .login_info
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 li_guard.clone()
             }
         };

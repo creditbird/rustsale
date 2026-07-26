@@ -180,12 +180,14 @@ export async function getLeadsByCategory(categoryId: number): Promise<Lead[]> {
 export async function getCampaignLeads(
   categoryId: number,
   segmentation: string,
-  filterTemplateId?: number | null
+  filterTemplateId?: number | null,
+  channel?: string | null
 ): Promise<Lead[]> {
   return invoke<Lead[]>('get_campaign_leads', {
     categoryId,
     segmentation,
-    filterTemplateId: filterTemplateId ?? null
+    filterTemplateId: filterTemplateId ?? null,
+    channel: channel ?? null
   });
 }
 

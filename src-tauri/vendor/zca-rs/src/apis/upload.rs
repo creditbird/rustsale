@@ -252,12 +252,13 @@ impl Zalo {
 
                 let inner_data: Value = match data_val {
                     Value::String(encrypted_str) if !encrypted_str.trim().is_empty() => {
-                        let secret_key = self
-                            .ctx
-                            .get_secret_key()
-                            .ok_or_else(|| ZaloError::Crypto("Context missing secret_key".to_string()))?;
-                        let decrypted_str = crate::crypto::aes::decode_aes(&secret_key, encrypted_str)?;
-                        let decrypted_json: Value = serde_json::from_str(&decrypted_str).unwrap_or_default();
+                        let secret_key = self.ctx.get_secret_key().ok_or_else(|| {
+                            ZaloError::Crypto("Context missing secret_key".to_string())
+                        })?;
+                        let decrypted_str =
+                            crate::crypto::aes::decode_aes(&secret_key, encrypted_str)?;
+                        let decrypted_json: Value =
+                            serde_json::from_str(&decrypted_str).unwrap_or_default();
                         decrypted_json
                             .get("data")
                             .cloned()

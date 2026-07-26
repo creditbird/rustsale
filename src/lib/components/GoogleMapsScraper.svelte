@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import divisions from '$lib/constants/vietnam-divisions.json';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -9,8 +8,30 @@
   import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Card from '$lib/components/ui/card';
   import * as Select from '$lib/components/ui/select';
-  import { Progress } from '$lib/components/ui/progress';
-  import { Search, MapPin, Play, Square, Terminal, Check, X, Building, Grid, Locate } from 'lucide-svelte';
+  import GoogleMapsJobHistory from '$lib/components/GoogleMapsJobHistory.svelte';
+  import GoogleMapsJobPanel from '$lib/components/GoogleMapsJobPanel.svelte';
+  import GoogleMapsRuntimePanel from '$lib/components/GoogleMapsRuntimePanel.svelte';
+  import {
+    cancelGoogleMapsScrapeJob,
+    createGoogleMapsScrapeJob,
+    deleteGoogleMapsScrapeJob,
+    getGoogleMapsRuntimeStatus,
+    listGoogleMapsScrapeJobs,
+    pauseGoogleMapsScrapeJob,
+    prepareGoogleMapsRuntime,
+    reduceGoogleMapsJobEvent,
+    resumeGoogleMapsScrapeJob,
+    retryGoogleMapsEmailEnrichment,
+    retryGoogleMapsFailedUnits,
+    subscribeToGoogleMapsJobEvents,
+    viewStateFromJob,
+    type GoogleMapsJobEvent,
+    type GoogleMapsJobStatus,
+    type GoogleMapsJobViewState,
+    type GoogleMapsRuntimeStatus,
+    type GoogleMapsScrapeJob
+  } from '$lib/services/googleMapsScraperService';
+  import { Search, MapPin, Play, Check, X, Building, Grid, Locate } from 'lucide-svelte';
 
   let mode = $state<'keyword' | 'grid'>('keyword');
   let keyword = $state('');
@@ -184,33 +205,113 @@
     }
   }
 
-  let isScraping = $state(false);
-  let progress = $state(0);
-  let statusMessage = $state('Ready');
   let logs = $state<string[]>([]);
   let headless = $state(true);
   let presetProvinces = $state<Record<string, { minLat: number; maxLat: number; minLng: number; maxLng: number }>>({});
-  let consoleElement: HTMLDivElement | null = null;
+  let selectedPresetProvince = $state('');
+  let runtime = $state<GoogleMapsRuntimeStatus | null>(null);
+  let runtimePreparing = $state(false);
+  let runtimeError = $state<string | null>(null);
+  let jobs = $state<GoogleMapsScrapeJob[]>([]);
+  let activeJob = $state<GoogleMapsScrapeJob | null>(null);
+  let activeView = $state<GoogleMapsJobViewState | null>(null);
+  let actionPending = $state(false);
+  let eventCleanup: (() => void) | null = null;
 
-  let unlistenProgress: UnlistenFn | null = null;
-  let unlistenLog: UnlistenFn | null = null;
-  let unlistenComplete: UnlistenFn | null = null;
+  let isScraping = $derived(activeJob !== null && isOpenStatus(activeJob.status));
+  let gridEstimate = $derived.by(() => estimateGrid(
+    Number(minLat),
+    Number(maxLat),
+    Number(minLng),
+    Number(maxLng),
+    Number(stepKm)
+  ));
 
   function appendLog(msg: string) {
     const timestamp = new Date().toLocaleTimeString();
     logs = [...logs, `[${timestamp}] ${msg}`];
-    setTimeout(() => {
-      if (consoleElement) consoleElement.scrollTop = consoleElement.scrollHeight;
-    }, 50);
   }
 
-  async function stopScrape() {
+  function isOpenStatus(status: GoogleMapsJobStatus): boolean {
+    return !['partial', 'completed', 'failed', 'cancelled'].includes(status);
+  }
+
+  function estimateGrid(
+    latMin: number,
+    latMax: number,
+    lngMin: number,
+    lngMax: number,
+    step: number
+  ): { initialCells: number; recommendedStepKm: number | null; error: string | null } {
+    const values = [latMin, latMax, lngMin, lngMax, step];
+    if (values.some((value) => !Number.isFinite(value))) {
+      return { initialCells: 0, recommendedStepKm: null, error: 'Coordinates and step must be finite numbers.' };
+    }
+    if (latMin < -90 || latMax > 90 || lngMin < -180 || lngMax > 180) {
+      return { initialCells: 0, recommendedStepKm: null, error: 'Latitude or longitude is outside the supported range.' };
+    }
+    if (latMin >= latMax || lngMin >= lngMax) {
+      return { initialCells: 0, recommendedStepKm: null, error: 'Bounding-box minimums must be less than maximums.' };
+    }
+    if (step <= 0) {
+      return { initialCells: 0, recommendedStepKm: null, error: 'Grid step must be greater than zero.' };
+    }
+
+    const earthRadiusKm = 6_371.0088;
+    const heightKm = Math.abs((latMax - latMin) * Math.PI / 180) * earthRadiusKm;
+    const nearestEquatorLat = latMin <= 0 && latMax >= 0
+      ? 0
+      : Math.abs(latMin) < Math.abs(latMax) ? latMin : latMax;
+    const widthKm = Math.abs((lngMax - lngMin) * Math.PI / 180)
+      * earthRadiusKm
+      * Math.max(1e-9, Math.abs(Math.cos(nearestEquatorLat * Math.PI / 180)));
+    const countAtStep = (candidateStep: number) => {
+      const rows = Math.max(1, Math.ceil(heightKm / candidateStep));
+      const columns = Math.max(1, Math.ceil(widthKm / candidateStep));
+      return rows * columns;
+    };
+    const initialCells = countAtStep(step);
+    if (initialCells <= 10_000) {
+      return { initialCells, recommendedStepKm: null, error: null };
+    }
+
+    let low = step;
+    let high = Math.max(widthKm, heightKm, step);
+    while (countAtStep(high) > 10_000) high *= 2;
+    for (let iteration = 0; iteration < 64; iteration += 1) {
+      const middle = (low + high) / 2;
+      if (countAtStep(middle) > 10_000) low = middle;
+      else high = middle;
+    }
+    return { initialCells, recommendedStepKm: high, error: null };
+  }
+
+  function syncJob(updatedJob: GoogleMapsScrapeJob, message?: string): void {
+    const existing = jobs.findIndex((job) => job.id === updatedJob.id);
+    jobs = existing >= 0
+      ? jobs.map((job) => job.id === updatedJob.id ? updatedJob : job)
+      : [updatedJob, ...jobs];
+    activeJob = updatedJob;
+    const nextView = viewStateFromJob(updatedJob);
+    activeView = message ? { ...nextView, message } : nextView;
+  }
+
+  async function prepareRuntime(): Promise<GoogleMapsRuntimeStatus | null> {
+    runtimePreparing = true;
+    runtimeError = null;
+    appendLog('Preparing official CloakBrowser runtime...');
     try {
-      appendLog("Requesting to stop campaign...");
-      await invoke('stop_google_maps_scrape');
-      appendLog("Campaign stop command sent successfully.");
+      const prepared = await prepareGoogleMapsRuntime();
+      if (!prepared.installed) throw new Error('CloakBrowser runtime preparation did not produce an installed runtime.');
+      runtime = prepared;
+      appendLog(`CloakBrowser runtime ready${prepared.version ? `: ${prepared.version}` : ''}.`);
+      return prepared;
     } catch (err) {
-      appendLog(`Error stopping campaign: ${err}`);
+      runtimeError = err instanceof Error ? err.message : String(err);
+      appendLog(`CloakBrowser runtime error: ${runtimeError}`);
+      return null;
+    } finally {
+      runtimePreparing = false;
     }
   }
 
@@ -220,37 +321,12 @@
       return;
     }
 
-    if (mode === 'grid') {
-      const latMin = Number(minLat);
-      const latMax = Number(maxLat);
-      const lngMin = Number(minLng);
-      const lngMax = Number(maxLng);
-      const step = Number(stepKm);
-
-      if (isNaN(latMin) || isNaN(latMax) || isNaN(lngMin) || isNaN(lngMax) || isNaN(step)) {
-        appendLog("Error: Bounding box coordinates and step size must be valid numbers.");
-        return;
-      }
-      if (latMin < -90 || latMin > 90 || latMax < -90 || latMax > 90 ||
-          lngMin < -180 || lngMin > 180 || lngMax < -180 || lngMax > 180) {
-        appendLog("Error: Latitude must be between -90 and 90, Longitude must be between -180 and 180.");
-        return;
-      }
-      if (latMin >= latMax) {
-        appendLog("Error: Min Latitude must be less than Max Latitude.");
-        return;
-      }
-      if (lngMin >= lngMax) {
-        appendLog("Error: Min Longitude must be less than Max Longitude.");
-        return;
-      }
-      if (step <= 0) {
-        appendLog("Error: Step size must be greater than 0.");
-        return;
-      }
+    if (mode === 'grid' && (gridEstimate.error || gridEstimate.recommendedStepKm !== null)) {
+      appendLog(`Error: ${gridEstimate.error ?? `Grid estimate exceeds 10,000 cells. Use at least ${gridEstimate.recommendedStepKm?.toFixed(2)} km.`}`);
+      return;
     }
 
-    let districtsVal: string[] | null = null;
+    let districtsVal: string[] = [];
     let locationVal = mode === 'keyword' ? location : null;
     if (mode === 'keyword' && deepScan) {
       if (selectedDistricts.length === 0) {
@@ -273,30 +349,95 @@
       }
     }
 
-    isScraping = true;
-    progress = 0;
-    statusMessage = 'Initializing scrape...';
     logs = [];
     appendLog(`Starting Google Maps Scraper in ${mode} mode...`);
 
     try {
-      const bbox = mode === 'grid' ? [Number(minLat), Number(maxLat), Number(minLng), Number(maxLng)] : null;
+      const prepared = runtime?.installed ? runtime : await prepareRuntime();
+      if (!prepared) return;
+      const bbox: [number, number, number, number] | null = mode === 'grid'
+        ? [Number(minLat), Number(maxLat), Number(minLng), Number(maxLng)]
+        : null;
       const stepVal = mode === 'grid' ? Number(stepKm) : null;
 
-      await invoke('start_google_maps_scrape', {
+      const created = await createGoogleMapsScrapeJob({
         keyword,
         mode,
         location: locationVal,
         bbox,
-        stepKm: stepVal,
+        step_km: stepVal,
         districts: districtsVal,
         headless
       });
-      appendLog('Scrape command invoked successfully.');
+      syncJob(created, 'Durable job created. Starting the first pending unit...');
+      const started = await resumeGoogleMapsScrapeJob(created.id);
+      syncJob(started, 'Scraping is running.');
+      appendLog(`Durable job ${started.id} started.`);
     } catch (err) {
-      isScraping = false;
-      statusMessage = 'Failed to start scrape';
       appendLog(`Error: ${err}`);
+    }
+  }
+
+  async function runJobAction(
+    label: string,
+    action: (jobId: string) => Promise<GoogleMapsScrapeJob>
+  ): Promise<void> {
+    if (!activeJob || actionPending) return;
+    actionPending = true;
+    try {
+      appendLog(`${label} job ${activeJob.id}...`);
+      const updated = await action(activeJob.id);
+      syncJob(updated, updated.last_error_message ?? `${label} completed.`);
+    } catch (err) {
+      appendLog(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      actionPending = false;
+    }
+  }
+
+  const pauseActiveJob = () => runJobAction('Pausing', pauseGoogleMapsScrapeJob);
+  const resumeActiveJob = () => runJobAction('Resuming', resumeGoogleMapsScrapeJob);
+  const cancelActiveJob = () => runJobAction('Cancelling', cancelGoogleMapsScrapeJob);
+  const retryFailedUnits = () => runJobAction('Retrying failed units for', retryGoogleMapsFailedUnits);
+  const retryEmailEnrichment = () => runJobAction('Retrying email enrichment for', retryGoogleMapsEmailEnrichment);
+
+  function handleJobEvent(event: GoogleMapsJobEvent): void {
+    if (!activeJob || event.job_id !== activeJob.id) return;
+    const nextView = reduceGoogleMapsJobEvent(activeView, event);
+    if (nextView === activeView) return;
+    activeView = nextView;
+    const updatedJob: GoogleMapsScrapeJob = {
+      ...activeJob,
+      status: event.status,
+      stage: event.stage,
+      processed_units: event.processed_units,
+      total_units: event.total_units,
+      event_sequence: event.sequence,
+      updated_at: event.timestamp,
+      last_error_kind: event.error?.kind ?? null,
+      last_error_message: event.error?.message ?? null,
+      action_required: event.action_required
+    };
+    activeJob = updatedJob;
+    jobs = jobs.map((job) => job.id === updatedJob.id ? updatedJob : job);
+    appendLog(`[${event.status}] ${event.message}`);
+  }
+
+  function selectJob(job: GoogleMapsScrapeJob): void {
+    activeJob = job;
+    activeView = viewStateFromJob(job);
+  }
+
+  async function deleteJob(job: GoogleMapsScrapeJob): Promise<void> {
+    try {
+      await deleteGoogleMapsScrapeJob(job.id);
+      jobs = jobs.filter((candidate) => candidate.id !== job.id);
+      if (activeJob?.id === job.id) {
+        activeJob = jobs[0] ?? null;
+        activeView = activeJob ? viewStateFromJob(activeJob) : null;
+      }
+    } catch (err) {
+      appendLog(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -304,32 +445,32 @@
 
   onMount(async () => {
     try {
+      runtime = await getGoogleMapsRuntimeStatus();
+      runtimeError = null;
+    } catch (err) {
+      runtimeError = err instanceof Error ? err.message : String(err);
+      appendLog(`Error loading CloakBrowser runtime status: ${runtimeError}`);
+    }
+
+    try {
+      eventCleanup = await subscribeToGoogleMapsJobEvents(handleJobEvent);
+    } catch (err) {
+      appendLog(`Error subscribing to durable job events: ${err}`);
+    }
+
+    try {
       presetProvinces = await invoke('get_preset_provinces');
     } catch (err) {
       appendLog(`Error loading preset provinces: ${err}`);
     }
 
-    unlistenProgress = await listen<{ progress: number; status: string; message: string }>(
-      'scrape-progress',
-      (event) => {
-        progress = event.payload.progress;
-        statusMessage = event.payload.message;
-        if (event.payload.status === 'completed' || event.payload.status === 'failed') {
-          isScraping = false;
-        }
-      }
-    );
-
-    unlistenLog = await listen<{ message: string }>('scrape-log', (event) => {
-      appendLog(event.payload.message);
-    });
-
-    unlistenComplete = await listen<{ total_scraped: number; message: string }>('scrape-complete', (event) => {
-      isScraping = false;
-      progress = 100;
-      statusMessage = event.payload.message;
-      appendLog(`[COMPLETE] ${event.payload.message}`);
-    });
+    try {
+      jobs = await listGoogleMapsScrapeJobs();
+      const restored = jobs.find((job) => isOpenStatus(job.status)) ?? jobs[0] ?? null;
+      if (restored) selectJob(restored);
+    } catch (err) {
+      appendLog(`Error restoring Google Maps jobs: ${err}`);
+    }
 
     docClickHandler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -341,19 +482,25 @@
   });
 
   onDestroy(() => {
-    if (unlistenProgress) unlistenProgress();
-    if (unlistenLog) unlistenLog();
-    if (unlistenComplete) unlistenComplete();
+    eventCleanup?.();
     if (docClickHandler) document.removeEventListener('click', docClickHandler);
   });
 </script>
 
 <div class="flex flex-col gap-4">
   <!-- Top Header Bar -->
-  <div class="flex items-center justify-between">
+  <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
     <div class="flex flex-col">
       <h2 class="text-xl font-bold text-foreground tracking-tight">Google Maps Scraper</h2>
       <p class="text-xs text-muted-foreground mt-0.5">Extract local business lead data dynamically across regions</p>
+    </div>
+    <div class="w-full max-w-xl">
+      <GoogleMapsRuntimePanel
+        {runtime}
+        preparing={runtimePreparing}
+        error={runtimeError}
+        onPrepare={prepareRuntime}
+      />
     </div>
   </div>
 
@@ -563,6 +710,7 @@
                 <label for="preset-select" class="font-semibold text-foreground">Quick Select Province / City</label>
                 <Select.Root
                   type="single"
+                  bind:value={selectedPresetProvince}
                   disabled={isScraping}
                   onValueChange={(val) => {
                     if (val && presetProvinces[val]) {
@@ -576,7 +724,7 @@
                   }}
                 >
                   <Select.Trigger class="w-full h-9 text-xs">
-                    -- Select Province / City --
+                    {selectedPresetProvince || '-- Select Province / City --'}
                   </Select.Trigger>
                   <Select.Content>
                     {#each Object.keys(presetProvinces) as prov (prov)}
@@ -626,6 +774,22 @@
               </div>
               <input id="step-km" type="range" min="0.5" max="10.0" step="0.5" bind:value={stepKm} disabled={isScraping} class="w-full accent-emerald-600 cursor-pointer" />
               <p class="text-[11px] text-muted-foreground">Smaller steps increase accuracy but require more search grid points.</p>
+              <div class="flex flex-col gap-1 rounded-md border border-border bg-muted/20 p-2 text-[11px]" aria-live="polite">
+                {#if gridEstimate.error}
+                  <span class="font-medium text-destructive">{gridEstimate.error}</span>
+                {:else}
+                  <span class="font-medium text-foreground">
+                    Estimated initial cells: {gridEstimate.initialCells.toLocaleString('en-US')}
+                  </span>
+                  {#if gridEstimate.recommendedStepKm !== null}
+                    <span class="text-destructive">
+                      Estimate exceeds the 10,000-cell safety limit. Recommended minimum step: {gridEstimate.recommendedStepKm.toFixed(2)} km.
+                    </span>
+                  {:else}
+                    <span class="text-muted-foreground">Within the 10,000-cell backend safety limit.</span>
+                  {/if}
+                {/if}
+              </div>
             </div>
           </div>
         {/if}
@@ -643,10 +807,10 @@
             <span>Headless Mode (Hide browser)</span>
           </div>
 
-          {#if isScraping}
-            <Button variant="destructive" size="sm" onclick={stopScrape} class="gap-2">
-              <Square class="size-4" /> Stop Scrape
-            </Button>
+          {#if isScraping && activeJob}
+            <Badge variant="outline" class="text-[10px]">
+              Active durable job: {activeJob.status.replaceAll('_', ' ')}
+            </Badge>
           {:else}
             <Button size="sm" onclick={startScrape} disabled={!keyword.trim()} class="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white">
               <Play class="size-4 fill-white" /> Start Scrape Campaign
@@ -656,37 +820,25 @@
       </Card.Content>
     </Card.Root>
 
-    <!-- Right Execution Console Panel -->
-    <Card.Root class="lg:col-span-5 flex flex-col justify-between">
-      <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
-        <Card.Title class="text-base font-bold flex items-center gap-2">
-          <Terminal class="size-4 text-emerald-600" /> Execution Logs
-        </Card.Title>
-        <Badge variant={isScraping ? "default" : "outline"} class="text-[10px]">
-          {isScraping ? 'Running' : 'Idle'}
-        </Badge>
-      </Card.Header>
-      <Card.Content class="p-5 flex-1 flex flex-col gap-4">
-        <!-- Progress Bar -->
-        <div class="flex flex-col gap-1.5">
-          <div class="flex items-center justify-between text-xs">
-            <span class="font-medium text-foreground">{statusMessage}</span>
-            <span class="font-bold text-emerald-600">{Math.round(progress)}%</span>
-          </div>
-          <Progress value={progress} class="h-2" />
-        </div>
-
-        <!-- Console Log Output -->
-        <div class="flex-1 min-h-[260px] max-h-[460px] p-3 rounded-lg bg-slate-950 text-slate-100 font-mono text-[11px] overflow-y-auto flex flex-col gap-1 border border-slate-800" bind:this={consoleElement}>
-          {#if logs.length === 0}
-            <div class="text-slate-500 italic">Console output logs will stream here...</div>
-          {:else}
-            {#each logs as log, index (index)}
-              <div class="leading-relaxed border-b border-slate-900/60 pb-0.5">{log}</div>
-            {/each}
-          {/if}
-        </div>
-      </Card.Content>
-    </Card.Root>
+    <GoogleMapsJobPanel
+      job={activeJob}
+      view={activeView}
+      {logs}
+      {actionPending}
+      onPause={pauseActiveJob}
+      onResume={resumeActiveJob}
+      onCancel={cancelActiveJob}
+      onRetryFailed={retryFailedUnits}
+      onRetryEmail={retryEmailEnrichment}
+    />
   </div>
+
+  {#if jobs.length > 0}
+    <GoogleMapsJobHistory
+      {jobs}
+      activeJobId={activeJob?.id ?? null}
+      onSelect={selectJob}
+      onDelete={deleteJob}
+    />
+  {/if}
 </div>
