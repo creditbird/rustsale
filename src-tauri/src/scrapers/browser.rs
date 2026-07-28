@@ -32,6 +32,7 @@ pub enum GoogleMapsPageState {
     Captcha,
     ConsentRequired,
     RateLimited,
+    BlankPage,
     SelectorChanged,
 }
 

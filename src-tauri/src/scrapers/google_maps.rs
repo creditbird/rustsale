@@ -278,15 +278,25 @@ impl GoogleMapsScraper {
     async fn wait_for_page_health(&self) -> Result<GoogleMapsPageHealth, ScrapeJobError> {
         for attempt in 0..self.ready_attempts.max(1) {
             let health = self.session.health_snapshot().await?;
-            if health.state != GoogleMapsPageState::SelectorChanged {
+            if !matches!(
+                health.state,
+                GoogleMapsPageState::BlankPage | GoogleMapsPageState::SelectorChanged
+            ) {
                 return Ok(health);
             }
             if attempt + 1 == self.ready_attempts.max(1) {
-                return Err(scrape_error(
-                    ScrapeErrorKind::SelectorChanged,
-                    "Google Maps page did not expose a known result or place selector",
-                    false,
-                ));
+                return Err(match health.state {
+                    GoogleMapsPageState::BlankPage => scrape_error(
+                        ScrapeErrorKind::TransientNetwork,
+                        "Google Maps rendered a blank page after navigation",
+                        true,
+                    ),
+                    _ => scrape_error(
+                        ScrapeErrorKind::SelectorChanged,
+                        "Google Maps page did not expose a known result or place selector",
+                        false,
+                    ),
+                });
             }
             tokio::time::sleep(Duration::from_millis(self.ready_delay_ms)).await;
         }
@@ -463,6 +473,13 @@ fn terminal_listing_state(
         GoogleMapsPageState::Captcha => ScrapeErrorKind::Captcha,
         GoogleMapsPageState::ConsentRequired => ScrapeErrorKind::ConsentRequired,
         GoogleMapsPageState::RateLimited => ScrapeErrorKind::RateLimited,
+        GoogleMapsPageState::BlankPage => {
+            return Err(scrape_error(
+                ScrapeErrorKind::TransientNetwork,
+                "Google Maps rendered a blank search page",
+                true,
+            ));
+        }
         GoogleMapsPageState::SelectorChanged => {
             return Err(scrape_error(
                 ScrapeErrorKind::SelectorChanged,
@@ -499,6 +516,11 @@ fn place_state_error(state: GoogleMapsPageState, place_url: &str) -> ScrapeJobEr
         GoogleMapsPageState::RateLimited => scrape_error(
             ScrapeErrorKind::RateLimited,
             format!("Google Maps rate limited the place detail page {place_url}"),
+            true,
+        ),
+        GoogleMapsPageState::BlankPage => scrape_error(
+            ScrapeErrorKind::TransientNetwork,
+            format!("Google Maps rendered a blank place detail page {place_url}"),
             true,
         ),
         GoogleMapsPageState::SelectorChanged => scrape_error(
@@ -1035,6 +1057,21 @@ mod typed_tests {
         let error = scraper.search_page("cafe", None).await.unwrap_err();
 
         assert_eq!(error.kind, ScrapeErrorKind::SelectorChanged);
+        automation.assert_exhausted();
+    }
+
+    #[tokio::test]
+    async fn blank_page_returns_retryable_transient_network() {
+        let (scraper, automation) = scripted_scraper(vec![
+            Step::Navigate(Ok(())),
+            Step::Health(Ok(GoogleMapsPageState::BlankPage)),
+        ])
+        .await;
+
+        let error = scraper.search_page("cafe", None).await.unwrap_err();
+
+        assert_eq!(error.kind, ScrapeErrorKind::TransientNetwork);
+        assert!(error.retryable);
         automation.assert_exhausted();
     }
 

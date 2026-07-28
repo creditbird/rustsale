@@ -158,6 +158,10 @@
           <Button variant="outline" size="sm" onclick={onRetryEmail} disabled={actionPending}>
             <RefreshCw class="size-4" /> Retry Email Enrichment
           </Button>
+        {:else if status === 'failed' && job.failed_units > 0}
+          <Button variant="outline" size="sm" onclick={onRetryFailed} disabled={actionPending}>
+            <RefreshCw class="size-4" /> Retry Failed Units
+          </Button>
         {/if}
       </div>
     {/if}

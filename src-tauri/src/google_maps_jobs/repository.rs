@@ -293,6 +293,18 @@ impl ScrapeJobRepository {
         .await
     }
 
+    pub async fn import_ready_results(
+        &self,
+        job_id: &str,
+    ) -> Result<crate::google_maps_jobs::importer::ImportSummary> {
+        let job_id = job_id.to_string();
+        self.with_connection(move |mut conn| {
+            crate::google_maps_jobs::importer::import_ready_results(&mut conn, &job_id)
+                .map_err(anyhow::Error::from)
+        })
+        .await
+    }
+
     pub async fn get_job(&self, job_id: &str) -> Result<Option<ScrapeJob>> {
         let job_id = job_id.to_string();
         self.with_connection(move |conn| load_job(&conn, &job_id))
@@ -360,8 +372,10 @@ impl ScrapeJobRepository {
             let now = chrono::Utc::now().to_rfc3339();
             let mut reset_count = 0usize;
             let mut generation_increment = 0i64;
-            if current.status == ScrapeJobStatus::Partial
-                && to == ScrapeJobStatus::Queued
+            if matches!(
+                current.status,
+                ScrapeJobStatus::Partial | ScrapeJobStatus::Failed
+            ) && to == ScrapeJobStatus::Queued
                 && cause == TransitionCause::UserRetry
             {
                 reset_count = tx.execute(
@@ -371,7 +385,8 @@ impl ScrapeJobRepository {
                      WHERE job_id=?2 AND status='failed'
                        AND last_error_kind IN (
                            'disconnected', 'navigation_timeout', 'evaluation_timeout',
-                           'transient_network', 'browser_startup', 'runtime_unavailable'
+                           'transient_network', 'browser_startup', 'runtime_unavailable',
+                           'selector_changed'
                        )",
                     params![now, job_id],
                 )?;
@@ -652,6 +667,7 @@ impl ScrapeJobRepository {
     ) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
         let unit_id = unit_id.to_string();
+        let should_import_ready = !results.is_empty();
         self.with_connection(move |mut conn| {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             for result in &results {
@@ -699,10 +715,12 @@ impl ScrapeJobRepository {
             if changed != 1 {
                 return Err(anyhow!("checkpoint requires a running job"));
             }
-            let job =
-                load_job(&tx, &job_id)?.ok_or_else(|| anyhow!("checkpointed job was not found"))?;
             tx.commit()?;
-            Ok(job)
+            if should_import_ready {
+                crate::google_maps_jobs::importer::import_ready_results(&mut conn, &job_id)
+                    .map_err(anyhow::Error::from)?;
+            }
+            load_job(&conn, &job_id)?.ok_or_else(|| anyhow!("checkpointed job was not found"))
         })
         .await
     }
@@ -1171,7 +1189,7 @@ pub fn is_valid_transition(
 ) -> bool {
     use ScrapeJobStatus::*;
 
-    if from == Partial && to == Queued {
+    if matches!(from, Partial | Failed) && to == Queued {
         return cause == TransitionCause::UserRetry;
     }
 
@@ -1775,6 +1793,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_retry_reopens_failed_selector_unit_without_resetting_completed_work() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![
+                    sample_unit(
+                        "unit-completed",
+                        "keyword:completed",
+                        ScrapeUnitStatus::Running,
+                    ),
+                    sample_unit("unit-failed", "keyword:failed", ScrapeUnitStatus::Running),
+                ],
+            )
+            .await
+            .unwrap();
+        context
+            .repository
+            .checkpoint_completed_unit("job-1", "unit-completed", Vec::new(), Vec::new())
+            .await
+            .unwrap();
+        let checkpoint = context
+            .repository
+            .checkpoint_failed_unit(
+                "job-1",
+                "unit-failed",
+                ScrapeJobError {
+                    kind: ScrapeErrorKind::SelectorChanged,
+                    message: "selector changed".to_string(),
+                    retryable: false,
+                },
+            )
+            .await
+            .unwrap();
+        let failed = context
+            .repository
+            .transition_job(
+                "job-1",
+                checkpoint.version,
+                ScrapeJobStatus::Failed,
+                TransitionCause::System,
+            )
+            .await
+            .unwrap();
+
+        let queued = context
+            .repository
+            .transition_job(
+                "job-1",
+                failed.version,
+                ScrapeJobStatus::Queued,
+                TransitionCause::UserRetry,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(queued.status, ScrapeJobStatus::Queued);
+        assert_eq!(queued.processed_units, 1);
+        assert_eq!(queued.failed_units, 0);
+        assert_eq!(queued.run_generation, 1);
+        let statuses = context
+            .connection()
+            .prepare("SELECT id, status FROM google_maps_scrape_units ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            statuses,
+            vec![
+                ("unit-completed".to_string(), "completed".to_string()),
+                ("unit-failed".to_string(), "pending".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn duplicate_unit_batch_rolls_back_job_counter() {
         let context = TestRepository::new();
         context
@@ -1952,6 +2056,53 @@ mod tests {
             .unwrap();
         assert_eq!(unit_status, "completed");
         assert_eq!(result_count, 1);
+    }
+
+    #[tokio::test]
+    async fn completed_checkpoint_imports_ready_result_before_finalization() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Running,
+                )],
+            )
+            .await
+            .unwrap();
+        let mut result = sample_result();
+        result.enrichment_status = "not_found".to_string();
+
+        let job = context
+            .repository
+            .checkpoint_completed_unit("job-1", "unit-1", vec![result], Vec::new())
+            .await
+            .unwrap();
+
+        assert_eq!(job.businesses_discovered, 1);
+        assert_eq!(job.businesses_qualified, 1);
+        assert_eq!(job.leads_created, 1);
+        let connection = context.connection();
+        let lead_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM leads", [], |row| row.get(0))
+            .unwrap();
+        let import_status: String = connection
+            .query_row(
+                "SELECT import_status FROM google_maps_scrape_results WHERE id='result-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lead_count, 1);
+        assert_eq!(import_status, "imported");
     }
 
     #[tokio::test]

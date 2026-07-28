@@ -135,6 +135,7 @@ impl GoogleMapsJobService {
     }
 
     pub async fn retry_failed_units(&self, job_id: &str) -> Result<ScrapeJob> {
+        self.repository.import_ready_results(job_id).await?;
         let job = self.get_job(job_id).await?;
         let queued = self
             .repository

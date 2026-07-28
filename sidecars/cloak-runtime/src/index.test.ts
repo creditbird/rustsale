@@ -135,7 +135,7 @@ describe('Google Maps block detection', () => {
     );
   });
 
-  test('classifies ready, empty, captcha, consent, rate limit, and selector drift', () => {
+  test('classifies ready, empty, captcha, consent, rate limit, blank pages, and selector drift', () => {
     expect(classifyGoogleMapsPageState({ url: 'https://google.com/maps', hasFeed: true })).toBe(
       'ready',
     );
@@ -169,7 +169,13 @@ describe('Google Maps block detection', () => {
         bodyText: 'Too many requests. Try again later.',
       }),
     ).toBe('rate_limited');
-    expect(classifyGoogleMapsPageState({ url: 'https://google.com/maps' })).toBe(
+    expect(classifyGoogleMapsPageState({ url: 'https://google.com/maps' })).toBe('blank_page');
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://google.com/maps/search/cafe',
+        bodyText: 'Google Maps search shell with an unrecognized result layout',
+      }),
+    ).toBe(
       'selector_changed',
     );
   });

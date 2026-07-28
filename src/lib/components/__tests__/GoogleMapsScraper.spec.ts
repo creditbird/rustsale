@@ -308,6 +308,24 @@ test('renders partial as unresolved work, never as completed', async () => {
   expect(screen.getByRole('button', { name: 'Retry Email Enrichment' })).toBeTruthy();
 });
 
+test('exposes failed-unit retry for a failed persisted job', async () => {
+  jobs = [
+    job('failed', {
+      failed_units: 1,
+      last_error_kind: 'selector_changed',
+      last_error_message: 'Google Maps rendered a blank page'
+    })
+  ];
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(await screen.findByRole('button', { name: 'Retry Failed Units' }));
+
+  expect(invocations).toContainEqual({
+    command: 'retry_google_maps_failed_units',
+    args: { jobId: 'job-1' }
+  });
+});
+
 test('ignores other-job and stale events while applying the next active-job event', async () => {
   jobs = [job('running')];
   render(GoogleMapsScraper);

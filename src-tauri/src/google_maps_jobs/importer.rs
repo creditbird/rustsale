@@ -53,6 +53,21 @@ pub fn import_pending_results(
     connection: &mut Connection,
     job_id: &str,
 ) -> Result<ImportSummary, ScrapeJobError> {
+    import_results(connection, job_id, false)
+}
+
+pub fn import_ready_results(
+    connection: &mut Connection,
+    job_id: &str,
+) -> Result<ImportSummary, ScrapeJobError> {
+    import_results(connection, job_id, true)
+}
+
+fn import_results(
+    connection: &mut Connection,
+    job_id: &str,
+    ready_only: bool,
+) -> Result<ImportSummary, ScrapeJobError> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(database_error)?;
@@ -77,11 +92,14 @@ pub fn import_pending_results(
                 "SELECT id, name, phone, normalized_phone, email, normalized_email, address
                  FROM google_maps_scrape_results
                  WHERE job_id=?1 AND import_status='pending' AND inside_requested_area=1
+                   AND (?2=0 OR enrichment_status IN (
+                       'found', 'not_found', 'failed', 'skipped_outside_area'
+                   ))
                  ORDER BY id",
             )
             .map_err(database_error)?;
         let rows = statement
-            .query_map(params![job_id], |row| {
+            .query_map(params![job_id, i64::from(ready_only)], |row| {
                 Ok(PendingResult {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -379,6 +397,52 @@ mod tests {
             .unwrap();
         assert_eq!(phone, "0901234567");
         assert_eq!(email, "");
+    }
+
+    #[test]
+    fn ready_import_preserves_results_with_pending_enrichment() {
+        let mut connection = connection();
+        insert_result(
+            &connection,
+            "ready",
+            "Ready Lead",
+            Some("090 123 4567"),
+            None,
+        );
+        insert_result(
+            &connection,
+            "pending",
+            "Pending Lead",
+            Some("091 234 5678"),
+            None,
+        );
+        connection
+            .execute(
+                "UPDATE google_maps_scrape_results SET enrichment_status='pending' WHERE id='pending'",
+                [],
+            )
+            .unwrap();
+
+        let summary = import_ready_results(&mut connection, "job-1").unwrap();
+
+        assert_eq!(summary.created, 1);
+        assert_eq!(lead_count(&connection), 1);
+        let statuses = connection
+            .prepare("SELECT id, import_status FROM google_maps_scrape_results ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            statuses,
+            vec![
+                ("pending".to_string(), "pending".to_string()),
+                ("ready".to_string(), "imported".to_string()),
+            ]
+        );
     }
 
     #[test]

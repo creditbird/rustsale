@@ -6,6 +6,7 @@ export type GoogleMapsPageState =
   | 'captcha'
   | 'consent_required'
   | 'rate_limited'
+  | 'blank_page'
   | 'selector_changed';
 
 export interface GoogleMapsPageSnapshot {
@@ -63,6 +64,9 @@ export function classifyGoogleMapsPageState(
     body.includes('google maps can\'t find')
   ) {
     return 'empty_results';
+  }
+  if (body.trim().length === 0) {
+    return 'blank_page';
   }
   return 'selector_changed';
 }
