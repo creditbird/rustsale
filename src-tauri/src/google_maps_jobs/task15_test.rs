@@ -174,6 +174,7 @@ fn old_job(
         started_at: Some("2026-06-01T00:00:01Z".to_string()),
         updated_at: completed_at.unwrap_or("2026-06-01T00:00:00Z").to_string(),
         completed_at: completed_at.map(str::to_string),
+        coverage_truncated: false,
     }
 }
 

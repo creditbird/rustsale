@@ -36,7 +36,7 @@ impl Default for GridLimits {
     fn default() -> Self {
         Self {
             max_depth: 6,
-            min_cell_size_m: 20.0,
+            min_cell_size_m: 250.0,
             max_initial_cells: 10_000,
             max_total_cells: 25_000,
         }
@@ -207,6 +207,52 @@ pub fn should_subdivide(
     children
         .first()
         .is_some_and(|child| radius_to_zoom(child.radius_m) > radius_to_zoom(cell.radius_m))
+}
+
+/// Reports a cell that satisfies every subdivision condition except the
+/// total-cell budget.
+///
+/// `should_subdivide` collapses "this cell does not need splitting" and "this
+/// cell needs splitting but there is no budget left" into one `false`, which
+/// let a job report a clean completion over truncated coverage. This separates
+/// the second case so the runner can pause as `paused_limit_reached`.
+#[allow(clippy::too_many_arguments)]
+pub fn grid_budget_exhausted(
+    cell: &GridCell,
+    raw_listing_count: usize,
+    saturation_threshold: usize,
+    reached_end: bool,
+    new_unique_ratio: f64,
+    total_cells: usize,
+    limits: GridLimits,
+) -> bool {
+    if should_subdivide(
+        cell,
+        raw_listing_count,
+        saturation_threshold,
+        reached_end,
+        new_unique_ratio,
+        total_cells,
+        limits,
+    ) {
+        return false;
+    }
+    if total_cells.saturating_add(4) <= limits.max_total_cells {
+        return false;
+    }
+    let unbounded = GridLimits {
+        max_total_cells: usize::MAX,
+        ..limits
+    };
+    should_subdivide(
+        cell,
+        raw_listing_count,
+        saturation_threshold,
+        reached_end,
+        new_unique_ratio,
+        0,
+        unbounded,
+    )
 }
 
 fn grid_cell_from_bbox(
@@ -458,6 +504,19 @@ mod tests {
         format!("http://127.0.0.1:{}", port)
     }
 
+    /// §11.3 of `docs/superpowers/specs/2026-07-26-google-maps-scraper-production-design.md`
+    /// fixes the default safety budget. Drift in these constants silently
+    /// widens the approved subdivision depth, so they are pinned here.
+    #[test]
+    fn default_grid_limits_match_the_approved_safety_budget() {
+        let limits = GridLimits::default();
+
+        assert_eq!(limits.max_depth, 6);
+        assert!((limits.min_cell_size_m - 250.0).abs() < f64::EPSILON);
+        assert_eq!(limits.max_initial_cells, 10_000);
+        assert_eq!(limits.max_total_cells, 25_000);
+    }
+
     #[test]
     fn test_grid_generation_and_subdivision() {
         let bbox = BoundingBox {
@@ -511,6 +570,44 @@ mod tests {
             assert!((cell.bbox.lat_min..=cell.bbox.lat_max).contains(&cell.center_lat));
             assert!((cell.bbox.lng_min..=cell.bbox.lng_max).contains(&cell.center_lng));
         }
+    }
+
+    /// Spec §11.3 requires that reaching a safety budget pauses the job rather
+    /// than silently truncating coverage. Distinguishing "not saturated" from
+    /// "would subdivide but the budget is gone" is what makes that possible.
+    #[test]
+    fn budget_exhaustion_is_distinguishable_from_an_unsaturated_cell() {
+        let limits = GridLimits {
+            max_depth: 6,
+            min_cell_size_m: 250.0,
+            max_initial_cells: 100,
+            max_total_cells: 1_000,
+        };
+        let cell = generate_initial_cells(
+            BoundingBox {
+                lat_min: 10.0,
+                lat_max: 10.2,
+                lng_min: 106.0,
+                lng_max: 106.2,
+            },
+            10.0,
+            limits,
+        )
+        .unwrap()
+        .remove(0);
+
+        assert!(
+            grid_budget_exhausted(&cell, 100, 55, false, 1.0, 999, limits),
+            "a saturated cell blocked only by the total-cell cap has exhausted the budget"
+        );
+        assert!(
+            !grid_budget_exhausted(&cell, 3, 55, true, 1.0, 999, limits),
+            "an exhausted low-yield cell is not a budget problem"
+        );
+        assert!(
+            !grid_budget_exhausted(&cell, 100, 55, false, 1.0, 1, limits),
+            "a cell that can still subdivide has not exhausted the budget"
+        );
     }
 
     #[test]

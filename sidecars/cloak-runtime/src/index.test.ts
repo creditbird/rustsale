@@ -174,6 +174,51 @@ describe('Google Maps block detection', () => {
     );
   });
 
+  test('structural feed evidence outranks incidental body text', () => {
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://google.com/maps/search/cafe',
+        hasFeed: true,
+        bodyText: 'Pho Sam — "they sell out by noon, try again later" · No results found nearby',
+      }),
+    ).toBe('ready');
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://google.com/maps/place/Pho-Sam',
+        hasPlaceHeading: true,
+        bodyText: 'One review mentions the rate limit on their loyalty card.',
+      }),
+    ).toBe('ready');
+  });
+
+  test('a challenge overlay is detected even while the feed DOM survives', () => {
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://www.google.com/maps/search/cafe',
+        hasFeed: true,
+        hasCaptchaChallenge: true,
+        bodyText: 'Cafe Sam · Cafe Lam · Cafe Trung',
+      }),
+    ).toBe('captcha');
+  });
+
+  test('genuine blocks still outrank structural evidence', () => {
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://www.google.com/sorry/index',
+        hasPlaceHeading: true,
+        bodyText: 'Our systems have detected unusual traffic',
+      }),
+    ).toBe('captcha');
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://www.google.com/maps',
+        hasFeed: true,
+        hasConsentDialog: true,
+      }),
+    ).toBe('consent_required');
+  });
+
   test('captcha relaunch reuses the exact persistent profile in headed mode', () => {
     const profileDir = '/app-data/google-maps/jobs/job-1/profile';
     const headless = persistentLaunchOptions({ profileDir, headless: true });

@@ -15,6 +15,7 @@ export interface GoogleMapsPageSnapshot {
   hasFeed?: boolean;
   hasPlaceHeading?: boolean;
   hasConsentDialog?: boolean;
+  hasCaptchaChallenge?: boolean;
 }
 
 export function classifyGoogleMapsPageState(
@@ -22,19 +23,30 @@ export function classifyGoogleMapsPageState(
 ): GoogleMapsPageState {
   const url = snapshot.url.toLowerCase();
   const body = (snapshot.bodyText ?? '').toLowerCase();
+
+  // Structural signals are checked before body text, and body text is only
+  // consulted once the structural signals are absent. Listing and review text
+  // routinely contains phrases such as "try again later" or "no results found",
+  // and a text-first order let ordinary page content pause an entire job.
+  // A challenge can be served as an overlay that leaves the underlying feed DOM
+  // intact, so the structural captcha signal has to outrank the feed.
+  if (url.includes('/sorry/') || snapshot.hasCaptchaChallenge) {
+    return 'captcha';
+  }
+  if (url.includes('consent.google.') || snapshot.hasConsentDialog) {
+    return 'consent_required';
+  }
+  if (snapshot.hasFeed || snapshot.hasPlaceHeading) {
+    return 'ready';
+  }
   if (
-    url.includes('/sorry/') ||
     body.includes('unusual traffic') ||
     body.includes('not a robot') ||
     body.includes('recaptcha')
   ) {
     return 'captcha';
   }
-  if (
-    url.includes('consent.google.') ||
-    snapshot.hasConsentDialog ||
-    body.includes('before you continue to google')
-  ) {
+  if (body.includes('before you continue to google')) {
     return 'consent_required';
   }
   if (
@@ -52,9 +64,6 @@ export function classifyGoogleMapsPageState(
   ) {
     return 'empty_results';
   }
-  if (snapshot.hasFeed || snapshot.hasPlaceHeading) {
-    return 'ready';
-  }
   return 'selector_changed';
 }
 
@@ -71,6 +80,11 @@ export async function inspectGoogleMapsPage(page: Page): Promise<{
     hasPlaceHeading: Boolean(document.querySelector('h1, [role="main"] h1')),
     hasConsentDialog: Boolean(
       document.querySelector('form[action*="consent"], [aria-label*="consent" i]'),
+    ),
+    hasCaptchaChallenge: Boolean(
+      document.querySelector(
+        'iframe[src*="recaptcha"], form#captcha-form, .g-recaptcha, [id*="recaptcha"]',
+      ),
     ),
   }));
   return {

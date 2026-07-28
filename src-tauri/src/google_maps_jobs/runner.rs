@@ -19,6 +19,10 @@ use tokio_util::sync::CancellationToken;
 pub struct UnitExecution {
     pub results: Vec<ScrapeResult>,
     pub child_units: Vec<ScrapeUnit>,
+    /// Set when this unit needed to subdivide but the configured cell budget is
+    /// gone. The runner pauses the job rather than reporting truncated coverage
+    /// as a clean completion.
+    pub budget_exhausted: bool,
 }
 
 #[derive(Debug, Default)]
@@ -45,6 +49,56 @@ pub trait ScrapeUnitProcessor: Send + Sync {
 pub struct RetryPolicy {
     pub max_retries: u32,
     pub base_delay: Duration,
+    pub failure_tolerance: FailureTolerance,
+}
+
+/// When place-level failures stop looking incidental and start looking
+/// systemic.
+///
+/// A single count cannot tell one withdrawn listing from a page layout change,
+/// so three independent signals are used. The consecutive guard is what catches
+/// selector drift early: a small job whose places all fail the same way trips it
+/// long before any ratio has a meaningful sample.
+#[derive(Debug, Clone, Copy)]
+pub struct FailureTolerance {
+    /// Consecutive place failures that mean every later unit would fail too.
+    pub max_consecutive_failures: u32,
+    /// Finished units required before a failure ratio carries any information.
+    pub min_sample: u64,
+    /// Failure ratio over that sample that means the fault is systemic.
+    pub max_failure_ratio: f64,
+    /// Ceiling on absorbed failures regardless of ratio or sample size.
+    pub max_total_failures: u64,
+}
+
+impl Default for FailureTolerance {
+    fn default() -> Self {
+        Self {
+            max_consecutive_failures: 5,
+            min_sample: 20,
+            max_failure_ratio: 0.5,
+            max_total_failures: 50,
+        }
+    }
+}
+
+impl FailureTolerance {
+    /// Whether the failures seen so far are systemic rather than incidental.
+    ///
+    /// `completed` and `failed` count *place units only*. The job-wide counters
+    /// cannot be used: a failed unit increments both the processed and the
+    /// failed counter, so a job-wide ratio can never exceed one half and every
+    /// threshold above that would be unreachable.
+    fn is_systemic(self, consecutive_failures: u32, completed: u64, failed: u64) -> bool {
+        if consecutive_failures >= self.max_consecutive_failures {
+            return true;
+        }
+        if failed >= self.max_total_failures {
+            return true;
+        }
+        let sample = completed.saturating_add(failed);
+        sample >= self.min_sample && (failed as f64 / sample as f64) > self.max_failure_ratio
+    }
 }
 
 impl RetryPolicy {
@@ -53,6 +107,7 @@ impl RetryPolicy {
         Self {
             max_retries: 3,
             base_delay: Duration::from_millis(1),
+            failure_tolerance: FailureTolerance::default(),
         }
     }
 }
@@ -62,6 +117,7 @@ impl Default for RetryPolicy {
         Self {
             max_retries: 3,
             base_delay: Duration::from_secs(2),
+            failure_tolerance: FailureTolerance::default(),
         }
     }
 }
@@ -320,6 +376,9 @@ impl ScrapeJobRunner {
     }
 
     async fn run_job(&self, job_id: &str, cancellation: CancellationToken) -> Result<()> {
+        // Reset by any successful unit: scattered bad listings across a long run
+        // are incidental, an unbroken streak of them is selector drift.
+        let mut consecutive_failures = 0u32;
         loop {
             if cancellation.is_cancelled() {
                 return Ok(());
@@ -365,7 +424,7 @@ impl ScrapeJobRunner {
                     self.repository.get_job(job_id).await?.ok_or_else(|| {
                         anyhow!("scrape job {job_id} disappeared during finalize")
                     })?;
-                if outcome.partial || current.failed_units > 0 {
+                if outcome.partial || current.failed_units > 0 || current.coverage_truncated {
                     let partial = self
                         .repository
                         .transition_job(
@@ -432,6 +491,8 @@ impl ScrapeJobRunner {
 
             match execution {
                 Ok(execution) => {
+                    consecutive_failures = 0;
+                    let execution_budget_exhausted = execution.budget_exhausted;
                     let checkpoint = self
                         .repository
                         .checkpoint_completed_unit(
@@ -453,6 +514,61 @@ impl ScrapeJobRunner {
                         None,
                         json!({"unit_key": unit.unit_key.clone()}),
                     );
+                    if execution_budget_exhausted {
+                        self.repository.mark_coverage_truncated(job_id).await?;
+                        let paused = self
+                            .repository
+                            .transition_job(
+                                job_id,
+                                checkpoint.version,
+                                ScrapeJobStatus::PausedLimitReached,
+                                TransitionCause::System,
+                            )
+                            .await?;
+                        self.events
+                            .publish_job(&paused, "Scrape job paused: grid cell budget exhausted")
+                            .await;
+                        log_scrape_event(
+                            "job_limit_reached",
+                            Some(&paused.id),
+                            Some(&unit.id),
+                            Some(&format!("{:?}", paused.stage).to_ascii_lowercase()),
+                            None,
+                            None,
+                            json!({"total_units": paused.total_units}),
+                        );
+                        self.processor
+                            .shutdown()
+                            .await
+                            .map_err(|error| anyhow!(error))?;
+                        return Ok(());
+                    }
+                }
+                Err(error)
+                    if error.retryable && unit.attempt_count <= self.retry_policy.max_retries =>
+                {
+                    let error_kind = format!("{:?}", error.kind).to_ascii_lowercase();
+                    log_scrape_event(
+                        "unit_retry_scheduled",
+                        Some(job_id),
+                        Some(&unit.id),
+                        Some(&format!("{:?}", job.stage).to_ascii_lowercase()),
+                        Some(unit.attempt_count),
+                        Some(&error_kind),
+                        json!({"message": error.message.clone()}),
+                    );
+                    let delay = self.retry_delay(unit.attempt_count);
+                    let next_retry_at = (chrono::Utc::now()
+                        + chrono::Duration::from_std(delay)
+                            .context("retry delay exceeded chrono range")?)
+                    .to_rfc3339();
+                    self.repository
+                        .schedule_retry(&unit.id, error, next_retry_at)
+                        .await?;
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return Ok(()),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
                 }
                 Err(error) if action_required(error.kind) => {
                     let error_kind = format!("{:?}", error.kind).to_ascii_lowercase();
@@ -495,35 +611,10 @@ impl ScrapeJobRunner {
                         .map_err(|error| anyhow!(error))?;
                     return Ok(());
                 }
-                Err(error)
-                    if error.retryable && unit.attempt_count <= self.retry_policy.max_retries =>
-                {
-                    let error_kind = format!("{:?}", error.kind).to_ascii_lowercase();
-                    log_scrape_event(
-                        "unit_retry_scheduled",
-                        Some(job_id),
-                        Some(&unit.id),
-                        Some(&format!("{:?}", job.stage).to_ascii_lowercase()),
-                        Some(unit.attempt_count),
-                        Some(&error_kind),
-                        json!({"message": error.message.clone()}),
-                    );
-                    let delay = self.retry_delay(unit.attempt_count);
-                    let next_retry_at = (chrono::Utc::now()
-                        + chrono::Duration::from_std(delay)
-                            .context("retry delay exceeded chrono range")?)
-                    .to_rfc3339();
-                    self.repository
-                        .schedule_retry(&unit.id, error, next_retry_at)
-                        .await?;
-                    tokio::select! {
-                        _ = cancellation.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(delay) => {}
-                    }
-                }
                 Err(error) => {
                     let retry_exhausted = error.retryable;
                     let error_kind = format!("{:?}", error.kind).to_ascii_lowercase();
+                    let tolerable = tolerable_unit_failure(&unit.unit_type, error.kind);
                     log_scrape_event(
                         "unit_failed",
                         Some(job_id),
@@ -537,6 +628,32 @@ impl ScrapeJobRunner {
                         .repository
                         .checkpoint_failed_unit(job_id, &unit.id, error)
                         .await?;
+
+                    // A place is one listing among many. Losing it is recorded
+                    // and the job carries on, up to the point where the failures
+                    // stop looking incidental and start looking systemic.
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let (places_completed, places_failed) =
+                        self.repository.count_place_unit_outcomes(job_id).await?;
+                    if tolerable
+                        && !self.retry_policy.failure_tolerance.is_systemic(
+                            consecutive_failures,
+                            places_completed,
+                            places_failed,
+                        )
+                    {
+                        self.events
+                            .publish_job(
+                                &checkpoint,
+                                format!(
+                                    "Skipped unit {} after a place-level failure",
+                                    unit.unit_key
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+
                     let terminal_status = if retry_exhausted {
                         ScrapeJobStatus::Partial
                     } else {
@@ -647,6 +764,26 @@ fn action_required(kind: ScrapeErrorKind) -> bool {
     matches!(
         kind,
         ScrapeErrorKind::Captcha | ScrapeErrorKind::ConsentRequired | ScrapeErrorKind::RateLimited
+    )
+}
+
+/// Whether a unit failure can be absorbed without ending the job.
+///
+/// Only place units qualify: they are one listing each, so a malformed or
+/// withdrawn listing is incidental. A search or grid unit failing means the
+/// page the whole job depends on is unreadable, and every later unit would fail
+/// identically. Infrastructure faults are never incidental at any level.
+fn tolerable_unit_failure(unit_type: &str, kind: ScrapeErrorKind) -> bool {
+    if unit_type != "place" {
+        return false;
+    }
+    !matches!(
+        kind,
+        ScrapeErrorKind::Disconnected
+            | ScrapeErrorKind::BrowserStartup
+            | ScrapeErrorKind::RuntimeUnavailable
+            | ScrapeErrorKind::Database
+            | ScrapeErrorKind::Cancelled
     )
 }
 #[cfg(test)]
@@ -844,6 +981,7 @@ mod tests {
             started_at: None,
             updated_at: now,
             completed_at: None,
+            coverage_truncated: false,
         }
     }
 
@@ -928,6 +1066,7 @@ mod tests {
             RetryPolicy {
                 max_retries: 3,
                 base_delay: Duration::from_millis(2),
+                failure_tolerance: FailureTolerance::default(),
             },
         ))
     }
@@ -1123,6 +1262,472 @@ mod tests {
                 .unwrap()
                 .status,
             ScrapeJobStatus::Completed
+        );
+    }
+
+    /// One malformed listing must not end a job. Place units are individually
+    /// scoped work, so a place-level failure is recorded and the runner moves
+    /// on; the job ends `Partial` because a failure was recorded.
+    #[tokio::test]
+    async fn a_failed_place_unit_does_not_abort_the_remaining_units() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("tolerant-job", ScrapeMode::Keyword),
+            vec![
+                unit("tolerant-job", "place-a", "a", "place"),
+                unit("tolerant-job", "place-b", "b", "place"),
+                unit("tolerant-job", "place-c", "c", "place"),
+            ],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![
+            success(),
+            error(ScrapeErrorKind::SelectorChanged, false),
+            success(),
+        ]));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("tolerant-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        assert_eq!(processor.calls(), vec!["a", "b", "c"]);
+        let job = repository.get_job("tolerant-job").await.unwrap().unwrap();
+        assert_eq!(job.status, ScrapeJobStatus::Partial);
+        assert_eq!(job.failed_units, 1);
+        assert_eq!(
+            repository
+                .get_unit("place-c")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeUnitStatus::Completed
+        );
+    }
+
+    /// An absolute count cannot tell one bad listing from a layout change. A
+    /// small job whose places all fail the same way is selector drift, and it
+    /// must fail fast rather than grind through every unit and report `Partial`.
+    #[tokio::test]
+    async fn a_small_job_whose_places_all_fail_stops_early() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("systemic-job", ScrapeMode::Keyword),
+            (0..20)
+                .map(|index| {
+                    let id = format!("p{index:02}");
+                    unit("systemic-job", &id, &id, "place")
+                })
+                .collect(),
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(
+            (0..20)
+                .map(|_| error(ScrapeErrorKind::SelectorChanged, false))
+                .collect(),
+        ));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("systemic-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        let attempted = processor.calls().len();
+        assert!(
+            attempted <= FailureTolerance::default().max_consecutive_failures as usize,
+            "a systemic fault must be caught by the consecutive guard, attempted {attempted}"
+        );
+        assert_eq!(
+            repository
+                .get_job("systemic-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Failed
+        );
+    }
+
+    /// Tolerance is bounded by consecutive failures, and the bound means what
+    /// its name says: two consecutive failures stop a job configured for two.
+    #[tokio::test]
+    async fn consecutive_place_failures_stop_the_job() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("intolerant-job", ScrapeMode::Keyword),
+            vec![
+                unit("intolerant-job", "p1", "p1", "place"),
+                unit("intolerant-job", "p2", "p2", "place"),
+                unit("intolerant-job", "p3", "p3", "place"),
+            ],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![
+            error(ScrapeErrorKind::SelectorChanged, false),
+            error(ScrapeErrorKind::SelectorChanged, false),
+            error(ScrapeErrorKind::SelectorChanged, false),
+        ]));
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            processor.clone(),
+            Arc::new(ScrapeEventPublisher::new(64)),
+            RetryPolicy {
+                max_retries: 3,
+                base_delay: Duration::from_millis(2),
+                failure_tolerance: FailureTolerance {
+                    max_consecutive_failures: 2,
+                    ..FailureTolerance::default()
+                },
+            },
+        ));
+
+        runner.start("intolerant-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        assert_eq!(processor.calls(), vec!["p1", "p2"]);
+        assert_eq!(
+            repository
+                .get_job("intolerant-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Failed
+        );
+    }
+
+    /// The whole point of making a place its own unit: a block part-way through
+    /// a listing must cost only the blocked place. This walks the full path —
+    /// search unit checkpoints place children, one place completes, the next is
+    /// blocked, the job pauses, and resuming claims the blocked place and only
+    /// the blocked place, with the completed one still checkpointed.
+    #[tokio::test]
+    async fn a_block_mid_listing_only_costs_the_blocked_place() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("mid-listing", ScrapeMode::Keyword),
+            vec![unit("mid-listing", "search-unit", "search", "keyword")],
+        )
+        .await;
+        let place_children = vec![
+            unit("mid-listing", "place-a", "place:0xAAA", "place"),
+            unit("mid-listing", "place-b", "place:0xBBB", "place"),
+            unit("mid-listing", "place-c", "place:0xCCC", "place"),
+        ];
+        let processor = Arc::new(
+            FakeProcessor::new(vec![
+                Ok(UnitExecution {
+                    child_units: place_children,
+                    ..UnitExecution::default()
+                }),
+                success(),
+                error(ScrapeErrorKind::Captcha, false),
+            ])
+            .with_action_health(vec![
+                Ok(GoogleMapsPageHealth {
+                    state: GoogleMapsPageState::Captcha,
+                    url: "https://www.google.com/sorry/index".to_string(),
+                    title: "Google verification".to_string(),
+                }),
+                Ok(GoogleMapsPageHealth {
+                    state: GoogleMapsPageState::Ready,
+                    url: "https://www.google.com/maps".to_string(),
+                    title: "Google Maps".to_string(),
+                }),
+            ]),
+        );
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("mid-listing").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        assert_eq!(
+            processor.calls(),
+            vec!["search", "place:0xAAA", "place:0xBBB"]
+        );
+        let paused = repository.get_job("mid-listing").await.unwrap().unwrap();
+        assert_eq!(paused.status, ScrapeJobStatus::PausedRequiresAction);
+        assert_eq!(
+            repository
+                .get_unit("place-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeUnitStatus::Completed,
+            "the place scraped before the block must stay checkpointed"
+        );
+        assert_eq!(
+            repository
+                .get_unit("place-b")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeUnitStatus::Pending,
+            "only the blocked place returns to the queue"
+        );
+
+        runner.confirm_action("mid-listing").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        assert_eq!(
+            processor.calls(),
+            vec![
+                "search",
+                "place:0xAAA",
+                "place:0xBBB",
+                "place:0xBBB",
+                "place:0xCCC"
+            ],
+            "resume re-runs the blocked place only, never the search page or a completed place"
+        );
+    }
+
+    /// The failure ratio has to be reachable. Measured job-wide it never is,
+    /// because a failed unit increments the processed counter too, capping any
+    /// job-wide ratio at one half. This interleaves failures with successes so
+    /// the consecutive guard never fires and only the ratio can stop the job.
+    #[tokio::test]
+    async fn a_majority_place_failure_rate_stops_the_job() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("ratio-job", ScrapeMode::Keyword),
+            (0..30)
+                .map(|index| {
+                    let id = format!("r{index:02}");
+                    unit("ratio-job", &id, &id, "place")
+                })
+                .collect(),
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(
+            (0..30)
+                .map(|index| {
+                    if index % 2 == 0 {
+                        error(ScrapeErrorKind::SelectorChanged, false)
+                    } else {
+                        success()
+                    }
+                })
+                .collect(),
+        ));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("ratio-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(10)).await.unwrap();
+
+        // Alternating outcomes: after 21 units there are 11 failures against 10
+        // successes, the first point past the minimum sample where the ratio
+        // exceeds one half.
+        assert_eq!(processor.calls().len(), 21);
+        assert_eq!(
+            repository
+                .get_job("ratio-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Failed
+        );
+    }
+
+    /// An isolated failure between successes must not accumulate towards the
+    /// consecutive guard, otherwise a long job dies of scattered bad listings.
+    #[tokio::test]
+    async fn scattered_place_failures_do_not_accumulate() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("scattered-job", ScrapeMode::Keyword),
+            (0..9)
+                .map(|index| {
+                    let id = format!("s{index}");
+                    unit("scattered-job", &id, &id, "place")
+                })
+                .collect(),
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![
+            error(ScrapeErrorKind::SelectorChanged, false),
+            success(),
+            error(ScrapeErrorKind::SelectorChanged, false),
+            success(),
+            error(ScrapeErrorKind::SelectorChanged, false),
+            success(),
+            error(ScrapeErrorKind::SelectorChanged, false),
+            success(),
+            error(ScrapeErrorKind::SelectorChanged, false),
+        ]));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("scattered-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        assert_eq!(processor.calls().len(), 9);
+        let job = repository.get_job("scattered-job").await.unwrap().unwrap();
+        assert_eq!(job.status, ScrapeJobStatus::Partial);
+        assert_eq!(job.failed_units, 5);
+    }
+
+    /// A search unit failure is still systemic: if the search page itself is
+    /// unreadable, every later unit would fail the same way.
+    #[tokio::test]
+    async fn a_failed_search_unit_still_stops_the_job() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("search-fatal", ScrapeMode::Keyword),
+            vec![
+                unit("search-fatal", "s1", "s1", "keyword"),
+                unit("search-fatal", "s2", "s2", "keyword"),
+            ],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![error(
+            ScrapeErrorKind::SelectorChanged,
+            false,
+        )]));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("search-fatal").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        assert_eq!(processor.calls(), vec!["s1"]);
+        assert_eq!(
+            repository
+                .get_job("search-fatal")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Failed
+        );
+    }
+
+    /// A transient throttle must be retried with backoff before a human is
+    /// asked to intervene. Only once retries are exhausted does it become an
+    /// action-required pause.
+    #[tokio::test]
+    async fn rate_limiting_retries_before_requiring_user_action() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("throttled-job", ScrapeMode::Keyword),
+            vec![unit("throttled-job", "throttled-unit", "first", "keyword")],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![
+            error(ScrapeErrorKind::RateLimited, true),
+            error(ScrapeErrorKind::RateLimited, true),
+            error(ScrapeErrorKind::RateLimited, true),
+            success(),
+        ]));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("throttled-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        assert_eq!(processor.calls().len(), 4);
+        assert_eq!(
+            repository
+                .get_job("throttled-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Completed
+        );
+    }
+
+    /// Spec §11.3: exhausting a safety budget pauses the job so the operator can
+    /// decide, and leaves pending units intact. Silently stopping subdivision
+    /// reported truncated coverage as a clean completion.
+    #[tokio::test]
+    async fn grid_budget_exhaustion_pauses_the_job_as_limit_reached() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("budget-job", ScrapeMode::Grid),
+            vec![
+                unit("budget-job", "cell-a", "a", "grid"),
+                unit("budget-job", "cell-b", "b", "grid"),
+            ],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![Ok(UnitExecution {
+            budget_exhausted: true,
+            ..UnitExecution::default()
+        })]));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("budget-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        assert_eq!(processor.calls(), vec!["a"]);
+        assert_eq!(
+            repository
+                .get_job("budget-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::PausedLimitReached
+        );
+        assert_eq!(
+            repository.get_unit("cell-b").await.unwrap().unwrap().status,
+            ScrapeUnitStatus::Pending
+        );
+    }
+
+    /// Pausing on the cell budget records that coverage was cut short. Resuming
+    /// is the operator accepting that, not the truncation disappearing: if the
+    /// blocked cell was the last unit there is nothing left to claim, and a
+    /// clean `Completed` would report full coverage of an area the job never
+    /// finished subdividing.
+    #[tokio::test]
+    async fn resuming_after_a_budget_pause_cannot_report_clean_completion() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("truncated-job", ScrapeMode::Grid),
+            vec![unit("truncated-job", "only-cell", "only", "grid")],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![Ok(UnitExecution {
+            budget_exhausted: true,
+            ..UnitExecution::default()
+        })]));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("truncated-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+        assert_eq!(
+            repository
+                .get_job("truncated-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::PausedLimitReached
+        );
+
+        runner.start("truncated-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        assert_eq!(
+            repository
+                .get_job("truncated-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Partial,
+            "coverage was truncated by the budget, so the job is partial"
         );
     }
 

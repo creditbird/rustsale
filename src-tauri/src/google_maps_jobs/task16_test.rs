@@ -177,6 +177,7 @@ fn job(id: &str, mode: ScrapeMode, total_units: u64) -> ScrapeJob {
         started_at: None,
         updated_at: now,
         completed_at: None,
+        coverage_truncated: false,
     }
 }
 
@@ -255,6 +256,7 @@ async fn keyword_job_checkpoints_result_and_imports_lead_before_completion() {
     let processor = Arc::new(IntegrationProcessor::new(
         context.repository.clone(),
         vec![Ok(UnitExecution {
+            budget_exhausted: false,
             results: vec![importable_result(job_id, unit_id)],
             child_units: Vec::new(),
         })],
@@ -382,6 +384,7 @@ async fn saturated_grid_checkpoint_persists_only_four_bounded_children() {
     let processor = Arc::new(IntegrationProcessor::new(
         context.repository.clone(),
         vec![Ok(UnitExecution {
+            budget_exhausted: false,
             results: Vec::new(),
             child_units: children,
         })],
@@ -432,6 +435,7 @@ async fn database_import_failure_fails_job_without_completion_event() {
     let processor = Arc::new(IntegrationProcessor::new(
         context.repository.clone(),
         vec![Ok(UnitExecution {
+            budget_exhausted: false,
             results: vec![importable_result(job_id, unit_id)],
             child_units: Vec::new(),
         })],

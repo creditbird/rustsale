@@ -3,7 +3,7 @@
 **Date:** 2026-07-26
 **Spec:** `docs/superpowers/specs/2026-07-26-google-maps-scraper-production-design.md`
 **Plan:** `docs/superpowers/plans/2026-07-26-google-maps-scraper-production.md`
-**Current Status:** TASK 15 COMPLETE; TASK 16 IN PROGRESS — Linux production runtime paths and release gates have passed, but Windows/macOS real-runtime and real CAPTCHA evidence are still missing. Final status remains **NOT READY**.
+**Current Status:** TASK 15 COMPLETE; TASK 16 IN PROGRESS — Linux production runtime paths and release gates have passed, but Windows/macOS real-runtime and real CAPTCHA evidence are still missing. A peer-reviewed algorithm audit on 2026-07-26 additionally found four scrape/grid defects, two spec drifts, and — while investigating a serial-suite flake — an unretryable SQLite lock-upgrade defect, none of which was covered by any existing gate; see "Algorithm Audit 2026-07-26". REQ-005, REQ-010, REQ-011, and REQ-012 were reverted from COMPLETE to IN PROGRESS as a result. A CRITICAL code review of that remediation then found three further blockers, one of which was introduced by the remediation itself; see "Remediation Review 2026-07-26". Those are fixed with regression tests, but no claim is made here that the module is complete: the reworked unit model has still never been exercised against a real runtime. Final status remains **NOT READY**.
 
 **Execution Mode:** Inline on `master`, explicitly selected by the user. No commits will be created unless requested.
 
@@ -17,14 +17,14 @@
 | REQ-002 | Atomic checkpoints | 2-3 | Transactional result/child/unit/job checkpoint, rollback on invalid unit state, batch unit rollback, optimistic versioning | Repository 12/12; rollback and counter tests | COMPLETE |
 | REQ-003 | Startup interruption recovery | 3, 8, 12, 16 | Repository atomically marks running jobs interrupted and resets running units pending; Tauri setup initializes the singleton repository/runner/service and runs startup recovery without launching the browser | Automated restart tests plus Linux SIGKILL QA: sidecar/Chromium exited, restart converted `running` to `interrupted`, UI restored Resume/Cancel, resumed job then cancelled cleanly | COMPLETE |
 | REQ-004 | One active worker | 8, 12 | Singleton managed runner owns one `ActiveJob`, rejects a conflicting second start, and executes units sequentially | Concurrent-start and service conflict tests; full Rust 124/124 parallel plus serial | COMPLETE |
-| REQ-005 | Typed browser errors | 6-8, 12, 16 | Object-safe automation and production processor propagate typed search, grid, enrichment, import, and terminal-state failures without converting them to empty success; sidecar error serialization removes terminal escape sequences | Automated browser/Google Maps/processor tests; Linux forced Chromium termination retried exactly three times and stopped later cells; ANSI regression 7/7 with 1 intentional smoke skip | COMPLETE |
+| REQ-005 | Typed browser errors | 6-8, 12, 16 | Object-safe automation and production processor propagate typed search, grid, enrichment, import, and terminal-state failures without converting them to empty success; sidecar error serialization removes terminal escape sequences | Automated browser/Google Maps/processor tests; Linux forced Chromium termination retried exactly three times and stopped later cells; ANSI regression 7/7 with 1 intentional smoke skip. **Audit 2026-07-26 contradicts the "without converting them to empty success" claim: AUD-003 shows a detail-level non-ready state is converted into a successful truncated traversal, and AUD-004 shows a single malformed place escalates to a whole-job `Failed`.** | IN PROGRESS |
 | REQ-006 | Official runtime download/cache | 5-6, 14, 16 | Sidecar pins CloakBrowser wrapper `0.5.1` and Chromium `146.0.7680.177.5`; Rust manager uses only the bundled sidecar; UI exposes direct first-use official download, retry, verification, and installed-version state | Linux clean-cache smoke downloaded about 206 MB from the official channel, verified Ed25519 and SHA-256, launched, reused cache, and cleaned up; Windows/macOS real-runtime evidence remains missing | IN PROGRESS |
 | REQ-007 | Cross-platform sidecar builds | 5-6, 16 | Target-aware Bun compile plus Rust target-path resolution cover Linux x64/ARM64, Windows x64, and macOS x64/ARM64; Tauri registers `binaries/cloak-runtime` as `externalBin`; CI matrix covers Ubuntu, Windows, Intel macOS, and Apple Silicon macOS | Linux x64 standalone/runtime QA passes and target-aware CI commands are defined; Windows/macOS real-runtime QA remains missing | IN PROGRESS |
 | REQ-008 | Persistent CAPTCHA profile | 9, 14, 16 | Jobs persist `profile_dir` and `blocked_url`; action-required detection relaunches the same profile headed; UI restores `paused_requires_action`, explains manual CAPTCHA completion, and resumes the exact job | Automated runner/browser/component same-profile tests pass; Linux pause/resume reused the exact `profile_dir`; a real CAPTCHA was not intentionally triggered | IN PROGRESS |
 | REQ-009 | Backend grid validation | 4, 14, 16 | Finite/range/order/step validation, no-allocation estimate, 10,000 initial-cell cap, backend recommendation, and matching UI preflight estimate/warning | Automated validation/component tests plus Linux BBox `[10.775,10.7755,106.699,106.6995]` produced exactly one cell and completed `1/1` | COMPLETE |
-| REQ-010 | Bounded adaptive subdivision | 4, 8, 12, 16 | Production processor checkpoints clipped child cells and enforces depth/min-size/zoom/total-cell/low-yield policy through the durable runner | Grid/runner/processor tests plus forced termination job `gmaps-1785048270761-296db70c275dde93`: first unit retried, eight later units were never claimed before recovery/cancel | COMPLETE |
-| REQ-011 | Raw listing saturation | 7-8, 12, 16 | Production processor uses independent `raw_listing_count`, `reached_end`, blocked reason, and deduplicated details to decide subdivision and terminal state | Automated typed scraper tests plus real keyword job discovered 15 listings without false empty/selector completion | COMPLETE |
-| REQ-012 | Spatial filtering and dedup | 7-8, 12, 16 | Processor persists candidates, applies inclusive BBox/exact-location qualification, and preserves place ID, canonical URL, phone, then name/address dedup precedence; keyword/deep-scan jobs without BBox are explicitly inside scope | Spatial/processor regressions plus Linux keyword and one-cell grid runtime QA | COMPLETE |
+| REQ-010 | Bounded adaptive subdivision | 4, 8, 12, 16 | Production processor checkpoints clipped child cells and enforces depth/min-size/zoom/total-cell/low-yield policy through the durable runner | Grid/runner/processor tests plus forced termination job `gmaps-1785048270761-296db70c275dde93`: first unit retried, eight later units were never claimed before recovery/cancel. **Audit 2026-07-26: the min-size policy is enforced at `min_cell_size_m = 20.0` against a spec value of 250 (AUD-005), and the total-cell budget is enforced by a silent `return false` instead of the specified `paused_limit_reached` transition (AUD-006).** | IN PROGRESS |
+| REQ-011 | Raw listing saturation | 7-8, 12, 16 | Production processor uses independent `raw_listing_count`, `reached_end`, blocked reason, and deduplicated details to decide subdivision and terminal state | Automated typed scraper tests plus real keyword job discovered 15 listings without false empty/selector completion. **Audit 2026-07-26: both inputs to the subdivision decision are unsound — `reached_end` is reported `false` for a demonstrably exhausted feed (AUD-001) and `raw_listing_count` is rewritten to zero by a detail-level fault (AUD-003). Two red characterization tests are committed and failing.** | IN PROGRESS |
+| REQ-012 | Spatial filtering and dedup | 7-8, 12, 16 | Processor persists candidates, applies inclusive BBox/exact-location qualification, and preserves place ID, canonical URL, phone, then name/address dedup precedence; keyword/deep-scan jobs without BBox are explicitly inside scope | Spatial/processor regressions plus Linux keyword and one-cell grid runtime QA. **Audit 2026-07-26: qualification reads the viewport-centre `@lat,lng` in preference to the authoritative `!3d`/`!4d` place coordinates (AUD-007), and candidates qualified as outside the requested area are stranded at `import_status='pending'` with no reason counter (AUD-008).** | IN PROGRESS |
 | REQ-013 | Safe email enrichment | 10 | `SafeHttpClient` allows only credential-free HTTP(S), disables proxies and automatic redirects, resolves and validates every hop, rejects non-public destinations, pins the approved address, stays on one registrable domain, enforces three redirects/2 MB/5s connect/15s request; deterministic robots-aware crawl visits at most five HTML pages and selects mailto before visible email; repository atomically claims and checkpoints `running/found/not_found/retry_wait/failed` without repeating Maps scraping | Email security/extraction 14/14 including real reqwest pinned-address integration; repository enrichment checkpoint 1/1; full Rust 102/102 parallel and serial | COMPLETE |
 | REQ-014 | Phone/email Lead qualification | 11, 16 | Importer independently normalizes Vietnamese mobile formats (`03/05/07/08/09`, local/`84`/`0084`) and normalized email; landline-only results are rejected | Automated importer tests plus real `Dien Lanh HK` job: 15 qualified results, 10 Leads created, 5 contact duplicates | COMPLETE |
 | REQ-015 | Idempotent Lead import | 2, 11, 16 | `BEGIN IMMEDIATE` batch revalidates contacts, deduplicates normalized phone and case-insensitive trimmed email across existing Leads and the current batch, writes Lead/result status/job counters atomically, and rolls back on any SQL/read/insert failure | Automated replay/rollback tests plus SQLite evidence for job `gmaps-1785047852973-54455993d3e8a22f`: `imported=10`, `duplicate=5`, total Leads `10` | COMPLETE |
@@ -33,6 +33,173 @@
 | REQ-018 | Structured diagnostics and cleanup | 6, 15-16 | Sidecar diagnostics stay on stderr, stdout is typed JSON, rolling logs redact secrets, diagnostics are job/unit scoped, retention preserves action-required profiles, shutdown is graceful then forced with async wait/reap, and protocol errors strip ANSI controls | Task 15 redaction/retention/wrapper tests; forced termination/crash recovery/clean-cache process checks; ANSI regression test passes | COMPLETE |
 | REQ-019 | Compatibility wrappers | 15 | Legacy start/stop commands delegate to durable create/resume/cancel flows and cannot emit duplicate terminal events | Task 15 compatibility tests and full Rust release suite | COMPLETE |
 | REQ-020 | Full release QA | 16 | Cross-platform CI and complete local Linux release matrix are implemented | Linux release gates and real-runtime QA pass; Windows/macOS real-runtime and real CAPTCHA evidence remain mandatory blockers | IN PROGRESS |
+
+## Algorithm Audit 2026-07-26
+
+An independent scrape/grid algorithm audit was performed after Task 16, peer-reviewed, and corrected before being recorded here. It found defects that no existing gate covers: every finding below is invisible to the 142-test Rust suite, to Clippy, and to the Linux runtime QA, because each one produces a *successful-looking* outcome rather than a failure. No historical QA evidence in this ledger is retracted — the runs happened and passed as recorded; they simply did not exercise these paths.
+
+**No production code has been changed by this audit.** Three red characterization tests are committed and failing by design.
+
+| ID | Severity | Finding | Location |
+|---|---|---|---|
+| AUD-001 | HIGH | `scroll_feed` reports `reached_end = false` whenever the localized end-of-list sentinel is absent, even after the feed height has stopped changing. `should_subdivide` then fans a demonstrably exhausted cell into four children. Measured fan-out is roughly 21 cells per affected initial cell — the `consecutive_low_yield_levels >= 2` guard caps the cascade at two to three levels, so this is a ~20x waste, not an unbounded explosion. | `src-tauri/src/scrapers/google_maps.rs:244`, `src-tauri/src/scrapers/grid.rs:180` |
+| AUD-002 | HIGH | A CAPTCHA encountered part-way through detail traversal returns the places collected so far, but the processor converts the blocked reason into an `Err` before `page_to_execution`, and `checkpoint_completed_unit` persists results only for a successful unit. All detail work before the block is discarded and the unit restarts from zero on resume. Because that traffic is what provokes the block, the unit can fail at the same point indefinitely. | `src-tauri/src/scrapers/google_maps.rs:167`, `src-tauri/src/google_maps_jobs/processor.rs:136`, `src-tauri/src/google_maps_jobs/repository.rs:560` |
+| AUD-003 | HIGH | A non-ready state on a *place detail* page is folded into the search-level `EmptyResults` branch, which hardcodes `raw_listing_count` to zero; the caller then forces `reached_end = false`. The unit is checkpointed as completed with partial data, the unvisited place URLs are dropped permanently, and the zeroed count feeds the subdivision decision. | `src-tauri/src/scrapers/google_maps.rs:374` |
+| AUD-004 | MEDIUM-HIGH | A place detail page missing an `<h1>`, or whose URL fails canonicalization, raises a non-retryable place-level error. The runner escalates it to a whole-job `Failed` and abandons every remaining pending unit. One anomalous listing can end a 500-district job. | `src-tauri/src/scrapers/google_maps.rs:294`, `src-tauri/src/google_maps_jobs/runner.rs:523` |
+| AUD-005 | MEDIUM | Spec drift: the design specifies `min_cell_size_m = 250`; `GridLimits::default()` uses `20.0`, permitting far deeper subdivision than the approved safety budget. | spec §11.3, `src-tauri/src/scrapers/grid.rs:35` |
+| AUD-006 | MEDIUM | Spec drift: the design specifies that reaching a safety budget pauses the job as `paused_limit_reached`. `ScrapeJobStatus::PausedLimitReached` exists in the enum, the transition table, and the `start()` gate, but no code path ever emits it. Hitting `max_total_cells` silently stops subdivision and the job reports `Completed` despite truncated coverage. | spec §11.3, `src-tauri/src/scrapers/grid.rs:192` |
+| AUD-007 | MEDIUM | Both the injected JavaScript and the Rust parser prefer the viewport-centre `@lat,lng` over the authoritative `!3d`/`!4d` place coordinates. `inside_requested_area` depends on these values, so listings near a bbox edge can be misqualified and silently dropped. | `src-tauri/src/scrapers/google_maps.rs:485`, `sidecars/cloak-runtime/src/googleMaps.ts` |
+| AUD-008 | MEDIUM | Candidates with `inside_requested_area = 0` are stranded at `import_status='pending'` forever with no reason counter, so the gap between `businesses_discovered` and `leads_created` is unattributable in the UI. Note that enrichment does *not* filter on this column — only import does — so these rows still consume outbound HTTP. | `src-tauri/src/google_maps_jobs/processor.rs:376`, `src-tauri/src/google_maps_jobs/importer.rs:79`, `src-tauri/src/google_maps_jobs/repository.rs:864` |
+| AUD-009 | MEDIUM | `classifyGoogleMapsPageState` matches `'try again later'`, `'rate limit'`, and `'no results found'` against up to 20,000 characters of `innerText`, and orders those checks *before* the structural `hasFeed → ready` check. Ordinary review or listing text can therefore pause an entire job for user action. | `sidecars/cloak-runtime/src/googleMaps.ts:20` |
+| AUD-010 | MEDIUM | `RateLimited` routes straight to action-required, pausing the job for a human instead of backing off and retrying a potentially transient throttle. | `src-tauri/src/google_maps_jobs/runner.rs:646` |
+| AUD-011 | UNPROVEN | Hypothesis that Google writes the `!1s` feature id into the URL asynchronously, so `place_id` may be absent at extraction time and dedup falls back to a `canonical_url` that varies by entry viewport, inflating `businesses_discovered`. The URL fallback path is real and confirmed by code; the asynchronous-timing premise requires runtime capture to prove and is **not** treated as a confirmed defect. | `src-tauri/src/scrapers/google_maps.rs:444` |
+| AUD-012 | HIGH | Found while investigating a serial-suite flake, and confirmed to be a production defect rather than a test artefact. All 20 repository transactions were `BEGIN DEFERRED` while every one of them reads before it writes. Two concurrent operations therefore take read locks and then deadlock on upgrade, which SQLite reports as `SQLITE_BUSY_SNAPSHOT` (error 517, "Cannot promote read transaction to write transaction") — a code `busy_timeout` deliberately does not retry, despite WAL and a 5 s timeout both being configured correctly. Reproduced 5/5 with 24 concurrent claims. In production this is reachable whenever a Tauri command runs while the runner checkpoints, for example the user pressing Cancel mid-unit. The importer already used `BEGIN IMMEDIATE`; nothing else did. | `src-tauri/src/google_maps_jobs/repository.rs`, `src-tauri/src/db.rs:28` |
+
+### Red Characterization Tests
+
+Committed and failing by design. These are characterization tests, not acceptance tests — they pin current wrong behaviour so a fix is observable.
+
+| Test | Covers | Original failure | Now |
+|---|---|---|---|
+| `stable_feed_without_end_sentinel_reports_reached_end` | AUD-001 | `reached_end` is `false` for a feed whose height and place count stopped changing | GREEN |
+| `default_grid_limits_match_the_approved_safety_budget` | AUD-005 | `min_cell_size_m` is `20.0`, spec requires `250.0` | GREEN |
+| `detail_page_empty_results_preserves_search_listing_count` | AUD-003 | `raw_listing_count` is `0`, expected `2` | REPLACED |
+| `detail_page_empty_results_is_not_reported_as_a_clean_traversal` | AUD-003 | one of two places visited, still reported as a successful unit | REPLACED |
+
+The two AUD-003 characterization tests were replaced when AUD-002 landed, exactly as this ledger required and never cited as evidence of the fix. Their replacements assert the durable contract instead of the wrong behaviour:
+
+| Replacement test | Asserts |
+|---|---|
+| `collecting_a_search_page_does_not_visit_place_details` | the search unit stops at the listing; any detail navigation would be an unscripted browser call |
+| `place_detail_empty_results_is_a_place_scoped_fault` | a place that fails to render is a retryable place-level `InvalidResponse`, never a search-level empty result |
+| `place_detail_captcha_surfaces_as_captcha` | a block on one place is reported as that block, so the runner can pause without discarding checkpointed places |
+| `search_unit_emits_one_place_child_per_listing` | one durable `place` unit per URL, so the job cannot complete while any place URL is unprocessed |
+| `a_place_found_by_two_cells_creates_one_unit` | the viewport-independent place unit key collapses cross-cell duplicates without failing the checkpoint |
+| `a_failed_place_unit_does_not_abort_the_remaining_units` | a place failure is recorded and the run continues; the job ends `Partial` |
+| `place_failures_past_the_threshold_stop_the_job` | tolerance is bounded, so a systemic failure still stops the job |
+| `a_failed_search_unit_still_stops_the_job` | search-level failures remain fatal |
+| `rate_limiting_retries_before_requiring_user_action` | a throttle is retried with backoff before a human is asked to intervene |
+| `grid_budget_exhaustion_pauses_the_job_as_limit_reached` | budget exhaustion pauses the job and leaves pending units intact |
+| `concurrent_writes_never_fail_on_a_lock_upgrade` | concurrent repository writes never fail with an unretryable lock upgrade |
+| `enrichment_skips_results_outside_the_requested_area` | out-of-area rows do not consume outbound enrichment HTTP |
+
+**These two AUD-003 tests must not be cited as evidence that AUD-002 or AUD-003 is fixed.** When the AUD-002 partial-checkpoint design lands, `detail_page_empty_results_preserves_search_listing_count` is to be replaced by an assertion against the partial/checkpoint payload, and `detail_page_empty_results_is_not_reported_as_a_clean_traversal` by a repository- or processor-level test proving a unit cannot complete while place URLs remain unprocessed.
+
+### Agreed Remediation Order
+
+1. This ledger update.
+2. AUD-001 via termination semantics, plus AUD-005. Agreed thresholds: compare the `(height, place_count)` pair rather than height alone; either value changing resets the counter; three consecutive unchanged observations (four snapshots including the baseline) sets `reached_end = true`; the sentinel and the 120 cap still terminate immediately; exhausting `max_scroll_attempts` while data is still changing remains `reached_end = false`. No separate "exhausted" and "gave up" thresholds — `max_scroll_attempts` already is the give-up branch.
+3. AUD-002 by promoting each place detail to a child unit, or by checkpointing `next_place_index` together with partial results.
+4. AUD-003 on top of that checkpoint; `EmptyResults` must distinguish search level from detail level.
+5. AUD-004 via a per-place error ledger and an error-rate threshold.
+6. Then AUD-009, AUD-007, AUD-011, AUD-008, AUD-010.
+
+AUD-003 must not be merged independently ahead of AUD-002; doing so only converts silent data loss into a retry/livelock of a different shape.
+
+### Audit Gate Evidence
+
+Measured at the audit checkpoint, before any remediation:
+
+| Gate | Command | Exit | Result |
+|---|---|---:|---|
+| Rust tests | `cargo test --manifest-path src-tauri/Cargo.toml` | 101 | 142 passed, 3 failed — the three red characterization tests only, no regression |
+| Rust format | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 0 | PASS |
+| Rust Clippy | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` | 0 | PASS, no issues found |
+
+### Remediation Progress
+
+**AUD-001 — FIXED.** `scroll_feed` now compares the `(height, place_count)` pair rather than height alone, resets its counter when either value moves, and sets `reached_end = true` after `STABLE_FEED_OBSERVATIONS = 3` consecutive identical observations. The sentinel and the 120-result cap still terminate immediately, and exhausting `max_scroll_attempts` while either value is still changing still reports `false`, which remains the distinct give-up branch. `should_subdivide` and spec §12 were deliberately left unchanged: the defect was in the evidence feeding the decision, not in the decision rule. GitNexus impact for `scroll_feed` was LOW — one direct caller, 14 impacted symbols confined to the `Scrapers` module, zero affected processes.
+
+**AUD-005 — FIXED.** `GridLimits::default().min_cell_size_m` moved from `20.0` to the specified `250.0`, pinned by a test that also pins `max_depth`, `max_initial_cells`, and `max_total_cells` against future drift. Side benefit: it independently bounds any residual AUD-001-style fan-out, because cells below 250 m no longer subdivide at all.
+
+**AUD-002, AUD-003, AUD-004 — FIXED together, by making a place detail its own durable unit.** A search unit now stops at the listing (`collect_search_listing`) and emits one `place` child unit per URL; a place unit visits exactly one page (`scrape_place`). This resolves all three findings at their shared root rather than individually:
+
+- AUD-002: places already scraped are already completed units, so a block part-way through a listing costs the current place only. Resume re-runs one place, not the whole search page.
+- AUD-003: a non-ready place page is classified by `place_state_error`, which is structurally separate from the search-level `terminal_listing_state`. `EmptyResults` on a place is now a retryable `InvalidResponse` scoped to that place, and can no longer zero the search listing count or complete a truncated traversal.
+- AUD-004: `tolerable_unit_failure` absorbs a failed `place` unit, records it, and continues to the next unit; the job ends `Partial` because a failure was recorded. Search and grid unit failures remain job-fatal, because an unreadable search page would fail every later unit identically. Tolerance is bounded by `FailureTolerance` — see REV-003, which replaced the first attempt's absolute count.
+
+Two side effects worth recording. Place unit keys are viewport-independent, so the same business found by two grid cells collapses to one unit through the existing `INSERT OR IGNORE` child insert — covered by a new test, since that behaviour is now load-bearing. And subdivision novelty is now measured from place URLs rather than extracted candidates, because the search unit completes before any detail is fetched; `place_url_dedup_key` applies the same `place_id`-then-URL precedence the extracted candidate would.
+
+**AUD-006 — FIXED.** `grid_budget_exhausted` distinguishes "this cell does not need splitting" from "this cell needs splitting but the budget is gone". The processor reports the second case through `UnitExecution::budget_exhausted`, and the runner transitions the job to `PausedLimitReached` with pending units left intact, as spec §11.3 requires. This is the first code path that ever emits that status.
+
+**AUD-007 — FIXED.** `coordinates_from_url` and the injected extraction script both prefer `!3d`/`!4d` over the `@lat,lng` viewport centre.
+
+**AUD-008 — FIXED.** A candidate outside the requested area is persisted as `import_status='skipped_outside_area'` rather than being stranded at `pending`, making the discovered-to-imported gap attributable by query. Enrichment now also filters on `import_status='pending'`, so these rows no longer consume outbound HTTP for a lead that can never be created. Surfacing the count in the UI remains outstanding.
+
+**AUD-009 — FIXED.** `classifyGoogleMapsPageState` checks URL and structural signals before body text, so a feed or place heading outranks incidental listing and review copy. A genuine `/sorry/` interstitial or consent dialog still outranks structure.
+
+**AUD-010 — FIXED.** `RateLimited` is raised as retryable and the runner's retry arm is now evaluated before the action-required arm, so a throttle is retried with exponential backoff and only becomes an action-required pause once retries are exhausted. `Captcha` and `ConsentRequired` stay non-retryable and pause immediately, because retrying them is pointless.
+
+**AUD-011 — MITIGATED, premise still unproven.** Identity is derived by `place_identity`, which is viewport-independent, so the dedup fallback is identical across entry points. This removes the impact without relying on the asynchronous-`!1s` premise, which still has no runtime evidence either way. The first attempt at this fix over-stripped the URL and introduced REV-001; see "Remediation Review 2026-07-26".
+
+**AUD-012 — FIXED.** All 20 repository transactions now use `BEGIN IMMEDIATE`, matching what the importer already did. The lock-upgrade failure is covered by a concurrency test that reproduced the defect 5/5 before the fix and passes 5/5 after.
+
+### Post-Remediation Gate Evidence
+
+The `google_maps_scrape_job_command_rejects_second_active_job` flake that exposed AUD-012 did not recur in six consecutive serial runs after the fix.
+
+| Gate | Command | Exit | Result |
+|---|---|---:|---|
+| Rust tests, parallel | `cargo test --manifest-path src-tauri/Cargo.toml` | 0 | 161 passed, 0 failed |
+| Rust tests, serial ×6 | `cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1` | 0 | 161 passed, 0 failed on every run |
+| Rust format | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 0 | PASS |
+| Rust Clippy | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` | 0 | PASS, no issues found |
+| Rust release build | `cargo build --manifest-path src-tauri/Cargo.toml --release` | 0 | optimized binary built |
+| Frontend tests | `bun run test` | 0 | 40 pass, 1 skip, 0 fail; 126 assertions |
+| Svelte diagnostics | `bun run check` | 0 | 0 errors, 0 warnings across 4,633 files |
+| Sidecar build | `bun run build:cloak-runtime` | 0 | Linux x64 standalone built; binary removed afterwards, `.gitkeep` retained |
+| Repository whitespace | `git diff --check` | 0 | clean |
+
+## Remediation Review 2026-07-26
+
+An independent CRITICAL review of the remediation above found three blockers and three coverage gaps. **REV-001 was introduced by the remediation itself and was more damaging than the finding it came from**, which is recorded here rather than quietly fixed: a fix that adds a data-loss path is worse than the defect it replaces, and the review caught what the 161-test suite did not.
+
+| ID | Severity | Finding | Resolution |
+|---|---|---|---|
+| REV-001 | CRITICAL | The place unit key used a helper that strips everything after `/@` or `/data=`, leaving the bare name slug. Two branches of a chain — different feature ids, different coordinates — collapsed onto one key such as `place:.../maps/place/starbucks`, and the `INSERT OR IGNORE` child insert then silently discarded one of the businesses. Introduced while fixing AUD-011. | Replaced by a single `place_identity` used by the place unit key, the listing novelty key, and the persisted result dedup key alike. Precedence: `!1s` feature id, then authoritative `!3d`/`!4d` coordinates, then the URL with only the viewport segment removed. The slug is never an identity. |
+| REV-002 | HIGH | `max_total_cells` is a budget of grid cells, but `should_subdivide` and `grid_budget_exhausted` were given `job.total_units`, which after the place-unit split is dominated by place units. A job would pause as `paused_limit_reached` having barely subdivided. | New `count_units_by_type` measures grid units alone; place units no longer consume the cell budget. |
+| REV-003 | HIGH | Failure tolerance was an absolute count, so a 20-place job where every place failed with `SelectorChanged` ran to completion and reported `Partial` — near-certain selector drift reported as a successful-ish run. The field name also implied one more tolerated failure than it allowed. | Replaced by `FailureTolerance`: a consecutive-failure guard (default 5) that catches systemic drift before any ratio has a sample, a failure ratio (default 0.5) applied only past a minimum sample (default 20), and a hard absolute cap (default 50). The consecutive counter resets on any successful unit. |
+| REV-004 | MEDIUM | Subdivision novelty compared listing keys against completed results only. Grid children sort before place children on the same timestamp, so a place already scheduled but not yet scraped counted as new and inflated the low-yield heuristic. | Novelty now compares against completed results **and** existing place unit keys, via `list_place_unit_keys`. |
+| REV-005 | Coverage | No cross-layer test proved the central claim of the place-unit architecture. | `a_block_mid_listing_only_costs_the_blocked_place` walks search checkpoint → place children → one completes → next is blocked → job pauses → resume claims the blocked place and only the blocked place. |
+| REV-006 | Coverage | The classifier had no structural CAPTCHA signal, so a challenge overlay that leaves the feed DOM intact would be masked by the `hasFeed → ready` branch. | `hasCaptchaChallenge` is collected from the page and outranks the ready branch. |
+| REV-007 | Coverage | Out-of-area results were no longer enriched but kept `enrichment_status='pending'` forever. | Both queues now carry the terminal `skipped_outside_area`, so neither shows work that will never be done. |
+
+REV-005 passed on first run. It is a coverage test, not a red-then-green fix: it protects behaviour the place-unit architecture already provides, and is recorded as such rather than as evidence of a defect found.
+
+## Second Review 2026-07-27
+
+A second CRITICAL review found that three of the fixes above were incomplete. **Two of the three were unreachable or self-defeating in exactly the way the first round claimed to have solved**, which is recorded rather than folded silently into the tables above.
+
+| ID | Severity | Finding | Resolution |
+|---|---|---|---|
+| REV-002a | HIGH | The REV-003 failure ratio could never fire. `checkpoint_failed_unit` increments `processed_units` *and* `failed_units` for the same unit, so a job-wide `failed / (processed + failed)` is capped at one half and any threshold above one half is unreachable dead code. Eleven failures against nine successes read as 35.5%, not 55%. | `count_place_unit_outcomes` counts completed and failed **place units** separately, and the ratio is computed over those. Covered by a test that interleaves failures with successes so the consecutive guard never fires and only the ratio can stop the job. |
+| REV-002b | HIGH | Pausing as `paused_limit_reached` was informational only. The blocked cell is checkpointed as completed before the pause, so if it was the last unit, resuming found nothing to claim and went straight to `Completed` — reporting full coverage of an area the job stopped subdividing. | A durable `coverage_truncated` column is set when the budget is spent and never cleared. Finalization forces `Partial` while it is set, so resuming is the operator accepting a shortfall rather than the shortfall disappearing. |
+| REV-002c | HIGH | The REV-001 identity fix still collapsed to the slug in one branch: when a URL has `/@…` with no path segment after it, `url_without_viewport` returned everything *before* `/@`, which is the bare slug. Two branches distinguished only by viewport merged again. The REV-001 test used two different `data=` payloads and never reached that branch. | `url_without_viewport` now returns `None` when nothing survives the strip, and identity keeps the whole URL including the viewport in that case. Where no discriminator exists, identity stays conservative: a duplicate unit is recoverable, a silently merged business is not. |
+| REV-002d | MEDIUM | The same place listed once with `!1s` and once without produced a `place:` key and a `geo:` key, which the union check could not recognise as one business, so it could still be scheduled twice and inflate novelty. | `place_identity_aliases` returns every legitimate identity form, and both child planning and novelty compare against all of them rather than the primary key alone. |
+
+`canonicalize_place_url` still drops the query string before identity is derived. No place discriminator is known to be carried there for `/maps/place/` feed anchors, so this is left as recorded rather than changed speculatively; if a URL arrives with no feature id, no coordinates, and no path discriminator, identity is genuinely indeterminate from the URL and the conservative viewport-preserving fallback is what limits the damage.
+
+### Review Gate Evidence
+
+| Gate | Command | Exit | Result |
+|---|---|---:|---|
+| Rust tests, parallel | `cargo test --manifest-path src-tauri/Cargo.toml` | 0 | 169 passed, 0 failed |
+| Rust tests, serial ×5 | `cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1` | 0 | 169 passed, 0 failed on every run |
+| Rust format | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 0 | PASS |
+| Rust Clippy | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` | 0 | PASS, no issues found |
+| Rust release build | `cargo build --manifest-path src-tauri/Cargo.toml --release` | 0 | optimized binary built |
+| Frontend tests | `bun run test` | 0 | 41 pass, 1 skip, 0 fail; 127 assertions |
+| Svelte diagnostics | `bun run check` | 0 | 0 errors, 0 warnings across 4,633 files |
+| Repository whitespace | `git diff --check` | 0 | clean |
+
+### Still Outstanding
+
+Fixing the algorithm defects does not clear the release. These remain blockers and are unchanged by this work:
+
+- Windows and macOS real-runtime download, launch, and cleanup evidence. CI compilation is not a substitute.
+- A real CAPTCHA exercised end to end.
+- Runtime re-validation of the reworked unit model on Linux. Every claim above rests on automated tests; the place-unit split changes the shape of a real run substantially — unit counts, event volume, and browser navigation pattern — and the Linux runtime QA in this ledger predates it.
+- UI surfacing of the `skipped_outside_area` count (AUD-008). An earlier revision of this ledger also claimed `paused_limit_reached` was unrendered; that was wrong. `GoogleMapsJobPanel.svelte` already carries its status label, its explanatory message, and a Resume action, and `googleMapsScraperService.ts` already types the status. What is new is that resuming past a budget pause can no longer end as `Completed` — see REV-002b.
 
 ## GitNexus Impact Record
 

@@ -124,6 +124,11 @@ pub struct ScrapeJob {
     pub started_at: Option<String>,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// Set once a cell needed to subdivide but the configured cell budget was
+    /// spent. Resuming is the operator accepting the shortfall, not the
+    /// shortfall disappearing, so the job can no longer finish as `Completed`.
+    #[serde(default)]
+    pub coverage_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

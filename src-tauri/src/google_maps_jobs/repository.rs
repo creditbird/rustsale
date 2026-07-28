@@ -5,11 +5,17 @@ use crate::google_maps_jobs::types::{
     TransitionCause,
 };
 use anyhow::{anyhow, Context, Result};
-use rusqlite::{params, types::Type, Connection, OptionalExtension, Row, Transaction};
+// Every transaction below reads before it writes. `BEGIN IMMEDIATE` takes the
+// write lock up front so `busy_timeout` can wait for it; a DEFERRED transaction
+// would instead fail the upgrade with SQLITE_BUSY_SNAPSHOT (517), which is not
+// retryable and surfaced as a spurious "database is locked".
+use rusqlite::{
+    params, types::Type, Connection, OptionalExtension, Row, Transaction, TransactionBehavior,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 
-const JOB_COLUMNS: &str = "id, mode, keyword, location, bbox_json, step_km, headless, profile_dir, blocked_url, status, stage, total_units, processed_units, failed_units, businesses_discovered, businesses_qualified, leads_created, last_error_kind, last_error_message, action_required, event_sequence, version, run_generation, created_at, started_at, updated_at, completed_at";
+const JOB_COLUMNS: &str = "id, mode, keyword, location, bbox_json, step_km, headless, profile_dir, blocked_url, status, stage, total_units, processed_units, failed_units, businesses_discovered, businesses_qualified, leads_created, last_error_kind, last_error_message, action_required, event_sequence, version, run_generation, created_at, started_at, updated_at, completed_at, coverage_truncated";
 const UNIT_COLUMNS: &str = "id, job_id, unit_key, unit_type, payload_json, status, depth, attempt_count, next_retry_at, last_error_kind, last_error_message, created_at, updated_at, completed_at";
 const RESULT_COLUMNS: &str = "id, job_id, source_unit_id, place_id, canonical_url, dedup_key, name, phone, normalized_phone, email, normalized_email, address, website, facebook, zalo, latitude, longitude, inside_requested_area, detail_status, enrichment_status, import_status, last_error_kind, last_error_message, first_seen_at, last_seen_at";
 
@@ -115,7 +121,7 @@ impl ScrapeJobRepository {
         }
         let job_id = job.id.clone();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             insert_job(&tx, &job)?;
             for unit in &units {
                 if unit.job_id != job_id {
@@ -134,7 +140,7 @@ impl ScrapeJobRepository {
     pub async fn pause_job(&self, job_id: &str) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let current = load_job(&tx, &job_id)?
                 .ok_or_else(|| anyhow!("scrape job {job_id} was not found"))?;
             if current.status != ScrapeJobStatus::Running {
@@ -168,7 +174,7 @@ impl ScrapeJobRepository {
     pub async fn set_stage(&self, job_id: &str, stage: ScrapeStage) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = chrono::Utc::now().to_rfc3339();
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_jobs
@@ -191,7 +197,7 @@ impl ScrapeJobRepository {
     pub async fn reopen_for_email_retry(&self, job_id: &str) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let current = load_job(&tx, &job_id)?
                 .ok_or_else(|| anyhow!("scrape job {job_id} was not found"))?;
             if current.status != ScrapeJobStatus::Partial {
@@ -251,7 +257,7 @@ impl ScrapeJobRepository {
         let job_id = job_id.to_string();
         let result_id = result_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_results
                  SET enrichment_status='running', last_error_kind=NULL,
@@ -333,7 +339,7 @@ impl ScrapeJobRepository {
     ) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let current = load_job(&tx, &job_id)?
                 .ok_or_else(|| anyhow!("scrape job {job_id} was not found"))?;
             if current.version != expected_version {
@@ -428,7 +434,7 @@ impl ScrapeJobRepository {
 
     pub async fn recover_interrupted_jobs(&self) -> Result<usize> {
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = chrono::Utc::now().to_rfc3339();
             tx.execute(
                 "UPDATE google_maps_scrape_units
@@ -455,7 +461,7 @@ impl ScrapeJobRepository {
     pub async fn insert_units(&self, job_id: &str, units: Vec<ScrapeUnit>) -> Result<usize> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             for unit in &units {
                 if unit.job_id != job_id {
                     return Err(anyhow!("unit {} belongs to a different job", unit.id));
@@ -477,10 +483,90 @@ impl ScrapeJobRepository {
         .await
     }
 
+    /// Counts units of one type.
+    ///
+    /// The grid safety budget is a budget of *cells*, so it must be measured
+    /// against grid units alone. `total_units` also carries one unit per place
+    /// detail and would exhaust the budget after a single populated cell.
+    pub async fn count_units_by_type(&self, job_id: &str, unit_type: &str) -> Result<u64> {
+        let job_id = job_id.to_string();
+        let unit_type = unit_type.to_string();
+        self.with_connection(move |conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM google_maps_scrape_units WHERE job_id=?1 AND unit_type=?2",
+                params![job_id, unit_type],
+                |row| row.get(0),
+            )?;
+            Ok(count.max(0) as u64)
+        })
+        .await
+    }
+
+    /// Records that the cell budget cut this job's coverage short.
+    ///
+    /// The flag is durable and never cleared, so resuming past a budget pause
+    /// cannot report full coverage of an area the job stopped subdividing.
+    pub async fn mark_coverage_truncated(&self, job_id: &str) -> Result<()> {
+        let job_id = job_id.to_string();
+        self.with_connection(move |conn| {
+            conn.execute(
+                "UPDATE google_maps_scrape_jobs SET coverage_truncated=1, updated_at=?1
+                 WHERE id=?2",
+                params![chrono::Utc::now().to_rfc3339(), job_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Finished place units, split into completed and failed.
+    ///
+    /// The failure ratio has to be measured over place units alone. The job-wide
+    /// counters cannot serve: `checkpoint_failed_unit` increments
+    /// `processed_units` *and* `failed_units` for the same unit, so
+    /// `failed / (processed + failed)` can never exceed one half and any
+    /// threshold above that is unreachable.
+    pub async fn count_place_unit_outcomes(&self, job_id: &str) -> Result<(u64, u64)> {
+        let job_id = job_id.to_string();
+        self.with_connection(move |conn| {
+            let (completed, failed): (i64, i64) = conn.query_row(
+                "SELECT
+                     COUNT(*) FILTER (WHERE status='completed'),
+                     COUNT(*) FILTER (WHERE status='failed')
+                 FROM google_maps_scrape_units
+                 WHERE job_id=?1 AND unit_type='place'",
+                params![job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            Ok((completed.max(0) as u64, failed.max(0) as u64))
+        })
+        .await
+    }
+
+    /// The identities of every place already scheduled as a unit.
+    ///
+    /// Subdivision novelty must be measured against work already planned, not
+    /// only against work already finished: a grid child can be claimed before
+    /// its place siblings, and counting an unscraped-but-scheduled place as new
+    /// makes the low-yield heuristic subdivide again.
+    pub async fn list_place_unit_keys(&self, job_id: &str) -> Result<Vec<String>> {
+        let job_id = job_id.to_string();
+        self.with_connection(move |conn| {
+            let mut statement = conn.prepare(
+                "SELECT unit_key FROM google_maps_scrape_units
+                 WHERE job_id=?1 AND unit_type='place'",
+            )?;
+            let rows = statement.query_map(params![job_id], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()
+                .map_err(Into::into)
+        })
+        .await
+    }
+
     pub async fn claim_next_unit(&self, job_id: &str) -> Result<Option<ScrapeUnit>> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = chrono::Utc::now().to_rfc3339();
             let unit_id: Option<String> = tx
                 .query_row(
@@ -532,7 +618,7 @@ impl ScrapeJobRepository {
         }
         let unit_id = unit_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_units
                  SET status='retry_scheduled', next_retry_at=?1, last_error_kind=?2,
@@ -567,7 +653,7 @@ impl ScrapeJobRepository {
         let job_id = job_id.to_string();
         let unit_id = unit_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             for result in &results {
                 if result.job_id != job_id || result.source_unit_id != unit_id {
                     return Err(anyhow!(
@@ -630,7 +716,7 @@ impl ScrapeJobRepository {
         let job_id = job_id.to_string();
         let unit_id = unit_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = chrono::Utc::now().to_rfc3339();
             let error_kind = enum_to_text(&error.kind)?;
             let changed = tx.execute(
@@ -677,7 +763,7 @@ impl ScrapeJobRepository {
         let job_id = job_id.to_string();
         let unit_id = unit_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = chrono::Utc::now().to_rfc3339();
             let error_kind = enum_to_text(&error.kind)?;
             let changed = tx.execute(
@@ -719,7 +805,7 @@ impl ScrapeJobRepository {
     pub async fn cancel_job(&self, job_id: &str) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let current = load_job(&tx, &job_id)?
                 .ok_or_else(|| anyhow!("scrape job {job_id} was not found"))?;
             if current.status == ScrapeJobStatus::Cancelled {
@@ -763,7 +849,7 @@ impl ScrapeJobRepository {
     pub async fn complete_job_if_exhausted(&self, job_id: &str) -> Result<Option<ScrapeJob>> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let open_units: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM google_maps_scrape_units
                  WHERE job_id=?1 AND status IN ('pending', 'running', 'retry_scheduled')",
@@ -798,7 +884,7 @@ impl ScrapeJobRepository {
     pub async fn fail_job(&self, job_id: &str, error: ScrapeJobError) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let current = load_job(&tx, &job_id)?
                 .ok_or_else(|| anyhow!("scrape job {job_id} was not found"))?;
             if current.status != ScrapeJobStatus::Running {
@@ -834,7 +920,7 @@ impl ScrapeJobRepository {
     pub async fn upsert_results(&self, job_id: &str, results: Vec<ScrapeResult>) -> Result<usize> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             for result in &results {
                 if result.job_id != job_id {
                     return Err(anyhow!("result belongs to a different job"));
@@ -870,6 +956,7 @@ impl ScrapeJobRepository {
                    AND (normalized_phone IS NULL OR trim(normalized_phone)='')
                    AND website IS NOT NULL AND trim(website)<>''
                    AND enrichment_status IN ('pending', 'retry_wait')
+                   AND import_status='pending'
                  ORDER BY first_seen_at ASC, id ASC"
             ))?;
             let rows = stmt.query_map(params![job_id], result_from_row)?;
@@ -885,7 +972,7 @@ impl ScrapeJobRepository {
     ) -> Result<Option<ScrapeResult>> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let result_id: Option<String> = tx
                 .query_row(
                     "SELECT id FROM google_maps_scrape_results
@@ -953,7 +1040,7 @@ impl ScrapeJobRepository {
             .transpose()?;
         let error_message = outcome.error.map(|error| error.message);
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_results
                  SET email=?1, normalized_email=?1, enrichment_status=?2,
@@ -1013,7 +1100,7 @@ impl ScrapeJobRepository {
     pub async fn delete_terminal_job(&self, job_id: &str) -> Result<bool> {
         let job_id = job_id.to_string();
         self.with_connection(move |mut conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let job = load_job(&tx, &job_id)?
                 .ok_or_else(|| anyhow!("scrape job {job_id} was not found"))?;
             if !job.status.is_terminal() {
@@ -1217,6 +1304,7 @@ fn job_from_row(row: &Row<'_>) -> rusqlite::Result<ScrapeJob> {
         started_at: row.get(24)?,
         updated_at: row.get(25)?,
         completed_at: row.get(26)?,
+        coverage_truncated: row.get::<_, i64>(27)? != 0,
     })
 }
 
@@ -1475,6 +1563,7 @@ mod tests {
             completed_at: status
                 .is_terminal()
                 .then(|| "2026-07-26T00:01:00Z".to_string()),
+            coverage_truncated: false,
         }
     }
 
@@ -1996,6 +2085,162 @@ mod tests {
             )
             .unwrap();
         assert_eq!(unit_status, "failed");
+    }
+
+    /// Every repository mutation reads before it writes. Under a DEFERRED
+    /// transaction two such operations can both take read locks and then
+    /// deadlock on upgrade, which SQLite reports as `database is locked`
+    /// immediately and `busy_timeout` deliberately does not retry. Losing a
+    /// claim race is a legitimate outcome; failing on lock upgrade is not.
+    #[tokio::test]
+    async fn concurrent_writes_never_fail_on_a_lock_upgrade() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                (0..24)
+                    .map(|index| {
+                        sample_unit(
+                            &format!("unit-{index:03}"),
+                            &format!("keyword:{index}"),
+                            ScrapeUnitStatus::Pending,
+                        )
+                    })
+                    .collect(),
+            )
+            .await
+            .unwrap();
+
+        let repository = context.repository.clone();
+        let attempts = (0..24)
+            .map(|_| {
+                let repository = repository.clone();
+                tokio::spawn(async move { repository.claim_next_unit("job-1").await })
+            })
+            .collect::<Vec<_>>();
+
+        let mut lock_failures = Vec::new();
+        for attempt in attempts {
+            if let Err(error) = attempt.await.unwrap() {
+                let message = format!("{error:#}");
+                if message.contains("database is locked")
+                    || message.contains("database table is locked")
+                {
+                    lock_failures.push(message);
+                }
+            }
+        }
+
+        assert!(
+            lock_failures.is_empty(),
+            "concurrent claims failed on lock upgrade: {lock_failures:?}"
+        );
+    }
+
+    /// A result outside the requested area can never be imported, so paying for
+    /// an outbound enrichment crawl on it is pure waste.
+    #[tokio::test]
+    async fn enrichment_skips_results_outside_the_requested_area() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Running,
+                )],
+            )
+            .await
+            .unwrap();
+
+        let mut outside = sample_result();
+        outside.id = "result-outside-enrichment".to_string();
+        outside.dedup_key = "place:outside-enrichment".to_string();
+        outside.place_id = Some("outside-enrichment".to_string());
+        outside.phone = None;
+        outside.normalized_phone = None;
+        outside.website = Some("https://example.com".to_string());
+        outside.enrichment_status = "pending".to_string();
+        outside.inside_requested_area = Some(false);
+        outside.import_status = "skipped_outside_area".to_string();
+
+        context
+            .repository
+            .upsert_results("job-1", vec![outside])
+            .await
+            .unwrap();
+
+        assert!(context
+            .repository
+            .list_results_for_enrichment("job-1")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Two grid cells routinely surface the same business. The place unit key is
+    /// viewport-independent, so the second cell must not create a duplicate unit
+    /// and must not fail the checkpoint that carries it.
+    #[tokio::test]
+    async fn a_place_found_by_two_cells_creates_one_unit() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![
+                    sample_unit("unit-1", "grid:a", ScrapeUnitStatus::Running),
+                    sample_unit("unit-2", "grid:b", ScrapeUnitStatus::Running),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let shared = |id: &str| ScrapeUnit {
+            id: id.to_string(),
+            unit_key: "place:https://www.google.com/maps/place/cafe+sam".to_string(),
+            unit_type: "place".to_string(),
+            ..sample_unit(id, "unused", ScrapeUnitStatus::Pending)
+        };
+
+        context
+            .repository
+            .checkpoint_completed_unit("job-1", "unit-1", Vec::new(), vec![shared("place-from-a")])
+            .await
+            .unwrap();
+        let job = context
+            .repository
+            .checkpoint_completed_unit("job-1", "unit-2", Vec::new(), vec![shared("place-from-b")])
+            .await
+            .unwrap();
+
+        let units = context.repository.list_units("job-1").await.unwrap();
+        assert_eq!(
+            units
+                .iter()
+                .filter(|unit| unit.unit_type == "place")
+                .count(),
+            1
+        );
+        assert_eq!(job.total_units, 3);
     }
 
     #[tokio::test]

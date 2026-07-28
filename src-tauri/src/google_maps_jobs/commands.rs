@@ -90,6 +90,7 @@ impl GoogleMapsJobService {
             started_at: None,
             updated_at: now,
             completed_at: None,
+            coverage_truncated: false,
         };
         match self.repository.create_job_with_units(job, units).await {
             Ok(job) => Ok(job),
@@ -787,6 +788,7 @@ mod tests {
             started_at: None,
             updated_at: now,
             completed_at: None,
+            coverage_truncated: false,
         }
     }
 }

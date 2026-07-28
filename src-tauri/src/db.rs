@@ -263,7 +263,9 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 created_at TEXT NOT NULL,
                 started_at TEXT,
                 updated_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                coverage_truncated INTEGER NOT NULL DEFAULT 0
+                    CHECK (coverage_truncated IN (0, 1))
             )",
             [],
         )?;
@@ -279,6 +281,12 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             "google_maps_scrape_jobs",
             "blocked_url",
             "blocked_url TEXT",
+        )?;
+        add_column_if_missing(
+            &tx,
+            "google_maps_scrape_jobs",
+            "coverage_truncated",
+            "coverage_truncated INTEGER NOT NULL DEFAULT 0 CHECK (coverage_truncated IN (0, 1))",
         )?;
 
         tx.execute(
