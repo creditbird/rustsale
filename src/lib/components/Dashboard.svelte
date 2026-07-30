@@ -11,12 +11,16 @@
     Layers, Activity, RefreshCw, MessageCircle, Settings, X, Edit3, Save, Target
   } from 'lucide-svelte';
 
+  let { activeTab = 'dashboard' }: { activeTab?: string } = $props();
+
   let leads = $state<Lead[]>([]);
   let deals = $state<Deal[]>([]);
   let recentActivities = $state<ActivityType[]>([]);
   let errorMsg = $state<string | null>(null);
   let loading = $state(false);
   let selectedPeriod = $state('Q3 2026');
+  let isStale = $state(false);
+  let hasLoaded = $state(false);
 
   // Configurable Base Target & Stretch Goals (Quarterly baseline)
   let targetRevenue = $state(120000);
@@ -24,6 +28,19 @@
   let showTargetModal = $state(false);
   let editTargetInput = $state(120000);
   let editStretchInput = $state(150000);
+
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  function debouncedReload() {
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (activeTab === 'dashboard') {
+        reloadData();
+      } else {
+        isStale = true;
+      }
+    }, 300);
+  }
 
   $effect(() => {
     // Load persisted targets if available
@@ -36,16 +53,36 @@
       // Fallback to default
     }
 
-    Promise.all([crmService.getLeads(), crmService.getDeals(), crmService.getRecentActivities(5)])
-      .then(([leadsData, dealsData, activitiesData]) => {
-        leads = leadsData;
-        deals = dealsData;
-        recentActivities = activitiesData;
-        errorMsg = null;
-      })
-      .catch((err) => {
-        errorMsg = err instanceof Error ? err.message : String(err);
-      });
+    if (activeTab === 'dashboard') {
+      if (isStale || !hasLoaded) {
+        isStale = false;
+        reloadData();
+      }
+    } else {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+        isStale = true;
+      }
+    }
+  });
+
+  onMount(() => {
+    const unsubBridge = crmService.initScraperEventBridge();
+
+    const unsubLeads = crmService.onLeadsChanged(() => {
+      if (activeTab === 'dashboard') {
+        debouncedReload();
+      } else {
+        isStale = true;
+      }
+    });
+
+    return () => {
+      unsubLeads();
+      unsubBridge();
+      if (reloadTimer) clearTimeout(reloadTimer);
+    };
   });
 
   function openTargetModal() {
@@ -75,6 +112,8 @@
         deals = dealsData;
         recentActivities = activitiesData;
         errorMsg = null;
+        hasLoaded = true;
+        isStale = false;
       })
       .catch((err) => {
         errorMsg = err instanceof Error ? err.message : String(err);

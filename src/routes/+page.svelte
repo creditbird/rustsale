@@ -27,22 +27,64 @@
     contacts: { title: 'Converted Contacts', subtitle: 'Official converted customer database' }
   };
 
+  let isStale = $state(false);
+  let hasLoaded = $state(false);
+
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  function debouncedLoadLeads() {
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (activeTab === 'leads' || activeTab === 'contacts') {
+        loadLeads();
+      } else {
+        isStale = true;
+      }
+    }, 300);
+  }
+
   async function loadLeads() {
     try {
       leads = await crmService.getLeads();
       errorMsg = null;
+      hasLoaded = true;
+      isStale = false;
     } catch (err) {
+      hasLoaded = false;
       errorMsg = err instanceof Error ? err.message : String(err);
     }
   }
 
   $effect(() => {
     if (activeTab === 'leads' || activeTab === 'contacts') {
-      loadLeads();
+      if (isStale || !hasLoaded) {
+        isStale = false;
+        loadLeads();
+      }
+    } else {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+        isStale = true;
+      }
     }
   });
 
-  onMount(loadLeads);
+  onMount(() => {
+    const unsubBridge = crmService.initScraperEventBridge();
+    const unsub = crmService.onLeadsChanged(() => {
+      if (activeTab === 'leads' || activeTab === 'contacts') {
+        debouncedLoadLeads();
+      } else {
+        isStale = true;
+      }
+    });
+    return () => {
+      unsub();
+      unsubBridge();
+      if (reloadTimer) clearTimeout(reloadTimer);
+    };
+  });
 </script>
 
 <div class="flex w-screen h-screen overflow-hidden bg-background text-foreground antialiased font-sans">
@@ -95,7 +137,7 @@
       {/if}
 
       <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
-        <Dashboard />
+        <Dashboard {activeTab} />
       </div>
       <div class={activeTab === 'scraper' ? '' : 'hidden'}>
         <GoogleMapsScraper />
@@ -107,7 +149,7 @@
         <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} />
       </div>
       <div class={activeTab === 'categories' ? '' : 'hidden'}>
-        <CategoryManager />
+        <CategoryManager {activeTab} />
       </div>
       <div class={activeTab === 'outreach' ? '' : 'hidden'}>
         <ZaloOutreach />

@@ -87,6 +87,10 @@ export interface GoogleMapsJobEvent {
   stage: GoogleMapsScrapeStage;
   processed_units: number;
   total_units: number;
+  failed_units: number;
+  businesses_discovered: number;
+  businesses_qualified: number;
+  leads_created: number;
   percentage: number;
   message: string;
   error: GoogleMapsJobError | null;
@@ -164,7 +168,9 @@ export async function subscribeToGoogleMapsJobEvents(
   return () => {
     if (cleaned) return;
     cleaned = true;
-    unlisten();
+    if (typeof unlisten === 'function') {
+      unlisten();
+    }
   };
 }
 

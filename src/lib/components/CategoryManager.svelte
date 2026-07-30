@@ -12,6 +12,8 @@
   import * as Select from '$lib/components/ui/select';
   import { Folder, Plus, Trash2, Search, FolderMinus, AlertCircle, CheckCircle2 } from 'lucide-svelte';
 
+  let { activeTab = 'categories' }: { activeTab?: string } = $props();
+
   let categories = $state<Category[]>([]);
   let activeCategoryId = $state<number | null>(null);
   let newCategoryName = $state('');
@@ -30,28 +32,69 @@
   let loading = $state(false);
   let errorMsg = $state<string | null>(null);
   let successMsg = $state<string | null>(null);
+  let isStale = $state(false);
+  let hasLoaded = $state(false);
+
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  function debouncedReload() {
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (activeTab === 'categories') {
+        refreshData();
+      } else {
+        isStale = true;
+      }
+    }, 300);
+  }
+
+  async function refreshData() {
+    try {
+      await Promise.all([loadCategories(), loadAllLeads()]);
+      if (activeCategoryId) {
+        await loadCategoryLeads(activeCategoryId);
+      }
+      hasLoaded = true;
+      isStale = false;
+    } catch (err) {
+      hasLoaded = false;
+      errorMsg = err instanceof Error ? err.message : String(err);
+    }
+  }
 
   async function loadCategories() {
+    loading = true;
     try {
-      loading = true;
       categories = await crmService.getCategories();
-    } catch (err) {
-      errorMsg = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
     }
   }
 
   onMount(() => {
-    loadCategories();
-    loadAllLeads();
+    const unsubBridge = crmService.initScraperEventBridge();
+
+    const unsubLeads = crmService.onLeadsChanged(() => {
+      if (activeTab === 'categories') {
+        debouncedReload();
+      } else {
+        isStale = true;
+      }
+    });
+
+    return () => {
+      unsubLeads();
+      unsubBridge();
+      if (reloadTimer) clearTimeout(reloadTimer);
+    };
   });
 
   async function loadAllLeads() {
     try {
       allLeads = await crmService.getLeads();
     } catch (err) {
-      console.error(err);
+      console.error('Failed to load all leads in CategoryManager', err);
+      throw err;
     }
   }
 
@@ -66,14 +109,30 @@
       filterCategoryZalo = 'all';
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
+      throw err;
     } finally {
       loading = false;
     }
   }
 
   $effect(() => {
+    if (activeTab === 'categories') {
+      if (isStale || !hasLoaded) {
+        isStale = false;
+        refreshData();
+      }
+    } else {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+        isStale = true;
+      }
+    }
+  });
+
+  $effect(() => {
     if (activeCategoryId) {
-      loadCategoryLeads(activeCategoryId);
+      void loadCategoryLeads(activeCategoryId).catch(() => {});
     } else {
       categoryLeads = [];
     }

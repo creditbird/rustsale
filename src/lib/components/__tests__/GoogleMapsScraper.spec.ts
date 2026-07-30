@@ -339,6 +339,10 @@ test('ignores other-job and stale events while applying the next active-job even
     stage: 'cleanup',
     processed_units: 10,
     total_units: 10,
+    failed_units: 0,
+    businesses_discovered: 12,
+    businesses_qualified: 5,
+    leads_created: 4,
     percentage: 100,
     message: 'wrong job completed',
     error: null,
@@ -352,6 +356,10 @@ test('ignores other-job and stale events while applying the next active-job even
     stage: 'cleanup',
     processed_units: 10,
     total_units: 10,
+    failed_units: 0,
+    businesses_discovered: 12,
+    businesses_qualified: 5,
+    leads_created: 4,
     percentage: 100,
     message: 'stale completion',
     error: null,
@@ -369,6 +377,10 @@ test('ignores other-job and stale events while applying the next active-job even
     stage: 'scraping',
     processed_units: 4,
     total_units: 10,
+    failed_units: 0,
+    businesses_discovered: 13,
+    businesses_qualified: 6,
+    leads_created: 4,
     percentage: 40,
     message: 'Paused safely after the current checkpoint',
     error: null,
@@ -377,4 +389,44 @@ test('ignores other-job and stale events while applying the next active-job even
 
   expect(await screen.findByText('Paused safely after the current checkpoint')).toBeTruthy();
   expect(screen.getByText('Paused')).toBeTruthy();
+});
+
+test('updates live scraper counters from the accepted job event', async () => {
+  jobs = [
+    job('running', {
+      businesses_discovered: 0,
+      businesses_qualified: 0,
+      leads_created: 0
+    })
+  ];
+  render(GoogleMapsScraper);
+
+  expect(await screen.findByText('Running')).toBeTruthy();
+  expect(screen.getByText('Discovered').previousElementSibling?.textContent).toBe('0');
+  expect(screen.getByText('Qualified').previousElementSibling?.textContent).toBe('0');
+  expect(screen.getByText('Leads').previousElementSibling?.textContent).toBe('0');
+
+  emitJobEvent({
+    job_id: 'job-1',
+    sequence: 11,
+    timestamp: '2026-07-29T00:00:11Z',
+    status: 'running',
+    stage: 'scraping',
+    processed_units: 4,
+    total_units: 10,
+    failed_units: 1,
+    businesses_discovered: 12,
+    businesses_qualified: 5,
+    leads_created: 4,
+    percentage: 40,
+    message: 'Completed place checkpoint',
+    error: null,
+    action_required: null
+  });
+
+  await waitFor(() => {
+    expect(screen.getByText('Discovered').previousElementSibling?.textContent).toBe('12');
+    expect(screen.getByText('Qualified').previousElementSibling?.textContent).toBe('5');
+    expect(screen.getByText('Leads').previousElementSibling?.textContent).toBe('4');
+  });
 });

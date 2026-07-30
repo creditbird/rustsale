@@ -199,6 +199,10 @@ pub struct ScrapeJobEvent {
     pub stage: ScrapeStage,
     pub processed_units: u64,
     pub total_units: u64,
+    pub failed_units: u64,
+    pub businesses_discovered: u64,
+    pub businesses_qualified: u64,
+    pub leads_created: u64,
     pub percentage: f64,
     pub message: String,
     pub error: Option<ScrapeJobError>,
@@ -275,6 +279,10 @@ mod tests {
             stage: ScrapeStage::Scraping,
             processed_units: 3,
             total_units: 12,
+            failed_units: 1,
+            businesses_discovered: 12,
+            businesses_qualified: 5,
+            leads_created: 4,
             percentage: 25.0,
             message: "Scraping grid cell".to_string(),
             error: Some(ScrapeJobError {
@@ -285,6 +293,11 @@ mod tests {
             action_required: None,
         };
         let event_json = serde_json::to_string(&event).unwrap();
+        let event_value: serde_json::Value = serde_json::from_str(&event_json).unwrap();
+        assert_eq!(event_value["failed_units"], 1);
+        assert_eq!(event_value["businesses_discovered"], 12);
+        assert_eq!(event_value["businesses_qualified"], 5);
+        assert_eq!(event_value["leads_created"], 4);
         let decoded_event: ScrapeJobEvent = serde_json::from_str(&event_json).unwrap();
         assert_eq!(decoded_event, event);
     }
