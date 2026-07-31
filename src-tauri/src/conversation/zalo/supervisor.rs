@@ -208,26 +208,8 @@ async fn run_session_loop(
             }
         }
 
-        // 6. Request direct/group old messages and reactions from stored checkpoints
-        let direct_cursor = account_id.and_then(|id| {
-            service
-                .repository
-                .get_checkpoint(id, "direct_messages")
-                .ok()
-                .flatten()
-        });
-        let group_cursor = account_id.and_then(|id| {
-            service
-                .repository
-                .get_checkpoint(id, "group_messages")
-                .ok()
-                .flatten()
-        });
-
-        let _ = client.request_old_messages(ThreadType::User, direct_cursor.as_deref());
-        let _ = client.request_old_reactions(ThreadType::User, direct_cursor.as_deref());
-        let _ = client.request_old_messages(ThreadType::Group, group_cursor.as_deref());
-        let _ = client.request_old_reactions(ThreadType::Group, group_cursor.as_deref());
+        // 6. Request direct/group old messages and reactions from stored checkpoints with pagination
+        request_paginated_history(client.as_ref(), service.as_ref(), account_id).await;
 
         // 7. Drain receiver loop
         let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
@@ -282,25 +264,7 @@ async fn run_session_loop(
                                 Some("Receiver lagged"),
                             );
 
-                            let d_cursor = account_id.and_then(|id| {
-                                service
-                                    .repository
-                                    .get_checkpoint(id, "direct_messages")
-                                    .ok()
-                                    .flatten()
-                            });
-                            let g_cursor = account_id.and_then(|id| {
-                                service
-                                    .repository
-                                    .get_checkpoint(id, "group_messages")
-                                    .ok()
-                                    .flatten()
-                            });
-
-                            let _ = client.request_old_messages(ThreadType::User, d_cursor.as_deref());
-                            let _ = client.request_old_reactions(ThreadType::User, d_cursor.as_deref());
-                            let _ = client.request_old_messages(ThreadType::Group, g_cursor.as_deref());
-                            let _ = client.request_old_reactions(ThreadType::Group, g_cursor.as_deref());
+                            request_paginated_history(client.as_ref(), service.as_ref(), account_id).await;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             client.stop();
@@ -325,5 +289,53 @@ async fn run_session_loop(
             }
             backoff_secs = (backoff_secs * 2).min(30);
         }
+    }
+}
+
+async fn request_paginated_history(
+    client: &dyn crate::conversation::zalo::client::ZaloClient,
+    service: &ConversationService,
+    account_id: Option<i64>,
+) {
+    let acc_id = match account_id {
+        Some(id) => id,
+        None => return,
+    };
+
+    let mut direct_cursor = service
+        .repository
+        .get_checkpoint(acc_id, "direct_messages")
+        .ok()
+        .flatten();
+    let mut group_cursor = service
+        .repository
+        .get_checkpoint(acc_id, "group_messages")
+        .ok()
+        .flatten();
+
+    for _page in 0..5 {
+        let _ = client.request_old_messages(ThreadType::User, direct_cursor.as_deref());
+        let _ = client.request_old_reactions(ThreadType::User, direct_cursor.as_deref());
+        let _ = client.request_old_messages(ThreadType::Group, group_cursor.as_deref());
+        let _ = client.request_old_reactions(ThreadType::Group, group_cursor.as_deref());
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let next_direct = service
+            .repository
+            .get_checkpoint(acc_id, "direct_messages")
+            .ok()
+            .flatten();
+        let next_group = service
+            .repository
+            .get_checkpoint(acc_id, "group_messages")
+            .ok()
+            .flatten();
+
+        if next_direct == direct_cursor && next_group == group_cursor {
+            break;
+        }
+        direct_cursor = next_direct;
+        group_cursor = next_group;
     }
 }

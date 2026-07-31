@@ -397,3 +397,18 @@ async fn restart_account_cancels_old_task_before_connecting_again() {
     assert_eq!(harness.factory.max_simultaneous_clients("imei-a"), 1);
     harness.supervisor.stop_account("imei-a").await;
 }
+
+#[tokio::test]
+async fn stop_account_terminates_session_task_and_removes_from_supervisor() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+
+    harness.supervisor.stop_account("imei-a").await;
+    harness.factory.wait_for_stop_count("imei-a", 1).await;
+
+    // Further restarts can create clean task
+    harness.supervisor.restart_account("imei-a").await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 2).await;
+    harness.supervisor.stop_account("imei-a").await;
+}

@@ -486,4 +486,3 @@ Expected: all non-ignored tests pass; ignored live probe is listed but skipped u
 - [ ] **Step 3: Stop if the live gate has not passed**
 
 Do not start the storage foundation plan based only on synthetic tests. The live probe must pass on a non-production account, or the design must be revised to match observed provider behavior.
-

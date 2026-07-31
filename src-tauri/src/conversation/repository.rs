@@ -1203,15 +1203,28 @@ impl ConversationRepository {
         }
     }
 
+    pub fn get_channel_account_id(&self, provider_account_key: &str) -> Result<Option<i64>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM channel_accounts WHERE provider_account_key = ?1 AND channel = 'zalo'",
+                [provider_account_key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
     pub fn get_checkpoint(&self, channel_account_id: i64, scope: &str) -> Result<Option<String>> {
         let conn = open_db_connection(&self.db_path)?;
         let cursor: Option<String> = conn
             .query_row(
                 "SELECT cursor FROM channel_sync_checkpoints WHERE channel_account_id = ?1 AND scope = ?2",
                 params![channel_account_id, scope],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
-            .optional()?;
+            .optional()?
+            .flatten();
         Ok(cursor)
     }
 

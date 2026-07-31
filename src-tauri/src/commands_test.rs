@@ -1680,4 +1680,49 @@ mod tests {
             .unwrap();
         assert_eq!(total_history, 5);
     }
+
+    #[tokio::test]
+    async fn campaign_transaction_rolls_back_on_crm_error() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test-crm-campaign-rollback-{}",
+            rand::random::<u64>()
+        ));
+        let mut conn = db::init_db(temp_dir.to_str().unwrap()).unwrap();
+        crate::conversation::migration::migrate(&conn).unwrap();
+
+        let _lead_id = commands::add_lead_internal(
+            &mut conn,
+            "Rollback Lead".to_string(),
+            "Corp".to_string(),
+            "New".to_string(),
+            100.0,
+            "Owner".to_string(),
+            "r@corp.com".to_string(),
+            "0909000111".to_string(),
+            Some("uid-rollback".to_string()),
+            None,
+        )
+        .unwrap();
+
+        // Drop outreach_history table to induce an error inside transaction
+        conn.execute("DROP TABLE outreach_history", []).unwrap();
+        let db_mutex = std::sync::Arc::new(std::sync::Mutex::new(conn));
+
+        let _ = commands::send_zalo_campaign_internal(
+            None,
+            &db_mutex,
+            1,
+            1,
+            vec!["mock-campaign-1".to_string()],
+        )
+        .await;
+
+        let conn_locked = db_mutex.lock().unwrap();
+        let conv_count: i64 = conn_locked
+            .query_row("SELECT COUNT(*) FROM channel_conversations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(conv_count, 0);
+    }
 }

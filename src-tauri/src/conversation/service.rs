@@ -74,7 +74,27 @@ impl ConversationService {
         )? {
             match mutation {
                 ZaloMutation::Message(message) => {
+                    let is_group = matches!(
+                        message.conversation_kind,
+                        crate::conversation::types::ConversationKind::Group
+                    );
+                    let scope = if is_group {
+                        "group_messages"
+                    } else {
+                        "direct_messages"
+                    };
                     let applied = self.repository.apply_normalized_message(&message)?;
+                    let event_at = message
+                        .provider_timestamp
+                        .as_deref()
+                        .unwrap_or(&message.ingested_at);
+                    let _ = self.repository.update_checkpoint(
+                        applied.channel_account_id,
+                        scope,
+                        message.provider_message_id.as_deref(),
+                        Some(event_at),
+                        None,
+                    );
                     if !applied.duplicate {
                         let lead_id = applied.identity_id.and_then(|identity_id| {
                             self.repository
@@ -97,6 +117,17 @@ impl ConversationService {
                             message_id,
                             ConversationInvalidationReason::Reaction,
                         )?;
+                    }
+                    if let Ok(Some(account_id)) =
+                        self.repository.get_channel_account_id(provider_account_key)
+                    {
+                        let _ = self.repository.update_checkpoint(
+                            account_id,
+                            "direct_messages",
+                            Some(&reaction.provider_message_id),
+                            Some(&reaction.occurred_at),
+                            None,
+                        );
                     }
                 }
                 ZaloMutation::Undo(undo) => {
@@ -125,7 +156,26 @@ impl ConversationService {
                         message_id: None,
                     });
                 }
-                ZaloMutation::ReconcileRequired { .. } => {}
+                ZaloMutation::ReconcileRequired { scope } => {
+                    if let Ok(Some(account_id)) =
+                        self.repository.get_channel_account_id(provider_account_key)
+                    {
+                        let _ = self.repository.update_checkpoint(
+                            account_id,
+                            scope,
+                            None,
+                            None,
+                            Some("Reconcile required"),
+                        );
+                    }
+                    self.events.publish(ConversationInvalidatedEvent {
+                        conversation_id: 0,
+                        lead_id: None,
+                        channel: Channel::Zalo,
+                        reason: ConversationInvalidationReason::Metadata,
+                        message_id: None,
+                    });
+                }
             }
         }
         Ok(())

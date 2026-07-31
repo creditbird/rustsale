@@ -327,3 +327,126 @@ async fn publish_outreach_success_skips_duplicate() {
 
     assert!(rx.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn reconcile_required_updates_checkpoint_with_error_and_emits_invalidation_event() {
+    let harness = ServiceHarness::new();
+    let mut rx = harness.events.subscribe();
+
+    let account_id = harness
+        .service
+        .repository
+        .set_account_status(
+            "imei-rec",
+            crate::conversation::types::AccountConnectionStatus::Connected,
+            None,
+        )
+        .unwrap();
+
+    let event = ListenerEvent::Disconnected {
+        reason: "connection dropped".to_string(),
+        code: 1000,
+    };
+
+    harness
+        .service
+        .ingest_zalo_event("imei-rec", Some("Sale 1"), event)
+        .unwrap();
+
+    let checkpoint_err = harness
+        .service
+        .repository
+        .get_checkpoint(account_id, "direct_messages")
+        .unwrap();
+    assert_eq!(checkpoint_err, None);
+
+    let event_received = rx.try_recv().unwrap();
+    assert_eq!(
+        event_received.channel,
+        crate::conversation::types::Channel::Zalo
+    );
+    assert_eq!(
+        event_received.reason,
+        crate::conversation::events::ConversationInvalidationReason::Metadata
+    );
+}
+
+#[tokio::test]
+async fn outbox_job_reaching_max_attempts_fails_permanently() {
+    let harness = ServiceHarness::new();
+    let account_id = harness
+        .service
+        .repository
+        .set_account_status(
+            "imei-test",
+            crate::conversation::types::AccountConnectionStatus::Connected,
+            None,
+        )
+        .unwrap();
+
+    let conversation_id = {
+        let conn = open_db_connection(&harness.db_path).unwrap();
+        conn.query_row(
+            "INSERT INTO channel_conversations (channel_account_id, external_thread_id, kind, title, status, created_at, updated_at) VALUES (?1, 'peer-1', 'direct', 'Direct', 'active', '2026-07-31T00:00:00.000Z', '2026-07-31T00:00:00.000Z') RETURNING id",
+            [account_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+
+    let req = SendConversationMessageRequest {
+        conversation_id,
+        channel_account_id: account_id,
+        text: "fail test".to_string(),
+        reply_to_message_id: None,
+    };
+
+    let _msg_id = harness.service.enqueue_message(&req).unwrap();
+
+    let client = FakeZaloClient {
+        provider_message_id: None,
+        should_fail: true,
+        fail_error: Some("transient network error".to_string()),
+    };
+
+    // Simulate 5 claims/attempts by resetting next_attempt_at between loops
+    for _ in 0..4 {
+        let _ = harness
+            .service
+            .process_next_outbox_job(account_id, &client)
+            .await;
+        let conn = open_db_connection(&harness.db_path).unwrap();
+        conn.execute(
+            "UPDATE message_outbox_jobs SET next_attempt_at = NULL WHERE channel_account_id = ?1",
+            [account_id],
+        )
+        .unwrap();
+    }
+
+    // 5th attempt should give up and fail permanently
+    let processed = harness
+        .service
+        .process_next_outbox_job(account_id, &client)
+        .await
+        .unwrap();
+    assert!(processed);
+
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    let job_status: String = conn
+        .query_row(
+            "SELECT status FROM message_outbox_jobs WHERE channel_account_id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(job_status, "failed");
+
+    let msg_status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_status, "failed");
+}

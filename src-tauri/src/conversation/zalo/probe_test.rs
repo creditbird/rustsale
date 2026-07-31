@@ -55,16 +55,13 @@ fn probe_summary_records_sanitized_direct_identifiers() {
 }
 
 fn next_history_cursor(report: &ZaloProbeReport) -> Option<&str> {
-    report
-        .occurred_at_timestamps
-        .iter()
-        .min()
-        .map(String::as_str)
+    report.provider_message_ids.last().map(String::as_str)
 }
 
 #[test]
-fn history_cursor_uses_min_occurred_at_timestamp() {
+fn history_cursor_uses_last_provider_message_id() {
     let report = ZaloProbeReport {
+        provider_message_ids: vec!["msg-1".to_string(), "msg-2".to_string()],
         occurred_at_timestamps: vec![
             "2026-07-31T12:05:00.000Z".to_string(),
             "2026-07-31T12:01:00.000Z".to_string(),
@@ -72,8 +69,13 @@ fn history_cursor_uses_min_occurred_at_timestamp() {
         ..ZaloProbeReport::default()
     };
 
+    assert_eq!(next_history_cursor(&report), Some("msg-2"));
     assert_eq!(
-        next_history_cursor(&report),
+        report
+            .occurred_at_timestamps
+            .iter()
+            .min()
+            .map(String::as_str),
         Some("2026-07-31T12:01:00.000Z")
     );
 }
@@ -198,4 +200,29 @@ async fn live_zalo_conversation_probe() {
         !report.client_message_ids.is_empty(),
         "client message IDs were empty"
     );
+}
+
+#[tokio::test]
+async fn synthetic_zalo_conversation_probe_execution() {
+    let mut report = ZaloProbeReport::default();
+
+    let direct_ev = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        direct_message("peer-uid", "0", "msg-101"),
+    ))));
+    let old_ev = ListenerEvent::OldMessages {
+        messages: vec![Message::User(UserMessage::new(
+            "self-uid",
+            direct_message("peer-uid", "0", "msg-100"),
+        ))],
+        thread_type: zca_rs::models::ThreadType::User,
+    };
+
+    observe_listener_event(&mut report, &direct_ev);
+    observe_listener_event(&mut report, &old_ev);
+
+    assert_eq!(report.direct_messages, 2);
+    assert_eq!(report.old_direct_batches, 1);
+    assert_eq!(next_history_cursor(&report), Some("msg-100"));
+    assert_eq!(report.occurred_at_timestamps.len(), 2);
 }
