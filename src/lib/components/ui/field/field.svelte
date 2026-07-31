@@ -23,6 +23,7 @@
 <script lang="ts">
 	import { cn, type WithElementRef } from "$lib/utils.js";
 	import type { HTMLAttributes } from "svelte/elements";
+	import type { Snippet } from "svelte";
 
 	let {
 		ref = $bindable(null),
@@ -32,6 +33,7 @@
 		...restProps
 	}: WithElementRef<HTMLAttributes<HTMLDivElement>> & {
 		orientation?: FieldOrientation;
+		children?: Snippet;
 	} = $props();
 </script>
 
