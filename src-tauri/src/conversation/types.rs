@@ -220,6 +220,73 @@ pub struct LinkIdentityRequest {
     pub lead_id: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountConnectionStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+    Degraded,
+    Invalid,
+}
+
+impl AccountConnectionStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disconnected => "disconnected",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Degraded => "degraded",
+            Self::Invalid => "invalid",
+        }
+    }
+
+    pub fn from_db(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "disconnected" => Ok(Self::Disconnected),
+            "connecting" => Ok(Self::Connecting),
+            "connected" => Ok(Self::Connected),
+            "degraded" => Ok(Self::Degraded),
+            "invalid" => Ok(Self::Invalid),
+            other => Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid account connection status: {other}"),
+                )),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAccountRuntime {
+    pub channel_account_id: i64,
+    pub channel: Channel,
+    pub provider_account_key: String,
+    pub display_name: Option<String>,
+    pub status: AccountConnectionStatus,
+    pub last_connected_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRuntimeStatus {
+    pub accounts: Vec<ConversationAccountRuntime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendConversationMessageRequest {
+    pub conversation_id: i64,
+    pub channel_account_id: i64,
+    pub text: String,
+    pub reply_to_message_id: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +318,24 @@ mod tests {
         let value = utc_now();
         assert!(value.ends_with('Z'));
         assert_eq!(value.len(), "2026-07-31T01:02:03.000Z".len());
+    }
+
+    #[test]
+    fn runtime_status_contract_uses_camel_case_fields() {
+        let status = ConversationRuntimeStatus {
+            accounts: vec![ConversationAccountRuntime {
+                channel_account_id: 1,
+                channel: Channel::Zalo,
+                provider_account_key: "imei-a".to_string(),
+                display_name: Some("Sale 01".to_string()),
+                status: AccountConnectionStatus::Connected,
+                last_connected_at: Some("2026-07-31T00:00:00.000Z".to_string()),
+                last_error: None,
+            }],
+        };
+
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["accounts"][0]["channelAccountId"], 1);
+        assert_eq!(json["accounts"][0]["status"], "connected");
     }
 }
