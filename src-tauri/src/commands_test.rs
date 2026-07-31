@@ -1704,8 +1704,13 @@ mod tests {
         )
         .unwrap();
 
-        // Drop outreach_history table to induce an error inside transaction
-        conn.execute("DROP TABLE outreach_history", []).unwrap();
+        // Create trigger on leads that fails UPDATE AFTER outreach_history INSERT has already succeeded inside tx
+        conn.execute(
+            "CREATE TRIGGER fail_lead_update AFTER UPDATE ON leads BEGIN SELECT RAISE(ABORT, 'Simulated CRM lead update error'); END;",
+            [],
+        )
+        .unwrap();
+
         let db_mutex = std::sync::Arc::new(std::sync::Mutex::new(conn));
 
         let _ = commands::send_zalo_campaign_internal(
@@ -1718,6 +1723,15 @@ mod tests {
         .await;
 
         let conn_locked = db_mutex.lock().unwrap();
+
+        // Outreach history must be 0 because the successful INSERT in step 1 was rolled back on step 2 failure!
+        let history_count: i64 = conn_locked
+            .query_row("SELECT COUNT(*) FROM outreach_history", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(history_count, 0);
+
         let conv_count: i64 = conn_locked
             .query_row("SELECT COUNT(*) FROM channel_conversations", [], |row| {
                 row.get(0)

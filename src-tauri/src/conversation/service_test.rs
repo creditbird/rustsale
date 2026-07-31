@@ -353,12 +353,27 @@ async fn reconcile_required_updates_checkpoint_with_error_and_emits_invalidation
         .ingest_zalo_event("imei-rec", Some("Sale 1"), event)
         .unwrap();
 
-    let checkpoint_err = harness
+    let direct_detail = harness
         .service
         .repository
-        .get_checkpoint(account_id, "direct_messages")
+        .get_checkpoint_detail(account_id, "direct_messages")
+        .unwrap()
         .unwrap();
-    assert_eq!(checkpoint_err, None);
+    assert_eq!(
+        direct_detail.last_error,
+        Some("Reconcile required".to_string())
+    );
+
+    let group_detail = harness
+        .service
+        .repository
+        .get_checkpoint_detail(account_id, "group_messages")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        group_detail.last_error,
+        Some("Reconcile required".to_string())
+    );
 
     let event_received = rx.try_recv().unwrap();
     assert_eq!(
@@ -368,6 +383,71 @@ async fn reconcile_required_updates_checkpoint_with_error_and_emits_invalidation
     assert_eq!(
         event_received.reason,
         crate::conversation::events::ConversationInvalidationReason::Metadata
+    );
+}
+
+#[tokio::test]
+async fn monotonic_checkpoint_prevents_cursor_regression_from_older_or_out_of_order_events() {
+    let harness = ServiceHarness::new();
+    let account_id = harness
+        .service
+        .repository
+        .set_account_status(
+            "imei-mono",
+            crate::conversation::types::AccountConnectionStatus::Connected,
+            None,
+        )
+        .unwrap();
+
+    // 1. Ingest newer event (2026-07-31T10:00:00.000Z) with cursor msg-newer
+    harness
+        .service
+        .repository
+        .update_checkpoint(
+            account_id,
+            "direct_messages",
+            Some("msg-newer"),
+            Some("2026-07-31T10:00:00.000Z"),
+            None,
+        )
+        .unwrap();
+
+    let detail_1 = harness
+        .service
+        .repository
+        .get_checkpoint_detail(account_id, "direct_messages")
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail_1.cursor, Some("msg-newer".to_string()));
+    assert_eq!(
+        detail_1.last_event_at,
+        Some("2026-07-31T10:00:00.000Z".to_string())
+    );
+
+    // 2. Ingest older event (2026-07-31T09:00:00.000Z) with cursor msg-older
+    harness
+        .service
+        .repository
+        .update_checkpoint(
+            account_id,
+            "direct_messages",
+            Some("msg-older"),
+            Some("2026-07-31T09:00:00.000Z"),
+            None,
+        )
+        .unwrap();
+
+    // Checkpoint MUST keep msg-newer and 10:00:00 timestamp
+    let detail_2 = harness
+        .service
+        .repository
+        .get_checkpoint_detail(account_id, "direct_messages")
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail_2.cursor, Some("msg-newer".to_string()));
+    assert_eq!(
+        detail_2.last_event_at,
+        Some("2026-07-31T10:00:00.000Z".to_string())
     );
 }
 

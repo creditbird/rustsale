@@ -208,11 +208,14 @@ async fn run_session_loop(
             }
         }
 
-        // 6. Request direct/group old messages and reactions from stored checkpoints with pagination
-        request_paginated_history(client.as_ref(), service.as_ref(), account_id).await;
+        // 6. Request initial history and reactions from stored checkpoints
+        send_initial_history_requests(client.as_ref(), service.as_ref(), account_id);
 
-        // 7. Drain receiver loop
+        // 7. Drain receiver loop with reactive pagination state machine
         let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut direct_page_count = 0usize;
+        let mut group_page_count = 0usize;
+
         let should_reconnect = loop {
             tokio::select! {
                 _ = cancellation.cancelled() => {
@@ -247,9 +250,35 @@ async fn run_session_loop(
                                     | zca_rs::listener::ListenerEvent::Error(_)
                             );
 
-                            // 9. Call service.ingest_zalo_event before publishing UI events
+                            // 9. Check for OldMessages to drive pagination state machine
+                            let next_page_req = if let zca_rs::listener::ListenerEvent::OldMessages { ref messages, thread_type } = event {
+                                let page_count = match thread_type {
+                                    zca_rs::models::ThreadType::User => &mut direct_page_count,
+                                    zca_rs::models::ThreadType::Group => &mut group_page_count,
+                                };
+                                if !messages.is_empty() && *page_count < 5 {
+                                    *page_count += 1;
+                                    let next_cursor = match messages.last() {
+                                        Some(zca_rs::models::Message::User(m)) => Some(m.data.msg_id.clone()),
+                                        Some(zca_rs::models::Message::Group(m)) => Some(m.data.base.msg_id.clone()),
+                                        None => None,
+                                    };
+                                    next_cursor.map(|c| (thread_type, c))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            // 10. Call service.ingest_zalo_event before publishing UI events
                             let display_name = session.display_name.as_deref();
                             let _ = service.ingest_zalo_event(&imei, display_name, event);
+
+                            // 11. Trigger next page request if pagination state machine derived next_cursor
+                            if let Some((thread_type, cursor)) = next_page_req {
+                                let _ = client.request_old_messages(thread_type, Some(&cursor));
+                            }
 
                             if is_disconnecting {
                                 client.stop();
@@ -257,14 +286,16 @@ async fn run_session_loop(
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            // 10. On Lagged, request direct/group reconciliation and mark account degraded
+                            // 12. On Lagged, request direct/group reconciliation and mark account degraded
                             let _ = service.repository.set_account_status(
                                 &imei,
                                 AccountConnectionStatus::Degraded,
                                 Some("Receiver lagged"),
                             );
 
-                            request_paginated_history(client.as_ref(), service.as_ref(), account_id).await;
+                            direct_page_count = 0;
+                            group_page_count = 0;
+                            send_initial_history_requests(client.as_ref(), service.as_ref(), account_id);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             client.stop();
@@ -276,7 +307,7 @@ async fn run_session_loop(
         };
 
         if should_reconnect {
-            // 11. Drop client, sleep backoff, reconnect inside same task
+            // 13. Drop client, sleep backoff, reconnect inside same task
             let _ = service.repository.set_account_status(
                 &imei,
                 AccountConnectionStatus::Disconnected,
@@ -292,7 +323,7 @@ async fn run_session_loop(
     }
 }
 
-async fn request_paginated_history(
+fn send_initial_history_requests(
     client: &dyn crate::conversation::zalo::client::ZaloClient,
     service: &ConversationService,
     account_id: Option<i64>,
@@ -302,40 +333,19 @@ async fn request_paginated_history(
         None => return,
     };
 
-    let mut direct_cursor = service
+    let direct_cursor = service
         .repository
         .get_checkpoint(acc_id, "direct_messages")
         .ok()
         .flatten();
-    let mut group_cursor = service
+    let group_cursor = service
         .repository
         .get_checkpoint(acc_id, "group_messages")
         .ok()
         .flatten();
 
-    for _page in 0..5 {
-        let _ = client.request_old_messages(ThreadType::User, direct_cursor.as_deref());
-        let _ = client.request_old_reactions(ThreadType::User, direct_cursor.as_deref());
-        let _ = client.request_old_messages(ThreadType::Group, group_cursor.as_deref());
-        let _ = client.request_old_reactions(ThreadType::Group, group_cursor.as_deref());
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let next_direct = service
-            .repository
-            .get_checkpoint(acc_id, "direct_messages")
-            .ok()
-            .flatten();
-        let next_group = service
-            .repository
-            .get_checkpoint(acc_id, "group_messages")
-            .ok()
-            .flatten();
-
-        if next_direct == direct_cursor && next_group == group_cursor {
-            break;
-        }
-        direct_cursor = next_direct;
-        group_cursor = next_group;
-    }
+    let _ = client.request_old_messages(ThreadType::User, direct_cursor.as_deref());
+    let _ = client.request_old_reactions(ThreadType::User, direct_cursor.as_deref());
+    let _ = client.request_old_messages(ThreadType::Group, group_cursor.as_deref());
+    let _ = client.request_old_reactions(ThreadType::Group, group_cursor.as_deref());
 }

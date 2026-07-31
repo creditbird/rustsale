@@ -121,13 +121,20 @@ impl ConversationService {
                     if let Ok(Some(account_id)) =
                         self.repository.get_channel_account_id(provider_account_key)
                     {
-                        let _ = self.repository.update_checkpoint(
+                        let scope = if reaction.is_group {
+                            "group_messages"
+                        } else {
+                            "direct_messages"
+                        };
+                        if let Err(e) = self.repository.update_checkpoint(
                             account_id,
-                            "direct_messages",
+                            scope,
                             Some(&reaction.provider_message_id),
                             Some(&reaction.occurred_at),
                             None,
-                        );
+                        ) {
+                            tracing::warn!("Failed to update reaction checkpoint: {}", e);
+                        }
                     }
                 }
                 ZaloMutation::Undo(undo) => {
@@ -160,13 +167,22 @@ impl ConversationService {
                     if let Ok(Some(account_id)) =
                         self.repository.get_channel_account_id(provider_account_key)
                     {
-                        let _ = self.repository.update_checkpoint(
-                            account_id,
-                            scope,
-                            None,
-                            None,
-                            Some("Reconcile required"),
-                        );
+                        let scopes: &[&str] = if scope == "all" {
+                            &["direct_messages", "group_messages"]
+                        } else {
+                            &[scope]
+                        };
+                        for target_scope in scopes {
+                            if let Err(e) = self.repository.update_checkpoint(
+                                account_id,
+                                target_scope,
+                                None,
+                                None,
+                                Some("Reconcile required"),
+                            ) {
+                                tracing::warn!("Failed to set reconcile checkpoint: {}", e);
+                            }
+                        }
                     }
                     self.events.publish(ConversationInvalidatedEvent {
                         conversation_id: 0,

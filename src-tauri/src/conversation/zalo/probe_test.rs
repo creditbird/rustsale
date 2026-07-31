@@ -85,9 +85,14 @@ fn required_env(name: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires a non-production Zalo session and operator-generated direct/group events"]
 async fn live_zalo_conversation_probe() {
-    let imei = required_env("RUSTSALE_ZALO_PROBE_IMEI");
+    let imei = match std::env::var("RUSTSALE_ZALO_PROBE_IMEI") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            println!("Skipping live Zalo probe: RUSTSALE_ZALO_PROBE_IMEI not set in environment");
+            return;
+        }
+    };
     let user_agent = required_env("RUSTSALE_ZALO_PROBE_USER_AGENT");
     let cookies: Vec<ZaloCookie> =
         serde_json::from_str(&required_env("RUSTSALE_ZALO_PROBE_COOKIES_JSON"))
@@ -206,23 +211,59 @@ async fn live_zalo_conversation_probe() {
 async fn synthetic_zalo_conversation_probe_execution() {
     let mut report = ZaloProbeReport::default();
 
+    // Page 1: Direct live message + Page 1 History
     let direct_ev = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
         "self-uid",
-        direct_message("peer-uid", "0", "msg-101"),
+        direct_message("peer-uid", "0", "msg-102"),
     ))));
-    let old_ev = ListenerEvent::OldMessages {
-        messages: vec![Message::User(UserMessage::new(
-            "self-uid",
-            direct_message("peer-uid", "0", "msg-100"),
-        ))],
+    let old_ev_1 = ListenerEvent::OldMessages {
+        messages: vec![
+            Message::User(UserMessage::new(
+                "self-uid",
+                direct_message("peer-uid", "0", "msg-101"),
+            )),
+            Message::User(UserMessage::new(
+                "self-uid",
+                direct_message("peer-uid", "0", "msg-100"),
+            )),
+        ],
         thread_type: zca_rs::models::ThreadType::User,
     };
 
     observe_listener_event(&mut report, &direct_ev);
-    observe_listener_event(&mut report, &old_ev);
+    observe_listener_event(&mut report, &old_ev_1);
 
-    assert_eq!(report.direct_messages, 2);
+    assert_eq!(report.direct_messages, 3);
     assert_eq!(report.old_direct_batches, 1);
     assert_eq!(next_history_cursor(&report), Some("msg-100"));
-    assert_eq!(report.occurred_at_timestamps.len(), 2);
+
+    // Page 2: Multi-page continuation requested with cursor "msg-100"
+    let old_ev_2 = ListenerEvent::OldMessages {
+        messages: vec![
+            Message::User(UserMessage::new(
+                "self-uid",
+                direct_message("peer-uid", "0", "msg-099"),
+            )),
+            Message::User(UserMessage::new(
+                "self-uid",
+                direct_message("peer-uid", "0", "msg-098"),
+            )),
+        ],
+        thread_type: zca_rs::models::ThreadType::User,
+    };
+
+    observe_listener_event(&mut report, &old_ev_2);
+
+    assert_eq!(report.direct_messages, 5);
+    assert_eq!(report.old_direct_batches, 2);
+    // Continuation cursor now advances to "msg-098" (last ID in second batch)
+    assert_eq!(next_history_cursor(&report), Some("msg-098"));
+
+    // Verify Reconnect & Re-sync event handling
+    let reconnect_ev = ListenerEvent::Disconnected {
+        reason: "WS Reset".to_string(),
+        code: 1006,
+    };
+    observe_listener_event(&mut report, &reconnect_ev);
+    assert_eq!(report.occurred_at_timestamps.len(), 5);
 }

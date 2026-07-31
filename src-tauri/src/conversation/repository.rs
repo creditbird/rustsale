@@ -45,6 +45,14 @@ pub struct NormalizedMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncCheckpointDetail {
+    pub cursor: Option<String>,
+    pub last_event_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMessage {
     pub channel_account_id: i64,
     pub identity_id: Option<i64>,
@@ -1100,8 +1108,16 @@ impl ConversationRepository {
              (channel_account_id, scope, cursor, last_event_at, last_success_at, last_error, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(channel_account_id, scope) DO UPDATE SET
-                 cursor = COALESCE(excluded.cursor, channel_sync_checkpoints.cursor),
-                 last_event_at = COALESCE(excluded.last_event_at, channel_sync_checkpoints.last_event_at),
+                 cursor = CASE
+                     WHEN excluded.cursor IS NULL THEN channel_sync_checkpoints.cursor
+                     WHEN channel_sync_checkpoints.last_event_at IS NULL OR excluded.last_event_at >= channel_sync_checkpoints.last_event_at THEN excluded.cursor
+                     ELSE channel_sync_checkpoints.cursor
+                 END,
+                 last_event_at = CASE
+                     WHEN excluded.last_event_at IS NULL THEN channel_sync_checkpoints.last_event_at
+                     WHEN channel_sync_checkpoints.last_event_at IS NULL OR excluded.last_event_at >= channel_sync_checkpoints.last_event_at THEN excluded.last_event_at
+                     ELSE channel_sync_checkpoints.last_event_at
+                 END,
                  last_success_at = COALESCE(excluded.last_success_at, channel_sync_checkpoints.last_success_at),
                  last_error = excluded.last_error,
                  updated_at = excluded.updated_at",
@@ -1117,6 +1133,42 @@ impl ConversationRepository {
         )?;
 
         Ok(())
+    }
+
+    pub fn get_checkpoint(&self, channel_account_id: i64, scope: &str) -> Result<Option<String>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let cursor: Option<String> = conn
+            .query_row(
+                "SELECT cursor FROM channel_sync_checkpoints WHERE channel_account_id = ?1 AND scope = ?2",
+                params![channel_account_id, scope],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(cursor)
+    }
+
+    pub fn get_checkpoint_detail(
+        &self,
+        channel_account_id: i64,
+        scope: &str,
+    ) -> Result<Option<SyncCheckpointDetail>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let detail = conn
+            .query_row(
+                "SELECT cursor, last_event_at, last_success_at, last_error FROM channel_sync_checkpoints WHERE channel_account_id = ?1 AND scope = ?2",
+                params![channel_account_id, scope],
+                |row| {
+                    Ok(SyncCheckpointDetail {
+                        cursor: row.get(0)?,
+                        last_event_at: row.get(1)?,
+                        last_success_at: row.get(2)?,
+                        last_error: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(detail)
     }
 
     pub fn set_account_status(
@@ -1213,19 +1265,6 @@ impl ConversationRepository {
             )
             .optional()?;
         Ok(id)
-    }
-
-    pub fn get_checkpoint(&self, channel_account_id: i64, scope: &str) -> Result<Option<String>> {
-        let conn = open_db_connection(&self.db_path)?;
-        let cursor: Option<String> = conn
-            .query_row(
-                "SELECT cursor FROM channel_sync_checkpoints WHERE channel_account_id = ?1 AND scope = ?2",
-                params![channel_account_id, scope],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()?
-            .flatten();
-        Ok(cursor)
     }
 
     pub fn get_runtime_status(&self) -> Result<ConversationRuntimeStatus> {
