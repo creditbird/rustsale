@@ -1,8 +1,9 @@
 pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
-    utc_now, Channel, ChannelBadgeSummary, ConversationKind, ConversationMessage,
-    ConversationParticipantSummary, ConversationReplyTarget, InboxItem, InboxItemKind,
-    MessageDirection, MessageStatus, TimelineCursor, TimelinePage,
+    utc_now, Channel, ChannelBadgeSummary, ConversationAccountRuntime, ConversationKind,
+    ConversationMessage, ConversationParticipantSummary, ConversationReplyTarget,
+    ConversationRuntimeStatus, InboxItem, InboxItemKind, MessageDirection, MessageStatus,
+    TimelineCursor, TimelinePage,
 };
 pub use crate::conversation::zalo::normalizer::{
     NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
@@ -1142,6 +1143,127 @@ impl ConversationRepository {
         )?;
 
         Ok(id)
+    }
+
+    pub fn lead_id_for_identity(&self, identity_id: i64) -> Result<Option<i64>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let lead_id: Option<i64> = conn
+            .query_row(
+                "SELECT lead_id FROM channel_identities WHERE id = ?1",
+                [identity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(lead_id)
+    }
+
+    pub fn lookup_message_invalidation_info(
+        &self,
+        message_id: i64,
+    ) -> Result<Option<(i64, Option<i64>, Channel)>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let row: Option<(i64, Option<i64>, String)> = conn
+            .query_row(
+                "SELECT m.conversation_id, ci.lead_id, ca.channel
+                 FROM messages m
+                 JOIN channel_conversations cc ON cc.id = m.conversation_id
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 LEFT JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                 LEFT JOIN channel_identities ci ON ci.id = cp.identity_id
+                 WHERE m.id = ?1
+                 LIMIT 1",
+                [message_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+
+        if let Some((conversation_id, lead_id, channel_str)) = row {
+            let channel = Channel::from_str(&channel_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+            Ok(Some((conversation_id, lead_id, channel)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_checkpoint(&self, channel_account_id: i64, scope: &str) -> Result<Option<String>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let cursor: Option<String> = conn
+            .query_row(
+                "SELECT cursor FROM channel_sync_checkpoints WHERE channel_account_id = ?1 AND scope = ?2",
+                params![channel_account_id, scope],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(cursor)
+    }
+
+    pub fn get_runtime_status(&self) -> Result<ConversationRuntimeStatus> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, channel, provider_account_key, display_name, connection_status, last_connected_at, last_error
+             FROM channel_accounts
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let channel_str: String = row.get(1)?;
+            let channel = Channel::from_str(&channel_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+            let status_str: String = row.get(4)?;
+            let status = AccountConnectionStatus::from_db(&status_str)?;
+            Ok(ConversationAccountRuntime {
+                channel_account_id: row.get(0)?,
+                channel,
+                provider_account_key: row.get(2)?,
+                display_name: row.get(3)?,
+                status,
+                last_connected_at: row.get(5)?,
+                last_error: row.get(6)?,
+            })
+        })?;
+
+        let mut accounts = Vec::new();
+        for account in rows {
+            accounts.push(account?);
+        }
+
+        Ok(ConversationRuntimeStatus { accounts })
+    }
+
+    pub fn message_count(&self) -> u64 {
+        let conn = match open_db_connection(&self.db_path) {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap_or(0);
+        count as u64
+    }
+
+    pub fn account_status(&self, imei: &str) -> String {
+        let conn = match open_db_connection(&self.db_path) {
+            Ok(c) => c,
+            Err(_) => return "unknown".to_string(),
+        };
+        let status: String = conn
+            .query_row(
+                "SELECT connection_status FROM channel_accounts WHERE provider_account_key = ?1 AND channel = 'zalo'",
+                [imei],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "unknown".to_string());
+        status
     }
 }
 
