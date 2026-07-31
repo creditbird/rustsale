@@ -411,7 +411,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(history_count, 1);
-        assert_eq!(lead_4.zalo_reached, 0);
+
+        // Verify conversation and message persistence
+        let direct_conv_count: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'direct'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(direct_conv_count, 1);
+
+        let group_conv_count: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'group'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(group_conv_count, 0);
+
+        let total_messages: i64 = conn_locked
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total_messages, 1);
+
+        let (text_content, content_json): (String, String) = conn_locked
+            .query_row(
+                "SELECT text_content, content_json FROM messages LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(text_content.contains("Sarah Harrington"));
+        assert!(content_json.contains("zalo_outreach"));
     }
 
     #[tokio::test]

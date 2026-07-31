@@ -1710,6 +1710,12 @@ pub async fn send_zalo_outreach_internal(
             }
 
             let formatted_content = render_zalo_template(&template_content, &lead_name);
+            let local_request_id = format!("outreach-{}", rand::random::<u128>());
+            let conversation_sent_at = crate::conversation::types::utc_now();
+            let provider_receipt =
+                crate::conversation::outreach::ZaloProviderReceipt::mock(&local_request_id);
+            let external_user_id = format!("mock-uid-{sanitized_phone}");
+
             total_sent += 1;
             burst_counter += 1;
             let log_msg = format!("Message sent to {} ({}) (Mock)", lead_name, sanitized_phone);
@@ -1717,7 +1723,7 @@ pub async fn send_zalo_outreach_internal(
                 let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
             }
 
-            let act_res: Result<(), String> = {
+            let act_res: Result<crate::conversation::outreach::AppliedOutreachMessage, String> = {
                 let mut conn_guard = conn_mutex
                     .lock()
                     .map_err(|e| format!("Database lock error: {}", e))?;
@@ -1754,19 +1760,53 @@ pub async fn send_zalo_outreach_internal(
                 )
                 .map_err(|e| format!("Database query error: {}", e))?;
 
+                let applied_outreach =
+                    crate::conversation::outreach::record_outreach_success_in_transaction(
+                        &tx,
+                        &crate::conversation::outreach::OutreachConversationRecord {
+                            lead_id: i64::from(*lead_id),
+                            provider_account_key: imei.clone(),
+                            account_display_name: None,
+                            external_user_id,
+                            user_display_name: Some(lead_name.clone()),
+                            user_avatar_url: None,
+                            template_id: i64::from(template_id),
+                            source: "zalo_outreach".to_string(),
+                            text: formatted_content.clone(),
+                            local_request_id,
+                            provider_receipt,
+                            sent_at: conversation_sent_at,
+                        },
+                    )
+                    .map_err(|e| format!("Outreach conversation record error: {}", e))?;
+
                 tx.commit()
                     .map_err(|e| format!("Database transaction commit error: {}", e))?;
-                Ok(())
+                Ok(applied_outreach)
             };
 
-            if let Err(e) = act_res {
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "outreach-log",
-                        OutreachLogPayload {
-                            message: format!("Failed to record activity log: {}", e),
-                        },
-                    );
+            match act_res {
+                Ok(applied_outreach) => {
+                    if let Some(app) = app_handle {
+                        if let Some(state) =
+                            app.try_state::<crate::conversation::commands::ConversationState>()
+                        {
+                            state.service.publish_outreach_success(&applied_outreach);
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: format!(
+                                    "Delivery succeeded but local persistence failed: {}",
+                                    e
+                                ),
+                            },
+                        );
+                    }
                 }
             }
 
@@ -2164,11 +2204,16 @@ pub async fn send_zalo_outreach_internal(
                 ttl: None,
             };
 
+            let local_request_id = format!("outreach-{}", rand::random::<u128>());
+            let conversation_sent_at = crate::conversation::types::utc_now();
+
             match zalo
                 .send_message(msg_content, &user.uid, zca_rs::models::ThreadType::User)
                 .await
             {
-                Ok(_) => {
+                Ok(response) => {
+                    let provider_receipt =
+                        crate::conversation::outreach::ZaloProviderReceipt::from_response(response);
                     total_sent += 1;
                     burst_counter += 1;
                     let log_msg = format!("Message sent to {} ({})", lead_name, sanitized_phone);
@@ -2176,7 +2221,10 @@ pub async fn send_zalo_outreach_internal(
                         let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
                     }
 
-                    let act_res: Result<(), String> = {
+                    let act_res: Result<
+                        crate::conversation::outreach::AppliedOutreachMessage,
+                        String,
+                    > = {
                         let mut conn_guard = conn_mutex
                             .lock()
                             .map_err(|e| format!("Database lock error: {}", e))?;
@@ -2213,19 +2261,53 @@ pub async fn send_zalo_outreach_internal(
                         )
                         .map_err(|e| format!("Database query error: {}", e))?;
 
+                        let applied_outreach =
+                            crate::conversation::outreach::record_outreach_success_in_transaction(
+                                &tx,
+                                &crate::conversation::outreach::OutreachConversationRecord {
+                                    lead_id: i64::from(*lead_id),
+                                    provider_account_key: imei.clone(),
+                                    account_display_name: None,
+                                    external_user_id: user.uid.clone(),
+                                    user_display_name: Some(lead_name.clone()),
+                                    user_avatar_url: None,
+                                    template_id: i64::from(template_id),
+                                    source: "zalo_outreach".to_string(),
+                                    text: formatted_content.clone(),
+                                    local_request_id,
+                                    provider_receipt,
+                                    sent_at: conversation_sent_at,
+                                },
+                            )
+                            .map_err(|e| format!("Outreach conversation record error: {}", e))?;
+
                         tx.commit()
                             .map_err(|e| format!("Database transaction commit error: {}", e))?;
-                        Ok(())
+                        Ok(applied_outreach)
                     };
 
-                    if let Err(e) = act_res {
-                        if let Some(app) = app_handle {
-                            let _ = app.emit(
-                                "outreach-log",
-                                OutreachLogPayload {
-                                    message: format!("Failed to record activity log: {}", e),
-                                },
-                            );
+                    match act_res {
+                        Ok(applied_outreach) => {
+                            if let Some(app) = app_handle {
+                                if let Some(state) =
+                                    app.try_state::<crate::conversation::commands::ConversationState>()
+                                {
+                                    state.service.publish_outreach_success(&applied_outreach);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(app) = app_handle {
+                                let _ = app.emit(
+                                    "outreach-log",
+                                    OutreachLogPayload {
+                                        message: format!(
+                                            "Delivery succeeded but local persistence failed: {}",
+                                            e
+                                        ),
+                                    },
+                                );
+                            }
                         }
                     }
                 }
