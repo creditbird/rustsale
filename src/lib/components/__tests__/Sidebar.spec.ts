@@ -8,6 +8,7 @@ test('renders Sidebar with CRM logo and options', () => {
   expect(screen.getByText('RustSale')).toBeTruthy();
   expect(screen.getByText('CRM & Outreach Pro')).toBeTruthy();
   expect(screen.getByText('Dashboard')).toBeTruthy();
+  expect(screen.getByText('Conversations')).toBeTruthy();
   expect(screen.getByText('Email Outreach')).toBeTruthy();
 });
 
@@ -20,7 +21,7 @@ test('updates activeTab on navigation item click', async () => {
     }
   });
 
-  const emailButton = screen.getByText('Email Outreach');
-  await fireEvent.click(emailButton);
-  expect(activeTab).toBe('email_outreach');
+  const conversationButton = screen.getByText('Conversations');
+  await fireEvent.click(conversationButton);
+  expect(activeTab).toBe('conversation');
 });

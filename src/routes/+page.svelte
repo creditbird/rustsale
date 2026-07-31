@@ -8,6 +8,7 @@
   import ZaloOutreach from '$lib/components/ZaloOutreach.svelte';
   import EmailOutreach from '$lib/components/EmailOutreach.svelte';
   import CategoryManager from '$lib/components/CategoryManager.svelte';
+  import ConversationWorkspace from '$lib/components/conversation/ConversationWorkspace.svelte';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
   import { AlertCircle, Search, Bell } from 'lucide-svelte';
@@ -21,6 +22,10 @@
     scraper: { title: 'Google Maps Scraper', subtitle: 'Extract local business lead data dynamically across regions' },
     leads: { title: 'Lead Management', subtitle: 'Potential lead contacts, acquisition details and verification status' },
     categories: { title: 'Category Manager', subtitle: 'Organize, tag and structure lead segments' },
+    conversation: {
+      title: 'Unified Conversations',
+      subtitle: 'Zalo, WhatsApp, Messenger and Email customer history'
+    },
     outreach: { title: 'Zalo Outreach Manager', subtitle: 'Authenticate sessions, customize templates, and launch Zalo flows' },
     email_outreach: { title: 'Email Outreach Manager', subtitle: 'Configure SMTP servers, HTML templates, and targeted email broadcasts' },
     pipeline: { title: 'Deal Pipeline', subtitle: 'Kanban view for deal stages and sales conversion workflow' },
@@ -128,7 +133,9 @@
     </header>
 
     <!-- Main Scrollable Content Area -->
-    <div class="flex-1 overflow-y-auto p-6 space-y-6">
+    <div class={activeTab === 'conversation'
+      ? 'flex-1 min-h-0 overflow-hidden'
+      : 'flex-1 overflow-y-auto p-6 flex flex-col gap-6'}>
       {#if errorMsg}
         <div class="p-4 rounded-lg border border-destructive/30 bg-destructive/10 text-destructive text-xs flex items-center gap-3 animate-fade-in">
           <AlertCircle class="w-4 h-4 shrink-0" />
@@ -136,6 +143,9 @@
         </div>
       {/if}
 
+      <div class={activeTab === 'conversation' ? 'h-full' : 'hidden'}>
+        <ConversationWorkspace {activeTab} />
+      </div>
       <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
         <Dashboard {activeTab} />
       </div>
