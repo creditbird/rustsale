@@ -277,3 +277,53 @@ fn startup_marks_running_job_delivery_unknown_without_requeue() {
     assert_eq!(harness.outbox_status_for_message(message.id), "failed");
     assert_eq!(harness.pending_job_count(), 0);
 }
+
+#[tokio::test]
+async fn publish_outreach_success_emits_event_when_not_duplicate() {
+    let harness = ServiceHarness::new();
+    let mut rx = harness.events.subscribe();
+
+    let applied = crate::conversation::outreach::AppliedOutreachMessage {
+        applied: crate::conversation::repository::AppliedMessage {
+            channel_account_id: 1,
+            identity_id: Some(1),
+            conversation_id: 10,
+            message_id: 100,
+            duplicate: false,
+        },
+        lead_id: 42,
+    };
+
+    harness.service.publish_outreach_success(&applied);
+
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.conversation_id, applied.applied.conversation_id);
+    assert_eq!(event.lead_id, Some(applied.lead_id));
+    assert_eq!(event.channel, crate::conversation::types::Channel::Zalo);
+    assert_eq!(
+        event.reason,
+        crate::conversation::events::ConversationInvalidationReason::Message
+    );
+    assert_eq!(event.message_id, Some(applied.applied.message_id));
+}
+
+#[tokio::test]
+async fn publish_outreach_success_skips_duplicate() {
+    let harness = ServiceHarness::new();
+    let mut rx = harness.events.subscribe();
+
+    let applied = crate::conversation::outreach::AppliedOutreachMessage {
+        applied: crate::conversation::repository::AppliedMessage {
+            channel_account_id: 1,
+            identity_id: Some(1),
+            conversation_id: 10,
+            message_id: 100,
+            duplicate: true,
+        },
+        lead_id: 42,
+    };
+
+    harness.service.publish_outreach_success(&applied);
+
+    assert!(rx.try_recv().is_err());
+}

@@ -3,6 +3,7 @@ use super::events::{
 };
 use super::repository::ConversationRepository;
 use super::types::{Channel, ConversationRuntimeStatus, InboxItem, TimelineCursor, TimelinePage};
+use crate::conversation::outreach::AppliedOutreachMessage;
 use crate::conversation::zalo::normalizer::{NormalizedGroupSnapshot, ZaloMutation};
 use anyhow::Result;
 use std::sync::Arc;
@@ -160,6 +161,19 @@ impl ConversationService {
             message_id: None,
         });
         Ok(conversation_id)
+    }
+
+    pub fn publish_outreach_success(&self, applied: &AppliedOutreachMessage) {
+        if applied.applied.duplicate {
+            return;
+        }
+        self.events.publish(ConversationInvalidatedEvent {
+            conversation_id: applied.applied.conversation_id,
+            lead_id: Some(applied.lead_id),
+            channel: Channel::Zalo,
+            reason: ConversationInvalidationReason::Message,
+            message_id: Some(applied.applied.message_id),
+        });
     }
 
     pub fn runtime_status(&self) -> Result<ConversationRuntimeStatus> {
