@@ -6,6 +6,7 @@ use tauri::Manager;
 mod commands;
 #[cfg(test)]
 mod commands_test;
+pub mod conversation;
 mod db;
 #[cfg(test)]
 mod db_test;
