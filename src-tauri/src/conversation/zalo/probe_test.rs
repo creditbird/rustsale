@@ -54,6 +54,20 @@ fn probe_summary_records_sanitized_direct_identifiers() {
     assert_eq!(report.self_messages, 0);
 }
 
+fn next_history_cursor(report: &ZaloProbeReport) -> Option<&str> {
+    report.provider_message_ids.last().map(String::as_str)
+}
+
+#[test]
+fn history_cursor_uses_last_provider_message_id() {
+    let report = ZaloProbeReport {
+        provider_message_ids: vec!["message-1".to_string(), "message-2".to_string()],
+        ..ZaloProbeReport::default()
+    };
+
+    assert_eq!(next_history_cursor(&report), Some("message-2"));
+}
+
 fn required_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("missing required environment variable {name}"))
 }
@@ -117,6 +131,29 @@ async fn live_zalo_conversation_probe() {
             Err(_) => {}
         }
     }
+
+    if let Some(cursor) = next_history_cursor(&report) {
+        zalo.listener
+            .request_old_messages(zca_rs::models::ThreadType::User, Some(cursor))
+            .expect("request second direct-history page");
+    }
+
+    zalo.listener.stop();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    zalo.listener.start().expect("restart listener");
+    let mut reconnect_receiver = zalo.subscribe();
+    zalo.listener
+        .request_old_messages(
+            zca_rs::models::ThreadType::User,
+            next_history_cursor(&report),
+        )
+        .expect("request reconciliation after reconnect");
+
+    let reconnect_event = tokio::time::timeout(Duration::from_secs(20), reconnect_receiver.recv())
+        .await
+        .expect("no listener event after reconnect")
+        .expect("listener closed after reconnect");
+    observe_listener_event(&mut report, &reconnect_event);
 
     println!(
         "{}",
