@@ -152,24 +152,29 @@
     return baseReason;
   });
 
+  let targetConversationId = $derived(
+    selectedOption?.target.conversationId ?? item.conversationId ?? null
+  );
+
   let canSend = $derived(
     !disabled &&
       !isSending &&
       Boolean(text.trim()) &&
       selectedOption !== null &&
-      selectedOption.isEligible
+      selectedOption.isEligible &&
+      targetConversationId !== null
   );
 
   async function handleSend() {
     const trimmed = text.trim();
-    if (!trimmed || !canSend || !selectedOption || item.conversationId === null || item.conversationId === undefined) return;
+    if (!trimmed || !canSend || !selectedOption || targetConversationId === null) return;
 
     isSending = true;
     sendError = null;
 
     try {
       const msg = await sendConversationMessage({
-        conversationId: item.conversationId,
+        conversationId: targetConversationId,
         channelAccountId: selectedOption.id,
         text: trimmed,
         replyToMessageId: null

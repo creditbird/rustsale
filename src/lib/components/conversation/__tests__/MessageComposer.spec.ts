@@ -69,7 +69,7 @@ describe('MessageComposer Component', () => {
     key: 'item-101',
     kind: 'customer',
     leadId: 10,
-    conversationId: 101,
+    conversationId: null,
     identityId: 201,
     title: 'Nguyễn Văn A',
     avatarUrl: null,
@@ -87,7 +87,7 @@ describe('MessageComposer Component', () => {
         lastMessageAt: '2026-07-31T10:00:00Z'
       },
       {
-        conversationId: 101,
+        conversationId: 102,
         channelAccountId: 2,
         channel: 'zalo',
         accountDisplayName: 'Zalo Secondary',
@@ -118,7 +118,7 @@ describe('MessageComposer Component', () => {
 
     expect(mockSendConversationMessage).toHaveBeenCalledTimes(1);
     expect(mockSendConversationMessage).toHaveBeenCalledWith({
-      conversationId: 101,
+      conversationId: 102,
       channelAccountId: 2,
       text: 'Xin chào',
       replyToMessageId: null
@@ -275,7 +275,7 @@ describe('MessageComposer Component', () => {
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
 
     expect(mockSendConversationMessage).toHaveBeenCalledWith({
-      conversationId: 101,
+      conversationId: 102,
       channelAccountId: 2,
       text: 'Nội dung tin nhắn',
       replyToMessageId: null
@@ -330,5 +330,47 @@ describe('MessageComposer Component', () => {
     // Error message exposed
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('Lỗi kết nối mạng');
+  });
+
+  test('Customer item with conversationId: null sends using selected target conversationId', async () => {
+    const onQueued = mock(() => {});
+    const customerItemWithoutDirectId: InboxItem = {
+      ...baseItem,
+      conversationId: null,
+      replyTargets: [
+        {
+          conversationId: 555,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T12:00:00Z',
+          lastMessageAt: '2026-07-31T12:00:00Z'
+        }
+      ]
+    };
+
+    render(MessageComposer, {
+      props: {
+        item: customerItemWithoutDirectId,
+        runtime: baseRuntime,
+        onQueued
+      }
+    });
+
+    const textarea = screen.getByPlaceholderText(/Nhập tin nhắn|Send message/i);
+    await fireEvent.input(textarea, { target: { value: 'Tin nhắn cho Customer' } });
+
+    const sendBtn = screen.getByRole('button', { name: /Gửi|Send/i });
+    expect((sendBtn as HTMLButtonElement).disabled).toBe(false);
+
+    await fireEvent.click(sendBtn);
+
+    expect(mockSendConversationMessage).toHaveBeenCalledWith({
+      conversationId: 555,
+      channelAccountId: 1,
+      text: 'Tin nhắn cho Customer',
+      replyToMessageId: null
+    });
   });
 });

@@ -1026,6 +1026,15 @@ pub async fn start_zalo_qr_login(
                                 avatar.as_deref(),
                             );
                         }
+                        if let Some(conv_state) = app_handle_clone
+                            .try_state::<crate::conversation::commands::ConversationState>(
+                        ) {
+                            let supervisor = conv_state.zalo_supervisor.clone();
+                            let imei_clone = zalo.ctx.imei.clone();
+                            tokio::spawn(async move {
+                                let _ = supervisor.restart_account(&imei_clone).await;
+                            });
+                        }
                         match serde_json::to_value(payload) {
                             Ok(payload) => {
                                 let _ = app_handle_clone.emit("zalo-qr-success", payload);
@@ -1138,7 +1147,16 @@ pub fn get_zalo_sessions_internal(
 }
 
 #[tauri::command]
-pub fn delete_zalo_session(imei: String, state: tauri::State<DbState>) -> Result<(), String> {
+pub async fn delete_zalo_session(
+    app_handle: tauri::AppHandle,
+    imei: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    if let Some(conv_state) =
+        app_handle.try_state::<crate::conversation::commands::ConversationState>()
+    {
+        let _ = conv_state.zalo_supervisor.stop_account(&imei).await;
+    }
     let conn = state
         .conn
         .lock()
@@ -3059,14 +3077,18 @@ pub async fn send_zalo_campaign_internal(
                     let tx_res = conn_guard.transaction();
                     match tx_res {
                         Ok(tx) => {
-                            let _ = tx.execute(
+                            if let Err(e) = tx.execute(
                                 "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'SUCCESS', NULL, ?3, ?4)",
                                 rusqlite::params![lead_id, template_id, &now, &current_imei],
-                            );
-                            let _ = tx.execute(
+                            ) {
+                                return Err(format!("Outreach history log error: {}", e));
+                            }
+                            if let Err(e) = tx.execute(
                                 "UPDATE leads SET zalo_reached = 1, has_zalo = 1, last_activity = ?1 WHERE id = ?2",
                                 rusqlite::params![now, lead_id],
-                            );
+                            ) {
+                                return Err(format!("Lead update error: {}", e));
+                            }
 
                             let applied_res = crate::conversation::outreach::record_outreach_success_in_transaction(
                                 &tx,

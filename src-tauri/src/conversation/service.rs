@@ -250,18 +250,23 @@ impl ConversationService {
                     || err_msg.to_lowercase().contains("auth")
                     || err_msg.to_lowercase().contains("cookie");
 
-                if is_auth_err {
+                const MAX_ATTEMPTS: u32 = 5;
+                let should_give_up = is_auth_err || job.attempt_count >= MAX_ATTEMPTS;
+
+                if should_give_up {
                     self.repository
                         .fail_outbox_job(&job.job_id, None, &err_msg, &now)?;
                     self.publish_message_invalidation(
                         job.message_id,
                         ConversationInvalidationReason::Message,
                     )?;
-                    let _ = self.repository.set_account_status(
-                        &job.provider_account_key,
-                        crate::conversation::types::AccountConnectionStatus::Invalid,
-                        Some(&err_msg),
-                    );
+                    if is_auth_err {
+                        let _ = self.repository.set_account_status(
+                            &job.provider_account_key,
+                            crate::conversation::types::AccountConnectionStatus::Invalid,
+                            Some(&err_msg),
+                        );
+                    }
                 } else {
                     let retry_time = (chrono::Utc::now() + chrono::Duration::seconds(5))
                         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

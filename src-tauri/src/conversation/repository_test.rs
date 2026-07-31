@@ -371,3 +371,64 @@ fn group_snapshot_updates_title_avatar_and_participant_roles() {
         "admin"
     );
 }
+
+#[test]
+fn group_inbox_excludes_participants_who_left() {
+    let harness = Harness::new();
+    let conversation_id = harness
+        .repository
+        .apply_group_snapshot(&NormalizedGroupSnapshot {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "group-2".to_string(),
+            title: "Project Beta".to_string(),
+            avatar_url: None,
+            participants: vec![
+                NormalizedGroupParticipant {
+                    identity: NormalizedIdentity {
+                        identity_namespace: "zalo_uid".to_string(),
+                        external_id: "member-active".to_string(),
+                        display_name: Some("Active Member".to_string()),
+                        avatar_url: None,
+                        lead_id: None,
+                    },
+                    participant_role: "member".to_string(),
+                },
+                NormalizedGroupParticipant {
+                    identity: NormalizedIdentity {
+                        identity_namespace: "zalo_uid".to_string(),
+                        external_id: "member-left".to_string(),
+                        display_name: Some("Left Member".to_string()),
+                        avatar_url: None,
+                        lead_id: None,
+                    },
+                    participant_role: "member".to_string(),
+                },
+            ],
+            membership_complete: true,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+        })
+        .unwrap();
+
+    // Mark member-left as having left (left_at IS NOT NULL)
+    {
+        let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+        conn.execute(
+            "UPDATE conversation_participants SET left_at = '2026-07-31T02:00:00.000Z' WHERE conversation_id = ?1 AND identity_id = (SELECT id FROM channel_identities WHERE external_id = 'member-left')",
+            [conversation_id],
+        )
+        .unwrap();
+    }
+
+    let items = harness.repository.list_inbox().unwrap();
+    let group_item = items
+        .iter()
+        .find(|i| i.key == format!("conversation:{}", conversation_id))
+        .unwrap();
+
+    assert_eq!(group_item.participant_count, 1);
+    assert_eq!(group_item.participants.len(), 1);
+    assert_eq!(
+        group_item.participants[0].display_name.as_deref(),
+        Some("Active Member")
+    );
+}

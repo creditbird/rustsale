@@ -55,17 +55,27 @@ fn probe_summary_records_sanitized_direct_identifiers() {
 }
 
 fn next_history_cursor(report: &ZaloProbeReport) -> Option<&str> {
-    report.provider_message_ids.last().map(String::as_str)
+    report
+        .occurred_at_timestamps
+        .iter()
+        .min()
+        .map(String::as_str)
 }
 
 #[test]
-fn history_cursor_uses_last_provider_message_id() {
+fn history_cursor_uses_min_occurred_at_timestamp() {
     let report = ZaloProbeReport {
-        provider_message_ids: vec!["message-1".to_string(), "message-2".to_string()],
+        occurred_at_timestamps: vec![
+            "2026-07-31T12:05:00.000Z".to_string(),
+            "2026-07-31T12:01:00.000Z".to_string(),
+        ],
         ..ZaloProbeReport::default()
     };
 
-    assert_eq!(next_history_cursor(&report), Some("message-2"));
+    assert_eq!(
+        next_history_cursor(&report),
+        Some("2026-07-31T12:01:00.000Z")
+    );
 }
 
 fn required_env(name: &str) -> String {

@@ -19,6 +19,7 @@ pub struct ZaloProbeReport {
     pub client_message_ids: Vec<String>,
     pub real_message_ids: Vec<String>,
     pub thread_ids: Vec<String>,
+    pub occurred_at_timestamps: Vec<String>,
 }
 
 fn observe_message(report: &mut ZaloProbeReport, message: &Message) {
@@ -51,6 +52,14 @@ fn observe_message(report: &mut ZaloProbeReport, message: &Message) {
     }
     if !thread_id.is_empty() {
         report.thread_ids.push(thread_id.clone());
+    }
+    if !base.ts.is_empty() {
+        if let Ok(ts_ms) = base.ts.parse::<i64>() {
+            let rfc = chrono::DateTime::from_timestamp_millis(ts_ms)
+                .unwrap_or_else(chrono::Utc::now)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            report.occurred_at_timestamps.push(rfc);
+        }
     }
 }
 

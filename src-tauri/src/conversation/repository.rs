@@ -62,6 +62,7 @@ pub struct ClaimedOutboxJob {
     pub external_thread_id: String,
     pub is_group: bool,
     pub text: String,
+    pub attempt_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -634,7 +635,7 @@ impl ConversationRepository {
             }];
 
             let participant_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = ?1",
+                "SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = ?1 AND left_at IS NULL",
                 [conv_id],
                 |row| row.get(0),
             )?;
@@ -643,7 +644,7 @@ impl ConversationRepository {
                 "SELECT cp.identity_id, ci.display_name, ci.avatar_url, cp.participant_role
                  FROM conversation_participants cp
                  JOIN channel_identities ci ON ci.id = cp.identity_id
-                 WHERE cp.conversation_id = ?1
+                 WHERE cp.conversation_id = ?1 AND cp.left_at IS NULL
                  ORDER BY CASE WHEN cp.participant_role IN ('admin', 'owner') THEN 0 ELSE 1 END,
                           ci.display_name ASC
                  LIMIT 5",
@@ -1355,7 +1356,7 @@ impl ConversationRepository {
         let row = tx
             .query_row(
                 "SELECT oj.id, oj.message_id, oj.channel_account_id, ca.provider_account_key,
-                        cc.external_thread_id, cc.kind, m.text_content
+                        cc.external_thread_id, cc.kind, m.text_content, oj.attempt_count
                  FROM message_outbox_jobs oj
                  JOIN messages m ON m.id = oj.message_id
                  JOIN channel_conversations cc ON cc.id = m.conversation_id
@@ -1377,6 +1378,7 @@ impl ConversationRepository {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, Option<String>>(6)?,
+                        row.get::<_, u32>(7)?,
                     ))
                 },
             )
@@ -1390,16 +1392,18 @@ impl ConversationRepository {
             external_thread_id,
             kind_str,
             text_opt,
+            current_attempt,
         ) = match row {
             Some(data) => data,
             None => return Ok(None),
         };
 
+        let new_attempt_count = current_attempt + 1;
         tx.execute(
             "UPDATE message_outbox_jobs
-             SET status = 'running', attempt_count = attempt_count + 1, updated_at = ?2
+             SET status = 'running', attempt_count = ?2, updated_at = ?3
              WHERE id = ?1",
-            params![job_id, now],
+            params![job_id, new_attempt_count, now],
         )?;
 
         tx.execute(
@@ -1420,6 +1424,7 @@ impl ConversationRepository {
             external_thread_id,
             is_group,
             text,
+            attempt_count: new_attempt_count,
         }))
     }
 
