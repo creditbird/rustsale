@@ -24,6 +24,15 @@ plugin({
       return null; // Let Bun handle other paths normally
     });
 
+    build.onResolve({ filter: /^runed$/ }, (args: any) => {
+      if (args.importer && args.importer.includes("node_modules/runed")) {
+        return null;
+      }
+      return {
+        path: join(process.cwd(), "node_modules/runed/dist/index.js")
+      };
+    });
+
     // Process .svelte components
     build.onLoad({ filter: /\.svelte$/ }, ({ path }: { path: string }) => {
       const source = readFileSync(path, "utf8");
@@ -69,3 +78,10 @@ Object.getOwnPropertyNames(dom.window).forEach((key) => {
   // @ts-ignore
   globalThis[key] = dom.window[key];
 });
+
+// Polyfill svelte module for Bun test runner to use client implementation
+import { mock } from "bun:test";
+// @ts-ignore
+import * as svelteClient from "../../../../node_modules/svelte/src/index-client.js";
+
+mock.module("svelte", () => svelteClient);

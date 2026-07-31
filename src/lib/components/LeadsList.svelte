@@ -104,6 +104,26 @@
     filteredLeads.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   );
 
+  let isAllFilteredSelected = $derived(
+    filteredLeads.length > 0 && selectedRows.size === filteredLeads.length
+  );
+
+  let isCurrentPageAllSelected = $derived(
+    paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id !== undefined && selectedRows.has(l.id))
+  );
+
+  function selectAllFiltered() {
+    filteredLeads.forEach((l: Lead) => {
+      if (l.id !== undefined) selectedRows.add(l.id);
+    });
+    selectedRows = new Set(selectedRows);
+  }
+
+  function clearSelection() {
+    selectedRows.clear();
+    selectedRows = new Set(selectedRows);
+  }
+
   let totalPages = $derived(Math.max(1, Math.ceil(filteredLeads.length / pageSize)));
   let totalEntries = $derived(filteredLeads.length);
   let showingStart = $derived(totalEntries === 0 ? 0 : (currentPage - 1) * pageSize + 1);
@@ -290,6 +310,37 @@
     </div>
   </div>
 
+  <!-- Selection Banner -->
+  {#if selectedRows.size > 0}
+    <div class="px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-center justify-between text-xs text-emerald-700 dark:text-emerald-300 font-medium">
+      <div class="flex items-center gap-2">
+        <span>
+          {#if isAllFilteredSelected}
+            All <strong>{filteredLeads.length}</strong> leads matching this search/filter are selected.
+          {:else}
+            Selected <strong>{selectedRows.size}</strong> lead(s).
+          {/if}
+        </span>
+        {#if !isAllFilteredSelected && filteredLeads.length > paginatedLeads.length}
+          <button
+            type="button"
+            onclick={selectAllFiltered}
+            class="underline font-bold hover:text-emerald-800 dark:hover:text-emerald-100 transition-colors ml-1 cursor-pointer"
+          >
+            Select all {filteredLeads.length} leads matching search
+          </button>
+        {/if}
+      </div>
+      <button
+        type="button"
+        onclick={clearSelection}
+        class="text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+      >
+        Clear selection
+      </button>
+    </div>
+  {/if}
+
   <!-- Data Table -->
   <div class="rounded-md border border-border bg-card overflow-hidden">
     <Table.Root>
@@ -298,7 +349,7 @@
           <Table.Head class="w-10 text-center">
             <div class="flex items-center justify-center">
               <Checkbox 
-                checked={paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id && selectedRows.has(l.id))}
+                checked={isCurrentPageAllSelected}
                 onCheckedChange={(checked) => toggleAllRows(Boolean(checked))}
               />
             </div>
