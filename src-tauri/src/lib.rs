@@ -119,6 +119,21 @@ pub fn run() {
                 }
             });
 
+            let conversation_repository = std::sync::Arc::new(
+                conversation::repository::ConversationRepository::new(db_path_str.to_string()),
+            );
+            let conversation_events =
+                std::sync::Arc::new(conversation::events::ConversationEventPublisher::new(256));
+            let conversation_service =
+                std::sync::Arc::new(conversation::service::ConversationService::new(
+                    conversation_repository,
+                    conversation_events.clone(),
+                ));
+            app.manage(conversation::commands::ConversationState {
+                service: conversation_service,
+            });
+            conversation_events.spawn_tauri_forwarder(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -179,7 +194,11 @@ pub fn run() {
             commands::create_email_template,
             commands::update_email_template,
             commands::delete_email_template,
-            commands::send_email_outreach
+            commands::send_email_outreach,
+            conversation::commands::list_conversation_inbox,
+            conversation::commands::get_contact_timeline,
+            conversation::commands::get_conversation_timeline,
+            conversation::commands::link_conversation_identity
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
