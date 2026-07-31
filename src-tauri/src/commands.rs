@@ -1969,7 +1969,7 @@ pub async fn send_zalo_outreach_internal(
                 let _ = app.emit(
                     "outreach-complete",
                     OutreachCompletePayload {
-                        total_sent,
+                        total_sent: overall_sent,
                         message: final_msg,
                     },
                 );
@@ -2526,7 +2526,7 @@ pub async fn send_zalo_outreach_internal(
             let _ = app.emit(
                 "outreach-complete",
                 OutreachCompletePayload {
-                    total_sent,
+                    total_sent: overall_sent,
                     message: final_msg,
                 },
             );
