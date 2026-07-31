@@ -1,0 +1,384 @@
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tokio::sync::broadcast;
+use zca_rs::listener::ListenerEvent;
+use zca_rs::models::ThreadType;
+
+use crate::conversation::zalo::client::{normalize_group_info, ZaloClient};
+use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedSendRequest {
+    pub thread_id: String,
+    pub thread_type: ThreadType,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedHistoryRequest {
+    pub thread_type: ThreadType,
+    pub cursor: Option<String>,
+}
+
+pub struct FakeZaloClient {
+    pub event_tx: broadcast::Sender<ListenerEvent>,
+    pub captured_history_requests: Mutex<Vec<CapturedHistoryRequest>>,
+    pub captured_reaction_requests: Mutex<Vec<CapturedHistoryRequest>>,
+    pub captured_send_requests: Mutex<Vec<CapturedSendRequest>>,
+    pub captured_group_snapshot_requests: Mutex<Vec<Option<String>>>,
+    pub group_snapshots: Mutex<HashMap<String, NormalizedGroupSnapshot>>,
+    pub next_msg_id: Mutex<u64>,
+    pub stopped: Mutex<bool>,
+}
+
+impl FakeZaloClient {
+    pub fn new() -> Self {
+        let (event_tx, _) = broadcast::channel(100);
+        Self {
+            event_tx,
+            captured_history_requests: Mutex::new(Vec::new()),
+            captured_reaction_requests: Mutex::new(Vec::new()),
+            captured_send_requests: Mutex::new(Vec::new()),
+            captured_group_snapshot_requests: Mutex::new(Vec::new()),
+            group_snapshots: Mutex::new(HashMap::new()),
+            next_msg_id: Mutex::new(1000),
+            stopped: Mutex::new(false),
+        }
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        *self.stopped.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl ZaloClient for FakeZaloClient {
+    fn subscribe(&self) -> broadcast::Receiver<ListenerEvent> {
+        self.event_tx.subscribe()
+    }
+
+    fn request_old_messages(
+        &self,
+        thread_type: ThreadType,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.captured_history_requests
+            .lock()
+            .unwrap()
+            .push(CapturedHistoryRequest {
+                thread_type,
+                cursor: cursor.map(str::to_string),
+            });
+        Ok(())
+    }
+
+    fn request_old_reactions(
+        &self,
+        thread_type: ThreadType,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.captured_reaction_requests
+            .lock()
+            .unwrap()
+            .push(CapturedHistoryRequest {
+                thread_type,
+                cursor: cursor.map(str::to_string),
+            });
+        Ok(())
+    }
+
+    async fn get_all_group_snapshots(&self) -> anyhow::Result<Vec<NormalizedGroupSnapshot>> {
+        self.captured_group_snapshot_requests
+            .lock()
+            .unwrap()
+            .push(None);
+        let map = self.group_snapshots.lock().unwrap();
+        Ok(map.values().cloned().collect())
+    }
+
+    async fn get_group_snapshot(
+        &self,
+        group_id: &str,
+    ) -> anyhow::Result<Option<NormalizedGroupSnapshot>> {
+        self.captured_group_snapshot_requests
+            .lock()
+            .unwrap()
+            .push(Some(group_id.to_string()));
+        let map = self.group_snapshots.lock().unwrap();
+        Ok(map.get(group_id).cloned())
+    }
+
+    async fn send_text(
+        &self,
+        thread_id: &str,
+        thread_type: ThreadType,
+        text: &str,
+    ) -> anyhow::Result<String> {
+        self.captured_send_requests
+            .lock()
+            .unwrap()
+            .push(CapturedSendRequest {
+                thread_id: thread_id.to_string(),
+                thread_type,
+                text: text.to_string(),
+            });
+        let mut id = self.next_msg_id.lock().unwrap();
+        *id += 1;
+        Ok(id.to_string())
+    }
+
+    fn stop(&self) {
+        let mut stopped = self.stopped.lock().unwrap();
+        *stopped = true;
+    }
+}
+
+#[tokio::test]
+async fn test_fake_client_forwards_thread_types_and_captures_requests() {
+    let client = FakeZaloClient::new();
+
+    // Verify history request forwarding for User and Group
+    client
+        .request_old_messages(ThreadType::User, Some("cursor_1"))
+        .unwrap();
+    client
+        .request_old_messages(ThreadType::Group, None)
+        .unwrap();
+
+    let history_reqs = client.captured_history_requests.lock().unwrap().clone();
+    assert_eq!(history_reqs.len(), 2);
+    assert_eq!(history_reqs[0].thread_type, ThreadType::User);
+    assert_eq!(history_reqs[0].cursor.as_deref(), Some("cursor_1"));
+    assert_eq!(history_reqs[1].thread_type, ThreadType::Group);
+    assert_eq!(history_reqs[1].cursor, None);
+
+    // Verify reaction request forwarding
+    client
+        .request_old_reactions(ThreadType::User, None)
+        .unwrap();
+    client
+        .request_old_reactions(ThreadType::Group, Some("cursor_2"))
+        .unwrap();
+
+    let rxn_reqs = client.captured_reaction_requests.lock().unwrap().clone();
+    assert_eq!(rxn_reqs.len(), 2);
+    assert_eq!(rxn_reqs[0].thread_type, ThreadType::User);
+    assert_eq!(rxn_reqs[1].thread_type, ThreadType::Group);
+    assert_eq!(rxn_reqs[1].cursor.as_deref(), Some("cursor_2"));
+
+    // Verify send_text request forwarding and deterministic msg_id
+    let msg_id1 = client
+        .send_text("user_123", ThreadType::User, "Hello direct")
+        .await
+        .unwrap();
+    let msg_id2 = client
+        .send_text("group_456", ThreadType::Group, "Hello group")
+        .await
+        .unwrap();
+
+    assert_eq!(msg_id1, "1001");
+    assert_eq!(msg_id2, "1002");
+
+    let send_reqs = client.captured_send_requests.lock().unwrap().clone();
+    assert_eq!(send_reqs.len(), 2);
+    assert_eq!(
+        send_reqs[0],
+        CapturedSendRequest {
+            thread_id: "user_123".to_string(),
+            thread_type: ThreadType::User,
+            text: "Hello direct".to_string(),
+        }
+    );
+    assert_eq!(
+        send_reqs[1],
+        CapturedSendRequest {
+            thread_id: "group_456".to_string(),
+            thread_type: ThreadType::Group,
+            text: "Hello group".to_string(),
+        }
+    );
+
+    // Verify stop flag
+    assert!(!client.is_stopped());
+    client.stop();
+    assert!(client.is_stopped());
+}
+
+#[tokio::test]
+async fn test_fake_client_group_snapshots_complete_and_partial() {
+    let client = FakeZaloClient::new();
+
+    let complete_snapshot = NormalizedGroupSnapshot {
+        provider_account_key: "imei_1".to_string(),
+        external_thread_id: "g_complete".to_string(),
+        title: "Complete Group".to_string(),
+        avatar_url: Some("https://avatar/full.jpg".to_string()),
+        participants: vec![],
+        membership_complete: true,
+        occurred_at: "2026-07-31T00:00:00.000Z".to_string(),
+    };
+
+    let partial_snapshot = NormalizedGroupSnapshot {
+        provider_account_key: "imei_1".to_string(),
+        external_thread_id: "g_partial".to_string(),
+        title: "Partial Group".to_string(),
+        avatar_url: None,
+        participants: vec![],
+        membership_complete: false,
+        occurred_at: "2026-07-31T00:00:00.000Z".to_string(),
+    };
+
+    client
+        .group_snapshots
+        .lock()
+        .unwrap()
+        .insert("g_complete".to_string(), complete_snapshot);
+    client
+        .group_snapshots
+        .lock()
+        .unwrap()
+        .insert("g_partial".to_string(), partial_snapshot);
+
+    // Fetch all snapshots
+    let all = client.get_all_group_snapshots().await.unwrap();
+    assert_eq!(all.len(), 2);
+
+    let snapshot_reqs = client
+        .captured_group_snapshot_requests
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(snapshot_reqs, vec![None]);
+
+    // Fetch complete snapshot explicitly
+    let res_complete = client.get_group_snapshot("g_complete").await.unwrap();
+    assert!(res_complete.is_some());
+    assert!(res_complete.unwrap().membership_complete);
+
+    // Fetch partial snapshot explicitly
+    let res_partial = client.get_group_snapshot("g_partial").await.unwrap();
+    assert!(res_partial.is_some());
+    assert!(!res_partial.unwrap().membership_complete);
+
+    // Fetch unknown group snapshot
+    let res_unknown = client.get_group_snapshot("g_unknown").await.unwrap();
+    assert!(res_unknown.is_none());
+
+    let snapshot_reqs2 = client
+        .captured_group_snapshot_requests
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        snapshot_reqs2,
+        vec![
+            None,
+            Some("g_complete".to_string()),
+            Some("g_partial".to_string()),
+            Some("g_unknown".to_string())
+        ]
+    );
+}
+
+#[test]
+fn test_normalize_group_info_mapping() {
+    let setting = zca_rs::models::GroupSetting {
+        block_name: 0,
+        sign_admin_msg: 0,
+        add_member_only: 0,
+        set_topic_only: 0,
+        enable_msg_history: 0,
+        join_appr: 0,
+        lock_create_post: 0,
+        lock_create_poll: 0,
+        lock_send_msg: 0,
+        lock_view_member: 0,
+        bann_feature: 0,
+        dirty_media: 0,
+        ban_duration: 0,
+    };
+
+    let group_info = zca_rs::models::GroupInfo {
+        group_id: "g_100".to_string(),
+        name: "Test Team".to_string(),
+        desc: "Description".to_string(),
+        r#type: zca_rs::models::GroupType::Group,
+        creator_id: "user_owner".to_string(),
+        version: "1.0".to_string(),
+        avt: "http://avatar/small.jpg".to_string(),
+        full_avt: "http://avatar/full.jpg".to_string(),
+        member_ids: vec!["user_owner".to_string(), "user_mem".to_string()],
+        admin_ids: vec!["user_owner".to_string()],
+        current_mems: vec![
+            zca_rs::models::GroupCurrentMem {
+                id: "user_owner".to_string(),
+                d_name: "Owner Display".to_string(),
+                zalo_name: "Owner Zalo".to_string(),
+                avatar: "http://user/owner.jpg".to_string(),
+                avatar_25: "http://user/owner_25.jpg".to_string(),
+                account_status: 0,
+                r#type: 0,
+            },
+            zca_rs::models::GroupCurrentMem {
+                id: "user_mem".to_string(),
+                d_name: "".to_string(),
+                zalo_name: "Member Zalo".to_string(),
+                avatar: "".to_string(),
+                avatar_25: "http://user/mem_25.jpg".to_string(),
+                account_status: 0,
+                r#type: 0,
+            },
+        ],
+        update_mems: vec![],
+        admins: vec![],
+        has_more_member: 0,
+        sub_type: 0,
+        total_member: 2,
+        max_member: 1000,
+        setting,
+        created_time: 1700000000000,
+        visibility: 0,
+        global_id: "gid_100".to_string(),
+        e2ee: 0,
+        extra_info: zca_rs::models::GroupExtraInfo {
+            enable_media_store: 0,
+        },
+    };
+
+    let snapshot = normalize_group_info("imei_test", group_info);
+
+    assert_eq!(snapshot.provider_account_key, "imei_test");
+    assert_eq!(snapshot.external_thread_id, "g_100");
+    assert_eq!(snapshot.title, "Test Team");
+    assert_eq!(
+        snapshot.avatar_url.as_deref(),
+        Some("http://avatar/full.jpg")
+    );
+    assert!(snapshot.membership_complete);
+    assert_eq!(snapshot.participants.len(), 2);
+
+    // Admin member check
+    let p0 = &snapshot.participants[0];
+    assert_eq!(p0.identity.external_id, "user_owner");
+    assert_eq!(p0.identity.identity_namespace, "zalo_uid");
+    assert_eq!(p0.identity.display_name.as_deref(), Some("Owner Display"));
+    assert_eq!(
+        p0.identity.avatar_url.as_deref(),
+        Some("http://user/owner.jpg")
+    );
+    assert_eq!(p0.identity.lead_id, None);
+    assert_eq!(p0.participant_role, "admin");
+
+    // Non-admin member check (falls back to zalo_name and avatar_25)
+    let p1 = &snapshot.participants[1];
+    assert_eq!(p1.identity.external_id, "user_mem");
+    assert_eq!(p1.identity.identity_namespace, "zalo_uid");
+    assert_eq!(p1.identity.display_name.as_deref(), Some("Member Zalo"));
+    assert_eq!(
+        p1.identity.avatar_url.as_deref(),
+        Some("http://user/mem_25.jpg")
+    );
+    assert_eq!(p1.identity.lead_id, None);
+    assert_eq!(p1.participant_role, "member");
+}
