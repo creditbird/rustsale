@@ -1481,6 +1481,7 @@ mod tests {
             commands::ZaloOutreachRunOptions::default(),
             commands::OutreachProgressScope {
                 processed_offset: 0,
+                sent_offset: 0,
                 total_leads,
                 emit_complete: false,
             },
@@ -1497,6 +1498,7 @@ mod tests {
             commands::ZaloOutreachRunOptions::default(),
             commands::OutreachProgressScope {
                 processed_offset: partitions[0].1.len(),
+                sent_offset: res1.total_sent,
                 total_leads,
                 emit_complete: true,
             },

@@ -1491,6 +1491,7 @@ pub async fn start_zalo_outreach(
     tokio::spawn(async move {
         let db_state = app_handle_clone.state::<DbState>();
         let mut processed_offset = 0;
+        let mut sent_offset = 0;
         let num_partitions = active_partitions.len();
 
         for (part_idx, (imei, part_leads)) in active_partitions.into_iter().enumerate() {
@@ -1498,10 +1499,11 @@ pub async fn start_zalo_outreach(
             let is_last = part_idx == num_partitions - 1;
             let scope = OutreachProgressScope {
                 processed_offset,
+                sent_offset,
                 total_leads,
                 emit_complete: is_last,
             };
-            let _ = send_zalo_outreach_internal(
+            if let Ok(res) = send_zalo_outreach_internal(
                 Some(&app_handle_clone),
                 &db_state.conn,
                 imei,
@@ -1515,7 +1517,10 @@ pub async fn start_zalo_outreach(
                 },
                 scope,
             )
-            .await;
+            .await
+            {
+                sent_offset += res.total_sent;
+            }
             processed_offset += count;
         }
     });
@@ -1605,6 +1610,7 @@ pub struct ZaloOutreachRunOptions {
 #[derive(Debug, Clone, Copy)]
 pub struct OutreachProgressScope {
     pub processed_offset: usize,
+    pub sent_offset: usize,
     pub total_leads: usize,
     pub emit_complete: bool,
 }
@@ -1613,6 +1619,7 @@ impl Default for OutreachProgressScope {
     fn default() -> Self {
         Self {
             processed_offset: 0,
+            sent_offset: 0,
             total_leads: 0,
             emit_complete: true,
         }
@@ -1676,6 +1683,7 @@ pub async fn send_zalo_outreach_internal(
     } = options;
     let OutreachProgressScope {
         processed_offset,
+        sent_offset: _,
         total_leads,
         emit_complete,
     } = progress_scope;
@@ -1943,9 +1951,10 @@ pub async fn send_zalo_outreach_internal(
             }
         }
 
+        let overall_sent = progress_scope.sent_offset + total_sent;
         let final_msg = format!(
             "Outreach complete! Sent {} messages out of {} leads. (Mock)",
-            total_sent, display_total
+            overall_sent, display_total
         );
         if let Some(app) = app_handle {
             if emit_complete {
@@ -2499,9 +2508,10 @@ pub async fn send_zalo_outreach_internal(
         }
     }
 
+    let overall_sent = progress_scope.sent_offset + total_sent;
     let final_msg = format!(
         "Outreach complete! Sent {} messages out of {} leads.",
-        total_sent, display_total
+        overall_sent, display_total
     );
     if let Some(app) = app_handle {
         if emit_complete {
