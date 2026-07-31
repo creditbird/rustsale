@@ -129,10 +129,27 @@ pub fn run() {
                     conversation_repository,
                     conversation_events.clone(),
                 ));
+            let zalo_supervisor = std::sync::Arc::new(
+                conversation::zalo::supervisor::ZaloSessionSupervisor::new(
+                    db_path_str.to_string(),
+                    conversation_service.clone(),
+                    std::sync::Arc::new(conversation::zalo::client::RealZaloClientFactory),
+                ),
+            );
             app.manage(conversation::commands::ConversationState {
-                service: conversation_service,
+                service: conversation_service.clone(),
+                zalo_supervisor: zalo_supervisor.clone(),
             });
             conversation_events.spawn_tauri_forwarder(app.handle().clone());
+            let startup_service = conversation_service.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = startup_service.recover_outbox_startup() {
+                    tracing::error!(target: "conversation", %error, "outbox recovery failed");
+                }
+                if let Err(error) = zalo_supervisor.start_all().await {
+                    tracing::error!(target: "conversation", %error, "Zalo supervisor startup failed");
+                }
+            });
 
             Ok(())
         })
@@ -198,8 +215,12 @@ pub fn run() {
             conversation::commands::list_conversation_inbox,
             conversation::commands::get_contact_timeline,
             conversation::commands::get_conversation_timeline,
-            conversation::commands::link_conversation_identity
+            conversation::commands::link_conversation_identity,
+            conversation::commands::send_conversation_message,
+            conversation::commands::get_conversation_runtime_status,
+            conversation::commands::restart_conversation_account
         ])
+
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -25,6 +25,18 @@ impl ServiceHarness {
             [],
         )
         .unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS zalo_sessions (
+                imei TEXT PRIMARY KEY,
+                user_agent TEXT NOT NULL,
+                cookies_json TEXT NOT NULL,
+                language TEXT NOT NULL,
+                display_name TEXT,
+                avatar TEXT
+            )",
+            [],
+        )
+        .unwrap();
         migrate(&conn).unwrap();
         drop(conn);
 
@@ -191,4 +203,60 @@ fn link_identity_publishes_link_invalidation() {
     assert_eq!(event.reason, ConversationInvalidationReason::Link);
     assert_eq!(event.lead_id, Some(7));
     assert_eq!(event.conversation_id, applied.conversation_id);
+}
+
+#[tokio::test]
+async fn test_conversation_state_commands_integration() {
+    use super::commands::{
+        get_conversation_runtime_status, restart_conversation_account, send_conversation_message,
+        ConversationState,
+    };
+    use crate::conversation::types::SendConversationMessageRequest;
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+    ));
+
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+
+    let conv_state = ConversationState {
+        service: conversation_service,
+        zalo_supervisor: zalo_supervisor.clone(),
+    };
+
+    let app = mock_builder()
+        .manage(conv_state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+
+    let state = app.state::<ConversationState>();
+
+    // 1. get_conversation_runtime_status
+    let status = get_conversation_runtime_status(state.clone())
+        .await
+        .unwrap();
+    assert!(status.accounts.is_empty());
+
+    // 2. restart_conversation_account
+    let res = restart_conversation_account(state.clone(), "non-existent-account".to_string()).await;
+    assert!(res.is_ok());
+
+    // 3. send_conversation_message
+    let req = SendConversationMessageRequest {
+        conversation_id: 1,
+        channel_account_id: 1,
+        text: "hello tauri command".to_string(),
+        reply_to_message_id: None,
+    };
+    let _ = send_conversation_message(state.clone(), req);
 }
