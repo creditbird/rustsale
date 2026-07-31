@@ -3004,7 +3004,11 @@ pub async fn send_zalo_campaign_internal(
             }
         }
 
-        let send_result: Result<(), zca_rs::ZaloError> = if is_mock {
+        let local_request_id = format!("campaign-{}", rand::random::<u128>());
+        let send_result: Result<
+            crate::conversation::outreach::ZaloProviderReceipt,
+            zca_rs::ZaloError,
+        > = if is_mock {
             if current_imei == "mock-fail-imei" {
                 Err(zca_rs::ZaloError::ApiError {
                     message: "Mock session expired".to_string(),
@@ -3015,7 +3019,9 @@ pub async fn send_zalo_campaign_internal(
                     "Mock lead send failure".to_string(),
                 ))
             } else {
-                Ok(())
+                Ok(crate::conversation::outreach::ZaloProviderReceipt::mock(
+                    &local_request_id,
+                ))
             }
         } else {
             let zalo = &active_clients[active_index];
@@ -3031,7 +3037,7 @@ pub async fn send_zalo_campaign_internal(
             if let Some(u) = &uid {
                 zalo.send_message(msg_content, u, zca_rs::models::ThreadType::User)
                     .await
-                    .map(|_| ())
+                    .map(crate::conversation::outreach::ZaloProviderReceipt::from_response)
             } else {
                 Err(zca_rs::ZaloError::PayloadFormat(
                     "Missing Zalo UID for message send".to_string(),
@@ -3041,105 +3047,168 @@ pub async fn send_zalo_campaign_internal(
 
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-        if send_result.is_ok() {
-            total_sent += 1;
-            let history = crate::models::OutreachHistory {
-                id: None,
-                lead_id: lead.id.unwrap(),
-                template_id,
-                status: "SUCCESS".to_string(),
-                error_message: None,
-                sent_at: now.clone(),
-                session_imei: current_imei.clone(),
-            };
-            {
-                let conn_guard = conn_mutex.lock().unwrap();
-                let _ = crate::db::log_outreach_attempt(&conn_guard, &history);
-                let _ = conn_guard.execute(
-                    "UPDATE leads SET zalo_reached = 1, has_zalo = 1, last_activity = ?1 WHERE id = ?2",
-                    rusqlite::params![now, lead.id.unwrap()],
-                );
-            }
+        match send_result {
+            Ok(provider_receipt) => {
+                total_sent += 1;
+                let external_user_id = uid.clone().unwrap_or_default();
+                let lead_id = lead.id.unwrap();
+                let conversation_sent_at = now.clone();
 
-            if let Some(app) = app_handle {
-                let _ = app.emit(
-                    "campaign-log",
-                    CampaignLogPayload {
-                        message: format!("Sent to {} using session {}", lead.name, current_imei),
-                    },
-                );
-            }
+                let act_res = {
+                    let mut conn_guard = conn_mutex.lock().unwrap();
+                    let tx_res = conn_guard.transaction();
+                    match tx_res {
+                        Ok(tx) => {
+                            let _ = tx.execute(
+                                "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'SUCCESS', NULL, ?3, ?4)",
+                                rusqlite::params![lead_id, template_id, &now, &current_imei],
+                            );
+                            let _ = tx.execute(
+                                "UPDATE leads SET zalo_reached = 1, has_zalo = 1, last_activity = ?1 WHERE id = ?2",
+                                rusqlite::params![now, lead_id],
+                            );
 
-            if !is_mock {
-                use rand::Rng;
-                let sleep_ms = {
-                    let mut rng = rand::thread_rng();
-                    rng.gen_range(8000..=12000)
-                };
-                tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
-            } else {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-            }
+                            let applied_res = crate::conversation::outreach::record_outreach_success_in_transaction(
+                                &tx,
+                                &crate::conversation::outreach::OutreachConversationRecord {
+                                    lead_id: i64::from(lead_id),
+                                    provider_account_key: current_imei.clone(),
+                                    account_display_name: None,
+                                    external_user_id,
+                                    user_display_name: Some(lead.name.clone()),
+                                    user_avatar_url: None,
+                                    template_id: i64::from(template_id),
+                                    source: "zalo_campaign".to_string(),
+                                    text: formatted_content.clone(),
+                                    local_request_id,
+                                    provider_receipt,
+                                    sent_at: conversation_sent_at,
+                                },
+                            );
 
-            active_index = (active_index + 1) % active_imeis.len();
-        } else {
-            let send_error = send_result.expect_err("send result checked as error");
-            let send_error_message = send_error.to_string();
-            let rotate_session = should_rotate_zalo_session(&send_error);
-            let history = crate::models::OutreachHistory {
-                id: None,
-                lead_id: lead.id.unwrap(),
-                template_id,
-                status: "FAILED".to_string(),
-                error_message: Some(send_error_message.clone()),
-                sent_at: now,
-                session_imei: current_imei.clone(),
-            };
-            {
-                let conn_guard = conn_mutex.lock().unwrap();
-                let _ = crate::db::log_outreach_attempt(&conn_guard, &history);
-                let _ = conn_guard.execute(
-                    "UPDATE leads SET zalo_reached = 0 WHERE id = ?1",
-                    rusqlite::params![lead.id.unwrap()],
-                );
-            }
-
-            if let Some(app) = app_handle {
-                let _ = app.emit(
-                    "campaign-log",
-                    CampaignLogPayload {
-                        message: format!(
-                            "Failed sending to {} using session {}: {}",
-                            lead.name, current_imei, send_error_message
-                        ),
-                    },
-                );
-            }
-
-            if rotate_session {
-                active_imeis.remove(active_index);
-                if !is_mock {
-                    active_clients.remove(active_index);
-                }
-
-                if active_imeis.is_empty() {
-                    if let Some(app) = app_handle {
-                        let _ = app.emit(
-                            "campaign-log",
-                            CampaignLogPayload {
-                                message: "All sessions exhausted. Stopping campaign.".to_string(),
-                            },
-                        );
+                            match applied_res {
+                                Ok(applied) => match tx.commit() {
+                                    Ok(()) => Ok(applied),
+                                    Err(e) => {
+                                        Err(format!("Database transaction commit error: {}", e))
+                                    }
+                                },
+                                Err(e) => Err(format!("Outreach conversation record error: {}", e)),
+                            }
+                        }
+                        Err(e) => Err(format!("Failed to begin transaction: {}", e)),
                     }
-                    break;
+                };
+
+                match act_res {
+                    Ok(applied_outreach) => {
+                        if let Some(app) = app_handle {
+                            if let Some(state) =
+                                app.try_state::<crate::conversation::commands::ConversationState>()
+                            {
+                                state.service.publish_outreach_success(&applied_outreach);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(app) = app_handle {
+                            let _ = app.emit(
+                                "campaign-log",
+                                CampaignLogPayload {
+                                    message: format!(
+                                        "Delivery succeeded for {} but local persistence failed: {}",
+                                        lead.name, e
+                                    ),
+                                },
+                            );
+                        }
+                    }
                 }
-                active_index %= active_imeis.len();
-            } else {
+
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "campaign-log",
+                        CampaignLogPayload {
+                            message: format!(
+                                "Sent to {} using session {}",
+                                lead.name, current_imei
+                            ),
+                        },
+                    );
+                }
+
+                if !is_mock {
+                    use rand::Rng;
+                    let sleep_ms = {
+                        let mut rng = rand::thread_rng();
+                        rng.gen_range(8000..=12000)
+                    };
+                    tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                }
+
                 active_index = (active_index + 1) % active_imeis.len();
             }
+            Err(send_error) => {
+                let send_error_message = send_error.to_string();
+                let rotate_session = should_rotate_zalo_session(&send_error);
+                let history = crate::models::OutreachHistory {
+                    id: None,
+                    lead_id: lead.id.unwrap(),
+                    template_id,
+                    status: "FAILED".to_string(),
+                    error_message: Some(send_error_message.clone()),
+                    sent_at: now,
+                    session_imei: current_imei.clone(),
+                };
+                {
+                    let conn_guard = conn_mutex.lock().unwrap();
+                    let _ = crate::db::log_outreach_attempt(&conn_guard, &history);
+                    let _ = conn_guard.execute(
+                        "UPDATE leads SET zalo_reached = 0 WHERE id = ?1",
+                        rusqlite::params![lead.id.unwrap()],
+                    );
+                }
 
-            let cooldown_ms = if is_mock { 10 } else { 5000 };
-            tokio::time::sleep(tokio::time::Duration::from_millis(cooldown_ms)).await;
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "campaign-log",
+                        CampaignLogPayload {
+                            message: format!(
+                                "Failed sending to {} using session {}: {}",
+                                lead.name, current_imei, send_error_message
+                            ),
+                        },
+                    );
+                }
+
+                if rotate_session {
+                    active_imeis.remove(active_index);
+                    if !is_mock {
+                        active_clients.remove(active_index);
+                    }
+
+                    if active_imeis.is_empty() {
+                        if let Some(app) = app_handle {
+                            let _ = app.emit(
+                                "campaign-log",
+                                CampaignLogPayload {
+                                    message: "All sessions exhausted. Stopping campaign."
+                                        .to_string(),
+                                },
+                            );
+                        }
+                        break;
+                    }
+                    active_index %= active_imeis.len();
+                } else {
+                    active_index = (active_index + 1) % active_imeis.len();
+                }
+
+                let cooldown_ms = if is_mock { 10 } else { 5000 };
+                tokio::time::sleep(tokio::time::Duration::from_millis(cooldown_ms)).await;
+            }
         }
 
         if let Some(app) = app_handle {

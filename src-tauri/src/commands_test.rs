@@ -763,6 +763,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(h4, 1);
+
+        let direct_conv_count: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'direct'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(direct_conv_count, 1);
+
+        let group_conv_count: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'group'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(group_conv_count, 0);
+
+        let total_messages: i64 = conn_locked
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total_messages, 1);
+
+        let provider_key: String = conn_locked
+            .query_row(
+                "SELECT ca.provider_account_key FROM channel_accounts ca JOIN channel_conversations cc ON cc.channel_account_id = ca.id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider_key, "mock-success-imei");
     }
 
     #[tokio::test]
@@ -865,6 +897,41 @@ mod tests {
             .unwrap();
         assert_eq!(failure.0, 1);
         assert!(failure.1.contains("Mock lead send failure"));
+
+        let direct_conv_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'direct'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(direct_conv_count, 2);
+
+        let group_conv_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'group'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(group_conv_count, 0);
+
+        let total_messages: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total_messages, 2);
+
+        let provider_keys: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT ca.provider_account_key FROM channel_accounts ca JOIN channel_conversations cc ON cc.channel_account_id = ca.id")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .filter_map(Result::ok)
+                .collect()
+        };
+        assert_eq!(provider_keys.len(), 2);
+        assert!(provider_keys.iter().all(|k| k == "mock-success-imei"));
     }
 
     #[tokio::test]
@@ -945,6 +1012,38 @@ mod tests {
         // If mock-fail-imei was NOT evicted, it would be used and fail.
         let l2 = commands::get_lead_details_internal(&conn_locked, lead_2).unwrap();
         assert_eq!(l2.zalo_reached, 1);
+
+        let direct_conv_count: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'direct'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(direct_conv_count, 1);
+
+        let group_conv_count: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE kind = 'group'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(group_conv_count, 0);
+
+        let total_messages: i64 = conn_locked
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total_messages, 1);
+
+        let provider_key: String = conn_locked
+            .query_row(
+                "SELECT ca.provider_account_key FROM channel_accounts ca JOIN channel_conversations cc ON cc.channel_account_id = ca.id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider_key, "mock-success-imei");
     }
 
     #[tokio::test]
