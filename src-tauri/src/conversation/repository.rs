@@ -1,4 +1,7 @@
-use crate::conversation::types::{Channel, ConversationKind, MessageDirection, MessageStatus};
+use crate::conversation::types::{
+    utc_now, Channel, ConversationKind, ConversationMessage, MessageDirection, MessageStatus,
+    TimelineCursor, TimelinePage,
+};
 use crate::db::open_db_connection;
 use rusqlite::{params, OptionalExtension, Result};
 
@@ -206,5 +209,222 @@ impl ConversationRepository {
             message_id,
             duplicate: false,
         })
+    }
+
+    pub fn link_identity(&self, identity_id: i64, lead_id: i64) -> Result<i64> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE channel_identities
+             SET lead_id = ?1, link_source = 'manual', link_confidence = 1.0, verified_at = ?2, updated_at = ?2
+             WHERE id = ?3",
+            params![lead_id, utc_now(), identity_id],
+        )?;
+        let conversation_id = tx
+            .query_row(
+                "SELECT cp.conversation_id
+                 FROM conversation_participants cp
+                 JOIN channel_conversations cc ON cc.id = cp.conversation_id
+                 WHERE cp.identity_id = ?1 AND cc.kind IN ('direct', 'email_thread')
+                 ORDER BY cc.last_message_at DESC, cc.id DESC
+                 LIMIT 1",
+                [identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        tx.commit()?;
+        Ok(conversation_id)
+    }
+
+    pub fn get_contact_timeline(
+        &self,
+        lead_id: i64,
+        channels: &[Channel],
+        before: Option<&TimelineCursor>,
+        limit: u32,
+    ) -> Result<TimelinePage> {
+        if channels.is_empty() {
+            return Ok(TimelinePage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let conn = open_db_connection(&self.db_path)?;
+        let channel_placeholders = std::iter::repeat("?")
+            .take(channels.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let before_at = before.map(|cursor| cursor.occurred_at.as_str());
+        let before_id = before.map(|cursor| cursor.message_id);
+        let sql = format!(
+            "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
+                    ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
+                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
+                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+             WHERE EXISTS (
+                   SELECT 1
+                   FROM conversation_participants cp
+                   JOIN channel_identities participant ON participant.id = cp.identity_id
+                   WHERE cp.conversation_id = cc.id AND participant.lead_id = ?
+               )
+               AND cc.kind IN ('direct', 'email_thread')
+               AND ca.channel IN ({channel_placeholders})
+               AND (? IS NULL OR COALESCE(m.provider_timestamp, m.ingested_at) < ?
+                    OR (COALESCE(m.provider_timestamp, m.ingested_at) = ? AND m.id < ?))
+             ORDER BY occurred_at DESC, m.id DESC
+             LIMIT ?"
+        );
+        let mut values = Vec::<rusqlite::types::Value>::new();
+        values.push(lead_id.into());
+        values.extend(
+            channels
+                .iter()
+                .map(|channel| rusqlite::types::Value::Text(channel.as_str().to_string())),
+        );
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
+        let clamped_limit = limit.clamp(1, 100);
+        values.push(i64::from(clamped_limit).into());
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params_from_iter(values.iter()),
+                map_conversation_message,
+            )?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(page_from_descending_rows(rows, clamped_limit))
+    }
+
+    pub fn get_conversation_timeline(
+        &self,
+        conversation_id: i64,
+        before: Option<&TimelineCursor>,
+        limit: u32,
+    ) -> Result<TimelinePage> {
+        let conn = open_db_connection(&self.db_path)?;
+        let before_at = before.map(|cursor| cursor.occurred_at.as_str());
+        let before_id = before.map(|cursor| cursor.message_id);
+        let sql = "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
+                    ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
+                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
+                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+             WHERE m.conversation_id = ?
+               AND (? IS NULL OR COALESCE(m.provider_timestamp, m.ingested_at) < ?
+                    OR (COALESCE(m.provider_timestamp, m.ingested_at) = ? AND m.id < ?))
+             ORDER BY occurred_at DESC, m.id DESC
+             LIMIT ?";
+        let clamped_limit = limit.clamp(1, 100);
+        let mut values = Vec::<rusqlite::types::Value>::new();
+        values.push(conversation_id.into());
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
+        values.push(i64::from(clamped_limit).into());
+        let mut statement = conn.prepare(sql)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params_from_iter(values.iter()),
+                map_conversation_message,
+            )?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(page_from_descending_rows(rows, clamped_limit))
+    }
+}
+
+fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> {
+    let raw_channel: String = row.get(3)?;
+    let channel = Channel::from_str(&raw_channel).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    let raw_direction: String = row.get(7)?;
+    let direction = MessageDirection::from_str(&raw_direction).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            7,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    let raw_content_json: String = row.get(11)?;
+    let content: serde_json::Value =
+        serde_json::from_str(&raw_content_json).unwrap_or_else(|_| serde_json::json!({}));
+
+    let raw_status: String = row.get(13)?;
+    let status = MessageStatus::from_str(&raw_status).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            13,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    Ok(ConversationMessage {
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        channel_account_id: row.get(2)?,
+        channel,
+        account_display_name: row.get(4)?,
+        sender_identity_id: row.get(5)?,
+        sender_display_name: row.get(6)?,
+        direction,
+        provider_message_id: row.get(8)?,
+        content_type: row.get(9)?,
+        text_content: row.get(10)?,
+        content,
+        occurred_at: row.get(12)?,
+        status,
+        removed_at: row.get(14)?,
+        error_message: row.get(15)?,
+        reply_to_message_id: row.get(16)?,
+    })
+}
+
+fn page_from_descending_rows(mut rows: Vec<ConversationMessage>, limit: u32) -> TimelinePage {
+    let limit_usize = limit.clamp(1, 100) as usize;
+    let next_cursor = if rows.len() == limit_usize {
+        rows.last().map(|msg| TimelineCursor {
+            occurred_at: msg.occurred_at.clone(),
+            message_id: msg.id,
+        })
+    } else {
+        None
+    };
+
+    rows.reverse();
+
+    TimelinePage {
+        items: rows,
+        next_cursor,
     }
 }

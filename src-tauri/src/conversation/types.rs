@@ -24,6 +24,16 @@ impl Channel {
             Self::Email => "email",
         }
     }
+
+    pub fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "zalo" => Ok(Self::Zalo),
+            "whatsapp" => Ok(Self::WhatsApp),
+            "messenger" => Ok(Self::Messenger),
+            "email" => Ok(Self::Email),
+            _ => Err(format!("unknown channel: {s}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -60,6 +70,15 @@ impl MessageDirection {
             Self::System => "system",
         }
     }
+
+    pub fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "inbound" => Ok(Self::Inbound),
+            "outbound" => Ok(Self::Outbound),
+            "system" => Ok(Self::System),
+            _ => Err(format!("unknown message direction: {s}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -86,6 +105,20 @@ impl MessageStatus {
             Self::Received => "received",
             Self::Failed => "failed",
             Self::Removed => "removed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "sending" => Ok(Self::Sending),
+            "sent" => Ok(Self::Sent),
+            "delivered" => Ok(Self::Delivered),
+            "read" => Ok(Self::Read),
+            "received" => Ok(Self::Received),
+            "failed" => Ok(Self::Failed),
+            "removed" => Ok(Self::Removed),
+            _ => Err(format!("unknown message status: {s}")),
         }
     }
 }

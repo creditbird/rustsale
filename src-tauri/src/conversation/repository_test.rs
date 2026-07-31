@@ -100,3 +100,95 @@ fn same_peer_on_two_zalo_accounts_creates_two_provider_conversations() {
     assert_ne!(first.conversation_id, second.conversation_id);
     assert_eq!(first.identity_id, second.identity_id);
 }
+
+#[test]
+fn linking_identity_moves_direct_messages_into_contact_timeline_without_copying() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute("INSERT INTO leads (id, name) VALUES (7, 'Lead Seven')", [])
+        .unwrap();
+    drop(conn);
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-1"))
+        .unwrap();
+
+    harness
+        .repository
+        .link_identity(applied.identity_id.expect("direct message identity"), 7)
+        .unwrap();
+    let page = harness
+        .repository
+        .get_contact_timeline(7, &[Channel::Zalo], None, 50)
+        .unwrap();
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        page.items[0].provider_message_id.as_deref(),
+        Some("message-1")
+    );
+}
+
+#[test]
+fn group_messages_are_excluded_from_contact_timeline() {
+    let harness = Harness::new();
+    let mut message = direct_message("imei-a", "group-message-1");
+    message.conversation_kind = ConversationKind::Group;
+    message.external_thread_id = "group-1".to_string();
+    message
+        .participant
+        .as_mut()
+        .expect("group sender identity")
+        .lead_id = Some(7);
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute("INSERT INTO leads (id, name) VALUES (7, 'Lead Seven')", [])
+        .unwrap();
+    drop(conn);
+
+    harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+    let page = harness
+        .repository
+        .get_contact_timeline(7, &[Channel::Zalo], None, 50)
+        .unwrap();
+
+    assert!(page.items.is_empty());
+}
+
+#[test]
+fn timeline_pagination_returns_ascending_items_and_correct_next_cursor() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute("INSERT INTO leads (id, name) VALUES (7, 'Lead Seven')", [])
+        .unwrap();
+    drop(conn);
+
+    for i in 1..=3 {
+        let mut msg = direct_message("imei-a", &format!("msg-{i}"));
+        msg.provider_timestamp = Some(format!("2026-07-31T00:00:0{i}.000Z"));
+        msg.participant.as_mut().unwrap().lead_id = Some(7);
+        harness.repository.apply_normalized_message(&msg).unwrap();
+    }
+
+    // Page 1: limit 2 -> returns newest 2 items, chronological ascending (msg-2, msg-3)
+    let page1 = harness
+        .repository
+        .get_contact_timeline(7, &[Channel::Zalo], None, 2)
+        .unwrap();
+    assert_eq!(page1.items.len(), 2);
+    assert_eq!(page1.items[0].provider_message_id.as_deref(), Some("msg-2"));
+    assert_eq!(page1.items[1].provider_message_id.as_deref(), Some("msg-3"));
+    let cursor = page1.next_cursor.expect("next cursor present");
+    assert_eq!(cursor.message_id, page1.items[0].id);
+
+    // Page 2: before cursor -> returns remaining item (msg-1)
+    let page2 = harness
+        .repository
+        .get_contact_timeline(7, &[Channel::Zalo], Some(&cursor), 2)
+        .unwrap();
+    assert_eq!(page2.items.len(), 1);
+    assert_eq!(page2.items[0].provider_message_id.as_deref(), Some("msg-1"));
+    assert!(page2.next_cursor.is_none());
+}
