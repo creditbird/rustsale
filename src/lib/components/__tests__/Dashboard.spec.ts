@@ -1,5 +1,5 @@
 /// <reference types="bun-types" />
-import { mock } from 'bun:test';
+import { afterEach, mock } from 'bun:test';
 
 let leadsList = [
   { id: 1, name: "Lead One", company: "Company A", status: "New", value: 1000, last_activity: "2026-07-17", owner: "Owner A", email: "a@test.com", phone: "123", about: null },
@@ -35,10 +35,14 @@ mock.module('@tauri-apps/api/event', () => ({
   listen: async () => () => {}
 }));
 
-import { render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen } from '@testing-library/svelte';
 import Dashboard from '../Dashboard.svelte';
 import { notifyLeadsChanged } from '$lib/services/crmService';
 import { expect, test } from 'bun:test';
+
+afterEach(() => {
+  cleanup();
+});
 
 test('renders Dashboard screen headings and initial stats', async () => {
   render(Dashboard);
@@ -90,4 +94,49 @@ test('handles empty dataset without infinite IPC loop probe', async () => {
 
   // Should fetch at most twice on mount/initial effect, NOT loop infinitely (which would be 10-50+ calls)
   expect(getLeadsInvokeCount).toBeLessThanOrEqual(2);
+});
+
+test('does not re-fetch dashboard data on clean tab switch without background events', async () => {
+  leadsList = [
+    { id: 1, name: "Lead One", company: "Company A", status: "New", value: 1000, last_activity: "2026-07-17", owner: "Owner A", email: "a@test.com", phone: "123", about: null }
+  ];
+  getLeadsInvokeCount = 0;
+
+  const view = render(Dashboard, { props: { activeTab: 'dashboard' } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const initialFetchCount = getLeadsInvokeCount;
+
+  // Clean tab switch away and back
+  await view.rerender({ activeTab: 'leads' });
+  await view.rerender({ activeTab: 'dashboard' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // Should NOT re-fetch
+  expect(getLeadsInvokeCount).toBe(initialFetchCount);
+});
+
+test('re-fetches dashboard data on tab revisit if background event occurred and tab switched within 300ms', async () => {
+  leadsList = [
+    { id: 1, name: "Lead One", company: "Company A", status: "New", value: 1000, last_activity: "2026-07-17", owner: "Owner A", email: "a@test.com", phone: "123", about: null }
+  ];
+  getLeadsInvokeCount = 0;
+
+  const view = render(Dashboard, { props: { activeTab: 'dashboard' } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const initialFetchCount = getLeadsInvokeCount;
+
+  // Trigger background event -> starts 300ms reloadTimer
+  notifyLeadsChanged();
+
+  // Switch tab immediately (<300ms)
+  await view.rerender({ activeTab: 'leads' });
+
+  // Revisit tab after 100ms
+  await view.rerender({ activeTab: 'dashboard' });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  // MUST re-fetch because reloadTimer was cancelled mid-flight and marked isStale = true
+  expect(getLeadsInvokeCount).toBeGreaterThan(initialFetchCount);
 });

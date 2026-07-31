@@ -6,6 +6,7 @@ let listenFailuresRemaining = 0;
 let activeListenCount = 0;
 let deferNextListen = false;
 let resolveDeferredListen: (() => void) | null = null;
+let invokedCommands: Array<{ command: string; args?: Record<string, unknown> }> = [];
 
 function createUnlisten(): () => void {
   activeListenCount += 1;
@@ -19,7 +20,13 @@ function createUnlisten(): () => void {
 }
 
 mock.module('@tauri-apps/api/core', () => ({
-  invoke: async () => []
+  invoke: async (command: string, args?: Record<string, unknown>) => {
+    invokedCommands.push({ command, args });
+    if (command === 'get_outreach_leads_page') {
+      return { items: [], total: 0, next_cursor: null };
+    }
+    return [];
+  }
 }));
 
 mock.module('@tauri-apps/api/event', () => ({
@@ -42,10 +49,12 @@ mock.module('@tauri-apps/api/event', () => ({
 import {
   getBridgePromise,
   getBridgeRefCount,
+  getOutreachLeadsPage,
   handleScraperJobEvent,
   initScraperEventBridge,
   notifyLeadsChanged,
   onLeadsChanged,
+  resolveOutreachLeadIds,
   resetScraperJobEventBridgeState
 } from '../crmService';
 import type { GoogleMapsJobEvent } from '../googleMapsScraperService';
@@ -79,6 +88,34 @@ beforeEach(() => {
   activeListenCount = 0;
   deferNextListen = false;
   resolveDeferredListen = null;
+  invokedCommands = [];
+});
+
+test('maps paginated outreach filters to exact Tauri command payloads', async () => {
+  const filters = {
+    categoryId: 7,
+    segmentation: 'never_sent',
+    filterTemplateId: null,
+    channel: 'zalo' as const,
+    search: 'acme',
+    filterVerifiedZalo: true,
+    filterUnreached: true,
+    filterMobileOnly: false
+  };
+
+  await getOutreachLeadsPage(filters, 120, 50);
+  await resolveOutreachLeadIds(filters, [3, 9]);
+
+  expect(invokedCommands).toEqual([
+    {
+      command: 'get_outreach_leads_page',
+      args: { ...filters, cursor: 120, limit: 50 }
+    },
+    {
+      command: 'resolve_outreach_lead_ids',
+      args: { ...filters, excludedLeadIds: [3, 9] }
+    }
+  ]);
 });
 
 describe('crmService real-time lead change & scraper bridge', () => {

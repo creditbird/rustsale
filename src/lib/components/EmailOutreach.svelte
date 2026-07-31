@@ -1,8 +1,17 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { getLeads, getCategories, getCampaignLeads, type Lead, type Category } from '$lib/services/crmService';
+  import * as crmService from '$lib/services/crmService';
+  import {
+    getCategories,
+    getOutreachLeadsPage,
+    resolveOutreachLeadIds,
+    type Category,
+    type Lead,
+    type OutreachLeadFilters,
+    type OutreachLeadsPage
+  } from '$lib/services/crmService';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
@@ -34,15 +43,24 @@
     created_at?: string;
   }
 
+  const LEAD_PAGE_SIZE = 50;
+
   let smtpServers = $state<SmtpServer[]>([]);
   let templates = $state<EmailTemplate[]>([]);
   let leads = $state<Lead[]>([]);
+  let totalLeads = $state(0);
+  let currentLeadPage = $state(1);
+  let pageCursors = $state<(number | null)[]>([null]);
+  let nextLeadCursor = $state<number | null>(null);
+  let isLoadingLeads = $state(false);
   let categories = $state<Category[]>([]);
 
   let selectedSmtpId = $state<number | null>(null);
   let selectedSmtpIds = $state<number[]>([]);
   let selectedTemplateId = $state<number | null>(null);
   let selectedLeadIds = $state<number[]>([]);
+  let selectAllMatching = $state(true);
+  let excludedLeadIds = $state<number[]>([]);
 
   let selectedCategoryId = $state<number | null>(null);
   let segmentationFilter = $state('all');
@@ -83,59 +101,78 @@
   let campaignConsoleElement: HTMLDivElement | null = null;
 
   let campaignUnlistens: UnlistenFn[] = [];
+  let leadPageCache = new Map<string, OutreachLeadsPage>();
+  let leadRequestId = 0;
+  let loadedLeadFilterKey = '';
+  let isDisposed = false;
 
-  let filteredLeads = $derived(
-    leads.filter(lead =>
-      (lead.name || '').toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
-      (lead.company || '').toLowerCase().includes(leadSearchQuery.toLowerCase()) ||
-      (lead.email || '').toLowerCase().includes(leadSearchQuery.toLowerCase())
-    )
+  let selectedLeadSet = $derived(new Set(selectedLeadIds));
+  let excludedLeadSet = $derived(new Set(excludedLeadIds));
+  let selectedLeadCount = $derived(
+    selectAllMatching
+      ? Math.max(0, totalLeads - excludedLeadIds.length)
+      : selectedLeadIds.length
   );
 
   let isAllLeadsSelected = $derived(
-    filteredLeads.length > 0 &&
-    filteredLeads.every(lead => lead.id && selectedLeadIds.includes(lead.id))
+    totalLeads > 0 && selectAllMatching && excludedLeadIds.length === 0
   );
+  let totalLeadPages = $derived(Math.max(1, Math.ceil(totalLeads / LEAD_PAGE_SIZE)));
+  let hasPreviousLeadPage = $derived(currentLeadPage > 1);
+  let hasNextLeadPage = $derived(nextLeadCursor !== null);
 
-  async function loadSmtpServers(): Promise<void> {
+  async function loadSmtpServers(): Promise<boolean> {
     try {
       const res = await invoke<SmtpServer[]>('get_smtp_servers');
+      if (isDisposed) return false;
       smtpServers = [...res];
       if (smtpServers.length > 0) {
         if (selectedSmtpId === null && smtpServers[0].id) selectedSmtpId = smtpServers[0].id;
         if (selectedSmtpIds.length === 0 && smtpServers[0].id) selectedSmtpIds = [smtpServers[0].id];
       }
-    } catch (e) { console.error(e); }
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
   }
 
-  async function loadTemplates(): Promise<void> {
+  async function loadTemplates(): Promise<boolean> {
     try {
       const res = await invoke<EmailTemplate[]>('get_email_templates');
+      if (isDisposed) return false;
       templates = [...res];
       if (templates.length > 0 && selectedTemplateId === null) selectedTemplateId = templates[0].id || null;
-    } catch (e) { console.error(e); }
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
   }
 
-  async function loadLeadsData(): Promise<void> {
+  async function loadCategories(): Promise<boolean> {
     try {
-      leads = await getLeads();
-      selectedLeadIds = leads.filter(l => l.id != null).map(l => l.id as number);
-    } catch (e) { console.error(e); }
-  }
-
-  async function loadCategories(): Promise<void> {
-    try { categories = await getCategories(); } catch (e) { console.error(e); }
+      const result = await getCategories();
+      if (isDisposed) return false;
+      categories = result;
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
   }
 
   function selectValidEmail() {
-    const emailLeads = filteredLeads.filter(l => l.email && l.email.includes('@'));
+    const emailLeads = leads.filter(l => l.email && l.email.includes('@'));
+    if (selectAllMatching) return;
     const newIds = new Set(selectedLeadIds);
     emailLeads.forEach(l => { if (l.id != null) newIds.add(l.id); });
     selectedLeadIds = Array.from(newIds);
   }
 
   function selectUnreached() {
-    const unreached = filteredLeads.filter(l => !(l as any).email_reached);
+    const unreached = leads.filter(l => !(l as any).email_reached);
+    if (selectAllMatching) return;
     const newIds = new Set(selectedLeadIds);
     unreached.forEach(l => { if (l.id != null) newIds.add(l.id); });
     selectedLeadIds = Array.from(newIds);
@@ -147,40 +184,240 @@
     }
   });
 
-  async function reloadLeads() {
-    if (selectedCategoryId !== null && selectedCategoryId !== undefined) {
-      if (segmentationFilter === 'template_success' && !filterTemplateId) {
-        leads = [];
-        selectedLeadIds = [];
-        return;
-      }
-      try {
-        const res = await getCampaignLeads(Number(selectedCategoryId), segmentationFilter, filterTemplateId, 'email');
-        leads = res;
-        selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
-      } catch (err) {
-        console.error(err);
-        leads = [];
-        selectedLeadIds = [];
-      }
-    } else {
+  function currentLeadFilters(): OutreachLeadFilters {
+    return {
+      categoryId: selectedCategoryId,
+      segmentation: segmentationFilter,
+      filterTemplateId,
+      channel: 'email',
+      search: leadSearchQuery.trim(),
+      filterVerifiedZalo: false,
+      filterUnreached: false,
+      filterMobileOnly: false
+    };
+  }
+
+  function leadPageCacheKey(filters: OutreachLeadFilters, cursor: number | null): string {
+    return `${JSON.stringify(filters)}::${cursor ?? 'first'}`;
+  }
+
+  function resetLeadSelection() {
+    selectAllMatching = true;
+    excludedLeadIds = [];
+    selectedLeadIds = [];
+  }
+
+  function resetLeadPagination() {
+    currentLeadPage = 1;
+    pageCursors = [null];
+    nextLeadCursor = null;
+  }
+
+  function invalidateLeadCache() {
+    leadPageCache.clear();
+    leadRequestId += 1;
+  }
+
+  async function reloadLeads(options: {
+    page?: number;
+    cursor?: number | null;
+    force?: boolean;
+    resetSelection?: boolean;
+  } = {}): Promise<boolean> {
+    const page = options.page ?? currentLeadPage;
+    const cursor = options.cursor !== undefined
+      ? options.cursor
+      : (pageCursors[page - 1] ?? null);
+    const filters = currentLeadFilters();
+    const filterKey = JSON.stringify(filters);
+
+    if (filters.segmentation === 'template_success' && !filters.filterTemplateId) {
       leads = [];
-      selectedLeadIds = [];
+      totalLeads = 0;
+      nextLeadCursor = null;
+      loadedLeadFilterKey = filterKey;
+      isLoadingLeads = false;
+      isStale = false;
+      if (options.resetSelection) resetLeadSelection();
+      return true;
+    }
+
+    const cacheKey = leadPageCacheKey(filters, cursor);
+    const requestId = ++leadRequestId;
+    isLoadingLeads = true;
+
+    try {
+      let result = options.force ? undefined : leadPageCache.get(cacheKey);
+      if (!result) {
+        result = await getOutreachLeadsPage(filters, cursor, LEAD_PAGE_SIZE);
+        if (isDisposed) return false;
+        leadPageCache.set(cacheKey, result);
+      }
+      if (isDisposed || requestId !== leadRequestId) return true;
+
+      leads = result.items;
+      totalLeads = result.total;
+      nextLeadCursor = result.next_cursor;
+      currentLeadPage = page;
+      const cursors = pageCursors.slice(0, page);
+      cursors[page - 1] = cursor;
+      pageCursors = cursors;
+      loadedLeadFilterKey = filterKey;
+      isStale = false;
+      if (options.resetSelection) resetLeadSelection();
+      return true;
+    } catch (err) {
+      console.error('Error loading email outreach lead page:', err);
+      if (!isDisposed) isStale = true;
+      return false;
+    } finally {
+      if (!isDisposed && requestId === leadRequestId) isLoadingLeads = false;
     }
   }
 
+  async function showPreviousLeadPage() {
+    if (!hasPreviousLeadPage || isLoadingLeads) return;
+    const page = currentLeadPage - 1;
+    await reloadLeads({ page, cursor: pageCursors[page - 1] ?? null });
+  }
+
+  async function showNextLeadPage() {
+    if (!hasNextLeadPage || isLoadingLeads || nextLeadCursor === null) return;
+    const page = currentLeadPage + 1;
+    const cursor = nextLeadCursor;
+    const cursors = pageCursors.slice();
+    cursors[page - 1] = cursor;
+    pageCursors = cursors;
+    await reloadLeads({ page, cursor });
+  }
+
+  let { activeTab = 'email_outreach' }: { activeTab?: string } = $props();
+  let hasLoaded = $state(false);
+  let isStale = $state(false);
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  let filterReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function debouncedReload() {
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (activeTab === 'email_outreach') {
+        void refreshCrmData();
+      } else {
+        isStale = true;
+      }
+    }, 300);
+  }
+
+  async function refreshCrmData(): Promise<boolean> {
+    invalidateLeadCache();
+    const succeeded = await reloadLeads({ force: true });
+    if (isDisposed) return false;
+    isStale = !succeeded;
+    return succeeded;
+  }
+
+  async function refreshData(): Promise<boolean> {
+    const [categoriesLoaded, smtpLoaded, templatesLoaded] = await Promise.all([
+      loadCategories(),
+      loadSmtpServers(),
+      loadTemplates()
+    ]);
+    if (isDisposed) return false;
+    resetLeadPagination();
+    const leadsLoaded = await reloadLeads({ page: 1, cursor: null, resetSelection: true });
+    if (isDisposed) return false;
+    const succeeded = categoriesLoaded && smtpLoaded && templatesLoaded && leadsLoaded;
+
+    hasLoaded = succeeded;
+    if (succeeded) {
+      isStale = false;
+    } else {
+      isStale = true;
+    }
+    return succeeded;
+  }
+
   $effect(() => {
-    const cat = selectedCategoryId;
-    const seg = segmentationFilter;
-    const tmpl = filterTemplateId;
-    reloadLeads();
+    const filterKey = JSON.stringify({
+      categoryId: selectedCategoryId,
+      segmentation: segmentationFilter,
+      filterTemplateId,
+      channel: 'email',
+      search: leadSearchQuery.trim(),
+      filterVerifiedZalo: false,
+      filterUnreached: false,
+      filterMobileOnly: false
+    });
+    const shouldReload = untrack(
+      () => activeTab === 'email_outreach' && hasLoaded && filterKey !== loadedLeadFilterKey
+    );
+    if (!shouldReload) return;
+
+    if (filterReloadTimer) clearTimeout(filterReloadTimer);
+    isLoadingLeads = true;
+    filterReloadTimer = setTimeout(() => {
+      filterReloadTimer = null;
+      if (activeTab !== 'email_outreach') {
+        isLoadingLeads = false;
+        isStale = true;
+        return;
+      }
+      resetLeadPagination();
+      void reloadLeads({ page: 1, cursor: null, resetSelection: true });
+    }, 250);
   });
 
-  onMount(async () => {
-    loadCategories();
-    await loadSmtpServers();
-    await loadTemplates();
-    await loadLeadsData();
+  $effect(() => {
+    const isActive = activeTab === 'email_outreach';
+    const cacheState = untrack(() => ({ hasLoaded, isStale }));
+
+    if (isActive) {
+      if (!cacheState.hasLoaded) {
+        void refreshData();
+      } else if (cacheState.isStale) {
+        void refreshCrmData();
+      }
+    } else {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+        isStale = true;
+      }
+      if (filterReloadTimer) {
+        clearTimeout(filterReloadTimer);
+        filterReloadTimer = null;
+        isLoadingLeads = false;
+        isStale = true;
+      }
+    }
+  });
+
+  onMount(() => {
+    const unsubBridge = crmService.initScraperEventBridge();
+    const unsubLeads = crmService.onLeadsChanged(() => {
+      if (activeTab === 'email_outreach') {
+        debouncedReload();
+      } else {
+        isStale = true;
+      }
+    });
+
+    return () => {
+      isDisposed = true;
+      leadRequestId += 1;
+      unsubLeads();
+      unsubBridge();
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+      }
+      if (filterReloadTimer) {
+        clearTimeout(filterReloadTimer);
+        filterReloadTimer = null;
+      }
+      cleanupCampaignListeners();
+    };
   });
 
   function cleanupCampaignListeners() { campaignUnlistens.forEach(u => u()); campaignUnlistens = []; }
@@ -297,19 +534,31 @@
   }
 
   function toggleLead(leadId: number) {
-    if (selectedLeadIds.includes(leadId)) selectedLeadIds = selectedLeadIds.filter(id => id !== leadId);
+    if (selectAllMatching) {
+      if (excludedLeadSet.has(leadId)) excludedLeadIds = excludedLeadIds.filter(id => id !== leadId);
+      else excludedLeadIds = [...excludedLeadIds, leadId];
+      return;
+    }
+
+    if (selectedLeadSet.has(leadId)) selectedLeadIds = selectedLeadIds.filter(id => id !== leadId);
     else selectedLeadIds = [...selectedLeadIds, leadId];
   }
 
   function toggleSelectAll() {
     if (isAllLeadsSelected) {
-      const filteredIds = new Set(filteredLeads.map(l => l.id));
-      selectedLeadIds = selectedLeadIds.filter(id => !filteredIds.has(id));
+      selectAllMatching = false;
+      excludedLeadIds = [];
+      selectedLeadIds = [];
     } else {
-      const newIds = new Set(selectedLeadIds);
-      filteredLeads.forEach(l => { if (l.id != null) newIds.add(l.id); });
-      selectedLeadIds = Array.from(newIds);
+      resetLeadSelection();
     }
+  }
+
+  async function resolveSelectedLeadIds(): Promise<number[]> {
+    if (selectAllMatching) {
+      return resolveOutreachLeadIds(currentLeadFilters(), excludedLeadIds);
+    }
+    return [...selectedLeadIds];
   }
 
   function appendCampaignLog(msg: string) {
@@ -320,14 +569,21 @@
 
   async function startCampaign() {
     const activeSmtpId = selectedSmtpIds[0] || selectedSmtpId;
-    if (!activeSmtpId || !selectedTemplateId || selectedLeadIds.length === 0) return;
+    if (!activeSmtpId || !selectedTemplateId || selectedLeadCount === 0) return;
 
     isCampaignRunning = true; campaignProgress = 0; campaignStatus = 'Starting email campaign...'; campaignLogs = [];
-    appendCampaignLog(`Starting email campaign to ${selectedLeadIds.length} leads...`);
 
     cleanupCampaignListeners();
 
     try {
+      const campaignLeadIds = await resolveSelectedLeadIds();
+      if (campaignLeadIds.length === 0) {
+        isCampaignRunning = false;
+        campaignStatus = 'No matching leads selected.';
+        return;
+      }
+      appendCampaignLog(`Starting email campaign to ${campaignLeadIds.length} leads...`);
+
       const [progressUnlisten, logUnlisten, completeUnlisten] = await Promise.all([
         listen<{ progress: number; status: string; message: string }>('email-outreach-progress', (e) => {
           campaignProgress = e.payload.progress; campaignStatus = e.payload.message;
@@ -337,12 +593,12 @@
         listen<{ total_sent: number; message: string }>('email-outreach-complete', (e) => {
           isCampaignRunning = false; campaignProgress = 100; campaignStatus = e.payload.message;
           appendCampaignLog(`[COMPLETE] ${e.payload.message}`);
-          reloadLeads();
+          void refreshCrmData();
         })
       ]);
       campaignUnlistens.push(progressUnlisten, logUnlisten, completeUnlisten);
 
-      await invoke('send_email_outreach', { smtp_id: activeSmtpId, template_id: selectedTemplateId, lead_ids: selectedLeadIds });
+      await invoke('send_email_outreach', { smtp_id: activeSmtpId, template_id: selectedTemplateId, lead_ids: campaignLeadIds });
     } catch (e) { isCampaignRunning = false; appendCampaignLog(`Error: ${e}`); }
   }
 </script>
@@ -569,7 +825,7 @@
         <!-- Step 3: Select Leads Box -->
         <div class="flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs">
-            <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
+            <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadCount} chosen)</span>
             <div class="flex items-center gap-2">
               <Input type="text" placeholder="Search lead..." bind:value={leadSearchQuery} class="h-7 w-32 text-[11px]" />
               <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAll}>
@@ -579,19 +835,30 @@
           </div>
 
           <!-- Quick Helpers -->
-          <div class="flex items-center justify-end gap-1.5">
-            <Button variant="outline" size="sm" onclick={selectValidEmail} disabled={filteredLeads.filter(l => l.email && l.email.includes('@')).length === 0} class="h-6 text-[10px] px-2">
-              Valid Email Only
-            </Button>
-            <Button variant="outline" size="sm" onclick={selectUnreached} disabled={filteredLeads.length === 0} class="h-6 text-[10px] px-2">
-              Unreached Only
-            </Button>
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <Button variant="outline" size="sm" aria-label="Previous leads page" onclick={showPreviousLeadPage} disabled={!hasPreviousLeadPage || isLoadingLeads} class="h-6 text-[10px] px-2">
+                Prev
+              </Button>
+              <span class="min-w-12 text-center">{currentLeadPage}/{totalLeadPages}</span>
+              <Button variant="outline" size="sm" aria-label="Next leads page" onclick={showNextLeadPage} disabled={!hasNextLeadPage || isLoadingLeads} class="h-6 text-[10px] px-2">
+                Next
+              </Button>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <Button variant="outline" size="sm" onclick={selectValidEmail} disabled={leads.filter(l => l.email && l.email.includes('@')).length === 0} class="h-6 text-[10px] px-2">
+                Valid Email Only
+              </Button>
+              <Button variant="outline" size="sm" onclick={selectUnreached} disabled={leads.length === 0} class="h-6 text-[10px] px-2">
+                Unreached Only
+              </Button>
+            </div>
           </div>
 
           <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 flex flex-col gap-1">
-            {#each filteredLeads as lead (lead.id)}
+            {#each leads as lead (lead.id)}
               {#if lead.id}
-                {@const isSelected = selectedLeadIds.includes(lead.id)}
+                {@const isSelected = selectAllMatching ? !excludedLeadSet.has(lead.id) : selectedLeadSet.has(lead.id)}
                 <div
                   class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5' : ''}"
                   onclick={() => lead.id && toggleLead(lead.id)}
@@ -627,7 +894,7 @@
           <Button
             size="sm"
             onclick={startCampaign}
-            disabled={isCampaignRunning || (selectedSmtpIds.length === 0 && !selectedSmtpId) || !selectedTemplateId || selectedLeadIds.length === 0}
+            disabled={isCampaignRunning || isLoadingLeads || (selectedSmtpIds.length === 0 && !selectedSmtpId) || !selectedTemplateId || selectedLeadCount === 0}
             class="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
           >
             <Mail class="size-4" /> {isCampaignRunning ? 'Sending Email Campaign...' : 'Launch Email Campaign'}

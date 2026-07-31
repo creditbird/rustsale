@@ -1,5 +1,5 @@
 /// <reference types="bun-types" />
-import { afterEach, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -26,8 +26,10 @@ let mockEmailTemplates: Array<{
   content: string;
   created_at: string;
 }> = [];
+let mockCategories = [{ id: 1, name: 'VIP Clients' }];
+let smtpFailuresRemaining = 0;
 
-let mockLeads = [
+const defaultLeads = [
   {
     id: 1,
     name: 'Alice Johnson',
@@ -59,6 +61,7 @@ let mockLeads = [
     zalo_reached: 0
   }
 ];
+let mockLeads = defaultLeads.map((lead) => ({ ...lead }));
 
 let invokedCommands: Array<{ command: string; args?: any }> = [];
 
@@ -67,6 +70,10 @@ mock.module('@tauri-apps/api/core', () => ({
     invokedCommands.push({ command, args });
     switch (command) {
       case 'get_smtp_servers': {
+        if (smtpFailuresRemaining > 0) {
+          smtpFailuresRemaining -= 1;
+          return Promise.reject(new Error('SMTP load failed'));
+        }
         return Promise.resolve([...mockSmtpServers]);
       }
       case 'save_smtp_server': {
@@ -97,6 +104,28 @@ mock.module('@tauri-apps/api/core', () => ({
       }
       case 'get_email_templates': {
         return Promise.resolve([...mockEmailTemplates]);
+      }
+      case 'get_outreach_leads_page': {
+        const limit = Number(args?.limit || 50);
+        const cursor = args?.cursor == null ? null : Number(args.cursor);
+        const matching = [...mockLeads]
+          .filter((lead) => cursor === null || lead.id < cursor)
+          .sort((left, right) => right.id - left.id);
+        const items = matching.slice(0, limit);
+        return Promise.resolve({
+          items,
+          total: mockLeads.length,
+          next_cursor: matching.length > limit ? items.at(-1)?.id ?? null : null
+        });
+      }
+      case 'resolve_outreach_lead_ids': {
+        const excluded = new Set<number>(args?.excludedLeadIds || []);
+        return Promise.resolve(
+          mockLeads
+            .map((lead) => lead.id)
+            .filter((leadId) => !excluded.has(leadId))
+            .sort((left, right) => right - left)
+        );
       }
       case 'create_email_template': {
         const newTpl = {
@@ -130,7 +159,7 @@ mock.module('@tauri-apps/api/core', () => ({
         return Promise.resolve([...mockLeads]);
       }
       case 'get_categories': {
-        return Promise.resolve([{ id: 1, name: 'VIP Clients' }]);
+        return Promise.resolve([...mockCategories]);
       }
       case 'get_campaign_leads': {
         return Promise.resolve([...mockLeads]);
@@ -155,6 +184,13 @@ mock.module('@tauri-apps/api/event', () => ({
 }));
 
 import EmailOutreach from '../EmailOutreach.svelte';
+import { notifyLeadsChanged } from '$lib/services/crmService';
+
+beforeEach(() => {
+  mockCategories = [{ id: 1, name: 'VIP Clients' }];
+  mockLeads = defaultLeads.map((lead) => ({ ...lead }));
+  smtpFailuresRemaining = 0;
+});
 
 afterEach(() => {
   cleanup();
@@ -275,7 +311,7 @@ test('Lead selection and triggers Email Campaign execution with logs and progres
   render(EmailOutreach);
 
   expect(await screen.findByText(/Alice Johnson/i)).toBeTruthy();
-  expect(await screen.findByText(/Bob Smith/i)).toBeTruthy();
+  await fireEvent.click(await screen.findByText(/Bob Smith/i));
 
   const smtpCards = await screen.findAllByText(/Default SMTP/i);
   await fireEvent.click(smtpCards[0]);
@@ -294,9 +330,12 @@ test('Lead selection and triggers Email Campaign execution with logs and progres
   });
 
   const sendCmd = invokedCommands.find(c => c.command === 'send_email_outreach');
+  const resolverCmd = invokedCommands.find(c => c.command === 'resolve_outreach_lead_ids');
+  expect(resolverCmd?.args.excludedLeadIds).toEqual([2]);
+  expect(resolverCmd?.args.channel).toBe('email');
   expect(sendCmd?.args.smtp_id).toBe(1);
   expect(sendCmd?.args.template_id).toBe(1);
-  expect(sendCmd?.args.lead_ids.length).toBe(2);
+  expect(sendCmd?.args.lead_ids).toEqual([1]);
 
   const logListener = eventListeners.get('email-outreach-log');
   const progressListener = eventListeners.get('email-outreach-progress');
@@ -317,4 +356,125 @@ test('Lead selection and triggers Email Campaign execution with logs and progres
 
   const matchedComplete = await screen.findAllByText(/Email outreach completed/i);
   expect(matchedComplete.length).toBeGreaterThan(0);
+});
+
+test('does not re-fetch Email outreach data on clean tab switch without background events', async () => {
+  const view = render(EmailOutreach, { props: { activeTab: 'dashboard' } });
+  await view.rerender({ activeTab: 'email_outreach' });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
+  const initialCounts = {
+    categories: count('get_categories'),
+    smtp: count('get_smtp_servers'),
+    templates: count('get_email_templates'),
+    leads: count('get_outreach_leads_page')
+  };
+
+  await view.rerender({ activeTab: 'dashboard' });
+  await view.rerender({ activeTab: 'email_outreach' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  expect(count('get_categories')).toBe(initialCounts.categories);
+  expect(count('get_smtp_servers')).toBe(initialCounts.smtp);
+  expect(count('get_email_templates')).toBe(initialCounts.templates);
+  expect(count('get_outreach_leads_page')).toBe(initialCounts.leads);
+});
+
+test('performs one base refresh when mounted active', async () => {
+  render(EmailOutreach, { props: { activeTab: 'email_outreach' } });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
+  expect(count('get_categories')).toBe(1);
+  expect(count('get_smtp_servers')).toBe(1);
+  expect(count('get_email_templates')).toBe(1);
+  expect(count('get_outreach_leads_page')).toBe(1);
+});
+
+test('retries a failed initial SMTP load after tab revisit', async () => {
+  smtpFailuresRemaining = 1;
+  const view = render(EmailOutreach, { props: { activeTab: 'dashboard' } });
+  const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
+
+  await view.rerender({ activeTab: 'email_outreach' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const callsAfterFailure = count('get_smtp_servers');
+
+  await view.rerender({ activeTab: 'dashboard' });
+  await view.rerender({ activeTab: 'email_outreach' });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  expect(count('get_smtp_servers')).toBeGreaterThan(callsAfterFailure);
+});
+
+test('refreshes CRM data without reloading SMTP servers or templates after lead changes', async () => {
+  const view = render(EmailOutreach, { props: { activeTab: 'dashboard' } });
+  const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
+
+  await view.rerender({ activeTab: 'email_outreach' });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const initialSmtpCount = count('get_smtp_servers');
+  const initialTemplateCount = count('get_email_templates');
+  const initialLeadCount = count('get_outreach_leads_page');
+
+  notifyLeadsChanged();
+  await new Promise((resolve) => setTimeout(resolve, 450));
+
+  expect(count('get_smtp_servers')).toBe(initialSmtpCount);
+  expect(count('get_email_templates')).toBe(initialTemplateCount);
+  expect(count('get_outreach_leads_page')).toBeGreaterThan(initialLeadCount);
+});
+
+test('refreshes stale Email lead data after leaving during the realtime debounce', async () => {
+  const view = render(EmailOutreach, { props: { activeTab: 'email_outreach' } });
+  const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const initialLeadCount = count('get_outreach_leads_page');
+
+  notifyLeadsChanged();
+  await view.rerender({ activeTab: 'dashboard' });
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  expect(count('get_outreach_leads_page')).toBe(initialLeadCount);
+
+  await view.rerender({ activeTab: 'email_outreach' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(count('get_outreach_leads_page')).toBeGreaterThan(initialLeadCount);
+});
+
+test('loads all leads when no category is selected', async () => {
+  mockCategories = [];
+  const view = render(EmailOutreach, { props: { activeTab: 'dashboard' } });
+  const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
+
+  await view.rerender({ activeTab: 'email_outreach' });
+  expect(await screen.findByText(/Alice Johnson/)).toBeTruthy();
+
+  expect(count('get_outreach_leads_page')).toBe(1);
+  expect(count('get_campaign_leads')).toBe(0);
+});
+
+test('renders only one 50-lead page and navigates by cursor', async () => {
+  mockLeads = Array.from({ length: 125 }, (_, index) => ({
+    ...defaultLeads[0],
+    id: index + 1,
+    name: `Bulk Email Lead ${index + 1}`,
+    email: `email${index + 1}@example.com`
+  }));
+
+  render(EmailOutreach, { props: { activeTab: 'email_outreach' } });
+
+  expect(await screen.findByText(/Bulk Email Lead 125/)).toBeTruthy();
+  expect(screen.queryAllByText(/Bulk Email Lead/)).toHaveLength(50);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Next leads page' }));
+
+  expect(await screen.findByText(/Bulk Email Lead 75/)).toBeTruthy();
+  expect(screen.queryAllByText(/Bulk Email Lead/)).toHaveLength(50);
+
+  const callsAfterNext = invokedCommands.filter((entry) => entry.command === 'get_outreach_leads_page').length;
+  await fireEvent.click(screen.getByRole('button', { name: 'Previous leads page' }));
+
+  expect(await screen.findByText(/Bulk Email Lead 125/)).toBeTruthy();
+  expect(invokedCommands.filter((entry) => entry.command === 'get_outreach_leads_page').length).toBe(callsAfterNext);
 });

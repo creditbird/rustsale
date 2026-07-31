@@ -1,9 +1,261 @@
 use crate::models::{Activity, Category, Deal, EmailTemplate, Lead, SmtpServer, ZaloSessionStatus};
-use rusqlite::Connection;
+use rusqlite::{params_from_iter, types::Value, Connection, Row};
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 pub struct DbState {
     pub conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutreachLeadQuery {
+    pub category_id: Option<i32>,
+    pub segmentation: String,
+    pub filter_template_id: Option<i32>,
+    pub channel: String,
+    pub search: Option<String>,
+    pub filter_verified_zalo: bool,
+    pub filter_unreached: bool,
+    pub filter_mobile_only: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct OutreachLeadsPage {
+    pub items: Vec<Lead>,
+    pub total: i64,
+    pub next_cursor: Option<i32>,
+}
+
+fn outreach_lead_from_row(row: &Row<'_>) -> rusqlite::Result<Lead> {
+    Ok(Lead {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        company: row.get(2)?,
+        status: row.get(3)?,
+        value: row.get(4)?,
+        last_activity: row.get(5)?,
+        owner: row.get(6)?,
+        email: row.get(7)?,
+        phone: row.get(8)?,
+        about: row.get(9)?,
+        address: row.get(10)?,
+        has_zalo: row.get(11)?,
+        zalo_reached: row.get(12)?,
+        zalo_uid: row.get(13)?,
+        zalo_status: row.get(14)?,
+        relationship_status: row.get(15)?,
+        last_lookup_attempt: row.get(16)?,
+    })
+}
+
+fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<Value>), String> {
+    let mut sql = String::from(" FROM leads l WHERE 1 = 1");
+    let mut params = Vec::new();
+
+    if let Some(category_id) = query.category_id {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM lead_categories lc WHERE lc.lead_id = l.id AND lc.category_id = ?)",
+        );
+        params.push(Value::Integer(i64::from(category_id)));
+    }
+
+    if let Some(search) = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|search| !search.is_empty())
+    {
+        let pattern = format!("%{}%", search.to_lowercase());
+        sql.push_str(
+            " AND (LOWER(l.name) LIKE ? OR LOWER(l.company) LIKE ? OR LOWER(l.email) LIKE ? OR LOWER(l.phone) LIKE ?)",
+        );
+        for _ in 0..4 {
+            params.push(Value::Text(pattern.clone()));
+        }
+    }
+
+    if query.filter_verified_zalo {
+        sql.push_str(" AND l.has_zalo = 1");
+    }
+    if query.filter_unreached {
+        sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
+    }
+    if query.filter_mobile_only {
+        sql.push_str(
+            " AND (l.phone LIKE '09%' OR l.phone LIKE '03%' OR l.phone LIKE '07%' OR l.phone LIKE '08%' OR l.phone LIKE '05%')",
+        );
+    }
+
+    if query.category_id.is_some() {
+        let history_table = if query.channel == "email" {
+            "email_outreach_history"
+        } else {
+            "outreach_history"
+        };
+
+        match query.segmentation.as_str() {
+            "never_sent" => {
+                if query.channel != "email" {
+                    sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
+                }
+                sql.push_str(&format!(
+                    " AND NOT EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.status = 'SUCCESS')"
+                ));
+            }
+            "last_failed" => {
+                sql.push_str(&format!(
+                    " AND (SELECT history.status FROM {history_table} history WHERE history.lead_id = l.id ORDER BY history.sent_at DESC, history.id DESC LIMIT 1) = 'FAILED'"
+                ));
+            }
+            "template_success" => {
+                let template_id = query
+                    .filter_template_id
+                    .ok_or_else(|| "Template ID is required for success filtering".to_string())?;
+                sql.push_str(&format!(
+                    " AND EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.template_id = ? AND history.status = 'SUCCESS')"
+                ));
+                params.push(Value::Integer(i64::from(template_id)));
+            }
+            _ => {}
+        }
+    }
+
+    Ok((sql, params))
+}
+
+pub fn get_outreach_leads_page_internal(
+    conn: &Connection,
+    query: &OutreachLeadQuery,
+    cursor: Option<i32>,
+    limit: u32,
+) -> Result<OutreachLeadsPage, String> {
+    let (filter_sql, filter_params) = build_outreach_lead_filter(query)?;
+    let count_sql = format!("SELECT COUNT(*){filter_sql}");
+    let total = conn
+        .query_row(&count_sql, params_from_iter(filter_params.iter()), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| error.to_string())?;
+
+    let bounded_limit = limit.clamp(1, 200);
+    let mut page_sql = format!(
+        "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt{filter_sql}"
+    );
+    let mut page_params = filter_params;
+    if let Some(cursor) = cursor {
+        page_sql.push_str(" AND l.id < ?");
+        page_params.push(Value::Integer(i64::from(cursor)));
+    }
+    page_sql.push_str(" ORDER BY l.id DESC LIMIT ?");
+    page_params.push(Value::Integer(i64::from(bounded_limit + 1)));
+
+    let mut stmt = conn.prepare(&page_sql).map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map(params_from_iter(page_params.iter()), outreach_lead_from_row)
+        .map_err(|error| error.to_string())?;
+    let mut items = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+
+    let has_more = items.len() > bounded_limit as usize;
+    if has_more {
+        items.pop();
+    }
+    let next_cursor = if has_more {
+        items.last().and_then(|lead| lead.id)
+    } else {
+        None
+    };
+
+    Ok(OutreachLeadsPage {
+        items,
+        total,
+        next_cursor,
+    })
+}
+
+pub fn resolve_outreach_lead_ids_internal(
+    conn: &Connection,
+    query: &OutreachLeadQuery,
+    excluded_lead_ids: &[i32],
+) -> Result<Vec<i32>, String> {
+    let (filter_sql, filter_params) = build_outreach_lead_filter(query)?;
+    let sql = format!("SELECT l.id{filter_sql} ORDER BY l.id DESC");
+    let excluded = excluded_lead_ids.iter().copied().collect::<HashSet<_>>();
+    let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map(params_from_iter(filter_params.iter()), |row| {
+            row.get::<_, i32>(0)
+        })
+        .map_err(|error| error.to_string())?;
+
+    rows.filter_map(|row| match row {
+        Ok(lead_id) if !excluded.contains(&lead_id) => Some(Ok(lead_id)),
+        Ok(_) => None,
+        Err(error) => Some(Err(error.to_string())),
+    })
+    .collect()
+}
+
+#[tauri::command]
+pub fn get_outreach_leads_page(
+    state: tauri::State<DbState>,
+    category_id: Option<i32>,
+    segmentation: String,
+    filter_template_id: Option<i32>,
+    channel: String,
+    search: Option<String>,
+    filter_verified_zalo: bool,
+    filter_unreached: bool,
+    filter_mobile_only: bool,
+    cursor: Option<i32>,
+    limit: u32,
+) -> Result<OutreachLeadsPage, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|error| format!("Database lock error: {error}"))?;
+    let query = OutreachLeadQuery {
+        category_id,
+        segmentation,
+        filter_template_id,
+        channel,
+        search,
+        filter_verified_zalo,
+        filter_unreached,
+        filter_mobile_only,
+    };
+    get_outreach_leads_page_internal(&conn, &query, cursor, limit)
+}
+
+#[tauri::command]
+pub fn resolve_outreach_lead_ids(
+    state: tauri::State<DbState>,
+    category_id: Option<i32>,
+    segmentation: String,
+    filter_template_id: Option<i32>,
+    channel: String,
+    search: Option<String>,
+    filter_verified_zalo: bool,
+    filter_unreached: bool,
+    filter_mobile_only: bool,
+    excluded_lead_ids: Vec<i32>,
+) -> Result<Vec<i32>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|error| format!("Database lock error: {error}"))?;
+    let query = OutreachLeadQuery {
+        category_id,
+        segmentation,
+        filter_template_id,
+        channel,
+        search,
+        filter_verified_zalo,
+        filter_unreached,
+        filter_mobile_only,
+    };
+    resolve_outreach_lead_ids_internal(&conn, &query, &excluded_lead_ids)
 }
 
 #[tauri::command]

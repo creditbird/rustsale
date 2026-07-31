@@ -168,6 +168,8 @@ pub fn run() {
             commands::get_leads_by_category,
             commands::send_zalo_campaign,
             commands::get_campaign_leads,
+            commands::get_outreach_leads_page,
+            commands::resolve_outreach_lead_ids,
             commands::get_smtp_servers,
             commands::save_smtp_server,
             commands::delete_smtp_server,

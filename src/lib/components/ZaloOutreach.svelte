@@ -1,8 +1,17 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { getLeads, getCategories, getCampaignLeads, type Lead, type Category } from '$lib/services/crmService';
+  import * as crmService from '$lib/services/crmService';
+  import {
+    getCategories,
+    getOutreachLeadsPage,
+    resolveOutreachLeadIds,
+    type Category,
+    type Lead,
+    type OutreachLeadFilters,
+    type OutreachLeadsPage
+  } from '$lib/services/crmService';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
@@ -46,10 +55,19 @@
   let templates = $state<OutreachTemplate[]>([]);
   let selectedTemplateId = $state<number | null>(null);
 
+  const LEAD_PAGE_SIZE = 50;
+
   let leads = $state<Lead[]>([]);
+  let totalLeads = $state(0);
+  let currentLeadPage = $state(1);
+  let pageCursors = $state<(number | null)[]>([null]);
+  let nextLeadCursor = $state<number | null>(null);
+  let isLoadingLeads = $state(false);
   let categories = $state<Category[]>([]);
   let selectedCategoryId = $state<number | null>(null);
   let selectedLeadIds = $state<number[]>([]);
+  let selectAllMatching = $state(true);
+  let excludedLeadIds = $state<number[]>([]);
 
   let segmentationFilter = $state('all');
   let filterTemplateId = $state<number | null>(null);
@@ -119,27 +137,25 @@
 
   let qrUnlistens: UnlistenFn[] = [];
   let campaignUnlistens: UnlistenFn[] = [];
+  let leadPageCache = new Map<string, OutreachLeadsPage>();
+  let leadRequestId = 0;
+  let loadedLeadFilterKey = '';
+  let isDisposed = false;
 
-  let filteredLeads = $derived(
-    leads.filter(lead => {
-      const q = leadSearchQuery.toLowerCase().trim();
-      if (q) {
-        const matchesName = (lead.name || '').toLowerCase().includes(q);
-        const matchesCompany = (lead.company || '').toLowerCase().includes(q);
-        const matchesPhone = (lead.phone || '').toLowerCase().includes(q);
-        if (!matchesName && !matchesCompany && !matchesPhone) return false;
-      }
-      if (filterVerifiedZalo && lead.has_zalo !== 1) return false;
-      if (filterUnreached && lead.zalo_reached === 1) return false;
-      if (filterMobileOnly && !lead.phone) return false;
-      return true;
-    })
+  let selectedLeadSet = $derived(new Set(selectedLeadIds));
+  let excludedLeadSet = $derived(new Set(excludedLeadIds));
+  let selectedLeadCount = $derived(
+    selectAllMatching
+      ? Math.max(0, totalLeads - excludedLeadIds.length)
+      : selectedLeadIds.length
   );
 
   let isAllLeadsSelected = $derived(
-    filteredLeads.length > 0 && 
-    filteredLeads.every(lead => lead.id && selectedLeadIds.includes(lead.id))
+    totalLeads > 0 && selectAllMatching && excludedLeadIds.length === 0
   );
+  let totalLeadPages = $derived(Math.max(1, Math.ceil(totalLeads / LEAD_PAGE_SIZE)));
+  let hasPreviousLeadPage = $derived(currentLeadPage > 1);
+  let hasNextLeadPage = $derived(nextLeadCursor !== null);
 
   function getSessionDisplayName(s: { imei: string; display_name?: string | null }): string {
     const status = sessionStatuses[s.imei];
@@ -159,7 +175,9 @@
 
   async function loadSessions(): Promise<boolean> {
     try {
-      sessions = await invoke<ZaloSession[]>('get_zalo_sessions');
+      const result = await invoke<ZaloSession[]>('get_zalo_sessions');
+      if (isDisposed) return false;
+      sessions = result;
       if (sessions.length > 0 && selectedImeis.length === 0) {
         selectedImeis = [sessions[0].imei];
       }
@@ -170,30 +188,30 @@
     }
   }
 
-  async function loadTemplates() {
+  async function loadTemplates(): Promise<boolean> {
     try {
-      templates = await invoke<OutreachTemplate[]>('get_outreach_templates');
+      const result = await invoke<OutreachTemplate[]>('get_outreach_templates');
+      if (isDisposed) return false;
+      templates = result;
       if (templates.length > 0 && selectedTemplateId === null) {
         selectedTemplateId = templates[0].id || null;
       }
+      return true;
     } catch (e) {
       console.error('Error loading outreach templates:', e);
+      return false;
     }
   }
 
-  async function loadLeadsData() {
+  async function loadCategories(): Promise<boolean> {
     try {
-      leads = await getLeads();
-    } catch (e) {
-      console.error('Error loading leads:', e);
-    }
-  }
-
-  async function loadCategories() {
-    try {
-      categories = await getCategories();
+      const result = await getCategories();
+      if (isDisposed) return false;
+      categories = result;
+      return true;
     } catch (e) {
       console.error('Error loading categories:', e);
+      return false;
     }
   }
 
@@ -203,35 +221,112 @@
     }
   });
 
-  async function reloadLeads() {
-    if (selectedCategoryId !== null) {
-      if (segmentationFilter === 'template_success' && !filterTemplateId) {
-        leads = [];
-        selectedLeadIds = [];
-        return;
-      }
-      try {
-        const res = await getCampaignLeads(selectedCategoryId, segmentationFilter, filterTemplateId, 'zalo');
-        leads = res;
-        selectedLeadIds = leads.map(l => l.id).filter((id): id is number => id != null);
-      } catch (err) {
-        console.error('Error fetching campaign leads:', err);
-        leads = [];
-        selectedLeadIds = [];
-      }
-    } else {
+  function currentLeadFilters(): OutreachLeadFilters {
+    return {
+      categoryId: selectedCategoryId,
+      segmentation: segmentationFilter,
+      filterTemplateId,
+      channel: 'zalo',
+      search: leadSearchQuery.trim(),
+      filterVerifiedZalo,
+      filterUnreached,
+      filterMobileOnly
+    };
+  }
+
+  function leadPageCacheKey(filters: OutreachLeadFilters, cursor: number | null): string {
+    return `${JSON.stringify(filters)}::${cursor ?? 'first'}`;
+  }
+
+  function resetLeadSelection() {
+    selectAllMatching = true;
+    excludedLeadIds = [];
+    selectedLeadIds = [];
+  }
+
+  function resetLeadPagination() {
+    currentLeadPage = 1;
+    pageCursors = [null];
+    nextLeadCursor = null;
+  }
+
+  function invalidateLeadCache() {
+    leadPageCache.clear();
+    leadRequestId += 1;
+  }
+
+  async function reloadLeads(options: {
+    page?: number;
+    cursor?: number | null;
+    force?: boolean;
+    resetSelection?: boolean;
+  } = {}): Promise<boolean> {
+    const page = options.page ?? currentLeadPage;
+    const cursor = options.cursor !== undefined
+      ? options.cursor
+      : (pageCursors[page - 1] ?? null);
+    const filters = currentLeadFilters();
+    const filterKey = JSON.stringify(filters);
+
+    if (filters.segmentation === 'template_success' && !filters.filterTemplateId) {
       leads = [];
-      selectedLeadIds = [];
+      totalLeads = 0;
+      nextLeadCursor = null;
+      loadedLeadFilterKey = filterKey;
+      isLoadingLeads = false;
+      isStale = false;
+      if (options.resetSelection) resetLeadSelection();
+      return true;
+    }
+
+    const cacheKey = leadPageCacheKey(filters, cursor);
+    const requestId = ++leadRequestId;
+    isLoadingLeads = true;
+
+    try {
+      let result = options.force ? undefined : leadPageCache.get(cacheKey);
+      if (!result) {
+        result = await getOutreachLeadsPage(filters, cursor, LEAD_PAGE_SIZE);
+        if (isDisposed) return false;
+        leadPageCache.set(cacheKey, result);
+      }
+      if (isDisposed || requestId !== leadRequestId) return true;
+
+      leads = result.items;
+      totalLeads = result.total;
+      nextLeadCursor = result.next_cursor;
+      currentLeadPage = page;
+      const cursors = pageCursors.slice(0, page);
+      cursors[page - 1] = cursor;
+      pageCursors = cursors;
+      loadedLeadFilterKey = filterKey;
+      isStale = false;
+      if (options.resetSelection) resetLeadSelection();
+      return true;
+    } catch (err) {
+      console.error('Error loading outreach lead page:', err);
+      if (!isDisposed) isStale = true;
+      return false;
+    } finally {
+      if (!isDisposed && requestId === leadRequestId) isLoadingLeads = false;
     }
   }
 
-  $effect(() => {
-    // track dependencies
-    const cat = selectedCategoryId;
-    const seg = segmentationFilter;
-    const tmpl = filterTemplateId;
-    reloadLeads();
-  });
+  async function showPreviousLeadPage() {
+    if (!hasPreviousLeadPage || isLoadingLeads) return;
+    const page = currentLeadPage - 1;
+    await reloadLeads({ page, cursor: pageCursors[page - 1] ?? null });
+  }
+
+  async function showNextLeadPage() {
+    if (!hasNextLeadPage || isLoadingLeads || nextLeadCursor === null) return;
+    const page = currentLeadPage + 1;
+    const cursor = nextLeadCursor;
+    const cursors = pageCursors.slice();
+    cursors[page - 1] = cursor;
+    pageCursors = cursors;
+    await reloadLeads({ page, cursor });
+  }
 
   async function verifySession(imei: string) {
     sessionStatuses[imei] = { ...sessionStatuses[imei], checking: true, valid: null };
@@ -277,17 +372,134 @@
     }
   }
 
-  onMount(async () => {
-    loadCategories();
-    await loadSessions();
-    verifyAllSessions();
-    loadTemplates();
-    loadLeadsData();
+  let { activeTab = 'outreach' }: { activeTab?: string } = $props();
+  let hasLoaded = $state(false);
+  let isStale = $state(false);
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  let filterReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function debouncedReload() {
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (activeTab === 'outreach') {
+        void refreshCrmData();
+      } else {
+        isStale = true;
+      }
+    }, 300);
+  }
+
+  async function refreshCrmData(): Promise<boolean> {
+    invalidateLeadCache();
+    const succeeded = await reloadLeads({ force: true });
+    if (isDisposed) return false;
+    isStale = !succeeded;
+    return succeeded;
+  }
+
+  async function refreshData(): Promise<boolean> {
+    const [categoriesLoaded, sessionsLoaded, templatesLoaded] = await Promise.all([
+      loadCategories(),
+      loadSessions(),
+      loadTemplates()
+    ]);
+    if (isDisposed) return false;
+    resetLeadPagination();
+    const leadsLoaded = await reloadLeads({ page: 1, cursor: null, resetSelection: true });
+    if (isDisposed) return false;
+    const succeeded = categoriesLoaded && sessionsLoaded && templatesLoaded && leadsLoaded;
+
+    hasLoaded = succeeded;
+    if (succeeded) {
+      isStale = false;
+    } else {
+      isStale = true;
+    }
+    return succeeded;
+  }
+
+  $effect(() => {
+    const filterKey = JSON.stringify({
+      categoryId: selectedCategoryId,
+      segmentation: segmentationFilter,
+      filterTemplateId,
+      channel: 'zalo',
+      search: leadSearchQuery.trim(),
+      filterVerifiedZalo,
+      filterUnreached,
+      filterMobileOnly
+    });
+    const shouldReload = untrack(
+      () => activeTab === 'outreach' && hasLoaded && filterKey !== loadedLeadFilterKey
+    );
+    if (!shouldReload) return;
+
+    if (filterReloadTimer) clearTimeout(filterReloadTimer);
+    isLoadingLeads = true;
+    filterReloadTimer = setTimeout(() => {
+      filterReloadTimer = null;
+      if (activeTab !== 'outreach') {
+        isLoadingLeads = false;
+        isStale = true;
+        return;
+      }
+      resetLeadPagination();
+      void reloadLeads({ page: 1, cursor: null, resetSelection: true });
+    }, 250);
   });
 
-  onDestroy(() => {
-    cleanupQrListeners();
-    cleanupCampaignListeners();
+  $effect(() => {
+    const isActive = activeTab === 'outreach';
+    const cacheState = untrack(() => ({ hasLoaded, isStale }));
+
+    if (isActive) {
+      if (!cacheState.hasLoaded) {
+        void refreshData();
+      } else if (cacheState.isStale) {
+        void refreshCrmData();
+      }
+    } else {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+        isStale = true;
+      }
+      if (filterReloadTimer) {
+        clearTimeout(filterReloadTimer);
+        filterReloadTimer = null;
+        isLoadingLeads = false;
+        isStale = true;
+      }
+    }
+  });
+
+  onMount(() => {
+    const unsubBridge = crmService.initScraperEventBridge();
+    const unsubLeads = crmService.onLeadsChanged(() => {
+      if (activeTab === 'outreach') {
+        debouncedReload();
+      } else {
+        isStale = true;
+      }
+    });
+
+    return () => {
+      isDisposed = true;
+      leadRequestId += 1;
+      unsubLeads();
+      unsubBridge();
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+      }
+      if (filterReloadTimer) {
+        clearTimeout(filterReloadTimer);
+        filterReloadTimer = null;
+      }
+      cleanupQrListeners();
+      cleanupCampaignListeners();
+    };
   });
 
   function cleanupQrListeners() { qrUnlistens.forEach(u => u()); qrUnlistens = []; }
@@ -452,19 +664,31 @@
   }
 
   function toggleLead(id: number) {
-    if (selectedLeadIds.includes(id)) selectedLeadIds = selectedLeadIds.filter(x => x !== id);
+    if (selectAllMatching) {
+      if (excludedLeadSet.has(id)) excludedLeadIds = excludedLeadIds.filter(x => x !== id);
+      else excludedLeadIds = [...excludedLeadIds, id];
+      return;
+    }
+
+    if (selectedLeadSet.has(id)) selectedLeadIds = selectedLeadIds.filter(x => x !== id);
     else selectedLeadIds = [...selectedLeadIds, id];
   }
 
   function toggleSelectAllLeads() {
     if (isAllLeadsSelected) {
-      const filteredIds = new Set(filteredLeads.map(l => l.id));
-      selectedLeadIds = selectedLeadIds.filter(id => !filteredIds.has(id));
+      selectAllMatching = false;
+      excludedLeadIds = [];
+      selectedLeadIds = [];
     } else {
-      const newIds = new Set(selectedLeadIds);
-      filteredLeads.forEach(l => { if (l.id != null) newIds.add(l.id); });
-      selectedLeadIds = Array.from(newIds);
+      resetLeadSelection();
     }
+  }
+
+  async function resolveSelectedLeadIds(): Promise<number[]> {
+    if (selectAllMatching) {
+      return resolveOutreachLeadIds(currentLeadFilters(), excludedLeadIds);
+    }
+    return [...selectedLeadIds];
   }
 
   function appendCampaignLog(msg: string) {
@@ -476,17 +700,24 @@
   }
 
   async function startCampaign() {
-    if (selectedImeis.length === 0 || !selectedTemplateId || selectedLeadIds.length === 0) return;
+    if (selectedImeis.length === 0 || !selectedTemplateId || selectedLeadCount === 0) return;
 
     isCampaignRunning = true;
     campaignProgress = 0;
     campaignStatus = 'Starting Zalo outreach campaign...';
     campaignLogs = [];
-    appendCampaignLog(`Starting Zalo Campaign to ${selectedLeadIds.length} leads using ${selectedImeis.length} session(s)...`);
 
     cleanupCampaignListeners();
 
     try {
+      const campaignLeadIds = await resolveSelectedLeadIds();
+      if (campaignLeadIds.length === 0) {
+        isCampaignRunning = false;
+        campaignStatus = 'No matching leads selected.';
+        return;
+      }
+      appendCampaignLog(`Starting Zalo Campaign to ${campaignLeadIds.length} leads using ${selectedImeis.length} session(s)...`);
+
       const progressUnlisten = await listen<{ progress: number; status: string; message: string }>('outreach-progress', (event) => {
         campaignProgress = event.payload.progress;
         campaignStatus = event.payload.message;
@@ -504,14 +735,14 @@
         campaignProgress = 100;
         campaignStatus = event.payload.message;
         appendCampaignLog(`[COMPLETE] ${event.payload.message}`);
-        reloadLeads();
+        void refreshCrmData();
       });
       campaignUnlistens.push(completeUnlisten);
 
       await invoke('start_zalo_outreach', {
         imeis: selectedImeis,
         templateId: selectedTemplateId,
-        leadIds: selectedLeadIds,
+        leadIds: campaignLeadIds,
         enableBurstLimit,
         burstMaxMessages: Number(burstMaxMessages) || 5,
         burstDelaySeconds: Number(burstDelaySeconds) || 30,
@@ -777,7 +1008,7 @@
         <!-- Step 3: Select Leads Box -->
         <div class="flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs">
-            <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadIds.length} chosen)</span>
+            <span class="font-semibold text-foreground">Step 3: Select Leads ({selectedLeadCount} chosen)</span>
             <div class="flex items-center gap-2">
               <Input type="text" placeholder="Filter leads..." bind:value={leadSearchQuery} class="h-7 w-32 text-[11px]" />
               <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={toggleSelectAllLeads}>
@@ -787,37 +1018,48 @@
           </div>
 
           <!-- Quick Helpers -->
-          <div class="flex items-center justify-end gap-1.5">
-            <Button
-              variant={filterVerifiedZalo ? "default" : "outline"}
-              size="sm"
-              onclick={() => filterVerifiedZalo = !filterVerifiedZalo}
-              class="h-6 text-[10px] px-2"
-            >
-              Verified Zalo
-            </Button>
-            <Button
-              variant={filterUnreached ? "default" : "outline"}
-              size="sm"
-              onclick={() => filterUnreached = !filterUnreached}
-              class="h-6 text-[10px] px-2"
-            >
-              Unreached
-            </Button>
-            <Button
-              variant={filterMobileOnly ? "default" : "outline"}
-              size="sm"
-              onclick={() => filterMobileOnly = !filterMobileOnly}
-              class="h-6 text-[10px] px-2"
-            >
-              Mobile Only
-            </Button>
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <Button variant="outline" size="sm" aria-label="Previous leads page" onclick={showPreviousLeadPage} disabled={!hasPreviousLeadPage || isLoadingLeads} class="h-6 text-[10px] px-2">
+                Prev
+              </Button>
+              <span class="min-w-12 text-center">{currentLeadPage}/{totalLeadPages}</span>
+              <Button variant="outline" size="sm" aria-label="Next leads page" onclick={showNextLeadPage} disabled={!hasNextLeadPage || isLoadingLeads} class="h-6 text-[10px] px-2">
+                Next
+              </Button>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <Button
+                variant={filterVerifiedZalo ? "default" : "outline"}
+                size="sm"
+                onclick={() => filterVerifiedZalo = !filterVerifiedZalo}
+                class="h-6 text-[10px] px-2"
+              >
+                Verified Zalo
+              </Button>
+              <Button
+                variant={filterUnreached ? "default" : "outline"}
+                size="sm"
+                onclick={() => filterUnreached = !filterUnreached}
+                class="h-6 text-[10px] px-2"
+              >
+                Unreached
+              </Button>
+              <Button
+                variant={filterMobileOnly ? "default" : "outline"}
+                size="sm"
+                onclick={() => filterMobileOnly = !filterMobileOnly}
+                class="h-6 text-[10px] px-2"
+              >
+                Mobile Only
+              </Button>
+            </div>
           </div>
 
           <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 flex flex-col gap-1">
-            {#each filteredLeads as lead (lead.id)}
+            {#each leads as lead (lead.id)}
               {#if lead.id}
-                {@const isSelected = selectedLeadIds.includes(lead.id)}
+                {@const isSelected = selectAllMatching ? !excludedLeadSet.has(lead.id) : selectedLeadSet.has(lead.id)}
                 <div 
                   class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5 font-semibold' : ''}"
                   onclick={() => lead.id && toggleLead(lead.id)}
@@ -917,7 +1159,7 @@
           <Button
             size="sm"
             onclick={startCampaign}
-            disabled={isCampaignRunning || selectedImeis.length === 0 || !selectedTemplateId || selectedLeadIds.length === 0}
+            disabled={isCampaignRunning || isLoadingLeads || selectedImeis.length === 0 || !selectedTemplateId || selectedLeadCount === 0}
             class="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
           >
             <Send class="size-4" /> {isCampaignRunning ? 'Running Zalo Campaign...' : 'Launch Zalo Campaign'}

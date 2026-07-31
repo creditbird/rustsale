@@ -152,10 +152,10 @@
         <CategoryManager {activeTab} />
       </div>
       <div class={activeTab === 'outreach' ? '' : 'hidden'}>
-        <ZaloOutreach />
+        <ZaloOutreach {activeTab} />
       </div>
       <div class={activeTab === 'email_outreach' ? '' : 'hidden'}>
-        <EmailOutreach />
+        <EmailOutreach {activeTab} />
       </div>
       <div class={activeTab === 'pipeline' ? '' : 'hidden'}>
         <KanbanBoard />

@@ -17,6 +17,23 @@ export interface Lead {
   zalo_reached?: number;     // 0 = no, 1 = yes
 }
 
+export interface OutreachLeadFilters {
+  categoryId: number | null;
+  segmentation: string;
+  filterTemplateId: number | null;
+  channel: 'zalo' | 'email';
+  search: string;
+  filterVerifiedZalo: boolean;
+  filterUnreached: boolean;
+  filterMobileOnly: boolean;
+}
+
+export interface OutreachLeadsPage {
+  items: Lead[];
+  total: number;
+  next_cursor: number | null;
+}
+
 export interface Deal {
   id?: number;
   lead_id: number;
@@ -348,5 +365,27 @@ export async function getCampaignLeads(
     segmentation,
     filterTemplateId: filterTemplateId ?? null,
     channel: channel ?? null
+  });
+}
+
+export async function getOutreachLeadsPage(
+  filters: OutreachLeadFilters,
+  cursor: number | null,
+  limit: number
+): Promise<OutreachLeadsPage> {
+  return invoke<OutreachLeadsPage>('get_outreach_leads_page', {
+    ...filters,
+    cursor,
+    limit
+  });
+}
+
+export async function resolveOutreachLeadIds(
+  filters: OutreachLeadFilters,
+  excludedLeadIds: number[]
+): Promise<number[]> {
+  return invoke<number[]>('resolve_outreach_lead_ids', {
+    ...filters,
+    excludedLeadIds
   });
 }

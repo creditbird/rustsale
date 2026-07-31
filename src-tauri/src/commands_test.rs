@@ -1291,4 +1291,84 @@ mod tests {
         assert_eq!(leads.len(), 1);
         assert_eq!(leads[0], lead_1);
     }
+
+    fn default_outreach_query() -> commands::OutreachLeadQuery {
+        commands::OutreachLeadQuery {
+            category_id: None,
+            segmentation: "all".to_string(),
+            filter_template_id: None,
+            channel: "zalo".to_string(),
+            search: None,
+            filter_verified_zalo: false,
+            filter_unreached: false,
+            filter_mobile_only: false,
+        }
+    }
+
+    #[test]
+    fn test_outreach_lead_page_uses_cursor_filters_and_resolves_snapshot() {
+        let mut conn = crate::db::init_db(":memory:").unwrap();
+        let mut lead_ids = Vec::new();
+
+        for index in 1..=75 {
+            let lead_id = commands::add_lead_internal(
+                &mut conn,
+                format!("Lead {:03}", index),
+                format!("Company {:03}", index),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                format!("lead{index}@example.com"),
+                format!("09{index:08}"),
+                None,
+                None,
+            )
+            .unwrap();
+            lead_ids.push(lead_id);
+        }
+
+        conn.execute(
+            "UPDATE leads SET has_zalo = 1 WHERE id IN (?1, ?2)",
+            rusqlite::params![lead_ids[10], lead_ids[20]],
+        )
+        .unwrap();
+
+        let query = default_outreach_query();
+        let first_page =
+            commands::get_outreach_leads_page_internal(&conn, &query, None, 50).unwrap();
+
+        assert_eq!(first_page.total, 75);
+        assert_eq!(first_page.items.len(), 50);
+        assert_eq!(first_page.items[0].id, Some(*lead_ids.last().unwrap()));
+        assert_eq!(first_page.next_cursor, Some(lead_ids[25]));
+
+        let second_page =
+            commands::get_outreach_leads_page_internal(&conn, &query, first_page.next_cursor, 50)
+                .unwrap();
+        assert_eq!(second_page.total, 75);
+        assert_eq!(second_page.items.len(), 25);
+        assert_eq!(second_page.items[0].id, Some(lead_ids[24]));
+        assert_eq!(second_page.next_cursor, None);
+
+        let mut search_query = default_outreach_query();
+        search_query.search = Some("Lead 007".to_string());
+        let searched =
+            commands::get_outreach_leads_page_internal(&conn, &search_query, None, 50).unwrap();
+        assert_eq!(searched.total, 1);
+        assert_eq!(searched.items[0].name, "Lead 007");
+
+        let mut verified_query = default_outreach_query();
+        verified_query.filter_verified_zalo = true;
+        let verified =
+            commands::get_outreach_leads_page_internal(&conn, &verified_query, None, 50).unwrap();
+        assert_eq!(verified.total, 2);
+
+        let excluded = vec![lead_ids[74], lead_ids[73]];
+        let resolved =
+            commands::resolve_outreach_lead_ids_internal(&conn, &query, &excluded).unwrap();
+        assert_eq!(resolved.len(), 73);
+        assert!(!resolved.contains(&lead_ids[74]));
+        assert!(!resolved.contains(&lead_ids[73]));
+        assert_eq!(resolved[0], lead_ids[72]);
+    }
 }
