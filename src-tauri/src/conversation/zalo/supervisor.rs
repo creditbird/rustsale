@@ -37,6 +37,7 @@ impl ZaloSessionSupervisor {
     }
 
     pub async fn start_all(&self) -> anyhow::Result<()> {
+        let _ = self.service.recover_outbox_startup();
         let conn = open_db_connection(&self.db_path)?;
         let sessions = crate::db::get_all_zalo_sessions(&conn)
             .map_err(|e| anyhow::anyhow!("Failed to fetch Zalo sessions: {e}"))?;
@@ -229,11 +230,22 @@ async fn run_session_loop(
         let _ = client.request_old_reactions(ThreadType::Group, group_cursor.as_deref());
 
         // 7. Drain receiver loop
+        let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
         let should_reconnect = loop {
             tokio::select! {
                 _ = cancellation.cancelled() => {
                     client.stop();
                     return;
+                }
+                _ = outbox_ticker.tick() => {
+                    if let Some(acc_id) = account_id {
+                        while let Ok(true) = service.process_next_outbox_job(acc_id, client.as_ref()).await {
+                            if cancellation.is_cancelled() {
+                                client.stop();
+                                return;
+                            }
+                        }
+                    }
                 }
                 res = rx.recv() => {
                     match res {

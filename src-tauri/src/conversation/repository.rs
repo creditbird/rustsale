@@ -54,6 +54,17 @@ pub struct AppliedMessage {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClaimedOutboxJob {
+    pub job_id: String,
+    pub message_id: i64,
+    pub channel_account_id: i64,
+    pub provider_account_key: String,
+    pub external_thread_id: String,
+    pub is_group: bool,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ConversationRepository {
     db_path: String,
 }
@@ -1264,6 +1275,266 @@ impl ConversationRepository {
             )
             .unwrap_or_else(|_| "unknown".to_string());
         status
+    }
+
+    pub fn enqueue_outbound_message(
+        &self,
+        request: &crate::conversation::types::SendConversationMessageRequest,
+        local_request_id: &str,
+        job_id: &str,
+        now: &str,
+    ) -> Result<ConversationMessage> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let belongs: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM channel_conversations WHERE id = ?1 AND channel_account_id = ?2",
+                params![request.conversation_id, request.channel_account_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if belongs.is_none() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+
+        let content_json = serde_json::json!({ "text": request.text }).to_string();
+        let message_id: i64 = tx.query_row(
+            "INSERT INTO messages
+             (conversation_id, sender_identity_id, direction, provider_message_id, provider_client_message_id,
+              local_request_id, content_type, text_content, content_json, raw_payload_json, provider_timestamp,
+              ingested_at, sent_at, edited_at, removed_at, status, error_code, error_message, reply_to_message_id)
+             VALUES (?1, NULL, 'outbound', NULL, NULL, ?2, 'text', ?3, ?4, NULL, NULL, ?5, NULL, NULL, NULL, 'queued', NULL, NULL, ?6)
+             RETURNING id",
+            params![
+                request.conversation_id,
+                local_request_id,
+                request.text,
+                content_json,
+                now,
+                request.reply_to_message_id,
+            ],
+            |row| row.get(0),
+        )?;
+
+        tx.execute(
+            "INSERT INTO message_outbox_jobs
+             (id, message_id, channel_account_id, status, attempt_count, next_attempt_at, last_error, created_at, updated_at, completed_at)
+             VALUES (?1, ?2, ?3, 'pending', 0, ?4, NULL, ?4, ?4, NULL)",
+            params![job_id, message_id, request.channel_account_id, now],
+        )?;
+
+        let message = tx.query_row(
+            "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
+                    ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
+                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
+                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+             WHERE m.id = ?1",
+            [message_id],
+            map_conversation_message,
+        )?;
+
+        tx.commit()?;
+        Ok(message)
+    }
+
+    pub fn claim_next_outbox_job(
+        &self,
+        channel_account_id: i64,
+        now: &str,
+    ) -> Result<Option<ClaimedOutboxJob>> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let row = tx
+            .query_row(
+                "SELECT oj.id, oj.message_id, oj.channel_account_id, ca.provider_account_key,
+                        cc.external_thread_id, cc.kind, m.text_content
+                 FROM message_outbox_jobs oj
+                 JOIN messages m ON m.id = oj.message_id
+                 JOIN channel_conversations cc ON cc.id = m.conversation_id
+                 JOIN channel_accounts ca ON ca.id = oj.channel_account_id
+                 WHERE oj.channel_account_id = ?1
+                   AND (
+                     oj.status = 'pending'
+                     OR (oj.status = 'retry_wait' AND (oj.next_attempt_at IS NULL OR oj.next_attempt_at <= ?2))
+                   )
+                 ORDER BY oj.created_at ASC
+                 LIMIT 1",
+                params![channel_account_id, now],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let (
+            job_id,
+            message_id,
+            account_id,
+            provider_account_key,
+            external_thread_id,
+            kind_str,
+            text_opt,
+        ) = match row {
+            Some(data) => data,
+            None => return Ok(None),
+        };
+
+        tx.execute(
+            "UPDATE message_outbox_jobs
+             SET status = 'running', attempt_count = attempt_count + 1, updated_at = ?2
+             WHERE id = ?1",
+            params![job_id, now],
+        )?;
+
+        tx.execute(
+            "UPDATE messages SET status = 'sending' WHERE id = ?1",
+            params![message_id],
+        )?;
+
+        tx.commit()?;
+
+        let is_group = kind_str == "group";
+        let text = text_opt.unwrap_or_default();
+
+        Ok(Some(ClaimedOutboxJob {
+            job_id,
+            message_id,
+            channel_account_id: account_id,
+            provider_account_key,
+            external_thread_id,
+            is_group,
+            text,
+        }))
+    }
+
+    pub fn complete_outbox_job(
+        &self,
+        job_id: &str,
+        provider_message_id: &str,
+        now: &str,
+    ) -> Result<i64> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let message_id: i64 = tx.query_row(
+            "SELECT message_id FROM message_outbox_jobs WHERE id = ?1",
+            [job_id],
+            |row| row.get(0),
+        )?;
+
+        tx.execute(
+            "UPDATE message_outbox_jobs
+             SET status = 'completed', completed_at = ?2, updated_at = ?2
+             WHERE id = ?1",
+            params![job_id, now],
+        )?;
+
+        tx.execute(
+            "UPDATE messages
+             SET status = 'sent', provider_message_id = ?2, sent_at = ?3
+             WHERE id = ?1",
+            params![message_id, provider_message_id, now],
+        )?;
+
+        tx.execute(
+            "UPDATE channel_conversations
+             SET last_message_at = ?2, updated_at = ?2
+             WHERE id = (SELECT conversation_id FROM messages WHERE id = ?1)",
+            params![message_id, now],
+        )?;
+
+        tx.commit()?;
+        Ok(message_id)
+    }
+
+    pub fn fail_outbox_job(
+        &self,
+        job_id: &str,
+        retry_at: Option<&str>,
+        error: &str,
+        now: &str,
+    ) -> Result<()> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let message_id: i64 = tx.query_row(
+            "SELECT message_id FROM message_outbox_jobs WHERE id = ?1",
+            [job_id],
+            |row| row.get(0),
+        )?;
+
+        if let Some(next_attempt) = retry_at {
+            tx.execute(
+                "UPDATE message_outbox_jobs
+                 SET status = 'retry_wait', next_attempt_at = ?2, last_error = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                params![job_id, next_attempt, error, now],
+            )?;
+
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'queued', error_message = ?2
+                 WHERE id = ?1",
+                params![message_id, error],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE message_outbox_jobs
+                 SET status = 'failed', last_error = ?2, updated_at = ?3
+                 WHERE id = ?1",
+                params![job_id, error, now],
+            )?;
+
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'failed', error_message = ?2
+                 WHERE id = ?1",
+                params![message_id, error],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn mark_running_jobs_delivery_unknown(&self, now: &str) -> Result<u64> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let error_msg = "Delivery state unknown after application restart; manual retry required.";
+
+        tx.execute(
+            "UPDATE messages
+             SET status = 'failed', error_message = ?1
+             WHERE id IN (SELECT message_id FROM message_outbox_jobs WHERE status = 'running')",
+            params![error_msg],
+        )?;
+
+        let count = tx.execute(
+            "UPDATE message_outbox_jobs
+             SET status = 'failed', last_error = ?1, updated_at = ?2
+             WHERE status = 'running'",
+            params![error_msg, now],
+        )?;
+
+        tx.commit()?;
+        Ok(count as u64)
     }
 }
 

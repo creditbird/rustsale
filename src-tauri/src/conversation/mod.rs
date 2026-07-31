@@ -13,3 +13,5 @@ mod commands_test;
 mod migration_test;
 #[cfg(test)]
 mod repository_test;
+#[cfg(test)]
+pub mod service_test;
