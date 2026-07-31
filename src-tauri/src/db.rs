@@ -89,6 +89,8 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             "last_lookup_attempt TEXT",
         )?;
 
+        crate::conversation::migration::migrate(&tx)?;
+
         tx.execute(
             "CREATE TABLE IF NOT EXISTS activities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

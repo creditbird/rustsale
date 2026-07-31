@@ -1,0 +1,170 @@
+CREATE TABLE IF NOT EXISTS channel_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+    provider_account_key TEXT NOT NULL,
+    display_name TEXT,
+    avatar_url TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    connection_status TEXT NOT NULL DEFAULT 'disconnected',
+    last_connected_at TEXT,
+    last_error TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(channel, provider_account_key)
+);
+
+CREATE TABLE IF NOT EXISTS channel_identities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id INTEGER,
+    channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+    identity_namespace TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    normalized_address TEXT,
+    display_name TEXT,
+    avatar_url TEXT,
+    link_source TEXT NOT NULL DEFAULT 'unlinked',
+    link_confidence REAL,
+    verified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(channel, identity_namespace, external_id),
+    FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS channel_conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL,
+    external_thread_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('direct', 'group', 'email_thread')),
+    title TEXT,
+    avatar_url TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    last_message_at TEXT,
+    last_synced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(channel_account_id, external_thread_id, kind),
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS conversation_participants (
+    conversation_id INTEGER NOT NULL,
+    identity_id INTEGER NOT NULL,
+    participant_role TEXT NOT NULL DEFAULT 'member',
+    joined_at TEXT,
+    left_at TEXT,
+    PRIMARY KEY(conversation_id, identity_id),
+    FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY(identity_id) REFERENCES channel_identities(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    sender_identity_id INTEGER,
+    direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound', 'system')),
+    provider_message_id TEXT,
+    provider_client_message_id TEXT,
+    local_request_id TEXT,
+    content_type TEXT NOT NULL,
+    text_content TEXT,
+    content_json TEXT NOT NULL DEFAULT '{}',
+    raw_payload_json TEXT,
+    provider_timestamp TEXT,
+    ingested_at TEXT NOT NULL,
+    sent_at TEXT,
+    edited_at TEXT,
+    removed_at TEXT,
+    status TEXT NOT NULL DEFAULT 'received',
+    error_code TEXT,
+    error_message TEXT,
+    reply_to_message_id INTEGER,
+    FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY(sender_identity_id) REFERENCES channel_identities(id) ON DELETE SET NULL,
+    FOREIGN KEY(reply_to_message_id) REFERENCES messages(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_provider_unique
+ON messages(conversation_id, provider_message_id)
+WHERE provider_message_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_request_unique
+ON messages(local_request_id)
+WHERE local_request_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_messages_timeline
+ON messages(conversation_id, provider_timestamp, ingested_at, id);
+
+CREATE TABLE IF NOT EXISTS message_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    provider_attachment_id TEXT,
+    attachment_type TEXT NOT NULL,
+    file_name TEXT,
+    mime_type TEXT,
+    size_bytes INTEGER,
+    remote_url TEXT,
+    local_path TEXT,
+    thumbnail_url TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id INTEGER NOT NULL,
+    actor_external_id TEXT NOT NULL,
+    reaction TEXT NOT NULL,
+    reacted_at TEXT,
+    removed_at TEXT,
+    PRIMARY KEY(message_id, actor_external_id, reaction),
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS message_receipts (
+    message_id INTEGER NOT NULL,
+    recipient_external_id TEXT NOT NULL DEFAULT '',
+    receipt_type TEXT NOT NULL CHECK (receipt_type IN ('accepted', 'sent', 'delivered', 'read', 'failed')),
+    occurred_at TEXT NOT NULL,
+    raw_payload_json TEXT,
+    PRIMARY KEY(message_id, recipient_external_id, receipt_type),
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS channel_sync_checkpoints (
+    channel_account_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    cursor TEXT,
+    last_event_at TEXT,
+    last_success_at TEXT,
+    reconnect_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(channel_account_id, scope),
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS message_outbox_jobs (
+    id TEXT PRIMARY KEY,
+    message_id INTEGER NOT NULL UNIQUE,
+    channel_account_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'retry_wait', 'completed', 'failed', 'cancelled')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_identities_lead
+ON channel_identities(lead_id, channel);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_last_message
+ON channel_conversations(last_message_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_claim
+ON message_outbox_jobs(status, next_attempt_at, created_at);
