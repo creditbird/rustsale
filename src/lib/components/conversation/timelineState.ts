@@ -168,6 +168,7 @@ export class TimelineCache {
   }
 
   private touch(key: string): void {
+    if (key === '') return;
     this.accessOrder = this.accessOrder.filter((k) => k !== key);
     this.accessOrder.push(key);
   }
