@@ -1,7 +1,12 @@
 use super::migration::migrate;
-use super::repository::{ConversationRepository, NormalizedIdentity, NormalizedMessage};
+use super::repository::{
+    ConversationRepository, NormalizedGroupParticipant, NormalizedGroupSnapshot,
+    NormalizedIdentity, NormalizedMessage, NormalizedReaction, NormalizedReceipt, NormalizedUndo,
+    ReceiptKind,
+};
 use super::types::{Channel, ConversationKind, MessageDirection, MessageStatus};
 use crate::db::open_db_connection;
+use rusqlite::OptionalExtension;
 
 struct Harness {
     path: std::path::PathBuf,
@@ -26,6 +31,23 @@ impl Harness {
             repository: ConversationRepository::new(path.to_string_lossy().to_string()),
             path,
         }
+    }
+
+    fn scalar(&self, sql: &str) -> i64 {
+        let conn = open_db_connection(self.path.to_str().unwrap()).unwrap();
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    fn text(&self, sql: &str) -> String {
+        let conn = open_db_connection(self.path.to_str().unwrap()).unwrap();
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    fn optional_text(&self, sql: &str) -> Option<String> {
+        let conn = open_db_connection(self.path.to_str().unwrap()).unwrap();
+        conn.query_row(sql, [], |row| row.get(0))
+            .optional()
+            .unwrap()
     }
 }
 
@@ -191,4 +213,161 @@ fn timeline_pagination_returns_ascending_items_and_correct_next_cursor() {
     assert_eq!(page2.items.len(), 1);
     assert_eq!(page2.items[0].provider_message_id.as_deref(), Some("msg-1"));
     assert!(page2.next_cursor.is_none());
+}
+
+fn direct_message_with_client_id(
+    provider_message_id: &str,
+    client_message_id: &str,
+) -> NormalizedMessage {
+    let mut msg = direct_message("imei-a", provider_message_id);
+    msg.provider_client_message_id = Some(client_message_id.to_string());
+    msg
+}
+
+#[test]
+fn reaction_upsert_targets_provider_or_client_message_id() {
+    let harness = Harness::new();
+    harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id("message-1", "client-1"))
+        .unwrap();
+    let reaction = NormalizedReaction {
+        provider_account_key: "imei-a".to_string(),
+        external_thread_id: "peer-1".to_string(),
+        is_group: false,
+        provider_message_id: "message-1".to_string(),
+        provider_client_message_id: "client-1".to_string(),
+        actor_external_id: "peer-1".to_string(),
+        reaction: "heart".to_string(),
+        removed: false,
+        occurred_at: "2026-07-31T01:00:00.000Z".to_string(),
+        raw_payload: serde_json::json!({}),
+    };
+    harness.repository.apply_reaction(&reaction).unwrap();
+    harness.repository.apply_reaction(&reaction).unwrap();
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 1);
+}
+
+#[test]
+fn undo_marks_message_removed_without_deleting_it() {
+    let harness = Harness::new();
+    harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id("message-1", "client-1"))
+        .unwrap();
+    harness
+        .repository
+        .apply_undo(&NormalizedUndo {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "message-1".to_string(),
+            provider_client_message_id: "client-1".to_string(),
+            occurred_at: "2026-07-31T01:01:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM messages"), 1);
+    assert_eq!(
+        harness.text("SELECT status FROM messages LIMIT 1"),
+        "removed"
+    );
+    assert!(harness
+        .optional_text("SELECT removed_at FROM messages LIMIT 1")
+        .is_some());
+}
+
+#[test]
+fn read_receipt_advances_outbound_message_status() {
+    let harness = Harness::new();
+    let mut message = direct_message_with_client_id("message-1", "client-1");
+    message.direction = MessageDirection::Outbound;
+    message.status = MessageStatus::Sent;
+    harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "message-1".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(harness.text("SELECT status FROM messages LIMIT 1"), "read");
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 1);
+}
+
+#[test]
+fn checkpoint_upsert_is_monotonic_per_account_scope() {
+    let harness = Harness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id("message-1", "client-1"))
+        .unwrap();
+    harness
+        .repository
+        .update_checkpoint(
+            applied.channel_account_id,
+            "direct_messages",
+            Some("cursor-1"),
+            Some("2026-07-31T01:00:00.000Z"),
+            None,
+        )
+        .unwrap();
+    harness
+        .repository
+        .update_checkpoint(
+            applied.channel_account_id,
+            "direct_messages",
+            Some("cursor-2"),
+            Some("2026-07-31T01:05:00.000Z"),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        harness.text("SELECT cursor FROM channel_sync_checkpoints LIMIT 1"),
+        "cursor-2"
+    );
+}
+
+#[test]
+fn group_snapshot_updates_title_avatar_and_participant_roles() {
+    let harness = Harness::new();
+    let conversation_id = harness
+        .repository
+        .apply_group_snapshot(&NormalizedGroupSnapshot {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "group-1".to_string(),
+            title: "Project Alpha".to_string(),
+            avatar_url: Some("https://example.invalid/group.png".to_string()),
+            participants: vec![NormalizedGroupParticipant {
+                identity: NormalizedIdentity {
+                    identity_namespace: "zalo_uid".to_string(),
+                    external_id: "member-1".to_string(),
+                    display_name: Some("Member One".to_string()),
+                    avatar_url: None,
+                    lead_id: None,
+                },
+                participant_role: "admin".to_string(),
+            }],
+            membership_complete: true,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+        })
+        .unwrap();
+    assert!(conversation_id > 0);
+    assert_eq!(
+        harness.text("SELECT title FROM channel_conversations WHERE id = 1"),
+        "Project Alpha"
+    );
+    assert_eq!(
+        harness.text("SELECT participant_role FROM conversation_participants LIMIT 1"),
+        "admin"
+    );
 }

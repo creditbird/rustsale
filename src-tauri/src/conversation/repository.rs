@@ -1,7 +1,12 @@
+pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
     utc_now, Channel, ChannelBadgeSummary, ConversationKind, ConversationMessage,
     ConversationParticipantSummary, ConversationReplyTarget, InboxItem, InboxItemKind,
     MessageDirection, MessageStatus, TimelineCursor, TimelinePage,
+};
+pub use crate::conversation::zalo::normalizer::{
+    NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
+    NormalizedUndo, ReceiptKind,
 };
 use crate::db::open_db_connection;
 use rusqlite::{params, OptionalExtension, Result};
@@ -813,6 +818,405 @@ impl ConversationRepository {
             )?
             .collect::<Result<Vec<_>>>()?;
         Ok(page_from_descending_rows(rows, clamped_limit))
+    }
+
+    pub fn apply_reaction(&self, reaction: &NormalizedReaction) -> Result<Option<i64>> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let message_id = match resolve_message_id(
+            &tx,
+            &reaction.provider_account_key,
+            &reaction.external_thread_id,
+            reaction.is_group,
+            &reaction.provider_message_id,
+            &reaction.provider_client_message_id,
+        )? {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        let removed_at = if reaction.removed {
+            Some(reaction.occurred_at.as_str())
+        } else {
+            None
+        };
+
+        tx.execute(
+            "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
+                 reacted_at = COALESCE(message_reactions.reacted_at, excluded.reacted_at),
+                 removed_at = excluded.removed_at",
+            params![
+                message_id,
+                reaction.actor_external_id,
+                reaction.reaction,
+                reaction.occurred_at,
+                removed_at,
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(Some(message_id))
+    }
+
+    pub fn apply_undo(&self, undo: &NormalizedUndo) -> Result<Option<i64>> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let message_id = match resolve_message_id(
+            &tx,
+            &undo.provider_account_key,
+            &undo.external_thread_id,
+            undo.is_group,
+            &undo.provider_message_id,
+            &undo.provider_client_message_id,
+        )? {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        tx.execute(
+            "UPDATE messages
+             SET status = 'removed',
+                 removed_at = COALESCE(removed_at, ?1)
+             WHERE id = ?2",
+            params![undo.occurred_at, message_id],
+        )?;
+
+        tx.commit()?;
+        Ok(Some(message_id))
+    }
+
+    pub fn apply_receipt(&self, receipt: &NormalizedReceipt) -> Result<Option<i64>> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let message_id = match resolve_message_id(
+            &tx,
+            &receipt.provider_account_key,
+            &receipt.external_thread_id,
+            receipt.is_group,
+            &receipt.provider_message_id,
+            "",
+        )? {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        let receipt_type_str = match receipt.kind {
+            ReceiptKind::Delivered => "delivered",
+            ReceiptKind::Read => "read",
+        };
+
+        let recipients = if receipt.recipient_external_ids.is_empty() {
+            vec!["".to_string()]
+        } else {
+            receipt.recipient_external_ids.clone()
+        };
+
+        let payload_str = receipt.raw_payload.to_string();
+
+        for recipient_id in &recipients {
+            tx.execute(
+                "INSERT INTO message_receipts
+                 (message_id, recipient_external_id, receipt_type, occurred_at, raw_payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(message_id, recipient_external_id, receipt_type) DO UPDATE SET
+                     occurred_at = excluded.occurred_at,
+                     raw_payload_json = excluded.raw_payload_json",
+                params![
+                    message_id,
+                    recipient_id,
+                    receipt_type_str,
+                    receipt.occurred_at,
+                    payload_str,
+                ],
+            )?;
+        }
+
+        let current_status: String = tx.query_row(
+            "SELECT status FROM messages WHERE id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )?;
+
+        if current_status != "failed" && current_status != "removed" {
+            let current_rank = status_rank(&current_status);
+            let target_rank = status_rank(receipt_type_str);
+            if target_rank > current_rank {
+                tx.execute(
+                    "UPDATE messages SET status = ?1 WHERE id = ?2",
+                    params![receipt_type_str, message_id],
+                )?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(Some(message_id))
+    }
+
+    pub fn apply_group_snapshot(&self, snapshot: &NormalizedGroupSnapshot) -> Result<i64> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = &snapshot.occurred_at;
+
+        let channel_account_id: i64 = tx.query_row(
+            "INSERT INTO channel_accounts
+             (channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+             VALUES ('zalo', ?1, 'disconnected', '{}', ?2, ?2)
+             ON CONFLICT(channel, provider_account_key) DO UPDATE SET
+                 updated_at = excluded.updated_at
+             RETURNING id",
+            params![snapshot.provider_account_key, now],
+            |row| row.get(0),
+        )?;
+
+        let conversation_id: i64 = tx.query_row(
+            "INSERT INTO channel_conversations
+             (channel_account_id, external_thread_id, kind, title, avatar_url, status, last_synced_at, created_at, updated_at)
+             VALUES (?1, ?2, 'group', ?3, ?4, 'active', ?5, ?5, ?5)
+             ON CONFLICT(channel_account_id, external_thread_id, kind) DO UPDATE SET
+                 title = excluded.title,
+                 avatar_url = COALESCE(excluded.avatar_url, channel_conversations.avatar_url),
+                 last_synced_at = excluded.last_synced_at,
+                 updated_at = excluded.updated_at
+             RETURNING id",
+            params![
+                channel_account_id,
+                snapshot.external_thread_id,
+                snapshot.title,
+                snapshot.avatar_url,
+                now
+            ],
+            |row| row.get(0),
+        )?;
+
+        let mut active_identity_ids = Vec::new();
+
+        for participant in &snapshot.participants {
+            let identity_id: i64 = tx.query_row(
+                "INSERT INTO channel_identities
+                 (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
+                 VALUES (?1, 'zalo', ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                 ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
+                     lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
+                     display_name = COALESCE(excluded.display_name, channel_identities.display_name),
+                     avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),
+                     updated_at = excluded.updated_at
+                 RETURNING id",
+                params![
+                    participant.identity.lead_id,
+                    participant.identity.identity_namespace,
+                    participant.identity.external_id,
+                    participant.identity.display_name,
+                    participant.identity.avatar_url,
+                    if participant.identity.lead_id.is_some() { "provider_match" } else { "unlinked" },
+                    now
+                ],
+                |row| row.get(0),
+            )?;
+
+            active_identity_ids.push(identity_id);
+
+            tx.execute(
+                "INSERT INTO conversation_participants
+                 (conversation_id, identity_id, participant_role, joined_at, left_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL)
+                 ON CONFLICT(conversation_id, identity_id) DO UPDATE SET
+                     participant_role = excluded.participant_role,
+                     joined_at = COALESCE(conversation_participants.joined_at, excluded.joined_at),
+                     left_at = NULL",
+                params![
+                    conversation_id,
+                    identity_id,
+                    participant.participant_role,
+                    now
+                ],
+            )?;
+        }
+
+        if snapshot.membership_complete {
+            if active_identity_ids.is_empty() {
+                tx.execute(
+                    "UPDATE conversation_participants
+                     SET left_at = ?1
+                     WHERE conversation_id = ?2 AND left_at IS NULL",
+                    params![now, conversation_id],
+                )?;
+            } else {
+                let query = format!(
+                    "UPDATE conversation_participants
+                     SET left_at = ?1
+                     WHERE conversation_id = ?2
+                       AND left_at IS NULL
+                       AND identity_id NOT IN ({})",
+                    active_identity_ids
+                        .iter()
+                        .map(|id| id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                tx.execute(&query, params![now, conversation_id])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(conversation_id)
+    }
+
+    pub fn update_checkpoint(
+        &self,
+        channel_account_id: i64,
+        scope: &str,
+        cursor: Option<&str>,
+        event_at: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = open_db_connection(&self.db_path)?;
+        let now = utc_now();
+        let last_success = if error.is_none() {
+            Some(event_at.unwrap_or(&now))
+        } else {
+            None
+        };
+
+        conn.execute(
+            "INSERT INTO channel_sync_checkpoints
+             (channel_account_id, scope, cursor, last_event_at, last_success_at, last_error, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(channel_account_id, scope) DO UPDATE SET
+                 cursor = COALESCE(excluded.cursor, channel_sync_checkpoints.cursor),
+                 last_event_at = COALESCE(excluded.last_event_at, channel_sync_checkpoints.last_event_at),
+                 last_success_at = COALESCE(excluded.last_success_at, channel_sync_checkpoints.last_success_at),
+                 last_error = excluded.last_error,
+                 updated_at = excluded.updated_at",
+            params![
+                channel_account_id,
+                scope,
+                cursor,
+                event_at,
+                last_success,
+                error,
+                now
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn set_account_status(
+        &self,
+        provider_account_key: &str,
+        status: AccountConnectionStatus,
+        error: Option<&str>,
+    ) -> Result<i64> {
+        let conn = open_db_connection(&self.db_path)?;
+        let now = utc_now();
+        let status_str = status.as_str();
+        let last_connected = if status == AccountConnectionStatus::Connected {
+            Some(now.as_str())
+        } else {
+            None
+        };
+
+        let id: i64 = conn.query_row(
+            "INSERT INTO channel_accounts
+             (channel, provider_account_key, connection_status, last_error, last_connected_at, capabilities_json, created_at, updated_at)
+             VALUES ('zalo', ?1, ?2, ?3, ?4, '{}', ?5, ?5)
+             ON CONFLICT(channel, provider_account_key) DO UPDATE SET
+                 connection_status = excluded.connection_status,
+                 last_error = excluded.last_error,
+                 last_connected_at = COALESCE(excluded.last_connected_at, channel_accounts.last_connected_at),
+                 updated_at = excluded.updated_at
+             RETURNING id",
+            params![
+                provider_account_key,
+                status_str,
+                error,
+                last_connected,
+                now
+            ],
+            |row| row.get(0),
+        )?;
+
+        Ok(id)
+    }
+}
+
+fn resolve_message_id(
+    tx: &rusqlite::Transaction,
+    provider_account_key: &str,
+    external_thread_id: &str,
+    is_group: bool,
+    provider_message_id: &str,
+    provider_client_message_id: &str,
+) -> Result<Option<i64>> {
+    let channel_account_id: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM channel_accounts WHERE channel = 'zalo' AND provider_account_key = ?1",
+            [provider_account_key],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let channel_account_id = match channel_account_id {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+
+    let kind = if is_group { "group" } else { "direct" };
+    let conversation_id: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = ?3",
+            params![channel_account_id, external_thread_id, kind],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let conversation_id = match conversation_id {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+
+    if !provider_message_id.is_empty() {
+        let msg_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                params![conversation_id, provider_message_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if msg_id.is_some() {
+            return Ok(msg_id);
+        }
+    }
+
+    if !provider_client_message_id.is_empty() {
+        let msg_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_client_message_id = ?2",
+                params![conversation_id, provider_client_message_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if msg_id.is_some() {
+            return Ok(msg_id);
+        }
+    }
+
+    Ok(None)
+}
+
+fn status_rank(status: &str) -> i32 {
+    match status {
+        "queued" => 1,
+        "sending" => 2,
+        "sent" => 3,
+        "delivered" => 4,
+        "read" => 5,
+        _ => 0,
     }
 }
 
