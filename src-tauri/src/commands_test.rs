@@ -285,8 +285,22 @@ mod tests {
     async fn test_send_zalo_outreach_mock() {
         use std::sync::Mutex;
 
-        // Initialize a memory database
-        let mut conn = db::init_db(":memory:").unwrap();
+        let db_path = std::env::temp_dir().join(format!(
+            "rustsale-cmd-outreach-test-{}.db",
+            rand::random::<u64>()
+        ));
+        let db_str = db_path.to_str().unwrap().to_string();
+        struct TestCleanup(std::path::PathBuf);
+        impl Drop for TestCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+                let _ = std::fs::remove_file(self.0.with_extension("db-wal"));
+                let _ = std::fs::remove_file(self.0.with_extension("db-shm"));
+            }
+        }
+        let _cleanup = TestCleanup(db_path.clone());
+
+        let mut conn = db::init_db(&db_str).unwrap();
         db::seed_data(&mut conn).unwrap();
 
         // 1. Create a template
@@ -446,6 +460,23 @@ mod tests {
             .unwrap();
         assert!(text_content.contains("Sarah Harrington"));
         assert!(content_json.contains("zalo_outreach"));
+
+        let repository =
+            crate::conversation::repository::ConversationRepository::new(db_str.clone());
+        let page = repository
+            .get_contact_timeline(
+                lead_id_1 as i64,
+                &[crate::conversation::types::Channel::Zalo],
+                None,
+                50,
+            )
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert!(page
+            .items
+            .iter()
+            .all(|message| message.direction
+                == crate::conversation::types::MessageDirection::Outbound));
     }
 
     #[tokio::test]
@@ -629,7 +660,22 @@ mod tests {
     #[tokio::test]
     async fn test_send_zalo_campaign_mock() {
         use std::sync::Mutex;
-        let mut conn = db::init_db(":memory:").unwrap();
+        let db_path = std::env::temp_dir().join(format!(
+            "rustsale-cmd-campaign-test-{}.db",
+            rand::random::<u64>()
+        ));
+        let db_str = db_path.to_str().unwrap().to_string();
+        struct TestCleanup(std::path::PathBuf);
+        impl Drop for TestCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+                let _ = std::fs::remove_file(self.0.with_extension("db-wal"));
+                let _ = std::fs::remove_file(self.0.with_extension("db-shm"));
+            }
+        }
+        let _cleanup = TestCleanup(db_path.clone());
+
+        let mut conn = db::init_db(&db_str).unwrap();
         db::seed_data(&mut conn).unwrap();
 
         let template_id =
@@ -795,6 +841,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(provider_key, "mock-success-imei");
+
+        let repository =
+            crate::conversation::repository::ConversationRepository::new(db_str.clone());
+        let page = repository
+            .get_contact_timeline(
+                lead_4 as i64,
+                &[crate::conversation::types::Channel::Zalo],
+                None,
+                50,
+            )
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert!(page
+            .items
+            .iter()
+            .all(|message| message.direction
+                == crate::conversation::types::MessageDirection::Outbound));
     }
 
     #[tokio::test]
