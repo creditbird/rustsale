@@ -1448,6 +1448,7 @@ pub async fn send_zalo_outreach(
             lead_ids,
             template_id,
             ZaloOutreachRunOptions::default(),
+            OutreachProgressScope::default(),
         )
         .await;
     });
@@ -1474,15 +1475,37 @@ pub async fn start_zalo_outreach(
     let burst_delay = burst_delay_seconds.unwrap_or(0);
     let inter_delay = inter_message_delay_seconds.unwrap_or(0);
 
+    let partitions = partition_outreach_leads(&imeis, &lead_ids)?;
+    let active_partitions: Vec<(String, Vec<i32>)> = partitions
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .collect();
+
+    if active_partitions.is_empty() {
+        return Ok(());
+    }
+
+    let total_leads: usize = active_partitions.iter().map(|(_, ids)| ids.len()).sum();
     let app_handle_clone = app_handle.clone();
+
     tokio::spawn(async move {
         let db_state = app_handle_clone.state::<DbState>();
-        for imei in imeis {
+        let mut processed_offset = 0;
+        let num_partitions = active_partitions.len();
+
+        for (part_idx, (imei, part_leads)) in active_partitions.into_iter().enumerate() {
+            let count = part_leads.len();
+            let is_last = part_idx == num_partitions - 1;
+            let scope = OutreachProgressScope {
+                processed_offset,
+                total_leads,
+                emit_complete: is_last,
+            };
             let _ = send_zalo_outreach_internal(
                 Some(&app_handle_clone),
                 &db_state.conn,
                 imei,
-                lead_ids.clone(),
+                part_leads,
                 template_id,
                 ZaloOutreachRunOptions {
                     enable_burst_limit: enable_burst,
@@ -1490,8 +1513,10 @@ pub async fn start_zalo_outreach(
                     burst_delay_seconds: burst_delay,
                     inter_message_delay_seconds: inter_delay,
                 },
+                scope,
             )
             .await;
+            processed_offset += count;
         }
     });
     Ok(())
@@ -1577,6 +1602,63 @@ pub struct ZaloOutreachRunOptions {
     pub inter_message_delay_seconds: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct OutreachProgressScope {
+    pub processed_offset: usize,
+    pub total_leads: usize,
+    pub emit_complete: bool,
+}
+
+impl Default for OutreachProgressScope {
+    fn default() -> Self {
+        Self {
+            processed_offset: 0,
+            total_leads: 0,
+            emit_complete: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZaloOutreachBatchResult {
+    pub total_sent: usize,
+}
+
+pub fn partition_outreach_leads(
+    imeis: &[String],
+    lead_ids: &[i32],
+) -> Result<Vec<(String, Vec<i32>)>, String> {
+    let mut dedup_imeis: Vec<String> = Vec::new();
+    for imei in imeis {
+        if !dedup_imeis.contains(imei) {
+            dedup_imeis.push(imei.clone());
+        }
+    }
+
+    if dedup_imeis.is_empty() {
+        return Err("No valid IMEI provided".to_string());
+    }
+
+    let mut dedup_lead_ids: Vec<i32> = Vec::new();
+    for &id in lead_ids {
+        if !dedup_lead_ids.contains(&id) {
+            dedup_lead_ids.push(id);
+        }
+    }
+
+    let num_imeis = dedup_imeis.len();
+    let mut partitions: Vec<Vec<i32>> = vec![Vec::new(); num_imeis];
+    for (idx, &lead_id) in dedup_lead_ids.iter().enumerate() {
+        partitions[idx % num_imeis].push(lead_id);
+    }
+
+    let result = dedup_imeis
+        .into_iter()
+        .zip(partitions.into_iter())
+        .collect();
+    Ok(result)
+}
+
 pub async fn send_zalo_outreach_internal(
     app_handle: Option<&tauri::AppHandle>,
     conn_mutex: &std::sync::Mutex<Connection>,
@@ -1584,13 +1666,24 @@ pub async fn send_zalo_outreach_internal(
     lead_ids: Vec<i32>,
     template_id: i32,
     options: ZaloOutreachRunOptions,
-) -> Result<(), String> {
+    progress_scope: OutreachProgressScope,
+) -> Result<ZaloOutreachBatchResult, String> {
     let ZaloOutreachRunOptions {
         enable_burst_limit,
         burst_max_messages,
         burst_delay_seconds,
         inter_message_delay_seconds,
     } = options;
+    let OutreachProgressScope {
+        processed_offset,
+        total_leads,
+        emit_complete,
+    } = progress_scope;
+    let display_total = if total_leads > 0 {
+        total_leads
+    } else {
+        lead_ids.len()
+    };
     // Mock flow helper
     if imei == "mock-imei" || imei.starts_with("mock-") {
         let template_content = {
@@ -1637,7 +1730,8 @@ pub async fn send_zalo_outreach_internal(
                             message: msg.clone(),
                         },
                     );
-                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                    let current_num = processed_offset + idx + 1;
+                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
                     let _ = app.emit(
                         "outreach-progress",
                         OutreachProgressPayload {
@@ -1667,7 +1761,8 @@ pub async fn send_zalo_outreach_internal(
                             message: msg.clone(),
                         },
                     );
-                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                    let current_num = processed_offset + idx + 1;
+                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
                     let _ = app.emit(
                         "outreach-progress",
                         OutreachProgressPayload {
@@ -1696,7 +1791,8 @@ pub async fn send_zalo_outreach_internal(
                             message: msg.clone(),
                         },
                     );
-                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                    let current_num = processed_offset + idx + 1;
+                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
                     let _ = app.emit(
                         "outreach-progress",
                         OutreachProgressPayload {
@@ -1811,13 +1907,14 @@ pub async fn send_zalo_outreach_internal(
             }
 
             if let Some(app) = app_handle {
-                let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                let current_num = processed_offset + idx + 1;
+                let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
                 let _ = app.emit(
                     "outreach-progress",
                     OutreachProgressPayload {
                         progress: progress_val,
                         status: "running".to_string(),
-                        message: format!("Processed lead {}/{} (Mock)", idx + 1, lead_ids.len()),
+                        message: format!("Processed lead {}/{} (Mock)", current_num, display_total),
                     },
                 );
             }
@@ -1848,28 +1945,29 @@ pub async fn send_zalo_outreach_internal(
 
         let final_msg = format!(
             "Outreach complete! Sent {} messages out of {} leads. (Mock)",
-            total_sent,
-            lead_ids.len()
+            total_sent, display_total
         );
         if let Some(app) = app_handle {
-            let _ = app.emit(
-                "outreach-progress",
-                OutreachProgressPayload {
-                    progress: 100.0,
-                    status: "completed".to_string(),
-                    message: final_msg.clone(),
-                },
-            );
-            let _ = app.emit(
-                "outreach-complete",
-                OutreachCompletePayload {
-                    total_sent,
-                    message: final_msg,
-                },
-            );
+            if emit_complete {
+                let _ = app.emit(
+                    "outreach-progress",
+                    OutreachProgressPayload {
+                        progress: 100.0,
+                        status: "completed".to_string(),
+                        message: final_msg.clone(),
+                    },
+                );
+                let _ = app.emit(
+                    "outreach-complete",
+                    OutreachCompletePayload {
+                        total_sent,
+                        message: final_msg,
+                    },
+                );
+            }
         }
 
-        return Ok(());
+        return Ok(ZaloOutreachBatchResult { total_sent });
     }
 
     // Real Zalo flow
@@ -2043,7 +2141,8 @@ pub async fn send_zalo_outreach_internal(
                         message: msg.clone(),
                     },
                 );
-                let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                let current_num = processed_offset + idx + 1;
+                let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
                 let _ = app.emit(
                     "outreach-progress",
                     OutreachProgressPayload {
@@ -2073,7 +2172,8 @@ pub async fn send_zalo_outreach_internal(
                         message: msg.clone(),
                     },
                 );
-                let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                let current_num = processed_offset + idx + 1;
+                let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
                 let _ = app.emit(
                     "outreach-progress",
                     OutreachProgressPayload {
@@ -2121,7 +2221,8 @@ pub async fn send_zalo_outreach_internal(
                             message: msg.clone(),
                         },
                     );
-                    let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                    let current_num = processed_offset + idx + 1;
+                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
                     let _ = app.emit(
                         "outreach-progress",
                         OutreachProgressPayload {
@@ -2362,13 +2463,14 @@ pub async fn send_zalo_outreach_internal(
         }
 
         if let Some(app) = app_handle {
-            let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+            let current_num = processed_offset + idx + 1;
+            let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
             let _ = app.emit(
                 "outreach-progress",
                 OutreachProgressPayload {
                     progress: progress_val,
                     status: "running".to_string(),
-                    message: format!("Processed lead {}/{}", idx + 1, lead_ids.len()),
+                    message: format!("Processed lead {}/{}", current_num, display_total),
                 },
             );
         }
@@ -2399,28 +2501,29 @@ pub async fn send_zalo_outreach_internal(
 
     let final_msg = format!(
         "Outreach complete! Sent {} messages out of {} leads.",
-        total_sent,
-        lead_ids.len()
+        total_sent, display_total
     );
     if let Some(app) = app_handle {
-        let _ = app.emit(
-            "outreach-progress",
-            OutreachProgressPayload {
-                progress: 100.0,
-                status: "completed".to_string(),
-                message: final_msg.clone(),
-            },
-        );
-        let _ = app.emit(
-            "outreach-complete",
-            OutreachCompletePayload {
-                total_sent,
-                message: final_msg,
-            },
-        );
+        if emit_complete {
+            let _ = app.emit(
+                "outreach-progress",
+                OutreachProgressPayload {
+                    progress: 100.0,
+                    status: "completed".to_string(),
+                    message: final_msg.clone(),
+                },
+            );
+            let _ = app.emit(
+                "outreach-complete",
+                OutreachCompletePayload {
+                    total_sent,
+                    message: final_msg,
+                },
+            );
+        }
     }
 
-    Ok(())
+    Ok(ZaloOutreachBatchResult { total_sent })
 }
 
 /// Retrieves all categories from the database.

@@ -364,10 +364,11 @@ mod tests {
             vec![lead_id_1, lead_id_2, lead_id_3, lead_id_4],
             template_id,
             commands::ZaloOutreachRunOptions::default(),
+            commands::OutreachProgressScope::default(),
         )
         .await;
 
-        assert!(res.is_ok());
+        assert_eq!(res.unwrap().total_sent, 1);
 
         // Verify that activities log was written for lead_id_1 but not others
         let conn_locked = db_mutex.lock().unwrap();
@@ -513,10 +514,11 @@ mod tests {
                 burst_delay_seconds: 1,
                 inter_message_delay_seconds: 0,
             },
+            commands::OutreachProgressScope::default(),
         )
         .await;
 
-        assert!(res.is_ok());
+        assert_eq!(res.unwrap().total_sent, 3);
 
         let conn_locked = db_mutex.lock().unwrap();
         let activities_1 = commands::get_activities_internal(&conn_locked, lead_id_1).unwrap();
@@ -1403,5 +1405,115 @@ mod tests {
         assert!(!resolved.contains(&lead_ids[74]));
         assert!(!resolved.contains(&lead_ids[73]));
         assert_eq!(resolved[0], lead_ids[72]);
+    }
+
+    #[test]
+    fn selected_sessions_partition_leads_without_duplication() {
+        let imeis = vec![
+            "imei-a".to_string(),
+            "imei-b".to_string(),
+            "imei-a".to_string(),
+        ];
+        let lead_ids = vec![1, 2, 3, 4, 5, 2, 1];
+        let assignments = commands::partition_outreach_leads(&imeis, &lead_ids).unwrap();
+
+        assert_eq!(assignments.len(), 2);
+        assert_eq!(assignments[0], ("imei-a".to_string(), vec![1, 3, 5]));
+        assert_eq!(assignments[1], ("imei-b".to_string(), vec![2, 4]));
+
+        let all = assignments
+            .into_iter()
+            .flat_map(|(_, ids)| ids)
+            .collect::<Vec<_>>();
+        assert_eq!(all.len(), 5);
+        assert_eq!(
+            all.iter().collect::<std::collections::HashSet<_>>().len(),
+            5
+        );
+
+        let empty_imeis: Vec<String> = vec![];
+        assert!(commands::partition_outreach_leads(&empty_imeis, &[1, 2]).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_start_zalo_outreach_multi_session_partition() {
+        use std::sync::Mutex;
+
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        let template_id =
+            db::create_outreach_template(&conn, "Template Multi", "Hello [name]!", None).unwrap();
+
+        let mut lead_ids = Vec::new();
+        for i in 1..=5 {
+            let id = commands::add_lead_internal(
+                &mut conn,
+                format!("Lead {}", i),
+                format!("Company {}", i),
+                "New".to_string(),
+                1000.0,
+                "Alex".to_string(),
+                format!("lead{}@example.com", i),
+                format!("091234560{}", i),
+                None,
+                None,
+            )
+            .unwrap();
+            lead_ids.push(id);
+        }
+
+        let imeis = vec!["mock-imei-1".to_string(), "mock-imei-2".to_string()];
+        let partitions = commands::partition_outreach_leads(&imeis, &lead_ids).unwrap();
+        assert_eq!(partitions.len(), 2);
+        assert_eq!(partitions[0].1, vec![lead_ids[0], lead_ids[2], lead_ids[4]]);
+        assert_eq!(partitions[1].1, vec![lead_ids[1], lead_ids[3]]);
+
+        let db_mutex = Mutex::new(conn);
+        let total_leads = lead_ids.len();
+
+        let res1 = commands::send_zalo_outreach_internal(
+            None,
+            &db_mutex,
+            partitions[0].0.clone(),
+            partitions[0].1.clone(),
+            template_id,
+            commands::ZaloOutreachRunOptions::default(),
+            commands::OutreachProgressScope {
+                processed_offset: 0,
+                total_leads,
+                emit_complete: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let res2 = commands::send_zalo_outreach_internal(
+            None,
+            &db_mutex,
+            partitions[1].0.clone(),
+            partitions[1].1.clone(),
+            template_id,
+            commands::ZaloOutreachRunOptions::default(),
+            commands::OutreachProgressScope {
+                processed_offset: partitions[0].1.len(),
+                total_leads,
+                emit_complete: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(res1.total_sent + res2.total_sent, 5);
+
+        let conn_locked = db_mutex.lock().unwrap();
+        let total_history: i64 = conn_locked
+            .query_row(
+                "SELECT COUNT(*) FROM outreach_history WHERE status = 'SUCCESS'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_history, 5);
     }
 }
