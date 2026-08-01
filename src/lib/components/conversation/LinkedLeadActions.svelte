@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { linkConversationIdentity, unlinkConversationIdentity, type InboxItem } from '$lib/services/conversationService';
+  import {
+    linkConversationIdentity,
+    unlinkConversationIdentity,
+    unlinkConversationLead,
+    type InboxItem
+  } from '$lib/services/conversationService';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
   import { Button } from '$lib/components/ui/button';
@@ -60,11 +65,13 @@
   }
 
   async function handleConfirmRelink() {
-    if (!selectedLeadId || !item.identityId) return;
+    if (!selectedLeadId) return;
+    const targetIdentityId = item.identityId ?? item.participants?.[0]?.identityId;
+    if (!targetIdentityId) return;
     isRelinking = true;
     relinkError = null;
     try {
-      await linkConversationIdentity(item.identityId, selectedLeadId);
+      await linkConversationIdentity(targetIdentityId, selectedLeadId);
       isRelinkModalOpen = false;
       onRelinked?.(selectedLeadId);
     } catch (err) {
@@ -75,11 +82,15 @@
   }
 
   async function handleConfirmUnlink() {
-    if (!item.identityId) return;
+    if (!item.identityId && !item.leadId) return;
     isUnlinking = true;
     unlinkError = null;
     try {
-      await unlinkConversationIdentity(item.identityId);
+      if (item.leadId) {
+        await unlinkConversationLead(item.leadId);
+      } else if (item.identityId) {
+        await unlinkConversationIdentity(item.identityId);
+      }
       isUnlinkModalOpen = false;
       onUnlinked?.();
     } catch (err) {
@@ -95,7 +106,7 @@
     type="button"
     variant="outline"
     size="sm"
-    disabled={!item.identityId}
+    disabled={!item.identityId && !item.leadId}
     onclick={openRelinkModal}
     class="flex items-center gap-1.5 text-xs"
   >
@@ -107,7 +118,7 @@
     type="button"
     variant="outline"
     size="sm"
-    disabled={!item.identityId}
+    disabled={!item.identityId && !item.leadId}
     onclick={() => (isUnlinkModalOpen = true)}
     class="flex items-center gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
   >

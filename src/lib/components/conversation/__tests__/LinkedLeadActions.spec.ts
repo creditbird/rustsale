@@ -33,6 +33,7 @@ const mockGetLeads = mock(async (): Promise<Lead[]> => [
 
 const mockLinkConversationIdentity = mock(async (...args: any[]): Promise<void> => {});
 const mockUnlinkConversationIdentity = mock(async (...args: any[]): Promise<void> => {});
+const mockUnlinkConversationLead = mock(async (...args: any[]): Promise<void> => {});
 
 mock.module('$lib/services/crmService', () => ({
   getLeads: () => mockGetLeads()
@@ -40,7 +41,8 @@ mock.module('$lib/services/crmService', () => ({
 
 mock.module('$lib/services/conversationService', () => ({
   linkConversationIdentity: (...args: any[]) => mockLinkConversationIdentity(...args),
-  unlinkConversationIdentity: (...args: any[]) => mockUnlinkConversationIdentity(...args)
+  unlinkConversationIdentity: (...args: any[]) => mockUnlinkConversationIdentity(...args),
+  unlinkConversationLead: (...args: any[]) => mockUnlinkConversationLead(...args)
 }));
 
 describe('LinkedLeadActions Component', () => {
@@ -50,6 +52,7 @@ describe('LinkedLeadActions Component', () => {
     mockGetLeads.mockClear();
     mockLinkConversationIdentity.mockClear();
     mockUnlinkConversationIdentity.mockClear();
+    mockUnlinkConversationLead.mockClear();
   });
 
   const leadItem: InboxItem = {
@@ -128,7 +131,7 @@ describe('LinkedLeadActions Component', () => {
     expect(onRelinked).toHaveBeenCalledWith(2);
   });
 
-  test('confirming unlink calls unlinkConversationIdentity and emits onUnlinked', async () => {
+  test('confirming unlink calls unlinkConversationLead when leadId is present', async () => {
     const onUnlinked = mock(() => {});
     render(LinkedLeadActions, {
       props: {
@@ -148,19 +151,46 @@ describe('LinkedLeadActions Component', () => {
     await fireEvent.click(confirmUnlinkBtn);
     await tick();
 
+    expect(mockUnlinkConversationLead).toHaveBeenCalledWith(1);
+    expect(onUnlinked).toHaveBeenCalledTimes(1);
+  });
+
+  test('confirming unlink calls unlinkConversationIdentity when leadId is null', async () => {
+    const onUnlinked = mock(() => {});
+    const itemWithoutLead: InboxItem = {
+      ...leadItem,
+      leadId: null,
+      identityId: 500
+    };
+    render(LinkedLeadActions, {
+      props: {
+        item: itemWithoutLead,
+        onUnlinked
+      }
+    });
+
+    const unlinkBtn = screen.getByRole('button', { name: /Hủy liên kết/i });
+    await fireEvent.click(unlinkBtn);
+    await tick();
+
+    const confirmUnlinkBtn = screen.getByRole('button', { name: /Xác nhận hủy/i });
+    await fireEvent.click(confirmUnlinkBtn);
+    await tick();
+
     expect(mockUnlinkConversationIdentity).toHaveBeenCalledWith(500);
     expect(onUnlinked).toHaveBeenCalledTimes(1);
   });
 
-  test('disabled when identityId is missing', () => {
-    const itemWithoutIdentity: InboxItem = {
+  test('disabled when both identityId and leadId are missing', () => {
+    const itemWithoutIdentityOrLead: InboxItem = {
       ...leadItem,
-      identityId: null
+      identityId: null,
+      leadId: null
     };
 
     render(LinkedLeadActions, {
       props: {
-        item: itemWithoutIdentity
+        item: itemWithoutIdentityOrLead
       }
     });
 
@@ -169,5 +199,57 @@ describe('LinkedLeadActions Component', () => {
 
     expect(relinkBtn.disabled).toBe(true);
     expect(unlinkBtn.disabled).toBe(true);
+  });
+
+  test('enabled when identityId is null but leadId is present', () => {
+    const itemWithLeadOnly: InboxItem = {
+      ...leadItem,
+      identityId: null,
+      leadId: 1
+    };
+
+    render(LinkedLeadActions, {
+      props: {
+        item: itemWithLeadOnly
+      }
+    });
+
+    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i }) as HTMLButtonElement;
+    const unlinkBtn = screen.getByRole('button', { name: /Hủy liên kết/i }) as HTMLButtonElement;
+
+    expect(relinkBtn.disabled).toBe(false);
+    expect(unlinkBtn.disabled).toBe(false);
+  });
+
+  test('relinking uses participant identityId when item.identityId is null', async () => {
+    const onRelinked = mock(() => {});
+    const itemWithParticipantOnly: InboxItem = {
+      ...leadItem,
+      identityId: null,
+      leadId: 1,
+      participants: [{ identityId: 600, displayName: 'Test', avatarUrl: null, participantRole: 'member' }]
+    };
+
+    render(LinkedLeadActions, {
+      props: {
+        item: itemWithParticipantOnly,
+        onRelinked
+      }
+    });
+
+    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i });
+    await fireEvent.click(relinkBtn);
+    await tick();
+
+    const leadOption = screen.getByText(/Trần Thị Lead/i);
+    await fireEvent.click(leadOption);
+    await tick();
+
+    const confirmBtn = screen.getByRole('button', { name: /Xác nhận đổi/i });
+    await fireEvent.click(confirmBtn);
+    await tick();
+
+    expect(mockLinkConversationIdentity).toHaveBeenCalledWith(600, 2);
+    expect(onRelinked).toHaveBeenCalledWith(2);
   });
 });
