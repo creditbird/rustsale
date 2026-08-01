@@ -19,8 +19,13 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+pub(crate) fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_rustls_crypto_provider();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -183,7 +188,8 @@ pub fn run() {
             google_maps_jobs::commands::list_google_maps_scrape_jobs,
             google_maps_jobs::commands::delete_google_maps_scrape_job,
             commands::start_zalo_qr_login,
-            commands::get_zalo_sessions,
+            commands::get_managed_zalo_accounts,
+            commands::get_managed_smtp_accounts,
             commands::delete_zalo_session,
             commands::verify_zalo_session,
             commands::verify_all_zalo_sessions,
@@ -203,7 +209,6 @@ pub fn run() {
             commands::get_campaign_leads,
             commands::get_outreach_leads_page,
             commands::resolve_outreach_lead_ids,
-            commands::get_smtp_servers,
             commands::save_smtp_server,
             commands::delete_smtp_server,
             commands::test_smtp_connection,
@@ -216,6 +221,7 @@ pub fn run() {
             conversation::commands::get_contact_timeline,
             conversation::commands::get_conversation_timeline,
             conversation::commands::link_conversation_identity,
+            conversation::commands::unlink_conversation_identity,
             conversation::commands::send_conversation_message,
             conversation::commands::get_conversation_runtime_status,
             conversation::commands::restart_conversation_account

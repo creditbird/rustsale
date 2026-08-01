@@ -4,7 +4,7 @@ use super::repository::{
     NormalizedIdentity, NormalizedMessage, NormalizedReaction, NormalizedReceipt, NormalizedUndo,
     ReceiptKind,
 };
-use super::types::{Channel, ConversationKind, MessageDirection, MessageStatus};
+use super::types::{Channel, ConversationKind, InboxItemKind, MessageDirection, MessageStatus};
 use crate::db::open_db_connection;
 use rusqlite::OptionalExtension;
 
@@ -235,6 +235,7 @@ fn reaction_upsert_targets_provider_or_client_message_id() {
         provider_account_key: "imei-a".to_string(),
         external_thread_id: "peer-1".to_string(),
         is_group: false,
+        provider_event_id: Some("reaction-event-1".to_string()),
         provider_message_id: "message-1".to_string(),
         provider_client_message_id: "client-1".to_string(),
         actor_external_id: "peer-1".to_string(),
@@ -338,6 +339,57 @@ fn checkpoint_upsert_is_monotonic_per_account_scope() {
 }
 
 #[test]
+fn history_cursor_moves_backward_without_regressing_realtime_watermark() {
+    let harness = Harness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id("message-1", "client-1"))
+        .unwrap();
+
+    harness
+        .repository
+        .update_checkpoint(
+            applied.channel_account_id,
+            "direct_messages",
+            Some("message-newest"),
+            Some("2026-07-31T10:00:00.000Z"),
+            None,
+        )
+        .unwrap();
+    harness
+        .repository
+        .update_history_cursor(
+            applied.channel_account_id,
+            "direct_message_history",
+            "message-older-1",
+        )
+        .unwrap();
+    harness
+        .repository
+        .update_history_cursor(
+            applied.channel_account_id,
+            "direct_message_history",
+            "message-older-2",
+        )
+        .unwrap();
+
+    assert_eq!(
+        harness
+            .repository
+            .get_checkpoint(applied.channel_account_id, "direct_messages")
+            .unwrap(),
+        Some("message-newest".to_string())
+    );
+    assert_eq!(
+        harness
+            .repository
+            .get_checkpoint(applied.channel_account_id, "direct_message_history")
+            .unwrap(),
+        Some("message-older-2".to_string())
+    );
+}
+
+#[test]
 fn group_snapshot_updates_title_avatar_and_participant_roles() {
     let harness = Harness::new();
     let conversation_id = harness
@@ -431,4 +483,28 @@ fn group_inbox_excludes_participants_who_left() {
         group_item.participants[0].display_name.as_deref(),
         Some("Active Member")
     );
+}
+
+#[test]
+fn unlink_identity_resets_lead_id_and_returns_conversation_id() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute("INSERT INTO leads (id, name) VALUES (42, 'Lead 42')", [])
+        .unwrap();
+    drop(conn);
+
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-1"))
+        .unwrap();
+    let identity_id = applied.identity_id.expect("identity exists");
+    harness.repository.link_identity(identity_id, 42).unwrap();
+
+    let conv_id = harness.repository.unlink_identity(identity_id).unwrap();
+    assert!(conv_id > 0);
+
+    let inbox = harness.repository.list_inbox().unwrap();
+    let item = inbox.iter().find(|i| i.conversation_id == Some(conv_id)).unwrap();
+    assert_eq!(item.kind, InboxItemKind::Unknown);
+    assert_eq!(item.lead_id, None);
 }

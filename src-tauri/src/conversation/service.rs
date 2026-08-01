@@ -5,6 +5,10 @@ use super::repository::ConversationRepository;
 use super::types::{Channel, ConversationRuntimeStatus, InboxItem, TimelineCursor, TimelinePage};
 use crate::conversation::outreach::AppliedOutreachMessage;
 use crate::conversation::zalo::normalizer::{NormalizedGroupSnapshot, ZaloMutation};
+use crate::conversation::zalo::{
+    DIRECT_MESSAGE_WATERMARK_SCOPE, DIRECT_REACTION_WATERMARK_SCOPE, GROUP_MESSAGE_WATERMARK_SCOPE,
+    GROUP_REACTION_WATERMARK_SCOPE,
+};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -61,6 +65,20 @@ impl ConversationService {
         Ok(())
     }
 
+    pub fn unlink_identity(&self, identity_id: i64) -> Result<()> {
+        let conversation_id = self.repository.unlink_identity(identity_id)?;
+        if conversation_id > 0 {
+            self.events.publish(ConversationInvalidatedEvent {
+                conversation_id,
+                lead_id: None,
+                channel: Channel::Zalo,
+                reason: ConversationInvalidationReason::Link,
+                message_id: None,
+            });
+        }
+        Ok(())
+    }
+
     pub fn ingest_zalo_event(
         &self,
         provider_account_key: &str,
@@ -79,22 +97,26 @@ impl ConversationService {
                         crate::conversation::types::ConversationKind::Group
                     );
                     let scope = if is_group {
-                        "group_messages"
+                        GROUP_MESSAGE_WATERMARK_SCOPE
                     } else {
-                        "direct_messages"
+                        DIRECT_MESSAGE_WATERMARK_SCOPE
                     };
                     let applied = self.repository.apply_normalized_message(&message)?;
                     let event_at = message
                         .provider_timestamp
                         .as_deref()
                         .unwrap_or(&message.ingested_at);
-                    let _ = self.repository.update_checkpoint(
-                        applied.channel_account_id,
-                        scope,
-                        message.provider_message_id.as_deref(),
-                        Some(event_at),
-                        None,
-                    );
+                    self.repository
+                        .update_checkpoint(
+                            applied.channel_account_id,
+                            scope,
+                            message.provider_message_id.as_deref(),
+                            Some(event_at),
+                            None,
+                        )
+                        .map_err(|error| {
+                            anyhow::anyhow!("Failed to update message checkpoint: {error}")
+                        })?;
                     if !applied.duplicate {
                         let lead_id = applied.identity_id.and_then(|identity_id| {
                             self.repository
@@ -122,19 +144,21 @@ impl ConversationService {
                         self.repository.get_channel_account_id(provider_account_key)
                     {
                         let scope = if reaction.is_group {
-                            "group_messages"
+                            GROUP_REACTION_WATERMARK_SCOPE
                         } else {
-                            "direct_messages"
+                            DIRECT_REACTION_WATERMARK_SCOPE
                         };
-                        if let Err(e) = self.repository.update_checkpoint(
-                            account_id,
-                            scope,
-                            Some(&reaction.provider_message_id),
-                            Some(&reaction.occurred_at),
-                            None,
-                        ) {
-                            tracing::warn!("Failed to update reaction checkpoint: {}", e);
-                        }
+                        self.repository
+                            .update_checkpoint(
+                                account_id,
+                                scope,
+                                reaction.provider_event_id.as_deref(),
+                                Some(&reaction.occurred_at),
+                                None,
+                            )
+                            .map_err(|error| {
+                                anyhow::anyhow!("Failed to update reaction checkpoint: {error}")
+                            })?;
                     }
                 }
                 ZaloMutation::Undo(undo) => {
@@ -168,7 +192,12 @@ impl ConversationService {
                         self.repository.get_channel_account_id(provider_account_key)
                     {
                         let scopes: &[&str] = if scope == "all" {
-                            &["direct_messages", "group_messages"]
+                            &[
+                                DIRECT_MESSAGE_WATERMARK_SCOPE,
+                                GROUP_MESSAGE_WATERMARK_SCOPE,
+                                DIRECT_REACTION_WATERMARK_SCOPE,
+                                GROUP_REACTION_WATERMARK_SCOPE,
+                            ]
                         } else {
                             &[scope]
                         };

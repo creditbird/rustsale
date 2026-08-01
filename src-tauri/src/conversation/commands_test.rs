@@ -205,6 +205,26 @@ fn link_identity_publishes_link_invalidation() {
     assert_eq!(event.conversation_id, applied.conversation_id);
 }
 
+#[test]
+fn unlink_identity_publishes_link_invalidation() {
+    let harness = ServiceHarness::new();
+    harness.insert_lead(7, "Lead Seven");
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-1"))
+        .unwrap();
+    let identity_id = applied.identity_id.unwrap();
+    harness.service.link_identity(identity_id, 7).unwrap();
+
+    let mut receiver = harness.events.subscribe();
+    harness.service.unlink_identity(identity_id).unwrap();
+
+    let event = receiver.try_recv().unwrap();
+    assert_eq!(event.reason, ConversationInvalidationReason::Link);
+    assert_eq!(event.lead_id, None);
+    assert_eq!(event.conversation_id, applied.conversation_id);
+}
+
 #[tokio::test]
 async fn test_conversation_state_commands_integration() {
     use super::commands::{
