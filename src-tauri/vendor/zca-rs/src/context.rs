@@ -232,6 +232,7 @@ pub fn default_image_metadata_getter(
 #[derive(Clone)]
 pub struct Options {
     pub self_listen: bool,
+    pub auto_start_listener: bool,
     pub check_update: bool,
     pub logging: bool,
     pub api_type: i32,
@@ -243,6 +244,7 @@ impl std::fmt::Debug for Options {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Options")
             .field("self_listen", &self.self_listen)
+            .field("auto_start_listener", &self.auto_start_listener)
             .field("check_update", &self.check_update)
             .field("logging", &self.logging)
             .field("api_type", &self.api_type)
@@ -259,6 +261,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             self_listen: false,
+            auto_start_listener: true,
             check_update: true,
             logging: true,
             api_type: 30,

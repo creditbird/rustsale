@@ -166,6 +166,7 @@ pub struct TMessage {
     #[serde(default)]
     pub top_out_impr_time_out: Option<String>,
     pub property_ext: Option<TPropertyExt>,
+    #[serde(default)]
     pub params_ext: TParamsExt,
     pub cmd: i32,
     pub st: i32,
@@ -184,8 +185,8 @@ pub struct TPropertyExt {
     pub ext: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TParamsExt {
     pub count_unread: i32,
     pub contain_type: i32,
@@ -493,4 +494,76 @@ pub struct SendMessageResult {
 pub struct SendMessageResponse {
     pub message: Option<SendMessageResult>,
     pub attachment: Vec<SendMessageResult>,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn group_history_message_defaults_missing_params_ext() {
+        let message: TMessage = serde_json::from_value(serde_json::json!({
+            "actionId": "action-1",
+            "msgId": "message-1",
+            "cliMsgId": "client-1",
+            "msgType": "webchat",
+            "uidFrom": "peer-1",
+            "idTo": "group-1",
+            "dName": "Peer",
+            "ts": "1785456000000",
+            "status": 1,
+            "content": "hello",
+            "notify": "",
+            "ttl": 0,
+            "userId": "",
+            "uin": "",
+            "propertyExt": null,
+            "cmd": 501,
+            "st": 0,
+            "at": 0,
+            "realMsgId": "real-1",
+            "quote": null
+        }))
+        .unwrap();
+
+        assert_eq!(message.params_ext.count_unread, 0);
+        assert_eq!(message.params_ext.contain_type, 0);
+        assert_eq!(message.params_ext.platform_type, 0);
+    }
+
+    #[test]
+    fn realtime_message_defaults_partial_params_ext() {
+        let message: TMessage = serde_json::from_value(serde_json::json!({
+            "actionId": "action-2",
+            "msgId": "message-2",
+            "cliMsgId": "client-2",
+            "msgType": "webchat",
+            "uidFrom": "peer-2",
+            "idTo": "self-1",
+            "dName": "Peer",
+            "ts": "1785548753795",
+            "status": 1,
+            "content": "hello",
+            "notify": "",
+            "ttl": 0,
+            "userId": "",
+            "uin": "",
+            "propertyExt": null,
+            "paramsExt": {
+                "countUnread": 0,
+                "containType": 0
+            },
+            "cmd": 501,
+            "st": 0,
+            "at": 0,
+            "realMsgId": "real-2",
+            "quote": null
+        }))
+        .unwrap();
+
+        assert_eq!(message.params_ext.count_unread, 0);
+        assert_eq!(message.params_ext.contain_type, 0);
+        assert_eq!(message.params_ext.platform_type, 0);
+    }
 }

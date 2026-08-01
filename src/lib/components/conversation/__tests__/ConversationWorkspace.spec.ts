@@ -30,11 +30,11 @@ function emitInvalidated(event: ConversationInvalidatedEvent) {
 }
 
 const mockCustomerItem: InboxItem = {
-  key: 'customer-1',
+  key: 'lead:1',
   kind: 'customer',
   leadId: 1,
-  conversationId: 10,
-  identityId: 100,
+  conversationId: null,
+  identityId: null,
   title: 'Nguyễn Văn A',
   avatarUrl: null,
   lastMessagePreview: 'Xin chào',
@@ -472,7 +472,7 @@ describe('ConversationWorkspace Component', () => {
   test('12. Renders LinkedLeadActions when selectedItem.kind === "customer"', async () => {
     const mockLeadItem: InboxItem = {
       ...mockCustomerItem,
-      key: 'customer-1',
+      key: 'lead:1',
       kind: 'customer'
     };
     mockListConversationInbox.mockImplementationOnce(async () => [mockLeadItem]);

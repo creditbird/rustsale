@@ -12,6 +12,10 @@
     type OutreachLeadFilters,
     type OutreachLeadsPage
   } from '$lib/services/crmService';
+  import {
+    listManagedSmtpAccounts,
+    type ManagedSmtpAccount
+  } from '$lib/services/accountSettingsService';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
@@ -20,20 +24,7 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import * as Select from '$lib/components/ui/select';
   import { Progress } from '$lib/components/ui/progress';
-  import { Mail, Plus, Server, Edit, Trash2, Send, FileText, RefreshCw } from 'lucide-svelte';
-
-  interface SmtpServer {
-    id?: number;
-    name: string;
-    host: string;
-    port: number;
-    username: string;
-    password: string;
-    from_email: string;
-    from_name: string;
-    security: string;
-    created_at?: string;
-  }
+  import { Mail, Plus, Server, Edit, Trash2, Send, FileText, Settings2 } from 'lucide-svelte';
 
   interface EmailTemplate {
     id?: number;
@@ -45,7 +36,7 @@
 
   const LEAD_PAGE_SIZE = 50;
 
-  let smtpServers = $state<SmtpServer[]>([]);
+  let smtpServers = $state<ManagedSmtpAccount[]>([]);
   let templates = $state<EmailTemplate[]>([]);
   let leads = $state<Lead[]>([]);
   let totalLeads = $state(0);
@@ -67,20 +58,6 @@
   let filterTemplateId = $state<number | null>(null);
   let leadSearchQuery = $state('');
 
-  let isSmtpModalOpen = $state(false);
-  let editingSmtpId = $state<number | null>(null);
-  let smtpName = $state('');
-  let smtpHost = $state('');
-  let smtpPort = $state(587);
-  let smtpUsername = $state('');
-  let smtpPassword = $state('');
-  let smtpFromEmail = $state('');
-  let smtpFromName = $state('');
-  let smtpSecurity = $state('STARTTLS');
-  let smtpTesting = $state(false);
-  let smtpTestResult = $state<{ success: boolean; message: string } | null>(null);
-  let smtpError = $state<string | null>(null);
-
   let isTemplateModalOpen = $state(false);
   let editingTemplateId = $state<number | null>(null);
   let templateName = $state('');
@@ -89,8 +66,6 @@
   let templateError = $state<string | null>(null);
   let activeInputField = $state<'subject' | 'content'>('content');
 
-  let isDeleteSmtpModalOpen = $state(false);
-  let smtpToDeleteId = $state<number | null>(null);
   let isDeleteTemplateModalOpen = $state(false);
   let templateToDeleteId = $state<number | null>(null);
 
@@ -123,7 +98,7 @@
 
   async function loadSmtpServers(): Promise<boolean> {
     try {
-      const res = await invoke<SmtpServer[]>('get_smtp_servers');
+      const res = await listManagedSmtpAccounts();
       if (isDisposed) return false;
       smtpServers = [...res];
       if (smtpServers.length > 0) {
@@ -291,7 +266,13 @@
     await reloadLeads({ page, cursor });
   }
 
-  let { activeTab = 'email_outreach' }: { activeTab?: string } = $props();
+  let {
+    activeTab = 'email_outreach',
+    onOpenSettings = () => {}
+  }: {
+    activeTab?: string;
+    onOpenSettings?: () => void;
+  } = $props();
   let hasLoaded = $state(false);
   let isStale = $state(false);
   let reloadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -422,65 +403,6 @@
 
   function cleanupCampaignListeners() { campaignUnlistens.forEach(u => u()); campaignUnlistens = []; }
 
-  function openAddSmtpModal() {
-    editingSmtpId = null;
-    smtpName = ''; smtpHost = ''; smtpPort = 587; smtpUsername = ''; smtpPassword = '';
-    smtpFromEmail = ''; smtpFromName = ''; smtpSecurity = 'STARTTLS'; smtpTestResult = null; smtpError = null;
-    isSmtpModalOpen = true;
-  }
-
-  function openEditSmtpModal(server: SmtpServer) {
-    editingSmtpId = server.id || null;
-    smtpName = server.name; smtpHost = server.host; smtpPort = server.port;
-    smtpUsername = server.username; smtpPassword = server.password;
-    smtpFromEmail = server.from_email; smtpFromName = server.from_name; smtpSecurity = server.security;
-    smtpTestResult = null; smtpError = null;
-    isSmtpModalOpen = true;
-  }
-
-  async function handleTestSmtpConnection() {
-    smtpTesting = true; smtpTestResult = null; smtpError = null;
-    try {
-      const res = await invoke<string>('test_smtp_connection', { host: smtpHost, port: Number(smtpPort) });
-      smtpTestResult = { success: true, message: res };
-    } catch (e) {
-      smtpTestResult = { success: false, message: String(e) };
-    } finally { smtpTesting = false; }
-  }
-
-  async function handleSaveSmtpServer() {
-    if (!smtpName.trim() || !smtpHost.trim()) { smtpError = 'Name and Host are required.'; return; }
-    try {
-      const serverPayload: SmtpServer = {
-        id: editingSmtpId || undefined,
-        name: smtpName.trim(), host: smtpHost.trim(), port: Number(smtpPort),
-        username: smtpUsername.trim(), password: smtpPassword,
-        from_email: smtpFromEmail.trim(), from_name: smtpFromName.trim(),
-        security: smtpSecurity, created_at: new Date().toISOString()
-      };
-      const savedId = await invoke<number>('save_smtp_server', { server: serverPayload });
-      selectedSmtpId = savedId || editingSmtpId || null;
-      await loadSmtpServers();
-      isSmtpModalOpen = false;
-    } catch (e) { smtpError = String(e); }
-  }
-
-  function promptDeleteSmtp(id: number) {
-    smtpToDeleteId = id;
-    isDeleteSmtpModalOpen = true;
-  }
-
-  async function confirmDeleteSmtp() {
-    if (!smtpToDeleteId) return;
-    try {
-      await invoke('delete_smtp_server', { id: smtpToDeleteId });
-      if (selectedSmtpId === smtpToDeleteId) selectedSmtpId = null;
-      await loadSmtpServers();
-      isDeleteSmtpModalOpen = false;
-      smtpToDeleteId = null;
-    } catch (e) { alert(String(e)); }
-  }
-
   function openAddTemplateModal() {
     editingTemplateId = null; templateName = ''; templateSubject = ''; templateContent = ''; templateError = null;
     activeInputField = 'content';
@@ -608,7 +530,7 @@
   <div class="flex items-center justify-between">
     <div class="flex flex-col">
       <h2 class="text-xl font-bold text-foreground tracking-tight">Email Outreach Manager</h2>
-      <p class="text-xs text-muted-foreground mt-0.5">Configure SMTP servers, HTML templates, and targeted email broadcasts</p>
+      <p class="text-xs text-muted-foreground mt-0.5">Select configured senders, manage templates, and launch targeted email broadcasts</p>
     </div>
   </div>
 
@@ -616,19 +538,22 @@
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
     <!-- Left Column: SMTP & Templates -->
     <div class="lg:col-span-5 flex flex-col gap-4">
-      <!-- SMTP Servers Card -->
+      <!-- Managed Email Accounts Card -->
       <Card.Root>
         <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
           <Card.Title class="text-sm font-bold flex items-center gap-2">
-            <Server class="size-4 text-emerald-600" /> SMTP Configurations
+            <Server class="size-4 text-emerald-600" /> Available Email Accounts
           </Card.Title>
-          <Button size="sm" class="h-7 text-[11px] px-2 gap-1 bg-emerald-600 hover:bg-emerald-700 text-white" onclick={openAddSmtpModal}>
-            <Plus class="size-3" /> Add Server
+          <Button variant="outline" size="sm" class="h-7 text-[11px] px-2 gap-1" onclick={onOpenSettings}>
+            <Settings2 class="size-3" /> Manage accounts in Settings
           </Button>
         </Card.Header>
         <Card.Content class="p-3 flex flex-col gap-2 text-xs max-h-56 overflow-y-auto">
           {#if smtpServers.length === 0}
-            <div class="text-muted-foreground text-center py-4 italic">No SMTP servers added yet.</div>
+            <div class="flex flex-col items-center gap-2 py-4 text-center text-muted-foreground">
+              <span class="italic">No email account is available.</span>
+              <Button variant="link" size="sm" onclick={onOpenSettings}>Open account settings</Button>
+            </div>
           {:else}
             {#each smtpServers as server (server.id)}
               <div
@@ -642,15 +567,7 @@
                   <div class="font-semibold text-foreground flex items-center gap-1.5">
                     {server.name} <Badge variant="outline" class="text-[9px] px-1 py-0">{server.security}</Badge>
                   </div>
-                  <div class="text-[10px] text-muted-foreground truncate">{server.host}:{server.port} • {server.from_email}</div>
-                </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={(e) => { e.stopPropagation(); openEditSmtpModal(server); }}>
-                    <Edit class="size-3" />
-                  </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={(e) => { e.stopPropagation(); server.id && promptDeleteSmtp(server.id); }}>
-                    <Trash2 class="size-3" />
-                  </Button>
+                  <div class="text-[10px] text-muted-foreground truncate">{server.host}:{server.port} • {server.fromEmail}</div>
                 </div>
               </div>
             {/each}
@@ -716,23 +633,21 @@
               <span class="text-xs text-muted-foreground">No active SMTP servers configured.</span>
             {:else}
               {#each smtpServers as s (s.id)}
-                {#if s.id}
-                  {@const isSelected = selectedSmtpIds.includes(s.id)}
-                  <label class="flex items-center gap-2 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}">
-                    <Checkbox
-                      checked={isSelected}
-                      disabled={isCampaignRunning}
-                      onCheckedChange={(checked) => {
-                        if (checked) {
-                          if (s.id && !selectedSmtpIds.includes(s.id)) selectedSmtpIds = [...selectedSmtpIds, s.id];
-                        } else {
-                          selectedSmtpIds = selectedSmtpIds.filter(id => id !== s.id);
-                        }
-                      }}
-                    />
-                    <span class="font-medium text-foreground">{s.name} ({s.host})</span>
-                  </label>
-                {/if}
+                {@const isSelected = selectedSmtpIds.includes(s.id)}
+                <label class="flex items-center gap-2 p-2 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors {isSelected ? 'border-primary bg-primary/5 font-semibold' : ''}">
+                  <Checkbox
+                    checked={isSelected}
+                    disabled={isCampaignRunning}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        if (!selectedSmtpIds.includes(s.id)) selectedSmtpIds = [...selectedSmtpIds, s.id];
+                      } else {
+                        selectedSmtpIds = selectedSmtpIds.filter(id => id !== s.id);
+                      }
+                    }}
+                  />
+                  <span class="font-medium text-foreground">{s.name} ({s.host})</span>
+                </label>
               {/each}
             {/if}
           </div>
@@ -916,70 +831,6 @@
   </div>
 </div>
 
-<!-- SMTP Dialog -->
-<Dialog.Root bind:open={isSmtpModalOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>{editingSmtpId ? 'Edit SMTP Configuration' : 'Add SMTP Configuration'}</Dialog.Title>
-    </Dialog.Header>
-    <div class="flex flex-col gap-3 py-2 text-xs">
-      {#if smtpError}
-        <div class="p-2 rounded bg-destructive/10 text-destructive text-xs">{smtpError}</div>
-      {/if}
-      <div class="flex flex-col gap-1">
-        <label for="smtp-name" class="font-semibold text-foreground">Server Name *</label>
-        <Input id="smtp-name" bind:value={smtpName} placeholder="e.g. Work SendGrid" class="text-xs" />
-      </div>
-      <div class="grid grid-cols-3 gap-2">
-        <div class="col-span-2 flex flex-col gap-1">
-          <label for="smtp-host" class="font-semibold text-foreground">Host *</label>
-          <Input id="smtp-host" bind:value={smtpHost} placeholder="smtp.gmail.com" class="text-xs" />
-        </div>
-        <div class="flex flex-col gap-1">
-          <label for="smtp-port" class="font-semibold text-foreground">Port</label>
-          <Input id="smtp-port" type="number" bind:value={smtpPort} class="text-xs" />
-        </div>
-      </div>
-      <div class="grid grid-cols-2 gap-2">
-        <div class="flex flex-col gap-1">
-          <label for="smtp-username" class="font-semibold text-foreground">Username</label>
-          <Input id="smtp-username" bind:value={smtpUsername} placeholder="Username" class="text-xs" />
-        </div>
-        <div class="flex flex-col gap-1">
-          <label for="smtp-password" class="font-semibold text-foreground">Password</label>
-          <Input id="smtp-password" type="password" bind:value={smtpPassword} placeholder="Password" class="text-xs" />
-        </div>
-      </div>
-      <div class="grid grid-cols-2 gap-2">
-        <div class="flex flex-col gap-1">
-          <label for="smtp-from-name" class="font-semibold text-foreground">From Name</label>
-          <Input id="smtp-from-name" bind:value={smtpFromName} placeholder="Sales Team" class="text-xs" />
-        </div>
-        <div class="flex flex-col gap-1">
-          <label for="smtp-from-email" class="font-semibold text-foreground">From Email</label>
-          <Input id="smtp-from-email" bind:value={smtpFromEmail} placeholder="sales@company.com" class="text-xs" />
-        </div>
-      </div>
-
-      <!-- Test Connection Button -->
-      <div class="pt-2 border-t border-border flex items-center justify-between">
-        <Button variant="outline" size="sm" onclick={handleTestSmtpConnection} disabled={smtpTesting || !smtpHost.trim()} class="h-8 text-xs gap-1">
-          <RefreshCw class="size-3 {smtpTesting ? 'animate-spin' : ''}" /> Test Connection
-        </Button>
-        {#if smtpTestResult}
-          <span class="text-[11px] font-medium {smtpTestResult.success ? 'text-emerald-600' : 'text-rose-500'}">
-            {smtpTestResult.message}
-          </span>
-        {/if}
-      </div>
-    </div>
-    <Dialog.Footer class="gap-2">
-      <Button variant="outline" size="sm" onclick={() => isSmtpModalOpen = false}>Cancel</Button>
-      <Button size="sm" onclick={handleSaveSmtpServer}>Save Server</Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
 <!-- Email Template Dialog -->
 <Dialog.Root bind:open={isTemplateModalOpen}>
   <Dialog.Content class="sm:max-w-4xl max-w-[95vw] w-full max-h-[90vh] flex flex-col overflow-hidden p-6 gap-4">
@@ -1062,22 +913,6 @@
       <Button size="sm" onclick={handleSaveTemplate} class="h-9 px-5 rounded-xl font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm">
         Save Template
       </Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
-<!-- Delete SMTP Confirmation Dialog -->
-<Dialog.Root bind:open={isDeleteSmtpModalOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>Delete SMTP Server</Dialog.Title>
-    </Dialog.Header>
-    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
-      Are you sure you want to delete this SMTP server configuration? This action cannot be undone.
-    </div>
-    <Dialog.Footer class="gap-2">
-      <Button variant="outline" size="sm" onclick={() => isDeleteSmtpModalOpen = false}>Cancel</Button>
-      <Button variant="destructive" size="sm" onclick={confirmDeleteSmtp}>Delete SMTP Server</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

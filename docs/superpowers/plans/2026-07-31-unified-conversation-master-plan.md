@@ -283,3 +283,35 @@ Phase 0–4 is complete only when:
 - Outreach to N recipients produces N direct conversations and zero groups.
 - Existing Zalo and Email Outreach remain functional.
 - Targeted and full validation commands pass, except explicitly documented unrelated pre-existing failures.
+
+## 2026-07-31 Completion Audit
+
+This matrix is the authoritative execution status. The child-plan checkboxes remain as the original implementation recipe and are not treated as completion evidence without the verification listed here.
+
+| Child plan | Automated implementation | Live/manual evidence | Status |
+|---|---|---|---|
+| Zalo synchronization spike | Probe, protocol-ready listener startup, zlib/gzip/raw-deflate decoding, tolerant live payload models, direct/group history, reaction history, page-2 cursor, reconnect, and sanitized output verified | Operator-generated realtime direct/group message, recall, delivered, and seen actions still require a second non-production device/account | **Automated and live backfill complete; interactive realtime gate pending** |
+| Storage foundation | Schema, migrations, repository, identity linking, inbox aggregation, timeline pagination, commands, and regression tests verified | No external gate required | **Complete** |
+| Zalo sync and send runtime | Supervised protocol-ready sessions, idempotent ingestion, separate forward/backfill checkpoints, four-stream pagination, bounded outbox retry, and lifecycle tests verified | Manual Tauri session exercise for realtime recall/delivered/seen state transitions remains pending | **Implementation complete; manual runtime smoke pending** |
+| Conversation UI workspace | Channel badges, unified timeline, pagination/cache behavior, safe rendering, account-aware composer, unknown-contact linking, navigation, tests, typecheck, and production build verified | Manual Tauri visual/interaction smoke remains pending | **Implementation complete; manual UI smoke pending** |
+| Outreach integration | Atomic persistence, one-lead-one-send partitioning, direct-only conversations, provider receipt deduplication, rollback behavior, and regressions verified | Two-session/three-test-lead delivery smoke is intentionally not run without approved test recipients | **Implementation complete; external delivery smoke pending** |
+
+### Verification Evidence
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`: 245 passed, 0 failed, 1 ignored live probe.
+- `cargo test --manifest-path src-tauri/vendor/zca-rs/Cargo.toml`: 14 passed plus 1 doc-test, 0 failed.
+- Explicit ignored live probe: passed with direct and group history batches, reaction batches, second-page direct history, reconnect reconciliation, and zero protocol decode errors.
+- `bun test`: 148 passed, 1 skipped, 0 failed.
+- `bun run check`: 0 errors, 0 warnings.
+- `bun run build`: passed.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: passed.
+- `git diff --check`: passed.
+- `mcp__gitnexus.detect_changes({scope: "all"})`: 24 source/document files detected. Aggregate risk is reported as CRITICAL because startup `run`, the vendored protocol layer, and the pre-existing `AGENTS.md`/`CLAUDE.md` index-stat updates are included; manual path review found no changed source outside the declared Conversation, Zalo adapter, Cargo, and master-plan boundaries. All pre-edit symbol impact checks used for this remediation were LOW.
+
+### Remaining External Gates
+
+1. Use a second non-production Zalo device/account during the live probe to generate realtime inbound direct/group messages, reaction, recall, delivered, and seen events.
+2. Run the manual Tauri Conversation workspace smoke checklist.
+3. Run the two-session Outreach smoke against three explicitly approved test leads; confirm one direct delivery per lead and zero created groups.
+
+No production or unapproved recipient message was sent during this audit.

@@ -1,8 +1,8 @@
 use super::service::ConversationService;
 use super::types::{
     Channel, ConversationMessage, ConversationRuntimeStatus, InboxItem, LinkIdentityRequest,
-    SendConversationMessageRequest, TimelineCursor, TimelinePage, UnlinkIdentityRequest,
-    UnlinkLeadRequest,
+    RelinkLeadRequest, SendConversationMessageRequest, TimelineCursor, TimelinePage,
+    UnlinkIdentityRequest, UnlinkLeadRequest,
 };
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
@@ -79,6 +79,17 @@ pub fn unlink_conversation_lead(
     state
         .service
         .unlink_lead(request.lead_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn relink_conversation_lead(
+    state: tauri::State<'_, ConversationState>,
+    request: RelinkLeadRequest,
+) -> Result<(), String> {
+    state
+        .service
+        .relink_lead(request.source_lead_id, request.target_lead_id)
         .map_err(|error| error.to_string())
 }
 

@@ -32,6 +32,7 @@ const mockGetLeads = mock(async (): Promise<Lead[]> => [
 ]);
 
 const mockLinkConversationIdentity = mock(async (...args: any[]): Promise<void> => {});
+const mockRelinkConversationLead = mock(async (...args: any[]): Promise<void> => {});
 const mockUnlinkConversationIdentity = mock(async (...args: any[]): Promise<void> => {});
 const mockUnlinkConversationLead = mock(async (...args: any[]): Promise<void> => {});
 
@@ -41,6 +42,7 @@ mock.module('$lib/services/crmService', () => ({
 
 mock.module('$lib/services/conversationService', () => ({
   linkConversationIdentity: (...args: any[]) => mockLinkConversationIdentity(...args),
+  relinkConversationLead: (...args: any[]) => mockRelinkConversationLead(...args),
   unlinkConversationIdentity: (...args: any[]) => mockUnlinkConversationIdentity(...args),
   unlinkConversationLead: (...args: any[]) => mockUnlinkConversationLead(...args)
 }));
@@ -51,6 +53,7 @@ describe('LinkedLeadActions Component', () => {
     document.body.innerHTML = '';
     mockGetLeads.mockClear();
     mockLinkConversationIdentity.mockClear();
+    mockRelinkConversationLead.mockClear();
     mockUnlinkConversationIdentity.mockClear();
     mockUnlinkConversationLead.mockClear();
   });
@@ -59,15 +62,15 @@ describe('LinkedLeadActions Component', () => {
     key: 'lead-1',
     kind: 'customer',
     leadId: 1,
-    conversationId: 55,
-    identityId: 500,
+    conversationId: null,
+    identityId: null,
     title: 'Nguyễn Văn Lead',
     avatarUrl: null,
     lastMessagePreview: 'Xin chào',
     lastMessageAt: '2026-07-31T10:00:00Z',
     channels: [{ channel: 'zalo', messageCount: 1 }],
     replyTargets: [],
-    participantCount: 1,
+    participantCount: 0,
     participants: []
   };
 
@@ -106,7 +109,7 @@ describe('LinkedLeadActions Component', () => {
     expect(screen.getByText('Trần Thị Lead')).toBeTruthy();
   });
 
-  test('clicking relink calls linkConversationIdentity and emits onRelinked', async () => {
+  test('clicking relink moves the full customer aggregate to the selected lead', async () => {
     const onRelinked = mock(() => {});
     render(LinkedLeadActions, {
       props: {
@@ -127,7 +130,8 @@ describe('LinkedLeadActions Component', () => {
     await fireEvent.click(confirmBtn);
     await tick();
 
-    expect(mockLinkConversationIdentity).toHaveBeenCalledWith(500, 2);
+    expect(mockRelinkConversationLead).toHaveBeenCalledWith(1, 2);
+    expect(mockLinkConversationIdentity).not.toHaveBeenCalled();
     expect(onRelinked).toHaveBeenCalledWith(2);
   });
 
@@ -221,18 +225,16 @@ describe('LinkedLeadActions Component', () => {
     expect(unlinkBtn.disabled).toBe(false);
   });
 
-  test('relinking uses participant identityId when item.identityId is null', async () => {
+  test('relinking prefers lead-level command even when an identityId is present', async () => {
     const onRelinked = mock(() => {});
-    const itemWithParticipantOnly: InboxItem = {
+    const itemWithIdentity: InboxItem = {
       ...leadItem,
-      identityId: null,
-      leadId: 1,
-      participants: [{ identityId: 600, displayName: 'Test', avatarUrl: null, participantRole: 'member' }]
+      identityId: 600
     };
 
     render(LinkedLeadActions, {
       props: {
-        item: itemWithParticipantOnly,
+        item: itemWithIdentity,
         onRelinked
       }
     });
@@ -249,7 +251,8 @@ describe('LinkedLeadActions Component', () => {
     await fireEvent.click(confirmBtn);
     await tick();
 
-    expect(mockLinkConversationIdentity).toHaveBeenCalledWith(600, 2);
+    expect(mockRelinkConversationLead).toHaveBeenCalledWith(1, 2);
+    expect(mockLinkConversationIdentity).not.toHaveBeenCalled();
     expect(onRelinked).toHaveBeenCalledWith(2);
   });
 });

@@ -93,6 +93,31 @@ impl ConversationService {
         Ok(())
     }
 
+    pub fn relink_lead(&self, source_lead_id: i64, target_lead_id: i64) -> Result<()> {
+        let conversation_id = self
+            .repository
+            .relink_lead(source_lead_id, target_lead_id)?;
+        if conversation_id > 0 {
+            self.events.publish(ConversationInvalidatedEvent {
+                conversation_id,
+                lead_id: Some(source_lead_id),
+                channel: Channel::Zalo,
+                reason: ConversationInvalidationReason::Link,
+                message_id: None,
+            });
+            if target_lead_id != source_lead_id {
+                self.events.publish(ConversationInvalidatedEvent {
+                    conversation_id,
+                    lead_id: Some(target_lead_id),
+                    channel: Channel::Zalo,
+                    reason: ConversationInvalidationReason::Link,
+                    message_id: None,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn ingest_zalo_event(
         &self,
         provider_account_key: &str,

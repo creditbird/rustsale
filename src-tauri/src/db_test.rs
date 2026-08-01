@@ -23,6 +23,45 @@ mod tests {
         assert!(tables.contains(&"categories".to_string()));
         assert!(tables.contains(&"lead_categories".to_string()));
         assert!(tables.contains(&"outreach_history".to_string()));
+
+        let zalo_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(zalo_sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(zalo_columns.contains(&"auth_status".to_string()));
+        assert!(zalo_columns.contains(&"auth_checked_at".to_string()));
+        assert!(zalo_columns.contains(&"auth_error".to_string()));
+    }
+
+    #[test]
+    fn smtp_update_with_empty_password_preserves_secret() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+        let server = crate::models::SmtpServer {
+            id: None,
+            name: "Primary SMTP".to_string(),
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            username: "sender@example.com".to_string(),
+            password: "secret-password".to_string(),
+            from_email: "sender@example.com".to_string(),
+            from_name: "Sales".to_string(),
+            security: "STARTTLS".to_string(),
+            created_at: String::new(),
+        };
+
+        let id = db::save_smtp_server(&conn, &server).unwrap();
+        let mut update = server;
+        update.id = Some(id);
+        update.name = "Primary SMTP Updated".to_string();
+        update.password.clear();
+        db::save_smtp_server(&conn, &update).unwrap();
+
+        let saved = db::get_smtp_server_by_id(&conn, id).unwrap().unwrap();
+        assert_eq!(saved.name, "Primary SMTP Updated");
+        assert_eq!(saved.password, "secret-password");
     }
 
     #[test]

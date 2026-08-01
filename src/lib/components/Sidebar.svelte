@@ -8,7 +8,8 @@
     MessageSquare,
     Mail,
     Kanban,
-    UserCheck
+    UserCheck,
+    Settings2
   } from 'lucide-svelte';
 
   let { activeTab = $bindable() } = $props();
@@ -22,7 +23,8 @@
     { id: 'outreach', label: 'Zalo Outreach', icon: MessageSquare },
     { id: 'email_outreach', label: 'Email Outreach', icon: Mail },
     { id: 'pipeline', label: 'Deal Pipeline', icon: Kanban },
-    { id: 'contacts', label: 'Contacts', icon: UserCheck }
+    { id: 'contacts', label: 'Contacts', icon: UserCheck },
+    { id: 'settings', label: 'Settings', icon: Settings2 }
   ];
 </script>
 

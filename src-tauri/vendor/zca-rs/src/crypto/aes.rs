@@ -4,7 +4,7 @@ use aes_gcm::aead::consts::U16;
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::AesGcm;
 use base64::prelude::*;
-use flate2::read::ZlibDecoder;
+use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use md5::{Digest, Md5};
 use std::io::Read;
 
@@ -116,9 +116,21 @@ pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u
 
 /// Decompress Zlib payload.
 pub fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, ZaloError> {
-    let mut decoder = ZlibDecoder::new(data);
+    fn read_all(mut decoder: impl Read) -> std::io::Result<Vec<u8>> {
+        let mut result = Vec::new();
+        decoder.read_to_end(&mut result)?;
+        Ok(result)
+    }
+
+    if let Ok(result) = read_all(ZlibDecoder::new(data)) {
+        return Ok(result);
+    }
+    if let Ok(result) = read_all(GzDecoder::new(data)) {
+        return Ok(result);
+    }
+
     let mut result = Vec::new();
-    decoder
+    DeflateDecoder::new(data)
         .read_to_end(&mut result)
         .map_err(|e| ZaloError::Decompression(e.to_string()))?;
     Ok(result)
@@ -370,6 +382,55 @@ pub fn decode_event_data(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
+    use flate2::Compression;
+    use std::io::Write;
+
+    fn compressed_payload<E>(mut encoder: E) -> Vec<u8>
+    where
+        E: Write + FinishEncoder,
+    {
+        encoder.write_all(b"zalo-history-payload").unwrap();
+        encoder.finish_encoder().unwrap()
+    }
+
+    trait FinishEncoder {
+        fn finish_encoder(self) -> std::io::Result<Vec<u8>>;
+    }
+
+    impl FinishEncoder for ZlibEncoder<Vec<u8>> {
+        fn finish_encoder(self) -> std::io::Result<Vec<u8>> {
+            self.finish()
+        }
+    }
+
+    impl FinishEncoder for GzEncoder<Vec<u8>> {
+        fn finish_encoder(self) -> std::io::Result<Vec<u8>> {
+            self.finish()
+        }
+    }
+
+    impl FinishEncoder for DeflateEncoder<Vec<u8>> {
+        fn finish_encoder(self) -> std::io::Result<Vec<u8>> {
+            self.finish()
+        }
+    }
+
+    #[test]
+    fn websocket_decompression_accepts_zlib_gzip_and_raw_deflate() {
+        let payloads = [
+            compressed_payload(ZlibEncoder::new(Vec::new(), Compression::default())),
+            compressed_payload(GzEncoder::new(Vec::new(), Compression::default())),
+            compressed_payload(DeflateEncoder::new(Vec::new(), Compression::default())),
+        ];
+
+        for payload in payloads {
+            assert_eq!(
+                zlib_decompress(&payload).unwrap(),
+                b"zalo-history-payload"
+            );
+        }
+    }
 
     #[test]
     fn decode_event_data_unwraps_inner_data_for_plaintext() {

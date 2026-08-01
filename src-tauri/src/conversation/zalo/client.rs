@@ -73,6 +73,9 @@ pub fn normalize_group_info(
 #[async_trait]
 pub trait ZaloClient: Send + Sync {
     fn subscribe(&self) -> broadcast::Receiver<ListenerEvent>;
+    fn start(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn request_old_messages(
         &self,
         thread_type: zca_rs::models::ThreadType,
@@ -127,6 +130,13 @@ impl RealZaloClient {
 impl ZaloClient for RealZaloClient {
     fn subscribe(&self) -> broadcast::Receiver<ListenerEvent> {
         self.inner.subscribe()
+    }
+
+    fn start(&self) -> anyhow::Result<()> {
+        self.inner
+            .listener
+            .start()
+            .map_err(|error| anyhow::anyhow!("Failed to start Zalo listener: {error}"))
     }
 
     fn request_old_messages(
@@ -252,6 +262,7 @@ impl ZaloClientFactory for RealZaloClientFactory {
 
         let mut options = zca_rs::Options::default();
         options.self_listen = true;
+        options.auto_start_listener = false;
 
         let zalo = zca_rs::Zalo::login(session.imei.clone(), session.user_agent, cookies, options)
             .await

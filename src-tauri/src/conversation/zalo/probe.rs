@@ -15,11 +15,75 @@ pub struct ZaloProbeReport {
     pub seen_events: usize,
     pub group_events: usize,
     pub self_messages: usize,
+    pub connected_events: usize,
+    pub disconnected_events: usize,
+    pub error_events: usize,
+    pub error_message_lengths: Vec<usize>,
     pub provider_message_ids: Vec<String>,
+    pub direct_provider_message_ids: Vec<String>,
+    pub group_provider_message_ids: Vec<String>,
     pub client_message_ids: Vec<String>,
     pub real_message_ids: Vec<String>,
     pub thread_ids: Vec<String>,
     pub occurred_at_timestamps: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SanitizedZaloProbeSummary {
+    pub direct_messages: usize,
+    pub group_messages: usize,
+    pub old_direct_batches: usize,
+    pub old_group_batches: usize,
+    pub reactions: usize,
+    pub undo_events: usize,
+    pub delivered_events: usize,
+    pub seen_events: usize,
+    pub group_events: usize,
+    pub self_messages: usize,
+    pub connected_events: usize,
+    pub disconnected_events: usize,
+    pub error_events: usize,
+    pub error_message_lengths: Vec<usize>,
+    pub provider_message_id_lengths: Vec<usize>,
+    pub client_message_id_lengths: Vec<usize>,
+    pub real_message_id_lengths: Vec<usize>,
+    pub thread_id_lengths: Vec<usize>,
+    pub occurred_at_count: usize,
+    pub earliest_occurred_at: Option<String>,
+    pub latest_occurred_at: Option<String>,
+}
+
+impl ZaloProbeReport {
+    pub fn sanitized_summary(&self) -> SanitizedZaloProbeSummary {
+        SanitizedZaloProbeSummary {
+            direct_messages: self.direct_messages,
+            group_messages: self.group_messages,
+            old_direct_batches: self.old_direct_batches,
+            old_group_batches: self.old_group_batches,
+            reactions: self.reactions,
+            undo_events: self.undo_events,
+            delivered_events: self.delivered_events,
+            seen_events: self.seen_events,
+            group_events: self.group_events,
+            self_messages: self.self_messages,
+            connected_events: self.connected_events,
+            disconnected_events: self.disconnected_events,
+            error_events: self.error_events,
+            error_message_lengths: self.error_message_lengths.clone(),
+            provider_message_id_lengths: self
+                .provider_message_ids
+                .iter()
+                .map(String::len)
+                .collect(),
+            client_message_id_lengths: self.client_message_ids.iter().map(String::len).collect(),
+            real_message_id_lengths: self.real_message_ids.iter().map(String::len).collect(),
+            thread_id_lengths: self.thread_ids.iter().map(String::len).collect(),
+            occurred_at_count: self.occurred_at_timestamps.len(),
+            earliest_occurred_at: self.occurred_at_timestamps.iter().min().cloned(),
+            latest_occurred_at: self.occurred_at_timestamps.iter().max().cloned(),
+        }
+    }
 }
 
 fn observe_message(report: &mut ZaloProbeReport, message: &Message) {
@@ -43,6 +107,11 @@ fn observe_message(report: &mut ZaloProbeReport, message: &Message) {
     }
     if !base.msg_id.is_empty() {
         report.provider_message_ids.push(base.msg_id.clone());
+        if is_group {
+            report.group_provider_message_ids.push(base.msg_id.clone());
+        } else {
+            report.direct_provider_message_ids.push(base.msg_id.clone());
+        }
     }
     if !base.cli_msg_id.is_empty() {
         report.client_message_ids.push(base.cli_msg_id.clone());
@@ -85,11 +154,15 @@ pub fn observe_listener_event(report: &mut ZaloProbeReport, event: &ListenerEven
         ListenerEvent::DeliveredMessages(events) => report.delivered_events += events.len(),
         ListenerEvent::SeenMessages(events) => report.seen_events += events.len(),
         ListenerEvent::GroupEvent(_) => report.group_events += 1,
-        ListenerEvent::Connected
-        | ListenerEvent::Disconnected { .. }
-        | ListenerEvent::Closed { .. }
-        | ListenerEvent::Error(_)
-        | ListenerEvent::Typing(_)
+        ListenerEvent::Connected => report.connected_events += 1,
+        ListenerEvent::Disconnected { .. } | ListenerEvent::Closed { .. } => {
+            report.disconnected_events += 1;
+        }
+        ListenerEvent::Error(error) | ListenerEvent::PacketError { error, .. } => {
+            report.error_events += 1;
+            report.error_message_lengths.push(error.len());
+        }
+        ListenerEvent::Typing(_)
         | ListenerEvent::UploadAttachment(_)
         | ListenerEvent::FriendEvent(_) => {}
     }

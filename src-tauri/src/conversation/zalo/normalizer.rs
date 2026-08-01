@@ -11,6 +11,7 @@ pub struct NormalizedReaction {
     pub provider_account_key: String,
     pub external_thread_id: String,
     pub is_group: bool,
+    pub provider_event_id: Option<String>,
     pub provider_message_id: String,
     pub provider_client_message_id: String,
     pub actor_external_id: String,
@@ -212,6 +213,8 @@ fn normalize_reaction(provider_account_key: &str, reaction: &Reaction) -> Vec<Za
                 provider_account_key: provider_account_key.to_string(),
                 external_thread_id: reaction.thread_id.clone(),
                 is_group: reaction.is_group,
+                provider_event_id: (!reaction.data.msg_id.is_empty())
+                    .then_some(reaction.data.msg_id.clone()),
                 provider_message_id: r_msg.g_msg_id.clone(),
                 provider_client_message_id: r_msg.c_msg_id.clone(),
                 actor_external_id: reaction.data.uid_from.clone(),
@@ -338,14 +341,10 @@ pub fn normalize_listener_event(
         }
         ListenerEvent::Disconnected { .. }
         | ListenerEvent::Closed { .. }
-        | ListenerEvent::Error(_) => Ok(vec![
-            ZaloMutation::ReconcileRequired {
-                scope: "direct_messages",
-            },
-            ZaloMutation::ReconcileRequired {
-                scope: "group_messages",
-            },
-        ]),
+        | ListenerEvent::Error(_) => Ok(vec![ZaloMutation::ReconcileRequired { scope: "all" }]),
+        ListenerEvent::PacketError { .. } => {
+            Ok(vec![ZaloMutation::ReconcileRequired { scope: "all" }])
+        }
         ListenerEvent::GroupEvent(_) => Ok(vec![ZaloMutation::ReconcileRequired {
             scope: "group_metadata",
         }]),

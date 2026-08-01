@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     linkConversationIdentity,
+    relinkConversationLead,
     unlinkConversationIdentity,
     unlinkConversationLead,
     type InboxItem
@@ -66,12 +67,16 @@
 
   async function handleConfirmRelink() {
     if (!selectedLeadId) return;
-    const targetIdentityId = item.identityId ?? item.participants?.[0]?.identityId;
-    if (!targetIdentityId) return;
     isRelinking = true;
     relinkError = null;
     try {
-      await linkConversationIdentity(targetIdentityId, selectedLeadId);
+      if (item.leadId) {
+        await relinkConversationLead(item.leadId, selectedLeadId);
+      } else if (item.identityId) {
+        await linkConversationIdentity(item.identityId, selectedLeadId);
+      } else {
+        return;
+      }
       isRelinkModalOpen = false;
       onRelinked?.(selectedLeadId);
     } catch (err) {

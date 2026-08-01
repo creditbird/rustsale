@@ -10,6 +10,7 @@ test('renders Sidebar with CRM logo and options', () => {
   expect(screen.getByText('Dashboard')).toBeTruthy();
   expect(screen.getByText('Conversations')).toBeTruthy();
   expect(screen.getByText('Email Outreach')).toBeTruthy();
+  expect(screen.getByText('Settings')).toBeTruthy();
 });
 
 test('updates activeTab on navigation item click', async () => {
@@ -24,4 +25,7 @@ test('updates activeTab on navigation item click', async () => {
   const conversationButton = screen.getByText('Conversations');
   await fireEvent.click(conversationButton);
   expect(activeTab).toBe('conversation');
+
+  await fireEvent.click(screen.getByText('Settings'));
+  expect(activeTab).toBe('settings');
 });

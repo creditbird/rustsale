@@ -30,9 +30,12 @@ const mockSendConversationMessage = mock(async (request: any): Promise<Conversat
     replyToMessageId: null
   } as unknown as ConversationMessage;
 });
+const mockRestartConversationAccount = mock(async (_providerAccountKey: string) => {});
 
 mock.module('$lib/services/conversationService', () => ({
-  sendConversationMessage: (req: any) => mockSendConversationMessage(req)
+  sendConversationMessage: (req: any) => mockSendConversationMessage(req),
+  restartConversationAccount: (providerAccountKey: string) =>
+    mockRestartConversationAccount(providerAccountKey)
 }));
 
 describe('MessageComposer Component', () => {
@@ -40,6 +43,7 @@ describe('MessageComposer Component', () => {
     cleanup();
     document.body.innerHTML = '';
     mockSendConversationMessage.mockClear();
+    mockRestartConversationAccount.mockClear();
   });
 
   const baseRuntime: ConversationRuntimeStatus = {
@@ -252,6 +256,36 @@ describe('MessageComposer Component', () => {
 
     const sendBtn = screen.getByRole('button', { name: /Gửi|Send/i }) as HTMLButtonElement;
     expect(sendBtn.disabled).toBe(true);
+  });
+
+  test('disconnected account offers reconnect and Settings recovery actions', async () => {
+    const onOpenSettings = mock(() => {});
+    const onRuntimeRefresh = mock(() => {});
+    const disconnectedRuntime: ConversationRuntimeStatus = {
+      accounts: [
+        {
+          ...baseRuntime.accounts[0],
+          status: 'disconnected',
+          lastError: 'Listener stopped'
+        }
+      ]
+    };
+    const item: InboxItem = {
+      ...baseItem,
+      replyTargets: [baseItem.replyTargets[0]]
+    };
+
+    render(MessageComposer, {
+      props: { item, runtime: disconnectedRuntime, onOpenSettings, onRuntimeRefresh }
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /Reconnect Zalo Main/i }));
+
+    expect(mockRestartConversationAccount).toHaveBeenCalledWith('zalo-1');
+    expect(onRuntimeRefresh).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(screen.getByRole('button', { name: /Open account settings/i }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   test('Enter sends trimmed text, Shift+Enter inserts a newline', async () => {

@@ -2,13 +2,208 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use zca_rs::listener::ListenerEvent;
 use zca_rs::models::ThreadType;
 
 use crate::conversation::service::ConversationService;
 use crate::conversation::types::{AccountConnectionStatus, ConversationRuntimeStatus};
 use crate::conversation::zalo::client::ZaloClientFactory;
+use crate::conversation::zalo::{
+    DIRECT_MESSAGE_HISTORY_SCOPE, DIRECT_MESSAGE_WATERMARK_SCOPE, DIRECT_REACTION_HISTORY_SCOPE,
+    DIRECT_REACTION_WATERMARK_SCOPE, GROUP_MESSAGE_HISTORY_SCOPE, GROUP_MESSAGE_WATERMARK_SCOPE,
+    GROUP_REACTION_HISTORY_SCOPE, GROUP_REACTION_WATERMARK_SCOPE,
+};
 use crate::db::open_db_connection;
 use crate::models::ZaloSession;
+
+const MAX_HISTORY_PAGES: usize = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum HistoryStream {
+    DirectMessages,
+    DirectReactions,
+    GroupMessages,
+    GroupReactions,
+}
+
+impl HistoryStream {
+    const ALL: [Self; 4] = [
+        Self::DirectMessages,
+        Self::DirectReactions,
+        Self::GroupMessages,
+        Self::GroupReactions,
+    ];
+
+    fn checkpoint_scope(self) -> &'static str {
+        match self {
+            Self::DirectMessages => DIRECT_MESSAGE_HISTORY_SCOPE,
+            Self::DirectReactions => DIRECT_REACTION_HISTORY_SCOPE,
+            Self::GroupMessages => GROUP_MESSAGE_HISTORY_SCOPE,
+            Self::GroupReactions => GROUP_REACTION_HISTORY_SCOPE,
+        }
+    }
+
+    fn thread_type(self) -> ThreadType {
+        match self {
+            Self::DirectMessages | Self::DirectReactions => ThreadType::User,
+            Self::GroupMessages | Self::GroupReactions => ThreadType::Group,
+        }
+    }
+
+    fn request(
+        self,
+        client: &dyn crate::conversation::zalo::client::ZaloClient,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::DirectMessages | Self::GroupMessages => {
+                client.request_old_messages(self.thread_type(), cursor)
+            }
+            Self::DirectReactions | Self::GroupReactions => {
+                client.request_old_reactions(self.thread_type(), cursor)
+            }
+        }
+    }
+
+    fn initial_cursor(
+        self,
+        service: &ConversationService,
+        account_id: i64,
+    ) -> anyhow::Result<Option<String>> {
+        if let Some(cursor) = service
+            .repository
+            .get_checkpoint(account_id, self.checkpoint_scope())?
+        {
+            return Ok(Some(cursor));
+        }
+
+        let watermark_scope = match self {
+            Self::DirectMessages => DIRECT_MESSAGE_WATERMARK_SCOPE,
+            Self::DirectReactions => DIRECT_REACTION_WATERMARK_SCOPE,
+            Self::GroupMessages => GROUP_MESSAGE_WATERMARK_SCOPE,
+            Self::GroupReactions => GROUP_REACTION_WATERMARK_SCOPE,
+        };
+        Ok(service
+            .repository
+            .get_checkpoint(account_id, watermark_scope)?)
+    }
+}
+
+#[derive(Debug, Default)]
+struct HistoryStreamState {
+    pages_requested: usize,
+    last_requested_cursor: Option<String>,
+    completed: bool,
+}
+
+#[derive(Debug, Default)]
+struct HistoryPaginationState {
+    streams: HashMap<HistoryStream, HistoryStreamState>,
+}
+
+impl HistoryPaginationState {
+    fn start(
+        client: &dyn crate::conversation::zalo::client::ZaloClient,
+        service: &ConversationService,
+        account_id: Option<i64>,
+    ) -> anyhow::Result<Self> {
+        let Some(account_id) = account_id else {
+            return Ok(Self::default());
+        };
+
+        let mut pagination = Self::default();
+        for stream in HistoryStream::ALL {
+            let cursor = stream.initial_cursor(service, account_id)?;
+            stream.request(client, cursor.as_deref())?;
+            pagination.streams.insert(
+                stream,
+                HistoryStreamState {
+                    pages_requested: 1,
+                    last_requested_cursor: cursor,
+                    completed: false,
+                },
+            );
+        }
+        Ok(pagination)
+    }
+
+    fn request_next(
+        &mut self,
+        client: &dyn crate::conversation::zalo::client::ZaloClient,
+        stream: HistoryStream,
+        cursor: &str,
+    ) -> anyhow::Result<()> {
+        let state = self.streams.entry(stream).or_default();
+        if state.completed
+            || state.pages_requested >= MAX_HISTORY_PAGES
+            || state.last_requested_cursor.as_deref() == Some(cursor)
+        {
+            state.completed = true;
+            return Ok(());
+        }
+
+        stream.request(client, Some(cursor))?;
+        state.pages_requested += 1;
+        state.last_requested_cursor = Some(cursor.to_string());
+        Ok(())
+    }
+
+    fn complete(&mut self, stream: HistoryStream) {
+        self.streams.entry(stream).or_default().completed = true;
+    }
+}
+
+struct HistoryBatch {
+    stream: HistoryStream,
+    cursor: Option<String>,
+}
+
+fn history_batch(event: &ListenerEvent) -> Option<HistoryBatch> {
+    match event {
+        ListenerEvent::OldMessages {
+            messages,
+            thread_type,
+        } => {
+            let stream = match thread_type {
+                ThreadType::User => HistoryStream::DirectMessages,
+                ThreadType::Group => HistoryStream::GroupMessages,
+            };
+            let cursor = messages.last().and_then(|message| match message {
+                zca_rs::models::Message::User(message) => {
+                    (!message.data.msg_id.is_empty()).then(|| message.data.msg_id.clone())
+                }
+                zca_rs::models::Message::Group(message) => {
+                    (!message.data.base.msg_id.is_empty()).then(|| message.data.base.msg_id.clone())
+                }
+            });
+            Some(HistoryBatch { stream, cursor })
+        }
+        ListenerEvent::OldReactions {
+            reactions,
+            is_group,
+        } => {
+            let stream = if *is_group {
+                HistoryStream::GroupReactions
+            } else {
+                HistoryStream::DirectReactions
+            };
+            let cursor = reactions.last().and_then(|reaction| {
+                (!reaction.data.msg_id.is_empty()).then(|| reaction.data.msg_id.clone())
+            });
+            Some(HistoryBatch { stream, cursor })
+        }
+        _ => None,
+    }
+}
+
+fn mark_account_degraded(service: &ConversationService, imei: &str, error: &dyn std::fmt::Display) {
+    tracing::warn!(provider_account_key = imei, error = %error, "Zalo conversation session degraded");
+    let _ = service.repository.set_account_status(
+        imei,
+        AccountConnectionStatus::Degraded,
+        Some(&error.to_string()),
+    );
+}
 
 struct SessionTask {
     cancellation: CancellationToken,
@@ -194,7 +389,58 @@ async fn run_session_loop(
         // 3. Subscribe immediately
         let mut rx = client.subscribe();
 
-        // 4. Mark account connected
+        if let Err(error) = client.start() {
+            mark_account_degraded(service.as_ref(), &imei, &error);
+            client.stop();
+            tokio::select! {
+                _ = cancellation.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+            }
+            backoff_secs = (backoff_secs * 2).min(30);
+            continue;
+        }
+
+        let ready_result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                client.stop();
+                return;
+            }
+            result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                loop {
+                    match rx.recv().await {
+                        Ok(ListenerEvent::Connected) => return Ok(()),
+                        Ok(ListenerEvent::Error(error)) => anyhow::bail!("Zalo listener failed before ready: {error}"),
+                        Ok(ListenerEvent::Disconnected { code, reason })
+                        | Ok(ListenerEvent::Closed { code, reason }) => {
+                            anyhow::bail!("Zalo listener closed before ready ({code}): {reason}")
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            anyhow::bail!("Zalo listener lagged by {skipped} events before ready")
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            anyhow::bail!("Zalo listener event stream closed before ready")
+                        }
+                    }
+                }
+            }) => match result {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!("Timed out waiting for Zalo listener readiness")),
+            }
+        };
+
+        if let Err(error) = ready_result {
+            mark_account_degraded(service.as_ref(), &imei, &error);
+            client.stop();
+            tokio::select! {
+                _ = cancellation.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+            }
+            backoff_secs = (backoff_secs * 2).min(30);
+            continue;
+        }
+
+        // 4. Mark account connected after the protocol cipher is ready
         let account_id = service
             .repository
             .set_account_status(&imei, AccountConnectionStatus::Connected, None)
@@ -209,12 +455,23 @@ async fn run_session_loop(
         }
 
         // 6. Request initial history and reactions from stored checkpoints
-        send_initial_history_requests(client.as_ref(), service.as_ref(), account_id);
+        let mut pagination =
+            match send_initial_history_requests(client.as_ref(), service.as_ref(), account_id) {
+                Ok(pagination) => pagination,
+                Err(error) => {
+                    mark_account_degraded(service.as_ref(), &imei, &error);
+                    client.stop();
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+                    }
+                    backoff_secs = (backoff_secs * 2).min(30);
+                    continue;
+                }
+            };
 
         // 7. Drain receiver loop with reactive pagination state machine
         let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
-        let mut direct_page_count = 0usize;
-        let mut group_page_count = 0usize;
 
         let should_reconnect = loop {
             tokio::select! {
@@ -250,34 +507,46 @@ async fn run_session_loop(
                                     | zca_rs::listener::ListenerEvent::Error(_)
                             );
 
-                            // 9. Check for OldMessages to drive pagination state machine
-                            let next_page_req = if let zca_rs::listener::ListenerEvent::OldMessages { ref messages, thread_type } = event {
-                                let page_count = match thread_type {
-                                    zca_rs::models::ThreadType::User => &mut direct_page_count,
-                                    zca_rs::models::ThreadType::Group => &mut group_page_count,
-                                };
-                                if !messages.is_empty() && *page_count < 5 {
-                                    *page_count += 1;
-                                    let next_cursor = match messages.last() {
-                                        Some(zca_rs::models::Message::User(m)) => Some(m.data.msg_id.clone()),
-                                        Some(zca_rs::models::Message::Group(m)) => Some(m.data.base.msg_id.clone()),
-                                        None => None,
-                                    };
-                                    next_cursor.map(|c| (thread_type, c))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
+                            let history_batch = history_batch(&event);
 
                             // 10. Call service.ingest_zalo_event before publishing UI events
                             let display_name = session.display_name.as_deref();
-                            let _ = service.ingest_zalo_event(&imei, display_name, event);
+                            if let Err(error) = service.ingest_zalo_event(&imei, display_name, event) {
+                                mark_account_degraded(service.as_ref(), &imei, &error);
+                                client.stop();
+                                break true;
+                            }
 
                             // 11. Trigger next page request if pagination state machine derived next_cursor
-                            if let Some((thread_type, cursor)) = next_page_req {
-                                let _ = client.request_old_messages(thread_type, Some(&cursor));
+                            if let Some(batch) = history_batch {
+                                if let Some(cursor) = batch.cursor {
+                                    let Some(account_id) = account_id else {
+                                        let error = anyhow::anyhow!("Missing channel account ID during history backfill");
+                                        mark_account_degraded(service.as_ref(), &imei, &error);
+                                        client.stop();
+                                        break true;
+                                    };
+                                    if let Err(error) = service.repository.update_history_cursor(
+                                        account_id,
+                                        batch.stream.checkpoint_scope(),
+                                        &cursor,
+                                    ) {
+                                        mark_account_degraded(service.as_ref(), &imei, &error);
+                                        client.stop();
+                                        break true;
+                                    }
+                                    if let Err(error) = pagination.request_next(
+                                        client.as_ref(),
+                                        batch.stream,
+                                        &cursor,
+                                    ) {
+                                        mark_account_degraded(service.as_ref(), &imei, &error);
+                                        client.stop();
+                                        break true;
+                                    }
+                                } else {
+                                    pagination.complete(batch.stream);
+                                }
                             }
 
                             if is_disconnecting {
@@ -293,9 +562,18 @@ async fn run_session_loop(
                                 Some("Receiver lagged"),
                             );
 
-                            direct_page_count = 0;
-                            group_page_count = 0;
-                            send_initial_history_requests(client.as_ref(), service.as_ref(), account_id);
+                            match send_initial_history_requests(
+                                client.as_ref(),
+                                service.as_ref(),
+                                account_id,
+                            ) {
+                                Ok(next_pagination) => pagination = next_pagination,
+                                Err(error) => {
+                                    mark_account_degraded(service.as_ref(), &imei, &error);
+                                    client.stop();
+                                    break true;
+                                }
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             client.stop();
@@ -327,25 +605,6 @@ fn send_initial_history_requests(
     client: &dyn crate::conversation::zalo::client::ZaloClient,
     service: &ConversationService,
     account_id: Option<i64>,
-) {
-    let acc_id = match account_id {
-        Some(id) => id,
-        None => return,
-    };
-
-    let direct_cursor = service
-        .repository
-        .get_checkpoint(acc_id, "direct_messages")
-        .ok()
-        .flatten();
-    let group_cursor = service
-        .repository
-        .get_checkpoint(acc_id, "group_messages")
-        .ok()
-        .flatten();
-
-    let _ = client.request_old_messages(ThreadType::User, direct_cursor.as_deref());
-    let _ = client.request_old_reactions(ThreadType::User, direct_cursor.as_deref());
-    let _ = client.request_old_messages(ThreadType::Group, group_cursor.as_deref());
-    let _ = client.request_old_reactions(ThreadType::Group, group_cursor.as_deref());
+) -> anyhow::Result<HistoryPaginationState> {
+    HistoryPaginationState::start(client, service, account_id)
 }

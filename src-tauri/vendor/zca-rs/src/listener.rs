@@ -56,6 +56,11 @@ pub enum ListenerEvent {
         reason: String,
     },
     Error(String),
+    PacketError {
+        cmd: u16,
+        sub_cmd: u8,
+        error: String,
+    },
     Typing(Typing),
     Message(Box<ModelMessage>),
     OldMessages {
@@ -361,8 +366,6 @@ async fn connection_loop(
             }
         };
 
-        let _ = event_tx.send(ListenerEvent::Connected);
-
         let (mut ws_write, mut ws_read) = ws_stream.split();
         let mut cipher_key: Option<String> = None;
         let (ping_tx, mut ping_rx) = mpsc::channel::<()>(1);
@@ -416,6 +419,7 @@ async fn connection_loop(
                             if version == 1 && cmd == 1 && sub_cmd == 1 {
                                 if let Some(key) = parsed.get("key").and_then(|v| v.as_str()) {
                                     cipher_key = Some(key.to_string());
+                                    let _ = event_tx.send(ListenerEvent::Connected);
 
                                     let ping_tx_clone = ping_tx.clone();
                                     let ping_interval = {
@@ -450,6 +454,11 @@ async fn connection_loop(
 
                             if let Err(e) = handle_incoming_packet(version, cmd, sub_cmd, parsed, cipher_key.as_deref(), &ctx, self_listen, &event_tx).await {
                                 log::error!("Error handling incoming packet: {:?}", e);
+                                let _ = event_tx.send(ListenerEvent::PacketError {
+                                    cmd,
+                                    sub_cmd,
+                                    error: e.to_string(),
+                                });
                             }
                         }
                         Some(Ok(WsMessage::Close(frame))) => {

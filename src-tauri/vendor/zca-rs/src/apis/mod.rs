@@ -368,7 +368,9 @@ impl Zalo {
         }
 
         let zalo = Zalo::new(ctx, ws_urls);
-        zalo.listener.start()?;
+        if zalo.ctx.options.auto_start_listener {
+            zalo.listener.start()?;
+        }
 
         Ok(zalo)
     }

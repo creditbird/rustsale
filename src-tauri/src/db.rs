@@ -130,6 +130,15 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         )?;
         let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN display_name TEXT", []);
         let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN avatar TEXT", []);
+        let _ = tx.execute(
+            "ALTER TABLE zalo_sessions ADD COLUMN auth_status TEXT NOT NULL DEFAULT 'unknown'",
+            [],
+        );
+        let _ = tx.execute(
+            "ALTER TABLE zalo_sessions ADD COLUMN auth_checked_at TEXT",
+            [],
+        );
+        let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN auth_error TEXT", []);
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS outreach_templates (
@@ -435,6 +444,23 @@ pub fn update_zalo_session_profile(
     Ok(())
 }
 
+pub fn update_zalo_session_auth_status(
+    conn: &Connection,
+    imei: &str,
+    auth_status: &str,
+    auth_error: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE zalo_sessions
+         SET auth_status = ?1,
+             auth_checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+             auth_error = ?2
+         WHERE imei = ?3",
+        rusqlite::params![auth_status, auth_error, imei],
+    )?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn get_zalo_session(
     conn: &Connection,
@@ -651,7 +677,9 @@ pub fn save_smtp_server(conn: &Connection, server: &crate::models::SmtpServer) -
     if let Some(id) = server.id {
         if id > 0 {
             conn.execute(
-                "UPDATE smtp_servers SET name = ?1, host = ?2, port = ?3, username = ?4, password = ?5, from_email = ?6, from_name = ?7, security = ?8 WHERE id = ?9",
+                "UPDATE smtp_servers SET name = ?1, host = ?2, port = ?3, username = ?4,
+                    password = CASE WHEN trim(?5) = '' THEN password ELSE ?5 END,
+                    from_email = ?6, from_name = ?7, security = ?8 WHERE id = ?9",
                 rusqlite::params![
                     server.name,
                     server.host,

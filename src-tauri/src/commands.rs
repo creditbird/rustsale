@@ -1,4 +1,7 @@
-use crate::models::{Activity, Category, Deal, EmailTemplate, Lead, SmtpServer, ZaloSessionStatus};
+use crate::models::{
+    Activity, Category, Deal, EmailTemplate, Lead, ManagedSmtpAccount, ManagedZaloAccount,
+    SmtpServer, ZaloSessionStatus,
+};
 use rusqlite::{params_from_iter, types::Value, Connection, Row};
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -923,6 +926,12 @@ fn emit_zalo_qr_error(app_handle: &tauri::AppHandle, message: &str) {
     }
 }
 
+pub(crate) fn zalo_api_options() -> zca_rs::Options {
+    let mut options = zca_rs::Options::default();
+    options.auto_start_listener = false;
+    options
+}
+
 pub fn persist_authenticated_zalo_session(
     conn: &Connection,
     imei: &str,
@@ -985,7 +994,7 @@ pub async fn start_zalo_qr_login(
                 }
             };
 
-        let options = zca_rs::Options::default();
+        let options = zalo_api_options();
         match zca_rs::Zalo::login_qr(options, callback).await {
             Ok(zalo) => {
                 let cookies = zalo.ctx.cookie_jar.to_vec();
@@ -1129,21 +1138,92 @@ pub fn handle_zalo_qr_event(
     }
 }
 
-#[tauri::command]
-pub fn get_zalo_sessions(
-    state: tauri::State<DbState>,
-) -> Result<Vec<crate::models::ZaloSession>, String> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|e| format!("Database lock error: {}", e))?;
-    get_zalo_sessions_internal(&conn)
-}
-
+#[cfg(test)]
 pub fn get_zalo_sessions_internal(
     conn: &Connection,
 ) -> Result<Vec<crate::models::ZaloSession>, String> {
     crate::db::get_all_zalo_sessions(conn).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn get_managed_zalo_accounts(
+    state: tauri::State<DbState>,
+) -> Result<Vec<ManagedZaloAccount>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_managed_zalo_accounts_internal(&conn)
+}
+
+pub fn get_managed_zalo_accounts_internal(
+    conn: &Connection,
+) -> Result<Vec<ManagedZaloAccount>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT zs.imei, zs.display_name, zs.avatar,
+                    COALESCE(zs.auth_status, 'unknown'), zs.auth_checked_at, zs.auth_error,
+                    COALESCE(ca.connection_status, 'disconnected'),
+                    ca.last_connected_at, ca.last_error
+             FROM zalo_sessions zs
+             LEFT JOIN channel_accounts ca
+               ON ca.channel = 'zalo' AND ca.provider_account_key = zs.imei
+             ORDER BY lower(COALESCE(zs.display_name, zs.imei)), zs.imei",
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ManagedZaloAccount {
+                account_key: row.get(0)?,
+                display_name: row.get(1)?,
+                avatar: row.get(2)?,
+                auth_status: row.get(3)?,
+                auth_checked_at: row.get(4)?,
+                auth_error: row.get(5)?,
+                runtime_status: row.get(6)?,
+                last_connected_at: row.get(7)?,
+                last_error: row.get(8)?,
+            })
+        })
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn get_managed_smtp_accounts(
+    state: tauri::State<DbState>,
+) -> Result<Vec<ManagedSmtpAccount>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_managed_smtp_accounts_internal(&conn)
+}
+
+pub fn get_managed_smtp_accounts_internal(
+    conn: &Connection,
+) -> Result<Vec<ManagedSmtpAccount>, String> {
+    crate::db::get_smtp_servers(conn)
+        .map(|servers| {
+            servers
+                .into_iter()
+                .filter_map(|server| {
+                    server.id.map(|id| ManagedSmtpAccount {
+                        id,
+                        name: server.name,
+                        host: server.host,
+                        port: server.port,
+                        username: server.username,
+                        from_email: server.from_email,
+                        from_name: server.from_name,
+                        security: server.security,
+                    })
+                })
+                .collect()
+        })
+        .map_err(|e| format!("Database error: {}", e))
 }
 
 #[tauri::command]
@@ -1184,17 +1264,36 @@ pub async fn verify_zalo_session(
     };
 
     let status = verify_zalo_session_internal(session).await?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    persist_zalo_verification(&conn, &imei, &status)?;
     if status.is_valid {
-        if let Ok(conn) = state.conn.lock() {
-            let _ = crate::db::update_zalo_session_profile(
-                &conn,
-                &imei,
-                status.display_name.as_deref(),
-                status.avatar.as_deref(),
-            );
-        }
+        crate::db::update_zalo_session_profile(
+            &conn,
+            &imei,
+            status.display_name.as_deref(),
+            status.avatar.as_deref(),
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
     }
     Ok(status)
+}
+
+fn persist_zalo_verification(
+    conn: &Connection,
+    imei: &str,
+    status: &ZaloSessionStatus,
+) -> Result<(), String> {
+    let auth_status = if status.is_valid { "valid" } else { "expired" };
+    crate::db::update_zalo_session_auth_status(
+        conn,
+        imei,
+        auth_status,
+        status.error_message.as_deref(),
+    )
+    .map_err(|e| format!("Database error: {}", e))
 }
 
 fn extract_zalo_profile_info(
@@ -1279,7 +1378,7 @@ pub async fn verify_zalo_session_internal(
             }
         };
 
-    let options = zca_rs::Options::default();
+    let options = zalo_api_options();
     match zca_rs::Zalo::login(
         session.imei.clone(),
         session.user_agent.clone(),
@@ -1354,26 +1453,36 @@ pub async fn verify_all_zalo_sessions(
         let imei = session.imei.clone();
         match verify_zalo_session_internal(session).await {
             Ok(status) => {
+                let conn = state
+                    .conn
+                    .lock()
+                    .map_err(|e| format!("Database lock error: {}", e))?;
+                persist_zalo_verification(&conn, &imei, &status)?;
                 if status.is_valid {
-                    if let Ok(conn) = state.conn.lock() {
-                        let _ = crate::db::update_zalo_session_profile(
-                            &conn,
-                            &imei,
-                            status.display_name.as_deref(),
-                            status.avatar.as_deref(),
-                        );
-                    }
+                    crate::db::update_zalo_session_profile(
+                        &conn,
+                        &imei,
+                        status.display_name.as_deref(),
+                        status.avatar.as_deref(),
+                    )
+                    .map_err(|e| format!("Database error: {}", e))?;
                 }
                 results.push(status);
             }
             Err(e) => {
-                results.push(ZaloSessionStatus {
+                let status = ZaloSessionStatus {
                     imei: imei.clone(),
                     is_valid: false,
                     display_name: None,
                     avatar: None,
                     error_message: Some(e),
-                });
+                };
+                let conn = state
+                    .conn
+                    .lock()
+                    .map_err(|error| format!("Database lock error: {}", error))?;
+                persist_zalo_verification(&conn, &imei, &status)?;
+                results.push(status);
             }
         }
     }
@@ -2103,7 +2212,7 @@ pub async fn send_zalo_outreach_internal(
         }
     };
 
-    let options = zca_rs::Options::default();
+    let options = zalo_api_options();
     let zalo = match zca_rs::Zalo::login(
         session.imei.clone(),
         session.user_agent.clone(),
@@ -2839,7 +2948,7 @@ pub async fn send_zalo_campaign_internal(
         }
         for session in sessions_to_login {
             if let Ok(cookies) = serde_json::from_str(&session.cookies_json) {
-                let options = zca_rs::Options::default();
+                let options = zalo_api_options();
                 if let Ok(zalo) = zca_rs::Zalo::login(
                     session.imei.clone(),
                     session.user_agent.clone(),
@@ -3407,7 +3516,7 @@ pub async fn get_campaign_leads(
     Ok(leads)
 }
 
-#[tauri::command]
+#[cfg(test)]
 pub fn get_smtp_servers(state: tauri::State<DbState>) -> Result<Vec<SmtpServer>, String> {
     let conn = state
         .conn

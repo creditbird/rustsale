@@ -144,6 +144,9 @@ export const unlinkConversationIdentity = (identityId: number) =>
 export const unlinkConversationLead = (leadId: number) =>
   invoke<void>('unlink_conversation_lead', { request: { leadId } });
 
+export const relinkConversationLead = (sourceLeadId: number, targetLeadId: number) =>
+  invoke<void>('relink_conversation_lead', { request: { sourceLeadId, targetLeadId } });
+
 export const sendConversationMessage = (request: SendConversationMessageRequest) =>
   invoke<ConversationMessage>('send_conversation_message', { request });
 

@@ -12,6 +12,10 @@
     type OutreachLeadFilters,
     type OutreachLeadsPage
   } from '$lib/services/crmService';
+  import {
+    listManagedZaloAccounts,
+    type ManagedZaloAccount
+  } from '$lib/services/accountSettingsService';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
@@ -20,24 +24,7 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import * as Select from '$lib/components/ui/select';
   import { Progress } from '$lib/components/ui/progress';
-  import { MessageSquare, Plus, RefreshCw, Trash2, Edit, QrCode, Send, CheckCircle, AlertCircle, User, Upload, Image, X, FileImage } from 'lucide-svelte';
-
-  interface ZaloSession {
-    imei: string;
-    user_agent: string;
-    cookies_json: string;
-    language: string;
-    display_name?: string | null;
-    avatar?: string | null;
-  }
-
-  interface ZaloSessionStatus {
-    imei: string;
-    is_valid: boolean;
-    display_name?: string;
-    avatar?: string;
-    error_message?: string;
-  }
+  import { MessageSquare, Plus, Trash2, Edit, Send, Upload, Image, X, FileImage, Settings2 } from 'lucide-svelte';
 
   interface OutreachTemplate {
     id?: number;
@@ -47,10 +34,8 @@
     created_at?: string;
   }
 
-  let sessions = $state<ZaloSession[]>([]);
-  let sessionStatuses = $state<Record<string, { valid: boolean | null; checking: boolean; displayName?: string; avatar?: string; error?: string }>>({});
+  let sessions = $state<ManagedZaloAccount[]>([]);
   let selectedImeis = $state<string[]>([]);
-  let isVerifyingAll = $state(false);
 
   let templates = $state<OutreachTemplate[]>([]);
   let selectedTemplateId = $state<number | null>(null);
@@ -76,12 +61,6 @@
   let filterVerifiedZalo = $state(false);
   let filterUnreached = $state(false);
   let filterMobileOnly = $state(false);
-
-  let isQrModalOpen = $state(false);
-  let qrImage = $state<string | null>(null);
-  let qrUser = $state<{ avatar: string; display_name: string } | null>(null);
-  let qrStatus = $state('Initializing Zalo QR code...');
-  let qrError = $state<string | null>(null);
 
   let isTemplateModalOpen = $state(false);
   let editingTemplateId = $state<number | null>(null);
@@ -116,10 +95,6 @@
     }, 0);
   }
 
-  let isDeleteSessionModalOpen = $state(false);
-  let sessionToDelete = $state<ZaloSession | null>(null);
-  let isDeletingSession = $state(false);
-
   let isDeleteTemplateModalOpen = $state(false);
   let templateToDelete = $state<OutreachTemplate | null>(null);
   let isDeletingTemplate = $state(false);
@@ -135,7 +110,6 @@
   let burstDelaySeconds = $state(30);
   let interMessageDelaySeconds = $state(3);
 
-  let qrUnlistens: UnlistenFn[] = [];
   let campaignUnlistens: UnlistenFn[] = [];
   let leadPageCache = new Map<string, OutreachLeadsPage>();
   let leadRequestId = 0;
@@ -157,29 +131,21 @@
   let hasPreviousLeadPage = $derived(currentLeadPage > 1);
   let hasNextLeadPage = $derived(nextLeadCursor !== null);
 
-  function getSessionDisplayName(s: { imei: string; display_name?: string | null }): string {
-    const status = sessionStatuses[s.imei];
-    if (status?.displayName && status.displayName.trim()) {
-      return status.displayName;
-    }
-    if (s.display_name && s.display_name.trim()) {
-      return s.display_name;
-    }
-    return `Zalo (${s.imei.slice(0, 8)}...)`;
+  function getSessionDisplayName(session: ManagedZaloAccount): string {
+    return session.displayName?.trim() || `Zalo (${session.accountKey.slice(0, 8)}...)`;
   }
 
-  function getSessionAvatar(s: { imei: string; avatar?: string | null }): string | null | undefined {
-    const status = sessionStatuses[s.imei];
-    return status?.avatar || s.avatar;
+  function getSessionAvatar(session: ManagedZaloAccount): string | null {
+    return session.avatar;
   }
 
   async function loadSessions(): Promise<boolean> {
     try {
-      const result = await invoke<ZaloSession[]>('get_zalo_sessions');
+      const result = await listManagedZaloAccounts();
       if (isDisposed) return false;
       sessions = result;
       if (sessions.length > 0 && selectedImeis.length === 0) {
-        selectedImeis = [sessions[0].imei];
+        selectedImeis = [sessions[0].accountKey];
       }
       return true;
     } catch (e) {
@@ -328,51 +294,13 @@
     await reloadLeads({ page, cursor });
   }
 
-  async function verifySession(imei: string) {
-    sessionStatuses[imei] = { ...sessionStatuses[imei], checking: true, valid: null };
-    try {
-      const res = await invoke<ZaloSessionStatus>('verify_zalo_session', { imei });
-      sessionStatuses[imei] = {
-        checking: false,
-        valid: res ? res.is_valid : false,
-        displayName: res?.display_name,
-        avatar: res?.avatar,
-        error: res?.error_message
-      };
-      await loadSessions();
-    } catch (e) {
-      sessionStatuses[imei] = { checking: false, valid: false, error: String(e) };
-    }
-  }
-
-  async function verifyAllSessions() {
-    if (sessions.length === 0) return;
-    isVerifyingAll = true;
-    for (const s of sessions) {
-      sessionStatuses[s.imei] = { ...sessionStatuses[s.imei], checking: true };
-    }
-    try {
-      const results = await invoke<ZaloSessionStatus[]>('verify_all_zalo_sessions') || [];
-      if (Array.isArray(results)) {
-        for (const res of results) {
-          sessionStatuses[res.imei] = {
-            checking: false,
-            valid: res.is_valid,
-            displayName: res.display_name,
-            avatar: res.avatar,
-            error: res.error_message
-          };
-        }
-      }
-      await loadSessions();
-    } catch (e) {
-      console.error('Error verifying all sessions:', e);
-    } finally {
-      isVerifyingAll = false;
-    }
-  }
-
-  let { activeTab = 'outreach' }: { activeTab?: string } = $props();
+  let {
+    activeTab = 'outreach',
+    onOpenSettings = () => {}
+  }: {
+    activeTab?: string;
+    onOpenSettings?: () => void;
+  } = $props();
   let hasLoaded = $state(false);
   let isStale = $state(false);
   let reloadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -497,82 +425,11 @@
         clearTimeout(filterReloadTimer);
         filterReloadTimer = null;
       }
-      cleanupQrListeners();
       cleanupCampaignListeners();
     };
   });
 
-  function cleanupQrListeners() { qrUnlistens.forEach(u => u()); qrUnlistens = []; }
   function cleanupCampaignListeners() { campaignUnlistens.forEach(u => u()); campaignUnlistens = []; }
-
-  async function openQrLogin() {
-    isQrModalOpen = true;
-    qrImage = null;
-    qrUser = null;
-    qrStatus = 'Connecting to Zalo...';
-    qrError = null;
-    cleanupQrListeners();
-
-    try {
-      const codeUnlisten = await listen<{ image_base64: string }>('zalo-qr-code', (event) => {
-        qrImage = event.payload.image_base64;
-        qrStatus = 'Scan the QR code with your Zalo app to login.';
-      });
-      qrUnlistens.push(codeUnlisten);
-
-      const scannedUnlisten = await listen<{ avatar: string; display_name: string }>('zalo-qr-scanned', (event) => {
-        qrUser = { avatar: event.payload.avatar, display_name: event.payload.display_name };
-        qrStatus = `Scanned by ${event.payload.display_name}! Confirm on phone...`;
-      });
-      qrUnlistens.push(scannedUnlisten);
-
-      const successUnlisten = await listen<{ imei: string }>('zalo-qr-success', async (event) => {
-        qrStatus = 'Login successful!';
-        setTimeout(async () => {
-          isQrModalOpen = false;
-          cleanupQrListeners();
-          await loadSessions();
-          verifySession(event.payload.imei);
-        }, 1000);
-      });
-      qrUnlistens.push(successUnlisten);
-
-      const errorUnlisten = await listen<{ message: string }>('zalo-qr-error', (event) => {
-        qrError = event.payload.message;
-        qrStatus = event.payload.message;
-      });
-      qrUnlistens.push(errorUnlisten);
-
-      await invoke('start_zalo_qr_login');
-    } catch (e) {
-      const message = String(e);
-      qrError = message;
-      qrStatus = message;
-    }
-  }
-
-  function closeQrModal() { isQrModalOpen = false; cleanupQrListeners(); }
-
-  function promptDeleteSession(session: ZaloSession) {
-    sessionToDelete = session;
-    isDeleteSessionModalOpen = true;
-  }
-
-  async function confirmDeleteSession() {
-    if (!sessionToDelete) return;
-    isDeletingSession = true;
-    try {
-      await invoke('delete_zalo_session', { imei: sessionToDelete.imei });
-      selectedImeis = selectedImeis.filter(i => i !== sessionToDelete?.imei);
-      await loadSessions();
-      isDeleteSessionModalOpen = false;
-      sessionToDelete = null;
-    } catch (e) {
-      alert(`Error deleting session: ${e}`);
-    } finally {
-      isDeletingSession = false;
-    }
-  }
 
   function triggerFileInput() {
     fileInputRef?.click();
@@ -760,7 +617,7 @@
   <div class="flex items-center justify-between">
     <div class="flex flex-col">
       <h2 class="text-xl font-bold text-foreground tracking-tight">Zalo Outreach Manager</h2>
-      <p class="text-xs text-muted-foreground mt-0.5">Authenticate sessions, customize templates, and launch campaign flows</p>
+      <p class="text-xs text-muted-foreground mt-0.5">Select connected accounts, customize templates, and launch campaign flows</p>
     </div>
   </div>
 
@@ -768,27 +625,24 @@
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
     <!-- Left Column: Sessions & Templates -->
     <div class="lg:col-span-5 flex flex-col gap-4">
-      <!-- Sessions Card -->
+      <!-- Managed Accounts Card -->
       <Card.Root>
         <Card.Header class="pb-3 border-b border-border flex flex-row items-center justify-between">
           <Card.Title class="text-sm font-bold flex items-center gap-2">
-            <MessageSquare class="size-4 text-emerald-600" /> Zalo Sessions
+            <MessageSquare class="size-4 text-emerald-600" /> Available Zalo Accounts
           </Card.Title>
-          <div class="flex items-center gap-1.5">
-            <Button variant="outline" size="sm" class="h-7 text-[11px] px-2 gap-1" onclick={verifyAllSessions} disabled={isVerifyingAll}>
-              <RefreshCw class="size-3 {isVerifyingAll ? 'animate-spin' : ''}" /> Check All
-            </Button>
-            <Button size="sm" class="h-7 text-[11px] px-2 gap-1 bg-emerald-600 hover:bg-emerald-700 text-white" onclick={openQrLogin}>
-              <QrCode class="size-3" /> Add Session
-            </Button>
-          </div>
+          <Button variant="outline" size="sm" class="h-7 text-[11px] px-2 gap-1" onclick={onOpenSettings}>
+            <Settings2 class="size-3" /> Manage accounts in Settings
+          </Button>
         </Card.Header>
         <Card.Content class="p-3 flex flex-col gap-2 text-xs max-h-56 overflow-y-auto">
           {#if sessions.length === 0}
-            <div class="text-muted-foreground text-center py-4 italic">No Zalo sessions logged in.</div>
+            <div class="flex flex-col items-center gap-2 py-4 text-center text-muted-foreground">
+              <span class="italic">No Zalo account is available.</span>
+              <Button variant="link" size="sm" onclick={onOpenSettings}>Open account settings</Button>
+            </div>
           {:else}
-            {#each sessions as s (s.imei)}
-              {@const status = sessionStatuses[s.imei]}
+            {#each sessions as s (s.accountKey)}
               {@const displayName = getSessionDisplayName(s)}
               {@const avatarUrl = getSessionAvatar(s)}
               <div class="flex items-center justify-between p-2 rounded-lg border border-border bg-card hover:bg-accent/40 transition-colors">
@@ -803,22 +657,11 @@
                   <div class="truncate flex flex-col gap-0.5">
                     <div class="font-semibold text-foreground truncate flex items-center gap-1.5">
                       {displayName}
-                      {#if status?.valid === true}
-                        <Badge variant="outline" class="text-[9px] px-1 py-0 border-emerald-500/30 text-emerald-600 bg-emerald-500/10">Active</Badge>
-                      {:else if status?.valid === false}
-                        <Badge variant="outline" class="text-[9px] px-1 py-0 border-rose-500/30 text-rose-600 bg-rose-500/10">Expired</Badge>
-                      {/if}
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 capitalize">{s.authStatus}</Badge>
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 capitalize">{s.runtimeStatus}</Badge>
                     </div>
-                    <div class="text-[10px] text-muted-foreground truncate">IMEI: {s.imei.slice(0, 16)}...</div>
+                    <div class="text-[10px] text-muted-foreground truncate">IMEI: {s.accountKey.slice(0, 16)}...</div>
                   </div>
-                </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <Button variant="ghost" size="sm" class="size-6 p-0" onclick={() => verifySession(s.imei)}>
-                    <RefreshCw class="size-3 {status?.checking ? 'animate-spin' : ''}" />
-                  </Button>
-                  <Button variant="ghost" size="sm" class="size-6 p-0 text-destructive" onclick={() => promptDeleteSession(s)}>
-                    <Trash2 class="size-3" />
-                  </Button>
                 </div>
               </div>
             {/each}
@@ -890,8 +733,8 @@
         <div class="flex flex-col gap-1.5">
           <span class="font-semibold text-foreground">Step 1: Select Active Zalo Session(s)</span>
           <div class="flex flex-wrap gap-2 pt-1">
-            {#each sessions as s (s.imei)}
-              {@const isSelected = selectedImeis.includes(s.imei)}
+            {#each sessions as s (s.accountKey)}
+              {@const isSelected = selectedImeis.includes(s.accountKey)}
               {@const displayName = getSessionDisplayName(s)}
               {@const avatarUrl = getSessionAvatar(s)}
               <label 
@@ -902,9 +745,9 @@
                   disabled={isCampaignRunning}
                   onCheckedChange={(checked) => {
                     if (checked) {
-                      if (!selectedImeis.includes(s.imei)) selectedImeis = [...selectedImeis, s.imei];
+                      if (!selectedImeis.includes(s.accountKey)) selectedImeis = [...selectedImeis, s.accountKey];
                     } else {
-                      selectedImeis = selectedImeis.filter(i => i !== s.imei);
+                      selectedImeis = selectedImeis.filter(i => i !== s.accountKey);
                     }
                   }}
                 />
@@ -1181,28 +1024,6 @@
   </div>
 </div>
 
-<!-- QR Login Dialog -->
-<Dialog.Root bind:open={isQrModalOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>Zalo QR Login</Dialog.Title>
-    </Dialog.Header>
-    <div class="flex flex-col items-center justify-center p-6 gap-4">
-      {#if qrImage}
-        <img src={qrImage.startsWith('data:image/') ? qrImage : `data:image/png;base64,${qrImage}`} alt="Zalo QR Code" class="size-56 rounded-lg border border-border shadow-xs" />
-      {:else if qrUser}
-        <div class="text-center flex flex-col gap-2">
-          <img src={qrUser.avatar} alt="User Avatar" class="size-16 rounded-full mx-auto border border-border" />
-          <h3 class="font-bold text-foreground">{qrUser.display_name}</h3>
-        </div>
-      {:else}
-        <div class="size-12 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
-      {/if}
-      <p class="text-xs text-muted-foreground font-medium text-center">{qrStatus}</p>
-    </div>
-  </Dialog.Content>
-</Dialog.Root>
-
 <!-- Template Modal Dialog -->
 <Dialog.Root bind:open={isTemplateModalOpen}>
   <Dialog.Content class="sm:max-w-2xl w-full">
@@ -1311,28 +1132,6 @@
     <Dialog.Footer class="gap-2 pt-2 border-t border-border">
       <Button variant="outline" size="sm" onclick={() => isTemplateModalOpen = false}>Cancel</Button>
       <Button size="sm" onclick={saveTemplate} class="px-5">Save Template</Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
-<!-- Delete Session Confirmation Dialog -->
-<Dialog.Root bind:open={isDeleteSessionModalOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>Logout & Delete Zalo Session</Dialog.Title>
-    </Dialog.Header>
-    <div class="py-2 text-xs text-muted-foreground leading-relaxed">
-      Are you sure you want to log out and delete the session for
-      <strong class="text-foreground">{sessionToDelete ? getSessionDisplayName(sessionToDelete) : ''}</strong>?
-      This action will remove saved credentials from your system.
-    </div>
-    <Dialog.Footer class="gap-2">
-      <Button variant="outline" size="sm" onclick={() => isDeleteSessionModalOpen = false} disabled={isDeletingSession}>
-        Cancel
-      </Button>
-      <Button variant="destructive" size="sm" onclick={confirmDeleteSession} disabled={isDeletingSession}>
-        {isDeletingSession ? 'Deleting...' : 'Delete Session'}
-      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

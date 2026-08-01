@@ -70,11 +70,25 @@ mock.module('@tauri-apps/api/core', () => ({
     invokedCommands.push({ command, args });
     switch (command) {
       case 'get_smtp_servers': {
+        return Promise.reject(new Error('Outreach must not request SMTP passwords'));
+      }
+      case 'get_managed_smtp_accounts': {
         if (smtpFailuresRemaining > 0) {
           smtpFailuresRemaining -= 1;
           return Promise.reject(new Error('SMTP load failed'));
         }
-        return Promise.resolve([...mockSmtpServers]);
+        return Promise.resolve(
+          mockSmtpServers.map((server) => ({
+            id: server.id,
+            name: server.name,
+            host: server.host,
+            port: server.port,
+            username: server.username,
+            fromEmail: server.from_email,
+            fromName: server.from_name,
+            security: server.security
+          }))
+        );
       }
       case 'save_smtp_server': {
         const id = args?.server?.id || mockSmtpServers.length + 1;
@@ -203,53 +217,37 @@ afterEach(() => {
 test('renders EmailOutreach section headings and initial state', async () => {
   render(EmailOutreach);
 
-  expect(await screen.findByText('SMTP Configurations')).toBeTruthy();
+  expect(await screen.findByText('Available Email Accounts')).toBeTruthy();
   expect(await screen.findByText('Email Templates')).toBeTruthy();
   expect(await screen.findByText('Campaign Execution')).toBeTruthy();
 });
 
-test('SMTP server modal controls - opens modal, saves new SMTP server and tests connection', async () => {
-  render(EmailOutreach);
+test('uses redacted SMTP accounts and delegates management to Settings', async () => {
+  mockSmtpServers.push({
+    id: 7,
+    name: 'Primary SMTP',
+    host: 'smtp.example.com',
+    port: 587,
+    username: 'sender@example.com',
+    password: 'must-never-reach-outreach',
+    from_email: 'sender@example.com',
+    from_name: 'Sales Team',
+    security: 'STARTTLS',
+    created_at: '2026-08-01'
+  });
+  const onOpenSettings = mock(() => {});
+  render(EmailOutreach, { props: { activeTab: 'email_outreach', onOpenSettings } });
 
-  // Open Add SMTP Modal
-  const addSmtpBtn = await screen.findByRole('button', { name: /Add Server/i });
-  await fireEvent.click(addSmtpBtn);
+  expect((await screen.findAllByText('Primary SMTP')).length).toBeGreaterThan(0);
+  await fireEvent.click(screen.getByRole('button', { name: /Manage accounts in Settings/i }));
 
-  expect(await screen.findByRole('heading', { name: /Add SMTP Configuration/i })).toBeTruthy();
-
-  // Fill in form fields
-  const nameInput = screen.getByLabelText(/Server Name/i);
-  const hostInput = screen.getByLabelText(/^Host \*$/i);
-  const portInput = screen.getByLabelText(/^Port$/i);
-  const usernameInput = screen.getByLabelText(/Username/i);
-  const passwordInput = screen.getByLabelText(/Password/i);
-  const fromEmailInput = screen.getByLabelText(/From Email/i);
-  const fromNameInput = screen.getByLabelText(/From Name/i);
-
-  await fireEvent.input(nameInput, { target: { value: 'Primary SMTP' } });
-  await fireEvent.input(hostInput, { target: { value: 'smtp.gmail.com' } });
-  await fireEvent.input(portInput, { target: { value: '587' } });
-  await fireEvent.input(usernameInput, { target: { value: 'user@gmail.com' } });
-  await fireEvent.input(passwordInput, { target: { value: 'secretpass' } });
-  await fireEvent.input(fromEmailInput, { target: { value: 'outreach@company.com' } });
-  await fireEvent.input(fromNameInput, { target: { value: 'Sales Team' } });
-
-  // Test Connection
-  const testBtn = screen.getByRole('button', { name: /Test Connection/i });
-  await fireEvent.click(testBtn);
-
-  expect(await screen.findByText(/Successfully connected to smtp.gmail.com:587/i)).toBeTruthy();
-  await tick();
-  await new Promise((r) => setTimeout(r, 50));
-
-  // Save SMTP Server
-  const saveBtn = screen.getByRole('button', { name: /Save Server/i });
-  await fireEvent.click(saveBtn);
-  await tick();
-  await new Promise((r) => setTimeout(r, 100));
-
-  const matchedSmtp = await screen.findAllByText(/Primary SMTP/i);
-  expect(matchedSmtp.length).toBeGreaterThan(0);
+  const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
+  expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  expect(count('get_managed_smtp_accounts')).toBe(1);
+  expect(count('get_smtp_servers')).toBe(0);
+  expect(count('save_smtp_server')).toBe(0);
+  expect(count('delete_smtp_server')).toBe(0);
+  expect(screen.queryByText('must-never-reach-outreach')).toBeNull();
 });
 
 test('Email template modal controls - opens modal, inserts variable badges into subject and content, and creates template', async () => {
@@ -366,7 +364,7 @@ test('does not re-fetch Email outreach data on clean tab switch without backgrou
   const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
   const initialCounts = {
     categories: count('get_categories'),
-    smtp: count('get_smtp_servers'),
+    smtp: count('get_managed_smtp_accounts'),
     templates: count('get_email_templates'),
     leads: count('get_outreach_leads_page')
   };
@@ -376,7 +374,7 @@ test('does not re-fetch Email outreach data on clean tab switch without backgrou
   await new Promise((resolve) => setTimeout(resolve, 100));
 
   expect(count('get_categories')).toBe(initialCounts.categories);
-  expect(count('get_smtp_servers')).toBe(initialCounts.smtp);
+  expect(count('get_managed_smtp_accounts')).toBe(initialCounts.smtp);
   expect(count('get_email_templates')).toBe(initialCounts.templates);
   expect(count('get_outreach_leads_page')).toBe(initialCounts.leads);
 });
@@ -387,7 +385,7 @@ test('performs one base refresh when mounted active', async () => {
 
   const count = (command: string) => invokedCommands.filter((entry) => entry.command === command).length;
   expect(count('get_categories')).toBe(1);
-  expect(count('get_smtp_servers')).toBe(1);
+  expect(count('get_managed_smtp_accounts')).toBe(1);
   expect(count('get_email_templates')).toBe(1);
   expect(count('get_outreach_leads_page')).toBe(1);
 });
@@ -399,13 +397,13 @@ test('retries a failed initial SMTP load after tab revisit', async () => {
 
   await view.rerender({ activeTab: 'email_outreach' });
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const callsAfterFailure = count('get_smtp_servers');
+  const callsAfterFailure = count('get_managed_smtp_accounts');
 
   await view.rerender({ activeTab: 'dashboard' });
   await view.rerender({ activeTab: 'email_outreach' });
   await new Promise((resolve) => setTimeout(resolve, 150));
 
-  expect(count('get_smtp_servers')).toBeGreaterThan(callsAfterFailure);
+  expect(count('get_managed_smtp_accounts')).toBeGreaterThan(callsAfterFailure);
 });
 
 test('refreshes CRM data without reloading SMTP servers or templates after lead changes', async () => {
@@ -414,14 +412,14 @@ test('refreshes CRM data without reloading SMTP servers or templates after lead 
 
   await view.rerender({ activeTab: 'email_outreach' });
   await new Promise((resolve) => setTimeout(resolve, 150));
-  const initialSmtpCount = count('get_smtp_servers');
+  const initialSmtpCount = count('get_managed_smtp_accounts');
   const initialTemplateCount = count('get_email_templates');
   const initialLeadCount = count('get_outreach_leads_page');
 
   notifyLeadsChanged();
   await new Promise((resolve) => setTimeout(resolve, 450));
 
-  expect(count('get_smtp_servers')).toBe(initialSmtpCount);
+  expect(count('get_managed_smtp_accounts')).toBe(initialSmtpCount);
   expect(count('get_email_templates')).toBe(initialTemplateCount);
   expect(count('get_outreach_leads_page')).toBeGreaterThan(initialLeadCount);
 });

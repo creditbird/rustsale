@@ -88,6 +88,33 @@ pub struct ZaloSessionStatus {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedZaloAccount {
+    pub account_key: String,
+    pub display_name: Option<String>,
+    pub avatar: Option<String>,
+    pub auth_status: String,
+    pub auth_checked_at: Option<String>,
+    pub auth_error: Option<String>,
+    pub runtime_status: String,
+    pub last_connected_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedSmtpAccount {
+    pub id: i32,
+    pub name: String,
+    pub host: String,
+    pub port: i32,
+    pub username: String,
+    pub from_email: String,
+    pub from_name: String,
+    pub security: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SmtpServer {
     pub id: Option<i32>,

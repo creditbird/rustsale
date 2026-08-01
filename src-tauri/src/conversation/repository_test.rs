@@ -89,6 +89,21 @@ fn direct_message(account: &str, provider_message_id: &str) -> NormalizedMessage
     }
 }
 
+fn direct_message_for_peer(
+    account: &str,
+    provider_message_id: &str,
+    peer_id: &str,
+) -> NormalizedMessage {
+    let mut message = direct_message(account, provider_message_id);
+    let participant = message.participant.as_mut().expect("participant exists");
+    participant.external_id = peer_id.to_string();
+    participant.display_name = Some(peer_id.to_string());
+    message.external_thread_id = peer_id.to_string();
+    message.conversation_title = Some(peer_id.to_string());
+    message.provider_client_message_id = Some(format!("client-{peer_id}"));
+    message
+}
+
 #[test]
 fn duplicate_provider_message_is_idempotent() {
     let harness = Harness::new();
@@ -501,11 +516,8 @@ fn unlink_identity_resets_lead_id_and_returns_conversation_id() {
     harness.repository.link_identity(identity_id, 42).unwrap();
 
     let inbox_before = harness.repository.list_inbox().unwrap();
-    let customer_item = inbox_before
-        .iter()
-        .find(|i| i.lead_id == Some(42))
-        .unwrap();
-    assert_eq!(customer_item.identity_id, Some(identity_id));
+    let customer_item = inbox_before.iter().find(|i| i.lead_id == Some(42)).unwrap();
+    assert_eq!(customer_item.identity_id, None);
 
     let conv_id = harness.repository.unlink_identity(identity_id).unwrap();
     assert!(conv_id > 0);
@@ -574,4 +586,99 @@ fn unlink_lead_resets_lead_id_and_returns_conversation_id() {
     assert_eq!(link_source, "unlinked");
     assert_eq!(link_confidence, 0.0);
     assert_eq!(verified_at, None);
+}
+
+#[test]
+fn unlink_lead_resets_all_identities_for_aggregated_customer() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute("INSERT INTO leads (id, name) VALUES (42, 'Lead 42')", [])
+        .unwrap();
+    drop(conn);
+
+    let first = harness
+        .repository
+        .apply_normalized_message(&direct_message_for_peer("imei-a", "message-1", "peer-1"))
+        .unwrap();
+    let second = harness
+        .repository
+        .apply_normalized_message(&direct_message_for_peer("imei-b", "message-2", "peer-2"))
+        .unwrap();
+    let first_identity_id = first.identity_id.expect("first identity exists");
+    let second_identity_id = second.identity_id.expect("second identity exists");
+    harness
+        .repository
+        .link_identity(first_identity_id, 42)
+        .unwrap();
+    harness
+        .repository
+        .link_identity(second_identity_id, 42)
+        .unwrap();
+
+    harness.repository.unlink_lead(42).unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM channel_identities WHERE lead_id IS NULL"),
+        2
+    );
+    assert_eq!(
+        harness.scalar(
+            "SELECT COUNT(*) FROM channel_identities
+             WHERE link_source = 'unlinked'
+               AND link_confidence = 0.0
+               AND verified_at IS NULL"
+        ),
+        2
+    );
+}
+
+#[test]
+fn relink_lead_moves_all_identities_to_target_lead() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO leads (id, name) VALUES (42, 'Lead 42'), (84, 'Lead 84')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let first = harness
+        .repository
+        .apply_normalized_message(&direct_message_for_peer("imei-a", "message-1", "peer-1"))
+        .unwrap();
+    let second = harness
+        .repository
+        .apply_normalized_message(&direct_message_for_peer("imei-b", "message-2", "peer-2"))
+        .unwrap();
+    harness
+        .repository
+        .link_identity(first.identity_id.expect("first identity exists"), 42)
+        .unwrap();
+    harness
+        .repository
+        .link_identity(second.identity_id.expect("second identity exists"), 42)
+        .unwrap();
+
+    let conversation_id = harness.repository.relink_lead(42, 84).unwrap();
+
+    assert!(conversation_id > 0);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM channel_identities WHERE lead_id = 42"),
+        0
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM channel_identities WHERE lead_id = 84"),
+        2
+    );
+    assert_eq!(
+        harness.scalar(
+            "SELECT COUNT(*) FROM channel_identities
+             WHERE lead_id = 84
+               AND link_source = 'manual'
+               AND link_confidence = 1.0
+               AND verified_at IS NOT NULL"
+        ),
+        2
+    );
 }

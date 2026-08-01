@@ -116,6 +116,7 @@ fn reaction_event_normalizes_correctly() {
     };
     assert_eq!(norm_reaction.provider_account_key, "imei-a");
     assert_eq!(norm_reaction.external_thread_id, "peer-uid");
+    assert_eq!(norm_reaction.provider_event_id.as_deref(), Some("msg-10"));
     assert!(!norm_reaction.is_group);
     assert_eq!(norm_reaction.provider_message_id, "gmsg-10");
     assert_eq!(norm_reaction.provider_client_message_id, "cmsg-10");
@@ -236,13 +237,25 @@ fn disconnect_and_error_events_emit_reconcile_required() {
         reason: "abnormal".to_string(),
     };
     let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
-    assert_eq!(mutations.len(), 2);
-    let ZaloMutation::ReconcileRequired { scope: scope1 } = mutations[0] else {
+    assert_eq!(mutations.len(), 1);
+    let ZaloMutation::ReconcileRequired { scope } = mutations[0] else {
         panic!("expected reconcile");
     };
-    let ZaloMutation::ReconcileRequired { scope: scope2 } = mutations[1] else {
+    assert_eq!(scope, "all");
+}
+
+#[test]
+fn packet_error_event_emits_reconcile_required() {
+    let event = ListenerEvent::PacketError {
+        cmd: 501,
+        sub_cmd: 1,
+        error: "invalid packet payload".to_string(),
+    };
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    assert_eq!(mutations.len(), 1);
+    let ZaloMutation::ReconcileRequired { scope } = mutations[0] else {
         panic!("expected reconcile");
     };
-    assert_eq!(scope1, "direct_messages");
-    assert_eq!(scope2, "group_messages");
+    assert_eq!(scope, "all");
 }

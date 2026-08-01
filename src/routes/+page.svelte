@@ -9,6 +9,7 @@
   import EmailOutreach from '$lib/components/EmailOutreach.svelte';
   import CategoryManager from '$lib/components/CategoryManager.svelte';
   import ConversationWorkspace from '$lib/components/conversation/ConversationWorkspace.svelte';
+  import Settings from '$lib/components/Settings.svelte';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
   import { AlertCircle, Search, Bell } from 'lucide-svelte';
@@ -26,10 +27,11 @@
       title: 'Unified Conversations',
       subtitle: 'Zalo, WhatsApp, Messenger and Email customer history'
     },
-    outreach: { title: 'Zalo Outreach Manager', subtitle: 'Authenticate sessions, customize templates, and launch Zalo flows' },
-    email_outreach: { title: 'Email Outreach Manager', subtitle: 'Configure SMTP servers, HTML templates, and targeted email broadcasts' },
+    outreach: { title: 'Zalo Outreach Manager', subtitle: 'Select connected accounts, customize templates, and launch Zalo flows' },
+    email_outreach: { title: 'Email Outreach Manager', subtitle: 'Select configured senders, manage templates, and launch targeted broadcasts' },
     pipeline: { title: 'Deal Pipeline', subtitle: 'Kanban view for deal stages and sales conversion workflow' },
-    contacts: { title: 'Converted Contacts', subtitle: 'Official converted customer database' }
+    contacts: { title: 'Converted Contacts', subtitle: 'Official converted customer database' },
+    settings: { title: 'Channels & Accounts', subtitle: 'Manage provider authentication, senders, and realtime connection health' }
   };
 
   let isStale = $state(false);
@@ -144,7 +146,7 @@
       {/if}
 
       <div class={activeTab === 'conversation' ? 'h-full' : 'hidden'}>
-        <ConversationWorkspace {activeTab} />
+        <ConversationWorkspace {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       </div>
       <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
         <Dashboard {activeTab} />
@@ -162,13 +164,16 @@
         <CategoryManager {activeTab} />
       </div>
       <div class={activeTab === 'outreach' ? '' : 'hidden'}>
-        <ZaloOutreach {activeTab} />
+        <ZaloOutreach {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       </div>
       <div class={activeTab === 'email_outreach' ? '' : 'hidden'}>
-        <EmailOutreach {activeTab} />
+        <EmailOutreach {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       </div>
       <div class={activeTab === 'pipeline' ? '' : 'hidden'}>
         <KanbanBoard />
+      </div>
+      <div class={activeTab === 'settings' ? '' : 'hidden'}>
+        <Settings />
       </div>
     </div>
   </main>

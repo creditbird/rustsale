@@ -85,6 +85,13 @@ mod tests {
     }
 
     #[test]
+    fn zalo_api_options_do_not_start_realtime_listener() {
+        let options = commands::zalo_api_options();
+
+        assert!(!options.auto_start_listener);
+    }
+
+    #[test]
     fn test_zalo_qr_and_session_commands() {
         let conn = db::init_db(":memory:").unwrap();
 
@@ -232,6 +239,101 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("Session with IMEI non-existent-imei not found"));
+
+        {
+            let conn = state.conn.lock().unwrap();
+            db::save_zalo_session(&conn, "imei-invalid", "MockUA", "not valid json", "vi").unwrap();
+        }
+
+        let status = commands::verify_zalo_session("imei-invalid".to_string(), state.clone())
+            .await
+            .unwrap();
+        assert!(!status.is_valid);
+
+        let conn = state.conn.lock().unwrap();
+        let (auth_status, auth_checked_at, auth_error): (String, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT auth_status, auth_checked_at, auth_error FROM zalo_sessions WHERE imei = ?1",
+                ["imei-invalid"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(auth_status, "expired");
+        assert!(auth_checked_at.is_some());
+        assert!(auth_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Invalid cookies format")));
+
+        let runtime_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_accounts WHERE provider_account_key = ?1",
+                ["imei-invalid"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runtime_rows, 0);
+    }
+
+    #[test]
+    fn managed_zalo_accounts_redact_credentials() {
+        let conn = db::init_db(":memory:").unwrap();
+        conn.execute(
+            "INSERT INTO zalo_sessions
+             (imei, user_agent, cookies_json, language, display_name, auth_status)
+             VALUES (?1, ?2, ?3, 'vi', ?4, 'valid')",
+            rusqlite::params![
+                "imei-secret",
+                "secret-user-agent",
+                "secret-cookies",
+                "Hello World"
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_accounts
+             (channel, provider_account_key, display_name, connection_status, capabilities_json, created_at, updated_at)
+             VALUES ('zalo', ?1, ?2, 'connected', '{}', ?3, ?3)",
+            rusqlite::params!["imei-secret", "Hello World", "2026-08-01T00:00:00.000Z"],
+        )
+        .unwrap();
+
+        let accounts = commands::get_managed_zalo_accounts_internal(&conn).unwrap();
+        let json = serde_json::to_string(&accounts).unwrap();
+
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].runtime_status, "connected");
+        assert!(!json.contains("secret-cookies"));
+        assert!(!json.contains("secret-user-agent"));
+        assert!(!json.contains("cookies_json"));
+        assert!(!json.contains("user_agent"));
+    }
+
+    #[test]
+    fn managed_smtp_accounts_redact_password() {
+        let conn = db::init_db(":memory:").unwrap();
+        db::save_smtp_server(
+            &conn,
+            &crate::models::SmtpServer {
+                id: None,
+                name: "Primary SMTP".to_string(),
+                host: "smtp.example.com".to_string(),
+                port: 587,
+                username: "sender@example.com".to_string(),
+                password: "secret-password".to_string(),
+                from_email: "sender@example.com".to_string(),
+                from_name: "Sales".to_string(),
+                security: "STARTTLS".to_string(),
+                created_at: String::new(),
+            },
+        )
+        .unwrap();
+
+        let accounts = commands::get_managed_smtp_accounts_internal(&conn).unwrap();
+        let json = serde_json::to_string(&accounts).unwrap();
+
+        assert_eq!(accounts.len(), 1);
+        assert!(!json.contains("secret-password"));
+        assert!(!json.contains("password"));
     }
 
     #[test]

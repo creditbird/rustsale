@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use zca_rs::listener::ListenerEvent;
-use zca_rs::models::ThreadType;
+use zca_rs::models::{
+    EventReactions, Message, Reaction, TMessage, TReaction, TReactionContent, TReactionMsg,
+    ThreadType, UserMessage,
+};
 
 use crate::conversation::events::ConversationEventPublisher;
 use crate::conversation::migration::migrate;
@@ -12,6 +15,66 @@ use crate::conversation::types::{MessageStatus, SendConversationMessageRequest};
 use crate::conversation::zalo::client::ZaloClient;
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
 use crate::db::open_db_connection;
+
+fn direct_message_event(message_id: &str) -> ListenerEvent {
+    let raw_message: TMessage = serde_json::from_value(serde_json::json!({
+        "actionId": "action-1",
+        "msgId": message_id,
+        "cliMsgId": format!("client-{message_id}"),
+        "msgType": "webchat",
+        "uidFrom": "peer-uid",
+        "idTo": "0",
+        "dName": "Peer",
+        "ts": "1785492000000",
+        "status": 1,
+        "content": "hello",
+        "notify": "",
+        "ttl": 0,
+        "userId": "",
+        "uin": "",
+        "propertyExt": null,
+        "paramsExt": {"countUnread": 1, "containType": 0, "platformType": 1},
+        "cmd": 501,
+        "st": 0,
+        "at": 0,
+        "realMsgId": format!("real-{message_id}"),
+        "quote": null
+    }))
+    .unwrap();
+
+    ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        raw_message,
+    ))))
+}
+
+fn direct_reaction_event(target_message_id: &str) -> ListenerEvent {
+    ListenerEvent::Reaction(Reaction::new(
+        "self-uid",
+        TReaction {
+            action_id: "reaction-action".to_string(),
+            msg_id: "reaction-event".to_string(),
+            cli_msg_id: "reaction-client".to_string(),
+            msg_type: "1".to_string(),
+            uid_from: "peer-uid".to_string(),
+            id_to: "0".to_string(),
+            d_name: Some("Peer".to_string()),
+            content: TReactionContent {
+                r_msg: vec![TReactionMsg {
+                    g_msg_id: target_message_id.to_string(),
+                    c_msg_id: "old-client-message".to_string(),
+                    msg_type: 1,
+                }],
+                r_icon: EventReactions::Heart,
+                r_type: 1,
+                source: 1,
+            },
+            ts: "1785495600000".to_string(),
+            ttl: 0,
+        },
+        false,
+    ))
+}
 
 pub struct FakeZaloClient {
     pub provider_message_id: Option<String>,
@@ -375,6 +438,16 @@ async fn reconcile_required_updates_checkpoint_with_error_and_emits_invalidation
         Some("Reconcile required".to_string())
     );
 
+    for scope in ["direct_reactions", "group_reactions"] {
+        let detail = harness
+            .service
+            .repository
+            .get_checkpoint_detail(account_id, scope)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.last_error, Some("Reconcile required".to_string()));
+    }
+
     let event_received = rx.try_recv().unwrap();
     assert_eq!(
         event_received.channel,
@@ -384,6 +457,7 @@ async fn reconcile_required_updates_checkpoint_with_error_and_emits_invalidation
         event_received.reason,
         crate::conversation::events::ConversationInvalidationReason::Metadata
     );
+    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -449,6 +523,80 @@ async fn monotonic_checkpoint_prevents_cursor_regression_from_older_or_out_of_or
         detail_2.last_event_at,
         Some("2026-07-31T10:00:00.000Z".to_string())
     );
+}
+
+#[tokio::test]
+async fn reaction_checkpoint_is_isolated_from_message_watermark() {
+    let harness = ServiceHarness::new();
+    let account_id = harness
+        .service
+        .repository
+        .set_account_status(
+            "imei-test",
+            crate::conversation::types::AccountConnectionStatus::Connected,
+            None,
+        )
+        .unwrap();
+    harness
+        .service
+        .repository
+        .update_checkpoint(
+            account_id,
+            "direct_messages",
+            Some("message-newest"),
+            Some("2026-07-31T10:00:00.000Z"),
+            None,
+        )
+        .unwrap();
+
+    harness
+        .service
+        .ingest_zalo_event(
+            "imei-test",
+            Some("Sale 1"),
+            direct_reaction_event("message-old"),
+        )
+        .unwrap();
+
+    assert_eq!(
+        harness
+            .service
+            .repository
+            .get_checkpoint(account_id, "direct_messages")
+            .unwrap(),
+        Some("message-newest".to_string())
+    );
+    assert_eq!(
+        harness
+            .service
+            .repository
+            .get_checkpoint(account_id, "direct_reactions")
+            .unwrap(),
+        Some("reaction-event".to_string())
+    );
+}
+
+#[tokio::test]
+async fn message_checkpoint_failure_is_returned_to_the_supervisor() {
+    let harness = ServiceHarness::new();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "CREATE TRIGGER fail_message_checkpoint BEFORE INSERT ON channel_sync_checkpoints
+         BEGIN SELECT RAISE(ABORT, 'checkpoint unavailable'); END;",
+        [],
+    )
+    .unwrap();
+
+    let error = harness
+        .service
+        .ingest_zalo_event(
+            "imei-test",
+            Some("Sale 1"),
+            direct_message_event("checkpoint-failure-message"),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("checkpoint"));
 }
 
 #[tokio::test]

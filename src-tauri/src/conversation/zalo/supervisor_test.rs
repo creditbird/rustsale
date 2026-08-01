@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use zca_rs::listener::ListenerEvent;
-use zca_rs::models::{Message, ThreadType, UserMessage};
+use zca_rs::models::{
+    EventReactions, Message, Reaction, TReaction, TReactionContent, TReactionMsg, ThreadType,
+    UserMessage,
+};
 
 use crate::conversation::events::{ConversationEventPublisher, ConversationInvalidationReason};
 use crate::conversation::migration::migrate;
@@ -45,6 +48,60 @@ pub fn direct_listener_event(msg_id: &str) -> ListenerEvent {
     ))))
 }
 
+fn direct_old_messages_event(message_ids: &[&str]) -> ListenerEvent {
+    let messages = message_ids
+        .iter()
+        .map(|message_id| match direct_listener_event(message_id) {
+            ListenerEvent::Message(message) => *message,
+            _ => unreachable!(),
+        })
+        .collect();
+
+    ListenerEvent::OldMessages {
+        messages,
+        thread_type: ThreadType::User,
+    }
+}
+
+fn direct_old_reactions_event(page_ids: &[&str]) -> ListenerEvent {
+    let reactions = page_ids
+        .iter()
+        .enumerate()
+        .map(|(index, page_id)| {
+            Reaction::new(
+                "self-uid",
+                TReaction {
+                    action_id: format!("reaction-action-{index}"),
+                    msg_id: format!("reaction-event-{page_id}"),
+                    cli_msg_id: format!("reaction-client-{index}"),
+                    msg_type: "1".to_string(),
+                    uid_from: "peer-uid".to_string(),
+                    id_to: "0".to_string(),
+                    d_name: Some("Peer".to_string()),
+                    content: TReactionContent {
+                        r_msg: vec![TReactionMsg {
+                            g_msg_id: format!("target-message-{page_id}"),
+                            c_msg_id: format!("target-client-{index}"),
+                            msg_type: 1,
+                        }],
+                        r_icon: EventReactions::Heart,
+                        r_type: 1,
+                        source: 1,
+                    },
+                    ts: "1785495600000".to_string(),
+                    ttl: 0,
+                },
+                false,
+            )
+        })
+        .collect();
+
+    ListenerEvent::OldReactions {
+        reactions,
+        is_group: false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedHistoryRequest {
     pub thread_type: ThreadType,
@@ -78,6 +135,11 @@ impl HarnessClient {
 impl ZaloClient for HarnessClient {
     fn subscribe(&self) -> broadcast::Receiver<ListenerEvent> {
         self.event_tx.subscribe()
+    }
+
+    fn start(&self) -> anyhow::Result<()> {
+        let _ = self.event_tx.send(ListenerEvent::Connected);
+        Ok(())
     }
 
     fn request_old_messages(
@@ -363,6 +425,73 @@ async fn supervisor_persists_fake_direct_message_and_publishes_invalidation() {
 }
 
 #[tokio::test]
+async fn packet_error_keeps_listener_alive_for_following_messages() {
+    let harness = SupervisorHarness::new().await;
+    let mut events = harness.events.subscribe();
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    harness
+        .factory
+        .emit(
+            "imei-a",
+            ListenerEvent::PacketError {
+                cmd: 501,
+                sub_cmd: 1,
+                error: "invalid packet payload".to_string(),
+            },
+        )
+        .await;
+    harness
+        .factory
+        .emit(
+            "imei-a",
+            direct_listener_event("message-after-packet-error"),
+        )
+        .await;
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.reason == ConversationInvalidationReason::Message {
+                return event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(event.reason, ConversationInvalidationReason::Message);
+    assert_eq!(harness.repository.message_count(), 1);
+    assert_eq!(
+        *harness
+            .factory
+            .connect_counts
+            .lock()
+            .unwrap()
+            .get("imei-a")
+            .unwrap_or(&0),
+        1
+    );
+    assert_eq!(
+        harness
+            .factory
+            .clients
+            .lock()
+            .unwrap()
+            .get("imei-a")
+            .map(|clients| clients.iter().filter(|client| client.is_stopped()).count())
+            .unwrap_or(0),
+        0
+    );
+
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
 async fn lagged_receiver_requests_direct_and_group_reconciliation() {
     let harness = SupervisorHarness::with_listener_capacity(1).await;
     harness.supervisor.start_all().await.unwrap();
@@ -381,6 +510,155 @@ async fn lagged_receiver_requests_direct_and_group_reconciliation() {
         .iter()
         .any(|request| request.thread_type == ThreadType::Group));
     assert_eq!(harness.repository.account_status("imei-a"), "degraded");
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn reactive_history_requests_exactly_five_pages_and_persists_the_last_cursor() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    for page in 1..=5 {
+        let message_id = format!("history-page-{page}");
+        harness
+            .factory
+            .emit("imei-a", direct_old_messages_event(&[&message_id]))
+            .await;
+
+        if page < 5 {
+            harness
+                .factory
+                .wait_for_history_request_count("imei-a", 4 + page)
+                .await;
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let requests = harness.factory.history_requests("imei-a").await;
+    assert_eq!(requests.len(), 8);
+    assert_eq!(
+        requests
+            .iter()
+            .filter_map(|request| request.cursor.as_deref())
+            .collect::<Vec<_>>(),
+        vec![
+            "history-page-1",
+            "history-page-2",
+            "history-page-3",
+            "history-page-4"
+        ]
+    );
+
+    let account_id = harness
+        .repository
+        .get_channel_account_id("imei-a")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        harness
+            .repository
+            .get_checkpoint(account_id, "direct_message_history")
+            .unwrap(),
+        Some("history-page-5".to_string())
+    );
+
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn failed_history_ingest_does_not_request_the_next_page() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    let conn = crate::db::open_db_connection(&harness._db_path).unwrap();
+    conn.execute(
+        "CREATE TRIGGER fail_second_history_message BEFORE INSERT ON messages
+         WHEN NEW.provider_message_id = 'history-page-fail'
+         BEGIN SELECT RAISE(ABORT, 'history page ingest failure'); END;",
+        [],
+    )
+    .unwrap();
+
+    harness
+        .factory
+        .emit(
+            "imei-a",
+            direct_old_messages_event(&["history-page-ok", "history-page-fail"]),
+        )
+        .await;
+    harness.factory.wait_for_stop_count("imei-a", 1).await;
+
+    let requests = harness.factory.history_requests("imei-a").await;
+    assert_eq!(requests.len(), 4);
+    assert_eq!(harness.repository.message_count(), 1);
+
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn reactive_reaction_history_requests_exactly_five_pages() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    for page in 1..=5 {
+        let message_id = format!("reaction-page-{page}");
+        harness
+            .factory
+            .emit("imei-a", direct_old_reactions_event(&[&message_id]))
+            .await;
+
+        if page < 5 {
+            harness
+                .factory
+                .wait_for_history_request_count("imei-a", 4 + page)
+                .await;
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let requests = harness.factory.history_requests("imei-a").await;
+    assert_eq!(requests.len(), 8);
+    assert_eq!(
+        requests
+            .iter()
+            .filter_map(|request| request.cursor.as_deref())
+            .collect::<Vec<_>>(),
+        vec![
+            "reaction-event-reaction-page-1",
+            "reaction-event-reaction-page-2",
+            "reaction-event-reaction-page-3",
+            "reaction-event-reaction-page-4"
+        ]
+    );
+
+    let account_id = harness
+        .repository
+        .get_channel_account_id("imei-a")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        harness
+            .repository
+            .get_checkpoint(account_id, "direct_reaction_history")
+            .unwrap(),
+        Some("reaction-event-reaction-page-5".to_string())
+    );
+
     harness.supervisor.stop_account("imei-a").await;
 }
 

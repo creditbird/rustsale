@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import {
+    restartConversationAccount,
     sendConversationMessage,
     type InboxItem,
     type ConversationRuntimeStatus,
@@ -12,23 +13,29 @@
   import { Button } from '$lib/components/ui/button';
   import * as Select from '$lib/components/ui/select';
   import { Badge } from '$lib/components/ui/badge';
-  import { Send, AlertCircle } from 'lucide-svelte';
+  import { Send, AlertCircle, RefreshCw, Settings2 } from 'lucide-svelte';
 
   let {
     item,
     runtime,
     disabled = false,
-    onQueued
+    onQueued,
+    onOpenSettings = () => {},
+    onRuntimeRefresh = () => {}
   }: {
     item: InboxItem;
     runtime?: ConversationRuntimeStatus;
     disabled?: boolean;
     onQueued?: (message: ConversationMessage) => void;
+    onOpenSettings?: () => void;
+    onRuntimeRefresh?: () => void | Promise<void>;
   } = $props();
 
   let text = $state('');
   let isSending = $state(false);
   let sendError = $state<string | null>(null);
+  let reconnecting = $state(false);
+  let recoveryError = $state<string | null>(null);
 
   let selectedChannelAccountId = $state<number | null>(null);
   let selectedAccountIdString = $state<string>('');
@@ -189,6 +196,21 @@
     }
   }
 
+  async function handleReconnect() {
+    if (!selectedOption?.account?.providerAccountKey || reconnecting) return;
+
+    reconnecting = true;
+    recoveryError = null;
+    try {
+      await restartConversationAccount(selectedOption.account.providerAccountKey);
+      await onRuntimeRefresh();
+    } catch (err) {
+      recoveryError = err instanceof Error ? err.message : String(err);
+    } finally {
+      reconnecting = false;
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -239,9 +261,44 @@
   </div>
 
   {#if statusReason}
+    <div class="text-xs text-destructive bg-destructive/10 p-2 rounded-md flex flex-wrap items-center justify-between gap-2" role="alert">
+      <div class="flex min-w-0 items-center gap-1.5">
+        <AlertCircle class="size-3.5 shrink-0" />
+        <span>{statusReason}</span>
+      </div>
+      <div class="flex shrink-0 items-center gap-1.5">
+        {#if selectedOption?.account?.providerAccountKey}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            class="h-7 gap-1 text-xs"
+            aria-label={`Reconnect ${selectedOption.account.displayName || selectedOption.label}`}
+            onclick={handleReconnect}
+            disabled={reconnecting}
+          >
+            <RefreshCw class="size-3 {reconnecting ? 'animate-spin' : ''}" />
+            Reconnect
+          </Button>
+        {/if}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          class="h-7 gap-1 text-xs"
+          aria-label="Open account settings"
+          onclick={onOpenSettings}
+        >
+          <Settings2 class="size-3" /> Settings
+        </Button>
+      </div>
+    </div>
+  {/if}
+
+  {#if recoveryError}
     <div class="text-xs text-destructive bg-destructive/10 p-2 rounded-md flex items-center gap-1.5" role="alert">
       <AlertCircle class="size-3.5 shrink-0" />
-      <span>{statusReason}</span>
+      <span>{recoveryError}</span>
     </div>
   {/if}
 

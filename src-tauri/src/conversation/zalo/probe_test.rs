@@ -3,7 +3,7 @@ use serde_json::json;
 use std::time::Duration;
 use zca_rs::context::ZaloCookie;
 use zca_rs::listener::ListenerEvent;
-use zca_rs::models::{Message, TMessage, UserMessage};
+use zca_rs::models::{GroupMessage, Message, TGroupMessage, TMessage, UserMessage};
 use zca_rs::{Options, Zalo};
 
 fn direct_message(uid_from: &str, id_to: &str, msg_id: &str) -> TMessage {
@@ -54,8 +54,30 @@ fn probe_summary_records_sanitized_direct_identifiers() {
     assert_eq!(report.self_messages, 0);
 }
 
+#[test]
+fn probe_records_packet_errors_without_exposing_payloads() {
+    let event = ListenerEvent::PacketError {
+        cmd: 501,
+        sub_cmd: 1,
+        error: "invalid packet payload".to_string(),
+    };
+    let mut report = ZaloProbeReport::default();
+
+    observe_listener_event(&mut report, &event);
+
+    assert_eq!(report.error_events, 1);
+    assert_eq!(report.error_message_lengths, vec![22]);
+}
+
 fn next_history_cursor(report: &ZaloProbeReport) -> Option<&str> {
     report.provider_message_ids.last().map(String::as_str)
+}
+
+fn next_direct_history_cursor(report: &ZaloProbeReport) -> Option<&str> {
+    report
+        .direct_provider_message_ids
+        .last()
+        .map(String::as_str)
 }
 
 #[test]
@@ -80,19 +102,54 @@ fn history_cursor_uses_last_provider_message_id() {
     );
 }
 
+#[test]
+fn direct_history_cursor_ignores_group_message_ids() {
+    let direct_event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        direct_message("peer-uid", "0", "direct-1"),
+    ))));
+    let group_event = ListenerEvent::Message(Box::new(Message::Group(GroupMessage::new(
+        "self-uid",
+        TGroupMessage {
+            base: direct_message("group-peer", "group-1", "group-1"),
+            mentions: None,
+        },
+    ))));
+    let mut report = ZaloProbeReport::default();
+
+    observe_listener_event(&mut report, &direct_event);
+    observe_listener_event(&mut report, &group_event);
+
+    assert_eq!(next_direct_history_cursor(&report), Some("direct-1"));
+    assert_eq!(report.group_provider_message_ids, vec!["group-1"]);
+}
+
+#[test]
+fn sanitized_probe_summary_exposes_counts_and_lengths_only() {
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        direct_message("secret-peer-uid", "0", "secret-message-id"),
+    ))));
+    let mut report = ZaloProbeReport::default();
+    observe_listener_event(&mut report, &event);
+
+    let serialized = serde_json::to_string(&report.sanitized_summary()).unwrap();
+
+    assert!(!serialized.contains("secret-peer-uid"));
+    assert!(!serialized.contains("secret-message-id"));
+    assert!(serialized.contains("providerMessageIdLengths"));
+    assert!(serialized.contains("threadIdLengths"));
+}
+
 fn required_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("missing required environment variable {name}"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a non-production Zalo session and explicit live credentials"]
 async fn live_zalo_conversation_probe() {
-    let imei = match std::env::var("RUSTSALE_ZALO_PROBE_IMEI") {
-        Ok(v) if !v.is_empty() => v,
-        _ => {
-            println!("Skipping live Zalo probe: RUSTSALE_ZALO_PROBE_IMEI not set in environment");
-            return;
-        }
-    };
+    crate::install_rustls_crypto_provider();
+    let imei = required_env("RUSTSALE_ZALO_PROBE_IMEI");
     let user_agent = required_env("RUSTSALE_ZALO_PROBE_USER_AGENT");
     let cookies: Vec<ZaloCookie> =
         serde_json::from_str(&required_env("RUSTSALE_ZALO_PROBE_COOKIES_JSON"))
@@ -104,10 +161,30 @@ async fn live_zalo_conversation_probe() {
 
     let mut options = Options::default();
     options.self_listen = true;
+    options.auto_start_listener = false;
     let zalo = Zalo::login(imei, user_agent, cookies, options)
         .await
         .expect("Zalo probe login failed");
     let mut receiver = zalo.subscribe();
+    zalo.listener.start().expect("start Zalo probe listener");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match receiver.recv().await {
+                Ok(ListenerEvent::Connected) => break,
+                Ok(ListenerEvent::Error(error)) => {
+                    panic!("Zalo probe listener failed before ready: {error}")
+                }
+                Ok(ListenerEvent::Disconnected { code, reason })
+                | Ok(ListenerEvent::Closed { code, reason }) => {
+                    panic!("Zalo probe listener closed before ready ({code}): {reason}")
+                }
+                Ok(_) => {}
+                Err(error) => panic!("Zalo probe readiness stream failed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("Zalo probe listener readiness timed out");
 
     zalo.listener
         .request_old_messages(zca_rs::models::ThreadType::User, None)
@@ -132,7 +209,7 @@ async fn live_zalo_conversation_probe() {
     let group_history = zalo
         .get_group_chat_history(&first_group_id, Some(50))
         .await
-        .expect("get group history");
+        .ok();
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_seconds);
     let mut report = ZaloProbeReport::default();
@@ -149,39 +226,111 @@ async fn live_zalo_conversation_probe() {
         }
     }
 
-    if let Some(cursor) = next_history_cursor(&report) {
-        zalo.listener
-            .request_old_messages(zca_rs::models::ThreadType::User, Some(cursor))
-            .expect("request second direct-history page");
+    println!(
+        "initialProbe={}",
+        serde_json::to_string(&report.sanitized_summary())
+            .expect("serialize initial sanitized probe report")
+    );
+
+    let first_direct_batch_count = report.old_direct_batches;
+    let direct_cursor = next_direct_history_cursor(&report)
+        .expect("direct history must expose a provider message ID cursor")
+        .to_string();
+    zalo.listener
+        .request_old_messages(zca_rs::models::ThreadType::User, Some(&direct_cursor))
+        .expect("request second direct-history page");
+
+    let second_page_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while report.old_direct_batches == first_direct_batch_count
+        && tokio::time::Instant::now() < second_page_deadline
+    {
+        match tokio::time::timeout(Duration::from_secs(2), receiver.recv()).await {
+            Ok(Ok(event)) => observe_listener_event(&mut report, &event),
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                panic!("probe receiver lagged by {skipped} events while waiting for page 2");
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("probe listener closed while waiting for page 2");
+            }
+            Err(_) => {}
+        }
     }
+    assert!(
+        report.old_direct_batches > first_direct_batch_count,
+        "second direct-history page not observed"
+    );
 
     zalo.listener.stop();
     tokio::time::sleep(Duration::from_secs(2)).await;
-    zalo.listener.start().expect("restart listener");
     let mut reconnect_receiver = zalo.subscribe();
+    zalo.listener.start().expect("restart listener");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match reconnect_receiver.recv().await {
+                Ok(ListenerEvent::Connected) => break,
+                Ok(ListenerEvent::Error(error)) => {
+                    panic!("Zalo probe listener failed during reconnect: {error}")
+                }
+                Ok(ListenerEvent::Disconnected { code, reason })
+                | Ok(ListenerEvent::Closed { code, reason }) => {
+                    panic!("Zalo probe listener closed during reconnect ({code}): {reason}")
+                }
+                Ok(_) => {}
+                Err(error) => panic!("Zalo probe reconnect stream failed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("Zalo probe reconnect readiness timed out");
+    let reconnect_batch_count = report.old_direct_batches;
+    let reconnect_cursor = next_direct_history_cursor(&report)
+        .expect("reconnect history must expose a provider message ID cursor")
+        .to_string();
     zalo.listener
-        .request_old_messages(
-            zca_rs::models::ThreadType::User,
-            next_history_cursor(&report),
-        )
+        .request_old_messages(zca_rs::models::ThreadType::User, Some(&reconnect_cursor))
         .expect("request reconciliation after reconnect");
 
-    let reconnect_event = tokio::time::timeout(Duration::from_secs(20), reconnect_receiver.recv())
-        .await
-        .expect("no listener event after reconnect")
-        .expect("listener closed after reconnect");
-    observe_listener_event(&mut report, &reconnect_event);
+    let reconnect_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while report.old_direct_batches == reconnect_batch_count
+        && tokio::time::Instant::now() < reconnect_deadline
+    {
+        match tokio::time::timeout(Duration::from_secs(2), reconnect_receiver.recv()).await {
+            Ok(Ok(event)) => observe_listener_event(&mut report, &event),
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                panic!("probe receiver lagged by {skipped} events after reconnect");
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("probe listener closed after reconnect");
+            }
+            Err(_) => {}
+        }
+    }
+    assert!(
+        report.old_direct_batches > reconnect_batch_count,
+        "direct-history reconciliation not observed after reconnect"
+    );
 
     println!(
         "{}",
-        serde_json::to_string_pretty(&report).expect("serialize sanitized probe report")
+        serde_json::to_string_pretty(&report.sanitized_summary())
+            .expect("serialize sanitized probe report")
     );
     println!(
-        "groupHistory={{groupIdLength:{},messageCount:{},more:{},lastActionIdLength:{}}}",
+        "groupHistory={{groupIdLength:{},available:{},messageCount:{},more:{},lastActionIdLength:{}}}",
         first_group_id.len(),
-        group_history.group_msgs.len(),
-        group_history.more,
-        group_history.last_action_id.len()
+        group_history.is_some(),
+        group_history
+            .as_ref()
+            .map(|history| history.group_msgs.len())
+            .unwrap_or_default(),
+        group_history
+            .as_ref()
+            .map(|history| history.more)
+            .unwrap_or_default(),
+        group_history
+            .as_ref()
+            .map(|history| history.last_action_id.len())
+            .unwrap_or_default()
     );
 
     assert!(
@@ -194,7 +343,10 @@ async fn live_zalo_conversation_probe() {
     );
     assert!(report.direct_messages >= 1, "no direct message observed");
     assert!(
-        report.group_messages >= 1 || !group_history.group_msgs.is_empty(),
+        report.group_messages >= 1
+            || group_history
+                .as_ref()
+                .is_some_and(|history| !history.group_msgs.is_empty()),
         "no group message observed"
     );
     assert!(
@@ -204,6 +356,10 @@ async fn live_zalo_conversation_probe() {
     assert!(
         !report.client_message_ids.is_empty(),
         "client message IDs were empty"
+    );
+    assert_eq!(
+        report.error_events, 0,
+        "protocol decode errors were observed"
     );
 }
 

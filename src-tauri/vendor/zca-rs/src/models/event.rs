@@ -1,5 +1,17 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+fn deserialize_string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::String(value) => Ok(value),
+        serde_json::Value::Number(value) => Ok(value.to_string()),
+        _ => Ok(String::new()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FriendEventType {
     Add = 0,
@@ -925,8 +937,10 @@ pub enum EventReactions {
 #[serde(rename_all = "camelCase")]
 pub struct TReactionMsg {
     #[serde(rename = "gMsgID")]
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub g_msg_id: String,
     #[serde(rename = "cMsgID")]
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub c_msg_id: String,
     pub msg_type: i32,
 }
@@ -951,6 +965,7 @@ pub struct TReaction {
     pub id_to: String,
     pub d_name: Option<String>,
     pub content: TReactionContent,
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub ts: String,
     pub ttl: i32,
 }
@@ -1139,6 +1154,32 @@ pub fn get_group_event_type(act: &str) -> GroupEventType {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn reaction_history_accepts_numeric_timestamp() {
+        let reaction: TReaction = serde_json::from_value(serde_json::json!({
+            "actionId": "reaction-action",
+            "msgId": "reaction-event",
+            "cliMsgId": "reaction-client",
+            "msgType": "1",
+            "uidFrom": "peer-1",
+            "idTo": "0",
+            "dName": "Peer",
+            "content": {
+                "rMsg": [{"gMsgID": 1785483160459_i64, "cMsgID": 1785483160460_i64, "msgType": 1}],
+                "rIcon": ":-h",
+                "rType": 1,
+                "source": 1
+            },
+            "ts": 1785483160459_i64,
+            "ttl": 0
+        }))
+        .unwrap();
+
+        assert_eq!(reaction.ts, "1785483160459");
+        assert_eq!(reaction.content.r_msg[0].g_msg_id, "1785483160459");
+        assert_eq!(reaction.content.r_msg[0].c_msg_id, "1785483160460");
+    }
 
     #[test]
     fn friend_request_event_parses_typed_payload() {

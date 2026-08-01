@@ -81,6 +81,7 @@ import {
   getConversationTimeline,
   initConversationEventBridge,
   linkConversationIdentity,
+  relinkConversationLead,
   unlinkConversationIdentity,
   unlinkConversationLead,
   listConversationInbox,
@@ -176,6 +177,17 @@ describe('conversationService IPC command wrappers', () => {
       command: 'unlink_conversation_lead',
       args: {
         request: { leadId: 7 }
+      }
+    });
+  });
+
+  test('relinkConversationLead calls relink_conversation_lead with request wrapper', async () => {
+    await relinkConversationLead(7, 8);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'relink_conversation_lead',
+      args: {
+        request: { sourceLeadId: 7, targetLeadId: 8 }
       }
     });
   });

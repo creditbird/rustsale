@@ -39,11 +39,25 @@ mock.module('@tauri-apps/api/core', () => ({
     invokedCommands.push({ command, args });
     switch (command) {
       case 'get_zalo_sessions':
+        return Promise.reject(new Error('Outreach must not request credential-bearing sessions'));
+      case 'get_managed_zalo_accounts':
         if (sessionFailuresRemaining > 0) {
           sessionFailuresRemaining -= 1;
           return Promise.reject(new Error('session load failed'));
         }
-        return Promise.resolve(mockSessions);
+        return Promise.resolve(
+          mockSessions.map((session) => ({
+            accountKey: session.imei,
+            displayName: `Zalo ${session.imei}`,
+            avatar: null,
+            authStatus: 'valid',
+            authCheckedAt: '2026-08-01T08:00:00Z',
+            authError: null,
+            runtimeStatus: 'connected',
+            lastConnectedAt: '2026-08-01T08:00:00Z',
+            lastError: null
+          }))
+        );
       case 'verify_all_zalo_sessions':
         return Promise.resolve(
           mockSessions.map((s) => ({
@@ -110,18 +124,6 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import ZaloOutreach from '../ZaloOutreach.svelte';
 import { notifyLeadsChanged } from '$lib/services/crmService';
 
-async function waitForListener(eventName: string): Promise<EventListener> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const listener = eventListeners.get(eventName);
-    if (listener) {
-      return listener;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
-
-  throw new Error(`Listener ${eventName} was not registered`);
-}
-
 beforeEach(() => {
   mockSessions = [];
   mockCategories = [];
@@ -137,42 +139,7 @@ afterEach(() => {
   eventListeners.clear();
 });
 
-test('shows a terminal QR login error instead of leaving the modal pending', async () => {
-  render(ZaloOutreach);
-
-  await fireEvent.click(screen.getByRole('button', { name: /Add Session/ }));
-  const errorListener = await waitForListener('zalo-qr-error');
-
-  errorListener({
-    payload: {
-      message: 'Zalo confirmed the scan but did not finish creating a session. Please try again.'
-    }
-  });
-
-  expect(
-    await screen.findByText('Zalo confirmed the scan but did not finish creating a session. Please try again.')
-  ).toBeTruthy();
-});
-
-test('loads the saved session and closes the QR modal after login succeeds', async () => {
-  render(ZaloOutreach);
-
-  await fireEvent.click(screen.getByRole('button', { name: /Add Session/ }));
-  const successListener = await waitForListener('zalo-qr-success');
-  mockSessions = [{
-    imei: 'device-imei-123',
-    user_agent: 'Mozilla/5.0',
-    cookies_json: '[]',
-    language: 'vi'
-  }];
-
-  successListener({ payload: { imei: 'device-imei-123' } });
-
-  expect((await screen.findAllByText(/device-imei-123/, {}, { timeout: 2500 })).length).toBeGreaterThan(0);
-  expect(screen.queryByText('Zalo QR Login')).toBeNull();
-});
-
-test('verifies Zalo sessions only after the user clicks Check All', async () => {
+test('uses redacted accounts and delegates account management to Settings', async () => {
   mockSessions = [{
     imei: 'device-imei-456',
     user_agent: 'Mozilla/5.0',
@@ -180,14 +147,18 @@ test('verifies Zalo sessions only after the user clicks Check All', async () => 
     language: 'vi'
   }];
 
-  render(ZaloOutreach, { props: { activeTab: 'outreach' } });
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  const onOpenSettings = mock(() => {});
+  render(ZaloOutreach, { props: { activeTab: 'outreach', onOpenSettings } });
 
+  expect((await screen.findAllByText(/Zalo device-imei-456/)).length).toBeGreaterThan(0);
+  await fireEvent.click(screen.getByRole('button', { name: /Manage accounts in Settings/i }));
+
+  expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  expect(countCommand('get_managed_zalo_accounts')).toBe(1);
+  expect(countCommand('get_zalo_sessions')).toBe(0);
   expect(countCommand('verify_all_zalo_sessions')).toBe(0);
-
-  await fireEvent.click(screen.getByRole('button', { name: /Check All/i }));
-
-  expect((await screen.findAllByText(/User device-imei-456/)).length).toBeGreaterThan(0);
+  expect(countCommand('start_zalo_qr_login')).toBe(0);
+  expect(countCommand('delete_zalo_session')).toBe(0);
 });
 
 test('does not re-fetch Zalo outreach data on clean tab switch without background events', async () => {
@@ -204,7 +175,7 @@ test('does not re-fetch Zalo outreach data on clean tab switch without backgroun
 
   const initialCounts = {
     categories: countCommand('get_categories'),
-    sessions: countCommand('get_zalo_sessions'),
+    sessions: countCommand('get_managed_zalo_accounts'),
     templates: countCommand('get_outreach_templates'),
     leads: countCommand('get_outreach_leads_page')
   };
@@ -214,7 +185,7 @@ test('does not re-fetch Zalo outreach data on clean tab switch without backgroun
   await new Promise((resolve) => setTimeout(resolve, 100));
 
   expect(countCommand('get_categories')).toBe(initialCounts.categories);
-  expect(countCommand('get_zalo_sessions')).toBe(initialCounts.sessions);
+  expect(countCommand('get_managed_zalo_accounts')).toBe(initialCounts.sessions);
   expect(countCommand('get_outreach_templates')).toBe(initialCounts.templates);
   expect(countCommand('get_outreach_leads_page')).toBe(initialCounts.leads);
 });
@@ -224,7 +195,7 @@ test('performs one base refresh when mounted active', async () => {
   await new Promise((resolve) => setTimeout(resolve, 150));
 
   expect(countCommand('get_categories')).toBe(1);
-  expect(countCommand('get_zalo_sessions')).toBe(1);
+  expect(countCommand('get_managed_zalo_accounts')).toBe(1);
   expect(countCommand('get_outreach_templates')).toBe(1);
   expect(countCommand('get_outreach_leads_page')).toBe(1);
 });
@@ -235,13 +206,13 @@ test('retries a failed initial session load after tab revisit', async () => {
 
   await view.rerender({ activeTab: 'outreach' });
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const callsAfterFailure = countCommand('get_zalo_sessions');
+  const callsAfterFailure = countCommand('get_managed_zalo_accounts');
 
   await view.rerender({ activeTab: 'dashboard' });
   await view.rerender({ activeTab: 'outreach' });
   await new Promise((resolve) => setTimeout(resolve, 150));
 
-  expect(countCommand('get_zalo_sessions')).toBeGreaterThan(callsAfterFailure);
+  expect(countCommand('get_managed_zalo_accounts')).toBeGreaterThan(callsAfterFailure);
 });
 
 test('refreshes CRM data without re-verifying sessions after lead changes', async () => {

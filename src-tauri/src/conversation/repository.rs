@@ -380,22 +380,12 @@ impl ConversationRepository {
                 })?
                 .collect::<Result<Vec<_>>>()?;
 
-            let primary_identity_id: Option<i64> = conn
-                .query_row(
-                    "SELECT id FROM channel_identities
-                     WHERE lead_id = ?1
-                     ORDER BY updated_at DESC, id DESC LIMIT 1",
-                    [lead_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-
             items.push(InboxItem {
                 key: format!("lead:{lead_id}"),
                 kind: InboxItemKind::Customer,
                 lead_id: Some(lead_id),
                 conversation_id: None,
-                identity_id: primary_identity_id,
+                identity_id: None,
                 title,
                 avatar_url,
                 last_message_preview,
@@ -780,6 +770,34 @@ impl ConversationRepository {
              SET lead_id = NULL, link_source = 'unlinked', link_confidence = 0.0, verified_at = NULL, updated_at = ?1
              WHERE lead_id = ?2",
             params![utc_now(), lead_id],
+        )?;
+        tx.commit()?;
+        Ok(conversation_id)
+    }
+
+    pub fn relink_lead(&self, source_lead_id: i64, target_lead_id: i64) -> Result<i64> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let conversation_id = tx
+            .query_row(
+                "SELECT cp.conversation_id
+                 FROM conversation_participants cp
+                 JOIN channel_conversations cc ON cc.id = cp.conversation_id
+                 JOIN channel_identities ci ON ci.id = cp.identity_id
+                 WHERE ci.lead_id = ?1 AND cc.kind IN ('direct', 'email_thread')
+                 ORDER BY cc.last_message_at DESC, cc.id DESC
+                 LIMIT 1",
+                [source_lead_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let now = utc_now();
+        tx.execute(
+            "UPDATE channel_identities
+             SET lead_id = ?1, link_source = 'manual', link_confidence = 1.0, verified_at = ?2, updated_at = ?2
+             WHERE lead_id = ?3",
+            params![target_lead_id, now, source_lead_id],
         )?;
         tx.commit()?;
         Ok(conversation_id)
