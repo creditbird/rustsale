@@ -26,12 +26,21 @@
   import ConversationSidebar from './ConversationSidebar.svelte';
   import ChannelBadges from './ChannelBadges.svelte';
   import UnknownContactActions from './UnknownContactActions.svelte';
+  import LinkedLeadActions from './LinkedLeadActions.svelte';
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
   import { Button } from '$lib/components/ui/button';
   import { AlertCircle, RefreshCw, Users, MessageSquare } from 'lucide-svelte';
 
-  let { activeTab = 'conversation' }: { activeTab?: string } = $props();
+  let {
+    activeTab = 'conversation',
+    onOpenSettings = () => {},
+    runtimeRefreshIntervalMs = 5_000
+  }: {
+    activeTab?: string;
+    onOpenSettings?: () => void;
+    runtimeRefreshIntervalMs?: number;
+  } = $props();
 
   let inbox = $state<InboxItem[]>([]);
   let inboxLoading = $state(false);
@@ -41,6 +50,7 @@
   let runtime = $state<ConversationRuntimeStatus>({ accounts: [] });
   let runtimeLoading = $state(false);
   let runtimeError = $state<string | null>(null);
+  let runtimeRefreshInFlight = false;
 
   // Variant caching and staleness
   let variantsCache = new TimelineCache(MAX_CHANNEL_VARIANTS);
@@ -93,6 +103,16 @@
     }
   });
 
+  $effect(() => {
+    if (activeTab !== 'conversation' || runtimeRefreshIntervalMs <= 0) return;
+
+    const interval = setInterval(() => {
+      void refreshRuntimeStatus(true);
+    }, runtimeRefreshIntervalMs);
+
+    return () => clearInterval(interval);
+  });
+
   // Event Bridge registration
   onMount(() => {
     const cleanupBridge = initConversationEventBridge();
@@ -139,15 +159,18 @@
     }
   }
 
-  async function refreshRuntimeStatus() {
-    runtimeLoading = true;
+  async function refreshRuntimeStatus(silent = false) {
+    if (runtimeRefreshInFlight) return;
+    runtimeRefreshInFlight = true;
+    if (!silent) runtimeLoading = true;
     runtimeError = null;
     try {
       runtime = await getConversationRuntimeStatus();
     } catch (err) {
       runtimeError = err instanceof Error ? err.message : String(err);
     } finally {
-      runtimeLoading = false;
+      if (!silent) runtimeLoading = false;
+      runtimeRefreshInFlight = false;
     }
   }
 
@@ -423,6 +446,11 @@
     refreshOpenTimeline();
   }
 
+  function handleUnlinked() {
+    refreshInbox();
+    refreshOpenTimeline();
+  }
+
   function getParticipantsPreview(item: InboxItem): string {
     if (!item.participants || item.participants.length === 0) return '';
     return item.participants.map((p) => p.displayName || 'Thành viên').join(', ');
@@ -477,6 +505,8 @@
 
           {#if selectedItem.kind === 'unknown'}
             <UnknownContactActions item={selectedItem} onLinked={handleLinked} />
+          {:else if selectedItem.kind === 'lead' || selectedItem.kind === 'customer'}
+            <LinkedLeadActions item={selectedItem} onRelinked={handleLinked} onUnlinked={handleUnlinked} />
           {/if}
         </div>
 
@@ -503,7 +533,7 @@
             type="button"
             variant="outline"
             size="sm"
-            onclick={refreshRuntimeStatus}
+            onclick={() => refreshRuntimeStatus()}
             class="h-7 text-xs flex items-center gap-1 shrink-0"
           >
             <RefreshCw class="w-3 h-3" />
@@ -531,6 +561,8 @@
         runtime={runtime}
         disabled={runtimeLoading}
         onQueued={handleQueuedMessage}
+        {onOpenSettings}
+        onRuntimeRefresh={() => refreshRuntimeStatus()}
       />
     {:else}
       <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-center">

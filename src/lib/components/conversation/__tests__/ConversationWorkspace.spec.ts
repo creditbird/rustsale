@@ -256,6 +256,23 @@ describe('ConversationWorkspace Component', () => {
     expect(mockGetConversationRuntimeStatus).toHaveBeenCalledTimes(1);
   });
 
+  test('2b. Runtime polling runs only while Conversations is active', async () => {
+    const { rerender } = render(ConversationWorkspace, {
+      props: { activeTab: 'conversation', runtimeRefreshIntervalMs: 15 }
+    });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 55));
+
+    expect(mockGetConversationRuntimeStatus.mock.calls.length).toBeGreaterThan(1);
+
+    await rerender({ activeTab: 'crm', runtimeRefreshIntervalMs: 15 });
+    await tick();
+    const callsWhileActive = mockGetConversationRuntimeStatus.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mockGetConversationRuntimeStatus).toHaveBeenCalledTimes(callsWhileActive);
+  });
+
   test('3. Selecting customer activates all available badges and calls getContactTimeline(leadId, activeChannels, null, 50)', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();
@@ -450,5 +467,21 @@ describe('ConversationWorkspace Component', () => {
 
     const bubbles = timelineContainer?.querySelectorAll('[data-message-id="999"]');
     expect(bubbles?.length).toBe(1);
+  });
+
+  test('12. Renders LinkedLeadActions when selectedItem.kind === "lead"', async () => {
+    const mockLeadItem: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead-1',
+      kind: 'lead'
+    };
+    mockListConversationInbox.mockImplementationOnce(async () => [mockLeadItem]);
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(screen.getByRole('button', { name: /Đổi lead/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Hủy liên kết/i })).toBeTruthy();
   });
 });

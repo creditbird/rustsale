@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 
 export type Channel = 'zalo' | 'whatsapp' | 'messenger' | 'email';
 export type ConversationKind = 'direct' | 'group' | 'email_thread';
-export type InboxItemKind = 'customer' | 'unknown' | 'group';
+export type InboxItemKind = 'customer' | 'unknown' | 'group' | 'lead';
 export type MessageDirection = 'inbound' | 'outbound' | 'system';
 export type MessageStatus =
   | 'queued'
