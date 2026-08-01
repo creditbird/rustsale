@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 
 export type Channel = 'zalo' | 'whatsapp' | 'messenger' | 'email';
 export type ConversationKind = 'direct' | 'group' | 'email_thread';
-export type InboxItemKind = 'customer' | 'unknown' | 'group' | 'lead';
+export type InboxItemKind = 'customer' | 'unknown' | 'group';
 export type MessageDirection = 'inbound' | 'outbound' | 'system';
 export type MessageStatus =
   | 'queued'
@@ -140,6 +140,9 @@ export const linkConversationIdentity = (identityId: number, leadId: number) =>
 
 export const unlinkConversationIdentity = (identityId: number) =>
   invoke<void>('unlink_conversation_identity', { request: { identityId } });
+
+export const unlinkConversationLead = (leadId: number) =>
+  invoke<void>('unlink_conversation_lead', { request: { leadId } });
 
 export const sendConversationMessage = (request: SendConversationMessageRequest) =>
   invoke<ConversationMessage>('send_conversation_message', { request });

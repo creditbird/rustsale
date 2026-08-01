@@ -82,6 +82,7 @@ import {
   initConversationEventBridge,
   linkConversationIdentity,
   unlinkConversationIdentity,
+  unlinkConversationLead,
   listConversationInbox,
   onConversationInvalidated,
   resetConversationEventBridgeState,
@@ -164,6 +165,17 @@ describe('conversationService IPC command wrappers', () => {
       command: 'unlink_conversation_identity',
       args: {
         request: { identityId: 10 }
+      }
+    });
+  });
+
+  test('unlinkConversationLead calls unlink_conversation_lead with request wrapper', async () => {
+    await unlinkConversationLead(7);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'unlink_conversation_lead',
+      args: {
+        request: { leadId: 7 }
       }
     });
   });
