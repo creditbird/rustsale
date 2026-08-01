@@ -226,6 +226,12 @@ pub struct UnlinkIdentityRequest {
     pub identity_id: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnlinkLeadRequest {
+    pub lead_id: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountConnectionStatus {

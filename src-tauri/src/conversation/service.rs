@@ -79,6 +79,20 @@ impl ConversationService {
         Ok(())
     }
 
+    pub fn unlink_lead(&self, lead_id: i64) -> Result<()> {
+        let conversation_id = self.repository.unlink_lead(lead_id)?;
+        if conversation_id > 0 {
+            self.events.publish(ConversationInvalidatedEvent {
+                conversation_id,
+                lead_id: Some(lead_id),
+                channel: Channel::Zalo,
+                reason: ConversationInvalidationReason::Link,
+                message_id: None,
+            });
+        }
+        Ok(())
+    }
+
     pub fn ingest_zalo_event(
         &self,
         provider_account_key: &str,

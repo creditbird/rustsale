@@ -222,6 +222,7 @@ pub fn run() {
             conversation::commands::get_conversation_timeline,
             conversation::commands::link_conversation_identity,
             conversation::commands::unlink_conversation_identity,
+            conversation::commands::unlink_conversation_lead,
             conversation::commands::send_conversation_message,
             conversation::commands::get_conversation_runtime_status,
             conversation::commands::restart_conversation_account

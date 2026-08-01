@@ -280,3 +280,53 @@ async fn test_conversation_state_commands_integration() {
     };
     let _ = send_conversation_message(state.clone(), req);
 }
+
+#[tokio::test]
+async fn test_unlink_conversation_lead_command() {
+    use super::commands::{unlink_conversation_lead, ConversationState};
+    use super::types::UnlinkLeadRequest;
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    harness.insert_lead(7, "Lead Seven");
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-1"))
+        .unwrap();
+    let identity_id = applied.identity_id.unwrap();
+    harness.service.link_identity(identity_id, 7).unwrap();
+
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+    ));
+
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+
+    let conv_state = ConversationState {
+        service: conversation_service,
+        zalo_supervisor,
+    };
+
+    let app = mock_builder()
+        .manage(conv_state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+
+    let state = app.state::<ConversationState>();
+    let mut receiver = harness.events.subscribe();
+
+    unlink_conversation_lead(state, UnlinkLeadRequest { lead_id: 7 }).unwrap();
+
+    let event = receiver.try_recv().unwrap();
+    assert_eq!(event.reason, ConversationInvalidationReason::Link);
+    assert_eq!(event.lead_id, Some(7));
+    assert_eq!(event.conversation_id, applied.conversation_id);
+}

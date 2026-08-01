@@ -500,8 +500,34 @@ fn unlink_identity_resets_lead_id_and_returns_conversation_id() {
     let identity_id = applied.identity_id.expect("identity exists");
     harness.repository.link_identity(identity_id, 42).unwrap();
 
+    let inbox_before = harness.repository.list_inbox().unwrap();
+    let customer_item = inbox_before
+        .iter()
+        .find(|i| i.lead_id == Some(42))
+        .unwrap();
+    assert_eq!(customer_item.identity_id, Some(identity_id));
+
     let conv_id = harness.repository.unlink_identity(identity_id).unwrap();
     assert!(conv_id > 0);
+
+    // Direct DB assertions
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let (db_lead_id, link_source, link_confidence, verified_at): (
+        Option<i64>,
+        String,
+        f64,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT lead_id, link_source, link_confidence, verified_at FROM channel_identities WHERE id = ?1",
+            [identity_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(db_lead_id, None);
+    assert_eq!(link_source, "unlinked");
+    assert_eq!(link_confidence, 0.0);
+    assert_eq!(verified_at, None);
 
     let inbox = harness.repository.list_inbox().unwrap();
     let item = inbox
@@ -510,4 +536,42 @@ fn unlink_identity_resets_lead_id_and_returns_conversation_id() {
         .unwrap();
     assert_eq!(item.kind, InboxItemKind::Unknown);
     assert_eq!(item.lead_id, None);
+}
+
+#[test]
+fn unlink_lead_resets_lead_id_and_returns_conversation_id() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute("INSERT INTO leads (id, name) VALUES (42, 'Lead 42')", [])
+        .unwrap();
+    drop(conn);
+
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-1"))
+        .unwrap();
+    let identity_id = applied.identity_id.expect("identity exists");
+    harness.repository.link_identity(identity_id, 42).unwrap();
+
+    let conv_id = harness.repository.unlink_lead(42).unwrap();
+    assert_eq!(conv_id, applied.conversation_id);
+
+    // Direct DB assertions
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let (db_lead_id, link_source, link_confidence, verified_at): (
+        Option<i64>,
+        String,
+        f64,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT lead_id, link_source, link_confidence, verified_at FROM channel_identities WHERE id = ?1",
+            [identity_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(db_lead_id, None);
+    assert_eq!(link_source, "unlinked");
+    assert_eq!(link_confidence, 0.0);
+    assert_eq!(verified_at, None);
 }

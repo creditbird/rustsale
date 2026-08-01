@@ -2,6 +2,7 @@ use super::service::ConversationService;
 use super::types::{
     Channel, ConversationMessage, ConversationRuntimeStatus, InboxItem, LinkIdentityRequest,
     SendConversationMessageRequest, TimelineCursor, TimelinePage, UnlinkIdentityRequest,
+    UnlinkLeadRequest,
 };
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
@@ -67,6 +68,17 @@ pub fn unlink_conversation_identity(
     state
         .service
         .unlink_identity(request.identity_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn unlink_conversation_lead(
+    state: tauri::State<'_, ConversationState>,
+    request: UnlinkLeadRequest,
+) -> Result<(), String> {
+    state
+        .service
+        .unlink_lead(request.lead_id)
         .map_err(|error| error.to_string())
 }
 
