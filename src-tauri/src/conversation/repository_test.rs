@@ -504,7 +504,10 @@ fn unlink_identity_resets_lead_id_and_returns_conversation_id() {
     assert!(conv_id > 0);
 
     let inbox = harness.repository.list_inbox().unwrap();
-    let item = inbox.iter().find(|i| i.conversation_id == Some(conv_id)).unwrap();
+    let item = inbox
+        .iter()
+        .find(|i| i.identity_id == Some(identity_id))
+        .unwrap();
     assert_eq!(item.kind, InboxItemKind::Unknown);
     assert_eq!(item.lead_id, None);
 }

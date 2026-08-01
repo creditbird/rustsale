@@ -138,6 +138,9 @@ export const getConversationTimeline = (
 export const linkConversationIdentity = (identityId: number, leadId: number) =>
   invoke<void>('link_conversation_identity', { request: { identityId, leadId } });
 
+export const unlinkConversationIdentity = (identityId: number) =>
+  invoke<void>('unlink_conversation_identity', { request: { identityId } });
+
 export const sendConversationMessage = (request: SendConversationMessageRequest) =>
   invoke<ConversationMessage>('send_conversation_message', { request });
 
