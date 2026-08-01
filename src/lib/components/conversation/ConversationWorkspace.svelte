@@ -505,7 +505,7 @@
 
           {#if selectedItem.kind === 'unknown'}
             <UnknownContactActions item={selectedItem} onLinked={handleLinked} />
-          {:else if selectedItem.kind === 'customer' || selectedItem.kind === 'lead'}
+          {:else if selectedItem.kind === 'customer'}
             <LinkedLeadActions item={selectedItem} onRelinked={handleLinked} onUnlinked={handleUnlinked} />
           {/if}
         </div>

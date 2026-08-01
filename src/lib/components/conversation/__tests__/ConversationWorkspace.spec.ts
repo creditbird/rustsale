@@ -469,11 +469,11 @@ describe('ConversationWorkspace Component', () => {
     expect(bubbles?.length).toBe(1);
   });
 
-  test('12. Renders LinkedLeadActions when selectedItem.kind === "lead"', async () => {
+  test('12. Renders LinkedLeadActions when selectedItem.kind === "customer"', async () => {
     const mockLeadItem: InboxItem = {
       ...mockCustomerItem,
-      key: 'lead-1',
-      kind: 'lead'
+      key: 'customer-1',
+      kind: 'customer'
     };
     mockListConversationInbox.mockImplementationOnce(async () => [mockLeadItem]);
 
