@@ -62,6 +62,40 @@ fn inbound_direct_message_links_peer_as_sender_and_participant() {
 }
 
 #[test]
+fn outbound_direct_message_does_not_use_account_name_for_peer_identity() {
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        base_message("0", "peer-uid", "message-2", json!("hello")),
+    ))));
+
+    let mutations = normalize_listener_event("imei-a", Some("Probe Sender"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+
+    assert_eq!(message.external_thread_id, "peer-uid");
+    assert_eq!(
+        message.direction,
+        crate::conversation::types::MessageDirection::Outbound
+    );
+    assert!(!message.sender_is_participant);
+    assert_eq!(
+        message
+            .participant
+            .as_ref()
+            .map(|identity| identity.external_id.as_str()),
+        Some("peer-uid")
+    );
+    assert_eq!(
+        message
+            .participant
+            .as_ref()
+            .and_then(|identity| identity.display_name.as_deref()),
+        None
+    );
+}
+
+#[test]
 fn outbound_group_message_does_not_assign_customer_sender_identity() {
     let raw = TGroupMessage {
         base: base_message("0", "group-1", "message-2", json!("hello group")),
@@ -258,4 +292,25 @@ fn packet_error_event_emits_reconcile_required() {
         panic!("expected reconcile");
     };
     assert_eq!(scope, "all");
+}
+
+#[test]
+fn photo_message_extracts_caption_text_content() {
+    let mut base = base_message("peer-uid", "0", "photo-msg-1", json!({
+        "url": "https://cdn.example.com/photo.jpg",
+        "caption": "Chào tháng 8 may mắn"
+    }));
+    base.msg_type = "chat.photo".to_string();
+
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        base,
+    ))));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+    assert_eq!(message.content_type, "image");
+    assert_eq!(message.text_content.as_deref(), Some("Chào tháng 8 may mắn"));
 }

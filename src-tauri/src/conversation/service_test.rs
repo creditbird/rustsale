@@ -12,7 +12,7 @@ use crate::conversation::migration::migrate;
 use crate::conversation::repository::ConversationRepository;
 use crate::conversation::service::ConversationService;
 use crate::conversation::types::{MessageStatus, SendConversationMessageRequest};
-use crate::conversation::zalo::client::ZaloClient;
+use crate::conversation::zalo::client::{NormalizedProfile, ZaloClient};
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
 use crate::db::open_db_connection;
 
@@ -148,6 +148,77 @@ impl ZaloClient for FakeZaloClient {
             .provider_message_id
             .clone()
             .unwrap_or_else(|| "provider-default".to_string()))
+    }
+
+    fn stop(&self) {}
+}
+
+pub struct PhoneLookupZaloClient {
+    profile: NormalizedProfile,
+    sent_thread_ids: std::sync::Mutex<Vec<String>>,
+}
+
+impl PhoneLookupZaloClient {
+    fn new(profile: NormalizedProfile) -> Self {
+        Self {
+            profile,
+            sent_thread_ids: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl ZaloClient for PhoneLookupZaloClient {
+    fn subscribe(&self) -> broadcast::Receiver<ListenerEvent> {
+        let (_tx, rx) = broadcast::channel(1);
+        rx
+    }
+
+    fn request_old_messages(
+        &self,
+        _thread_type: ThreadType,
+        _cursor: Option<&str>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn request_old_reactions(
+        &self,
+        _thread_type: ThreadType,
+        _cursor: Option<&str>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn get_all_group_snapshots(&self) -> anyhow::Result<Vec<NormalizedGroupSnapshot>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_group_snapshot(
+        &self,
+        _group_id: &str,
+    ) -> anyhow::Result<Option<NormalizedGroupSnapshot>> {
+        Ok(None)
+    }
+
+    async fn find_user_by_phone(
+        &self,
+        _phone: &str,
+    ) -> anyhow::Result<Option<NormalizedProfile>> {
+        Ok(Some(self.profile.clone()))
+    }
+
+    async fn send_text(
+        &self,
+        thread_id: &str,
+        _thread_type: ThreadType,
+        _text: &str,
+    ) -> anyhow::Result<String> {
+        self.sent_thread_ids
+            .lock()
+            .unwrap()
+            .push(thread_id.to_string());
+        Ok("provider-phone-lookup".to_string())
     }
 
     fn stop(&self) {}
@@ -326,6 +397,82 @@ async fn successful_worker_send_records_provider_id_and_completes_job() {
         Some("provider-42")
     );
     assert_eq!(harness.outbox_status_for_message(message.id), "completed");
+}
+
+#[tokio::test]
+async fn worker_resolves_phone_to_zalo_uid_before_sending_and_merges_thread() {
+    let harness = ServiceHarness::new();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO leads
+         (id, name, company, status, value, last_activity, owner, email, phone, zalo_uid)
+         VALUES (114, 'Thao', 'lemy', 'New', 0, '2026-08-02T00:00:00Z', 'Self', 'info@lemyfinest.com', '0949743369', NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities
+         (id, lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
+         VALUES (801, NULL, 'zalo', 'zalo_uid', 'zalo-uid-thao-live', 'Hồ Ngọc Phương Thảo', 'https://example.com/thao.jpg', 'unlinked', '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations
+         (id, channel_account_id, external_thread_id, kind, title, avatar_url, status, created_at, updated_at)
+         VALUES (6002, 1, 'zalo-uid-thao-live', 'direct', 'Hồ Ngọc Phương Thảo', 'https://example.com/thao.jpg', 'active', '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants
+         (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (6002, 801, 'member', '2026-08-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let request = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 1,
+        phone_or_external_id: "0949743369".to_string(),
+        display_name: None,
+        initial_message: "Xin chào Thảo".to_string(),
+    };
+    let message = harness
+        .repository
+        .start_direct_conversation(&request, "2026-08-02T00:45:54.120Z")
+        .unwrap();
+    assert_ne!(message.conversation_id, 6002);
+
+    let client = PhoneLookupZaloClient::new(NormalizedProfile {
+        external_id: "zalo-uid-thao-live".to_string(),
+        display_name: Some("Hồ Ngọc Phương Thảo".to_string()),
+        avatar_url: Some("https://example.com/thao.jpg".to_string()),
+    });
+
+    let processed = harness
+        .service
+        .process_next_outbox_job(1, &client)
+        .await
+        .unwrap();
+
+    assert!(processed);
+    assert_eq!(
+        client.sent_thread_ids.lock().unwrap().as_slice(),
+        ["zalo-uid-thao-live"]
+    );
+    assert_eq!(harness.message_status(message.id), MessageStatus::Sent);
+
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    let conversation_id: i64 = conn
+        .query_row(
+            "SELECT conversation_id FROM messages WHERE id = ?1",
+            [message.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(conversation_id, 6002);
 }
 
 #[test]

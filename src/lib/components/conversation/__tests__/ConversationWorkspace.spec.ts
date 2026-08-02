@@ -86,6 +86,32 @@ const mockGroupItem: InboxItem = {
   ]
 };
 
+const mockUnknownItem: InboxItem = {
+  key: 'identity:28',
+  kind: 'unknown',
+  leadId: null,
+  conversationId: null,
+  identityId: 28,
+  title: 'Hồ Ngọc Phương Thảo',
+  avatarUrl: null,
+  lastMessagePreview: 'Chồng iu ơi',
+  lastMessageAt: '2026-08-01T03:16:38Z',
+  channels: [{ channel: 'zalo', messageCount: 6 }],
+  replyTargets: [
+    {
+      conversationId: 28,
+      channelAccountId: 1,
+      channel: 'zalo',
+      accountDisplayName: 'Hello World',
+      conversationKind: 'direct',
+      lastInboundAt: '2026-08-01T03:14:08Z',
+      lastMessageAt: '2026-08-01T03:16:38Z'
+    }
+  ],
+  participantCount: 0,
+  participants: []
+};
+
 const mockMsg1: ConversationMessage = {
   id: 101,
   conversationId: 10,
@@ -173,6 +199,15 @@ const mockGetConversationTimeline = mock(
   }
 );
 
+const mockGetIdentityTimeline = mock(
+  async (_identityId: number, _before: any, _limit: number): Promise<TimelinePage> => {
+    return {
+      items: [mockMsg1],
+      nextCursor: null
+    };
+  }
+);
+
 const mockGetConversationRuntimeStatus = mock(async (): Promise<ConversationRuntimeStatus> => {
   return {
     accounts: [
@@ -195,6 +230,8 @@ mock.module('$lib/services/conversationService', () => ({
     mockGetContactTimeline(leadId, channels, before, limit),
   getConversationTimeline: (convId: number, before: any, limit: number) =>
     mockGetConversationTimeline(convId, before, limit),
+  getIdentityTimeline: (identityId: number, before: any, limit: number) =>
+    mockGetIdentityTimeline(identityId, before, limit),
   getConversationRuntimeStatus: () => mockGetConversationRuntimeStatus(),
   initConversationEventBridge: () => () => {},
   onConversationInvalidated: (listener: (event: ConversationInvalidatedEvent) => void) => {
@@ -231,6 +268,7 @@ describe('ConversationWorkspace Component', () => {
     mockListConversationInbox.mockClear();
     mockGetContactTimeline.mockClear();
     mockGetConversationTimeline.mockClear();
+    mockGetIdentityTimeline.mockClear();
     mockGetConversationRuntimeStatus.mockClear();
   });
 
@@ -281,6 +319,20 @@ describe('ConversationWorkspace Component', () => {
     expect(mockGetContactTimeline).toHaveBeenCalledWith(1, ['zalo', 'messenger'], null, 50);
   });
 
+  test('3b. Selecting an unknown direct conversation activates its channel badge', async () => {
+    mockListConversationInbox.mockImplementationOnce(async () => [mockUnknownItem]);
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const zaloBadge = screen.getByRole('button', { name: 'zalo' });
+    expect(zaloBadge.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByText('Không có kênh nào đang được hiển thị')).toBeNull();
+    expect(mockGetIdentityTimeline).toHaveBeenCalledWith(28, null, 50);
+    expect(screen.queryByText('Chào shop')).not.toBeNull();
+  });
+
   test('4. Selecting group calls getConversationTimeline(conversationId, null, 50) without showing channel badges as filters', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();
@@ -308,7 +360,7 @@ describe('ConversationWorkspace Component', () => {
     expect(mockGetContactTimeline).toHaveBeenCalledWith(1, ['zalo'], null, 50);
   });
 
-  test('6. All badges inactive makes no timeline IPC call and shows explicit empty-filter state', async () => {
+  test('6. The final active badge cannot be disabled', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();
     await new Promise((r) => setTimeout(r, 20));
@@ -320,13 +372,11 @@ describe('ConversationWorkspace Component', () => {
     await fireEvent.click(messengerBadge);
     await tick();
 
-    mockGetContactTimeline.mockClear();
-
     await new Promise((r) => setTimeout(r, 20));
 
-    const elements = screen.getAllByText('Không có kênh nào đang được hiển thị');
-    expect(elements.length).toBeGreaterThanOrEqual(1);
-    expect(mockGetContactTimeline).not.toHaveBeenCalled();
+    expect(screen.queryByText('Không có kênh nào đang được hiển thị')).toBeNull();
+    expect(messengerBadge.getAttribute('aria-pressed')).toBe('true');
+    expect(mockGetContactTimeline).toHaveBeenLastCalledWith(1, ['messenger'], null, 50);
   });
 
   test('7. Older pagination uses current variant nextCursor and active channels', async () => {
@@ -349,6 +399,30 @@ describe('ConversationWorkspace Component', () => {
       { occurredAt: '2026-07-31T10:00:00Z', messageId: 101 },
       50
     );
+  });
+
+  test('7b. Unknown pagination uses identity timeline cursor', async () => {
+    const cursor = { occurredAt: '2026-07-31T10:00:00Z', messageId: 101 };
+    mockListConversationInbox.mockImplementationOnce(async () => [mockUnknownItem]);
+    mockGetIdentityTimeline.mockImplementationOnce(async () => ({
+      items: [mockMsg1],
+      nextCursor: cursor
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((r) => setTimeout(r, 20));
+
+    mockGetIdentityTimeline.mockClear();
+
+    const timelineContainer = document.querySelector('[data-timeline-container]');
+    expect(timelineContainer).toBeTruthy();
+
+    await fireEvent.scroll(timelineContainer!, { target: { scrollTop: 0 } });
+    await tick();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(mockGetIdentityTimeline).toHaveBeenCalledWith(28, cursor, 50);
   });
 
   test('8. Invalidation for open lead refreshes current variant; another lead marks inbox stale', async () => {
@@ -386,6 +460,88 @@ describe('ConversationWorkspace Component', () => {
 
     expect(mockGetContactTimeline).not.toHaveBeenCalled();
     expect(mockListConversationInbox).toHaveBeenCalledTimes(1);
+  });
+
+  test('8b. Invalidation for an unknown reply target refreshes its identity timeline', async () => {
+    mockListConversationInbox
+      .mockImplementationOnce(async () => [mockUnknownItem])
+      .mockImplementationOnce(async () => [mockUnknownItem]);
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((r) => setTimeout(r, 20));
+
+    mockGetIdentityTimeline.mockClear();
+
+    emitInvalidated({
+      conversationId: 28,
+      leadId: null,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 103
+    });
+
+    await new Promise((r) => setTimeout(r, 70));
+
+    expect(mockGetIdentityTimeline).toHaveBeenCalledWith(28, null, 50);
+  });
+
+  test('8c. Refresh replaces a stale failed bubble after the backend merges conversations', async () => {
+    const staleFailedMessage: ConversationMessage = {
+      ...mockMsg1,
+      id: 428,
+      direction: 'outbound',
+      providerMessageId: null,
+      textContent: 'hohoho',
+      content: { text: 'hohoho' },
+      occurredAt: '2026-08-02T00:45:54Z',
+      status: 'failed'
+    };
+    const restoredOldMessage: ConversationMessage = {
+      ...mockMsg1,
+      id: 426,
+      direction: 'outbound',
+      textContent: 'ua alo',
+      content: { text: 'ua alo' },
+      occurredAt: '2026-08-02T00:41:59Z',
+      status: 'read'
+    };
+    const latestMessage: ConversationMessage = {
+      ...mockMsg1,
+      id: 429,
+      direction: 'outbound',
+      textContent: 'kekke',
+      content: { text: 'kekke' },
+      occurredAt: '2026-08-02T01:01:26Z',
+      status: 'sent'
+    };
+
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [staleFailedMessage], nextCursor: null }))
+      .mockImplementationOnce(async () => ({
+        items: [restoredOldMessage, latestMessage],
+        nextCursor: null
+      }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('hohoho')).toBeTruthy();
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 429
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(screen.queryByText('hohoho')).toBeNull();
+    expect(screen.getByText('ua alo')).toBeTruthy();
+    expect(screen.getByText('kekke')).toBeTruthy();
   });
 
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {

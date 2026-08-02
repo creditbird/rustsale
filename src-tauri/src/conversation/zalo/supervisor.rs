@@ -470,12 +470,32 @@ async fn run_session_loop(
                 }
             };
 
+        let mut profile_sync_handle: Option<tokio::task::JoinHandle<()>> = None;
+
+        // 6.5 Run initial profile enrichment sync for unresolved identities
+        if let Some(acc_id) = account_id {
+            let is_idle = profile_sync_handle.as_ref().map_or(true, |h| h.is_finished());
+            if is_idle {
+                let service = service.clone();
+                let client = client.clone();
+                profile_sync_handle = Some(tokio::spawn(async move {
+                    if let Err(err) = service.sync_identity_profiles_for_account(acc_id, client.as_ref()).await {
+                        eprintln!("[ZaloSupervisor] Initial profile sync error for account {acc_id}: {err}");
+                    }
+                }));
+            }
+        }
+
         // 7. Drain receiver loop with reactive pagination state machine
         let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut profile_ticker = tokio::time::interval(std::time::Duration::from_secs(5));
 
         let should_reconnect = loop {
             tokio::select! {
                 _ = cancellation.cancelled() => {
+                    if let Some(h) = profile_sync_handle.take() {
+                        h.abort();
+                    }
                     client.stop();
                     return;
                 }
@@ -483,9 +503,26 @@ async fn run_session_loop(
                     if let Some(acc_id) = account_id {
                         while let Ok(true) = service.process_next_outbox_job(acc_id, client.as_ref()).await {
                             if cancellation.is_cancelled() {
+                                if let Some(h) = profile_sync_handle.take() {
+                                    h.abort();
+                                }
                                 client.stop();
                                 return;
                             }
+                        }
+                    }
+                }
+                _ = profile_ticker.tick() => {
+                    if let Some(acc_id) = account_id {
+                        let is_idle = profile_sync_handle.as_ref().map_or(true, |h| h.is_finished());
+                        if is_idle {
+                            let service = service.clone();
+                            let client = client.clone();
+                            profile_sync_handle = Some(tokio::spawn(async move {
+                                if let Err(err) = service.sync_identity_profiles_for_account(acc_id, client.as_ref()).await {
+                                    eprintln!("[ZaloSupervisor] Profile ticker sync error for account {acc_id}: {err}");
+                                }
+                            }));
                         }
                     }
                 }

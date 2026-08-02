@@ -110,7 +110,19 @@ fn content_parts(message_type: &str, content: &Value) -> (String, Option<String>
         "chat.link" => "link",
         _ => "unsupported",
     };
-    (content_type.to_string(), None, content.clone())
+
+    let text_content = content
+        .get("caption")
+        .or_else(|| content.get("description"))
+        .or_else(|| content.get("title"))
+        .or_else(|| content.get("text"))
+        .or_else(|| content.get("message"))
+        .or_else(|| content.get("subTitle"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+
+    (content_type.to_string(), text_content, content.clone())
 }
 
 fn normalize_message(
@@ -124,7 +136,7 @@ fn normalize_message(
             let participant = Some(NormalizedIdentity {
                 identity_namespace: "zalo_uid".to_string(),
                 external_id: message.thread_id.clone(),
-                display_name: (!message.data.d_name.is_empty())
+                display_name: (!message.is_self && !message.data.d_name.is_empty())
                     .then(|| message.data.d_name.clone()),
                 avatar_url: None,
                 lead_id: None,

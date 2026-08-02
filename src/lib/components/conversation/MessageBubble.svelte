@@ -44,6 +44,7 @@
   function isValidMediaUrl(url: unknown): boolean {
     if (typeof url !== 'string') return false;
     const trimmed = url.trim();
+    if (!trimmed) return false;
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return true;
     if (trimmed.startsWith('asset://') || trimmed.startsWith('asset:')) return true;
     if (
@@ -53,11 +54,16 @@
     ) {
       return true;
     }
+    if (trimmed.startsWith('data:')) {
+      return true;
+    }
     if (
-      trimmed.startsWith('data:image/png') ||
-      trimmed.startsWith('data:image/jpeg') ||
-      trimmed.startsWith('data:image/webp') ||
-      trimmed.startsWith('data:image/gif')
+      trimmed.startsWith('/') ||
+      trimmed.startsWith('./') ||
+      trimmed.startsWith('../') ||
+      trimmed.startsWith('file://') ||
+      trimmed.startsWith('file:') ||
+      trimmed.startsWith('blob:')
     ) {
       return true;
     }
@@ -72,7 +78,11 @@
       ? message.content.url
       : typeof message.content?.src === 'string'
         ? message.content.src
-        : null
+        : typeof message.content?.href === 'string'
+          ? message.content.href
+          : typeof message.content?.path === 'string'
+            ? message.content.path
+            : null
   );
 
   let isEmail = $derived(message.contentType === 'email');
@@ -80,6 +90,24 @@
     message.contentType === 'image' || message.contentType.startsWith('image/')
   );
   let isText = $derived(message.contentType === 'text');
+
+  let displayText = $derived(
+    typeof message.textContent === 'string' && message.textContent.trim() !== ''
+      ? message.textContent
+      : typeof message.content?.caption === 'string' && message.content.caption.trim() !== ''
+        ? message.content.caption
+        : typeof message.content?.description === 'string' && message.content.description.trim() !== ''
+          ? message.content.description
+          : typeof message.content?.title === 'string' && message.content.title.trim() !== ''
+            ? message.content.title
+            : typeof message.content?.text === 'string' && message.content.text.trim() !== ''
+              ? message.content.text
+              : typeof message.content?.message === 'string' && message.content.message.trim() !== ''
+                ? message.content.message
+                : typeof message.content?.subTitle === 'string' && message.content.subTitle.trim() !== ''
+                  ? message.content.subTitle
+                  : null
+  );
 
   let emailSubject = $derived(
     typeof message.content?.subject === 'string' ? message.content.subject : null
@@ -166,9 +194,9 @@
             <span class="font-semibold text-muted-foreground">Đến:</span> {emailTo}
           </div>
         {/if}
-        {#if message.textContent}
+        {#if displayText}
           <div class="mt-2 text-sm whitespace-pre-wrap font-normal border-t border-border/30 pt-2">
-            {message.textContent}
+            {displayText}
           </div>
         {/if}
       </div>
@@ -178,16 +206,11 @@
         <div class="overflow-hidden rounded-lg border border-border/30 my-1">
           <img
             src={mediaUrl}
-            alt={message.textContent || 'Hình ảnh'}
+            alt={displayText || 'Hình ảnh'}
             class="max-h-64 max-w-full object-cover rounded-lg"
             loading="lazy"
           />
         </div>
-        {#if message.textContent}
-          <p class="whitespace-pre-wrap break-words leading-relaxed">
-            {message.textContent}
-          </p>
-        {/if}
       {:else}
         <div class="flex items-center gap-2 p-2 rounded-md bg-destructive/10 text-destructive text-xs font-medium border border-destructive/20">
           <svg
@@ -208,10 +231,15 @@
           <span>File đính kèm không hợp lệ</span>
         </div>
       {/if}
-    {:else if isText || message.textContent}
+      {#if displayText}
+        <p class="whitespace-pre-wrap break-words leading-relaxed text-sm mt-1">
+          {displayText}
+        </p>
+      {/if}
+    {:else if isText || displayText}
       <!-- Plain Text -->
       <p class="whitespace-pre-wrap break-words leading-relaxed text-sm">
-        {message.textContent}
+        {displayText}
       </p>
     {:else}
       <!-- Fallback for Unsupported Content Types -->

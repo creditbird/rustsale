@@ -6,7 +6,7 @@ use super::repository::{
 };
 use super::types::{Channel, ConversationKind, InboxItemKind, MessageDirection, MessageStatus};
 use crate::db::open_db_connection;
-use rusqlite::OptionalExtension;
+use rusqlite::{params, OptionalExtension};
 
 struct Harness {
     path: std::path::PathBuf,
@@ -21,7 +21,7 @@ impl Harness {
         ));
         let conn = open_db_connection(path.to_str().unwrap()).unwrap();
         conn.execute(
-            "CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+            "CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT NOT NULL, phone TEXT, zalo_uid TEXT)",
             [],
         )
         .unwrap();
@@ -136,6 +136,66 @@ fn same_peer_on_two_zalo_accounts_creates_two_provider_conversations() {
     assert_ne!(first.channel_account_id, second.channel_account_id);
     assert_ne!(first.conversation_id, second.conversation_id);
     assert_eq!(first.identity_id, second.identity_id);
+}
+
+#[test]
+fn identity_timeline_combines_direct_messages_across_zalo_accounts() {
+    let harness = Harness::new();
+    let first = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-1"))
+        .unwrap();
+    let mut second_message = direct_message("imei-b", "message-2");
+    second_message.provider_timestamp = Some("2026-07-31T00:00:02.000Z".to_string());
+    let second = harness
+        .repository
+        .apply_normalized_message(&second_message)
+        .unwrap();
+
+    let page = harness
+        .repository
+        .get_identity_timeline(
+            first.identity_id.expect("direct message identity"),
+            None,
+            50,
+        )
+        .unwrap();
+
+    assert_ne!(first.conversation_id, second.conversation_id);
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|message| message.provider_message_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("message-1"), Some("message-2")]
+    );
+}
+
+#[test]
+fn identity_timeline_prefers_inbound_payload_name_over_stale_identity_name() {
+    let harness = Harness::new();
+    let mut message = direct_message("imei-a", "message-1");
+    message.participant.as_mut().unwrap().display_name = Some("Hello World".to_string());
+    message.raw_payload = Some(serde_json::json!({"dName": "Hồ Ngọc Phương Thảo"}));
+    let applied = harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+
+    let page = harness
+        .repository
+        .get_identity_timeline(
+            applied.identity_id.expect("direct message identity"),
+            None,
+            50,
+        )
+        .unwrap();
+
+    assert_eq!(
+        page.items[0].sender_display_name.as_deref(),
+        Some("Hồ Ngọc Phương Thảo")
+    );
 }
 
 #[test]
@@ -681,4 +741,539 @@ fn relink_lead_moves_all_identities_to_target_lead() {
         ),
         2
     );
+}
+
+#[test]
+fn list_inbox_uses_identity_display_name_and_includes_zero_message_channels() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO leads (id, name) VALUES (99, 'Hello World')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (800, 'zalo', 'imei-zalo-test', 'Shop Zalo', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_identities (id, lead_id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (900, 99, 'zalo', 'zalo_uid', 'zalo-user-123', 'Tuan Nguyen Zalo', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, avatar_url, created_at, updated_at)
+         VALUES (500, 800, 'direct', 'thread-123', NULL, NULL, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (500, 900, 'member', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    drop(conn);
+
+    let items = harness.repository.list_inbox().unwrap();
+    let customer_item = items
+        .iter()
+        .find(|i| i.lead_id == Some(99))
+        .expect("customer item found");
+
+    // Must fall back to identity display name because lead name is 'Hello World'
+    assert_eq!(customer_item.title, "Tuan Nguyen Zalo");
+
+    // Must include zalo channel even with 0 messages in messages table
+    assert_eq!(customer_item.channels.len(), 1);
+    assert_eq!(customer_item.channels[0].channel, Channel::Zalo);
+    assert_eq!(customer_item.channels[0].message_count, 0);
+}
+
+#[test]
+fn list_inbox_rejects_account_name_as_unknown_identity_title() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (801, 'zalo', 'imei-account-name', 'Hello World', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (901, 'zalo', 'zalo_uid', 'peer-with-reply', 'Hello World', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+                (902, 'zalo', 'zalo_uid', 'peer-outbound-only', 'Hello World', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, created_at, updated_at)
+         VALUES (501, 801, 'direct', 'peer-with-reply', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+                (502, 801, 'direct', 'peer-outbound-only', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (501, 901, 'member', '2026-08-01T00:00:00.000Z'),
+                (502, 902, 'member', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages (conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, content_json, raw_payload_json, provider_timestamp, ingested_at, status)
+         VALUES (501, 901, 'inbound', 'reply-1', 'text', 'Xin chào', '{\"text\":\"Xin chào\"}', '{\"dName\":\"Hồ Ngọc Phương Thảo\"}', '2026-08-01T03:14:08.495Z', '2026-08-01T03:14:08.587Z', 'received'),
+                (502, NULL, 'outbound', 'sent-1', 'text', 'Xin chào', '{\"text\":\"Xin chào\"}', '{\"dName\":\"Hello World\"}', '2026-08-01T03:15:00.000Z', '2026-08-01T03:15:00.100Z', 'sent')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let items = harness.repository.list_inbox().unwrap();
+    let replied = items
+        .iter()
+        .find(|item| item.identity_id == Some(901))
+        .expect("replied unknown item found");
+    let outbound_only = items
+        .iter()
+        .find(|item| item.identity_id == Some(902))
+        .expect("outbound-only unknown item found");
+
+    assert_eq!(replied.title, "Hồ Ngọc Phương Thảo");
+    assert_eq!(outbound_only.title, "Unknown (peer-outbound-only)");
+}
+
+#[test]
+fn delete_conversation_and_start_direct_conversation_execute_without_sql_errors() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (808, 'zalo', 'imei-del', 'Sale Account', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let start_req = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 808,
+        phone_or_external_id: "0909999888".to_string(),
+        display_name: Some("Test User".to_string()),
+        initial_message: "Hello phone".to_string(),
+    };
+
+    let msg = harness
+        .repository
+        .start_direct_conversation(&start_req, "2026-08-01T00:00:00.000Z")
+        .unwrap();
+
+    assert_eq!(msg.text_content.as_deref(), Some("Hello phone"));
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(msg.conversation_id),
+        identity_id: None,
+        lead_id: None,
+    };
+
+    harness.repository.delete_conversation(&del_req).unwrap();
+}
+
+#[test]
+fn profile_enrichment_queries_and_updates_work() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (999, 'zalo', 'imei-sync', 'Sync Account', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, avatar_url, created_at, updated_at)
+         VALUES (1001, 'zalo', 'zalo_uid', 'uid-1001', NULL, NULL, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (2001, 999, 'uid-1001', 'direct', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2001, 1001)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let needing = harness
+        .repository
+        .get_zalo_identities_needing_profile_sync(999, 10)
+        .unwrap();
+    assert_eq!(needing.len(), 1);
+    assert_eq!(needing[0], (1001, "uid-1001".to_string()));
+
+    let updated = harness
+        .repository
+        .mark_identities_profile_synced(
+            &[1001],
+            &[crate::conversation::zalo::client::NormalizedProfile {
+                external_id: "uid-1001".to_string(),
+                display_name: Some("Nguyen Van A".to_string()),
+                avatar_url: Some("https://example.com/avt.jpg".to_string()),
+            }],
+        )
+        .unwrap();
+    assert_eq!(updated, 1);
+
+    let needing_after = harness
+        .repository
+        .get_zalo_identities_needing_profile_sync(999, 10)
+        .unwrap();
+    assert_eq!(needing_after.len(), 0);
+}
+
+#[test]
+fn profile_enrichment_no_avatar_user_prevents_infinite_requery_loop() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (998, 'zalo', 'imei-no-avt', 'No Avt Account', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, avatar_url, created_at, updated_at)
+         VALUES (1002, 'zalo', 'zalo_uid', 'uid-no-avt', NULL, NULL, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (2002, 998, 'uid-no-avt', 'direct', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2002, 1002)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let needing = harness
+        .repository
+        .get_zalo_identities_needing_profile_sync(998, 10)
+        .unwrap();
+    assert_eq!(needing.len(), 1);
+
+    // Profile sync returns display name but NO avatar URL (user has no Zalo avatar)
+    harness
+        .repository
+        .mark_identities_profile_synced(
+            &[1002],
+            &[crate::conversation::zalo::client::NormalizedProfile {
+                external_id: "uid-no-avt".to_string(),
+                display_name: Some("User Without Avatar".to_string()),
+                avatar_url: None,
+            }],
+        )
+        .unwrap();
+
+    // Must NOT be returned on subsequent ticker runs
+    let needing_again = harness
+        .repository
+        .get_zalo_identities_needing_profile_sync(998, 10)
+        .unwrap();
+    assert_eq!(needing_again.len(), 0);
+}
+
+#[test]
+fn profile_enrichment_exponential_backoff_sequence_and_cap_at_24h() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, avatar_url, created_at, updated_at)
+         VALUES (1003, 'zalo', 'zalo_uid', 'uid-fail', NULL, NULL, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Perform 10 consecutive failures
+    for attempt in 1..=10 {
+        harness
+            .repository
+            .mark_identity_profile_sync_failed(&[1003], &format!("Network error {attempt}"))
+            .unwrap();
+
+        let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+        let (attempts, error): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT profile_sync_attempts, profile_sync_error FROM channel_identities WHERE id = 1003",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(attempts, attempt as i64);
+        assert_eq!(error.as_deref(), Some(format!("Network error {attempt}").as_str()));
+    }
+}
+
+#[test]
+fn profile_enrichment_7_day_ttl_refreshes_complete_profiles() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    let old_date = (chrono::Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+    let recent_date = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (997, 'zalo', 'imei-ttl', 'TTL Account', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    // Identity 1004: Complete profile, synced 10 days ago (older than 7-day TTL)
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, avatar_url, profile_synced_at, created_at, updated_at)
+         VALUES (1004, 'zalo', 'zalo_uid', 'uid-old-ttl', 'Name 1', 'https://example.com/1.jpg', ?1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        params![old_date],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (2004, 997, 'uid-old-ttl', 'direct', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2004, 1004)", []).unwrap();
+
+    // Identity 1005: Complete profile, synced 2 hours ago (within 7-day TTL)
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, avatar_url, profile_synced_at, created_at, updated_at)
+         VALUES (1005, 'zalo', 'zalo_uid', 'uid-recent-ttl', 'Name 2', 'https://example.com/2.jpg', ?1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        params![recent_date],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (2005, 997, 'uid-recent-ttl', 'direct', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2005, 1005)", []).unwrap();
+    drop(conn);
+
+    let needing = harness.repository.get_zalo_identities_needing_profile_sync(997, 10).unwrap();
+    assert_eq!(needing.len(), 1);
+    assert_eq!(needing[0].0, 1004);
+}
+
+#[test]
+fn start_direct_conversation_reuses_existing_thread_by_external_id() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (996, 'zalo', 'imei-existing', 'Account 996', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    // Insert an existing channel_conversations with external_thread_id = '0949743369'
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (5001, 996, 'direct', '0949743369', '0949743369', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let req = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 996,
+        phone_or_external_id: "0949743369".to_string(),
+        display_name: Some("Anh Nam".to_string()),
+        initial_message: "chao vo".to_string(),
+    };
+
+    // Calling start_direct_conversation must NOT fail with UNIQUE constraint error
+    let msg = harness.repository.start_direct_conversation(&req, "2026-08-01T12:00:00.000Z").unwrap();
+    assert_eq!(msg.conversation_id, 5001);
+}
+
+#[test]
+fn start_direct_conversation_reuses_existing_thread_by_lead_phone() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO leads (id, name, phone, zalo_uid)
+         VALUES (700, 'Hồ Ngọc Phương Thảo', '0949743369', 'zalo-uid-thao')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (997, 'zalo', 'imei-thao', 'Account 997', 'connected', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_identities (id, lead_id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (800, 700, 'zalo', 'zalo_uid', 'zalo-uid-thao', 'Hồ Ngọc Phương Thảo', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (6001, 997, 'direct', 'zalo-uid-thao', 'Hồ Ngọc Phương Thảo', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role)
+         VALUES (6001, 800, 'member')",
+        [],
+    )
+    .unwrap();
+
+    drop(conn);
+
+    let req = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 997,
+        phone_or_external_id: "0949743369".to_string(),
+        display_name: Some("Hồ Ngọc Phương Thảo".to_string()),
+        initial_message: "Xin chào Thảo".to_string(),
+    };
+
+    let msg = harness.repository.start_direct_conversation(&req, "2026-08-01T12:00:00.000Z").unwrap();
+    assert_eq!(msg.conversation_id, 6001);
+}
+
+#[test]
+fn resolve_direct_phone_recipient_merges_provisional_thread_into_zalo_uid_thread() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO leads (id, name, phone, zalo_uid)
+         VALUES (701, 'Thao', '0949743369', NULL)",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (998, 'zalo', 'imei-thao-live', 'Hello World', 'connected', '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_identities (id, lead_id, channel, identity_namespace, external_id, display_name, link_source, created_at, updated_at)
+         VALUES (801, NULL, 'zalo', 'zalo_uid', 'zalo-uid-thao-live', 'Hồ Ngọc Phương Thảo', 'unlinked', '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (6002, 998, 'direct', 'zalo-uid-thao-live', 'Hồ Ngọc Phương Thảo', '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role)
+         VALUES (6002, 801, 'member')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let request = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 998,
+        phone_or_external_id: "0949743369".to_string(),
+        display_name: None,
+        initial_message: "Xin chào Thảo".to_string(),
+    };
+    let message = harness
+        .repository
+        .start_direct_conversation(&request, "2026-08-02T00:45:54.120Z")
+        .unwrap();
+    assert_ne!(message.conversation_id, 6002);
+
+    let resolved = harness
+        .repository
+        .resolve_direct_phone_recipient(
+            message.id,
+            998,
+            "0949743369",
+            "zalo-uid-thao-live",
+            Some("Hồ Ngọc Phương Thảo"),
+            Some("https://example.com/thao.jpg"),
+            "2026-08-02T00:46:00.000Z",
+        )
+        .unwrap();
+
+    assert_eq!(resolved.conversation_id, 6002);
+    assert_eq!(resolved.external_thread_id, "zalo-uid-thao-live");
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let message_conversation_id: i64 = conn
+        .query_row(
+            "SELECT conversation_id FROM messages WHERE id = ?1",
+            [message.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(message_conversation_id, 6002);
+
+    let lead_uid: String = conn
+        .query_row("SELECT zalo_uid FROM leads WHERE id = 701", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(lead_uid, "zalo-uid-thao-live");
+
+    let linked_lead_id: i64 = conn
+        .query_row(
+            "SELECT lead_id FROM channel_identities WHERE id = 801",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(linked_lead_id, 701);
+
+    let provisional_conversation_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE external_thread_id = '0949743369'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provisional_conversation_count, 0);
 }

@@ -201,6 +201,25 @@ describe('ConversationSidebar Component', () => {
     expect(screen.getByText('09')).toBeTruthy();
   });
 
+  test('renders UN initials for Unknown contacts with parentheses', () => {
+    const itemUnknownFormatted: InboxItem = {
+      ...itemUnknown,
+      key: 'unknown-3',
+      title: 'Unknown (16868895665702)'
+    };
+    render(ConversationSidebar, {
+      props: {
+        items: [itemUnknownFormatted],
+        selectedKey: null,
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    expect(screen.getByText('UN')).toBeTruthy();
+    expect(screen.queryByText('U(')).toBeNull();
+  });
+
   test('renders skeletons when loading is true', () => {
     const { container } = render(ConversationSidebar, {
       props: {

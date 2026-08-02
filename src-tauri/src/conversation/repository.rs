@@ -10,6 +10,7 @@ pub use crate::conversation::zalo::normalizer::{
     NormalizedUndo, ReceiptKind,
 };
 use crate::db::open_db_connection;
+use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Result};
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,12 @@ pub struct ClaimedOutboxJob {
     pub is_group: bool,
     pub text: String,
     pub attempt_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedDirectRecipient {
+    pub conversation_id: i64,
+    pub external_thread_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -260,13 +267,35 @@ impl ConversationRepository {
         };
 
         for lead_id in lead_ids {
-            let title: String = conn
-                .query_row("SELECT name FROM leads WHERE id = ?1", [lead_id], |row| {
-                    row.get(0)
-                })
-                .optional()?
-                .flatten()
-                .unwrap_or_else(|| format!("Lead {lead_id}"));
+            let title: String = {
+                let lead_name: Option<String> = conn
+                    .query_row("SELECT name FROM leads WHERE id = ?1", [lead_id], |row| {
+                        row.get(0)
+                    })
+                    .optional()?
+                    .flatten();
+
+                let identity_name: Option<String> = conn
+                    .query_row(
+                        "SELECT display_name FROM channel_identities WHERE lead_id = ?1 AND display_name IS NOT NULL AND TRIM(display_name) != '' ORDER BY id ASC LIMIT 1",
+                        [lead_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+
+                match (lead_name, identity_name) {
+                    (Some(l), Some(i))
+                        if (l == "Hello World" || l.starts_with("Lead "))
+                            && !i.trim().is_empty() =>
+                    {
+                        i
+                    }
+                    (Some(l), _) if !l.trim().is_empty() => l,
+                    (_, Some(i)) => i,
+                    _ => format!("Lead {lead_id}"),
+                }
+            };
 
             let avatar_url: Option<String> = conn
                 .query_row(
@@ -360,11 +389,11 @@ impl ConversationRepository {
 
             let mut badge_stmt = conn.prepare(
                 "SELECT ca.channel, COUNT(m.id)
-                 FROM messages m
-                 JOIN channel_conversations cc ON cc.id = m.conversation_id
+                 FROM channel_conversations cc
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                  JOIN conversation_participants cp ON cp.conversation_id = cc.id
                  JOIN channel_identities ci ON ci.id = cp.identity_id
+                 LEFT JOIN messages m ON m.conversation_id = cc.id
                  WHERE ci.lead_id = ?1 AND cc.kind IN ('direct', 'email_thread')
                  GROUP BY ca.channel",
             )?;
@@ -398,9 +427,47 @@ impl ConversationRepository {
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
-        let unlinked_identities: Vec<(i64, Option<String>, Option<String>, String)> = {
+        let unlinked_identities: Vec<(
+            i64,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            bool,
+        )> = {
             let mut stmt = conn.prepare(
-                "SELECT ci.id, ci.display_name, ci.avatar_url, ci.external_id, MAX(COALESCE(cc.last_message_at, cc.created_at)) as max_at
+                "SELECT ci.id,
+                        ci.display_name,
+                        ci.avatar_url,
+                        ci.external_id,
+                        (
+                            SELECT CASE
+                                WHEN json_valid(m.raw_payload_json)
+                                THEN json_extract(m.raw_payload_json, '$.dName')
+                                ELSE NULL
+                            END
+                            FROM conversation_participants cp2
+                            JOIN messages m ON m.conversation_id = cp2.conversation_id
+                            WHERE cp2.identity_id = ci.id
+                              AND m.direction = 'inbound'
+                              AND NULLIF(TRIM(CASE
+                                  WHEN json_valid(m.raw_payload_json)
+                                  THEN json_extract(m.raw_payload_json, '$.dName')
+                                  ELSE NULL
+                              END), '') IS NOT NULL
+                            ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
+                            LIMIT 1
+                        ) AS latest_inbound_display_name,
+                        EXISTS (
+                            SELECT 1
+                            FROM conversation_participants cp3
+                            JOIN channel_conversations cc3 ON cc3.id = cp3.conversation_id
+                            JOIN channel_accounts ca3 ON ca3.id = cc3.channel_account_id
+                            WHERE cp3.identity_id = ci.id
+                              AND ci.display_name IS NOT NULL
+                              AND TRIM(ci.display_name) = TRIM(ca3.display_name)
+                        ) AS matches_account_name,
+                        MAX(COALESCE(cc.last_message_at, cc.created_at)) as max_at
                  FROM channel_conversations cc
                  JOIN conversation_participants cp ON cp.conversation_id = cc.id
                  JOIN channel_identities ci ON ci.id = cp.identity_id
@@ -416,13 +483,30 @@ impl ConversationRepository {
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)? != 0,
                 ))
             })?;
             rows.collect::<Result<Vec<_>>>()?
         };
 
-        for (identity_id, display_name, avatar_url, external_id) in unlinked_identities {
-            let title = display_name
+        for (
+            identity_id,
+            display_name,
+            avatar_url,
+            external_id,
+            latest_inbound_display_name,
+            matches_account_name,
+        ) in unlinked_identities
+        {
+            let stored_display_name = if matches_account_name {
+                None
+            } else {
+                display_name
+            };
+            let title = latest_inbound_display_name
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| stored_display_name.filter(|s| !s.trim().is_empty()))
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| format!("Unknown ({external_id})"));
 
@@ -507,10 +591,10 @@ impl ConversationRepository {
 
             let mut badge_stmt = conn.prepare(
                 "SELECT ca.channel, COUNT(m.id)
-                 FROM messages m
-                 JOIN channel_conversations cc ON cc.id = m.conversation_id
+                 FROM channel_conversations cc
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                  JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                 LEFT JOIN messages m ON m.conversation_id = cc.id
                  WHERE cp.identity_id = ?1 AND cc.kind IN ('direct', 'email_thread')
                  GROUP BY ca.channel",
             )?;
@@ -825,7 +909,15 @@ impl ConversationRepository {
         let before_id = before.map(|cursor| cursor.message_id);
         let sql = format!(
             "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                    ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
+                    ca.display_name, m.sender_identity_id,
+                    CASE
+                        WHEN m.direction = 'inbound'
+                         AND json_valid(m.raw_payload_json)
+                         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.dName')), '') IS NOT NULL
+                        THEN json_extract(m.raw_payload_json, '$.dName')
+                        ELSE ci.display_name
+                    END,
+                    m.direction,
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                     m.status, m.removed_at, m.error_message, m.reply_to_message_id
@@ -875,6 +967,66 @@ impl ConversationRepository {
         Ok(page_from_descending_rows(rows, clamped_limit))
     }
 
+    pub fn get_identity_timeline(
+        &self,
+        identity_id: i64,
+        before: Option<&TimelineCursor>,
+        limit: u32,
+    ) -> Result<TimelinePage> {
+        let conn = open_db_connection(&self.db_path)?;
+        let before_at = before.map(|cursor| cursor.occurred_at.as_str());
+        let before_id = before.map(|cursor| cursor.message_id);
+        let sql = "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
+                    ca.display_name, m.sender_identity_id,
+                    CASE
+                        WHEN m.direction = 'inbound'
+                         AND json_valid(m.raw_payload_json)
+                         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.dName')), '') IS NOT NULL
+                        THEN json_extract(m.raw_payload_json, '$.dName')
+                        ELSE ci.display_name
+                    END,
+                    m.direction,
+                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
+                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+             WHERE EXISTS (
+                   SELECT 1
+                   FROM conversation_participants cp
+                   WHERE cp.conversation_id = cc.id AND cp.identity_id = ?
+               )
+               AND cc.kind IN ('direct', 'email_thread')
+               AND (? IS NULL OR COALESCE(m.provider_timestamp, m.ingested_at) < ?
+                    OR (COALESCE(m.provider_timestamp, m.ingested_at) = ? AND m.id < ?))
+             ORDER BY occurred_at DESC, m.id DESC
+             LIMIT ?";
+        let clamped_limit = limit.clamp(1, 100);
+        let mut values = Vec::<rusqlite::types::Value>::new();
+        values.push(identity_id.into());
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_at.map_or(rusqlite::types::Value::Null, |value| {
+            value.to_string().into()
+        }));
+        values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
+        values.push(i64::from(clamped_limit).into());
+        let mut statement = conn.prepare(sql)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params_from_iter(values.iter()),
+                map_conversation_message,
+            )?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(page_from_descending_rows(rows, clamped_limit))
+    }
+
     pub fn get_conversation_timeline(
         &self,
         conversation_id: i64,
@@ -885,7 +1037,15 @@ impl ConversationRepository {
         let before_at = before.map(|cursor| cursor.occurred_at.as_str());
         let before_id = before.map(|cursor| cursor.message_id);
         let sql = "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                    ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
+                    ca.display_name, m.sender_identity_id,
+                    CASE
+                        WHEN m.direction = 'inbound'
+                         AND json_valid(m.raw_payload_json)
+                         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.dName')), '') IS NOT NULL
+                        THEN json_extract(m.raw_payload_json, '$.dName')
+                        ELSE ci.display_name
+                    END,
+                    m.direction,
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                     m.status, m.removed_at, m.error_message, m.reply_to_message_id
@@ -1502,6 +1662,456 @@ impl ConversationRepository {
         Ok(message)
     }
 
+    pub fn delete_conversation(
+        &self,
+        request: &crate::conversation::types::DeleteConversationRequest,
+    ) -> Result<()> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        if let Some(conv_id) = request.conversation_id {
+            if conv_id > 0 {
+                tx.execute("DELETE FROM messages WHERE conversation_id = ?1", params![conv_id])?;
+                tx.execute("DELETE FROM conversation_participants WHERE conversation_id = ?1", params![conv_id])?;
+                tx.execute("DELETE FROM channel_conversations WHERE id = ?1", params![conv_id])?;
+            }
+        }
+
+        if let Some(identity_id) = request.identity_id {
+            if identity_id > 0 {
+                tx.execute("DELETE FROM messages WHERE sender_identity_id = ?1", params![identity_id])?;
+                tx.execute("DELETE FROM conversation_participants WHERE identity_id = ?1", params![identity_id])?;
+                tx.execute("DELETE FROM channel_identities WHERE id = ?1 AND lead_id IS NULL", params![identity_id])?;
+            }
+        }
+
+        if let Some(lead_id) = request.lead_id {
+            if lead_id > 0 {
+                let conv_ids: Vec<i64> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT DISTINCT cp.conversation_id FROM conversation_participants cp
+                         JOIN channel_identities ci ON ci.id = cp.identity_id
+                         WHERE ci.lead_id = ?1",
+                    )?;
+                    let rows = stmt.query_map(params![lead_id], |row| row.get(0))?;
+                    rows.filter_map(Result::ok).collect()
+                };
+
+                for cid in conv_ids {
+                    tx.execute("DELETE FROM messages WHERE conversation_id = ?1", params![cid])?;
+                    tx.execute("DELETE FROM conversation_participants WHERE conversation_id = ?1", params![cid])?;
+                    tx.execute("DELETE FROM channel_conversations WHERE id = ?1", params![cid])?;
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn start_direct_conversation(
+        &self,
+        request: &crate::conversation::types::StartDirectConversationRequest,
+        now: &str,
+    ) -> Result<ConversationMessage> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let phone_clean = request.phone_or_external_id.trim();
+        if phone_clean.is_empty() {
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "phone number must not be empty"),
+            )));
+        }
+        let normalized_phone = crate::commands::normalize_phone_digits(phone_clean);
+
+        // 1. Try to find a matching lead by phone or zalo_uid
+        let matched_lead_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM leads
+                 WHERE phone = ?1 OR phone = ?2 OR zalo_uid = ?1 OR zalo_uid = ?2
+                 LIMIT 1",
+                params![phone_clean, normalized_phone],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+
+        let matched_lead_id: Option<i64> = match matched_lead_id {
+            Some(lid) => Some(lid),
+            None => {
+                if let Ok(mut stmt) = tx.prepare(
+                    "SELECT id, phone FROM leads WHERE phone IS NOT NULL AND TRIM(phone) != ''",
+                ) {
+                    let mut found_id = None;
+                    if let Ok(mut rows) = stmt.query([]) {
+                        while let Ok(Some(row)) = rows.next() {
+                            let id: i64 = match row.get(0) {
+                                Ok(i) => i,
+                                Err(_) => break,
+                            };
+                            let raw_phone: String = match row.get(1) {
+                                Ok(p) => p,
+                                Err(_) => break,
+                            };
+                            if crate::commands::normalize_phone_digits(&raw_phone) == normalized_phone {
+                                found_id = Some(id);
+                                break;
+                            }
+                        }
+                    }
+                    found_id
+                } else {
+                    None
+                }
+            }
+        };
+
+        // 2. Resolve channel_identity
+        let identity_id: i64 = match tx
+            .query_row(
+                "SELECT id FROM channel_identities
+                 WHERE (identity_namespace = 'zalo_uid' AND external_id IN (?1, ?2))
+                    OR (channel = 'zalo' AND lead_id IS NOT NULL AND lead_id = ?3)
+                 ORDER BY (CASE WHEN lead_id IS NOT NULL THEN 0 ELSE 1 END), id ASC
+                 LIMIT 1",
+                params![phone_clean, normalized_phone, matched_lead_id],
+                |row| row.get(0),
+            )
+            .optional()?
+        {
+            Some(id) => {
+                if let Some(lead_id) = matched_lead_id {
+                    tx.execute(
+                        "UPDATE channel_identities SET lead_id = ?1, link_source = 'provider_match' WHERE id = ?2 AND lead_id IS NULL",
+                        params![lead_id, id],
+                    )?;
+                }
+                if let Some(ref name) = request.display_name {
+                    if !name.trim().is_empty() {
+                        tx.execute(
+                            "UPDATE channel_identities SET display_name = ?1 WHERE id = ?2 AND (display_name IS NULL OR TRIM(display_name) = '')",
+                            params![name.trim(), id],
+                        )?;
+                    }
+                }
+                id
+            }
+            None => tx.query_row(
+                "INSERT INTO channel_identities (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
+                 VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, NULL, ?4, ?5, ?5)
+                 RETURNING id",
+                params![
+                    matched_lead_id,
+                    phone_clean,
+                    request.display_name.as_deref().map(str::trim),
+                    if matched_lead_id.is_some() { "provider_match" } else { "unlinked" },
+                    now,
+                ],
+                |row| row.get(0),
+            )?,
+        };
+
+        // 3. Resolve channel_conversations
+        let conversation_id: i64 = match tx
+            .query_row(
+                "SELECT cc.id FROM channel_conversations cc
+                 LEFT JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                 WHERE cc.channel_account_id = ?1 AND cc.kind = 'direct' AND (
+                     cp.identity_id = ?2
+                     OR cc.external_thread_id = ?3
+                     OR cc.external_thread_id = ?4
+                     OR (?5 IS NOT NULL AND cp.identity_id IN (SELECT id FROM channel_identities WHERE lead_id = ?5))
+                 )
+                 ORDER BY (CASE WHEN cp.identity_id = ?2 THEN 0 ELSE 1 END), cc.id ASC
+                 LIMIT 1",
+                params![
+                    request.channel_account_id,
+                    identity_id,
+                    phone_clean,
+                    normalized_phone,
+                    matched_lead_id,
+                ],
+                |row| row.get(0),
+            )
+            .optional()?
+        {
+            Some(cid) => {
+                tx.execute(
+                    "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+                     VALUES (?1, ?2, 'member', ?3)
+                     ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+                    params![cid, identity_id, now],
+                )?;
+                cid
+            }
+            None => {
+                let cid: i64 = tx.query_row(
+                    "INSERT INTO channel_conversations (channel_account_id, kind, external_thread_id, title, avatar_url, created_at, updated_at, last_message_at)
+                     VALUES (?1, 'direct', ?2, ?3, NULL, ?4, ?4, ?4)
+                     RETURNING id",
+                    params![
+                        request.channel_account_id,
+                        phone_clean,
+                        request.display_name.as_deref().unwrap_or(phone_clean),
+                        now,
+                    ],
+                    |row| row.get(0),
+                )?;
+                tx.execute(
+                    "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+                     VALUES (?1, ?2, 'member', ?3)
+                     ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+                    params![cid, identity_id, now],
+                )?;
+                cid
+            }
+        };
+
+        tx.commit()?;
+
+        let send_req = crate::conversation::types::SendConversationMessageRequest {
+            conversation_id,
+            channel_account_id: request.channel_account_id,
+            text: request.initial_message.clone(),
+            reply_to_message_id: None,
+        };
+
+        let local_request_id = format!("msg-{}", rand::random::<u128>());
+        let job_id = format!("outbox-{}", rand::random::<u128>());
+        self.enqueue_outbound_message(&send_req, &local_request_id, &job_id, now)
+    }
+
+    pub fn resolve_direct_phone_recipient(
+        &self,
+        message_id: i64,
+        channel_account_id: i64,
+        phone: &str,
+        resolved_uid: &str,
+        display_name: Option<&str>,
+        avatar_url: Option<&str>,
+        now: &str,
+    ) -> Result<ResolvedDirectRecipient> {
+        let resolved_uid = resolved_uid.trim();
+        if resolved_uid.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "resolved_uid must not be empty".to_string(),
+            ));
+        }
+
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let normalized_phone = crate::commands::normalize_phone_digits(phone);
+
+        let source_conversation_id: i64 = tx.query_row(
+            "SELECT cc.id
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             WHERE m.id = ?1
+               AND cc.channel_account_id = ?2
+               AND cc.kind = 'direct'",
+            params![message_id, channel_account_id],
+            |row| row.get(0),
+        )?;
+
+        let source_identity_ids: Vec<i64> = {
+            let mut stmt = tx.prepare(
+                "SELECT identity_id
+                 FROM conversation_participants
+                 WHERE conversation_id = ?1",
+            )?;
+            let rows = stmt.query_map([source_conversation_id], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>>>()?
+        };
+
+        let mut lead_id: Option<i64> = tx
+            .query_row(
+                "SELECT ci.lead_id
+                 FROM conversation_participants cp
+                 JOIN channel_identities ci ON ci.id = cp.identity_id
+                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL
+                 ORDER BY ci.id ASC
+                 LIMIT 1",
+                [source_conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if lead_id.is_none() {
+            lead_id = tx
+                .query_row(
+                    "SELECT id FROM leads
+                     WHERE phone = ?1 OR phone = ?2
+                     LIMIT 1",
+                    params![phone.trim(), normalized_phone],
+                    |row| row.get(0),
+                )
+                .optional()?;
+        }
+
+        if lead_id.is_none() {
+            let mut stmt = tx.prepare(
+                "SELECT id, phone FROM leads WHERE phone IS NOT NULL AND TRIM(phone) != ''",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let candidate_id: i64 = row.get(0)?;
+                let candidate_phone: String = row.get(1)?;
+                if crate::commands::normalize_phone_digits(&candidate_phone) == normalized_phone {
+                    lead_id = Some(candidate_id);
+                    break;
+                }
+            }
+        }
+
+        let identity_id: i64 = tx.query_row(
+            "INSERT INTO channel_identities
+             (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
+             VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
+                 lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
+                 display_name = COALESCE(excluded.display_name, channel_identities.display_name),
+                 avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),
+                 link_source = CASE
+                     WHEN channel_identities.lead_id IS NULL AND excluded.lead_id IS NOT NULL
+                     THEN 'provider_match'
+                     ELSE channel_identities.link_source
+                 END,
+                 updated_at = excluded.updated_at
+             RETURNING id",
+            params![
+                lead_id,
+                resolved_uid,
+                display_name.map(str::trim).filter(|value| !value.is_empty()),
+                avatar_url.map(str::trim).filter(|value| !value.is_empty()),
+                if lead_id.is_some() {
+                    "provider_match"
+                } else {
+                    "unlinked"
+                },
+                now,
+            ],
+            |row| row.get(0),
+        )?;
+
+        if let Some(lead_id) = lead_id {
+            tx.execute(
+                "UPDATE leads SET zalo_uid = ?1 WHERE id = ?2",
+                params![resolved_uid, lead_id],
+            )?;
+        }
+
+        let existing_conversation_id: Option<i64> = tx
+            .query_row(
+                "SELECT cc.id
+                 FROM channel_conversations cc
+                 LEFT JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                 WHERE cc.channel_account_id = ?1
+                   AND cc.kind = 'direct'
+                   AND cc.id != ?2
+                   AND (cc.external_thread_id = ?3 OR cp.identity_id = ?4)
+                 ORDER BY CASE WHEN cc.external_thread_id = ?3 THEN 0 ELSE 1 END, cc.id ASC
+                 LIMIT 1",
+                params![
+                    channel_account_id,
+                    source_conversation_id,
+                    resolved_uid,
+                    identity_id,
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let conversation_id = if let Some(existing_conversation_id) = existing_conversation_id {
+            tx.execute(
+                "INSERT INTO conversation_participants
+                 (conversation_id, identity_id, participant_role, joined_at)
+                 VALUES (?1, ?2, 'member', ?3)
+                 ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+                params![existing_conversation_id, identity_id, now],
+            )?;
+            tx.execute(
+                "UPDATE messages SET conversation_id = ?1 WHERE conversation_id = ?2",
+                params![existing_conversation_id, source_conversation_id],
+            )?;
+            tx.execute(
+                "UPDATE channel_conversations
+                 SET title = COALESCE(?2, title),
+                     avatar_url = COALESCE(?3, avatar_url),
+                     last_message_at = COALESCE(
+                         (SELECT last_message_at FROM channel_conversations WHERE id = ?4),
+                         last_message_at
+                     ),
+                     updated_at = ?5
+                 WHERE id = ?1",
+                params![
+                    existing_conversation_id,
+                    display_name.map(str::trim).filter(|value| !value.is_empty()),
+                    avatar_url.map(str::trim).filter(|value| !value.is_empty()),
+                    source_conversation_id,
+                    now,
+                ],
+            )?;
+            tx.execute(
+                "DELETE FROM channel_conversations WHERE id = ?1",
+                [source_conversation_id],
+            )?;
+            existing_conversation_id
+        } else {
+            tx.execute(
+                "INSERT INTO conversation_participants
+                 (conversation_id, identity_id, participant_role, joined_at)
+                 VALUES (?1, ?2, 'member', ?3)
+                 ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+                params![source_conversation_id, identity_id, now],
+            )?;
+            tx.execute(
+                "DELETE FROM conversation_participants
+                 WHERE conversation_id = ?1 AND identity_id != ?2",
+                params![source_conversation_id, identity_id],
+            )?;
+            tx.execute(
+                "UPDATE channel_conversations
+                 SET external_thread_id = ?2,
+                     title = COALESCE(?3, title),
+                     avatar_url = COALESCE(?4, avatar_url),
+                     updated_at = ?5
+                 WHERE id = ?1",
+                params![
+                    source_conversation_id,
+                    resolved_uid,
+                    display_name.map(str::trim).filter(|value| !value.is_empty()),
+                    avatar_url.map(str::trim).filter(|value| !value.is_empty()),
+                    now,
+                ],
+            )?;
+            source_conversation_id
+        };
+
+        for source_identity_id in source_identity_ids {
+            if source_identity_id == identity_id {
+                continue;
+            }
+            tx.execute(
+                "DELETE FROM channel_identities
+                 WHERE id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM conversation_participants WHERE identity_id = ?1
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM messages WHERE sender_identity_id = ?1
+                   )",
+                [source_identity_id],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(ResolvedDirectRecipient {
+            conversation_id,
+            external_thread_id: resolved_uid.to_string(),
+        })
+    }
+
     pub fn claim_next_outbox_job(
         &self,
         channel_account_id: i64,
@@ -1697,6 +2307,138 @@ impl ConversationRepository {
 
         tx.commit()?;
         Ok(count as u64)
+    }
+
+    pub fn get_zalo_identities_needing_profile_sync(
+        &self,
+        account_id: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, String)>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let now = utc_now();
+        let ttl_threshold = Utc::now()
+            .checked_sub_signed(chrono::Duration::days(7))
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+            .unwrap_or_else(utc_now);
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ci.id, ci.external_id
+             FROM channel_identities ci
+             JOIN conversation_participants cp ON cp.identity_id = ci.id
+             JOIN channel_conversations cc ON cc.id = cp.conversation_id
+             WHERE cc.channel_account_id = ?1
+               AND cc.kind = 'direct'
+               AND ci.channel = 'zalo'
+               AND ci.identity_namespace = 'zalo_uid'
+               AND (
+                 ci.profile_synced_at IS NULL
+                 OR ci.profile_synced_at <= ?2
+               )
+               AND (ci.next_profile_retry_at IS NULL OR ci.next_profile_retry_at <= ?3)
+             ORDER BY COALESCE(ci.profile_synced_at, '1970-01-01T00:00:00.000Z') ASC, ci.id ASC
+             LIMIT ?4",
+        )?;
+
+        let rows = stmt
+            .query_map(
+                params![account_id, ttl_threshold, now, limit as i64],
+                |row: &rusqlite::Row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(rows)
+    }
+
+    pub fn mark_identities_profile_synced(
+        &self,
+        requested_ids: &[i64],
+        profiles: &[crate::conversation::zalo::client::NormalizedProfile],
+    ) -> Result<usize> {
+        if requested_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = utc_now();
+        let mut updated = 0;
+
+        // 1. Mark ALL requested UIDs as synced with timestamp to prevent 5s re-query loop
+        for id in requested_ids {
+            tx.execute(
+                "UPDATE channel_identities
+                 SET profile_synced_at = ?1,
+                     profile_sync_error = NULL,
+                     profile_sync_attempts = 0,
+                     next_profile_retry_at = NULL,
+                     updated_at = ?1
+                 WHERE id = ?2",
+                params![now, id],
+            )?;
+        }
+
+        // 2. Update display_name and avatar_url for returned profiles if non-empty
+        for profile in profiles {
+            let res = tx.execute(
+                "UPDATE channel_identities
+                 SET display_name = CASE WHEN ?1 IS NOT NULL AND TRIM(?1) != '' THEN ?1 ELSE display_name END,
+                     avatar_url = CASE WHEN ?2 IS NOT NULL AND TRIM(?2) != '' THEN ?2 ELSE avatar_url END,
+                     updated_at = ?3
+                 WHERE channel = 'zalo'
+                   AND identity_namespace = 'zalo_uid'
+                   AND external_id = ?4",
+                params![profile.display_name, profile.avatar_url, now, profile.external_id],
+            )?;
+            updated += res;
+        }
+
+        tx.commit()?;
+        Ok(updated)
+    }
+
+    pub fn mark_identity_profile_sync_failed(
+        &self,
+        identity_ids: &[i64],
+        error_msg: &str,
+    ) -> Result<usize> {
+        if identity_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = utc_now();
+        let mut updated = 0;
+
+        for id in identity_ids {
+            let current_attempts: i64 = tx.query_row(
+                "SELECT profile_sync_attempts FROM channel_identities WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+
+            let new_attempts = current_attempts + 1;
+            // Exponential backoff: 300s, 600s, 1200s, 2400s... capped at 86400s (24 hours)
+            let backoff_secs = (300i64 * (1i64 << (new_attempts.saturating_sub(1).min(10)))).min(86400);
+            let next_retry = Utc::now()
+                .checked_add_signed(chrono::Duration::seconds(backoff_secs))
+                .map(|t: chrono::DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                .unwrap_or_else(utc_now);
+
+            let res = tx.execute(
+                "UPDATE channel_identities
+                 SET profile_sync_error = ?1,
+                     profile_sync_attempts = ?2,
+                     next_profile_retry_at = ?3,
+                     updated_at = ?4
+                 WHERE id = ?5",
+                params![error_msg, new_attempts, next_retry, now, id],
+            )?;
+            updated += res;
+        }
+
+        tx.commit()?;
+        Ok(updated)
     }
 }
 

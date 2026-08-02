@@ -1,8 +1,9 @@
 use super::service::ConversationService;
 use super::types::{
-    Channel, ConversationMessage, ConversationRuntimeStatus, InboxItem, LinkIdentityRequest,
-    RelinkLeadRequest, SendConversationMessageRequest, TimelineCursor, TimelinePage,
-    UnlinkIdentityRequest, UnlinkLeadRequest,
+    Channel, ConversationMessage, ConversationRuntimeStatus, DeleteConversationRequest,
+    InboxItem, LinkIdentityRequest, RelinkLeadRequest, SendConversationMessageRequest,
+    StartDirectConversationRequest, TimelineCursor, TimelinePage, UnlinkIdentityRequest,
+    UnlinkLeadRequest,
 };
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
@@ -46,6 +47,19 @@ pub fn get_conversation_timeline(
     state
         .service
         .get_conversation_timeline(conversation_id, before.as_ref(), limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_identity_timeline(
+    state: tauri::State<'_, ConversationState>,
+    identity_id: i64,
+    before: Option<TimelineCursor>,
+    limit: u32,
+) -> Result<TimelinePage, String> {
+    state
+        .service
+        .get_identity_timeline(identity_id, before.as_ref(), limit)
         .map_err(|error| error.to_string())
 }
 
@@ -124,5 +138,27 @@ pub async fn restart_conversation_account(
         .zalo_supervisor
         .restart_account(&provider_account_key)
         .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn delete_conversation(
+    state: tauri::State<'_, ConversationState>,
+    request: DeleteConversationRequest,
+) -> Result<(), String> {
+    state
+        .service
+        .delete_conversation(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn start_direct_conversation(
+    state: tauri::State<'_, ConversationState>,
+    request: StartDirectConversationRequest,
+) -> Result<ConversationMessage, String> {
+    state
+        .service
+        .start_direct_conversation(&request)
         .map_err(|error| error.to_string())
 }

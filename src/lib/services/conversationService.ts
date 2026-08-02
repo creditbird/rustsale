@@ -135,6 +135,12 @@ export const getConversationTimeline = (
   limit = 50
 ) => invoke<TimelinePage>('get_conversation_timeline', { conversationId, before, limit });
 
+export const getIdentityTimeline = (
+  identityId: number,
+  before: TimelineCursor | null,
+  limit = 50
+) => invoke<TimelinePage>('get_identity_timeline', { identityId, before, limit });
+
 export const linkConversationIdentity = (identityId: number, leadId: number) =>
   invoke<void>('link_conversation_identity', { request: { identityId, leadId } });
 
@@ -150,11 +156,30 @@ export const relinkConversationLead = (sourceLeadId: number, targetLeadId: numbe
 export const sendConversationMessage = (request: SendConversationMessageRequest) =>
   invoke<ConversationMessage>('send_conversation_message', { request });
 
+export interface DeleteConversationRequest {
+  conversationId?: number | null;
+  identityId?: number | null;
+  leadId?: number | null;
+}
+
+export interface StartDirectConversationRequest {
+  channelAccountId: number;
+  phoneOrExternalId: string;
+  displayName?: string | null;
+  initialMessage: string;
+}
+
 export const getConversationRuntimeStatus = () =>
   invoke<ConversationRuntimeStatus>('get_conversation_runtime_status');
 
 export const restartConversationAccount = (providerAccountKey: string) =>
   invoke<void>('restart_conversation_account', { providerAccountKey });
+
+export const deleteConversation = (request: DeleteConversationRequest) =>
+  invoke<void>('delete_conversation', { request });
+
+export const startDirectConversation = (request: StartDirectConversationRequest) =>
+  invoke<ConversationMessage>('start_direct_conversation', { request });
 
 // Ref-counted Event Bridge Logic
 type InvalidationListener = (event: ConversationInvalidatedEvent) => void;

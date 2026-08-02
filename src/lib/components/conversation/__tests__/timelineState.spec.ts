@@ -100,6 +100,36 @@ describe('timelineState', () => {
   });
 
   describe('mergeTimelinePage', () => {
+    it('drops stale server messages on refresh while retaining optimistic queued messages', () => {
+      const retained = createMessage(1, '2026-08-02T00:40:00Z');
+      const staleFailed = {
+        ...createMessage(428, '2026-08-02T00:45:54Z'),
+        direction: 'outbound' as const,
+        status: 'failed' as const,
+        providerMessageId: null
+      };
+      const optimisticQueued = {
+        ...createMessage(999, '2026-08-02T01:01:00Z'),
+        direction: 'outbound' as const,
+        status: 'queued' as const,
+        providerMessageId: null
+      };
+      const serverLatest = createMessage(2, '2026-08-02T01:00:00Z');
+
+      const merged = mergeTimelinePage(
+        {
+          items: [retained, staleFailed, optimisticQueued],
+          nextCursor: null,
+          hasLoaded: true,
+          loading: false
+        },
+        { items: [retained, serverLatest], nextCursor: null },
+        'refresh'
+      );
+
+      expect(merged.items.map((message) => message.id)).toEqual([1, 2, 999]);
+    });
+
     it('retains newest 200 items when mode is refresh', () => {
       const baseTime = 1700000000000;
       const currentItems = Array.from({ length: 150 }, (_, i) =>
@@ -119,7 +149,13 @@ describe('timelineState', () => {
 
       const merged = mergeTimelinePage(
         variant,
-        { items: newPageItems, nextCursor: null },
+        {
+          items: newPageItems,
+          nextCursor: {
+            occurredAt: newPageItems[0].occurredAt,
+            messageId: newPageItems[0].id
+          }
+        },
         'refresh'
       );
 

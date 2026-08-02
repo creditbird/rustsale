@@ -306,6 +306,23 @@ pub struct SendConversationMessageRequest {
     pub reply_to_message_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteConversationRequest {
+    pub conversation_id: Option<i64>,
+    pub identity_id: Option<i64>,
+    pub lead_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartDirectConversationRequest {
+    pub channel_account_id: i64,
+    pub phone_or_external_id: String,
+    pub display_name: Option<String>,
+    pub initial_message: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

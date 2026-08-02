@@ -227,4 +227,27 @@ describe('MessageBubble Component', () => {
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.getByText('File đính kèm không hợp lệ')).toBeTruthy();
   });
+
+  test('renders image caption or description from content object when textContent is null', () => {
+    const imageWithCaptionMsg: ConversationMessage = {
+      ...baseMessage,
+      contentType: 'image',
+      textContent: null,
+      content: {
+        url: 'https://cdn.example.com/photo.png',
+        caption: 'Chào tháng 8 may mắn'
+      }
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: imageWithCaptionMsg,
+        isGroup: false
+      }
+    });
+
+    const img = screen.getByRole('img');
+    expect(img.getAttribute('src')).toBe('https://cdn.example.com/photo.png');
+    expect(screen.getByText('Chào tháng 8 may mắn')).toBeTruthy();
+  });
 });

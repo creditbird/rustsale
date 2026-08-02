@@ -26,7 +26,11 @@ mock.module('@tauri-apps/api/core', () => ({
     if (command === 'list_conversation_inbox') {
       return [];
     }
-    if (command === 'get_contact_timeline' || command === 'get_conversation_timeline') {
+    if (
+      command === 'get_contact_timeline' ||
+      command === 'get_conversation_timeline' ||
+      command === 'get_identity_timeline'
+    ) {
       return { items: [], nextCursor: null };
     }
     if (command === 'get_conversation_runtime_status') {
@@ -79,6 +83,7 @@ import {
   getContactTimeline,
   getConversationRuntimeStatus,
   getConversationTimeline,
+  getIdentityTimeline,
   initConversationEventBridge,
   linkConversationIdentity,
   relinkConversationLead,
@@ -144,6 +149,19 @@ describe('conversationService IPC command wrappers', () => {
         conversationId: 15,
         before: null,
         limit: 20
+      }
+    });
+  });
+
+  test('getIdentityTimeline calls get_identity_timeline with args', async () => {
+    await getIdentityTimeline(28, null, 50);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'get_identity_timeline',
+      args: {
+        identityId: 28,
+        before: null,
+        limit: 50
       }
     });
   });

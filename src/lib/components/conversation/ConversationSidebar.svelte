@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { Channel, InboxItem } from '$lib/services/conversationService';
+  import type { Channel, ConversationMessage, InboxItem } from '$lib/services/conversationService';
+  import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { ScrollArea } from '$lib/components/ui/scroll-area';
   import { Skeleton } from '$lib/components/ui/skeleton';
@@ -11,20 +12,32 @@
   import Phone from 'lucide-svelte/icons/phone';
   import Search from 'lucide-svelte/icons/search';
   import Users from 'lucide-svelte/icons/users';
+  import Plus from 'lucide-svelte/icons/plus';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
+
+  import NewChatDialog from './NewChatDialog.svelte';
+  import DeleteConversationDialog from './DeleteConversationDialog.svelte';
 
   let {
     items,
     selectedKey,
     loading = false,
-    onSelect
+    onSelect,
+    onCreated,
+    onDeleted
   }: {
     items: InboxItem[];
     selectedKey: string | null;
     loading?: boolean;
     onSelect: (item: InboxItem) => void;
+    onCreated?: (message: ConversationMessage) => void;
+    onDeleted?: () => void;
   } = $props();
 
   let searchQuery = $state('');
+  let newChatOpen = $state(false);
+  let deleteDialogOpen = $state(false);
+  let itemToDelete = $state<InboxItem | null>(null);
 
   const channelIcons: Record<Channel, typeof MessageSquare> = {
     zalo: MessageSquare,
@@ -54,33 +67,55 @@
   function getInitials(title: string): string {
     if (!title) return '?';
     const clean = title.trim();
-    const parts = clean.split(/\s+/);
+    if (/^unknown\b/i.test(clean)) {
+      return 'UN';
+    }
+    const sanitized = clean.replace(/[()]/g, '').trim();
+    const parts = sanitized.split(/\s+/).filter(Boolean);
     if (parts.length >= 2) {
       return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
     }
-    return clean.slice(0, 2).toUpperCase();
+    return sanitized.slice(0, 2).toUpperCase();
   }
 
   function getParticipantsPreview(item: InboxItem): string {
     if (!item.participants || item.participants.length === 0) return '';
     return item.participants.map((p) => p.displayName || 'Thành viên').join(', ');
   }
+
+  function promptDelete(e: MouseEvent, item: InboxItem) {
+    e.stopPropagation();
+    itemToDelete = item;
+    deleteDialogOpen = true;
+  }
 </script>
 
-<div class="flex flex-col h-full w-full bg-background border-r border-border">
-  <div class="p-3 border-b border-border">
+<div class="flex flex-col h-full w-full bg-background border-r border-border min-h-0">
+  <div class="p-3 border-b border-border space-y-2 shrink-0">
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Hội thoại</span>
+      <Button
+        variant="default"
+        size="sm"
+        class="h-7 text-xs gap-1 px-2.5 font-medium"
+        onclick={() => (newChatOpen = true)}
+      >
+        <Plus class="w-3.5 h-3.5" />
+        <span>Chat mới</span>
+      </Button>
+    </div>
     <div class="relative">
       <Search class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
       <Input
         type="text"
         placeholder="Tìm kiếm cuộc trò chuyện..."
         bind:value={searchQuery}
-        class="pl-9 text-sm"
+        class="pl-9 text-sm h-8"
       />
     </div>
   </div>
 
-  <ScrollArea class="flex-1">
+  <ScrollArea class="flex-1 min-h-0 w-full h-full">
     {#if loading}
       <div class="space-y-3 p-3">
         {#each Array(5) as _, i}
@@ -138,8 +173,16 @@
                   {/if}
 
                   <div class="flex-1 min-w-0">
-                    <div class="flex items-center justify-between gap-1">
+                    <div class="flex items-center justify-between gap-1 group/item">
                       <span class="font-semibold text-sm truncate">{item.title}</span>
+                      <button
+                        type="button"
+                        title="Xóa cuộc trò chuyện"
+                        onclick={(e) => promptDelete(e, item)}
+                        class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                      >
+                        <Trash2 class="w-3.5 h-3.5" />
+                      </button>
                     </div>
 
                     {#if item.lastMessagePreview}
@@ -211,8 +254,16 @@
                   {/if}
 
                   <div class="flex-1 min-w-0">
-                    <div class="flex items-center justify-between gap-1">
+                    <div class="flex items-center justify-between gap-1 group/item">
                       <span class="font-semibold text-sm truncate">{item.title}</span>
+                      <button
+                        type="button"
+                        title="Xóa cuộc trò chuyện"
+                        onclick={(e) => promptDelete(e, item)}
+                        class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                      >
+                        <Trash2 class="w-3.5 h-3.5" />
+                      </button>
                     </div>
 
                     {#if item.lastMessagePreview}
@@ -257,4 +308,7 @@
       </div>
     {/if}
   </ScrollArea>
+
+  <NewChatDialog bind:open={newChatOpen} onSuccess={onCreated} />
+  <DeleteConversationDialog bind:open={deleteDialogOpen} item={itemToDelete} onDeleted={onDeleted} />
 </div>

@@ -64,6 +64,23 @@ describe('ChannelBadges Component', () => {
     expect(onToggle).toHaveBeenCalledWith('messenger');
   });
 
+  test('does not toggle off the final active channel', async () => {
+    const onToggle = mock((ch: Channel) => {});
+    render(ChannelBadges, {
+      props: {
+        channels: [{ channel: 'zalo', messageCount: 6 }],
+        activeChannels: ['zalo'],
+        onToggle
+      }
+    });
+
+    const zaloBtn = screen.getByRole('button', { name: /zalo/i });
+    await fireEvent.click(zaloBtn);
+
+    expect(zaloBtn.getAttribute('aria-pressed')).toBe('true');
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
   test('displays message when active channels set is empty', () => {
     render(ChannelBadges, {
       props: {

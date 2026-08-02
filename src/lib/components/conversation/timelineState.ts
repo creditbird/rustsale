@@ -59,7 +59,27 @@ export function mergeTimelinePage(
   page: TimelinePage,
   mode: 'refresh' | 'older'
 ): TimelineVariant {
-  const mergedItems = mergeMessages(current.items, page.items);
+  let mergedItems: ConversationMessage[];
+  if (mode === 'refresh') {
+    const pageIds = new Set(page.items.map((item) => item.id));
+    const optimisticItems = current.items.filter(
+      (item) => !pageIds.has(item.id) && (item.status === 'queued' || item.status === 'sending')
+    );
+    const retainedOlderItems = page.nextCursor
+      ? current.items.filter((item) => {
+          if (pageIds.has(item.id)) return false;
+          const itemTime = new Date(item.occurredAt).getTime();
+          const cursorTime = new Date(page.nextCursor!.occurredAt).getTime();
+          return (
+            itemTime < cursorTime ||
+            (itemTime === cursorTime && item.id < page.nextCursor!.messageId)
+          );
+        })
+      : [];
+    mergedItems = mergeMessages([...retainedOlderItems, ...optimisticItems], page.items);
+  } else {
+    mergedItems = mergeMessages(current.items, page.items);
+  }
 
   let retainedItems: ConversationMessage[];
   if (mergedItems.length > MAX_CACHED_MESSAGES) {

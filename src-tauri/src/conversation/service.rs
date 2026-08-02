@@ -12,6 +12,16 @@ use crate::conversation::zalo::{
 use anyhow::Result;
 use std::sync::Arc;
 
+fn normalized_vn_mobile_phone(value: &str) -> Option<String> {
+    let normalized = crate::commands::normalize_phone_digits(value);
+    if normalized.len() != 10 {
+        return None;
+    }
+
+    matches!(&normalized[0..2], "03" | "05" | "07" | "08" | "09")
+        .then_some(normalized)
+}
+
 #[derive(Clone)]
 pub struct ConversationService {
     pub repository: Arc<ConversationRepository>,
@@ -51,6 +61,17 @@ impl ConversationService {
         Ok(self
             .repository
             .get_conversation_timeline(conversation_id, before, limit)?)
+    }
+
+    pub fn get_identity_timeline(
+        &self,
+        identity_id: i64,
+        before: Option<&TimelineCursor>,
+        limit: u32,
+    ) -> Result<TimelinePage> {
+        Ok(self
+            .repository
+            .get_identity_timeline(identity_id, before, limit)?)
     }
 
     pub fn link_identity(&self, identity_id: i64, lead_id: i64) -> Result<()> {
@@ -116,6 +137,37 @@ impl ConversationService {
             }
         }
         Ok(())
+    }
+
+    pub fn delete_conversation(
+        &self,
+        request: &super::types::DeleteConversationRequest,
+    ) -> Result<()> {
+        self.repository.delete_conversation(request)?;
+        self.events.publish(ConversationInvalidatedEvent {
+            conversation_id: request.conversation_id.unwrap_or(0),
+            lead_id: request.lead_id,
+            channel: Channel::Zalo,
+            reason: ConversationInvalidationReason::Link,
+            message_id: None,
+        });
+        Ok(())
+    }
+
+    pub fn start_direct_conversation(
+        &self,
+        request: &super::types::StartDirectConversationRequest,
+    ) -> Result<super::types::ConversationMessage> {
+        let now = crate::conversation::types::utc_now();
+        let message = self.repository.start_direct_conversation(request, &now)?;
+        self.events.publish(ConversationInvalidatedEvent {
+            conversation_id: message.conversation_id,
+            lead_id: None,
+            channel: message.channel,
+            reason: ConversationInvalidationReason::Message,
+            message_id: Some(message.id),
+        });
+        Ok(message)
     }
 
     pub fn ingest_zalo_event(
@@ -343,6 +395,46 @@ impl ConversationService {
         Ok(count)
     }
 
+    pub async fn sync_identity_profiles_for_account(
+        &self,
+        account_id: i64,
+        client: &dyn crate::conversation::zalo::client::ZaloClient,
+    ) -> Result<usize> {
+        let items = self
+            .repository
+            .get_zalo_identities_needing_profile_sync(account_id, 50)?;
+        if items.is_empty() {
+            return Ok(0);
+        }
+
+        let ids: Vec<i64> = items.iter().map(|(id, _)| *id).collect();
+        let uids: Vec<String> = items.iter().map(|(_, uid)| uid.clone()).collect();
+
+        match client.fetch_user_profiles(&uids).await {
+            Ok(profiles) => {
+                let updated = self
+                    .repository
+                    .mark_identities_profile_synced(&ids, &profiles)?;
+                if updated > 0 {
+                    self.events.publish(ConversationInvalidatedEvent {
+                        conversation_id: 0,
+                        lead_id: None,
+                        channel: Channel::Zalo,
+                        reason: ConversationInvalidationReason::Metadata,
+                        message_id: None,
+                    });
+                }
+                Ok(updated)
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                self.repository
+                    .mark_identity_profile_sync_failed(&ids, &error_msg)?;
+                Err(e)
+            }
+        }
+    }
+
     pub async fn process_next_outbox_job(
         &self,
         channel_account_id: i64,
@@ -363,10 +455,50 @@ impl ConversationService {
             zca_rs::models::ThreadType::User
         };
 
-        match client
-            .send_text(&job.external_thread_id, thread_type, &job.text)
-            .await
-        {
+        let mut permanent_recipient_error = false;
+        let send_result = if !job.is_group {
+            if let Some(phone) = normalized_vn_mobile_phone(&job.external_thread_id) {
+                match client.find_user_by_phone(&phone).await {
+                    Ok(Some(profile)) if !profile.external_id.trim().is_empty() => {
+                        let resolved = self.repository.resolve_direct_phone_recipient(
+                            job.message_id,
+                            job.channel_account_id,
+                            &phone,
+                            &profile.external_id,
+                            profile.display_name.as_deref(),
+                            profile.avatar_url.as_deref(),
+                            &now,
+                        )?;
+                        client
+                            .send_text(&resolved.external_thread_id, thread_type, &job.text)
+                            .await
+                    }
+                    Ok(Some(_)) => {
+                        permanent_recipient_error = true;
+                        Err(anyhow::anyhow!(
+                            "Zalo phone lookup returned an empty user ID for {phone}"
+                        ))
+                    }
+                    Ok(None) => {
+                        permanent_recipient_error = true;
+                        Err(anyhow::anyhow!(
+                            "Phone number {phone} was not found on Zalo"
+                        ))
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                client
+                    .send_text(&job.external_thread_id, thread_type, &job.text)
+                    .await
+            }
+        } else {
+            client
+                .send_text(&job.external_thread_id, thread_type, &job.text)
+                .await
+        };
+
+        match send_result {
             Ok(provider_message_id) => {
                 let message_id =
                     self.repository
@@ -385,7 +517,9 @@ impl ConversationService {
                     || err_msg.to_lowercase().contains("cookie");
 
                 const MAX_ATTEMPTS: u32 = 5;
-                let should_give_up = is_auth_err || job.attempt_count >= MAX_ATTEMPTS;
+                let should_give_up = permanent_recipient_error
+                    || is_auth_err
+                    || job.attempt_count >= MAX_ATTEMPTS;
 
                 if should_give_up {
                     self.repository

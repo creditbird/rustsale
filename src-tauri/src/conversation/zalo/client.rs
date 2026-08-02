@@ -70,6 +70,13 @@ pub fn normalize_group_info(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedProfile {
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
 #[async_trait]
 pub trait ZaloClient: Send + Sync {
     fn subscribe(&self) -> broadcast::Receiver<ListenerEvent>;
@@ -97,6 +104,18 @@ pub trait ZaloClient: Send + Sync {
         thread_type: zca_rs::models::ThreadType,
         text: &str,
     ) -> anyhow::Result<String>;
+    async fn find_user_by_phone(
+        &self,
+        _phone: &str,
+    ) -> anyhow::Result<Option<NormalizedProfile>> {
+        Ok(None)
+    }
+    async fn fetch_user_profiles(
+        &self,
+        _user_ids: &[String],
+    ) -> anyhow::Result<Vec<NormalizedProfile>> {
+        Ok(Vec::new())
+    }
     fn stop(&self);
 }
 
@@ -242,6 +261,107 @@ impl ZaloClient for RealZaloClient {
         }
 
         Err(anyhow::anyhow!("Zalo response contains no text message ID"))
+    }
+
+    async fn find_user_by_phone(
+        &self,
+        phone: &str,
+    ) -> anyhow::Result<Option<NormalizedProfile>> {
+        Ok(self.inner.find_user(phone, None).await?.map(|user| {
+            let display_name = if !user.display_name.trim().is_empty() {
+                Some(user.display_name.trim().to_string())
+            } else if !user.zalo_name.trim().is_empty() {
+                Some(user.zalo_name.trim().to_string())
+            } else {
+                None
+            };
+            let avatar_url = (!user.avatar.trim().is_empty())
+                .then(|| user.avatar.trim().to_string());
+
+            NormalizedProfile {
+                external_id: user.uid,
+                display_name,
+                avatar_url,
+            }
+        }))
+    }
+
+    async fn fetch_user_profiles(
+        &self,
+        user_ids: &[String],
+    ) -> anyhow::Result<Vec<NormalizedProfile>> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::new();
+        for chunk in user_ids.chunks(50) {
+            let resp = self
+                .inner
+                .get_user_info(chunk, None)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to fetch Zalo user info batch: {e}"))?;
+
+            for (raw_id, user) in resp.changed_profiles {
+                let clean_id = if !user.user_id.trim().is_empty() {
+                    user.user_id.trim().to_string()
+                } else {
+                    raw_id.split('_').next().unwrap_or(&raw_id).to_string()
+                };
+                let display_name = if !user.display_name.trim().is_empty() {
+                    Some(user.display_name.trim().to_string())
+                } else if !user.zalo_name.trim().is_empty() {
+                    Some(user.zalo_name.trim().to_string())
+                } else {
+                    None
+                };
+                let avatar_url = if !user.avatar.trim().is_empty() {
+                    Some(user.avatar.trim().to_string())
+                } else if !user.bgavatar.trim().is_empty() {
+                    Some(user.bgavatar.trim().to_string())
+                } else {
+                    None
+                };
+
+                results.push(NormalizedProfile {
+                    external_id: clean_id,
+                    display_name,
+                    avatar_url,
+                });
+            }
+
+            for (raw_id, val) in resp.unchanged_profiles {
+                let clean_id = raw_id.split('_').next().unwrap_or(&raw_id).to_string();
+                let display_name = val
+                    .get("displayName")
+                    .or_else(|| val.get("display_name"))
+                    .or_else(|| val.get("zaloName"))
+                    .or_else(|| val.get("zalo_name"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string());
+
+                let avatar_url = val
+                    .get("avatar")
+                    .or_else(|| val.get("fullAvatar"))
+                    .or_else(|| val.get("full_avatar"))
+                    .or_else(|| val.get("avatar_240"))
+                    .or_else(|| val.get("avatar_120"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string());
+
+                if display_name.is_some() || avatar_url.is_some() {
+                    results.push(NormalizedProfile {
+                        external_id: clean_id,
+                        display_name,
+                        avatar_url,
+                    });
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     fn stop(&self) {

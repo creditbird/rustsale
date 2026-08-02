@@ -4,6 +4,7 @@
     listConversationInbox,
     getContactTimeline,
     getConversationTimeline,
+    getIdentityTimeline,
     getConversationRuntimeStatus,
     initConversationEventBridge,
     onConversationInvalidated,
@@ -30,7 +31,8 @@
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
   import { Button } from '$lib/components/ui/button';
-  import { AlertCircle, RefreshCw, Users, MessageSquare } from 'lucide-svelte';
+  import { AlertCircle, RefreshCw, Users, MessageSquare, Trash2 } from 'lucide-svelte';
+  import DeleteConversationDialog from './DeleteConversationDialog.svelte';
 
   let {
     activeTab = 'conversation',
@@ -189,15 +191,15 @@
   function selectItem(item: InboxItem) {
     selectedKey = item.key;
 
-    if (item.kind === 'group' || item.leadId === null) {
+    if (item.kind === 'group') {
       activeChannels = [];
     } else {
-      if (activeChannelsPerKey.has(item.key)) {
-        activeChannels = activeChannelsPerKey.get(item.key)!;
-      } else {
-        activeChannels = item.channels.map((c) => c.channel);
-        activeChannelsPerKey.set(item.key, activeChannels);
-      }
+      const availableChannels = item.channels.map((channel) => channel.channel);
+      const cachedChannels = (activeChannelsPerKey.get(item.key) ?? []).filter((channel) =>
+        availableChannels.includes(channel)
+      );
+      activeChannels = cachedChannels.length > 0 ? cachedChannels : availableChannels;
+      activeChannelsPerKey.set(item.key, activeChannels);
     }
 
     loadOrFetchVariant(item, activeChannels);
@@ -213,6 +215,10 @@
 
     let updated: Channel[];
     if (activeChannels.includes(ch)) {
+      if (activeChannels.length === 1) {
+        activeChannels = [...activeChannels];
+        return;
+      }
       updated = activeChannels.filter((c) => c !== ch);
     } else {
       updated = [...activeChannels, ch];
@@ -295,11 +301,14 @@
 
     try {
       let page;
-      if (item.kind === 'group' || item.leadId === null) {
-        if (item.conversationId === null) return;
+      if (item.kind === 'group') {
+        if (item.conversationId === null) throw new Error('Group conversation ID is missing');
         page = await getConversationTimeline(item.conversationId, null, 50);
+      } else if (item.kind === 'unknown') {
+        if (item.identityId === null) throw new Error('Unknown contact identity ID is missing');
+        page = await getIdentityTimeline(item.identityId, null, 50);
       } else {
-        if (item.leadId === null) return;
+        if (item.leadId === null) throw new Error('Customer lead ID is missing');
         page = await getContactTimeline(item.leadId, channels, null, 50);
       }
 
@@ -338,15 +347,18 @@
 
     try {
       let page;
-      if (selectedItem.kind === 'group' || selectedItem.leadId === null) {
-        if (selectedItem.conversationId === null) return;
+      if (selectedItem.kind === 'group') {
+        if (selectedItem.conversationId === null) throw new Error('Group conversation ID is missing');
         page = await getConversationTimeline(
           selectedItem.conversationId,
           currentVariant.nextCursor,
           50
         );
+      } else if (selectedItem.kind === 'unknown') {
+        if (selectedItem.identityId === null) throw new Error('Unknown contact identity ID is missing');
+        page = await getIdentityTimeline(selectedItem.identityId, currentVariant.nextCursor, 50);
       } else {
-        if (selectedItem.leadId === null) return;
+        if (selectedItem.leadId === null) throw new Error('Customer lead ID is missing');
         page = await getContactTimeline(
           selectedItem.leadId,
           activeChannels,
@@ -375,6 +387,16 @@
     await fetchVariantFirstPage(selectedItem, activeChannels, currentVariantKey, anchor);
   }
 
+  function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
+    if (item.kind === 'customer') {
+      return item.leadId !== null && event.leadId === item.leadId;
+    }
+    if (item.kind === 'group') {
+      return item.conversationId !== null && event.conversationId === item.conversationId;
+    }
+    return item.replyTargets.some((target) => target.conversationId === event.conversationId);
+  }
+
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     const isActive = activeTab === 'conversation';
 
@@ -384,14 +406,7 @@
         refreshInbox();
       }, 50);
 
-      const affectsOpenItem =
-        selectedItem !== null &&
-        ((selectedItem.kind !== 'group' &&
-          selectedItem.leadId !== null &&
-          event.leadId === selectedItem.leadId) ||
-          (selectedItem.kind === 'group' &&
-            selectedItem.conversationId !== null &&
-            event.conversationId === selectedItem.conversationId));
+      const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
       if (affectsOpenItem) {
         if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
@@ -402,13 +417,7 @@
     } else {
       inboxStale = true;
       if (selectedItem) {
-        const affectsOpenItem =
-          (selectedItem.kind !== 'group' &&
-            selectedItem.leadId !== null &&
-            event.leadId === selectedItem.leadId) ||
-          (selectedItem.kind === 'group' &&
-            selectedItem.conversationId !== null &&
-            event.conversationId === selectedItem.conversationId);
+        const affectsOpenItem = eventAffectsItem(selectedItem, event);
 
         if (affectsOpenItem && currentVariantKey) {
           timelineStale.add(currentVariantKey);
@@ -451,6 +460,18 @@
     refreshOpenTimeline();
   }
 
+  let deleteHeaderDialogOpen = $state(false);
+
+  function handleConversationCreated(msg: ConversationMessage) {
+    refreshInbox();
+    refreshOpenTimeline();
+  }
+
+  function handleConversationDeleted() {
+    selectedKey = null;
+    refreshInbox();
+  }
+
   function getParticipantsPreview(item: InboxItem): string {
     if (!item.participants || item.participants.length === 0) return '';
     return item.participants.map((p) => p.displayName || 'Thành viên').join(', ');
@@ -459,12 +480,14 @@
 
 <div class="flex h-full w-full min-h-0 bg-background overflow-hidden">
   <!-- Column 1: Sidebar -->
-  <div class="w-[320px] shrink-0 h-full min-h-0 border-r border-border">
+  <div class="w-[320px] shrink-0 h-full min-h-0 border-r border-border flex flex-col">
     <ConversationSidebar
       items={inbox}
       selectedKey={selectedKey}
       loading={inboxLoading}
       onSelect={handleSidebarSelect}
+      onCreated={handleConversationCreated}
+      onDeleted={handleConversationDeleted}
     />
   </div>
 
@@ -503,11 +526,23 @@
             </div>
           </div>
 
-          {#if selectedItem.kind === 'unknown'}
-            <UnknownContactActions item={selectedItem} onLinked={handleLinked} />
-          {:else if selectedItem.kind === 'customer'}
-            <LinkedLeadActions item={selectedItem} onRelinked={handleLinked} onUnlinked={handleUnlinked} />
-          {/if}
+          <div class="flex items-center gap-2">
+            {#if selectedItem.kind === 'unknown'}
+              <UnknownContactActions item={selectedItem} onLinked={handleLinked} />
+            {:else if selectedItem.kind === 'customer'}
+              <LinkedLeadActions item={selectedItem} onRelinked={handleLinked} onUnlinked={handleUnlinked} />
+            {/if}
+
+            <Button
+              variant="outline"
+              size="icon"
+              title="Xóa cuộc trò chuyện này"
+              onclick={() => (deleteHeaderDialogOpen = true)}
+              class="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+            >
+              <Trash2 class="w-4 h-4" />
+            </Button>
+          </div>
         </div>
 
         {#if selectedItem.kind !== 'group'}
@@ -574,4 +609,10 @@
       </div>
     {/if}
   </div>
+
+  <DeleteConversationDialog
+    bind:open={deleteHeaderDialogOpen}
+    item={selectedItem}
+    onDeleted={handleConversationDeleted}
+  />
 </div>

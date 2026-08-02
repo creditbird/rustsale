@@ -29,13 +29,36 @@
     messenger: 'Messenger',
     email: 'Email'
   };
+
+  let toggleValue = $state<Channel[]>([]);
+
+  $effect(() => {
+    toggleValue = [...activeChannels];
+  });
+
+  function handleValueChange(nextValue: string[]) {
+    const nextChannels = nextValue as Channel[];
+    if (nextChannels.length === 0 && activeChannels.length > 0) {
+      toggleValue = [...activeChannels];
+      return;
+    }
+
+    const changedChannel = channels
+      .map((channel) => channel.channel)
+      .find(
+        (channel) =>
+          activeChannels.includes(channel) !== nextChannels.includes(channel)
+      );
+    if (changedChannel) onToggle(changedChannel);
+  }
 </script>
 
 <div class="flex flex-col gap-2">
   {#if channels.length > 0}
     <ToggleGroup.Root
       type="multiple"
-      value={activeChannels}
+      bind:value={toggleValue}
+      onValueChange={handleValueChange}
       class="flex flex-wrap items-center gap-1.5"
     >
       {#each channels as ch (ch.channel)}
@@ -45,7 +68,6 @@
           value={ch.channel}
           aria-label={ch.channel}
           aria-pressed={isActive ? 'true' : 'false'}
-          onclick={() => onToggle(ch.channel)}
           class="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md border border-border transition-colors hover:bg-accent data-[state=on]:bg-accent data-[state=on]:text-accent-foreground"
         >
           <Icon class="w-3.5 h-3.5" />

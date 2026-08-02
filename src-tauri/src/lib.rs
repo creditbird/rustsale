@@ -220,13 +220,16 @@ pub fn run() {
             conversation::commands::list_conversation_inbox,
             conversation::commands::get_contact_timeline,
             conversation::commands::get_conversation_timeline,
+            conversation::commands::get_identity_timeline,
             conversation::commands::link_conversation_identity,
             conversation::commands::unlink_conversation_identity,
             conversation::commands::unlink_conversation_lead,
             conversation::commands::relink_conversation_lead,
             conversation::commands::send_conversation_message,
             conversation::commands::get_conversation_runtime_status,
-            conversation::commands::restart_conversation_account
+            conversation::commands::restart_conversation_account,
+            conversation::commands::delete_conversation,
+            conversation::commands::start_direct_conversation
         ])
 
         .run(tauri::generate_context!())
