@@ -376,7 +376,15 @@ impl SupervisorHarness {
 
         let repository = Arc::new(ConversationRepository::new(db_path.clone()));
         let events = Arc::new(ConversationEventPublisher::new(100));
-        let service = Arc::new(ConversationService::new(repository.clone(), events.clone()));
+        let spool_root = std::path::Path::new(&db_path)
+            .parent()
+            .unwrap()
+            .join("spool-sup");
+        let service = Arc::new(ConversationService::new(
+            repository.clone(),
+            events.clone(),
+            spool_root,
+        ));
         let factory = Arc::new(FakeZaloClientFactory::new(capacity));
 
         let supervisor = Arc::new(ZaloSessionSupervisor::new(

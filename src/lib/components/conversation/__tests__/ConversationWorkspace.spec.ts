@@ -129,7 +129,11 @@ const mockMsg1: ConversationMessage = {
   status: 'received',
   removedAt: null,
   errorMessage: null,
-  replyToMessageId: null
+  replyToMessageId: null,
+  attachments: [],
+  replyTarget: null,
+  reactions: [],
+  sendBatch: null
 };
 
 const mockMsg2: ConversationMessage = {
@@ -149,7 +153,11 @@ const mockMsg2: ConversationMessage = {
   status: 'received',
   removedAt: null,
   errorMessage: null,
-  replyToMessageId: null
+  replyToMessageId: null,
+  attachments: [],
+  replyTarget: null,
+  reactions: [],
+  sendBatch: null
 };
 
 const mockListConversationInbox = mock(async (): Promise<InboxItem[]> => {
@@ -191,7 +199,11 @@ const mockGetConversationTimeline = mock(
           status: 'received',
           removedAt: null,
           errorMessage: null,
-          replyToMessageId: null
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          sendBatch: null
         }
       ],
       nextCursor: null

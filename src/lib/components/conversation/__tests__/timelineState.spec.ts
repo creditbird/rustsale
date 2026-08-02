@@ -35,7 +35,11 @@ function createMessage(
     status: 'received',
     removedAt: null,
     errorMessage: null,
-    replyToMessageId: null
+    replyToMessageId: null,
+    attachments: [],
+    replyTarget: null,
+    reactions: [],
+    sendBatch: null
   };
 }
 

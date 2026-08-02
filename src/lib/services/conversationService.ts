@@ -31,7 +31,7 @@ export interface ChannelBadgeSummary {
   messageCount: number;
 }
 
-export interface ConversationReplyTarget {
+export interface InboxReplyTarget {
   conversationId: number;
   channelAccountId: number;
   channel: Channel;
@@ -59,9 +59,56 @@ export interface InboxItem {
   lastMessagePreview: string | null;
   lastMessageAt: string | null;
   channels: ChannelBadgeSummary[];
-  replyTargets: ConversationReplyTarget[];
+  replyTargets: InboxReplyTarget[];
   participantCount: number;
   participants: ConversationParticipantSummary[];
+}
+
+export interface ConversationAttachment {
+  id: number;
+  mediaType: string;
+  mimeType: string;
+  fileName: string | null;
+  sizeBytes: number | null;
+  localPath: string | null;
+  remoteUrl: string | null;
+  thumbnailUrl: string | null;
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
+}
+
+export interface ConversationReplyTarget {
+  messageId: number | null;
+  providerMessageId: string | null;
+  senderDisplayName: string | null;
+  contentType: string;
+  textContent: string | null;
+  mediaType: string | null;
+  occurredAt: string | null;
+}
+
+export interface ConversationReactionActor {
+  identityId: number;
+  displayName: string | null;
+  avatarUrl: string | null;
+}
+
+export interface ConversationReactionGroup {
+  reactionIcon: string;
+  count: number;
+  includesMe: boolean;
+  actors: ConversationReactionActor[];
+}
+
+export type MessageSendBatchStatus = 'queued' | 'sending' | 'sent' | 'partial' | 'failed';
+
+export interface ConversationSendBatchSummary {
+  sendBatchId: string;
+  status: MessageSendBatchStatus;
+  totalParts: number;
+  sentParts: number;
+  failedParts: number;
 }
 
 export interface ConversationMessage {
@@ -82,6 +129,10 @@ export interface ConversationMessage {
   removedAt: string | null;
   errorMessage: string | null;
   replyToMessageId: number | null;
+  attachments: ConversationAttachment[];
+  replyTarget: ConversationReplyTarget | null;
+  reactions: ConversationReactionGroup[];
+  sendBatch: ConversationSendBatchSummary | null;
 }
 
 export interface TimelinePage {
@@ -108,6 +159,55 @@ export interface SendConversationMessageRequest {
   channelAccountId: number;
   text: string;
   replyToMessageId: number | null;
+}
+
+export interface StagedConversationAttachment {
+  stagedAttachmentId: string;
+  mediaType: string;
+  mimeType: string;
+  fileName: string;
+  fileSizeBytes: number;
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
+  expiresAt: string;
+}
+
+export type SendPartContent =
+  | { type: 'text'; text: string }
+  | { type: 'sticker'; stickerId: number; cateId: number; stickerType: number }
+  | { type: 'attachment'; stagedAttachmentId: string };
+
+export interface SendPartRequest {
+  clientPartId: string;
+  content: SendPartContent;
+}
+
+export interface SendConversationBatchRequest {
+  conversationId: number;
+  clientBatchId: string;
+  replyToMessageId: number | null;
+  parts: SendPartRequest[];
+}
+
+export interface SendConversationBatchResult {
+  batchId: string;
+  clientBatchId: string;
+  queuedMessages: ConversationMessage[];
+}
+
+export interface ZaloStickerReference {
+  stickerId: number;
+  cateId: number;
+  stickerType: number;
+  url: string;
+}
+
+export interface StageClipboardImageRequest {
+  conversationId: number;
+  fileName: string;
+  mimeType: string;
+  base64Data: string;
 }
 
 export interface ConversationInvalidatedEvent {
@@ -180,6 +280,24 @@ export const deleteConversation = (request: DeleteConversationRequest) =>
 
 export const startDirectConversation = (request: StartDirectConversationRequest) =>
   invoke<ConversationMessage>('start_direct_conversation', { request });
+
+export const stageConversationAttachmentPaths = (conversationId: number, paths: string[]) =>
+  invoke<StagedConversationAttachment[]>('stage_conversation_attachment_paths', { conversationId, paths });
+
+export const stageConversationClipboardImage = (request: StageClipboardImageRequest) =>
+  invoke<StagedConversationAttachment>('stage_conversation_clipboard_image', { request });
+
+export const discardConversationStagedAttachment = (stagedAttachmentId: string) =>
+  invoke<void>('discard_conversation_staged_attachment', { stagedAttachmentId });
+
+export const sendConversationBatch = (request: SendConversationBatchRequest) =>
+  invoke<SendConversationBatchResult>('send_conversation_batch', { request });
+
+export const searchZaloStickers = (conversationId: number, query: string, limit = 50) =>
+  invoke<ZaloStickerReference[]>('search_zalo_stickers', { conversationId, query, limit });
+
+export const recallConversationMessage = (messageId: number) =>
+  invoke<ConversationMessage>('recall_conversation_message', { request: { messageId } });
 
 // Ref-counted Event Bridge Logic
 type InvalidationListener = (event: ConversationInvalidatedEvent) => void;

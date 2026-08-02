@@ -5,7 +5,10 @@ use tokio::sync::broadcast;
 use zca_rs::listener::ListenerEvent;
 use zca_rs::models::ThreadType;
 
-use crate::conversation::zalo::client::{normalize_group_info, ZaloClient};
+use crate::conversation::zalo::client::{
+    normalize_group_info, ProviderRecallRequest, ProviderSendError, ProviderSendRequest,
+    ProviderSendResult, ZaloClient, ZaloStickerReference,
+};
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,8 +29,13 @@ pub struct FakeZaloClient {
     pub captured_history_requests: Mutex<Vec<CapturedHistoryRequest>>,
     pub captured_reaction_requests: Mutex<Vec<CapturedHistoryRequest>>,
     pub captured_send_requests: Mutex<Vec<CapturedSendRequest>>,
+    pub captured_part_requests: Mutex<Vec<ProviderSendRequest>>,
+    pub captured_recall_requests: Mutex<Vec<ProviderRecallRequest>>,
+    pub captured_sticker_searches: Mutex<Vec<String>>,
     pub captured_group_snapshot_requests: Mutex<Vec<Option<String>>>,
     pub group_snapshots: Mutex<HashMap<String, NormalizedGroupSnapshot>>,
+    pub sticker_responses: Mutex<Vec<ZaloStickerReference>>,
+    pub own_id: Mutex<Option<String>>,
     pub next_msg_id: Mutex<u64>,
     pub stopped: Mutex<bool>,
 }
@@ -40,8 +48,13 @@ impl FakeZaloClient {
             captured_history_requests: Mutex::new(Vec::new()),
             captured_reaction_requests: Mutex::new(Vec::new()),
             captured_send_requests: Mutex::new(Vec::new()),
+            captured_part_requests: Mutex::new(Vec::new()),
+            captured_recall_requests: Mutex::new(Vec::new()),
+            captured_sticker_searches: Mutex::new(Vec::new()),
             captured_group_snapshot_requests: Mutex::new(Vec::new()),
             group_snapshots: Mutex::new(HashMap::new()),
+            sticker_responses: Mutex::new(Vec::new()),
+            own_id: Mutex::new(None),
             next_msg_id: Mutex::new(1000),
             stopped: Mutex::new(false),
         }
@@ -126,6 +139,49 @@ impl ZaloClient for FakeZaloClient {
         let mut id = self.next_msg_id.lock().unwrap();
         *id += 1;
         Ok(id.to_string())
+    }
+
+    async fn send_part(
+        &self,
+        request: ProviderSendRequest,
+    ) -> Result<ProviderSendResult, ProviderSendError> {
+        self.captured_part_requests
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        let mut id = self.next_msg_id.lock().unwrap();
+        *id += 1;
+        let provider_message_id = id.to_string();
+        let provider_client_message_id = if !request.provider_client_message_id.is_empty() {
+            request.provider_client_message_id
+        } else {
+            provider_message_id.clone()
+        };
+        Ok(ProviderSendResult {
+            provider_message_id,
+            provider_client_message_id,
+        })
+    }
+
+    async fn search_stickers(
+        &self,
+        keyword: &str,
+        _limit: u32,
+    ) -> Result<Vec<ZaloStickerReference>, ProviderSendError> {
+        self.captured_sticker_searches
+            .lock()
+            .unwrap()
+            .push(keyword.to_string());
+        Ok(self.sticker_responses.lock().unwrap().clone())
+    }
+
+    async fn recall(&self, request: ProviderRecallRequest) -> Result<(), ProviderSendError> {
+        self.captured_recall_requests.lock().unwrap().push(request);
+        Ok(())
+    }
+
+    fn own_external_id(&self) -> Option<String> {
+        self.own_id.lock().unwrap().clone()
     }
 
     fn stop(&self) {
@@ -381,4 +437,66 @@ fn test_normalize_group_info_mapping() {
     );
     assert_eq!(p1.identity.lead_id, None);
     assert_eq!(p1.participant_role, "member");
+}
+
+#[tokio::test]
+async fn test_fake_client_captures_provider_send_request_and_recall() {
+    use crate::conversation::zalo::client::{ProviderOutboundContent, ProviderQuoteContext};
+
+    let client = FakeZaloClient::new();
+    *client.own_id.lock().unwrap() = Some("own-123".into());
+
+    assert_eq!(client.own_external_id(), Some("own-123".into()));
+
+    let quote = ProviderQuoteContext {
+        provider_message_id: "p-msg-1".into(),
+        provider_client_message_id: "cli-msg-1".into(),
+        sender_external_id: "sender-1".into(),
+        content: "quoted text".into(),
+        message_type: 1,
+        property_ext: None,
+        provider_timestamp_ms: 1700000000000,
+        ttl: 0,
+    };
+
+    let req = ProviderSendRequest {
+        external_thread_id: "thread-1".into(),
+        thread_type: ThreadType::User,
+        provider_client_message_id: "1785491200123".into(),
+        content: ProviderOutboundContent::Attachment {
+            media_type: "image".into(),
+            mime_type: "image/png".into(),
+            file_name: "test.png".into(),
+            size_bytes: 50,
+            data: vec![1, 2, 3],
+        },
+        quote: Some(quote),
+    };
+
+    let res = client.send_part(req.clone()).await.unwrap();
+    assert_eq!(res.provider_client_message_id, "1785491200123");
+
+    let captured = client.captured_part_requests.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].provider_client_message_id, "1785491200123");
+    assert!(matches!(
+        captured[0].content,
+        ProviderOutboundContent::Attachment { .. }
+    ));
+    assert_eq!(
+        captured[0].quote.as_ref().unwrap().provider_message_id,
+        "p-msg-1"
+    );
+
+    let recall_req = ProviderRecallRequest {
+        external_thread_id: "thread-1".into(),
+        thread_type: ThreadType::User,
+        provider_message_id: res.provider_message_id.clone(),
+        provider_client_message_id: res.provider_client_message_id.clone(),
+    };
+    client.recall(recall_req.clone()).await.unwrap();
+
+    let recalled = client.captured_recall_requests.lock().unwrap();
+    assert_eq!(recalled.len(), 1);
+    assert_eq!(recalled[0], recall_req);
 }

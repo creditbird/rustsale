@@ -77,6 +77,121 @@ pub struct NormalizedProfile {
     pub avatar_url: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderQuoteContext {
+    pub provider_message_id: String,
+    pub provider_client_message_id: String,
+    pub sender_external_id: String,
+    pub content: String,
+    pub message_type: u32,
+    pub property_ext: Option<String>,
+    pub provider_timestamp_ms: u64,
+    pub ttl: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderOutboundContent {
+    Text {
+        text: String,
+    },
+    Attachment {
+        media_type: String,
+        mime_type: String,
+        file_name: String,
+        size_bytes: u64,
+        data: Vec<u8>,
+    },
+    Sticker {
+        sticker_id: u32,
+        cate_id: u32,
+        sticker_type: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderSendRequest {
+    pub external_thread_id: String,
+    pub thread_type: zca_rs::models::ThreadType,
+    pub provider_client_message_id: String,
+    pub content: ProviderOutboundContent,
+    pub quote: Option<ProviderQuoteContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSendResult {
+    pub provider_message_id: String,
+    pub provider_client_message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZaloStickerReference {
+    pub sticker_id: u32,
+    pub cate_id: u32,
+    pub sticker_type: u32,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRecallRequest {
+    pub external_thread_id: String,
+    pub thread_type: zca_rs::models::ThreadType,
+    pub provider_message_id: String,
+    pub provider_client_message_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSendErrorKind {
+    Authentication,
+    RateLimited,
+    Retryable,
+    Permanent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSendError {
+    pub kind: ProviderSendErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for ProviderSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for ProviderSendError {}
+
+impl From<zca_rs::error::ZaloError> for ProviderSendError {
+    fn from(err: zca_rs::error::ZaloError) -> Self {
+        use zca_rs::error::ZaloError;
+        let message = err.to_string();
+        let kind = match &err {
+            ZaloError::Network(_) | ZaloError::WebSocket(_) => ProviderSendErrorKind::Retryable,
+            ZaloError::ApiError { code, .. }
+                if code.map_or(false, |c| c == 429)
+                    || message.to_lowercase().contains("rate limit") =>
+            {
+                ProviderSendErrorKind::RateLimited
+            }
+            ZaloError::ApiError { code, .. } if code.map_or(false, |c| c >= 500) => {
+                ProviderSendErrorKind::Retryable
+            }
+            ZaloError::ApiError { .. } | ZaloError::LoginQRAborted | ZaloError::LoginQRDeclined => {
+                ProviderSendErrorKind::Authentication
+            }
+            ZaloError::PayloadFormat(_)
+            | ZaloError::Io(_)
+            | ZaloError::Json(_)
+            | ZaloError::Crypto(_)
+            | ZaloError::UrlParse(_)
+            | ZaloError::Decompression(_) => ProviderSendErrorKind::Permanent,
+            _ => ProviderSendErrorKind::Permanent,
+        };
+        ProviderSendError { kind, message }
+    }
+}
+
 #[async_trait]
 pub trait ZaloClient: Send + Sync {
     fn subscribe(&self) -> broadcast::Receiver<ListenerEvent>;
@@ -104,10 +219,29 @@ pub trait ZaloClient: Send + Sync {
         thread_type: zca_rs::models::ThreadType,
         text: &str,
     ) -> anyhow::Result<String>;
-    async fn find_user_by_phone(
+    async fn send_part(
         &self,
-        _phone: &str,
-    ) -> anyhow::Result<Option<NormalizedProfile>> {
+        _request: ProviderSendRequest,
+    ) -> Result<ProviderSendResult, ProviderSendError> {
+        Err(ProviderSendError {
+            kind: ProviderSendErrorKind::Permanent,
+            message: "send_part not implemented".into(),
+        })
+    }
+    async fn search_stickers(
+        &self,
+        _keyword: &str,
+        _limit: u32,
+    ) -> Result<Vec<ZaloStickerReference>, ProviderSendError> {
+        Ok(Vec::new())
+    }
+    async fn recall(&self, _request: ProviderRecallRequest) -> Result<(), ProviderSendError> {
+        Ok(())
+    }
+    fn own_external_id(&self) -> Option<String> {
+        None
+    }
+    async fn find_user_by_phone(&self, _phone: &str) -> anyhow::Result<Option<NormalizedProfile>> {
         Ok(None)
     }
     async fn fetch_user_profiles(
@@ -263,10 +397,7 @@ impl ZaloClient for RealZaloClient {
         Err(anyhow::anyhow!("Zalo response contains no text message ID"))
     }
 
-    async fn find_user_by_phone(
-        &self,
-        phone: &str,
-    ) -> anyhow::Result<Option<NormalizedProfile>> {
+    async fn find_user_by_phone(&self, phone: &str) -> anyhow::Result<Option<NormalizedProfile>> {
         Ok(self.inner.find_user(phone, None).await?.map(|user| {
             let display_name = if !user.display_name.trim().is_empty() {
                 Some(user.display_name.trim().to_string())
@@ -275,8 +406,8 @@ impl ZaloClient for RealZaloClient {
             } else {
                 None
             };
-            let avatar_url = (!user.avatar.trim().is_empty())
-                .then(|| user.avatar.trim().to_string());
+            let avatar_url =
+                (!user.avatar.trim().is_empty()).then(|| user.avatar.trim().to_string());
 
             NormalizedProfile {
                 external_id: user.uid,
@@ -364,8 +495,197 @@ impl ZaloClient for RealZaloClient {
         Ok(results)
     }
 
+    async fn send_part(
+        &self,
+        request: ProviderSendRequest,
+    ) -> Result<ProviderSendResult, ProviderSendError> {
+        let cli_msg_id = request
+            .provider_client_message_id
+            .parse::<u64>()
+            .map_err(|_| ProviderSendError {
+                kind: ProviderSendErrorKind::Permanent,
+                message: format!(
+                    "Invalid provider_client_message_id {}",
+                    request.provider_client_message_id
+                ),
+            })?;
+
+        match request.content {
+            ProviderOutboundContent::Text { text } => {
+                let quote = request.quote.map(to_zalo_quote);
+                let content = zca_rs::models::MessageContent {
+                    msg: text,
+                    styles: None,
+                    urgency: None,
+                    quote,
+                    mentions: None,
+                    attachments: None,
+                    ttl: None,
+                };
+                let res = self
+                    .inner
+                    .send_message_with_client_id(
+                        content,
+                        &request.external_thread_id,
+                        request.thread_type,
+                        cli_msg_id,
+                    )
+                    .await?;
+                let msg_res = res
+                    .message
+                    .or_else(|| res.attachment.into_iter().next())
+                    .ok_or_else(|| ProviderSendError {
+                        kind: ProviderSendErrorKind::Permanent,
+                        message: "No message result returned from Zalo".into(),
+                    })?;
+                Ok(ProviderSendResult {
+                    provider_message_id: msg_res.msg_id.to_string(),
+                    provider_client_message_id: if msg_res.cli_msg_id != 0 {
+                        msg_res.cli_msg_id.to_string()
+                    } else {
+                        request.provider_client_message_id
+                    },
+                })
+            }
+            ProviderOutboundContent::Attachment {
+                data,
+                file_name,
+                size_bytes,
+                ..
+            } => {
+                let quote = request.quote.map(to_zalo_quote);
+                let content = zca_rs::models::MessageContent {
+                    msg: String::new(),
+                    styles: None,
+                    urgency: None,
+                    quote,
+                    mentions: None,
+                    attachments: Some(vec![zca_rs::models::AttachmentSource::Buffer {
+                        data,
+                        filename: file_name,
+                        metadata: zca_rs::models::AttachmentMetadata {
+                            total_size: size_bytes,
+                            width: None,
+                            height: None,
+                        },
+                    }]),
+                    ttl: None,
+                };
+                let res = self
+                    .inner
+                    .send_message_with_client_id(
+                        content,
+                        &request.external_thread_id,
+                        request.thread_type,
+                        cli_msg_id,
+                    )
+                    .await?;
+                let msg_res = res
+                    .message
+                    .or_else(|| res.attachment.into_iter().next())
+                    .ok_or_else(|| ProviderSendError {
+                        kind: ProviderSendErrorKind::Permanent,
+                        message: "No message result returned from Zalo".into(),
+                    })?;
+                Ok(ProviderSendResult {
+                    provider_message_id: msg_res.msg_id.to_string(),
+                    provider_client_message_id: if msg_res.cli_msg_id != 0 {
+                        msg_res.cli_msg_id.to_string()
+                    } else {
+                        request.provider_client_message_id
+                    },
+                })
+            }
+            ProviderOutboundContent::Sticker {
+                sticker_id,
+                cate_id,
+                sticker_type,
+            } => {
+                let res = self
+                    .inner
+                    .send_sticker_with_client_id(
+                        sticker_id,
+                        cate_id,
+                        sticker_type,
+                        &request.external_thread_id,
+                        request.thread_type,
+                        cli_msg_id,
+                    )
+                    .await?;
+                Ok(ProviderSendResult {
+                    provider_message_id: res.msg_id.to_string(),
+                    provider_client_message_id: if res.cli_msg_id != 0 {
+                        res.cli_msg_id.to_string()
+                    } else {
+                        request.provider_client_message_id
+                    },
+                })
+            }
+        }
+    }
+
+    async fn search_stickers(
+        &self,
+        keyword: &str,
+        limit: u32,
+    ) -> Result<Vec<ZaloStickerReference>, ProviderSendError> {
+        let basics = self
+            .inner
+            .search_sticker(keyword, Some(limit.clamp(1, 50)))
+            .await?;
+        if basics.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<u32> = basics.iter().map(|b| b.sticker_id).collect();
+        let details = self.inner.get_stickers_detail(&ids).await?;
+        let detail_map: std::collections::HashMap<u32, zca_rs::models::StickerDetail> =
+            details.into_iter().map(|d| (d.id, d)).collect();
+
+        let mut results = Vec::new();
+        for b in basics {
+            if let Some(d) = detail_map.get(&b.sticker_id) {
+                results.push(ZaloStickerReference {
+                    sticker_id: b.sticker_id,
+                    cate_id: b.cate_id,
+                    sticker_type: b.r#type,
+                    url: d.sticker_url.clone(),
+                });
+            }
+        }
+        Ok(results)
+    }
+
+    async fn recall(&self, request: ProviderRecallRequest) -> Result<(), ProviderSendError> {
+        self.inner
+            .undo(
+                &request.provider_message_id,
+                &request.provider_client_message_id,
+                &request.external_thread_id,
+                request.thread_type,
+            )
+            .await?;
+        Ok(())
+    }
+
+    fn own_external_id(&self) -> Option<String> {
+        self.inner.get_own_id()
+    }
+
     fn stop(&self) {
         self.inner.listener.stop();
+    }
+}
+
+fn to_zalo_quote(value: ProviderQuoteContext) -> zca_rs::models::SendMessageQuote {
+    zca_rs::models::SendMessageQuote {
+        content: serde_json::Value::String(value.content),
+        msg_type: value.message_type.to_string(),
+        property_ext: value.property_ext.map(serde_json::Value::String),
+        uid_from: value.sender_external_id,
+        msg_id: value.provider_message_id,
+        cli_msg_id: value.provider_client_message_id,
+        ts: value.provider_timestamp_ms.to_string(),
+        ttl: value.ttl as i32,
     }
 }
 

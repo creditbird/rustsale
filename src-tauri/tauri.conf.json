@@ -14,7 +14,8 @@
       {
         "title": "RustSale CRM & Outreach Pro",
         "width": 1280,
-        "height": 800
+        "height": 800,
+        "dragDropEnabled": true
       }
     ],
     "security": {

@@ -1,7 +1,10 @@
+use super::error::ConversationCommandError;
 use super::service::ConversationService;
 use super::types::{
-    Channel, ConversationMessage, ConversationRuntimeStatus, DeleteConversationRequest,
-    InboxItem, LinkIdentityRequest, RelinkLeadRequest, SendConversationMessageRequest,
+    Channel, ConversationMessage, ConversationRuntimeStatus, DeleteConversationRequest, InboxItem,
+    LinkIdentityRequest, RelinkLeadRequest, SendConversationBatchRequest,
+    SendConversationBatchResult, SendConversationMessageRequest,
+    StageConversationClipboardImageRequest, StagedAttachmentResponse,
     StartDirectConversationRequest, TimelineCursor, TimelinePage, UnlinkIdentityRequest,
     UnlinkLeadRequest,
 };
@@ -161,4 +164,139 @@ pub fn start_direct_conversation(
         .service
         .start_direct_conversation(&request)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn send_conversation_batch(
+    state: tauri::State<'_, ConversationState>,
+    request: SendConversationBatchRequest,
+) -> Result<SendConversationBatchResult, ConversationCommandError> {
+    state
+        .service
+        .enqueue_batch(&request)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub async fn stage_conversation_attachment_paths(
+    state: tauri::State<'_, ConversationState>,
+    conversation_id: i64,
+    paths: Vec<String>,
+) -> Result<Vec<StagedAttachmentResponse>, ConversationCommandError> {
+    state
+        .service
+        .stager
+        .stage_paths(conversation_id, paths)
+        .await
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub async fn stage_conversation_clipboard_image(
+    state: tauri::State<'_, ConversationState>,
+    request: StageConversationClipboardImageRequest,
+) -> Result<StagedAttachmentResponse, ConversationCommandError> {
+    state
+        .service
+        .stager
+        .stage_clipboard_image(request)
+        .await
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub async fn discard_conversation_staged_attachment(
+    state: tauri::State<'_, ConversationState>,
+    staged_attachment_id: String,
+) -> Result<(), ConversationCommandError> {
+    state
+        .service
+        .stager
+        .discard(&staged_attachment_id)
+        .await
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub async fn search_zalo_stickers(
+    state: tauri::State<'_, ConversationState>,
+    conversation_id: i64,
+    query: String,
+    limit: u32,
+) -> Result<Vec<crate::conversation::zalo::client::ZaloStickerReference>, ConversationCommandError>
+{
+    use crate::conversation::error::{ConversationError, ConversationErrorCode};
+
+    let account_key = state
+        .service
+        .repository
+        .get_conversation_account_key(conversation_id)
+        .map_err(|e| ConversationError::from(e).command_error())?
+        .ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                format!("conversation {conversation_id} has no channel account"),
+            )
+            .command_error()
+        })?;
+
+    state
+        .zalo_supervisor
+        .search_stickers(&account_key, &query, limit)
+        .await
+        .map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                .command_error()
+        })
+}
+
+#[tauri::command]
+pub async fn recall_conversation_message(
+    state: tauri::State<'_, ConversationState>,
+    request: crate::conversation::types::RecallMessageRequest,
+) -> Result<ConversationMessage, ConversationCommandError> {
+    use crate::conversation::error::{ConversationError, ConversationErrorCode};
+
+    let prepared = state
+        .service
+        .prepare_recall(request.message_id)
+        .map_err(|e| ConversationError::from(e).command_error())?;
+
+    let client = state
+        .zalo_supervisor
+        .connected_client(&prepared.provider_account_key)
+        .await
+        .ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::ProviderAuth,
+                format!(
+                    "Zalo account {} is disconnected",
+                    prepared.provider_account_key
+                ),
+            )
+            .command_error()
+        })?;
+
+    let thread_type = if prepared.is_group {
+        zca_rs::models::ThreadType::Group
+    } else {
+        zca_rs::models::ThreadType::User
+    };
+
+    let recall_req = crate::conversation::zalo::client::ProviderRecallRequest {
+        external_thread_id: prepared.external_thread_id,
+        thread_type,
+        provider_message_id: prepared.provider_message_id,
+        provider_client_message_id: prepared.provider_client_message_id,
+    };
+
+    client.recall(recall_req).await.map_err(|e| {
+        ConversationError::new(ConversationErrorCode::ProviderFailure, e.message).command_error()
+    })?;
+
+    let now = crate::conversation::types::utc_now();
+    state
+        .service
+        .complete_recall(prepared.message_id, &now)
+        .map_err(|e| ConversationError::from(e).command_error())
 }

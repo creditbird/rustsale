@@ -1,8 +1,10 @@
+use crate::conversation::error::{ConversationError, ConversationErrorCode};
 pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
     utc_now, Channel, ChannelBadgeSummary, ConversationAccountRuntime, ConversationKind,
     ConversationMessage, ConversationParticipantSummary, ConversationReplyTarget,
-    ConversationRuntimeStatus, InboxItem, InboxItemKind, MessageDirection, MessageStatus,
+    ConversationRuntimeStatus, ConversationSendPartContent, InboxItem, InboxItemKind,
+    MessageDirection, MessageStatus, SendConversationBatchRequest, SendConversationBatchResult,
     TimelineCursor, TimelinePage,
 };
 pub use crate::conversation::zalo::normalizer::{
@@ -12,6 +14,29 @@ pub use crate::conversation::zalo::normalizer::{
 use crate::db::open_db_connection;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static LAST_PROVIDER_CLIENT_ID: AtomicU64 = AtomicU64::new(0);
+
+pub fn next_provider_client_message_id() -> String {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut observed = LAST_PROVIDER_CLIENT_ID.load(Ordering::Relaxed);
+    loop {
+        let candidate = now_ms.max(observed.saturating_add(1));
+        match LAST_PROVIDER_CLIENT_ID.compare_exchange_weak(
+            observed,
+            candidate,
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return candidate.to_string(),
+            Err(actual) => observed = actual,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct NormalizedIdentity {
@@ -20,6 +45,29 @@ pub struct NormalizedIdentity {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub lead_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalizedAttachment {
+    pub provider_attachment_id: Option<String>,
+    pub media_type: String,
+    pub mime_type: String,
+    pub file_name: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub remote_url: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub metadata_json: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalizedReplyReference {
+    pub provider_message_id: String,
+    pub provider_client_message_id: String,
+    pub sender_external_id: String,
+    pub occurred_at: String,
+    pub text_content: Option<String>,
+    pub content_type: String,
+    pub raw_quote: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +87,8 @@ pub struct NormalizedMessage {
     pub content_type: String,
     pub text_content: Option<String>,
     pub content: serde_json::Value,
+    pub attachments: Vec<NormalizedAttachment>,
+    pub reply: Option<NormalizedReplyReference>,
     pub raw_payload: Option<serde_json::Value>,
     pub provider_timestamp: Option<String>,
     pub ingested_at: String,
@@ -62,15 +112,32 @@ pub struct AppliedMessage {
     pub duplicate: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedAttachment {
+    pub media_type: String,
+    pub mime_type: String,
+    pub file_name: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub local_path: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClaimedOutboxJob {
     pub job_id: String,
     pub message_id: i64,
+    pub conversation_id: i64,
     pub channel_account_id: i64,
     pub provider_account_key: String,
     pub external_thread_id: String,
     pub is_group: bool,
-    pub text: String,
+    pub content_type: String,
+    pub text_content: Option<String>,
+    pub content_json: serde_json::Value,
+    pub provider_client_message_id: String,
+    pub attachment: Option<ClaimedAttachment>,
+    pub quote: Option<crate::conversation::zalo::client::ProviderQuoteContext>,
+    pub send_batch_id: Option<String>,
+    pub batch_index: Option<u32>,
     pub attempt_count: u32,
 }
 
@@ -78,6 +145,26 @@ pub struct ClaimedOutboxJob {
 pub struct ResolvedDirectRecipient {
     pub conversation_id: i64,
     pub external_thread_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StagedAttachmentRecord {
+    pub id: String,
+    pub conversation_id: i64,
+    pub staged_attachment_id: String,
+    pub media_type: String,
+    pub mime_type: String,
+    pub file_name: String,
+    pub file_size_bytes: u64,
+    pub local_path: String,
+    pub thumbnail_path: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_seconds: Option<f64>,
+    pub status: String,
+    pub expires_at: String,
+    pub created_at: String,
+    pub claimed_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +175,150 @@ pub struct ConversationRepository {
 impl ConversationRepository {
     pub fn new(db_path: String) -> Self {
         Self { db_path }
+    }
+
+    pub fn update_account_identity_and_capabilities(
+        &self,
+        account_id: i64,
+        avatar_url: Option<&str>,
+        capabilities_json: &str,
+        now: &str,
+    ) -> Result<()> {
+        let conn = open_db_connection(&self.db_path)?;
+        conn.execute(
+            "UPDATE channel_accounts
+             SET avatar_url = COALESCE(?2, avatar_url),
+                 capabilities_json = ?3,
+                 connection_status = 'connected',
+                 last_connected_at = ?4,
+                 updated_at = ?4
+             WHERE id = ?1",
+            params![account_id, avatar_url, capabilities_json, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_staged_attachment(&self, record: &StagedAttachmentRecord) -> Result<()> {
+        let conn = open_db_connection(&self.db_path)?;
+        conn.execute(
+            "INSERT INTO conversation_staged_attachments
+             (id, conversation_id, staged_attachment_id, media_type, mime_type, file_name, file_size_bytes, local_path, thumbnail_path, width, height, duration_seconds, status, expires_at, created_at, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                record.id,
+                record.conversation_id,
+                record.staged_attachment_id,
+                record.media_type,
+                record.mime_type,
+                record.file_name,
+                record.file_size_bytes,
+                record.local_path,
+                record.thumbnail_path,
+                record.width,
+                record.height,
+                record.duration_seconds,
+                record.status,
+                record.expires_at,
+                record.created_at,
+                record.claimed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_staged_attachment(
+        &self,
+        staged_attachment_id: &str,
+    ) -> Result<Option<StagedAttachmentRecord>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, staged_attachment_id, media_type, mime_type, file_name, file_size_bytes, local_path, thumbnail_path, width, height, duration_seconds, status, expires_at, created_at, claimed_at
+             FROM conversation_staged_attachments
+             WHERE staged_attachment_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![staged_attachment_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(StagedAttachmentRecord {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                staged_attachment_id: row.get(2)?,
+                media_type: row.get(3)?,
+                mime_type: row.get(4)?,
+                file_name: row.get(5)?,
+                file_size_bytes: row.get(6)?,
+                local_path: row.get(7)?,
+                thumbnail_path: row.get(8)?,
+                width: row.get(9)?,
+                height: row.get(10)?,
+                duration_seconds: row.get(11)?,
+                status: row.get(12)?,
+                expires_at: row.get(13)?,
+                created_at: row.get(14)?,
+                claimed_at: row.get(15)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn mark_staged_attachment_discarded(&self, staged_attachment_id: &str) -> Result<()> {
+        let conn = open_db_connection(&self.db_path)?;
+        conn.execute(
+            "UPDATE conversation_staged_attachments
+             SET status = 'discarded'
+             WHERE staged_attachment_id = ?1",
+            params![staged_attachment_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_staging_cleanup_candidates(
+        &self,
+        now: &str,
+    ) -> Result<Vec<StagedAttachmentRecord>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, staged_attachment_id, media_type, mime_type, file_name, file_size_bytes, local_path, thumbnail_path, width, height, duration_seconds, status, expires_at, created_at, claimed_at
+             FROM conversation_staged_attachments
+             WHERE status = 'discarded' OR (status = 'staged' AND expires_at <= ?1)",
+        )?;
+        let rows = stmt.query_map(params![now], |row| {
+            Ok(StagedAttachmentRecord {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                staged_attachment_id: row.get(2)?,
+                media_type: row.get(3)?,
+                mime_type: row.get(4)?,
+                file_name: row.get(5)?,
+                file_size_bytes: row.get(6)?,
+                local_path: row.get(7)?,
+                thumbnail_path: row.get(8)?,
+                width: row.get(9)?,
+                height: row.get(10)?,
+                duration_seconds: row.get(11)?,
+                status: row.get(12)?,
+                expires_at: row.get(13)?,
+                created_at: row.get(14)?,
+                claimed_at: row.get(15)?,
+            })
+        })?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
+
+    pub fn active_spool_bytes(&self) -> Result<u64> {
+        let conn = open_db_connection(&self.db_path)?;
+        let bytes: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(file_size_bytes), 0)
+             FROM conversation_staged_attachments
+             WHERE status IN ('staged', 'claimed')",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(bytes as u64)
     }
 
     pub fn apply_normalized_message(&self, message: &NormalizedMessage) -> Result<AppliedMessage> {
@@ -186,18 +417,105 @@ impl ConversationRepository {
                 |row| row.get::<_, i64>(0),
             )
             .optional()?
-        } else if let Some(local_request_id) = &message.local_request_id {
-            tx.query_row(
-                "SELECT id FROM messages WHERE local_request_id = ?1",
-                [local_request_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
         } else {
             None
         };
 
+        let existing_message_id = match existing_message_id {
+            Some(id) => Some(id),
+            None => {
+                if let Some(cli_id) = &message.provider_client_message_id {
+                    if !cli_id.trim().is_empty() {
+                        tx.query_row(
+                            "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_client_message_id = ?2",
+                            params![conversation_id, cli_id],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()?
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
+        let existing_message_id = match existing_message_id {
+            Some(id) => Some(id),
+            None => {
+                if let Some(local_req_id) = &message.local_request_id {
+                    tx.query_row(
+                        "SELECT id FROM messages WHERE local_request_id = ?1",
+                        [local_req_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?
+                } else {
+                    None
+                }
+            }
+        };
+
         if let Some(message_id) = existing_message_id {
+            tx.execute(
+                "UPDATE messages
+                 SET provider_message_id = COALESCE(provider_message_id, ?2),
+                     provider_client_message_id = COALESCE(provider_client_message_id, ?3),
+                     provider_timestamp = COALESCE(provider_timestamp, ?4),
+                     raw_payload_json = COALESCE(?5, raw_payload_json),
+                     status = CASE WHEN status IN ('sending', 'queued', 'failed') THEN 'sent' ELSE status END
+                 WHERE id = ?1",
+                params![
+                    message_id,
+                    message.provider_message_id,
+                    message.provider_client_message_id,
+                    message.provider_timestamp,
+                    message.raw_payload.as_ref().map(serde_json::Value::to_string),
+                ],
+            )?;
+
+            tx.execute(
+                "UPDATE message_outbox_jobs SET status = 'completed', completed_at = ?2, updated_at = ?2 WHERE message_id = ?1 AND status IN ('pending', 'running', 'retry_wait', 'failed')",
+                params![message_id, now],
+            )?;
+
+            let send_batch_id: Option<String> = tx
+                .query_row(
+                    "SELECT send_batch_id FROM messages WHERE id = ?1",
+                    [message_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+
+            if let Some(batch_id) = send_batch_id {
+                Self::recalculate_send_batch_status_tx(&tx, &batch_id, now)?;
+            }
+
+            for att in &message.attachments {
+                tx.execute(
+                    "INSERT INTO message_attachments
+                     (message_id, provider_attachment_id, attachment_type, mime_type, file_name, size_bytes, remote_url, thumbnail_url, metadata_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(message_id, provider_attachment_id) DO UPDATE SET
+                         remote_url = COALESCE(excluded.remote_url, message_attachments.remote_url),
+                         thumbnail_url = COALESCE(excluded.thumbnail_url, message_attachments.thumbnail_url),
+                         metadata_json = COALESCE(excluded.metadata_json, message_attachments.metadata_json)",
+                    params![
+                        message_id,
+                        att.provider_attachment_id,
+                        att.media_type,
+                        att.mime_type,
+                        att.file_name,
+                        att.size_bytes,
+                        att.remote_url,
+                        att.thumbnail_url,
+                        att.metadata_json.as_ref().map(serde_json::Value::to_string),
+                    ],
+                )?;
+            }
+
             tx.commit()?;
             return Ok(AppliedMessage {
                 channel_account_id,
@@ -234,6 +552,26 @@ impl ConversationRepository {
             ],
         )?;
         let message_id = tx.last_insert_rowid();
+
+        for att in &message.attachments {
+            tx.execute(
+                "INSERT INTO message_attachments
+                 (message_id, provider_attachment_id, attachment_type, mime_type, file_name, size_bytes, remote_url, thumbnail_url, metadata_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    message_id,
+                    att.provider_attachment_id,
+                    att.media_type,
+                    att.mime_type,
+                    att.file_name,
+                    att.size_bytes,
+                    att.remote_url,
+                    att.thumbnail_url,
+                    att.metadata_json.as_ref().map(serde_json::Value::to_string),
+                ],
+            )?;
+        }
+
         tx.commit()?;
 
         Ok(AppliedMessage {
@@ -350,7 +688,7 @@ impl ConversationRepository {
                     .optional()?
                     .flatten();
 
-                reply_targets.push(ConversationReplyTarget {
+                reply_targets.push(crate::conversation::types::InboxReplyTarget {
                     conversation_id: *conv_id,
                     channel_account_id: *account_id,
                     channel: *channel,
@@ -553,7 +891,7 @@ impl ConversationRepository {
                     .optional()?
                     .flatten();
 
-                reply_targets.push(ConversationReplyTarget {
+                reply_targets.push(crate::conversation::types::InboxReplyTarget {
                     conversation_id: *conv_id,
                     channel_account_id: *account_id,
                     channel: *channel,
@@ -687,7 +1025,7 @@ impl ConversationRepository {
                 .optional()?
                 .flatten();
 
-            let reply_target = ConversationReplyTarget {
+            let reply_target = crate::conversation::types::InboxReplyTarget {
                 conversation_id: conv_id,
                 channel_account_id: account_id,
                 channel,
@@ -1024,7 +1362,9 @@ impl ConversationRepository {
                 map_conversation_message,
             )?
             .collect::<Result<Vec<_>>>()?;
-        Ok(page_from_descending_rows(rows, clamped_limit))
+        let mut page = page_from_descending_rows(rows, clamped_limit);
+        crate::conversation::projection::hydrate_messages(&conn, &mut page.items)?;
+        Ok(page)
     }
 
     pub fn get_conversation_timeline(
@@ -1079,7 +1419,9 @@ impl ConversationRepository {
                 map_conversation_message,
             )?
             .collect::<Result<Vec<_>>>()?;
-        Ok(page_from_descending_rows(rows, clamped_limit))
+        let mut page = page_from_descending_rows(rows, clamped_limit);
+        crate::conversation::projection::hydrate_messages(&conn, &mut page.items)?;
+        Ok(page)
     }
 
     pub fn apply_reaction(&self, reaction: &NormalizedReaction) -> Result<Option<i64>> {
@@ -1520,6 +1862,70 @@ impl ConversationRepository {
         }
     }
 
+    pub fn lookup_message_thread_info(&self, message_id: i64) -> Result<(String, String, bool)> {
+        let conn = open_db_connection(&self.db_path)?;
+        let (account_key, external_thread_id, kind_str): (String, String, String) = conn
+            .query_row(
+                "SELECT ca.provider_account_key, cc.external_thread_id, cc.kind
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             WHERE m.id = ?1",
+                [message_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let is_group = kind_str == "group";
+        Ok((account_key, external_thread_id, is_group))
+    }
+
+    pub fn mark_message_recalled(&self, message_id: i64, now: &str) -> Result<()> {
+        let conn = open_db_connection(&self.db_path)?;
+        conn.execute(
+            "UPDATE messages SET status = 'removed', removed_at = COALESCE(removed_at, ?2) WHERE id = ?1",
+            params![message_id, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_message_by_id(&self, message_id: i64) -> Result<Option<ConversationMessage>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let sql = "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
+                    ca.display_name, m.sender_identity_id, ci.display_name,
+                    m.direction, m.provider_message_id, m.content_type, m.text_content,
+                    m.content_json, COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+             WHERE m.id = ?1";
+        let msg: Option<ConversationMessage> = conn
+            .query_row(sql, [message_id], map_conversation_message)
+            .optional()?;
+        if let Some(m) = msg {
+            let mut list = vec![m];
+            crate::conversation::projection::hydrate_messages(&conn, &mut list)?;
+            Ok(list.pop())
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_conversation_account_key(&self, conversation_id: i64) -> Result<Option<String>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let key: Option<String> = conn
+            .query_row(
+                "SELECT ca.provider_account_key
+                 FROM channel_conversations cc
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 WHERE cc.id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(key)
+    }
+
     pub fn get_channel_account_id(&self, provider_account_key: &str) -> Result<Option<i64>> {
         let conn = open_db_connection(&self.db_path)?;
         let id: Option<i64> = conn
@@ -1662,6 +2068,401 @@ impl ConversationRepository {
         Ok(message)
     }
 
+    fn recalculate_send_batch_status_tx(
+        tx: &rusqlite::Transaction<'_>,
+        send_batch_id: &str,
+        now: &str,
+    ) -> Result<()> {
+        let (total, sent_count, failed_count, active_count): (i32, i32, i32, i32) = tx.query_row(
+            "SELECT
+            COUNT(*),
+            SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status IN ('queued', 'sending') THEN 1 ELSE 0 END)
+         FROM messages WHERE send_batch_id = ?1",
+            [send_batch_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+
+        let status = if sent_count == total {
+            "sent"
+        } else if failed_count == total {
+            "failed"
+        } else if sent_count > 0 && (sent_count + failed_count == total) {
+            "partial"
+        } else if active_count > 0 && sent_count > 0 {
+            "sending"
+        } else {
+            "queued"
+        };
+
+        let completed_at = if status == "sent" || status == "failed" || status == "partial" {
+            Some(now)
+        } else {
+            None
+        };
+
+        tx.execute(
+            "UPDATE message_send_batches
+         SET status = ?2, updated_at = ?3, completed_at = COALESCE(completed_at, ?4)
+         WHERE id = ?1",
+            params![send_batch_id, status, now, completed_at],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn enqueue_outbound_batch(
+        &self,
+        request: &SendConversationBatchRequest,
+        now: &str,
+    ) -> Result<SendConversationBatchResult, ConversationError> {
+        let mut conn = open_db_connection(&self.db_path).map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+        })?;
+        let tx = conn.transaction().map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+        })?;
+
+        let channel_account_id: i64 = tx
+            .query_row(
+                "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                [request.conversation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?
+            .ok_or_else(|| {
+                ConversationError::new(
+                    ConversationErrorCode::InvalidRequest,
+                    "Target conversation does not exist",
+                )
+            })?;
+
+        let existing_batch_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM message_send_batches WHERE channel_account_id = ?1 AND client_batch_id = ?2",
+                params![channel_account_id, request.client_batch_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+        if let Some(batch_id) = existing_batch_id {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
+                        ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
+                        m.provider_message_id, m.content_type, m.text_content, m.content_json,
+                        COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                        m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                 FROM messages m
+                 JOIN channel_conversations cc ON cc.id = m.conversation_id
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+                 WHERE m.send_batch_id = ?1
+                 ORDER BY m.batch_index ASC",
+                )
+                .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
+
+            let rows = stmt
+                .query_map([&batch_id], map_conversation_message)
+                .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
+            let mut messages = Vec::new();
+            for r in rows {
+                messages.push(r.map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?);
+            }
+            drop(stmt);
+            tx.commit().map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?;
+
+            return Ok(SendConversationBatchResult {
+                batch_id,
+                client_batch_id: request.client_batch_id.clone(),
+                messages,
+            });
+        }
+
+        if request.parts.is_empty() || request.parts.len() > 10 {
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                "Batch must contain between 1 and 10 parts",
+            ));
+        }
+
+        let has_sticker = request
+            .parts
+            .iter()
+            .any(|p| matches!(p.content, ConversationSendPartContent::Sticker { .. }));
+        if has_sticker && request.parts.len() > 1 {
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                "Sticker must be the only part in a message batch",
+            ));
+        }
+
+        if let Some(quote_id) = request.reply_to_message_id {
+            let quote_belongs: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM messages WHERE id = ?1 AND conversation_id = ?2",
+                    params![quote_id, request.conversation_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
+
+            if quote_belongs.is_none() {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::QuoteNotReady,
+                    "Quote reply target message not found in conversation",
+                ));
+            }
+        }
+
+        for part in &request.parts {
+            if let ConversationSendPartContent::Attachment {
+                staged_attachment_id,
+            } = &part.content
+            {
+                let status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM conversation_staged_attachments WHERE staged_attachment_id = ?1 AND conversation_id = ?2",
+                        params![staged_attachment_id, request.conversation_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+                match status.as_deref() {
+                    Some("staged") => {}
+                    Some("claimed") | Some("discarded") | Some("expired") => {
+                        return Err(ConversationError::new(
+                            ConversationErrorCode::StageAlreadyClaimed,
+                            format!(
+                                "Attachment staging token {} is not active",
+                                staged_attachment_id
+                            ),
+                        ));
+                    }
+                    None => {
+                        return Err(ConversationError::new(
+                            ConversationErrorCode::StageExpired,
+                            format!(
+                                "Attachment staging token {} not found",
+                                staged_attachment_id
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(ConversationError::new(
+                            ConversationErrorCode::StageAlreadyClaimed,
+                            format!(
+                                "Attachment staging token {} is not active",
+                                staged_attachment_id
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
+        let batch_id = format!(
+            "batch-{}",
+            format!(
+                "{:016x}{:016x}",
+                rand::random::<u64>(),
+                rand::random::<u64>()
+            )
+        );
+        tx.execute(
+            "INSERT INTO message_send_batches
+             (id, conversation_id, channel_account_id, client_batch_id, reply_to_message_id, part_count, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7, ?7)",
+            params![
+                batch_id,
+                request.conversation_id,
+                channel_account_id,
+                request.client_batch_id,
+                request.reply_to_message_id,
+                request.parts.len() as i32,
+                now,
+            ],
+        ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+        let mut created_message_ids = Vec::new();
+
+        for (idx, part) in request.parts.iter().enumerate() {
+            let local_req_id = format!(
+                "batch:{}:part:{}",
+                request.client_batch_id, part.client_part_id
+            );
+            let cli_msg_id = next_provider_client_message_id();
+            let reply_to = if idx == 0 {
+                request.reply_to_message_id
+            } else {
+                None
+            };
+
+            let (content_type, text_content, content_json) = match &part.content {
+                ConversationSendPartContent::Text { text } => (
+                    "text",
+                    Some(text.clone()),
+                    serde_json::json!({ "text": text }).to_string(),
+                ),
+                ConversationSendPartContent::Sticker {
+                    sticker_id,
+                    cate_id,
+                    sticker_type,
+                } => (
+                    "sticker",
+                    None,
+                    serde_json::json!({
+                        "stickerId": sticker_id,
+                        "cateId": cate_id,
+                        "type": sticker_type,
+                    })
+                    .to_string(),
+                ),
+                ConversationSendPartContent::Attachment {
+                    staged_attachment_id,
+                } => (
+                    "attachment",
+                    None,
+                    serde_json::json!({ "stagedAttachmentId": staged_attachment_id }).to_string(),
+                ),
+            };
+
+            let message_id: i64 = tx.query_row(
+                "INSERT INTO messages
+                 (conversation_id, sender_identity_id, direction, provider_message_id, provider_client_message_id,
+                  local_request_id, content_type, text_content, content_json, raw_payload_json, provider_timestamp,
+                  ingested_at, sent_at, edited_at, removed_at, status, error_code, error_message, reply_to_message_id,
+                  send_batch_id, batch_index)
+                 VALUES (?1, NULL, 'outbound', NULL, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, NULL, NULL, NULL, 'queued', NULL, NULL, ?8, ?9, ?10)
+                 RETURNING id",
+                params![
+                    request.conversation_id,
+                    cli_msg_id,
+                    local_req_id,
+                    content_type,
+                    text_content,
+                    content_json,
+                    now,
+                    reply_to,
+                    batch_id,
+                    idx as i32,
+                ],
+                |row| row.get(0),
+            ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+            created_message_ids.push(message_id);
+
+            if let ConversationSendPartContent::Attachment {
+                staged_attachment_id,
+            } = &part.content
+            {
+                let rec: (String, String, String, u64, String, Option<String>) = tx
+                    .query_row(
+                        "SELECT media_type, mime_type, file_name, file_size_bytes, local_path, thumbnail_path
+                         FROM conversation_staged_attachments
+                         WHERE staged_attachment_id = ?1",
+                        params![staged_attachment_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                    )
+                    .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+                tx.execute(
+                    "INSERT INTO message_attachments
+                     (message_id, provider_attachment_id, attachment_type, file_name, mime_type, size_bytes, local_path, thumbnail_url, metadata_json, created_at)
+                     VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, '{}', ?8)",
+                    params![message_id, rec.0, rec.2, rec.1, rec.3, rec.4, rec.5, now],
+                ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+                tx.execute(
+                    "UPDATE conversation_staged_attachments
+                     SET status = 'claimed', claimed_at = ?1
+                     WHERE staged_attachment_id = ?2",
+                    params![now, staged_attachment_id],
+                )
+                .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
+            } else if let ConversationSendPartContent::Sticker {
+                sticker_id,
+                cate_id,
+                sticker_type,
+            } = &part.content
+            {
+                let meta = serde_json::json!({
+                    "stickerId": sticker_id,
+                    "cateId": cate_id,
+                    "type": sticker_type,
+                })
+                .to_string();
+
+                tx.execute(
+                    "INSERT INTO message_attachments
+                     (message_id, provider_attachment_id, attachment_type, file_name, mime_type, size_bytes, local_path, thumbnail_url, metadata_json, created_at)
+                     VALUES (?1, NULL, 'sticker', NULL, NULL, NULL, NULL, NULL, ?2, ?3)",
+                    params![message_id, meta, now],
+                ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+            }
+
+            let job_id = format!("outbox:{}:{:016x}", message_id, rand::random::<u64>());
+            tx.execute(
+                "INSERT INTO message_outbox_jobs
+                 (id, message_id, channel_account_id, status, attempt_count, next_attempt_at, last_error, created_at, updated_at, completed_at)
+                 VALUES (?1, ?2, ?3, 'pending', 0, ?4, NULL, ?4, ?4, NULL)",
+                params![job_id, message_id, channel_account_id, now],
+            ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+        }
+
+        let mut messages = Vec::new();
+        for msg_id in created_message_ids {
+            let msg = tx
+                .query_row(
+                    "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
+                        ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
+                        m.provider_message_id, m.content_type, m.text_content, m.content_json,
+                        COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                        m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                 FROM messages m
+                 JOIN channel_conversations cc ON cc.id = m.conversation_id
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+                 WHERE m.id = ?1",
+                    [msg_id],
+                    map_conversation_message,
+                )
+                .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
+
+            messages.push(msg);
+        }
+
+        tx.commit().map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+        })?;
+
+        Ok(SendConversationBatchResult {
+            batch_id,
+            client_batch_id: request.client_batch_id.clone(),
+            messages,
+        })
+    }
+
     pub fn delete_conversation(
         &self,
         request: &crate::conversation::types::DeleteConversationRequest,
@@ -1671,17 +2472,35 @@ impl ConversationRepository {
 
         if let Some(conv_id) = request.conversation_id {
             if conv_id > 0 {
-                tx.execute("DELETE FROM messages WHERE conversation_id = ?1", params![conv_id])?;
-                tx.execute("DELETE FROM conversation_participants WHERE conversation_id = ?1", params![conv_id])?;
-                tx.execute("DELETE FROM channel_conversations WHERE id = ?1", params![conv_id])?;
+                tx.execute(
+                    "DELETE FROM messages WHERE conversation_id = ?1",
+                    params![conv_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM conversation_participants WHERE conversation_id = ?1",
+                    params![conv_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM channel_conversations WHERE id = ?1",
+                    params![conv_id],
+                )?;
             }
         }
 
         if let Some(identity_id) = request.identity_id {
             if identity_id > 0 {
-                tx.execute("DELETE FROM messages WHERE sender_identity_id = ?1", params![identity_id])?;
-                tx.execute("DELETE FROM conversation_participants WHERE identity_id = ?1", params![identity_id])?;
-                tx.execute("DELETE FROM channel_identities WHERE id = ?1 AND lead_id IS NULL", params![identity_id])?;
+                tx.execute(
+                    "DELETE FROM messages WHERE sender_identity_id = ?1",
+                    params![identity_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM conversation_participants WHERE identity_id = ?1",
+                    params![identity_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM channel_identities WHERE id = ?1 AND lead_id IS NULL",
+                    params![identity_id],
+                )?;
             }
         }
 
@@ -1698,9 +2517,18 @@ impl ConversationRepository {
                 };
 
                 for cid in conv_ids {
-                    tx.execute("DELETE FROM messages WHERE conversation_id = ?1", params![cid])?;
-                    tx.execute("DELETE FROM conversation_participants WHERE conversation_id = ?1", params![cid])?;
-                    tx.execute("DELETE FROM channel_conversations WHERE id = ?1", params![cid])?;
+                    tx.execute(
+                        "DELETE FROM messages WHERE conversation_id = ?1",
+                        params![cid],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM conversation_participants WHERE conversation_id = ?1",
+                        params![cid],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM channel_conversations WHERE id = ?1",
+                        params![cid],
+                    )?;
                 }
             }
         }
@@ -1720,7 +2548,10 @@ impl ConversationRepository {
         let phone_clean = request.phone_or_external_id.trim();
         if phone_clean.is_empty() {
             return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "phone number must not be empty"),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "phone number must not be empty",
+                ),
             )));
         }
         let normalized_phone = crate::commands::normalize_phone_digits(phone_clean);
@@ -1754,7 +2585,9 @@ impl ConversationRepository {
                                 Ok(p) => p,
                                 Err(_) => break,
                             };
-                            if crate::commands::normalize_phone_digits(&raw_phone) == normalized_phone {
+                            if crate::commands::normalize_phone_digits(&raw_phone)
+                                == normalized_phone
+                            {
                                 found_id = Some(id);
                                 break;
                             }
@@ -2046,7 +2879,9 @@ impl ConversationRepository {
                  WHERE id = ?1",
                 params![
                     existing_conversation_id,
-                    display_name.map(str::trim).filter(|value| !value.is_empty()),
+                    display_name
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
                     avatar_url.map(str::trim).filter(|value| !value.is_empty()),
                     source_conversation_id,
                     now,
@@ -2080,7 +2915,9 @@ impl ConversationRepository {
                 params![
                     source_conversation_id,
                     resolved_uid,
-                    display_name.map(str::trim).filter(|value| !value.is_empty()),
+                    display_name
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
                     avatar_url.map(str::trim).filter(|value| !value.is_empty()),
                     now,
                 ],
@@ -2122,18 +2959,24 @@ impl ConversationRepository {
 
         let row = tx
             .query_row(
-                "SELECT oj.id, oj.message_id, oj.channel_account_id, ca.provider_account_key,
-                        cc.external_thread_id, cc.kind, m.text_content, oj.attempt_count
+                "SELECT oj.id, oj.message_id, m.conversation_id, oj.channel_account_id, ca.provider_account_key,
+                        cc.external_thread_id, cc.kind, m.content_type, m.text_content, m.content_json,
+                        m.provider_client_message_id, m.reply_to_message_id, m.send_batch_id, m.batch_index,
+                        oj.attempt_count
                  FROM message_outbox_jobs oj
                  JOIN messages m ON m.id = oj.message_id
                  JOIN channel_conversations cc ON cc.id = m.conversation_id
                  JOIN channel_accounts ca ON ca.id = oj.channel_account_id
                  WHERE oj.channel_account_id = ?1
+                   AND (ca.connection_status IS NULL OR ca.connection_status = 'connected' OR ca.connection_status = 'synced')
                    AND (
                      oj.status = 'pending'
                      OR (oj.status = 'retry_wait' AND (oj.next_attempt_at IS NULL OR oj.next_attempt_at <= ?2))
                    )
-                 ORDER BY oj.created_at ASC
+                 ORDER BY COALESCE((SELECT created_at FROM message_send_batches WHERE id = m.send_batch_id), m.ingested_at) ASC,
+                          COALESCE(m.batch_index, 0) ASC,
+                          oj.created_at ASC,
+                          m.id ASC
                  LIMIT 1",
                 params![channel_account_id, now],
                 |row| {
@@ -2141,11 +2984,18 @@ impl ConversationRepository {
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, u32>(7)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<i64>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                        row.get::<_, Option<u32>>(13)?,
+                        row.get::<_, u32>(14)?,
                     ))
                 },
             )
@@ -2154,11 +3004,18 @@ impl ConversationRepository {
         let (
             job_id,
             message_id,
+            conversation_id,
             account_id,
             provider_account_key,
             external_thread_id,
             kind_str,
+            content_type,
             text_opt,
+            content_json_raw,
+            cli_msg_id_opt,
+            reply_to_id,
+            send_batch_id,
+            batch_index,
             current_attempt,
         ) = match row {
             Some(data) => data,
@@ -2178,19 +3035,104 @@ impl ConversationRepository {
             params![message_id],
         )?;
 
+        if let Some(ref batch_id) = send_batch_id {
+            tx.execute(
+                "UPDATE message_send_batches SET status = 'sending', updated_at = ?2 WHERE id = ?1 AND status = 'queued'",
+                params![batch_id, now],
+            )?;
+        }
+
+        let attachment: Option<ClaimedAttachment> = tx
+            .query_row(
+                "SELECT attachment_type, mime_type, file_name, size_bytes, local_path
+                 FROM message_attachments
+                 WHERE message_id = ?1
+                 LIMIT 1",
+                [message_id],
+                |r| {
+                    Ok(ClaimedAttachment {
+                        media_type: r.get(0)?,
+                        mime_type: r.get(1)?,
+                        file_name: r.get(2)?,
+                        size_bytes: r.get(3)?,
+                        local_path: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        let quote: Option<crate::conversation::zalo::client::ProviderQuoteContext> = if let Some(
+            reply_id,
+        ) =
+            reply_to_id
+        {
+            tx.query_row(
+                "SELECT m.provider_message_id, m.provider_client_message_id, ci.external_id, m.text_content, m.content_type, m.provider_timestamp
+                 FROM messages m
+                 LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+                 WHERE m.id = ?1",
+                [reply_id],
+                |r| {
+                    let p_msg_id: Option<String> = r.get(0)?;
+                    let p_cli_id: Option<String> = r.get(1)?;
+                    let sender_ext: Option<String> = r.get(2)?;
+                    let text: Option<String> = r.get(3)?;
+                    let c_type: String = r.get(4)?;
+                    let ts_str: Option<String> = r.get(5)?;
+
+                    if let (Some(provider_message_id), Some(provider_client_message_id), Some(sender_external_id)) = (p_msg_id, p_cli_id, sender_ext) {
+                        let msg_type = match c_type.as_str() {
+                            "text" => 1,
+                            "sticker" => 2,
+                            "attachment" | "image" | "file" => 3,
+                            _ => 1,
+                        };
+                        let provider_timestamp_ms = ts_str
+                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                            .map(|dt| dt.timestamp_millis() as u64)
+                            .unwrap_or(0);
+                        Ok(Some(crate::conversation::zalo::client::ProviderQuoteContext {
+                            provider_message_id,
+                            provider_client_message_id,
+                            sender_external_id,
+                            content: text.unwrap_or_default(),
+                            message_type: msg_type,
+                            property_ext: None,
+                            provider_timestamp_ms,
+                            ttl: 0,
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                },
+            )?
+        } else {
+            None
+        };
+
         tx.commit()?;
 
         let is_group = kind_str == "group";
-        let text = text_opt.unwrap_or_default();
+        let content_json =
+            serde_json::from_str(&content_json_raw).unwrap_or(serde_json::Value::Null);
+        let provider_client_message_id = cli_msg_id_opt.unwrap_or_default();
 
         Ok(Some(ClaimedOutboxJob {
             job_id,
             message_id,
+            conversation_id,
             channel_account_id: account_id,
             provider_account_key,
             external_thread_id,
             is_group,
-            text,
+            content_type,
+            text_content: text_opt,
+            content_json,
+            provider_client_message_id,
+            attachment,
+            quote,
+            send_batch_id,
+            batch_index,
             attempt_count: new_attempt_count,
         }))
     }
@@ -2199,15 +3141,19 @@ impl ConversationRepository {
         &self,
         job_id: &str,
         provider_message_id: &str,
+        provider_client_message_id: &str,
         now: &str,
     ) -> Result<i64> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
-        let message_id: i64 = tx.query_row(
-            "SELECT message_id FROM message_outbox_jobs WHERE id = ?1",
+        let (message_id, send_batch_id): (i64, Option<String>) = tx.query_row(
+            "SELECT oj.message_id, m.send_batch_id
+             FROM message_outbox_jobs oj
+             JOIN messages m ON m.id = oj.message_id
+             WHERE oj.id = ?1",
             [job_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
         tx.execute(
@@ -2219,10 +3165,14 @@ impl ConversationRepository {
 
         tx.execute(
             "UPDATE messages
-             SET status = 'sent', provider_message_id = ?2, sent_at = ?3
+             SET status = 'sent', provider_message_id = ?2, provider_client_message_id = COALESCE(provider_client_message_id, ?3), sent_at = ?4
              WHERE id = ?1",
-            params![message_id, provider_message_id, now],
+            params![message_id, provider_message_id, provider_client_message_id, now],
         )?;
+
+        if let Some(ref batch_id) = send_batch_id {
+            Self::recalculate_send_batch_status_tx(&tx, batch_id, now)?;
+        }
 
         tx.execute(
             "UPDATE channel_conversations
@@ -2235,50 +3185,83 @@ impl ConversationRepository {
         Ok(message_id)
     }
 
-    pub fn fail_outbox_job(
+    pub fn schedule_outbox_retry(
         &self,
         job_id: &str,
-        retry_at: Option<&str>,
+        retry_at: &str,
+        code: crate::conversation::error::ConversationErrorCode,
         error: &str,
         now: &str,
     ) -> Result<()> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
-        let message_id: i64 = tx.query_row(
-            "SELECT message_id FROM message_outbox_jobs WHERE id = ?1",
+        let (message_id, send_batch_id): (i64, Option<String>) = tx.query_row(
+            "SELECT oj.message_id, m.send_batch_id
+             FROM message_outbox_jobs oj
+             JOIN messages m ON m.id = oj.message_id
+             WHERE oj.id = ?1",
             [job_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        if let Some(next_attempt) = retry_at {
-            tx.execute(
-                "UPDATE message_outbox_jobs
-                 SET status = 'retry_wait', next_attempt_at = ?2, last_error = ?3, updated_at = ?4
-                 WHERE id = ?1",
-                params![job_id, next_attempt, error, now],
-            )?;
+        tx.execute(
+            "UPDATE message_outbox_jobs
+             SET status = 'retry_wait', next_attempt_at = ?2, last_error = ?3, updated_at = ?4
+             WHERE id = ?1",
+            params![job_id, retry_at, error, now],
+        )?;
 
-            tx.execute(
-                "UPDATE messages
-                 SET status = 'queued', error_message = ?2
-                 WHERE id = ?1",
-                params![message_id, error],
-            )?;
-        } else {
-            tx.execute(
-                "UPDATE message_outbox_jobs
-                 SET status = 'failed', last_error = ?2, updated_at = ?3
-                 WHERE id = ?1",
-                params![job_id, error, now],
-            )?;
+        tx.execute(
+            "UPDATE messages
+             SET status = 'queued', error_code = ?2, error_message = ?3
+             WHERE id = ?1",
+            params![message_id, code.as_str(), error],
+        )?;
 
-            tx.execute(
-                "UPDATE messages
-                 SET status = 'failed', error_message = ?2
-                 WHERE id = ?1",
-                params![message_id, error],
-            )?;
+        if let Some(ref batch_id) = send_batch_id {
+            Self::recalculate_send_batch_status_tx(&tx, batch_id, now)?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn fail_outbox_job(
+        &self,
+        job_id: &str,
+        code: crate::conversation::error::ConversationErrorCode,
+        error: &str,
+        now: &str,
+    ) -> Result<()> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let (message_id, send_batch_id): (i64, Option<String>) = tx.query_row(
+            "SELECT oj.message_id, m.send_batch_id
+             FROM message_outbox_jobs oj
+             JOIN messages m ON m.id = oj.message_id
+             WHERE oj.id = ?1",
+            [job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        tx.execute(
+            "UPDATE message_outbox_jobs
+             SET status = 'failed', last_error = ?2, updated_at = ?3
+             WHERE id = ?1",
+            params![job_id, error, now],
+        )?;
+
+        tx.execute(
+            "UPDATE messages
+             SET status = 'failed', error_code = ?2, error_message = ?3
+             WHERE id = ?1",
+            params![message_id, code.as_str(), error],
+        )?;
+
+        if let Some(ref batch_id) = send_batch_id {
+            Self::recalculate_send_batch_status_tx(&tx, batch_id, now)?;
         }
 
         tx.commit()?;
@@ -2293,7 +3276,7 @@ impl ConversationRepository {
 
         tx.execute(
             "UPDATE messages
-             SET status = 'failed', error_message = ?1
+             SET status = 'failed', error_code = 'delivery_unknown', error_message = ?1
              WHERE id IN (SELECT message_id FROM message_outbox_jobs WHERE status = 'running')",
             params![error_msg],
         )?;
@@ -2419,10 +3402,13 @@ impl ConversationRepository {
 
             let new_attempts = current_attempts + 1;
             // Exponential backoff: 300s, 600s, 1200s, 2400s... capped at 86400s (24 hours)
-            let backoff_secs = (300i64 * (1i64 << (new_attempts.saturating_sub(1).min(10)))).min(86400);
+            let backoff_secs =
+                (300i64 * (1i64 << (new_attempts.saturating_sub(1).min(10)))).min(86400);
             let next_retry = Utc::now()
                 .checked_add_signed(chrono::Duration::seconds(backoff_secs))
-                .map(|t: chrono::DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                .map(|t: chrono::DateTime<Utc>| {
+                    t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                })
                 .unwrap_or_else(utc_now);
 
             let res = tx.execute(
@@ -2549,6 +3535,17 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         )
     })?;
 
+    let reply_to_message_id: Option<i64> = row.get(16)?;
+    let reply_target = reply_to_message_id.map(|id| ConversationReplyTarget {
+        message_id: Some(id),
+        provider_message_id: None,
+        sender_display_name: None,
+        content_type: "text".into(),
+        text_content: None,
+        media_type: None,
+        occurred_at: None,
+    });
+
     Ok(ConversationMessage {
         id: row.get(0)?,
         conversation_id: row.get(1)?,
@@ -2566,7 +3563,11 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         status,
         removed_at: row.get(14)?,
         error_message: row.get(15)?,
-        reply_to_message_id: row.get(16)?,
+        reply_to_message_id,
+        attachments: Vec::new(),
+        reply_target,
+        reactions: Vec::new(),
+        send_batch: None,
     })
 }
 

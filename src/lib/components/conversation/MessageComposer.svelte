@@ -6,7 +6,7 @@
     type InboxItem,
     type ConversationRuntimeStatus,
     type ConversationMessage,
-    type ConversationReplyTarget,
+    type InboxReplyTarget,
     type ConversationAccountRuntime
   } from '$lib/services/conversationService';
   import { Textarea } from '$lib/components/ui/textarea';
@@ -77,7 +77,7 @@
   }
 
   type ComposerOption = {
-    target: ConversationReplyTarget;
+    target: InboxReplyTarget;
     account: ConversationAccountRuntime | null;
     id: number;
     label: string;

@@ -150,6 +150,29 @@ impl ZaloClient for FakeZaloClient {
             .unwrap_or_else(|| "provider-default".to_string()))
     }
 
+    async fn send_part(
+        &self,
+        request: crate::conversation::zalo::client::ProviderSendRequest,
+    ) -> Result<
+        crate::conversation::zalo::client::ProviderSendResult,
+        crate::conversation::zalo::client::ProviderSendError,
+    > {
+        if self.should_fail {
+            let err = self.fail_error.as_deref().unwrap_or("send failed");
+            return Err(crate::conversation::zalo::client::ProviderSendError {
+                kind: crate::conversation::zalo::client::ProviderSendErrorKind::Retryable,
+                message: err.to_string(),
+            });
+        }
+        Ok(crate::conversation::zalo::client::ProviderSendResult {
+            provider_message_id: self
+                .provider_message_id
+                .clone()
+                .unwrap_or_else(|| "provider-default".to_string()),
+            provider_client_message_id: request.provider_client_message_id,
+        })
+    }
+
     fn stop(&self) {}
 }
 
@@ -201,10 +224,7 @@ impl ZaloClient for PhoneLookupZaloClient {
         Ok(None)
     }
 
-    async fn find_user_by_phone(
-        &self,
-        _phone: &str,
-    ) -> anyhow::Result<Option<NormalizedProfile>> {
+    async fn find_user_by_phone(&self, _phone: &str) -> anyhow::Result<Option<NormalizedProfile>> {
         Ok(Some(self.profile.clone()))
     }
 
@@ -218,7 +238,24 @@ impl ZaloClient for PhoneLookupZaloClient {
             .lock()
             .unwrap()
             .push(thread_id.to_string());
-        Ok("provider-phone-lookup".to_string())
+        Ok("provider-phone-1".to_string())
+    }
+
+    async fn send_part(
+        &self,
+        request: crate::conversation::zalo::client::ProviderSendRequest,
+    ) -> Result<
+        crate::conversation::zalo::client::ProviderSendResult,
+        crate::conversation::zalo::client::ProviderSendError,
+    > {
+        self.sent_thread_ids
+            .lock()
+            .unwrap()
+            .push(request.external_thread_id.clone());
+        Ok(crate::conversation::zalo::client::ProviderSendResult {
+            provider_message_id: "provider-phone-1".to_string(),
+            provider_client_message_id: request.provider_client_message_id,
+        })
     }
 
     fn stop(&self) {}
@@ -280,7 +317,15 @@ impl ServiceHarness {
 
         let repository = Arc::new(ConversationRepository::new(db_path.clone()));
         let events = Arc::new(ConversationEventPublisher::new(100));
-        let service = Arc::new(ConversationService::new(repository.clone(), events.clone()));
+        let spool_root = std::path::Path::new(&db_path)
+            .parent()
+            .unwrap()
+            .join("spool-service");
+        let service = Arc::new(ConversationService::new(
+            repository.clone(),
+            events.clone(),
+            spool_root,
+        ));
 
         Self {
             db_path,

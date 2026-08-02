@@ -215,6 +215,8 @@ pub struct ZaloSessionSupervisor {
     service: Arc<ConversationService>,
     factory: Arc<dyn ZaloClientFactory>,
     tasks: Mutex<HashMap<String, SessionTask>>,
+    clients: Mutex<HashMap<String, Arc<dyn crate::conversation::zalo::client::ZaloClient>>>,
+    sticker_cache: std::sync::Mutex<crate::conversation::zalo::sticker_cache::ZaloStickerCache>,
 }
 
 impl ZaloSessionSupervisor {
@@ -228,7 +230,54 @@ impl ZaloSessionSupervisor {
             service,
             factory,
             tasks: Mutex::new(HashMap::new()),
+            clients: Mutex::new(HashMap::new()),
+            sticker_cache: std::sync::Mutex::new(
+                crate::conversation::zalo::sticker_cache::ZaloStickerCache::new(),
+            ),
         }
+    }
+
+    pub async fn connected_client(
+        &self,
+        provider_account_key: &str,
+    ) -> Option<Arc<dyn crate::conversation::zalo::client::ZaloClient>> {
+        let clients = self.clients.lock().await;
+        clients.get(provider_account_key).cloned()
+    }
+
+    pub async fn search_stickers(
+        &self,
+        provider_account_key: &str,
+        query: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<crate::conversation::zalo::client::ZaloStickerReference>> {
+        let key = crate::conversation::zalo::sticker_cache::CacheKey {
+            provider_account_key: provider_account_key.to_string(),
+            query: query.to_lowercase(),
+            limit,
+        };
+        let now = std::time::Instant::now();
+        {
+            let mut cache = self.sticker_cache.lock().unwrap();
+            if let Some(cached) = cache.get(&key, now) {
+                return Ok(cached);
+            }
+        }
+        let client = self
+            .connected_client(provider_account_key)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!("Zalo account {provider_account_key} is not connected")
+            })?;
+        let stickers = client
+            .search_stickers(query, limit)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.message))?;
+        {
+            let mut cache = self.sticker_cache.lock().unwrap();
+            cache.insert(key, stickers.clone(), now);
+        }
+        Ok(stickers)
     }
 
     pub async fn start_all(&self) -> anyhow::Result<()> {
@@ -447,6 +496,19 @@ async fn run_session_loop(
             .ok()
             .or(account_id);
 
+        if let Some(acc_id) = account_id {
+            let cap_json = serde_json::to_string(
+                &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
+            )
+            .unwrap_or_default();
+            let _ = service.repository.update_account_identity_and_capabilities(
+                acc_id,
+                client.own_external_id().as_deref(),
+                &cap_json,
+                &crate::conversation::types::utc_now(),
+            );
+        }
+
         // 5. Fetch all group snapshots and apply them before history reconciliation
         if let Ok(snapshots) = client.get_all_group_snapshots().await {
             for snapshot in snapshots {
@@ -474,12 +536,17 @@ async fn run_session_loop(
 
         // 6.5 Run initial profile enrichment sync for unresolved identities
         if let Some(acc_id) = account_id {
-            let is_idle = profile_sync_handle.as_ref().map_or(true, |h| h.is_finished());
+            let is_idle = profile_sync_handle
+                .as_ref()
+                .map_or(true, |h| h.is_finished());
             if is_idle {
                 let service = service.clone();
                 let client = client.clone();
                 profile_sync_handle = Some(tokio::spawn(async move {
-                    if let Err(err) = service.sync_identity_profiles_for_account(acc_id, client.as_ref()).await {
+                    if let Err(err) = service
+                        .sync_identity_profiles_for_account(acc_id, client.as_ref())
+                        .await
+                    {
                         eprintln!("[ZaloSupervisor] Initial profile sync error for account {acc_id}: {err}");
                     }
                 }));

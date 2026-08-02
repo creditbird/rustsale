@@ -44,7 +44,8 @@ impl ServiceHarness {
             path.to_string_lossy().to_string(),
         ));
         let events = Arc::new(ConversationEventPublisher::new(256));
-        let service = ConversationService::new(repository.clone(), events.clone());
+        let spool_root = path.parent().unwrap().join("spool-harness");
+        let service = ConversationService::new(repository.clone(), events.clone(), spool_root);
 
         Self {
             path,
@@ -103,6 +104,8 @@ pub fn direct_message_for(
         content_type: "text".to_string(),
         text_content: Some(provider_message_id.to_string()),
         content: serde_json::json!({"text": provider_message_id}),
+        attachments: Vec::new(),
+        reply: None,
         raw_payload: None,
         provider_timestamp: Some("2026-07-31T00:00:00.000Z".to_string()),
         ingested_at: "2026-07-31T00:00:01.000Z".to_string(),
@@ -137,6 +140,8 @@ pub fn group_message(
         content_type: "text".to_string(),
         text_content: Some("hello group".to_string()),
         content: serde_json::json!({"text": "hello group"}),
+        attachments: Vec::new(),
+        reply: None,
         raw_payload: None,
         provider_timestamp: Some("2026-07-31T00:00:00.000Z".to_string()),
         ingested_at: "2026-07-31T00:00:01.000Z".to_string(),
@@ -241,6 +246,7 @@ async fn test_conversation_state_commands_integration() {
     let conversation_service = Arc::new(ConversationService::new(
         harness.repository.clone(),
         harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-cmd1"),
     ));
 
     let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
@@ -302,6 +308,7 @@ async fn test_unlink_conversation_lead_command() {
     let conversation_service = Arc::new(ConversationService::new(
         harness.repository.clone(),
         harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-cmd2"),
     ));
 
     let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
@@ -352,6 +359,7 @@ async fn test_unlink_conversation_identity_command() {
     let conversation_service = Arc::new(ConversationService::new(
         harness.repository.clone(),
         harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-cmd3"),
     ));
     let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
         harness.path.to_str().unwrap().to_string(),
@@ -402,6 +410,7 @@ async fn test_relink_conversation_lead_command() {
     let conversation_service = Arc::new(ConversationService::new(
         harness.repository.clone(),
         harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-cmd4"),
     ));
     let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
         harness.path.to_str().unwrap().to_string(),

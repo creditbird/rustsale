@@ -85,6 +85,17 @@ impl Zalo {
         thread_id: &str,
         thread_type: ThreadType,
     ) -> Result<SendMessageResponse, ZaloError> {
+        self.send_message_with_client_id(message, thread_id, thread_type, get_timestamp_ms())
+            .await
+    }
+
+    pub async fn send_message_with_client_id(
+        &self,
+        message: MessageContent,
+        thread_id: &str,
+        thread_type: ThreadType,
+        client_id: u64,
+    ) -> Result<SendMessageResponse, ZaloError> {
         let mut msg = message.msg.clone();
         let attachments = message.attachments.clone().unwrap_or_default();
         let mentions = message.mentions.clone();
@@ -92,6 +103,12 @@ impl Zalo {
         let ttl = message.ttl;
         let styles = message.styles.clone();
         let urgency = message.urgency;
+
+        if attachments.len() > 1 {
+            return Err(ZaloError::PayloadFormat(
+                "send_message_with_client_id accepts at most 1 attachment per part".to_string(),
+            ));
+        }
 
         if msg.is_empty() && attachments.is_empty() {
             return Err(ZaloError::PayloadFormat(
@@ -140,13 +157,13 @@ impl Zalo {
                     ttl,
                 };
                 let msg_result = self
-                    .send_text_only_message(text_msg_content, thread_id, thread_type)
+                    .send_text_only_message_with_client_id(text_msg_content, thread_id, thread_type, client_id)
                     .await?;
                 responses.message = Some(msg_result);
                 msg = String::new();
             }
 
-            let attachment_results = self
+            let mut attachment_results = self
                 .send_attachments_helper(
                     &msg,
                     attachments.clone(),
@@ -159,6 +176,11 @@ impl Zalo {
                     thread_type,
                 )
                 .await?;
+            for r in &mut attachment_results {
+                if r.cli_msg_id == 0 {
+                    r.cli_msg_id = client_id;
+                }
+            }
             responses.attachment = attachment_results;
             msg = String::new();
         }
@@ -174,7 +196,7 @@ impl Zalo {
                 ttl,
             };
             let msg_result = self
-                .send_text_only_message(text_msg_content, thread_id, thread_type)
+                .send_text_only_message_with_client_id(text_msg_content, thread_id, thread_type, client_id)
                 .await?;
             responses.message = Some(msg_result);
         }
@@ -182,161 +204,31 @@ impl Zalo {
         Ok(responses)
     }
 
-    async fn send_text_only_message(
+    async fn send_text_only_message_with_client_id(
         &self,
         message: MessageContent,
         thread_id: &str,
         thread_type: ThreadType,
+        client_id: u64,
     ) -> Result<SendMessageResult, ZaloError> {
         let is_group = thread_type == ThreadType::Group;
+        let mut params = build_text_params(
+            &message.msg,
+            thread_id,
+            thread_type,
+            client_id,
+            message.quote.as_ref(),
+            message.mentions.as_deref(),
+            message.ttl,
+            &self.ctx.imei,
+        );
 
-        let mentions_val = if is_group {
-            if let Some(m_list) = &message.mentions {
-                let filtered: Vec<serde_json::Value> = m_list
-                    .iter()
-                    .filter(|m| m.pos >= 0 && !m.uid.is_empty() && m.len > 0)
-                    .map(|m| {
-                        serde_json::json!({
-                            "pos": m.pos,
-                            "uid": m.uid,
-                            "len": m.len,
-                            "type": if m.uid == "-1" { 1 } else { 0 },
-                        })
-                    })
-                    .collect();
-                if filtered.is_empty() {
-                    serde_json::Value::Null
-                } else {
-                    serde_json::json!(filtered)
-                }
-            } else {
-                serde_json::Value::Null
-            }
-        } else {
-            serde_json::Value::Null
-        };
-
-        let has_mentions = !mentions_val.is_null();
-
-        let mut params = serde_json::json!({
-            "message": message.msg,
-            "clientId": get_timestamp_ms(),
-            "ttl": message.ttl.unwrap_or(0),
-        });
-
-        if is_group {
-            params
-                .as_object_mut()
-                .map(|m| m.insert("grid".to_string(), serde_json::json!(thread_id)));
-            params
-                .as_object_mut()
-                .map(|m| m.insert("visibility".to_string(), serde_json::json!(0)));
-            if has_mentions {
-                params.as_object_mut().map(|m| {
-                    m.insert(
-                        "mentionInfo".to_string(),
-                        serde_json::json!(mentions_val.to_string()),
-                    )
-                });
-            }
-        } else {
-            params
-                .as_object_mut()
-                .map(|m| m.insert("toid".to_string(), serde_json::json!(thread_id)));
-            params
-                .as_object_mut()
-                .map(|m| m.insert("imei".to_string(), serde_json::json!(self.ctx.imei)));
-        }
-
-        if let Some(q) = &message.quote {
-            params
-                .as_object_mut()
-                .map(|m| m.insert("qmsgOwner".to_string(), serde_json::json!(q.uid_from)));
-            params
-                .as_object_mut()
-                .map(|m| m.insert("qmsgId".to_string(), serde_json::json!(q.msg_id)));
-            params
-                .as_object_mut()
-                .map(|m| m.insert("qmsgCliId".to_string(), serde_json::json!(q.cli_msg_id)));
-
-            let qmsg_type = match q.msg_type.as_str() {
-                "webchat" => 1,
-                _ => 1,
-            };
-            params
-                .as_object_mut()
-                .map(|m| m.insert("qmsgType".to_string(), serde_json::json!(qmsg_type)));
-            params
-                .as_object_mut()
-                .map(|m| m.insert("qmsgTs".to_string(), serde_json::json!(q.ts)));
-            params
-                .as_object_mut()
-                .map(|m| m.insert("qmsgTTL".to_string(), serde_json::json!(q.ttl)));
-
-            let qmsg_content = if q.content.is_string() {
-                q.content.as_str().unwrap_or("").to_string()
-            } else {
-                if q.msg_type == "chat.todo" {
-                    if let Some(params_str) = q.content.get("params").and_then(|v| v.as_str()) {
-                        let parsed: Result<serde_json::Value, _> = serde_json::from_str(params_str);
-                        if let Ok(p) = parsed {
-                            p.get("item")
-                                .and_then(|i| i.get("content"))
-                                .and_then(|c| c.as_str())
-                                .unwrap_or("")
-                                .to_string()
-                        } else {
-                            "".to_string()
-                        }
-                    } else {
-                        "".to_string()
-                    }
-                } else {
-                    "".to_string()
-                }
-            };
-            params
-                .as_object_mut()
-                .map(|m| m.insert("qmsg".to_string(), serde_json::json!(qmsg_content)));
-
-            if is_group {
-                let qmsg_attach = if q.content.is_string() {
-                    q.property_ext.clone().unwrap_or(serde_json::Value::Null)
-                } else if q.msg_type == "chat.todo" {
-                    serde_json::json!({
-                        "properties": {
-                            "color": 0,
-                            "size": 0,
-                            "type": 0,
-                            "subType": 0,
-                            "ext": "{\"shouldParseLinkOrContact\":0}"
-                        }
-                    })
-                } else {
-                    let mut attach_obj = q.content.clone();
-                    if let Some(thumb) = q.content.get("thumb") {
-                        attach_obj
-                            .as_object_mut()
-                            .map(|m| m.insert("thumbUrl".to_string(), thumb.clone()));
-                    }
-                    if let Some(href) = q.content.get("href") {
-                        attach_obj
-                            .as_object_mut()
-                            .map(|m| m.insert("oriUrl".to_string(), href.clone()));
-                        attach_obj
-                            .as_object_mut()
-                            .map(|m| m.insert("normalUrl".to_string(), href.clone()));
-                    }
-                    attach_obj
-                };
-                params.as_object_mut().map(|m| {
-                    m.insert(
-                        "qmsgAttach".to_string(),
-                        serde_json::json!(qmsg_attach.to_string()),
-                    )
-                });
-            }
-        }
+        let has_mentions = is_group
+            && message
+                .mentions
+                .as_ref()
+                .map(|m| m.iter().any(|item| item.pos >= 0 && !item.uid.is_empty() && item.len > 0))
+                .unwrap_or(false);
 
         if let Some(st_list) = &message.styles {
             let mut formatted_styles = Vec::new();
@@ -387,8 +279,13 @@ impl Zalo {
             format!("{}/{}", path, suffix)
         };
 
-        self.request_api_form_with_query(service, &path_buf, &[("nretry", "0")], params)
-            .await
+        let mut res: SendMessageResult = self
+            .request_api_form_with_query(service, &path_buf, &[("nretry", "0")], params)
+            .await?;
+        if res.cli_msg_id == 0 {
+            res.cli_msg_id = client_id;
+        }
+        Ok(res)
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -736,7 +633,8 @@ impl Zalo {
                 .send_gif_chunk(&data, &filename, params, thread_type)
                 .await?;
             let msg_id = res_val.get("msgId").and_then(|v| v.as_u64()).unwrap_or(0);
-            results.push(SendMessageResult { msg_id });
+            let cli_msg_id = res_val.get("cliMsgId").and_then(|v| v.as_u64()).unwrap_or(0);
+            results.push(SendMessageResult { msg_id, cli_msg_id });
         }
 
         Ok(results)
@@ -906,25 +804,36 @@ impl Zalo {
         thread_id: &str,
         thread_type: ThreadType,
     ) -> Result<SendMessageResult, ZaloError> {
-        let is_group = thread_type == ThreadType::Group;
-        let mut params = serde_json::json!({
-            "stickerId": sticker_id,
-            "cateId": cate_id,
-            "type": sticker_type,
-            "clientId": get_timestamp_ms(),
-            "imei": self.ctx.imei,
-            "zsource": 101,
-        });
+        self.send_sticker_with_client_id(
+            sticker_id,
+            cate_id,
+            sticker_type,
+            thread_id,
+            thread_type,
+            get_timestamp_ms(),
+        )
+        .await
+    }
 
-        if is_group {
-            params
-                .as_object_mut()
-                .map(|m| m.insert("grid".to_string(), serde_json::json!(thread_id)));
-        } else {
-            params
-                .as_object_mut()
-                .map(|m| m.insert("toid".to_string(), serde_json::json!(thread_id)));
-        }
+    pub async fn send_sticker_with_client_id(
+        &self,
+        sticker_id: u32,
+        cate_id: u32,
+        sticker_type: u32,
+        thread_id: &str,
+        thread_type: ThreadType,
+        client_id: u64,
+    ) -> Result<SendMessageResult, ZaloError> {
+        let is_group = thread_type == ThreadType::Group;
+        let params = build_sticker_params(
+            sticker_id,
+            cate_id,
+            sticker_type,
+            thread_id,
+            thread_type,
+            client_id,
+            &self.ctx.imei,
+        );
 
         let service = if is_group { "group" } else { "chat" };
         let path = if is_group {
@@ -933,8 +842,13 @@ impl Zalo {
             "api/message/sticker"
         };
 
-        self.request_api_form_with_query(service, path, &[("nretry", "0")], params)
-            .await
+        let mut res: SendMessageResult = self
+            .request_api_form_with_query(service, path, &[("nretry", "0")], params)
+            .await?;
+        if res.cli_msg_id == 0 {
+            res.cli_msg_id = client_id;
+        }
+        Ok(res)
     }
 
     pub async fn add_reaction(
@@ -1765,5 +1679,239 @@ impl Zalo {
         };
 
         self.request_api_form(service, path, params).await
+    }
+}
+
+pub(crate) fn build_text_params(
+    message: &str,
+    thread_id: &str,
+    thread_type: ThreadType,
+    client_id: u64,
+    quote: Option<&SendMessageQuote>,
+    mentions: Option<&[MessageMention]>,
+    ttl: Option<u64>,
+    imei: &str,
+) -> serde_json::Value {
+    let is_group = thread_type == ThreadType::Group;
+
+    let mentions_val = if is_group {
+        if let Some(m_list) = mentions {
+            let filtered: Vec<serde_json::Value> = m_list
+                .iter()
+                .filter(|m| m.pos >= 0 && !m.uid.is_empty() && m.len > 0)
+                .map(|m| {
+                    serde_json::json!({
+                        "pos": m.pos,
+                        "uid": m.uid,
+                        "len": m.len,
+                        "type": if m.uid == "-1" { 1 } else { 0 },
+                    })
+                })
+                .collect();
+            if filtered.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(filtered)
+            }
+        } else {
+            serde_json::Value::Null
+        }
+    } else {
+        serde_json::Value::Null
+    };
+
+    let has_mentions = !mentions_val.is_null();
+
+    let mut params = serde_json::json!({
+        "message": message,
+        "clientId": client_id,
+        "ttl": ttl.unwrap_or(0),
+    });
+
+    if is_group {
+        params
+            .as_object_mut()
+            .map(|m| m.insert("grid".to_string(), serde_json::json!(thread_id)));
+        params
+            .as_object_mut()
+            .map(|m| m.insert("visibility".to_string(), serde_json::json!(0)));
+        if has_mentions {
+            params.as_object_mut().map(|m| {
+                m.insert(
+                    "mentionInfo".to_string(),
+                    serde_json::json!(mentions_val.to_string()),
+                )
+            });
+        }
+    } else {
+        params
+            .as_object_mut()
+            .map(|m| m.insert("toid".to_string(), serde_json::json!(thread_id)));
+        params
+            .as_object_mut()
+            .map(|m| m.insert("imei".to_string(), serde_json::json!(imei)));
+    }
+
+    if let Some(q) = quote {
+        params
+            .as_object_mut()
+            .map(|m| m.insert("qmsgOwner".to_string(), serde_json::json!(q.uid_from)));
+        params
+            .as_object_mut()
+            .map(|m| m.insert("qmsgId".to_string(), serde_json::json!(q.msg_id)));
+        params
+            .as_object_mut()
+            .map(|m| m.insert("qmsgCliId".to_string(), serde_json::json!(q.cli_msg_id)));
+
+        let qmsg_type = match q.msg_type.as_str() {
+            "webchat" => 1,
+            _ => 1,
+        };
+        params
+            .as_object_mut()
+            .map(|m| m.insert("qmsgType".to_string(), serde_json::json!(qmsg_type)));
+        params
+            .as_object_mut()
+            .map(|m| m.insert("qmsgTs".to_string(), serde_json::json!(q.ts)));
+        params
+            .as_object_mut()
+            .map(|m| m.insert("qmsgTTL".to_string(), serde_json::json!(q.ttl)));
+
+        let qmsg_content = if q.content.is_string() {
+            q.content.as_str().unwrap_or("").to_string()
+        } else {
+            if q.msg_type == "chat.todo" {
+                if let Some(params_str) = q.content.get("params").and_then(|v| v.as_str()) {
+                    let parsed: Result<serde_json::Value, _> = serde_json::from_str(params_str);
+                    if let Ok(p) = parsed {
+                        p.get("item")
+                            .and_then(|i| i.get("content"))
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("")
+                            .to_string()
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                }
+            } else {
+                "".to_string()
+            }
+        };
+        params
+            .as_object_mut()
+            .map(|m| m.insert("qmsg".to_string(), serde_json::json!(qmsg_content)));
+
+        if is_group {
+            let qmsg_attach = if q.content.is_string() {
+                q.property_ext.clone().unwrap_or(serde_json::Value::Null)
+            } else if q.msg_type == "chat.todo" {
+                serde_json::json!({
+                    "properties": {
+                        "color": 0,
+                        "size": 0,
+                        "type": 0,
+                        "subType": 0,
+                        "ext": "{\"shouldParseLinkOrContact\":0}"
+                    }
+                })
+            } else {
+                let mut attach_obj = q.content.clone();
+                if let Some(thumb) = q.content.get("thumb") {
+                    attach_obj
+                        .as_object_mut()
+                        .map(|m| m.insert("thumbUrl".to_string(), thumb.clone()));
+                }
+                if let Some(href) = q.content.get("href") {
+                    attach_obj
+                        .as_object_mut()
+                        .map(|m| m.insert("oriUrl".to_string(), href.clone()));
+                    attach_obj
+                        .as_object_mut()
+                        .map(|m| m.insert("normalUrl".to_string(), href.clone()));
+                }
+                attach_obj
+            };
+            params.as_object_mut().map(|m| {
+                m.insert(
+                    "qmsgAttach".to_string(),
+                    serde_json::json!(qmsg_attach.to_string()),
+                )
+            });
+        }
+    }
+
+    params
+}
+
+pub(crate) fn build_sticker_params(
+    sticker_id: u32,
+    cate_id: u32,
+    sticker_type: u32,
+    thread_id: &str,
+    thread_type: ThreadType,
+    client_id: u64,
+    imei: &str,
+) -> serde_json::Value {
+    let is_group = thread_type == ThreadType::Group;
+    let mut params = serde_json::json!({
+        "stickerId": sticker_id,
+        "cateId": cate_id,
+        "type": sticker_type,
+        "clientId": client_id,
+        "imei": imei,
+        "zsource": 101,
+    });
+
+    if is_group {
+        params
+            .as_object_mut()
+            .map(|m| m.insert("grid".to_string(), serde_json::json!(thread_id)));
+    } else {
+        params
+            .as_object_mut()
+            .map(|m| m.insert("toid".to_string(), serde_json::json!(thread_id)));
+    }
+
+    params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_text_client_id_is_preserved() {
+        let params = build_text_params(
+            "hello",
+            "peer-1",
+            ThreadType::User,
+            1_785_491_200_123,
+            None,
+            None,
+            None,
+            "imei-a",
+        );
+        assert_eq!(params["clientId"], 1_785_491_200_123_u64);
+        assert_eq!(params["toid"], "peer-1");
+        assert_eq!(params["imei"], "imei-a");
+    }
+
+    #[test]
+    fn explicit_sticker_client_id_is_preserved() {
+        let params = build_sticker_params(
+            100,
+            20,
+            1,
+            "group-1",
+            ThreadType::Group,
+            1_785_491_200_456,
+            "imei-a",
+        );
+        assert_eq!(params["clientId"], 1_785_491_200_456_u64);
+        assert_eq!(params["grid"], "group-1");
+        assert_eq!(params["stickerId"], 100);
+        assert_eq!(params["cateId"], 20);
     }
 }

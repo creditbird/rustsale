@@ -27,6 +27,7 @@ pub(crate) fn install_rustls_crypto_provider() {
 pub fn run() {
     install_rustls_crypto_provider();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -133,6 +134,7 @@ pub fn run() {
                 std::sync::Arc::new(conversation::service::ConversationService::new(
                     conversation_repository,
                     conversation_events.clone(),
+                    app_data_dir.join("attachments-spool"),
                 ));
             let zalo_supervisor = std::sync::Arc::new(
                 conversation::zalo::supervisor::ZaloSessionSupervisor::new(
@@ -229,7 +231,13 @@ pub fn run() {
             conversation::commands::get_conversation_runtime_status,
             conversation::commands::restart_conversation_account,
             conversation::commands::delete_conversation,
-            conversation::commands::start_direct_conversation
+            conversation::commands::start_direct_conversation,
+            conversation::commands::send_conversation_batch,
+            conversation::commands::stage_conversation_attachment_paths,
+            conversation::commands::stage_conversation_clipboard_image,
+            conversation::commands::discard_conversation_staged_attachment,
+            conversation::commands::search_zalo_stickers,
+            conversation::commands::recall_conversation_message
         ])
 
         .run(tauri::generate_context!())

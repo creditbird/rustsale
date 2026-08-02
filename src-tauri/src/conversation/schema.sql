@@ -172,3 +172,48 @@ ON channel_conversations(last_message_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_outbox_claim
 ON message_outbox_jobs(status, next_attempt_at, created_at);
+
+CREATE TABLE IF NOT EXISTS message_send_batches (
+    id TEXT PRIMARY KEY,
+    conversation_id INTEGER NOT NULL,
+    channel_account_id INTEGER NOT NULL,
+    client_batch_id TEXT NOT NULL,
+    reply_to_message_id INTEGER,
+    part_count INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sending', 'partial', 'sent', 'failed')),
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(channel_account_id, client_batch_id),
+    FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY(reply_to_message_id) REFERENCES messages(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_send_batches_conversation_created
+ON message_send_batches(conversation_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS conversation_staged_attachments (
+    id TEXT PRIMARY KEY,
+    conversation_id INTEGER NOT NULL,
+    staged_attachment_id TEXT NOT NULL UNIQUE,
+    media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video', 'audio', 'file')),
+    mime_type TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_size_bytes INTEGER NOT NULL,
+    local_path TEXT NOT NULL,
+    thumbnail_path TEXT,
+    width INTEGER,
+    height INTEGER,
+    duration_seconds REAL,
+    status TEXT NOT NULL DEFAULT 'staged' CHECK (status IN ('staged', 'claimed', 'discarded', 'expired')),
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_staged_attachments_cleanup
+ON conversation_staged_attachments(status, expires_at, created_at);

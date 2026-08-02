@@ -2,7 +2,7 @@ use super::migration::migrate;
 use super::repository::{
     ConversationRepository, NormalizedGroupParticipant, NormalizedGroupSnapshot,
     NormalizedIdentity, NormalizedMessage, NormalizedReaction, NormalizedReceipt, NormalizedUndo,
-    ReceiptKind,
+    ReceiptKind, StagedAttachmentRecord,
 };
 use super::types::{Channel, ConversationKind, InboxItemKind, MessageDirection, MessageStatus};
 use crate::db::open_db_connection;
@@ -77,11 +77,13 @@ fn direct_message(account: &str, provider_message_id: &str) -> NormalizedMessage
         conversation_title: Some("Peer One".to_string()),
         direction: MessageDirection::Inbound,
         provider_message_id: Some(provider_message_id.to_string()),
-        provider_client_message_id: Some("client-1".to_string()),
+        provider_client_message_id: Some(format!("client-{provider_message_id}")),
         local_request_id: None,
         content_type: "text".to_string(),
         text_content: Some("hello".to_string()),
         content: serde_json::json!({"text": "hello"}),
+        attachments: Vec::new(),
+        reply: None,
         raw_payload: None,
         provider_timestamp: Some("2026-07-31T00:00:00.000Z".to_string()),
         ingested_at: "2026-07-31T00:00:01.000Z".to_string(),
@@ -1034,7 +1036,10 @@ fn profile_enrichment_exponential_backoff_sequence_and_cap_at_24h() {
             .unwrap();
 
         assert_eq!(attempts, attempt as i64);
-        assert_eq!(error.as_deref(), Some(format!("Network error {attempt}").as_str()));
+        assert_eq!(
+            error.as_deref(),
+            Some(format!("Network error {attempt}").as_str())
+        );
     }
 }
 
@@ -1066,7 +1071,11 @@ fn profile_enrichment_7_day_ttl_refreshes_complete_profiles() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2004, 1004)", []).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2004, 1004)",
+        [],
+    )
+    .unwrap();
 
     // Identity 1005: Complete profile, synced 2 hours ago (within 7-day TTL)
     conn.execute(
@@ -1081,10 +1090,17 @@ fn profile_enrichment_7_day_ttl_refreshes_complete_profiles() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2005, 1005)", []).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (2005, 1005)",
+        [],
+    )
+    .unwrap();
     drop(conn);
 
-    let needing = harness.repository.get_zalo_identities_needing_profile_sync(997, 10).unwrap();
+    let needing = harness
+        .repository
+        .get_zalo_identities_needing_profile_sync(997, 10)
+        .unwrap();
     assert_eq!(needing.len(), 1);
     assert_eq!(needing[0].0, 1004);
 }
@@ -1118,7 +1134,10 @@ fn start_direct_conversation_reuses_existing_thread_by_external_id() {
     };
 
     // Calling start_direct_conversation must NOT fail with UNIQUE constraint error
-    let msg = harness.repository.start_direct_conversation(&req, "2026-08-01T12:00:00.000Z").unwrap();
+    let msg = harness
+        .repository
+        .start_direct_conversation(&req, "2026-08-01T12:00:00.000Z")
+        .unwrap();
     assert_eq!(msg.conversation_id, 5001);
 }
 
@@ -1171,7 +1190,10 @@ fn start_direct_conversation_reuses_existing_thread_by_lead_phone() {
         initial_message: "Xin chào Thảo".to_string(),
     };
 
-    let msg = harness.repository.start_direct_conversation(&req, "2026-08-01T12:00:00.000Z").unwrap();
+    let msg = harness
+        .repository
+        .start_direct_conversation(&req, "2026-08-01T12:00:00.000Z")
+        .unwrap();
     assert_eq!(msg.conversation_id, 6001);
 }
 
@@ -1255,7 +1277,9 @@ fn resolve_direct_phone_recipient_merges_provisional_thread_into_zalo_uid_thread
     assert_eq!(message_conversation_id, 6002);
 
     let lead_uid: String = conn
-        .query_row("SELECT zalo_uid FROM leads WHERE id = 701", [], |row| row.get(0))
+        .query_row("SELECT zalo_uid FROM leads WHERE id = 701", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(lead_uid, "zalo-uid-thao-live");
 
@@ -1276,4 +1300,254 @@ fn resolve_direct_phone_recipient_merges_provisional_thread_into_zalo_uid_thread
         )
         .unwrap();
     assert_eq!(provisional_conversation_count, 0);
+}
+
+#[test]
+fn enqueue_batch_creates_batch_parts_attachments_and_jobs_in_one_transaction() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    migrate(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'imei-a', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (1, 1, 'peer-1', 'direct', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    let db_path =
+        std::env::temp_dir().join(format!("repo-batch-test-{}.db", rand::random::<u64>()));
+    let conn_file = open_db_connection(db_path.to_str().unwrap()).unwrap();
+    migrate(&conn_file).unwrap();
+    conn_file.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'imei-a', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn_file.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (1, 1, 'peer-1', 'direct', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    let repo = ConversationRepository::new(db_path.to_str().unwrap().to_string());
+    repo.insert_staged_attachment(&StagedAttachmentRecord {
+        id: "rec-1".into(),
+        conversation_id: 1,
+        staged_attachment_id: "stage-1".into(),
+        media_type: "image".into(),
+        mime_type: "image/png".into(),
+        file_name: "a.png".into(),
+        file_size_bytes: 100,
+        local_path: "/tmp/a.png".into(),
+        thumbnail_path: None,
+        width: Some(50),
+        height: Some(50),
+        duration_seconds: None,
+        status: "staged".into(),
+        expires_at: "2099-01-01T00:00:00Z".into(),
+        created_at: "2026-08-01T00:00:00Z".into(),
+        claimed_at: None,
+    })
+    .unwrap();
+
+    repo.insert_staged_attachment(&StagedAttachmentRecord {
+        id: "rec-2".into(),
+        conversation_id: 1,
+        staged_attachment_id: "stage-2".into(),
+        media_type: "image".into(),
+        mime_type: "image/png".into(),
+        file_name: "b.png".into(),
+        file_size_bytes: 200,
+        local_path: "/tmp/b.png".into(),
+        thumbnail_path: None,
+        width: Some(60),
+        height: Some(60),
+        duration_seconds: None,
+        status: "staged".into(),
+        expires_at: "2099-01-01T00:00:00Z".into(),
+        created_at: "2026-08-01T00:00:00Z".into(),
+        claimed_at: None,
+    })
+    .unwrap();
+
+    use crate::conversation::types::{
+        ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest,
+    };
+
+    let req = SendConversationBatchRequest {
+        conversation_id: 1,
+        client_batch_id: "batch-100".into(),
+        reply_to_message_id: None,
+        parts: vec![
+            ConversationSendPartRequest {
+                client_part_id: "part-1".into(),
+                content: ConversationSendPartContent::Text {
+                    text: "hello".into(),
+                },
+            },
+            ConversationSendPartRequest {
+                client_part_id: "part-2".into(),
+                content: ConversationSendPartContent::Attachment {
+                    staged_attachment_id: "stage-1".into(),
+                },
+            },
+            ConversationSendPartRequest {
+                client_part_id: "part-3".into(),
+                content: ConversationSendPartContent::Attachment {
+                    staged_attachment_id: "stage-2".into(),
+                },
+            },
+        ],
+    };
+
+    let res = repo
+        .enqueue_outbound_batch(&req, "2026-08-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(res.client_batch_id, "batch-100");
+    assert_eq!(res.messages.len(), 3);
+
+    // Verify DB counts
+    let conn_check = open_db_connection(db_path.to_str().unwrap()).unwrap();
+    let batch_count: i64 = conn_check
+        .query_row("SELECT COUNT(*) FROM message_send_batches", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let message_count: i64 = conn_check
+        .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+        .unwrap();
+    let attach_count: i64 = conn_check
+        .query_row("SELECT COUNT(*) FROM message_attachments", [], |r| r.get(0))
+        .unwrap();
+    let job_count: i64 = conn_check
+        .query_row("SELECT COUNT(*) FROM message_outbox_jobs", [], |r| r.get(0))
+        .unwrap();
+
+    assert_eq!(batch_count, 1);
+    assert_eq!(message_count, 3);
+    assert_eq!(attach_count, 2);
+    assert_eq!(job_count, 3);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn repeated_client_batch_id_returns_existing_batch_without_duplicates() {
+    let db_path =
+        std::env::temp_dir().join(format!("repo-dedup-test-{}.db", rand::random::<u64>()));
+    let conn = open_db_connection(db_path.to_str().unwrap()).unwrap();
+    migrate(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'imei-a', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (1, 1, 'peer-1', 'direct', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    let repo = ConversationRepository::new(db_path.to_str().unwrap().to_string());
+
+    use crate::conversation::types::{
+        ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest,
+    };
+
+    let req = SendConversationBatchRequest {
+        conversation_id: 1,
+        client_batch_id: "batch-dedup".into(),
+        reply_to_message_id: None,
+        parts: vec![ConversationSendPartRequest {
+            client_part_id: "part-1".into(),
+            content: ConversationSendPartContent::Text {
+                text: "hello".into(),
+            },
+        }],
+    };
+
+    let res1 = repo
+        .enqueue_outbound_batch(&req, "2026-08-01T00:00:00Z")
+        .unwrap();
+    let res2 = repo
+        .enqueue_outbound_batch(&req, "2026-08-01T00:00:00Z")
+        .unwrap();
+
+    assert_eq!(res1.batch_id, res2.batch_id);
+    assert_eq!(res1.messages.len(), res2.messages.len());
+    assert_eq!(res1.messages[0].id, res2.messages[0].id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn sticker_must_be_the_only_part_in_phase_one() {
+    let db_path =
+        std::env::temp_dir().join(format!("repo-sticker-test-{}.db", rand::random::<u64>()));
+    let conn = open_db_connection(db_path.to_str().unwrap()).unwrap();
+    migrate(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'imei-a', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (1, 1, 'peer-1', 'direct', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    let repo = ConversationRepository::new(db_path.to_str().unwrap().to_string());
+
+    use crate::conversation::types::{
+        ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest,
+    };
+
+    let invalid_req = SendConversationBatchRequest {
+        conversation_id: 1,
+        client_batch_id: "batch-invalid-sticker".into(),
+        reply_to_message_id: None,
+        parts: vec![
+            ConversationSendPartRequest {
+                client_part_id: "part-1".into(),
+                content: ConversationSendPartContent::Text {
+                    text: "hello".into(),
+                },
+            },
+            ConversationSendPartRequest {
+                client_part_id: "part-2".into(),
+                content: ConversationSendPartContent::Sticker {
+                    sticker_id: 1,
+                    cate_id: 2,
+                    sticker_type: 1,
+                },
+            },
+        ],
+    };
+
+    let err = repo
+        .enqueue_outbound_batch(&invalid_req, "2026-08-01T00:00:00Z")
+        .unwrap_err();
+    assert_eq!(
+        err.code,
+        crate::conversation::error::ConversationErrorCode::InvalidRequest
+    );
+
+    let valid_sticker_req = SendConversationBatchRequest {
+        conversation_id: 1,
+        client_batch_id: "batch-valid-sticker".into(),
+        reply_to_message_id: None,
+        parts: vec![ConversationSendPartRequest {
+            client_part_id: "part-1".into(),
+            content: ConversationSendPartContent::Sticker {
+                sticker_id: 1,
+                cate_id: 2,
+                sticker_type: 1,
+            },
+        }],
+    };
+
+    let res = repo
+        .enqueue_outbound_batch(&valid_sticker_req, "2026-08-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(res.messages.len(), 1);
+
+    let _ = std::fs::remove_file(db_path);
 }

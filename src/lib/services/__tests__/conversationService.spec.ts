@@ -94,6 +94,12 @@ import {
   resetConversationEventBridgeState,
   restartConversationAccount,
   sendConversationMessage,
+  sendConversationBatch,
+  stageConversationAttachmentPaths,
+  stageConversationClipboardImage,
+  discardConversationStagedAttachment,
+  searchZaloStickers,
+  recallConversationMessage,
   getBridgeRefCount,
   getBridgePromise,
   type ConversationInvalidatedEvent
@@ -248,6 +254,88 @@ describe('conversationService IPC command wrappers', () => {
       args: {
         providerAccountKey: 'zalo_acc_1'
       }
+    });
+  });
+
+  test('sendConversationBatch calls send_conversation_batch command', async () => {
+    await sendConversationBatch({
+      conversationId: 31,
+      clientBatchId: 'batch-1',
+      replyToMessageId: 9,
+      parts: [
+        { clientPartId: 'part-1', content: { type: 'text', text: 'Xin chào' } }
+      ]
+    });
+
+    expect(invokedCommands).toContainEqual({
+      command: 'send_conversation_batch',
+      args: {
+        request: {
+          conversationId: 31,
+          clientBatchId: 'batch-1',
+          replyToMessageId: 9,
+          parts: [
+            { clientPartId: 'part-1', content: { type: 'text', text: 'Xin chào' } }
+          ]
+        }
+      }
+    });
+  });
+
+  test('stageConversationAttachmentPaths calls stage_conversation_attachment_paths command', async () => {
+    await stageConversationAttachmentPaths(31, ['/path/image.png']);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'stage_conversation_attachment_paths',
+      args: { conversationId: 31, paths: ['/path/image.png'] }
+    });
+  });
+
+  test('stageConversationClipboardImage calls stage_conversation_clipboard_image command', async () => {
+    await stageConversationClipboardImage({
+      conversationId: 31,
+      fileName: 'clip.png',
+      mimeType: 'image/png',
+      base64Data: 'abc123'
+    });
+
+    expect(invokedCommands).toContainEqual({
+      command: 'stage_conversation_clipboard_image',
+      args: {
+        request: {
+          conversationId: 31,
+          fileName: 'clip.png',
+          mimeType: 'image/png',
+          base64Data: 'abc123'
+        }
+      }
+    });
+  });
+
+  test('discardConversationStagedAttachment calls discard_conversation_staged_attachment command', async () => {
+    await discardConversationStagedAttachment('staged-1');
+
+    expect(invokedCommands).toContainEqual({
+      command: 'discard_conversation_staged_attachment',
+      args: { stagedAttachmentId: 'staged-1' }
+    });
+  });
+
+  test('searchZaloStickers calls search_zalo_stickers command', async () => {
+    await searchZaloStickers(31, 'chào', 20);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'search_zalo_stickers',
+      args: { conversationId: 31, query: 'chào', limit: 20 }
+    });
+  });
+
+  test('recallConversationMessage calls recall_conversation_message command', async () => {
+    await recallConversationMessage(105);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'recall_conversation_message',
+      args: { request: { messageId: 105 } }
     });
   });
 });

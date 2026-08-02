@@ -31,6 +31,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     add_column_if_missing(conn, "channel_identities", "next_profile_retry_at", "TEXT")?;
+    add_column_if_missing(conn, "channel_accounts", "self_external_id", "TEXT")?;
+    add_column_if_missing(conn, "messages", "send_batch_id", "TEXT")?;
+    add_column_if_missing(conn, "messages", "batch_index", "INTEGER")?;
+
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_send_batch_part
+           ON messages(send_batch_id, batch_index)
+           WHERE send_batch_id IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_provider_client_unique
+           ON messages(conversation_id, provider_client_message_id)
+           WHERE provider_client_message_id IS NOT NULL;",
+    )?;
 
     Ok(())
 }

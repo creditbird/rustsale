@@ -488,6 +488,8 @@ pub struct MessageContent {
 pub struct SendMessageResult {
     #[serde(deserialize_with = "deserialize_string_or_number_u64")]
     pub msg_id: u64,
+    #[serde(default, deserialize_with = "deserialize_string_or_number_u64")]
+    pub cli_msg_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +502,16 @@ pub struct SendMessageResponse {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn send_message_result_defaults_missing_client_id() {
+        let result: SendMessageResult = serde_json::from_value(serde_json::json!({
+            "msgId": "101"
+        }))
+        .unwrap();
+        assert_eq!(result.msg_id, 101);
+        assert_eq!(result.cli_msg_id, 0);
+    }
 
     #[test]
     fn group_history_message_defaults_missing_params_ext() {

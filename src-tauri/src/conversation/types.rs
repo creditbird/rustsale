@@ -139,14 +139,79 @@ pub struct ChannelBadgeSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationAttachment {
+    pub id: i64,
+    pub media_type: String,
+    pub mime_type: String,
+    pub file_name: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub local_path: Option<String>,
+    pub remote_url: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationReplyTarget {
-    pub conversation_id: i64,
-    pub channel_account_id: i64,
-    pub channel: Channel,
-    pub account_display_name: Option<String>,
-    pub conversation_kind: ConversationKind,
-    pub last_inbound_at: Option<String>,
-    pub last_message_at: Option<String>,
+    pub message_id: Option<i64>,
+    pub provider_message_id: Option<String>,
+    pub sender_display_name: Option<String>,
+    pub content_type: String,
+    pub text_content: Option<String>,
+    pub media_type: Option<String>,
+    pub occurred_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationReactionActor {
+    pub identity_id: i64,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationReactionGroup {
+    pub reaction_icon: String,
+    pub count: u32,
+    pub includes_me: bool,
+    pub actors: Vec<ConversationReactionActor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSendBatchStatus {
+    Queued,
+    Sending,
+    Sent,
+    Partial,
+    Failed,
+}
+
+impl MessageSendBatchStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Sending => "sending",
+            Self::Sent => "sent",
+            Self::Partial => "partial",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSendBatchSummary {
+    pub send_batch_id: String,
+    pub status: MessageSendBatchStatus,
+    pub total_parts: u32,
+    pub sent_parts: u32,
+    pub failed_parts: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,6 +233,18 @@ pub enum InboxItemKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InboxReplyTarget {
+    pub conversation_id: i64,
+    pub channel_account_id: i64,
+    pub channel: Channel,
+    pub account_display_name: Option<String>,
+    pub conversation_kind: ConversationKind,
+    pub last_inbound_at: Option<String>,
+    pub last_message_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InboxItem {
     pub key: String,
     pub kind: InboxItemKind,
@@ -179,7 +256,7 @@ pub struct InboxItem {
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<String>,
     pub channels: Vec<ChannelBadgeSummary>,
-    pub reply_targets: Vec<ConversationReplyTarget>,
+    pub reply_targets: Vec<InboxReplyTarget>,
     pub participant_count: u64,
     pub participants: Vec<ConversationParticipantSummary>,
 }
@@ -204,6 +281,10 @@ pub struct ConversationMessage {
     pub removed_at: Option<String>,
     pub error_message: Option<String>,
     pub reply_to_message_id: Option<i64>,
+    pub attachments: Vec<ConversationAttachment>,
+    pub reply_target: Option<ConversationReplyTarget>,
+    pub reactions: Vec<ConversationReactionGroup>,
+    pub send_batch: Option<ConversationSendBatchSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -323,9 +404,189 @@ pub struct StartDirectConversationRequest {
     pub initial_message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationCapabilities {
+    pub max_text_length: usize,
+    pub max_attachments_per_batch: usize,
+    pub max_file_size_bytes: u64,
+    pub supported_image_types: Vec<String>,
+    pub supported_video_types: Vec<String>,
+    pub supported_audio_types: Vec<String>,
+    pub supported_doc_types: Vec<String>,
+    pub supports_stickers: bool,
+    pub supports_quote_reply: bool,
+    pub supports_recall: bool,
+    pub recall_window_seconds: Option<u64>,
+    pub supports_reactions: bool,
+}
+
+impl ConversationCapabilities {
+    pub fn zalo_phase_one() -> Self {
+        Self {
+            max_text_length: 2000,
+            max_attachments_per_batch: 10,
+            max_file_size_bytes: 52_428_800,
+            supported_image_types: vec![
+                "image/jpeg".into(),
+                "image/png".into(),
+                "image/webp".into(),
+                "image/gif".into(),
+            ],
+            supported_video_types: vec!["video/mp4".into()],
+            supported_audio_types: vec!["audio/aac".into(), "audio/m4a".into(), "audio/mp3".into()],
+            supported_doc_types: vec![
+                "application/pdf".into(),
+                "application/zip".into(),
+                "text/plain".into(),
+            ],
+            supports_stickers: true,
+            supports_quote_reply: true,
+            supports_recall: true,
+            recall_window_seconds: Some(86400),
+            supports_reactions: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ConversationSendPartContent {
+    #[serde(rename_all = "camelCase")]
+    Text { text: String },
+    #[serde(rename_all = "camelCase")]
+    Sticker {
+        sticker_id: u32,
+        cate_id: u32,
+        sticker_type: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    Attachment { staged_attachment_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSendPartRequest {
+    pub client_part_id: String,
+    #[serde(flatten)]
+    pub content: ConversationSendPartContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendConversationBatchRequest {
+    pub conversation_id: i64,
+    pub client_batch_id: String,
+    pub reply_to_message_id: Option<i64>,
+    pub parts: Vec<ConversationSendPartRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromotedStagedAttachment {
+    pub staged_attachment_id: String,
+    pub media_type: String,
+    pub mime_type: String,
+    pub file_name: String,
+    pub file_size_bytes: u64,
+    pub local_path: String,
+    pub thumbnail_path: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendConversationBatchResult {
+    pub batch_id: String,
+    pub client_batch_id: String,
+    pub messages: Vec<ConversationMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendConversationBatchResponse {
+    pub batch_id: String,
+    pub client_batch_id: String,
+    pub queued_messages: Vec<ConversationMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedAttachmentResponse {
+    pub staged_attachment_id: String,
+    pub media_type: String,
+    pub mime_type: String,
+    pub file_name: String,
+    pub file_size_bytes: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_seconds: Option<f64>,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZaloStickerCate {
+    pub id: u32,
+    pub name: String,
+    pub icon_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZaloSticker {
+    pub id: u32,
+    pub cate_id: u32,
+    pub sticker_type: u32,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZaloStickerPack {
+    pub category: ZaloStickerCate,
+    pub stickers: Vec<ZaloSticker>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallMessageRequest {
+    pub message_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageConversationClipboardImageRequest {
+    pub conversation_id: i64,
+    pub file_name: String,
+    pub mime_type: String,
+    pub base64_data: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_request_uses_tagged_camel_case_parts() {
+        let request = SendConversationBatchRequest {
+            conversation_id: 31,
+            client_batch_id: "batch-1".into(),
+            reply_to_message_id: Some(9),
+            parts: vec![ConversationSendPartRequest {
+                client_part_id: "part-1".into(),
+                content: ConversationSendPartContent::Attachment {
+                    staged_attachment_id: "stage-1".into(),
+                },
+            }],
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["conversationId"], 31);
+        assert_eq!(value["parts"][0]["clientPartId"], "part-1");
+        assert_eq!(value["parts"][0]["type"], "attachment");
+        assert_eq!(value["parts"][0]["stagedAttachmentId"], "stage-1");
+    }
 
     #[test]
     fn channel_contract_is_snake_case() {

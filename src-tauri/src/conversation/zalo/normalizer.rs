@@ -1,4 +1,6 @@
-use crate::conversation::repository::{NormalizedIdentity, NormalizedMessage};
+use crate::conversation::repository::{
+    NormalizedAttachment, NormalizedIdentity, NormalizedMessage, NormalizedReplyReference,
+};
 use crate::conversation::types::{Channel, ConversationKind, MessageDirection, MessageStatus};
 use anyhow::Result;
 use chrono::{SecondsFormat, TimeZone, Utc};
@@ -67,6 +69,14 @@ pub struct NormalizedGroupSnapshot {
     pub occurred_at: String,
 }
 
+struct NormalizedContentParts {
+    content_type: String,
+    text_content: Option<String>,
+    content: Value,
+    attachments: Vec<NormalizedAttachment>,
+    reply: Option<NormalizedReplyReference>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ZaloMutation {
     Message(NormalizedMessage),
@@ -93,13 +103,20 @@ fn provider_time_u64(millis: u64) -> String {
         .unwrap_or_else(crate::conversation::types::utc_now)
 }
 
-fn content_parts(message_type: &str, content: &Value) -> (String, Option<String>, Value) {
+fn content_parts(
+    message_type: &str,
+    content: &Value,
+    quote_obj: Option<&Value>,
+) -> NormalizedContentParts {
     if let Some(text) = content.as_str() {
-        return (
-            "text".to_string(),
-            Some(text.to_string()),
-            serde_json::json!({ "text": text }),
-        );
+        let reply = extract_reply(quote_obj);
+        return NormalizedContentParts {
+            content_type: "text".to_string(),
+            text_content: Some(text.to_string()),
+            content: serde_json::json!({ "text": text }),
+            attachments: Vec::new(),
+            reply,
+        };
     }
     let content_type = match message_type {
         "chat.photo" => "image",
@@ -122,7 +139,192 @@ fn content_parts(message_type: &str, content: &Value) -> (String, Option<String>
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string());
 
-    (content_type.to_string(), text_content, content.clone())
+    let mut attachments = Vec::new();
+    match content_type {
+        "image" => {
+            let url = content
+                .get("url")
+                .or_else(|| content.get("href"))
+                .or_else(|| content.get("hdUrl"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let thumb = content
+                .get("thumbUrl")
+                .or_else(|| content.get("thumb_url"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if url.is_some() || thumb.is_some() {
+                attachments.push(NormalizedAttachment {
+                    provider_attachment_id: None,
+                    media_type: "image".to_string(),
+                    mime_type: "image/jpeg".to_string(),
+                    file_name: None,
+                    size_bytes: None,
+                    remote_url: url,
+                    thumbnail_url: thumb,
+                    metadata_json: Some(content.clone()),
+                });
+            }
+        }
+        "video" => {
+            let url = content
+                .get("href")
+                .or_else(|| content.get("url"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let thumb = content
+                .get("thumbUrl")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let name = content
+                .get("file_name")
+                .or_else(|| content.get("fileName"))
+                .or_else(|| content.get("title"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let size = content
+                .get("fileSize")
+                .or_else(|| content.get("size"))
+                .and_then(|v| v.as_u64());
+            if url.is_some() || thumb.is_some() {
+                attachments.push(NormalizedAttachment {
+                    provider_attachment_id: None,
+                    media_type: "video".to_string(),
+                    mime_type: "video/mp4".to_string(),
+                    file_name: name,
+                    size_bytes: size,
+                    remote_url: url,
+                    thumbnail_url: thumb,
+                    metadata_json: Some(content.clone()),
+                });
+            }
+        }
+        "audio" => {
+            let url = content
+                .get("href")
+                .or_else(|| content.get("url"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(url) = url {
+                attachments.push(NormalizedAttachment {
+                    provider_attachment_id: None,
+                    media_type: "audio".to_string(),
+                    mime_type: "audio/aac".to_string(),
+                    file_name: None,
+                    size_bytes: None,
+                    remote_url: Some(url),
+                    thumbnail_url: None,
+                    metadata_json: Some(content.clone()),
+                });
+            }
+        }
+        "file" => {
+            let url = content
+                .get("href")
+                .or_else(|| content.get("url"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let name = content
+                .get("title")
+                .or_else(|| content.get("file_name"))
+                .or_else(|| content.get("fileName"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let size = content
+                .get("fileSize")
+                .or_else(|| content.get("size"))
+                .and_then(|v| v.as_u64());
+            if url.is_some() || name.is_some() {
+                attachments.push(NormalizedAttachment {
+                    provider_attachment_id: None,
+                    media_type: "file".to_string(),
+                    mime_type: "application/octet-stream".to_string(),
+                    file_name: name,
+                    size_bytes: size,
+                    remote_url: url,
+                    thumbnail_url: None,
+                    metadata_json: Some(content.clone()),
+                });
+            }
+        }
+        "sticker" => {
+            let url = content
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            attachments.push(NormalizedAttachment {
+                provider_attachment_id: content
+                    .get("id")
+                    .and_then(|v| v.as_u64())
+                    .map(|id| id.to_string()),
+                media_type: "sticker".to_string(),
+                mime_type: "image/webp".to_string(),
+                file_name: None,
+                size_bytes: None,
+                remote_url: url,
+                thumbnail_url: None,
+                metadata_json: Some(content.clone()),
+            });
+        }
+        _ => {}
+    }
+
+    let reply = extract_reply(quote_obj);
+
+    NormalizedContentParts {
+        content_type: content_type.to_string(),
+        text_content,
+        content: content.clone(),
+        attachments,
+        reply,
+    }
+}
+
+fn extract_reply(quote_obj: Option<&Value>) -> Option<NormalizedReplyReference> {
+    let quote = quote_obj?;
+    if quote.is_null() {
+        return None;
+    }
+    let p_msg_id = quote
+        .get("globalMsgId")
+        .or_else(|| quote.get("msgId"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let cli_msg_id = quote
+        .get("cliMsgId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let sender = quote
+        .get("ownerId")
+        .or_else(|| quote.get("uidFrom"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let text = quote
+        .get("msg")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let c_type = quote
+        .get("msgType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text")
+        .to_string();
+    let ts = quote
+        .get("ts")
+        .and_then(|v| v.as_str())
+        .map(provider_time)
+        .unwrap_or_else(crate::conversation::types::utc_now);
+
+    Some(NormalizedReplyReference {
+        provider_message_id: p_msg_id,
+        provider_client_message_id: cli_msg_id,
+        sender_external_id: sender,
+        occurred_at: ts,
+        text_content: text,
+        content_type: c_type,
+        raw_quote: quote.clone(),
+    })
 }
 
 fn normalize_message(
@@ -167,7 +369,11 @@ fn normalize_message(
             )
         }
     };
-    let (content_type, text_content, content) = content_parts(&base.msg_type, &base.content);
+    let quote_val = base
+        .quote
+        .as_ref()
+        .and_then(|q| serde_json::to_value(q).ok());
+    let parts = content_parts(&base.msg_type, &base.content, quote_val.as_ref());
 
     Ok(NormalizedMessage {
         channel: Channel::Zalo,
@@ -187,9 +393,11 @@ fn normalize_message(
         provider_client_message_id: (!base.cli_msg_id.is_empty())
             .then_some(base.cli_msg_id.clone()),
         local_request_id: None,
-        content_type,
-        text_content,
-        content,
+        content_type: parts.content_type,
+        text_content: parts.text_content,
+        content: parts.content,
+        attachments: parts.attachments,
+        reply: parts.reply,
         raw_payload: Some(serde_json::to_value(&base)?),
         provider_timestamp: Some(provider_time(&base.ts)),
         ingested_at: now,

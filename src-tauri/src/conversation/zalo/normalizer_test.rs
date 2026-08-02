@@ -296,21 +296,26 @@ fn packet_error_event_emits_reconcile_required() {
 
 #[test]
 fn photo_message_extracts_caption_text_content() {
-    let mut base = base_message("peer-uid", "0", "photo-msg-1", json!({
-        "url": "https://cdn.example.com/photo.jpg",
-        "caption": "Chào tháng 8 may mắn"
-    }));
+    let mut base = base_message(
+        "peer-uid",
+        "0",
+        "photo-msg-1",
+        json!({
+            "url": "https://cdn.example.com/photo.jpg",
+            "caption": "Chào tháng 8 may mắn"
+        }),
+    );
     base.msg_type = "chat.photo".to_string();
 
-    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
-        "self-uid",
-        base,
-    ))));
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", base))));
 
     let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
     let ZaloMutation::Message(message) = &mutations[0] else {
         panic!("expected message mutation");
     };
     assert_eq!(message.content_type, "image");
-    assert_eq!(message.text_content.as_deref(), Some("Chào tháng 8 may mắn"));
+    assert_eq!(
+        message.text_content.as_deref(),
+        Some("Chào tháng 8 may mắn")
+    );
 }

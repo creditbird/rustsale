@@ -1,6 +1,7 @@
 pub mod client;
 pub mod normalizer;
 pub mod probe;
+pub mod sticker_cache;
 pub mod supervisor;
 
 pub(crate) const DIRECT_MESSAGE_WATERMARK_SCOPE: &str = "direct_messages";
@@ -18,5 +19,7 @@ mod client_test;
 mod normalizer_test;
 #[cfg(test)]
 mod probe_test;
+#[cfg(test)]
+mod sticker_cache_test;
 #[cfg(test)]
 mod supervisor_test;

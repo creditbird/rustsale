@@ -11,8 +11,14 @@ use zca_rs::models::{SendMessageResponse, SendMessageResult};
 #[test]
 fn provider_receipt_prefers_text_message_id() {
     let receipt = ZaloProviderReceipt::from_response(SendMessageResponse {
-        message: Some(SendMessageResult { msg_id: 42 }),
-        attachment: vec![SendMessageResult { msg_id: 99 }],
+        message: Some(SendMessageResult {
+            msg_id: 42,
+            cli_msg_id: 0,
+        }),
+        attachment: vec![SendMessageResult {
+            msg_id: 99,
+            cli_msg_id: 0,
+        }],
     });
     assert_eq!(receipt.primary_message_id.as_deref(), Some("42"));
     assert_eq!(receipt.attachment_message_ids, vec!["99"]);
@@ -22,7 +28,10 @@ fn provider_receipt_prefers_text_message_id() {
 fn provider_receipt_uses_first_attachment_when_text_is_absent() {
     let receipt = ZaloProviderReceipt::from_response(SendMessageResponse {
         message: None,
-        attachment: vec![SendMessageResult { msg_id: 99 }],
+        attachment: vec![SendMessageResult {
+            msg_id: 99,
+            cli_msg_id: 0,
+        }],
     });
     assert_eq!(receipt.primary_message_id.as_deref(), Some("99"));
     assert_eq!(receipt.attachment_message_ids, vec!["99"]);
@@ -242,6 +251,8 @@ fn outreach_then_inbound_reply_merged_in_same_contact_timeline() {
         content_type: "text".to_string(),
         text_content: Some("Inbound Reply".to_string()),
         content: serde_json::json!({"text": "Inbound Reply"}),
+        attachments: Vec::new(),
+        reply: None,
         raw_payload: None,
         provider_timestamp: Some("2026-07-31T12:05:00.000Z".to_string()),
         ingested_at: "2026-07-31T12:05:01.000Z".to_string(),
@@ -310,6 +321,8 @@ fn duplicate_provider_message_id_suppresses_second_insert() {
         content_type: "text".to_string(),
         text_content: Some(outreach_rec.text.clone()),
         content: serde_json::json!({"text": outreach_rec.text}),
+        attachments: Vec::new(),
+        reply: None,
         raw_payload: None,
         provider_timestamp: Some(outreach_rec.sent_at.clone()),
         ingested_at: "2026-07-31T12:01:00.000Z".to_string(),

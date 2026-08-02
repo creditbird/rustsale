@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { ConversationMessage, MessageStatus } from '$lib/services/conversationService';
+  import MessageReplyPreview from './MessageReplyPreview.svelte';
+  import MessageContentRenderer from './MessageContentRenderer.svelte';
 
   let {
     message,
@@ -200,52 +202,11 @@
           </div>
         {/if}
       </div>
-    {:else if isImage}
-      <!-- Safe Image or Attachment Fallback -->
-      {#if isValidMediaUrl(mediaUrl)}
-        <div class="overflow-hidden rounded-lg border border-border/30 my-1">
-          <img
-            src={mediaUrl}
-            alt={displayText || 'Hình ảnh'}
-            class="max-h-64 max-w-full object-cover rounded-lg"
-            loading="lazy"
-          />
-        </div>
-      {:else}
-        <div class="flex items-center gap-2 p-2 rounded-md bg-destructive/10 text-destructive text-xs font-medium border border-destructive/20">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" x2="12" y1="8" y2="12" />
-            <line x1="12" x2="12.01" y1="16" y2="16" />
-          </svg>
-          <span>File đính kèm không hợp lệ</span>
-        </div>
-      {/if}
-      {#if displayText}
-        <p class="whitespace-pre-wrap break-words leading-relaxed text-sm mt-1">
-          {displayText}
-        </p>
-      {/if}
-    {:else if isText || displayText}
-      <!-- Plain Text -->
-      <p class="whitespace-pre-wrap break-words leading-relaxed text-sm">
-        {displayText}
-      </p>
     {:else}
-      <!-- Fallback for Unsupported Content Types -->
-      <div class="flex items-center gap-2 p-2 rounded-md bg-muted/40 text-muted-foreground text-xs italic">
-        <span>Nội dung chưa được hỗ trợ</span>
-      </div>
+      {#if message.replyTarget}
+        <MessageReplyPreview replyTarget={message.replyTarget} />
+      {/if}
+      <MessageContentRenderer {message} />
     {/if}
 
     <!-- Footer info: Timestamp & Status (for outbound) -->

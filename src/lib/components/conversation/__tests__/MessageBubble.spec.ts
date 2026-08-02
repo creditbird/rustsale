@@ -26,7 +26,11 @@ describe('MessageBubble Component', () => {
     status: 'received',
     removedAt: null,
     errorMessage: null,
-    replyToMessageId: null
+    replyToMessageId: null,
+    attachments: [],
+    replyTarget: null,
+    reactions: [],
+    sendBatch: null
   };
 
   test('inbound text shows sender, channel, account, and Vietnamese-localized timestamp', () => {
