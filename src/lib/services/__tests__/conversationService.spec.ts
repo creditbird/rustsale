@@ -263,7 +263,7 @@ describe('conversationService IPC command wrappers', () => {
       clientBatchId: 'batch-1',
       replyToMessageId: 9,
       parts: [
-        { clientPartId: 'part-1', content: { type: 'text', text: 'Xin chào' } }
+        { clientPartId: 'part-1', type: 'text', text: 'Xin chào' }
       ]
     });
 
@@ -275,7 +275,7 @@ describe('conversationService IPC command wrappers', () => {
           clientBatchId: 'batch-1',
           replyToMessageId: 9,
           parts: [
-            { clientPartId: 'part-1', content: { type: 'text', text: 'Xin chào' } }
+            { clientPartId: 'part-1', type: 'text', text: 'Xin chào' }
           ]
         }
       }

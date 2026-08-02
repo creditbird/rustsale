@@ -1,16 +1,9 @@
 <script lang="ts">
   import type { ConversationAttachment } from '$lib/services/conversationService';
-  import { safeConversationUrl } from './messageMedia';
+  import { formatBytes, safeConversationUrl } from './messageMedia';
 
   let { attachment }: { attachment: ConversationAttachment } = $props();
-  let safeUrl = $derived(safeConversationUrl(attachment.remoteUrl || attachment.localPath));
-
-  function formatSize(bytes: number | null): string {
-    if (!bytes) return '';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
+  let safeUrl = $derived(safeConversationUrl(attachment.remoteUrl));
 </script>
 
 <div class="file-message-content" data-testid="file-message-content">
@@ -23,7 +16,7 @@
     {:else}
       <span class="file-name">{attachment.fileName ?? 'Tập tin'}</span>
     {/if}
-    <span class="file-size">{formatSize(attachment.sizeBytes)}</span>
+    <span class="file-size">{formatBytes(attachment.sizeBytes)}</span>
   </div>
 </div>
 

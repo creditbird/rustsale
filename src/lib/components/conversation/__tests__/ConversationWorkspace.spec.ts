@@ -7,7 +7,9 @@ import type {
   ConversationRuntimeStatus,
   ConversationMessage,
   TimelinePage,
-  ConversationInvalidatedEvent
+  ConversationInvalidatedEvent,
+  ConversationCapabilities,
+  SendConversationBatchRequest
 } from '$lib/services/conversationService';
 import ConversationWorkspace from '../ConversationWorkspace.svelte';
 
@@ -22,6 +24,21 @@ beforeAll(() => {
 });
 
 let invalidationListeners = new Set<(event: ConversationInvalidatedEvent) => void>();
+
+const richCapabilities: ConversationCapabilities = {
+  maxTextLength: 2000,
+  maxAttachmentsPerBatch: 10,
+  maxFileSizeBytes: 50 * 1024 * 1024,
+  supportedImageTypes: ['image/png'],
+  supportedVideoTypes: ['video/mp4'],
+  supportedAudioTypes: ['audio/mpeg'],
+  supportedDocTypes: ['application/pdf'],
+  supportsStickers: true,
+  supportsQuoteReply: true,
+  supportsRecall: true,
+  recallWindowSeconds: 86400,
+  supportsReactions: true
+};
 
 function emitInvalidated(event: ConversationInvalidatedEvent) {
   for (const listener of invalidationListeners) {
@@ -122,6 +139,7 @@ const mockMsg1: ConversationMessage = {
   senderDisplayName: 'Nguyễn Văn A',
   direction: 'inbound',
   providerMessageId: 'p-101',
+  providerClientMessageId: 'client-101',
   contentType: 'text',
   textContent: 'Chào shop',
   content: { text: 'Chào shop' },
@@ -133,6 +151,7 @@ const mockMsg1: ConversationMessage = {
   attachments: [],
   replyTarget: null,
   reactions: [],
+  batchIndex: null,
   sendBatch: null
 };
 
@@ -146,6 +165,7 @@ const mockMsg2: ConversationMessage = {
   senderDisplayName: 'Nguyễn Văn A',
   direction: 'inbound',
   providerMessageId: 'p-102',
+  providerClientMessageId: 'client-102',
   contentType: 'text',
   textContent: 'Nhắn qua FB',
   content: { text: 'Nhắn qua FB' },
@@ -157,6 +177,7 @@ const mockMsg2: ConversationMessage = {
   attachments: [],
   replyTarget: null,
   reactions: [],
+  batchIndex: null,
   sendBatch: null
 };
 
@@ -192,6 +213,7 @@ const mockGetConversationTimeline = mock(
           senderDisplayName: 'Minh',
           direction: 'inbound',
           providerMessageId: 'p-201',
+          providerClientMessageId: 'client-201',
           contentType: 'text',
           textContent: 'Tin nhắn nhóm',
           content: { text: 'Tin nhắn nhóm' },
@@ -203,6 +225,7 @@ const mockGetConversationTimeline = mock(
           attachments: [],
           replyTarget: null,
           reactions: [],
+          batchIndex: null,
           sendBatch: null
         }
       ],
@@ -228,6 +251,7 @@ const mockGetConversationRuntimeStatus = mock(async (): Promise<ConversationRunt
         channel: 'zalo',
         providerAccountKey: 'zalo-1',
         displayName: 'Zalo Main',
+        capabilities: richCapabilities,
         status: 'connected',
         lastConnectedAt: '2026-07-31T10:00:00Z',
         lastError: null
@@ -235,6 +259,50 @@ const mockGetConversationRuntimeStatus = mock(async (): Promise<ConversationRunt
     ]
   };
 });
+
+const mockSendConversationBatch = mock(async (request: SendConversationBatchRequest) => ({
+  batchId: 'batch-optimistic',
+  clientBatchId: request.clientBatchId,
+  messages: request.parts.map((part, index): ConversationMessage => ({
+    id: 999 + index,
+    conversationId: request.conversationId,
+    channelAccountId: 1,
+    channel: 'zalo',
+    accountDisplayName: 'Zalo Main',
+    senderIdentityId: 1,
+    senderDisplayName: 'Agent',
+    direction: 'outbound',
+    providerMessageId: null,
+    providerClientMessageId: `client-${999 + index}`,
+    contentType: part.type,
+    textContent: part.type === 'text' ? part.text : null,
+    content: {},
+    occurredAt: `2026-08-02T13:00:0${index}.000Z`,
+    status: 'queued',
+    removedAt: null,
+    errorMessage: null,
+    replyToMessageId: request.replyToMessageId,
+    attachments: [],
+    replyTarget: null,
+    reactions: [],
+    batchIndex: index,
+    sendBatch: {
+      sendBatchId: 'batch-optimistic',
+      status: 'queued',
+      totalParts: request.parts.length,
+      sentParts: 0,
+      failedParts: 0
+    }
+  }))
+}));
+const mockRecallConversationMessage = mock(async (messageId: number): Promise<ConversationMessage> => ({
+  ...mockMsg1,
+  id: messageId,
+  direction: 'outbound',
+  status: 'removed',
+  removedAt: new Date().toISOString(),
+  textContent: null
+}));
 
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
@@ -250,25 +318,13 @@ mock.module('$lib/services/conversationService', () => ({
     invalidationListeners.add(listener);
     return () => invalidationListeners.delete(listener);
   },
-  sendConversationMessage: mock(async (req: any) => ({
-    id: 999,
-    conversationId: req.conversationId,
-    channelAccountId: req.channelAccountId,
-    channel: 'zalo',
-    accountDisplayName: 'Zalo Main',
-    senderIdentityId: 1,
-    senderDisplayName: 'Agent',
-    direction: 'outbound',
-    providerMessageId: 'p-999',
-    contentType: 'text',
-    textContent: req.text,
-    content: { text: req.text },
-    occurredAt: '2026-07-31T13:00:00Z',
-    status: 'queued',
-    removedAt: null,
-    errorMessage: null,
-    replyToMessageId: null
-  })),
+  sendConversationBatch: (request: SendConversationBatchRequest) => mockSendConversationBatch(request),
+  stageConversationAttachmentPaths: mock(async () => []),
+  stageConversationClipboardImage: mock(async () => null),
+  discardConversationStagedAttachment: mock(async () => {}),
+  restartConversationAccount: mock(async () => {}),
+  searchZaloStickers: mock(async () => []),
+  recallConversationMessage: (messageId: number) => mockRecallConversationMessage(messageId),
   linkConversationIdentity: mock(async () => {})
 }));
 
@@ -282,6 +338,8 @@ describe('ConversationWorkspace Component', () => {
     mockGetConversationTimeline.mockClear();
     mockGetIdentityTimeline.mockClear();
     mockGetConversationRuntimeStatus.mockClear();
+    mockSendConversationBatch.mockClear();
+    mockRecallConversationMessage.mockClear();
   });
 
   test('1. Mounting while activeTab !== "conversation" does not load inbox/runtime data', async () => {
@@ -651,5 +709,43 @@ describe('ConversationWorkspace Component', () => {
 
     expect(screen.getByRole('button', { name: /Đổi lead/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Hủy liên kết/i })).toBeTruthy();
+  });
+
+  test('13. Reply action pins the composer to the source conversation/account', async () => {
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getAllByTestId('message-actions-trigger')[0]);
+    await fireEvent.click(screen.getByText('Trả lời'));
+
+    expect(screen.getByTestId('composer-reply-bar')).toBeTruthy();
+    expect(screen.getByTestId('locked-target')).toBeTruthy();
+    expect(screen.queryByTestId('channel-account-select')).toBeNull();
+  });
+
+  test('14. Recall confirmation replaces the cached message with the returned tombstone', async () => {
+    mockGetContactTimeline.mockImplementationOnce(async () => ({
+      items: [
+        {
+          ...mockMsg1,
+          direction: 'outbound',
+          status: 'sent',
+          occurredAt: new Date().toISOString()
+        }
+      ],
+      nextCursor: null
+    }));
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getByTestId('message-actions-trigger'));
+    await fireEvent.click(screen.getByText('Thu hồi'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Xác nhận thu hồi' }));
+    await tick();
+
+    expect(mockRecallConversationMessage).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Tin nhắn đã bị xóa')).toBeTruthy();
   });
 });

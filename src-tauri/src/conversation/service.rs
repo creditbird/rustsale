@@ -1,7 +1,7 @@
 use super::events::{
     ConversationEventPublisher, ConversationInvalidatedEvent, ConversationInvalidationReason,
 };
-use super::repository::ConversationRepository;
+use super::repository::{ConversationRepository, ResolveDirectPhoneRecipientRequest};
 use super::types::{Channel, ConversationRuntimeStatus, InboxItem, TimelineCursor, TimelinePage};
 use crate::conversation::outreach::AppliedOutreachMessage;
 use crate::conversation::zalo::normalizer::{NormalizedGroupSnapshot, ZaloMutation};
@@ -552,13 +552,15 @@ impl ConversationService {
                 match client.find_user_by_phone(&phone).await {
                     Ok(Some(profile)) if !profile.external_id.trim().is_empty() => {
                         let resolved = self.repository.resolve_direct_phone_recipient(
-                            job.message_id,
-                            job.channel_account_id,
-                            &phone,
-                            &profile.external_id,
-                            profile.display_name.as_deref(),
-                            profile.avatar_url.as_deref(),
-                            &now,
+                            ResolveDirectPhoneRecipientRequest {
+                                message_id: job.message_id,
+                                channel_account_id: job.channel_account_id,
+                                phone: &phone,
+                                resolved_uid: &profile.external_id,
+                                display_name: profile.display_name.as_deref(),
+                                avatar_url: profile.avatar_url.as_deref(),
+                                now: &now,
+                            },
                         )?;
                         resolved.external_thread_id
                     }

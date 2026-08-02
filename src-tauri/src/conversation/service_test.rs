@@ -269,6 +269,12 @@ pub struct ServiceHarness {
     _clean_path: std::path::PathBuf,
 }
 
+impl Default for ServiceHarness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceHarness {
     pub fn new() -> Self {
         let clean_path = std::env::temp_dir().join(format!(

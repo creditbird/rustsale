@@ -5,6 +5,8 @@ type EventListener = (event: { payload: any }) => void;
 
 const eventListeners = new Map<string, EventListener>();
 let invokedCommands: Array<{ command: string; args?: Record<string, any> }> = [];
+let zaloRuntimeStatus = 'disconnected';
+let zaloRuntimeError: string | null = 'Realtime listener stopped';
 
 const zaloAccounts = [
   {
@@ -38,7 +40,13 @@ mock.module('@tauri-apps/api/core', () => ({
     invokedCommands.push({ command, args });
     switch (command) {
       case 'get_managed_zalo_accounts':
-        return structuredClone(zaloAccounts);
+        return structuredClone(
+          zaloAccounts.map((account) => ({
+            ...account,
+            runtimeStatus: zaloRuntimeStatus,
+            lastError: zaloRuntimeError
+          }))
+        );
       case 'get_managed_smtp_accounts':
         return structuredClone(smtpAccounts);
       case 'verify_zalo_session':
@@ -79,6 +87,8 @@ async function waitForListener(eventName: string) {
 beforeEach(() => {
   invokedCommands = [];
   eventListeners.clear();
+  zaloRuntimeStatus = 'disconnected';
+  zaloRuntimeError = 'Realtime listener stopped';
 });
 
 afterEach(() => {
@@ -105,6 +115,32 @@ describe('Settings', () => {
     expect(await screen.findByText('Authentication Valid')).toBeTruthy();
     expect(screen.getByText('Runtime Disconnected')).toBeTruthy();
     expect(screen.getByText('Realtime listener stopped')).toBeTruthy();
+  });
+
+  test('polls Zalo runtime status while settings remains open', async () => {
+    let pollAccounts: (() => void) | undefined;
+    const originalSetInterval = globalThis.setInterval;
+    globalThis.setInterval = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+      if (delay === 5_000) {
+        pollAccounts = () => callback(...args);
+        return 1;
+      }
+      return originalSetInterval(callback, delay, ...args);
+    }) as typeof globalThis.setInterval;
+
+    try {
+      render(Settings);
+      expect(await screen.findByText('Runtime Disconnected')).toBeTruthy();
+
+      zaloRuntimeStatus = 'connected';
+      zaloRuntimeError = null;
+      expect(pollAccounts).toBeDefined();
+      pollAccounts?.();
+
+      expect(await screen.findByText('Runtime Connected')).toBeTruthy();
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+    }
   });
 
   test('reconnects a disconnected Zalo account through the supervisor command', async () => {

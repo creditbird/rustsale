@@ -1,8 +1,9 @@
 use super::migration::migrate;
 use super::repository::{
-    ConversationRepository, NormalizedGroupParticipant, NormalizedGroupSnapshot,
-    NormalizedIdentity, NormalizedMessage, NormalizedReaction, NormalizedReceipt, NormalizedUndo,
-    ReceiptKind, StagedAttachmentRecord,
+    ConversationRepository, NormalizedAttachment, NormalizedGroupParticipant,
+    NormalizedGroupSnapshot, NormalizedIdentity, NormalizedMessage, NormalizedReaction,
+    NormalizedReceipt, NormalizedUndo, ReceiptKind, ResolveDirectPhoneRecipientRequest,
+    StagedAttachmentRecord,
 };
 use super::types::{Channel, ConversationKind, InboxItemKind, MessageDirection, MessageStatus};
 use crate::db::open_db_connection;
@@ -45,9 +46,10 @@ impl Harness {
 
     fn optional_text(&self, sql: &str) -> Option<String> {
         let conn = open_db_connection(self.path.to_str().unwrap()).unwrap();
-        conn.query_row(sql, [], |row| row.get(0))
+        conn.query_row(sql, [], |row| row.get::<_, Option<String>>(0))
             .optional()
             .unwrap()
+            .flatten()
     }
 }
 
@@ -121,6 +123,43 @@ fn duplicate_provider_message_is_idempotent() {
     assert_eq!(first.message_id, second.message_id);
     assert!(!first.duplicate);
     assert!(second.duplicate);
+}
+
+#[test]
+fn normalized_attachment_persists_created_at_and_duplicate_is_idempotent() {
+    let harness = Harness::new();
+    let mut message = direct_message("imei-a", "message-with-attachment");
+    message.attachments.push(NormalizedAttachment {
+        provider_attachment_id: None,
+        media_type: "image".to_string(),
+        mime_type: "image/png".to_string(),
+        file_name: Some("photo.png".to_string()),
+        size_bytes: Some(42),
+        remote_url: Some("https://example.com/photo.png".to_string()),
+        thumbnail_url: None,
+        metadata_json: Some(serde_json::json!({"width": 10, "height": 20})),
+    });
+
+    let first = harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+    let second = harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+
+    assert!(!first.duplicate);
+    assert!(second.duplicate);
+    assert_eq!(first.message_id, second.message_id);
+    assert_eq!(
+        harness.text("SELECT created_at FROM message_attachments LIMIT 1"),
+        message.ingested_at
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_attachments"),
+        1
+    );
 }
 
 #[test]
@@ -324,6 +363,93 @@ fn reaction_upsert_targets_provider_or_client_message_id() {
     harness.repository.apply_reaction(&reaction).unwrap();
     harness.repository.apply_reaction(&reaction).unwrap();
     assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 1);
+}
+
+#[test]
+fn account_identity_update_persists_self_external_id_without_corrupting_avatar() {
+    let harness = Harness::new();
+    harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-self"))
+        .unwrap();
+    let account_id = harness
+        .scalar("SELECT id FROM channel_accounts WHERE provider_account_key = 'imei-a' LIMIT 1");
+
+    harness
+        .repository
+        .update_account_identity_and_capabilities(
+            account_id,
+            Some("own-zuid-1"),
+            r#"{"canQuote":true}"#,
+            "2026-08-02T10:00:00.000Z",
+        )
+        .unwrap();
+
+    assert_eq!(
+        harness.optional_text("SELECT self_external_id FROM channel_accounts LIMIT 1"),
+        Some("own-zuid-1".to_string())
+    );
+    assert_eq!(
+        harness.optional_text("SELECT avatar_url FROM channel_accounts LIMIT 1"),
+        None
+    );
+}
+
+#[test]
+fn hydrated_reactions_mark_current_account_and_keep_external_id_fallback() {
+    let harness = Harness::new();
+    harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-reactions"))
+        .unwrap();
+    let account_id = harness
+        .scalar("SELECT id FROM channel_accounts WHERE provider_account_key = 'imei-a' LIMIT 1");
+    harness
+        .repository
+        .update_account_identity_and_capabilities(
+            account_id,
+            Some("own-zuid-1"),
+            "{}",
+            "2026-08-02T10:00:00.000Z",
+        )
+        .unwrap();
+
+    for actor_external_id in ["own-zuid-1", "peer-1"] {
+        harness
+            .repository
+            .apply_reaction(&NormalizedReaction {
+                provider_account_key: "imei-a".to_string(),
+                external_thread_id: "peer-1".to_string(),
+                is_group: false,
+                provider_event_id: Some(format!("event-{actor_external_id}")),
+                provider_message_id: "message-reactions".to_string(),
+                provider_client_message_id: "client-message-reactions".to_string(),
+                actor_external_id: actor_external_id.to_string(),
+                reaction: "heart".to_string(),
+                removed: false,
+                occurred_at: "2026-08-02T10:01:00.000Z".to_string(),
+                raw_payload: serde_json::json!({}),
+            })
+            .unwrap();
+    }
+
+    let conversation_id = harness.scalar("SELECT id FROM channel_conversations LIMIT 1");
+    let page = harness
+        .repository
+        .get_conversation_timeline(conversation_id, None, 50)
+        .unwrap();
+    let group = &page.items[0].reactions[0];
+
+    assert_eq!(group.count, 2);
+    assert!(group.includes_me);
+    assert!(group
+        .actors
+        .iter()
+        .any(|actor| actor.external_id == "own-zuid-1" && actor.identity_id.is_none()));
+    assert!(group
+        .actors
+        .iter()
+        .any(|actor| actor.external_id == "peer-1" && actor.identity_id.is_some()));
 }
 
 #[test]
@@ -1252,15 +1378,15 @@ fn resolve_direct_phone_recipient_merges_provisional_thread_into_zalo_uid_thread
 
     let resolved = harness
         .repository
-        .resolve_direct_phone_recipient(
-            message.id,
-            998,
-            "0949743369",
-            "zalo-uid-thao-live",
-            Some("Hồ Ngọc Phương Thảo"),
-            Some("https://example.com/thao.jpg"),
-            "2026-08-02T00:46:00.000Z",
-        )
+        .resolve_direct_phone_recipient(ResolveDirectPhoneRecipientRequest {
+            message_id: message.id,
+            channel_account_id: 998,
+            phone: "0949743369",
+            resolved_uid: "zalo-uid-thao-live",
+            display_name: Some("Hồ Ngọc Phương Thảo"),
+            avatar_url: Some("https://example.com/thao.jpg"),
+            now: "2026-08-02T00:46:00.000Z",
+        })
         .unwrap();
 
     assert_eq!(resolved.conversation_id, 6002);

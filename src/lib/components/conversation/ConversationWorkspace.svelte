@@ -8,11 +8,14 @@
     getConversationRuntimeStatus,
     initConversationEventBridge,
     onConversationInvalidated,
+    recallConversationMessage,
     type InboxItem,
     type Channel,
+    type ConversationCapabilities,
     type ConversationRuntimeStatus,
     type ConversationMessage,
-    type ConversationInvalidatedEvent
+    type ConversationInvalidatedEvent,
+    type SendConversationBatchResult
   } from '$lib/services/conversationService';
   import {
     TimelineCache,
@@ -30,6 +33,9 @@
   import LinkedLeadActions from './LinkedLeadActions.svelte';
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
+  import RecallMessageDialog from './RecallMessageDialog.svelte';
+  import type { ConversationReplySelection } from './composerDraftState';
+  import { attachmentLabel } from './messageMedia';
   import { Button } from '$lib/components/ui/button';
   import { AlertCircle, RefreshCw, Users, MessageSquare, Trash2 } from 'lucide-svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
@@ -69,11 +75,25 @@
   let hasBeenActivated = $state(false);
 
   let timelineRef = $state<ReturnType<typeof ConversationTimeline> | null>(null);
+  let replySelection = $state<ConversationReplySelection | null>(null);
+  let recallCandidate = $state<ConversationMessage | null>(null);
+  let recallBusy = $state(false);
+  let recallError = $state<string | null>(null);
+  let actionItemKey = $state<string | null>(null);
 
   let inboxRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let timelineRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   let selectedItem = $derived(inbox.find((i) => i.key === selectedKey) ?? null);
+
+  $effect(() => {
+    if (selectedKey !== actionItemKey) {
+      actionItemKey = selectedKey;
+      replySelection = null;
+      recallCandidate = null;
+      recallError = null;
+    }
+  });
 
   let currentVariantKey = $derived.by(() => {
     if (!selectedItem) return '';
@@ -426,28 +446,89 @@
     }
   }
 
-  function handleQueuedMessage(msg: ConversationMessage) {
-    if (!selectedItem) return;
+  function messagePreview(message: ConversationMessage): string {
+    if (message.textContent?.trim()) return message.textContent.trim();
+    const attachment = message.attachments[0];
+    if (attachment?.fileName) return attachment.fileName;
+    if (attachment) return attachmentLabel(attachment.mediaType);
+    if (message.contentType === 'sticker') return 'Sticker';
+    return attachmentLabel(message.contentType);
+  }
 
-    const merged = mergeMessages(currentVariant.items, [msg]);
+  function handleBatchQueued(result: SendConversationBatchResult) {
+    if (!selectedItem || result.messages.length === 0) return;
+
+    const merged = mergeMessages(currentVariant.items, result.messages);
     currentVariant = { ...currentVariant, items: merged };
     variantsCache.set(currentVariantKey, currentVariant);
 
-    // Update inbox preview
+    const lastMessage = [...result.messages].sort((left, right) => {
+      const indexDiff = (left.batchIndex ?? 0) - (right.batchIndex ?? 0);
+      return indexDiff !== 0 ? indexDiff : left.id - right.id;
+    }).at(-1)!;
     inbox = inbox.map((item) => {
       if (item.key === selectedItem?.key) {
         return {
           ...item,
-          lastMessagePreview: msg.textContent || 'Tin nhắn mới',
-          lastMessageAt: msg.occurredAt
+          lastMessagePreview: messagePreview(lastMessage),
+          lastMessageAt: lastMessage.occurredAt
         };
       }
       return item;
     });
 
+    replySelection = null;
+
     tick().then(() => {
       timelineRef?.scrollToBottom();
     });
+  }
+
+  function capabilitiesForMessage(message: ConversationMessage): ConversationCapabilities | undefined {
+    return runtime.accounts.find((account) => account.channelAccountId === message.channelAccountId)
+      ?.capabilities;
+  }
+
+  function handleReply(message: ConversationMessage): void {
+    replySelection = {
+      messageId: message.id,
+      conversationId: message.conversationId,
+      channelAccountId: message.channelAccountId,
+      preview: {
+        messageId: message.id,
+        providerMessageId: message.providerMessageId,
+        senderDisplayName: message.senderDisplayName,
+        contentType: message.contentType,
+        textContent: message.textContent,
+        mediaType: message.attachments[0]?.mediaType ?? null,
+        occurredAt: message.occurredAt
+      }
+    };
+  }
+
+  function handleRecall(message: ConversationMessage): void {
+    recallCandidate = message;
+    recallError = null;
+  }
+
+  async function confirmRecall(): Promise<void> {
+    if (!recallCandidate || recallBusy) return;
+    recallBusy = true;
+    recallError = null;
+    try {
+      const tombstone = await recallConversationMessage(recallCandidate.id);
+      currentVariant = {
+        ...currentVariant,
+        items: mergeMessages(currentVariant.items, [tombstone])
+      };
+      variantsCache.set(currentVariantKey, currentVariant);
+      if (replySelection?.messageId === tombstone.id) replySelection = null;
+      recallCandidate = null;
+    } catch (error) {
+      recallError = error instanceof Error ? error.message : String(error);
+    } finally {
+      recallBusy = false;
+    }
   }
 
   function handleLinked(leadId: number) {
@@ -588,6 +669,10 @@
           ? 'Không có kênh nào đang được hiển thị'
           : 'Chưa có tin nhắn trong cuộc trò chuyện này'}
         onLoadOlder={handleLoadOlder}
+        isGroup={selectedItem.kind === 'group'}
+        {capabilitiesForMessage}
+        onReply={handleReply}
+        onRecall={handleRecall}
       />
 
       <!-- Message Composer -->
@@ -595,7 +680,9 @@
         item={selectedItem}
         runtime={runtime}
         disabled={runtimeLoading}
-        onQueued={handleQueuedMessage}
+        replyTarget={replySelection}
+        onCancelReply={() => (replySelection = null)}
+        onBatchQueued={handleBatchQueued}
         {onOpenSettings}
         onRuntimeRefresh={() => refreshRuntimeStatus()}
       />
@@ -614,5 +701,17 @@
     bind:open={deleteHeaderDialogOpen}
     item={selectedItem}
     onDeleted={handleConversationDeleted}
+  />
+  <RecallMessageDialog
+    message={recallCandidate}
+    busy={recallBusy}
+    error={recallError}
+    onConfirm={confirmRecall}
+    onCancel={() => {
+      if (!recallBusy) {
+        recallCandidate = null;
+        recallError = null;
+      }
+    }}
   />
 </div>

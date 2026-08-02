@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import type { ConversationMessage } from '$lib/services/conversationService';
+  import type {
+    ConversationCapabilities,
+    ConversationMessage
+  } from '$lib/services/conversationService';
   import MessageBubble from './MessageBubble.svelte';
+  import MessageBatchGroup from './MessageBatchGroup.svelte';
+  import { expandWindowForBatchBoundaries, groupTimelineItems } from './timelineState';
 
   const MAX_DOM_ITEMS = 160;
 
@@ -11,7 +16,11 @@
     loadingOlder = false,
     hasMore = false,
     emptyMessage,
-    onLoadOlder
+    onLoadOlder,
+    isGroup = false,
+    capabilitiesForMessage = () => undefined,
+    onReply = () => {},
+    onRecall = () => {}
   }: {
     items: ConversationMessage[];
     loading?: boolean;
@@ -19,6 +28,10 @@
     hasMore?: boolean;
     emptyMessage: string;
     onLoadOlder: () => void;
+    isGroup?: boolean;
+    capabilitiesForMessage?: (message: ConversationMessage) => ConversationCapabilities | undefined;
+    onReply?: (message: ConversationMessage) => void;
+    onRecall?: (message: ConversationMessage) => void;
   } = $props();
 
   let containerEl: HTMLElement | null = $state(null);
@@ -34,11 +47,15 @@
     }
   });
 
-  let mountedItems = $derived(
-    items.length <= MAX_DOM_ITEMS
-      ? items
-      : items.slice(windowStart, windowStart + MAX_DOM_ITEMS)
-  );
+  let virtualWindow = $derived.by(() => {
+    const start = items.length <= MAX_DOM_ITEMS ? 0 : windowStart;
+    const end = items.length <= MAX_DOM_ITEMS
+      ? items.length
+      : Math.min(items.length, windowStart + MAX_DOM_ITEMS);
+    return expandWindowForBatchBoundaries(items, start, end);
+  });
+  let mountedItems = $derived(items.slice(virtualWindow.start, virtualWindow.end));
+  let renderItems = $derived(groupTimelineItems(mountedItems));
 
   // Auto-scroll tracking for new live messages
   let previousItemsLength = $state<number | null>(null);
@@ -230,8 +247,24 @@
     </div>
   {:else}
     <!-- Mounted Bounded Bubbles -->
-    {#each mountedItems as msg (msg.id)}
-      <MessageBubble message={msg} />
+    {#each renderItems as renderItem (renderItem.kind === 'batch' ? `${renderItem.batchId}:${renderItem.messages[0]?.id}` : `message:${renderItem.message.id}`)}
+      {#if renderItem.kind === 'batch'}
+        <MessageBatchGroup
+          messages={renderItem.messages}
+          {isGroup}
+          {capabilitiesForMessage}
+          {onReply}
+          {onRecall}
+        />
+      {:else}
+        <MessageBubble
+          message={renderItem.message}
+          {isGroup}
+          capabilities={capabilitiesForMessage(renderItem.message)}
+          {onReply}
+          {onRecall}
+        />
+      {/if}
     {/each}
   {/if}
 </div>

@@ -76,15 +76,22 @@
     return 'outline';
   }
 
-  async function loadAccounts() {
-    loading = true;
-    loadError = null;
+  async function loadAccounts(silent = false) {
+    if (!silent) {
+      loading = true;
+      loadError = null;
+    }
     try {
       accounts = await listManagedZaloAccounts();
+      loadError = null;
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      if (!silent) {
+        loadError = error instanceof Error ? error.message : String(error);
+      }
     } finally {
-      loading = false;
+      if (!silent) {
+        loading = false;
+      }
     }
   }
 
@@ -196,8 +203,15 @@
   }
 
   onMount(() => {
-    loadAccounts();
-    return cleanupQrListeners;
+    void loadAccounts();
+    const runtimePoll = setInterval(() => {
+      void loadAccounts(true);
+    }, 5_000);
+
+    return () => {
+      clearInterval(runtimePoll);
+      cleanupQrListeners();
+    };
   });
 </script>
 
@@ -208,7 +222,7 @@
       <p class="text-xs text-muted-foreground">Authentication health and realtime listener status are tracked separately.</p>
     </div>
     <div class="flex items-center gap-2">
-      <Button variant="outline" size="sm" onclick={loadAccounts} disabled={loading}>
+      <Button variant="outline" size="sm" onclick={() => void loadAccounts()} disabled={loading}>
         <RefreshCw class="size-4 {loading ? 'animate-spin' : ''}" data-icon="inline-start" />
         Refresh
       </Button>

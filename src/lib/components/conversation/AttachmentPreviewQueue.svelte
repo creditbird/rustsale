@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ComposerAttachmentItem } from './composerDraftState';
+  import { formatBytes, safeImagePreviewDataUrl } from './messageMedia';
 
   let {
     items = [],
@@ -8,12 +9,6 @@
     items?: ComposerAttachmentItem[];
     onRemove?: (item: ComposerAttachmentItem) => void;
   } = $props();
-
-  function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
 
   function handleRemove(item: ComposerAttachmentItem) {
     if (onRemove) {
@@ -25,9 +20,10 @@
 {#if items.length > 0}
   <div class="attachment-preview-queue" data-testid="attachment-preview-queue">
     {#each items as item (item.localId)}
+      {@const safePreview = safeImagePreviewDataUrl(item.previewDataUrl)}
       <div class="attachment-chip" data-status={item.status} data-testid="attachment-item">
-        {#if item.previewDataUrl}
-          <img src={item.previewDataUrl} alt={item.fileName} class="chip-thumbnail" />
+        {#if safePreview}
+          <img src={safePreview} alt={item.fileName} class="chip-thumbnail" />
         {:else}
           <div class="chip-icon">
             {#if item.attachmentType === 'image'}
@@ -44,7 +40,7 @@
 
         <div class="chip-info">
           <span class="chip-filename" title={item.fileName}>{item.fileName}</span>
-          <span class="chip-size">{formatSize(item.sizeBytes)}</span>
+          <span class="chip-size">{formatBytes(item.sizeBytes)}</span>
         </div>
 
         {#if item.status === 'staging'}
@@ -53,6 +49,8 @@
           <span class="chip-status error" title={item.errorMessage ?? 'Error'} data-testid="status-error">
             Failed
           </span>
+        {:else if item.status === 'removing'}
+          <span class="chip-status staging" data-testid="status-removing">Removing...</span>
         {/if}
 
         <button

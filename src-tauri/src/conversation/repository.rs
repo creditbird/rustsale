@@ -18,6 +18,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static LAST_PROVIDER_CLIENT_ID: AtomicU64 = AtomicU64::new(0);
 
+type UnlinkedIdentityRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    bool,
+);
+type GroupConversationRow = (
+    i64,
+    i64,
+    Channel,
+    Option<String>,
+    ConversationKind,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 pub fn next_provider_client_message_id() -> String {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -147,6 +166,16 @@ pub struct ResolvedDirectRecipient {
     pub external_thread_id: String,
 }
 
+pub struct ResolveDirectPhoneRecipientRequest<'a> {
+    pub message_id: i64,
+    pub channel_account_id: i64,
+    pub phone: &'a str,
+    pub resolved_uid: &'a str,
+    pub display_name: Option<&'a str>,
+    pub avatar_url: Option<&'a str>,
+    pub now: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StagedAttachmentRecord {
     pub id: String,
@@ -180,20 +209,20 @@ impl ConversationRepository {
     pub fn update_account_identity_and_capabilities(
         &self,
         account_id: i64,
-        avatar_url: Option<&str>,
+        self_external_id: Option<&str>,
         capabilities_json: &str,
         now: &str,
     ) -> Result<()> {
         let conn = open_db_connection(&self.db_path)?;
         conn.execute(
             "UPDATE channel_accounts
-             SET avatar_url = COALESCE(?2, avatar_url),
+             SET self_external_id = COALESCE(?2, self_external_id),
                  capabilities_json = ?3,
                  connection_status = 'connected',
                  last_connected_at = ?4,
                  updated_at = ?4
              WHERE id = ?1",
-            params![account_id, avatar_url, capabilities_json, now],
+            params![account_id, self_external_id, capabilities_json, now],
         )?;
         Ok(())
     }
@@ -494,14 +523,20 @@ impl ConversationRepository {
             }
 
             for att in &message.attachments {
-                tx.execute(
-                    "INSERT INTO message_attachments
-                     (message_id, provider_attachment_id, attachment_type, mime_type, file_name, size_bytes, remote_url, thumbnail_url, metadata_json)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                     ON CONFLICT(message_id, provider_attachment_id) DO UPDATE SET
-                         remote_url = COALESCE(excluded.remote_url, message_attachments.remote_url),
-                         thumbnail_url = COALESCE(excluded.thumbnail_url, message_attachments.thumbnail_url),
-                         metadata_json = COALESCE(excluded.metadata_json, message_attachments.metadata_json)",
+                let updated = tx.execute(
+                    "UPDATE message_attachments
+                     SET provider_attachment_id = COALESCE(provider_attachment_id, ?2),
+                         mime_type = COALESCE(?4, mime_type),
+                         file_name = COALESCE(?5, file_name),
+                         size_bytes = COALESCE(?6, size_bytes),
+                         remote_url = COALESCE(?7, remote_url),
+                         thumbnail_url = COALESCE(?8, thumbnail_url),
+                         metadata_json = COALESCE(?9, metadata_json)
+                     WHERE message_id = ?1
+                       AND (
+                           provider_attachment_id = ?2
+                           OR (provider_attachment_id IS NULL AND attachment_type = ?3)
+                       )",
                     params![
                         message_id,
                         att.provider_attachment_id,
@@ -514,6 +549,26 @@ impl ConversationRepository {
                         att.metadata_json.as_ref().map(serde_json::Value::to_string),
                     ],
                 )?;
+
+                if updated == 0 {
+                    tx.execute(
+                        "INSERT INTO message_attachments
+                         (message_id, provider_attachment_id, attachment_type, mime_type, file_name, size_bytes, remote_url, thumbnail_url, metadata_json, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        params![
+                            message_id,
+                            att.provider_attachment_id,
+                            att.media_type,
+                            att.mime_type,
+                            att.file_name,
+                            att.size_bytes,
+                            att.remote_url,
+                            att.thumbnail_url,
+                            att.metadata_json.as_ref().map(serde_json::Value::to_string),
+                            now,
+                        ],
+                    )?;
+                }
             }
 
             tx.commit()?;
@@ -556,8 +611,8 @@ impl ConversationRepository {
         for att in &message.attachments {
             tx.execute(
                 "INSERT INTO message_attachments
-                 (message_id, provider_attachment_id, attachment_type, mime_type, file_name, size_bytes, remote_url, thumbnail_url, metadata_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (message_id, provider_attachment_id, attachment_type, mime_type, file_name, size_bytes, remote_url, thumbnail_url, metadata_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     message_id,
                     att.provider_attachment_id,
@@ -568,6 +623,7 @@ impl ConversationRepository {
                     att.remote_url,
                     att.thumbnail_url,
                     att.metadata_json.as_ref().map(serde_json::Value::to_string),
+                    now,
                 ],
             )?;
         }
@@ -765,14 +821,7 @@ impl ConversationRepository {
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
-        let unlinked_identities: Vec<(
-            i64,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            bool,
-        )> = {
+        let unlinked_identities: Vec<UnlinkedIdentityRow> = {
             let mut stmt = conn.prepare(
                 "SELECT ci.id,
                         ci.display_name,
@@ -966,16 +1015,7 @@ impl ConversationRepository {
         }
 
         // 3. Group rows: Group conversations (key: "conversation:{conversation_id}")
-        let group_convs: Vec<(
-            i64,
-            i64,
-            Channel,
-            Option<String>,
-            ConversationKind,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = {
+        let group_convs: Vec<GroupConversationRow> = {
             let mut stmt = conn.prepare(
                 "SELECT cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.title, cc.avatar_url, cc.last_message_at
                  FROM channel_conversations cc
@@ -1239,8 +1279,7 @@ impl ConversationRepository {
             });
         }
         let conn = open_db_connection(&self.db_path)?;
-        let channel_placeholders = std::iter::repeat("?")
-            .take(channels.len())
+        let channel_placeholders = std::iter::repeat_n("?", channels.len())
             .collect::<Vec<_>>()
             .join(", ");
         let before_at = before.map(|cursor| cursor.occurred_at.as_str());
@@ -1258,7 +1297,8 @@ impl ConversationRepository {
                     m.direction,
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
+                    m.provider_client_message_id, m.batch_index
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -1326,7 +1366,8 @@ impl ConversationRepository {
                     m.direction,
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
+                    m.provider_client_message_id, m.batch_index
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -1388,7 +1429,8 @@ impl ConversationRepository {
                     m.direction,
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
+                    m.provider_client_message_id, m.batch_index
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -1893,7 +1935,8 @@ impl ConversationRepository {
                     ca.display_name, m.sender_identity_id, ci.display_name,
                     m.direction, m.provider_message_id, m.content_type, m.text_content,
                     m.content_json, COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
+                    m.provider_client_message_id, m.batch_index
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -1941,7 +1984,7 @@ impl ConversationRepository {
     pub fn get_runtime_status(&self) -> Result<ConversationRuntimeStatus> {
         let conn = open_db_connection(&self.db_path)?;
         let mut stmt = conn.prepare(
-            "SELECT id, channel, provider_account_key, display_name, connection_status, last_connected_at, last_error
+            "SELECT id, channel, provider_account_key, display_name, connection_status, last_connected_at, last_error, capabilities_json
              FROM channel_accounts
              ORDER BY id ASC",
         )?;
@@ -1961,6 +2004,9 @@ impl ConversationRepository {
                 channel,
                 provider_account_key: row.get(2)?,
                 display_name: row.get(3)?,
+                capabilities: crate::conversation::types::ConversationCapabilities::from_json(
+                    &row.get::<_, String>(7)?,
+                ),
                 status,
                 last_connected_at: row.get(5)?,
                 last_error: row.get(6)?,
@@ -2054,7 +2100,8 @@ impl ConversationRepository {
                     ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
+                    m.provider_client_message_id, m.batch_index
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2157,7 +2204,8 @@ impl ConversationRepository {
                         ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
                         m.provider_message_id, m.content_type, m.text_content, m.content_json,
                         COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                        m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                        m.status, m.removed_at, m.error_message, m.reply_to_message_id,
+                        m.provider_client_message_id, m.batch_index
                  FROM messages m
                  JOIN channel_conversations cc ON cc.id = m.conversation_id
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2278,12 +2326,9 @@ impl ConversationRepository {
         }
 
         let batch_id = format!(
-            "batch-{}",
-            format!(
-                "{:016x}{:016x}",
-                rand::random::<u64>(),
-                rand::random::<u64>()
-            )
+            "batch-{:016x}{:016x}",
+            rand::random::<u64>(),
+            rand::random::<u64>()
         );
         tx.execute(
             "INSERT INTO message_send_batches
@@ -2436,7 +2481,8 @@ impl ConversationRepository {
                         ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
                         m.provider_message_id, m.content_type, m.text_content, m.content_json,
                         COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                        m.status, m.removed_at, m.error_message, m.reply_to_message_id
+                        m.status, m.removed_at, m.error_message, m.reply_to_message_id,
+                        m.provider_client_message_id, m.batch_index
                  FROM messages m
                  JOIN channel_conversations cc ON cc.id = m.conversation_id
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2717,14 +2763,17 @@ impl ConversationRepository {
 
     pub fn resolve_direct_phone_recipient(
         &self,
-        message_id: i64,
-        channel_account_id: i64,
-        phone: &str,
-        resolved_uid: &str,
-        display_name: Option<&str>,
-        avatar_url: Option<&str>,
-        now: &str,
+        request: ResolveDirectPhoneRecipientRequest<'_>,
     ) -> Result<ResolvedDirectRecipient> {
+        let ResolveDirectPhoneRecipientRequest {
+            message_id,
+            channel_account_id,
+            phone,
+            resolved_uid,
+            display_name,
+            avatar_url,
+            now,
+        } = request;
         let resolved_uid = resolved_uid.trim();
         if resolved_uid.is_empty() {
             return Err(rusqlite::Error::InvalidParameterName(
@@ -3556,6 +3605,7 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         sender_display_name: row.get(6)?,
         direction,
         provider_message_id: row.get(8)?,
+        provider_client_message_id: row.get(17)?,
         content_type: row.get(9)?,
         text_content: row.get(10)?,
         content,
@@ -3567,6 +3617,7 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         attachments: Vec::new(),
         reply_target,
         reactions: Vec::new(),
+        batch_index: row.get(18)?,
         send_batch: None,
     })
 }

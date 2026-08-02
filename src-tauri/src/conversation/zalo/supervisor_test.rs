@@ -256,11 +256,13 @@ impl FakeZaloClientFactory {
     pub async fn wait_for_stop_count(&self, imei: &str, target: usize) {
         let start = std::time::Instant::now();
         loop {
-            let clients = self.clients.lock().unwrap();
-            let stopped_count = clients
-                .get(imei)
-                .map(|list| list.iter().filter(|c| c.is_stopped()).count())
-                .unwrap_or(0);
+            let stopped_count = {
+                let clients = self.clients.lock().unwrap();
+                clients
+                    .get(imei)
+                    .map(|list| list.iter().filter(|c| c.is_stopped()).count())
+                    .unwrap_or(0)
+            };
             if stopped_count >= target {
                 break;
             }
@@ -270,7 +272,6 @@ impl FakeZaloClientFactory {
                     target, stopped_count, imei
                 );
             }
-            drop(clients);
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
@@ -324,7 +325,7 @@ impl ZaloClientFactory for FakeZaloClientFactory {
         drop(connect_map);
 
         let mut clients_map = self.clients.lock().unwrap();
-        let list = clients_map.entry(imei.clone()).or_insert_with(Vec::new);
+        let list = clients_map.entry(imei.clone()).or_default();
 
         let active_count = list.iter().filter(|c| !c.is_stopped()).count() + 1;
 

@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'bun:test';
-import { render } from '@testing-library/svelte';
+import { afterEach, describe, it, expect } from 'bun:test';
+import { cleanup, render } from '@testing-library/svelte';
 import MessageContentRenderer from '../MessageContentRenderer.svelte';
 import type { ConversationMessage } from '$lib/services/conversationService';
 
 describe('MessageContentRenderer', () => {
+  afterEach(cleanup);
+
   const baseMessage: ConversationMessage = {
     id: 101,
     conversationId: 31,
@@ -14,6 +16,7 @@ describe('MessageContentRenderer', () => {
     senderDisplayName: 'Nguyen Van A',
     direction: 'inbound',
     providerMessageId: 'p-101',
+    providerClientMessageId: null,
     contentType: 'text',
     textContent: 'Xin chào bạn',
     content: {},
@@ -25,6 +28,7 @@ describe('MessageContentRenderer', () => {
     attachments: [],
     replyTarget: null,
     reactions: [],
+    batchIndex: null,
     sendBatch: null,
   };
 
@@ -44,7 +48,6 @@ describe('MessageContentRenderer', () => {
           mimeType: 'image/png',
           fileName: 'photo.png',
           sizeBytes: 1024,
-          localPath: null,
           remoteUrl: 'https://example.com/photo.png',
           thumbnailUrl: null,
           width: 800,
@@ -56,5 +59,62 @@ describe('MessageContentRenderer', () => {
 
     const { getByTestId } = render(MessageContentRenderer, { message: msgWithImage });
     expect(getByTestId('image-message-content')).not.toBeNull();
+  });
+
+  it('renders video, audio, and safe link attachments with dedicated components', () => {
+    const richMessage: ConversationMessage = {
+      ...baseMessage,
+      contentType: 'link',
+      content: {
+        url: 'https://example.com/article',
+        title: 'Bài viết an toàn',
+        description: 'Mô tả liên kết'
+      },
+      attachments: [
+        {
+          id: 2,
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          fileName: 'clip.mp4',
+          sizeBytes: 2048,
+          remoteUrl: 'https://example.com/clip.mp4',
+          thumbnailUrl: null,
+          width: 640,
+          height: 360,
+          durationSeconds: 12
+        },
+        {
+          id: 3,
+          mediaType: 'audio',
+          mimeType: 'audio/mpeg',
+          fileName: 'voice.mp3',
+          sizeBytes: 512,
+          remoteUrl: 'https://example.com/voice.mp3',
+          thumbnailUrl: null,
+          width: null,
+          height: null,
+          durationSeconds: 8
+        }
+      ]
+    };
+
+    const { getByTestId, getByText } = render(MessageContentRenderer, { message: richMessage });
+    expect(getByTestId('video-message-content')).toBeTruthy();
+    expect(getByTestId('audio-message-content')).toBeTruthy();
+    expect(getByTestId('link-message-content')).toBeTruthy();
+    expect(getByText('Bài viết an toàn')).toBeTruthy();
+  });
+
+  it('does not render unsafe link protocols', () => {
+    const unsafeLink: ConversationMessage = {
+      ...baseMessage,
+      contentType: 'link',
+      textContent: null,
+      content: { url: 'javascript:alert(1)', title: 'Unsafe' }
+    };
+
+    const { queryByRole, getByText } = render(MessageContentRenderer, { message: unsafeLink });
+    expect(queryByRole('link')).toBeNull();
+    expect(getByText('Liên kết không hợp lệ')).toBeTruthy();
   });
 });

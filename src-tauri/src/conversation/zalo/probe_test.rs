@@ -159,9 +159,11 @@ async fn live_zalo_conversation_probe() {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(90);
 
-    let mut options = Options::default();
-    options.self_listen = true;
-    options.auto_start_listener = false;
+    let options = Options {
+        self_listen: true,
+        auto_start_listener: false,
+        ..Default::default()
+    };
     let zalo = Zalo::login(imei, user_agent, cookies, options)
         .await
         .expect("Zalo probe login failed");

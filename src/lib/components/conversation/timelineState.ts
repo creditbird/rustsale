@@ -16,6 +16,10 @@ export interface TimelineVariant {
   loading: boolean;
 }
 
+export type TimelineRenderItem =
+  | { kind: 'message'; message: ConversationMessage }
+  | { kind: 'batch'; batchId: string; messages: ConversationMessage[] };
+
 export function channelSetKey(channels: Channel[]): string {
   return [...channels].sort().join('|');
 }
@@ -27,6 +31,70 @@ function compareMessages(a: ConversationMessage, b: ConversationMessage): number
     return timeA - timeB;
   }
   return a.id - b.id;
+}
+
+function batchId(message: ConversationMessage | undefined): string | null {
+  return message?.sendBatch?.sendBatchId ?? null;
+}
+
+function compareBatchParts(a: ConversationMessage, b: ConversationMessage): number {
+  const indexA = a.batchIndex ?? Number.MAX_SAFE_INTEGER;
+  const indexB = b.batchIndex ?? Number.MAX_SAFE_INTEGER;
+  if (indexA !== indexB) return indexA - indexB;
+  return compareMessages(a, b);
+}
+
+export function groupTimelineItems(messages: ConversationMessage[]): TimelineRenderItem[] {
+  const result: TimelineRenderItem[] = [];
+  let index = 0;
+
+  while (index < messages.length) {
+    const message = messages[index];
+    const currentBatchId = batchId(message);
+    if (!currentBatchId) {
+      result.push({ kind: 'message', message });
+      index += 1;
+      continue;
+    }
+
+    const batchMessages: ConversationMessage[] = [];
+    while (index < messages.length && batchId(messages[index]) === currentBatchId) {
+      batchMessages.push(messages[index]);
+      index += 1;
+    }
+    result.push({
+      kind: 'batch',
+      batchId: currentBatchId,
+      messages: [...batchMessages].sort(compareBatchParts)
+    });
+  }
+
+  return result;
+}
+
+export function expandWindowForBatchBoundaries(
+  messages: ConversationMessage[],
+  start: number,
+  end: number
+): { start: number; end: number } {
+  let expandedStart = Math.max(0, Math.min(start, messages.length));
+  let expandedEnd = Math.max(expandedStart, Math.min(end, messages.length));
+
+  const startBatchId = batchId(messages[expandedStart]);
+  if (startBatchId) {
+    while (expandedStart > 0 && batchId(messages[expandedStart - 1]) === startBatchId) {
+      expandedStart -= 1;
+    }
+  }
+
+  const endBatchId = batchId(messages[expandedEnd - 1]);
+  if (endBatchId) {
+    while (expandedEnd < messages.length && batchId(messages[expandedEnd]) === endBatchId) {
+      expandedEnd += 1;
+    }
+  }
+
+  return { start: expandedStart, end: expandedEnd };
 }
 
 export function mergeMessages(

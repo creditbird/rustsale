@@ -1,9 +1,13 @@
 use crate::conversation::types::{
     ConversationAttachment, ConversationMessage, ConversationReactionActor,
-    ConversationReactionGroup, ConversationReplyTarget,
+    ConversationReactionGroup, ConversationReplyTarget, ConversationSendBatchSummary,
+    MessageSendBatchStatus,
 };
 use rusqlite::{Connection, Result};
 use std::collections::HashMap;
+
+type ReactionAggregate = (u32, bool, Vec<ConversationReactionActor>);
+type ReactionGroupsByIcon = HashMap<String, ReactionAggregate>;
 
 pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage]) -> Result<()> {
     if messages.is_empty() {
@@ -110,26 +114,67 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         }
     }
 
+    let batch_query = format!(
+        "SELECT m.id, mb.id, mb.status, mb.part_count,
+                COALESCE(SUM(CASE WHEN batch_message.status = 'sent' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN batch_message.status = 'failed' THEN 1 ELSE 0 END), 0)
+         FROM messages m
+         JOIN message_send_batches mb ON mb.id = m.send_batch_id
+         LEFT JOIN messages batch_message ON batch_message.send_batch_id = mb.id
+         WHERE m.id IN ({placeholders})
+         GROUP BY m.id, mb.id, mb.status, mb.part_count"
+    );
+    let mut batch_stmt = conn.prepare(&batch_query)?;
+    let mut batch_rows = batch_stmt.query(params_ref.as_slice())?;
+    let mut batch_map: HashMap<i64, ConversationSendBatchSummary> = HashMap::new();
+    while let Some(row) = batch_rows.next()? {
+        let message_id: i64 = row.get(0)?;
+        let status_raw: String = row.get(2)?;
+        let status = match status_raw.as_str() {
+            "sending" => MessageSendBatchStatus::Sending,
+            "sent" => MessageSendBatchStatus::Sent,
+            "partial" => MessageSendBatchStatus::Partial,
+            "failed" => MessageSendBatchStatus::Failed,
+            _ => MessageSendBatchStatus::Queued,
+        };
+        batch_map.insert(
+            message_id,
+            ConversationSendBatchSummary {
+                send_batch_id: row.get(1)?,
+                status,
+                total_parts: row.get(3)?,
+                sent_parts: row.get(4)?,
+                failed_parts: row.get(5)?,
+            },
+        );
+    }
+
     let mut reactions_map: HashMap<i64, Vec<ConversationReactionGroup>> = HashMap::new();
     let react_query = format!(
-        "SELECT mr.message_id, mr.reaction, ci.id, ci.display_name, ci.avatar_url
+        "SELECT mr.message_id, mr.reaction, mr.actor_external_id,
+                ci.id, ci.display_name, ci.avatar_url, ca.self_external_id
          FROM message_reactions mr
-         LEFT JOIN channel_identities ci ON ci.external_id = mr.actor_external_id
+         JOIN messages m ON m.id = mr.message_id
+         JOIN channel_conversations cc ON cc.id = m.conversation_id
+         JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+         LEFT JOIN channel_identities ci
+           ON ci.channel = ca.channel
+          AND ci.identity_namespace = 'zalo_uid'
+          AND ci.external_id = mr.actor_external_id
          WHERE mr.message_id IN ({placeholders}) AND mr.removed_at IS NULL
          ORDER BY mr.message_id ASC"
     );
     let mut react_stmt = conn.prepare(&react_query)?;
     let mut react_rows = react_stmt.query(params_ref.as_slice())?;
-    let mut raw_reactions: HashMap<
-        i64,
-        HashMap<String, (u32, bool, Vec<ConversationReactionActor>)>,
-    > = HashMap::new();
+    let mut raw_reactions: HashMap<i64, ReactionGroupsByIcon> = HashMap::new();
     while let Some(row) = react_rows.next()? {
         let msg_id: i64 = row.get(0)?;
         let icon: String = row.get(1)?;
-        let identity_id: Option<i64> = row.get(2)?;
-        let display_name: Option<String> = row.get(3)?;
-        let avatar_url: Option<String> = row.get(4)?;
+        let actor_external_id: String = row.get(2)?;
+        let identity_id: Option<i64> = row.get(3)?;
+        let display_name: Option<String> = row.get(4)?;
+        let avatar_url: Option<String> = row.get(5)?;
+        let self_external_id: Option<String> = row.get(6)?;
 
         let entry = raw_reactions
             .entry(msg_id)
@@ -137,13 +182,13 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
             .entry(icon)
             .or_insert_with(|| (0, false, Vec::new()));
         entry.0 += 1;
-        if let Some(id) = identity_id {
-            entry.2.push(ConversationReactionActor {
-                identity_id: id,
-                display_name,
-                avatar_url,
-            });
-        }
+        entry.1 |= self_external_id.as_deref() == Some(actor_external_id.as_str());
+        entry.2.push(ConversationReactionActor {
+            identity_id,
+            external_id: actor_external_id,
+            display_name,
+            avatar_url,
+        });
     }
     for (msg_id, groups_map) in raw_reactions {
         let groups = groups_map
@@ -171,6 +216,9 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         }
         if let Some(reacts) = reactions_map.remove(&msg.id) {
             msg.reactions = reacts;
+        }
+        if let Some(batch) = batch_map.remove(&msg.id) {
+            msg.send_batch = Some(batch);
         }
     }
 

@@ -194,3 +194,57 @@ async fn staging_enforces_one_gib_spool_quota() {
 
     assert_eq!(err.code, super::error::ConversationErrorCode::FileTooLarge);
 }
+
+#[tokio::test]
+async fn staging_rejects_batch_over_100_mib_without_partial_files() {
+    let (stager, dir) = setup_test_stager();
+    let first = dir.path().join("first.bin");
+    let second = dir.path().join("second.bin");
+    let third = dir.path().join("third.bin");
+
+    fs::File::create(&first)
+        .unwrap()
+        .set_len(MAX_ATTACHMENT_BYTES)
+        .unwrap();
+    fs::File::create(&second)
+        .unwrap()
+        .set_len(MAX_ATTACHMENT_BYTES)
+        .unwrap();
+    fs::File::create(&third).unwrap().set_len(1).unwrap();
+
+    let err = stager
+        .stage_paths(
+            1,
+            vec![
+                first.to_string_lossy().to_string(),
+                second.to_string_lossy().to_string(),
+                third.to_string_lossy().to_string(),
+            ],
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, super::error::ConversationErrorCode::FileTooLarge);
+    assert!(err.message.contains("100 MiB"));
+    assert_eq!(fs::read_dir(stager.root()).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn staging_errors_do_not_expose_source_paths() {
+    let (stager, dir) = setup_test_stager();
+    let source = dir.path().join("customer-secret-contract.pdf");
+
+    let err = stager
+        .stage_paths(1, vec![source.to_string_lossy().to_string()])
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        err.code,
+        super::error::ConversationErrorCode::InvalidRequest
+    );
+    assert!(!err.message.contains("customer-secret-contract.pdf"));
+    assert!(!err
+        .message
+        .contains(&dir.path().to_string_lossy().to_string()));
+}

@@ -41,6 +41,21 @@ export interface InboxReplyTarget {
   lastMessageAt: string | null;
 }
 
+export interface ConversationCapabilities {
+  maxTextLength: number;
+  maxAttachmentsPerBatch: number;
+  maxFileSizeBytes: number;
+  supportedImageTypes: string[];
+  supportedVideoTypes: string[];
+  supportedAudioTypes: string[];
+  supportedDocTypes: string[];
+  supportsStickers: boolean;
+  supportsQuoteReply: boolean;
+  supportsRecall: boolean;
+  recallWindowSeconds: number | null;
+  supportsReactions: boolean;
+}
+
 export interface ConversationParticipantSummary {
   identityId: number;
   displayName: string | null;
@@ -70,7 +85,6 @@ export interface ConversationAttachment {
   mimeType: string;
   fileName: string | null;
   sizeBytes: number | null;
-  localPath: string | null;
   remoteUrl: string | null;
   thumbnailUrl: string | null;
   width: number | null;
@@ -89,7 +103,8 @@ export interface ConversationReplyTarget {
 }
 
 export interface ConversationReactionActor {
-  identityId: number;
+  identityId: number | null;
+  externalId: string;
   displayName: string | null;
   avatarUrl: string | null;
 }
@@ -121,6 +136,7 @@ export interface ConversationMessage {
   senderDisplayName: string | null;
   direction: MessageDirection;
   providerMessageId: string | null;
+  providerClientMessageId: string | null;
   contentType: string;
   textContent: string | null;
   content: Record<string, unknown>;
@@ -132,6 +148,7 @@ export interface ConversationMessage {
   attachments: ConversationAttachment[];
   replyTarget: ConversationReplyTarget | null;
   reactions: ConversationReactionGroup[];
+  batchIndex: number | null;
   sendBatch: ConversationSendBatchSummary | null;
 }
 
@@ -145,6 +162,7 @@ export interface ConversationAccountRuntime {
   channel: Channel;
   providerAccountKey: string;
   displayName: string | null;
+  capabilities: ConversationCapabilities;
   status: AccountConnectionStatus;
   lastConnectedAt: string | null;
   lastError: string | null;
@@ -178,10 +196,7 @@ export type SendPartContent =
   | { type: 'sticker'; stickerId: number; cateId: number; stickerType: number }
   | { type: 'attachment'; stagedAttachmentId: string };
 
-export interface SendPartRequest {
-  clientPartId: string;
-  content: SendPartContent;
-}
+export type SendPartRequest = { clientPartId: string } & SendPartContent;
 
 export interface SendConversationBatchRequest {
   conversationId: number;
@@ -193,7 +208,7 @@ export interface SendConversationBatchRequest {
 export interface SendConversationBatchResult {
   batchId: string;
   clientBatchId: string;
-  queuedMessages: ConversationMessage[];
+  messages: ConversationMessage[];
 }
 
 export interface ZaloStickerReference {

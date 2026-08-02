@@ -3,7 +3,7 @@
   import { safeConversationUrl } from './messageMedia';
 
   let { attachment }: { attachment: ConversationAttachment } = $props();
-  let safeUrl = $derived(safeConversationUrl(attachment.remoteUrl || attachment.localPath));
+  let safeUrl = $derived(safeConversationUrl(attachment.remoteUrl));
 </script>
 
 {#if safeUrl}

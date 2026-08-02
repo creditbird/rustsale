@@ -78,6 +78,7 @@ struct NormalizedContentParts {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ZaloMutation {
     Message(NormalizedMessage),
     Reaction(NormalizedReaction),

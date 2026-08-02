@@ -3,6 +3,9 @@
   import ImageMessageContent from './ImageMessageContent.svelte';
   import FileMessageContent from './FileMessageContent.svelte';
   import StickerMessageContent from './StickerMessageContent.svelte';
+  import VideoMessageContent from './VideoMessageContent.svelte';
+  import AudioMessageContent from './AudioMessageContent.svelte';
+  import LinkMessageContent from './LinkMessageContent.svelte';
   import { safeConversationUrl } from './messageMedia';
 
   let { message }: { message: ConversationMessage } = $props();
@@ -40,6 +43,7 @@
   let isImageContentType = $derived(
     message.contentType === 'image' || message.contentType.startsWith('image/')
   );
+  let isLinkContentType = $derived(message.contentType === 'link');
 
   let safeLegacyUrl = $derived(safeConversationUrl(legacyMediaUrl));
   let isUnsafeLegacyImage = $derived(
@@ -58,6 +62,10 @@
             <ImageMessageContent attachment={att} />
           {:else if att.mediaType === 'sticker'}
             <StickerMessageContent attachment={att} />
+          {:else if att.mediaType === 'video'}
+            <VideoMessageContent attachment={att} />
+          {:else if att.mediaType === 'audio' || att.mediaType === 'voice'}
+            <AudioMessageContent attachment={att} />
           {:else}
             <FileMessageContent attachment={att} />
           {/if}
@@ -80,7 +88,11 @@
       {/if}
     {/if}
 
-    {#if displayText}
+    {#if isLinkContentType}
+      <LinkMessageContent content={message.content} textContent={message.textContent} />
+    {/if}
+
+    {#if displayText && !isLinkContentType}
       <div class="message-text-content" data-testid="message-text-content">
         {displayText}
       </div>

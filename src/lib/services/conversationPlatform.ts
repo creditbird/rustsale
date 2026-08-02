@@ -26,28 +26,41 @@ export async function openFilePicker(options: OpenFilePickerOptions = {}): Promi
   return [result];
 }
 
-export function onDragDropEvent(onDrop: (paths: string[]) => void): () => void {
-  const webview = getCurrentWebview();
+export function onDragDropEvent(
+  onDrop: (paths: string[]) => void,
+  onActiveChange: (active: boolean) => void = () => {}
+): () => void {
   let unlisten: (() => void) | null = null;
 
-  webview.onDragDropEvent((event) => {
-    if (event.payload.type === 'drop') {
-      onDrop(event.payload.paths);
-    }
-  }).then((fn) => {
-    unlisten = fn;
-  }).catch((err) => {
-    console.error('Failed to attach drag-drop listener:', err);
-  });
+  try {
+    const webview = getCurrentWebview();
+    webview.onDragDropEvent((event) => {
+      if (event.payload.type === 'enter' || event.payload.type === 'over') {
+        onActiveChange(true);
+      } else if (event.payload.type === 'drop') {
+        onActiveChange(false);
+        onDrop(event.payload.paths);
+      } else if (event.payload.type === 'leave') {
+        onActiveChange(false);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    }).catch(() => {
+      onActiveChange(false);
+    });
+  } catch {
+    onActiveChange(false);
+  }
 
   return () => {
+    onActiveChange(false);
     if (unlisten) {
       unlisten();
     }
   };
 }
 
-export const MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MiB
+export const MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export async function readClipboardImage(): Promise<{ fileName: string; mimeType: string; base64Data: string } | null> {
   if (typeof navigator === 'undefined' || !navigator.clipboard) {

@@ -169,12 +169,12 @@ impl From<zca_rs::error::ZaloError> for ProviderSendError {
         let kind = match &err {
             ZaloError::Network(_) | ZaloError::WebSocket(_) => ProviderSendErrorKind::Retryable,
             ZaloError::ApiError { code, .. }
-                if code.map_or(false, |c| c == 429)
+                if code.is_some_and(|c| c == 429)
                     || message.to_lowercase().contains("rate limit") =>
             {
                 ProviderSendErrorKind::RateLimited
             }
-            ZaloError::ApiError { code, .. } if code.map_or(false, |c| c >= 500) => {
+            ZaloError::ApiError { code, .. } if code.is_some_and(|c| c >= 500) => {
                 ProviderSendErrorKind::Retryable
             }
             ZaloError::ApiError { .. } | ZaloError::LoginQRAborted | ZaloError::LoginQRDeclined => {
@@ -700,9 +700,11 @@ impl ZaloClientFactory for RealZaloClientFactory {
         let cookies: Vec<zca_rs::context::ZaloCookie> = serde_json::from_str(&session.cookies_json)
             .map_err(|e| anyhow::anyhow!("Invalid cookies JSON in session: {e}"))?;
 
-        let mut options = zca_rs::Options::default();
-        options.self_listen = true;
-        options.auto_start_listener = false;
+        let options = zca_rs::Options {
+            self_listen: true,
+            auto_start_listener: false,
+            ..Default::default()
+        };
 
         let zalo = zca_rs::Zalo::login(session.imei.clone(), session.user_agent, cookies, options)
             .await

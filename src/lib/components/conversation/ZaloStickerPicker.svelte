@@ -1,14 +1,18 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { searchZaloStickers, type ZaloStickerReference } from '$lib/services/conversationService';
+  import { safeConversationUrl } from './messageMedia';
 
   let {
     conversationId,
     disabled = false,
-    onSelect = () => {}
+    onSelect = () => {},
+    search = searchZaloStickers
   }: {
     conversationId: number;
     disabled?: boolean;
     onSelect?: (sticker: ZaloStickerReference) => void;
+    search?: (conversationId: number, query: string, limit: number) => Promise<ZaloStickerReference[]>;
   } = $props();
 
   let query = $state('');
@@ -25,7 +29,7 @@
     error = null;
 
     try {
-      const results = await searchZaloStickers(conversationId, searchTerm.trim(), 40);
+      const results = await search(conversationId, searchTerm.trim(), 40);
       if (reqId === currentRequestId) {
         stickers = results;
       }
@@ -52,6 +56,11 @@
   $effect(() => {
     performSearch('');
   });
+
+  onDestroy(() => {
+    currentRequestId += 1;
+    if (debounceTimer) clearTimeout(debounceTimer);
+  });
 </script>
 
 <div class="sticker-picker-container" data-testid="zalo-sticker-picker">
@@ -76,15 +85,18 @@
   {:else}
     <div class="sticker-grid" data-testid="sticker-grid">
       {#each stickers as sticker (sticker.stickerId)}
-        <button
-          type="button"
-          class="sticker-item"
-          {disabled}
-          onclick={() => onSelect(sticker)}
-          data-testid="sticker-item-btn"
-        >
-          <img src={sticker.url} alt={`Sticker ${sticker.stickerId}`} loading="lazy" />
-        </button>
+        {@const safeUrl = safeConversationUrl(sticker.url)}
+        {#if safeUrl}
+          <button
+            type="button"
+            class="sticker-item"
+            {disabled}
+            onclick={() => onSelect(sticker)}
+            data-testid="sticker-item-btn"
+          >
+            <img src={safeUrl} alt={`Sticker ${sticker.stickerId}`} loading="lazy" />
+          </button>
+        {/if}
       {/each}
     </div>
   {/if}

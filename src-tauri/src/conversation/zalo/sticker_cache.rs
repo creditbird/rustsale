@@ -22,6 +22,12 @@ pub struct ZaloStickerCache {
     access_order: VecDeque<CacheKey>,
 }
 
+impl Default for ZaloStickerCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ZaloStickerCache {
     pub fn new() -> Self {
         Self {

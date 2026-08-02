@@ -67,13 +67,15 @@ impl ConversationAttachmentStager {
         conversation_id: i64,
         paths: Vec<String>,
     ) -> ConversationResult<Vec<StagedAttachmentResponse>> {
-        let mut results = Vec::new();
+        let mut sources = Vec::with_capacity(paths.len());
+        let mut batch_bytes = 0_u64;
+
         for source_path_str in paths {
-            let source_path = Path::new(&source_path_str);
-            let metadata = fs::symlink_metadata(source_path).map_err(|e| {
+            let source_path = PathBuf::from(&source_path_str);
+            let metadata = fs::symlink_metadata(&source_path).map_err(|_| {
                 ConversationError::new(
                     ConversationErrorCode::InvalidRequest,
-                    format!("Failed to stat file {}: {}", source_path_str, e),
+                    "Failed to access attachment source",
                 )
             })?;
 
@@ -92,40 +94,56 @@ impl ConversationAttachmentStager {
                 ));
             }
 
-            let current_spool_bytes = self.repository.active_spool_bytes().map_err(|e| {
-                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            batch_bytes = batch_bytes.checked_add(file_size).ok_or_else(|| {
+                ConversationError::new(
+                    ConversationErrorCode::FileTooLarge,
+                    "Attachment batch exceeds the 100 MiB application limit",
+                )
             })?;
-
-            if current_spool_bytes + file_size > MAX_SPOOL_BYTES {
+            if batch_bytes > MAX_BATCH_BYTES {
                 return Err(ConversationError::new(
                     ConversationErrorCode::FileTooLarge,
-                    "Staging spool quota of 1 GiB exceeded",
+                    "Attachment batch exceeds the 100 MiB application limit",
                 ));
             }
 
+            let file_name = source_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("attachment")
+                .to_string();
+            sources.push((source_path, file_name, file_size));
+        }
+
+        let current_spool_bytes = self.repository.active_spool_bytes().map_err(|error| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, error.to_string())
+        })?;
+        if current_spool_bytes.saturating_add(batch_bytes) > MAX_SPOOL_BYTES {
+            return Err(ConversationError::new(
+                ConversationErrorCode::FileTooLarge,
+                "Staging spool quota of 1 GiB exceeded",
+            ));
+        }
+
+        let mut results: Vec<StagedAttachmentResponse> = Vec::new();
+        for (source_path, file_name, file_size) in sources {
             let staged_id = format!(
-                "stage-{}",
-                format!(
-                    "{:016x}{:016x}",
-                    rand::random::<u64>(),
-                    rand::random::<u64>()
-                )
+                "stage-{:016x}{:016x}",
+                rand::random::<u64>(),
+                rand::random::<u64>()
             );
             let spool_filename = format!("{}.dat", staged_id);
             let target_path = self.root.join(&spool_filename);
 
-            fs::copy(source_path, &target_path).map_err(|e| {
-                ConversationError::new(
+            if let Err(error) = fs::copy(&source_path, &target_path) {
+                for staged in &results {
+                    let _ = self.discard_sync(&staged.staged_attachment_id);
+                }
+                return Err(ConversationError::new(
                     ConversationErrorCode::ProviderFailure,
-                    format!("Failed to copy file to spool: {}", e),
-                )
-            })?;
-
-            let file_name = source_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("attachment")
-                .to_string();
+                    format!("Failed to copy attachment into the staging spool: {error}"),
+                ));
+            }
 
             let staged = match self.inspect_and_register(
                 conversation_id,
@@ -137,6 +155,9 @@ impl ConversationAttachmentStager {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = fs::remove_file(&target_path);
+                    for staged in &results {
+                        let _ = self.discard_sync(&staged.staged_attachment_id);
+                    }
                     return Err(e);
                 }
             };
@@ -199,12 +220,9 @@ impl ConversationAttachmentStager {
         }
 
         let staged_id = format!(
-            "stage-{}",
-            format!(
-                "{:016x}{:016x}",
-                rand::random::<u64>(),
-                rand::random::<u64>()
-            )
+            "stage-{:016x}{:016x}",
+            rand::random::<u64>(),
+            rand::random::<u64>()
         );
         let spool_filename = format!("{}.dat", staged_id);
         let target_path = self.root.join(&spool_filename);
@@ -244,7 +262,7 @@ impl ConversationAttachmentStager {
             .flatten()
             .map(|kind| kind.mime_type().to_string())
             .unwrap_or_else(|| {
-                let ext = target_path
+                let ext = Path::new(file_name)
                     .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
@@ -300,12 +318,9 @@ impl ConversationAttachmentStager {
 
         let record = StagedAttachmentRecord {
             id: format!(
-                "record-{}",
-                format!(
-                    "{:016x}{:016x}",
-                    rand::random::<u64>(),
-                    rand::random::<u64>()
-                )
+                "record-{:016x}{:016x}",
+                rand::random::<u64>(),
+                rand::random::<u64>()
             ),
             conversation_id,
             staged_attachment_id: staged_id.to_string(),

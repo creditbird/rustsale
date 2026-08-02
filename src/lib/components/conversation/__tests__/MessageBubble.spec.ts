@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
-import { afterEach, describe, expect, test } from 'bun:test';
-import { cleanup, render, screen } from '@testing-library/svelte';
-import type { ConversationMessage } from '$lib/services/conversationService';
+import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
+import type { ConversationCapabilities, ConversationMessage } from '$lib/services/conversationService';
 import MessageBubble from '../MessageBubble.svelte';
 
 describe('MessageBubble Component', () => {
@@ -19,6 +19,7 @@ describe('MessageBubble Component', () => {
     senderDisplayName: 'Trần Văn B',
     direction: 'inbound',
     providerMessageId: 'p-101',
+    providerClientMessageId: 'client-101',
     contentType: 'text',
     textContent: 'Xin chào shop, em muốn tư vấn sản phẩm',
     content: {},
@@ -30,7 +31,23 @@ describe('MessageBubble Component', () => {
     attachments: [],
     replyTarget: null,
     reactions: [],
+    batchIndex: null,
     sendBatch: null
+  };
+
+  const richCapabilities: ConversationCapabilities = {
+    maxTextLength: 2000,
+    maxAttachmentsPerBatch: 10,
+    maxFileSizeBytes: 50 * 1024 * 1024,
+    supportedImageTypes: ['image/png'],
+    supportedVideoTypes: ['video/mp4'],
+    supportedAudioTypes: ['audio/mpeg'],
+    supportedDocTypes: ['application/pdf'],
+    supportsStickers: true,
+    supportsQuoteReply: true,
+    supportsRecall: true,
+    recallWindowSeconds: 86400,
+    supportsReactions: true
   };
 
   test('inbound text shows sender, channel, account, and Vietnamese-localized timestamp', () => {
@@ -92,6 +109,16 @@ describe('MessageBubble Component', () => {
       status: 'removed',
       removedAt: '2026-07-31T15:00:00Z',
       textContent: 'Nội dung bí mật đã bị xóa'
+      ,reactions: [
+        {
+          reactionIcon: '❤️',
+          count: 1,
+          includesMe: true,
+          actors: [
+            { identityId: null, externalId: 'own-zuid', displayName: null, avatarUrl: null }
+          ]
+        }
+      ]
     };
 
     render(MessageBubble, {
@@ -103,6 +130,51 @@ describe('MessageBubble Component', () => {
 
     expect(screen.getByText('Tin nhắn đã bị xóa')).toBeTruthy();
     expect(screen.queryByText('Nội dung bí mật đã bị xóa')).toBeNull();
+    expect(screen.queryByTestId('message-reaction-summary')).toBeNull();
+  });
+
+  test('reply and recall eligibility are capability and provider-ID driven', async () => {
+    const onReply = mock(() => {});
+    const onRecall = mock(() => {});
+    const outbound: ConversationMessage = {
+      ...baseMessage,
+      direction: 'outbound',
+      status: 'sent',
+      occurredAt: new Date().toISOString()
+    };
+    render(MessageBubble, {
+      message: outbound,
+      capabilities: richCapabilities,
+      onReply,
+      onRecall
+    });
+
+    await fireEvent.click(screen.getByTestId('message-actions-trigger'));
+    expect(screen.getByText('Trả lời')).toBeTruthy();
+    expect(screen.getByText('Thu hồi')).toBeTruthy();
+    await fireEvent.click(screen.getByText('Thu hồi'));
+    expect(onRecall).toHaveBeenCalledWith(outbound);
+  });
+
+  test('right-click and Shift+F10 open the same explicit actions', async () => {
+    const onReply = mock(() => {});
+    const { container } = render(MessageBubble, {
+      message: baseMessage,
+      capabilities: richCapabilities,
+      onReply
+    });
+    const bubble = container.querySelector('[data-message-id="101"]') as HTMLElement;
+
+    await fireEvent.contextMenu(bubble);
+    await fireEvent.click(screen.getByText('Trả lời'));
+    expect(onReply).toHaveBeenCalledTimes(1);
+
+    await fireEvent.keyDown(screen.getByTestId('message-actions-trigger'), {
+      key: 'F10',
+      shiftKey: true
+    });
+    await fireEvent.click(screen.getByText('Trả lời'));
+    expect(onReply).toHaveBeenCalledTimes(2);
   });
 
   test('contentType = email renders a card using content.subject, content.from, content.to without {@html}', () => {

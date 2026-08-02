@@ -536,9 +536,7 @@ async fn run_session_loop(
 
         // 6.5 Run initial profile enrichment sync for unresolved identities
         if let Some(acc_id) = account_id {
-            let is_idle = profile_sync_handle
-                .as_ref()
-                .map_or(true, |h| h.is_finished());
+            let is_idle = profile_sync_handle.as_ref().is_none_or(|h| h.is_finished());
             if is_idle {
                 let service = service.clone();
                 let client = client.clone();
@@ -581,7 +579,7 @@ async fn run_session_loop(
                 }
                 _ = profile_ticker.tick() => {
                     if let Some(acc_id) = account_id {
-                        let is_idle = profile_sync_handle.as_ref().map_or(true, |h| h.is_finished());
+                        let is_idle = profile_sync_handle.as_ref().is_none_or(|h| h.is_finished());
                         if is_idle {
                             let service = service.clone();
                             let client = client.clone();

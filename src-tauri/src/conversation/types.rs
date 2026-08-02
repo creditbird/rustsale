@@ -25,6 +25,7 @@ impl Channel {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> std::result::Result<Self, String> {
         match s {
             "zalo" => Ok(Self::Zalo),
@@ -71,6 +72,7 @@ impl MessageDirection {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> std::result::Result<Self, String> {
         match s {
             "inbound" => Ok(Self::Inbound),
@@ -108,6 +110,7 @@ impl MessageStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> std::result::Result<Self, String> {
         match s {
             "queued" => Ok(Self::Queued),
@@ -145,6 +148,7 @@ pub struct ConversationAttachment {
     pub mime_type: String,
     pub file_name: Option<String>,
     pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing)]
     pub local_path: Option<String>,
     pub remote_url: Option<String>,
     pub thumbnail_url: Option<String>,
@@ -168,7 +172,8 @@ pub struct ConversationReplyTarget {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationReactionActor {
-    pub identity_id: i64,
+    pub identity_id: Option<i64>,
+    pub external_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
 }
@@ -273,6 +278,7 @@ pub struct ConversationMessage {
     pub sender_display_name: Option<String>,
     pub direction: MessageDirection,
     pub provider_message_id: Option<String>,
+    pub provider_client_message_id: Option<String>,
     pub content_type: String,
     pub text_content: Option<String>,
     pub content: serde_json::Value,
@@ -284,6 +290,7 @@ pub struct ConversationMessage {
     pub attachments: Vec<ConversationAttachment>,
     pub reply_target: Option<ConversationReplyTarget>,
     pub reactions: Vec<ConversationReactionGroup>,
+    pub batch_index: Option<u32>,
     pub send_batch: Option<ConversationSendBatchSummary>,
 }
 
@@ -367,6 +374,7 @@ pub struct ConversationAccountRuntime {
     pub channel: Channel,
     pub provider_account_key: String,
     pub display_name: Option<String>,
+    pub capabilities: ConversationCapabilities,
     pub status: AccountConnectionStatus,
     pub last_connected_at: Option<String>,
     pub last_error: Option<String>,
@@ -422,6 +430,27 @@ pub struct ConversationCapabilities {
 }
 
 impl ConversationCapabilities {
+    pub fn text_only() -> Self {
+        Self {
+            max_text_length: 2000,
+            max_attachments_per_batch: 0,
+            max_file_size_bytes: 0,
+            supported_image_types: Vec::new(),
+            supported_video_types: Vec::new(),
+            supported_audio_types: Vec::new(),
+            supported_doc_types: Vec::new(),
+            supports_stickers: false,
+            supports_quote_reply: false,
+            supports_recall: false,
+            recall_window_seconds: None,
+            supports_reactions: false,
+        }
+    }
+
+    pub fn from_json(value: &str) -> Self {
+        serde_json::from_str(value).unwrap_or_else(|_| Self::text_only())
+    }
+
     pub fn zalo_phase_one() -> Self {
         Self {
             max_text_length: 2000,
@@ -625,6 +654,7 @@ mod tests {
                 channel: Channel::Zalo,
                 provider_account_key: "imei-a".to_string(),
                 display_name: Some("Sale 01".to_string()),
+                capabilities: ConversationCapabilities::zalo_phase_one(),
                 status: AccountConnectionStatus::Connected,
                 last_connected_at: Some("2026-07-31T00:00:00.000Z".to_string()),
                 last_error: None,
@@ -634,5 +664,26 @@ mod tests {
         let json = serde_json::to_value(status).unwrap();
         assert_eq!(json["accounts"][0]["channelAccountId"], 1);
         assert_eq!(json["accounts"][0]["status"], "connected");
+    }
+
+    #[test]
+    fn conversation_attachment_does_not_serialize_local_spool_path() {
+        let attachment = ConversationAttachment {
+            id: 1,
+            media_type: "image".to_string(),
+            mime_type: "image/png".to_string(),
+            file_name: Some("safe.png".to_string()),
+            size_bytes: Some(4),
+            local_path: Some("/home/user/private/attachments-spool/stage-a.dat".to_string()),
+            remote_url: Some("https://cdn.example/safe.png".to_string()),
+            thumbnail_url: None,
+            width: Some(1),
+            height: Some(1),
+            duration_seconds: None,
+        };
+
+        let json = serde_json::to_value(attachment).unwrap();
+        assert!(json.get("localPath").is_none());
+        assert_eq!(json["remoteUrl"], "https://cdn.example/safe.png");
     }
 }

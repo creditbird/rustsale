@@ -6,6 +6,8 @@ import {
   mergeMessages,
   mergeTimelinePage,
   nearestSurvivingAnchor,
+  expandWindowForBatchBoundaries,
+  groupTimelineItems,
   TimelineCache,
   MAX_CACHED_MESSAGES,
   MAX_CHANNEL_VARIANTS,
@@ -28,6 +30,7 @@ function createMessage(
     senderDisplayName: 'Customer',
     direction: 'inbound',
     providerMessageId: `prov-${id}`,
+    providerClientMessageId: `client-${id}`,
     contentType: 'text',
     textContent,
     content: {},
@@ -39,9 +42,47 @@ function createMessage(
     attachments: [],
     replyTarget: null,
     reactions: [],
+    batchIndex: null,
     sendBatch: null
   };
 }
+
+describe('batch timeline helpers', () => {
+  it('groups only adjacent equal batch IDs and sorts parts without mutating input', () => {
+    const first = createMessage(1, '2026-08-02T10:00:00Z');
+    first.sendBatch = { sendBatchId: 'batch-a', status: 'queued', totalParts: 2, sentParts: 0, failedParts: 0 };
+    (first as ConversationMessage & { batchIndex: number }).batchIndex = 1;
+    const second = createMessage(2, '2026-08-02T10:00:01Z');
+    second.sendBatch = { sendBatchId: 'batch-a', status: 'queued', totalParts: 2, sentParts: 0, failedParts: 0 };
+    (second as ConversationMessage & { batchIndex: number }).batchIndex = 0;
+    const middle = createMessage(3, '2026-08-02T10:00:02Z');
+    const reused = createMessage(4, '2026-08-02T10:00:03Z');
+    reused.sendBatch = { sendBatchId: 'batch-a', status: 'queued', totalParts: 1, sentParts: 0, failedParts: 0 };
+    (reused as ConversationMessage & { batchIndex: number }).batchIndex = 0;
+    const input = [first, second, middle, reused];
+
+    const grouped = groupTimelineItems(input);
+
+    expect(grouped.map((item) => item.kind)).toEqual(['batch', 'message', 'batch']);
+    expect(grouped[0].kind === 'batch' ? grouped[0].messages.map((message) => message.id) : []).toEqual([2, 1]);
+    expect(input.map((message) => message.id)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('expands an end-exclusive virtual window to contiguous batch boundaries', () => {
+    const items = Array.from({ length: 7 }, (_, index) =>
+      createMessage(index + 1, `2026-08-02T10:00:0${index}Z`)
+    );
+    for (const index of [0, 1, 2]) {
+      items[index].sendBatch = { sendBatchId: 'batch-a', status: 'queued', totalParts: 3, sentParts: 0, failedParts: 0 };
+    }
+    for (const index of [4, 5, 6]) {
+      items[index].sendBatch = { sendBatchId: 'batch-b', status: 'queued', totalParts: 3, sentParts: 0, failedParts: 0 };
+    }
+
+    expect(expandWindowForBatchBoundaries(items, 1, 6)).toEqual({ start: 0, end: 7 });
+    expect(expandWindowForBatchBoundaries(items, 3, 4)).toEqual({ start: 3, end: 4 });
+  });
+});
 
 describe('timelineState', () => {
   describe('constants', () => {

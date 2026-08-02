@@ -1,15 +1,32 @@
 <script lang="ts">
-  import type { ConversationMessage, MessageStatus } from '$lib/services/conversationService';
+  import type {
+    ConversationCapabilities,
+    ConversationMessage,
+    MessageStatus
+  } from '$lib/services/conversationService';
   import MessageReplyPreview from './MessageReplyPreview.svelte';
   import MessageContentRenderer from './MessageContentRenderer.svelte';
+  import MessageActionsMenu from './MessageActionsMenu.svelte';
+  import MessageReactionSummary from './MessageReactionSummary.svelte';
+  import { safeConversationUrl } from './messageMedia';
 
   let {
     message,
-    isGroup = false
+    isGroup = false,
+    showStatus = true,
+    capabilities,
+    onReply = () => {},
+    onRecall = () => {}
   }: {
     message: ConversationMessage;
     isGroup?: boolean;
+    showStatus?: boolean;
+    capabilities?: ConversationCapabilities;
+    onReply?: (message: ConversationMessage) => void;
+    onRecall?: (message: ConversationMessage) => void;
   } = $props();
+
+  let actionsOpen = $state(false);
 
   function formatTimestamp(isoString: string): string {
     try {
@@ -43,35 +60,6 @@
     }
   }
 
-  function isValidMediaUrl(url: unknown): boolean {
-    if (typeof url !== 'string') return false;
-    const trimmed = url.trim();
-    if (!trimmed) return false;
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return true;
-    if (trimmed.startsWith('asset://') || trimmed.startsWith('asset:')) return true;
-    if (
-      trimmed.startsWith('http://asset.localhost') ||
-      trimmed.startsWith('http://tauri.localhost') ||
-      trimmed.startsWith('tauri:')
-    ) {
-      return true;
-    }
-    if (trimmed.startsWith('data:')) {
-      return true;
-    }
-    if (
-      trimmed.startsWith('/') ||
-      trimmed.startsWith('./') ||
-      trimmed.startsWith('../') ||
-      trimmed.startsWith('file://') ||
-      trimmed.startsWith('file:') ||
-      trimmed.startsWith('blob:')
-    ) {
-      return true;
-    }
-    return false;
-  }
-
   let isOutbound = $derived(message.direction === 'outbound');
   let isRemoved = $derived(message.status === 'removed' || message.removedAt !== null);
 
@@ -88,11 +76,6 @@
   );
 
   let isEmail = $derived(message.contentType === 'email');
-  let isImage = $derived(
-    message.contentType === 'image' || message.contentType.startsWith('image/')
-  );
-  let isText = $derived(message.contentType === 'text');
-
   let displayText = $derived(
     typeof message.textContent === 'string' && message.textContent.trim() !== ''
       ? message.textContent
@@ -124,11 +107,65 @@
         ? message.content.to
         : null
   );
+
+  let copyValue = $derived.by(() => {
+    if (message.textContent?.trim()) return message.textContent.trim();
+    const contentUrl = safeConversationUrl(mediaUrl);
+    if (contentUrl) return contentUrl;
+    for (const attachment of message.attachments) {
+      const attachmentUrl = safeConversationUrl(attachment.remoteUrl);
+      if (attachmentUrl) return attachmentUrl;
+    }
+    return null;
+  });
+  let hasBothProviderIds = $derived(
+    Boolean(message.providerMessageId && message.providerClientMessageId)
+  );
+  let canReply = $derived(
+    !isRemoved && Boolean(capabilities?.supportsQuoteReply) && hasBothProviderIds
+  );
+  let canCopy = $derived(!isRemoved && copyValue !== null);
+  let withinRecallWindow = $derived.by(() => {
+    const windowSeconds = capabilities?.recallWindowSeconds;
+    if (windowSeconds === null || windowSeconds === undefined) return true;
+    const occurredAt = new Date(message.occurredAt).getTime();
+    if (!Number.isFinite(occurredAt)) return false;
+    return Date.now() - occurredAt <= windowSeconds * 1000;
+  });
+  let canRecall = $derived(
+    isOutbound &&
+      !isRemoved &&
+      Boolean(capabilities?.supportsRecall) &&
+      hasBothProviderIds &&
+      ['sent', 'delivered', 'read'].includes(message.status) &&
+      withinRecallWindow
+  );
+
+  async function handleCopy(): Promise<void> {
+    if (!copyValue || !navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(copyValue).catch(() => {});
+  }
+
+  function registerContextMenu(node: HTMLElement) {
+    const openActions = (event: MouseEvent) => {
+      event.preventDefault();
+      actionsOpen = true;
+    };
+    node.addEventListener('contextmenu', openActions);
+    return {
+      destroy() {
+        node.removeEventListener('contextmenu', openActions);
+      }
+    };
+  }
 </script>
 
 <div
   class="flex w-full my-1.5 {isOutbound ? 'justify-end' : 'justify-start'}"
   data-message-id={message.id}
+  role="group"
+  aria-label={`Tin nhắn ${message.id}`}
+  use:registerContextMenu
 >
   <div
     class="max-w-[80%] sm:max-w-[70%] rounded-2xl p-3 shadow-xs transition-colors text-sm font-sans space-y-1.5 {isOutbound
@@ -136,7 +173,8 @@
       : 'bg-muted/60 text-foreground border border-border/50 rounded-tl-xs'}"
   >
     <!-- Header info: Sender name / Channel / Account -->
-    <div class="flex items-center gap-2 text-xs opacity-75 font-medium flex-wrap">
+    <div class="flex items-start justify-between gap-2">
+      <div class="flex items-center gap-2 text-xs opacity-75 font-medium flex-wrap">
       {#if !isOutbound && (isGroup || message.senderDisplayName)}
         <span class="font-semibold text-foreground/90" data-slot="sender-name">
           {message.senderDisplayName || 'Khách hàng'}
@@ -154,6 +192,16 @@
           {message.accountDisplayName}
         </span>
       {/if}
+      </div>
+      <MessageActionsMenu
+        bind:open={actionsOpen}
+        {canReply}
+        {canCopy}
+        {canRecall}
+        onReply={() => onReply(message)}
+        onCopy={() => void handleCopy()}
+        onRecall={() => onRecall(message)}
+      />
     </div>
 
     <!-- Message Content Section -->
@@ -209,10 +257,14 @@
       <MessageContentRenderer {message} />
     {/if}
 
+    {#if !isRemoved && message.reactions.length > 0}
+      <MessageReactionSummary groups={message.reactions} />
+    {/if}
+
     <!-- Footer info: Timestamp & Status (for outbound) -->
     <div class="flex items-center justify-end gap-1.5 text-[11px] opacity-70 mt-1 select-none">
       <span>{formatTimestamp(message.occurredAt)}</span>
-      {#if isOutbound && !isRemoved}
+      {#if showStatus && isOutbound && !isRemoved}
         <span class="font-medium" data-slot="status-label">
           · {getStatusLabel(message.status)}
         </span>

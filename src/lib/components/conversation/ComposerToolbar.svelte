@@ -1,10 +1,14 @@
 <script lang="ts">
+  import type { ConversationCapabilities } from '$lib/services/conversationService';
+
   let {
+    capabilities,
     disabled = false,
     onToggleEmoji = () => {},
     onToggleSticker = () => {},
     onPickAttachment = () => {}
   }: {
+    capabilities: ConversationCapabilities;
     disabled?: boolean;
     onToggleEmoji?: () => void;
     onToggleSticker?: () => void;
@@ -24,27 +28,31 @@
     😊
   </button>
 
-  <button
-    type="button"
-    class="toolbar-btn"
-    {disabled}
-    aria-label="Toggle sticker picker"
-    onclick={onToggleSticker}
-    data-testid="toggle-sticker-btn"
-  >
-    🏷️
-  </button>
+  {#if capabilities.supportsStickers}
+    <button
+      type="button"
+      class="toolbar-btn"
+      {disabled}
+      aria-label="Toggle sticker picker"
+      onclick={onToggleSticker}
+      data-testid="toggle-sticker-btn"
+    >
+      🏷️
+    </button>
+  {/if}
 
-  <button
-    type="button"
-    class="toolbar-btn"
-    {disabled}
-    aria-label="Attach file"
-    onclick={onPickAttachment}
-    data-testid="attach-file-btn"
-  >
-    📎
-  </button>
+  {#if capabilities.maxAttachmentsPerBatch > 0}
+    <button
+      type="button"
+      class="toolbar-btn"
+      {disabled}
+      aria-label="Attach file"
+      onclick={onPickAttachment}
+      data-testid="attach-file-btn"
+    >
+      📎
+    </button>
+  {/if}
 </div>
 
 <style>

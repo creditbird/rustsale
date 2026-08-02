@@ -476,17 +476,19 @@ async fn test_fake_client_captures_provider_send_request_and_recall() {
     let res = client.send_part(req.clone()).await.unwrap();
     assert_eq!(res.provider_client_message_id, "1785491200123");
 
-    let captured = client.captured_part_requests.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].provider_client_message_id, "1785491200123");
-    assert!(matches!(
-        captured[0].content,
-        ProviderOutboundContent::Attachment { .. }
-    ));
-    assert_eq!(
-        captured[0].quote.as_ref().unwrap().provider_message_id,
-        "p-msg-1"
-    );
+    {
+        let captured = client.captured_part_requests.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].provider_client_message_id, "1785491200123");
+        assert!(matches!(
+            captured[0].content,
+            ProviderOutboundContent::Attachment { .. }
+        ));
+        assert_eq!(
+            captured[0].quote.as_ref().unwrap().provider_message_id,
+            "p-msg-1"
+        );
+    }
 
     let recall_req = ProviderRecallRequest {
         external_thread_id: "thread-1".into(),
