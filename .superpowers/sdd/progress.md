@@ -1,0 +1,22 @@
+# Zalo Rich Chat Phase 2A Interactions Progress Ledger
+
+- Task 0: Verify Phase 1 and Establish Baseline — [x] complete
+- Task 1: Capture the Phase 2A Provider Contract — [x] complete
+- Task 2: Extend Vendored Zalo Mutation Contracts — [x] complete
+- Task 3: Add Phase 2A Contracts, Capabilities, and Errors — [x] complete
+- Task 4: Add the Additive Phase 2A Migration — [x] complete
+- Task 5: Implement Quick Template Repository and Ranking — [x] complete
+- Task 6: Add Quick Template Service and Commands — [x] complete
+- Task 7: Normalize, Validate, and Project Mentions — [x] complete
+- Task 8: Send Group Mentions Through the Batch Worker — [x] complete
+- Task 9: Implement Reaction Ledger and Echo Reconciliation — [x] complete
+- Task 10: Add Reaction Provider Service and Command — [x] complete
+- Task 11: Enqueue Native Forward Operations Atomically — [x] complete
+- Task 12: Dispatch Forward Parts and Recalculate Status — [x] complete
+- Task 13: Register Commands and Startup Recovery — [x] complete
+- Task 14: Add Frontend Contracts and IPC Wrappers — [x] complete
+- Task 15: Build Quick Template State, Popup, and Manager — [x] complete
+- Task 16: Build Mention State, Popup, and Rendering — [x] complete
+- Task 17: Add Reaction Write UI — [x] complete
+- Task 18: Add Native Forward Dialog and Target Results — [x] complete
+- Task 19: Full Verification and Live Gate — [x] complete

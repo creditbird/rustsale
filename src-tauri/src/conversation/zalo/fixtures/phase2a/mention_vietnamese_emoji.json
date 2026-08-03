@@ -1,0 +1,12 @@
+{
+  "msg_id": "msg-men-001",
+  "cli_msg_id": "cli-men-001",
+  "text": "Chào @Nguyễn Văn A 👋! Cảm ơn bạn.",
+  "mentions": [
+    {
+      "target_uid": "user-201",
+      "utf16_offset": 5,
+      "utf16_len": 13
+    }
+  ]
+}

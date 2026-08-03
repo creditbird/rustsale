@@ -2,31 +2,46 @@
   import type {
     ConversationCapabilities,
     ConversationMessage,
+    ConversationReactionCode,
     MessageStatus
   } from '$lib/services/conversationService';
   import MessageReplyPreview from './MessageReplyPreview.svelte';
   import MessageContentRenderer from './MessageContentRenderer.svelte';
   import MessageActionsMenu from './MessageActionsMenu.svelte';
   import MessageReactionSummary from './MessageReactionSummary.svelte';
+  import MessageReactionPicker from './MessageReactionPicker.svelte';
   import { safeConversationUrl } from './messageMedia';
+  import { Smile } from 'lucide-svelte';
 
   let {
     message,
     isGroup = false,
     showStatus = true,
     capabilities,
+    pendingReactions = [],
     onReply = () => {},
-    onRecall = () => {}
+    onRecall = () => {},
+    onForward = () => {},
+    onToggleReaction = () => {}
   }: {
     message: ConversationMessage;
     isGroup?: boolean;
     showStatus?: boolean;
     capabilities?: ConversationCapabilities;
+    pendingReactions?: ConversationReactionCode[];
     onReply?: (message: ConversationMessage) => void;
     onRecall?: (message: ConversationMessage) => void;
+    onForward?: (message: ConversationMessage) => void;
+    onToggleReaction?: (
+      message: ConversationMessage,
+      code: ConversationReactionCode,
+      currentActive?: boolean
+    ) => void;
   } = $props();
 
   let actionsOpen = $state(false);
+  let showPicker = $state(false);
+  let isHovered = $state(false);
 
   function formatTimestamp(isoString: string): string {
     try {
@@ -57,6 +72,33 @@
         return 'Thất bại';
       default:
         return status;
+    }
+  }
+
+  function iconToCode(icon: string): ConversationReactionCode {
+    switch (icon) {
+      case '❤️':
+      case 'heart':
+        return 'heart';
+      case '👍':
+      case 'like':
+        return 'like';
+      case '😆':
+      case '😄':
+      case 'haha':
+        return 'haha';
+      case '😮':
+      case 'wow':
+        return 'wow';
+      case '😭':
+      case '😢':
+      case 'cry':
+        return 'cry';
+      case '😡':
+      case 'angry':
+        return 'angry';
+      default:
+        return 'like';
     }
   }
 
@@ -118,6 +160,7 @@
     }
     return null;
   });
+
   let hasBothProviderIds = $derived(
     Boolean(message.providerMessageId && message.providerClientMessageId)
   );
@@ -140,6 +183,23 @@
       ['sent', 'delivered', 'read'].includes(message.status) &&
       withinRecallWindow
   );
+  let canReact = $derived(
+    !isRemoved && (message.actions ? message.actions.react : Boolean(capabilities?.reactions?.enabled ?? capabilities?.supportsReactions ?? true))
+  );
+  let canForward = $derived(
+    !isRemoved && (message.actions ? message.actions.forward : Boolean(capabilities?.forward?.enabled ?? true))
+  );
+
+  let activeReactionCodes = $derived.by(() => {
+    const codes: ConversationReactionCode[] = [];
+    for (const group of message.reactions) {
+      if (group.includesMe) {
+        const code = iconToCode(group.reactionIcon);
+        if (!codes.includes(code)) codes.push(code);
+      }
+    }
+    return codes;
+  });
 
   async function handleCopy(): Promise<void> {
     if (!copyValue || !navigator.clipboard?.writeText) return;
@@ -158,50 +218,92 @@
       }
     };
   }
+
+  function handleSelectReaction(code: ConversationReactionCode, activeState: boolean) {
+    showPicker = false;
+    onToggleReaction(message, code, activeState);
+  }
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="flex w-full my-1.5 {isOutbound ? 'justify-end' : 'justify-start'}"
+  class="group/bubble flex w-full my-1.5 {isOutbound ? 'justify-end' : 'justify-start'}"
   data-message-id={message.id}
   role="group"
   aria-label={`Tin nhắn ${message.id}`}
   use:registerContextMenu
+  onmouseenter={() => (isHovered = true)}
+  onmouseleave={() => {
+    isHovered = false;
+  }}
 >
   <div
-    class="max-w-[80%] sm:max-w-[70%] rounded-2xl p-3 shadow-xs transition-colors text-sm font-sans space-y-1.5 {isOutbound
+    class="relative max-w-[80%] sm:max-w-[70%] rounded-2xl p-3 shadow-xs transition-colors text-sm font-sans space-y-1.5 {isOutbound
       ? 'bg-primary text-primary-foreground rounded-tr-xs'
       : 'bg-muted/60 text-foreground border border-border/50 rounded-tl-xs'}"
   >
+    <!-- Floating reaction picker popover -->
+    {#if showPicker}
+      <div class="absolute bottom-full left-0 z-40 mb-1">
+        <MessageReactionPicker
+          messageId={message.id}
+          activeReactions={activeReactionCodes}
+          disabledReactions={pendingReactions}
+          onSelect={handleSelectReaction}
+          onClose={() => (showPicker = false)}
+        />
+      </div>
+    {/if}
+
     <!-- Header info: Sender name / Channel / Account -->
     <div class="flex items-start justify-between gap-2">
       <div class="flex items-center gap-2 text-xs opacity-75 font-medium flex-wrap">
-      {#if !isOutbound && (isGroup || message.senderDisplayName)}
-        <span class="font-semibold text-foreground/90" data-slot="sender-name">
-          {message.senderDisplayName || 'Khách hàng'}
-        </span>
-      {/if}
+        {#if !isOutbound && (isGroup || message.senderDisplayName)}
+          <span class="font-semibold text-foreground/90" data-slot="sender-name">
+            {message.senderDisplayName || 'Khách hàng'}
+          </span>
+        {/if}
 
-      {#if message.channel}
-        <span class="capitalize px-1.5 py-0.5 rounded-sm bg-background/20 text-[10px] uppercase tracking-wider font-semibold">
-          {message.channel}
-        </span>
-      {/if}
+        {#if message.channel}
+          <span class="capitalize px-1.5 py-0.5 rounded-sm bg-background/20 text-[10px] uppercase tracking-wider font-semibold">
+            {message.channel}
+          </span>
+        {/if}
 
-      {#if message.accountDisplayName}
-        <span class="truncate max-w-[150px]" title={message.accountDisplayName}>
-          {message.accountDisplayName}
-        </span>
-      {/if}
+        {#if message.accountDisplayName}
+          <span class="truncate max-w-[150px]" title={message.accountDisplayName}>
+            {message.accountDisplayName}
+          </span>
+        {/if}
       </div>
-      <MessageActionsMenu
-        bind:open={actionsOpen}
-        {canReply}
-        {canCopy}
-        {canRecall}
-        onReply={() => onReply(message)}
-        onCopy={() => void handleCopy()}
-        onRecall={() => onRecall(message)}
-      />
+
+      <div class="flex items-center gap-1">
+        {#if canReact}
+          <button
+            type="button"
+            aria-label="Thả cảm xúc"
+            title="Thả cảm xúc"
+            class="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground opacity-0 group-hover/bubble:opacity-100 focus:opacity-100 transition-opacity"
+            onclick={() => (showPicker = !showPicker)}
+          >
+            <Smile class="size-4" />
+          </button>
+        {/if}
+
+        <MessageActionsMenu
+          bind:open={actionsOpen}
+          {canReply}
+          {canCopy}
+          {canRecall}
+          {canReact}
+          {canForward}
+          onReply={() => onReply(message)}
+          onCopy={() => void handleCopy()}
+          onRecall={() => onRecall(message)}
+          onForward={() => onForward(message)}
+          onToggleReaction={(code) => onToggleReaction(message, code)}
+        />
+      </div>
     </div>
 
     <!-- Message Content Section -->
@@ -258,7 +360,12 @@
     {/if}
 
     {#if !isRemoved && message.reactions.length > 0}
-      <MessageReactionSummary groups={message.reactions} />
+      <MessageReactionSummary
+        groups={message.reactions}
+        {canReact}
+        {pendingReactions}
+        onToggleReaction={(code, currentActive) => onToggleReaction(message, code, currentActive)}
+      />
     {/if}
 
     <!-- Footer info: Timestamp & Status (for outbound) -->

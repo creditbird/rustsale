@@ -1,0 +1,50 @@
+[
+  {
+    "msg_id": "msg-fwd-101",
+    "cli_msg_id": "cli-fwd-101",
+    "content_type": "text",
+    "content": "Kế hoạch kinh doanh Q3",
+    "is_forwarded": true,
+    "original_msg_id": "msg-orig-101"
+  },
+  {
+    "msg_id": "msg-fwd-102",
+    "cli_msg_id": "cli-fwd-102",
+    "content_type": "photo",
+    "content": "https://example.com/sanitized/photo1.jpg",
+    "is_forwarded": true,
+    "original_msg_id": "msg-orig-102"
+  },
+  {
+    "msg_id": "msg-fwd-103",
+    "cli_msg_id": "cli-fwd-103",
+    "content_type": "video",
+    "content": "https://example.com/sanitized/demo.mp4",
+    "is_forwarded": true,
+    "original_msg_id": "msg-orig-103"
+  },
+  {
+    "msg_id": "msg-fwd-104",
+    "cli_msg_id": "cli-fwd-104",
+    "content_type": "file",
+    "content": "https://example.com/sanitized/baocao.pdf",
+    "is_forwarded": true,
+    "original_msg_id": "msg-orig-104"
+  },
+  {
+    "msg_id": "msg-fwd-105",
+    "cli_msg_id": "cli-fwd-105",
+    "content_type": "sticker",
+    "content": "sticker_cat_01",
+    "is_forwarded": true,
+    "original_msg_id": "msg-orig-105"
+  },
+  {
+    "msg_id": "msg-fwd-106",
+    "cli_msg_id": "cli-fwd-106",
+    "content_type": "link",
+    "content": "https://example.com/sanitized/article",
+    "is_forwarded": true,
+    "original_msg_id": "msg-orig-106"
+  }
+]

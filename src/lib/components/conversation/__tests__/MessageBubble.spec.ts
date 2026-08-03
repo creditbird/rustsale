@@ -326,4 +326,32 @@ describe('MessageBubble Component', () => {
     expect(img.getAttribute('src')).toBe('https://cdn.example.com/photo.png');
     expect(screen.getByText('Chào tháng 8 may mắn')).toBeTruthy();
   });
+
+  test('renders text message with mention highlights when mentions array is provided', () => {
+    const mentionMessage: ConversationMessage = {
+      ...baseMessage,
+      textContent: 'Xin chào @Nguyễn Văn A trong nhóm',
+      mentions: [
+        {
+          identityId: 501,
+          externalId: 'ext-501',
+          displayText: '@Nguyễn Văn A',
+          startUtf16: 9,
+          lengthUtf16: 13
+        }
+      ]
+    };
+
+    const { getAllByTestId } = render(MessageBubble, {
+      props: {
+        message: mentionMessage,
+        isGroup: true
+      }
+    });
+
+    const mentionSpans = getAllByTestId('mention-span');
+    expect(mentionSpans).toHaveLength(1);
+    expect(mentionSpans[0].textContent).toBe('@Nguyễn Văn A');
+    expect(mentionSpans[0].getAttribute('data-mention-id')).toBe('501');
+  });
 });

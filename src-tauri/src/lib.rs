@@ -237,7 +237,16 @@ pub fn run() {
             conversation::commands::stage_conversation_clipboard_image,
             conversation::commands::discard_conversation_staged_attachment,
             conversation::commands::search_zalo_stickers,
-            conversation::commands::recall_conversation_message
+            conversation::commands::recall_conversation_message,
+            conversation::commands::list_conversation_quick_templates,
+            conversation::commands::create_conversation_quick_template,
+            conversation::commands::update_conversation_quick_template,
+            conversation::commands::delete_conversation_quick_template,
+            conversation::commands::mark_conversation_quick_template_used,
+            conversation::commands::set_conversation_reaction,
+            conversation::commands::forward_conversation_message,
+            conversation::commands::retry_conversation_forward_target,
+            conversation::commands::list_conversation_mention_candidates
         ])
 
         .run(tauri::generate_context!())

@@ -1,12 +1,17 @@
 use super::error::ConversationCommandError;
 use super::service::ConversationService;
 use super::types::{
-    Channel, ConversationMessage, ConversationRuntimeStatus, DeleteConversationRequest, InboxItem,
-    LinkIdentityRequest, RelinkLeadRequest, SendConversationBatchRequest,
-    SendConversationBatchResult, SendConversationMessageRequest,
+    Channel, ConversationForwardTargetResult, ConversationMentionCandidate, ConversationMessage,
+    ConversationQuickTemplate, ConversationReactionMutationResult, ConversationRuntimeStatus,
+    CreateConversationQuickTemplateRequest, DeleteConversationQuickTemplateRequest,
+    DeleteConversationRequest, ForwardConversationMessageRequest, ForwardConversationMessageResult,
+    InboxItem, LinkIdentityRequest, ListConversationMentionCandidatesRequest,
+    ListConversationQuickTemplatesRequest, MarkConversationQuickTemplateUsedRequest,
+    RelinkLeadRequest, RetryConversationForwardTargetRequest, SendConversationBatchRequest,
+    SendConversationBatchResult, SendConversationMessageRequest, SetConversationReactionRequest,
     StageConversationClipboardImageRequest, StagedAttachmentResponse,
     StartDirectConversationRequest, TimelineCursor, TimelinePage, UnlinkIdentityRequest,
-    UnlinkLeadRequest,
+    UnlinkLeadRequest, UpdateConversationQuickTemplateRequest,
 };
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
@@ -299,4 +304,128 @@ pub async fn recall_conversation_message(
         .service
         .complete_recall(prepared.message_id, &now)
         .map_err(|e| ConversationError::from(e).command_error())
+}
+
+#[tauri::command]
+pub fn list_conversation_quick_templates(
+    state: tauri::State<'_, ConversationState>,
+    request: ListConversationQuickTemplatesRequest,
+) -> Result<Vec<ConversationQuickTemplate>, ConversationCommandError> {
+    state
+        .service
+        .list_quick_templates(request)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub fn create_conversation_quick_template(
+    state: tauri::State<'_, ConversationState>,
+    request: CreateConversationQuickTemplateRequest,
+) -> Result<ConversationQuickTemplate, ConversationCommandError> {
+    state
+        .service
+        .create_quick_template(request)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub fn update_conversation_quick_template(
+    state: tauri::State<'_, ConversationState>,
+    request: UpdateConversationQuickTemplateRequest,
+) -> Result<ConversationQuickTemplate, ConversationCommandError> {
+    state
+        .service
+        .update_quick_template(request)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub fn delete_conversation_quick_template(
+    state: tauri::State<'_, ConversationState>,
+    request: DeleteConversationQuickTemplateRequest,
+) -> Result<(), ConversationCommandError> {
+    state
+        .service
+        .delete_quick_template(request)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub fn mark_conversation_quick_template_used(
+    state: tauri::State<'_, ConversationState>,
+    request: MarkConversationQuickTemplateUsedRequest,
+) -> Result<(), ConversationCommandError> {
+    state
+        .service
+        .mark_quick_template_used(request)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub async fn set_conversation_reaction(
+    state: tauri::State<'_, ConversationState>,
+    request: SetConversationReactionRequest,
+) -> Result<ConversationReactionMutationResult, ConversationCommandError> {
+    use crate::conversation::error::{ConversationError, ConversationErrorCode};
+
+    let (provider_account_key, ..) = state
+        .service
+        .repository
+        .lookup_message_thread_info(request.message_id)
+        .map_err(|e| ConversationError::from(e).command_error())?;
+
+    let client = state
+        .zalo_supervisor
+        .connected_client(&provider_account_key)
+        .await
+        .ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::AccountDisconnected,
+                format!("Zalo account {provider_account_key} is disconnected"),
+            )
+            .command_error()
+        })?;
+
+    state
+        .service
+        .set_conversation_reaction(&request, client.as_ref())
+        .await
+        .map_err(|e| e.command_error())
+}
+
+#[tauri::command]
+pub fn forward_conversation_message(
+    state: tauri::State<'_, ConversationState>,
+    request: ForwardConversationMessageRequest,
+) -> Result<ForwardConversationMessageResult, ConversationCommandError> {
+    state
+        .service
+        .forward_conversation_message(request)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub fn retry_conversation_forward_target(
+    state: tauri::State<'_, ConversationState>,
+    request: RetryConversationForwardTargetRequest,
+) -> Result<ConversationForwardTargetResult, ConversationCommandError> {
+    state
+        .service
+        .retry_forward_target(&request.client_operation_id, request.target_conversation_id)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
+pub fn list_conversation_mention_candidates(
+    state: tauri::State<'_, ConversationState>,
+    request: ListConversationMentionCandidatesRequest,
+) -> Result<Vec<ConversationMentionCandidate>, ConversationCommandError> {
+    state
+        .service
+        .list_mention_candidates(
+            request.conversation_id,
+            request.query.as_deref(),
+            request.limit,
+        )
+        .map_err(|error| error.command_error())
 }

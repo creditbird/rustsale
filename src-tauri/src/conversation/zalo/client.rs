@@ -89,10 +89,19 @@ pub struct ProviderQuoteContext {
     pub ttl: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderMention {
+    pub pos: usize,
+    pub len: usize,
+    pub target_external_id: Option<String>,
+    pub is_all: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderOutboundContent {
     Text {
         text: String,
+        mentions: Vec<ProviderMention>,
     },
     Attachment {
         media_type: String,
@@ -138,6 +147,24 @@ pub struct ProviderRecallRequest {
     pub thread_type: zca_rs::models::ThreadType,
     pub provider_message_id: String,
     pub provider_client_message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderReactionRequest {
+    pub provider_message_id: String,
+    pub provider_client_message_id: String,
+    pub external_thread_id: String,
+    pub thread_type: zca_rs::models::ThreadType,
+    pub reaction_code: Option<crate::conversation::types::ConversationReactionCode>,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderForwardRequest {
+    pub external_thread_id: String,
+    pub thread_type: zca_rs::models::ThreadType,
+    pub provider_client_message_id: String,
+    pub source_provider_message_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +255,15 @@ pub trait ZaloClient: Send + Sync {
             message: "send_part not implemented".into(),
         })
     }
+    async fn forward_message(
+        &self,
+        _request: ProviderForwardRequest,
+    ) -> Result<ProviderSendResult, ProviderSendError> {
+        Err(ProviderSendError {
+            kind: ProviderSendErrorKind::Permanent,
+            message: "forward_message not implemented".into(),
+        })
+    }
     async fn search_stickers(
         &self,
         _keyword: &str,
@@ -236,6 +272,12 @@ pub trait ZaloClient: Send + Sync {
         Ok(Vec::new())
     }
     async fn recall(&self, _request: ProviderRecallRequest) -> Result<(), ProviderSendError> {
+        Ok(())
+    }
+    async fn set_reaction(
+        &self,
+        _request: ProviderReactionRequest,
+    ) -> Result<(), ProviderSendError> {
         Ok(())
     }
     fn own_external_id(&self) -> Option<String> {
@@ -511,14 +553,34 @@ impl ZaloClient for RealZaloClient {
             })?;
 
         match request.content {
-            ProviderOutboundContent::Text { text } => {
+            ProviderOutboundContent::Text { text, mentions } => {
                 let quote = request.quote.map(to_zalo_quote);
+                let zalo_mentions = if mentions.is_empty() {
+                    None
+                } else {
+                    Some(
+                        mentions
+                            .iter()
+                            .map(|m| zca_rs::models::MessageMention {
+                                pos: m.pos as i32,
+                                uid: if m.is_all {
+                                    "0".to_string()
+                                } else {
+                                    m.target_external_id
+                                        .clone()
+                                        .unwrap_or_else(|| "0".to_string())
+                                },
+                                len: m.len as i32,
+                            })
+                            .collect(),
+                    )
+                };
                 let content = zca_rs::models::MessageContent {
                     msg: text,
                     styles: None,
                     urgency: None,
                     quote,
-                    mentions: None,
+                    mentions: zalo_mentions,
                     attachments: None,
                     ttl: None,
                 };
@@ -624,6 +686,37 @@ impl ZaloClient for RealZaloClient {
         }
     }
 
+    async fn forward_message(
+        &self,
+        request: ProviderForwardRequest,
+    ) -> Result<ProviderSendResult, ProviderSendError> {
+        let cli_msg_id = request.provider_client_message_id.parse::<u64>().ok();
+
+        let forward_req = zca_rs::models::ForwardMessageRequest {
+            client_id: cli_msg_id,
+            message: "Đã chuyển tiếp một tin nhắn".to_string(),
+            thread_id: request.external_thread_id.clone(),
+            thread_type: request.thread_type,
+            reference: Some(zca_rs::models::ForwardReference {
+                id: request.source_provider_message_id,
+                ts: 0,
+                log_src_type: 0,
+                fw_lvl: 1,
+            }),
+            ttl: Some(0),
+        };
+
+        let receipt = self.inner.forward_message_one(forward_req).await?;
+        Ok(ProviderSendResult {
+            provider_message_id: receipt.msg_id.to_string(),
+            provider_client_message_id: if !receipt.cli_msg_id.is_empty() {
+                receipt.cli_msg_id
+            } else {
+                request.provider_client_message_id
+            },
+        })
+    }
+
     async fn search_stickers(
         &self,
         keyword: &str,
@@ -664,6 +757,52 @@ impl ZaloClient for RealZaloClient {
                 request.thread_type,
             )
             .await?;
+        Ok(())
+    }
+
+    async fn set_reaction(
+        &self,
+        request: ProviderReactionRequest,
+    ) -> Result<(), ProviderSendError> {
+        use crate::conversation::types::ConversationReactionCode;
+        let reaction = request.reaction_code.map(|code| match code {
+            ConversationReactionCode::Heart => {
+                zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Heart)
+            }
+            ConversationReactionCode::Like => {
+                zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Like)
+            }
+            ConversationReactionCode::Haha => {
+                zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Haha)
+            }
+            ConversationReactionCode::Wow => {
+                zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Wow)
+            }
+            ConversationReactionCode::Cry => {
+                zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Cry)
+            }
+            ConversationReactionCode::Angry => {
+                zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Angry)
+            }
+        });
+
+        let client_id = request
+            .client_mutation_id
+            .as_deref()
+            .and_then(|id| id.strip_prefix("mut-"))
+            .and_then(|s| s.split('-').next())
+            .and_then(|s| s.parse::<u64>().ok());
+
+        let req = zca_rs::models::ReactionRequest {
+            client_id,
+            reaction,
+            msg_id: request.provider_message_id,
+            cli_msg_id: request.provider_client_message_id,
+            thread_id: request.external_thread_id,
+            thread_type: request.thread_type,
+        };
+
+        self.inner.set_reaction(req).await?;
         Ok(())
     }
 

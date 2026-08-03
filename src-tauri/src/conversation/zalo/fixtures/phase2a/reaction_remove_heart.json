@@ -1,0 +1,11 @@
+{
+  "msg_id": "msg-101",
+  "cli_msg_id": "cli-101",
+  "thread_id": "user-201",
+  "actor_id": "user-101",
+  "code": "/:heart",
+  "emoji": "❤️",
+  "removed": true,
+  "action": "remove",
+  "occurred_at": 1785456010000
+}

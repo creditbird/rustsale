@@ -2,6 +2,7 @@
   import type {
     ConversationCapabilities,
     ConversationMessage,
+    ConversationReactionCode,
     MessageSendBatchStatus
   } from '$lib/services/conversationService';
   import MessageBubble from './MessageBubble.svelte';
@@ -10,14 +11,24 @@
     messages,
     isGroup = false,
     capabilitiesForMessage = () => undefined,
+    pendingReactionsForMessage = () => [],
     onReply = () => {},
-    onRecall = () => {}
+    onRecall = () => {},
+    onForward = () => {},
+    onToggleReaction = () => {}
   }: {
     messages: ConversationMessage[];
     isGroup?: boolean;
     capabilitiesForMessage?: (message: ConversationMessage) => ConversationCapabilities | undefined;
+    pendingReactionsForMessage?: (messageId: number) => ConversationReactionCode[];
     onReply?: (message: ConversationMessage) => void;
     onRecall?: (message: ConversationMessage) => void;
+    onForward?: (message: ConversationMessage) => void;
+    onToggleReaction?: (
+      message: ConversationMessage,
+      code: ConversationReactionCode,
+      currentActive?: boolean
+    ) => void;
   } = $props();
 
   function getBatchStatus(batchMessages: ConversationMessage[]): MessageSendBatchStatus {
@@ -55,8 +66,11 @@
       {isGroup}
       showStatus={false}
       capabilities={capabilitiesForMessage(message)}
+      pendingReactions={pendingReactionsForMessage(message.id)}
       {onReply}
       {onRecall}
+      {onForward}
+      {onToggleReaction}
     />
     {#if message.status === 'failed' && message.errorMessage}
       <p class="ml-auto max-w-[70%] px-3 text-xs text-destructive">{message.errorMessage}</p>

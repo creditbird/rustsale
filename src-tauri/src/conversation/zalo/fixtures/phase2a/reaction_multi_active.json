@@ -1,0 +1,20 @@
+{
+  "msg_id": "msg-103",
+  "cli_msg_id": "cli-103",
+  "thread_id": "group-301",
+  "active_reactions": [
+    {
+      "actor_id": "user-101",
+      "code": "/:heart",
+      "emoji": "❤️",
+      "removed": false
+    },
+    {
+      "actor_id": "user-102",
+      "code": "/-haha",
+      "emoji": "😆",
+      "removed": false
+    }
+  ],
+  "occurred_at": 1785456015000
+}

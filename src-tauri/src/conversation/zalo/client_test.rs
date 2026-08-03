@@ -31,6 +31,10 @@ pub struct FakeZaloClient {
     pub captured_send_requests: Mutex<Vec<CapturedSendRequest>>,
     pub captured_part_requests: Mutex<Vec<ProviderSendRequest>>,
     pub captured_recall_requests: Mutex<Vec<ProviderRecallRequest>>,
+    pub captured_set_reaction_requests:
+        Mutex<Vec<crate::conversation::zalo::client::ProviderReactionRequest>>,
+    pub captured_forward_requests:
+        Mutex<Vec<crate::conversation::zalo::client::ProviderForwardRequest>>,
     pub captured_sticker_searches: Mutex<Vec<String>>,
     pub captured_group_snapshot_requests: Mutex<Vec<Option<String>>>,
     pub group_snapshots: Mutex<HashMap<String, NormalizedGroupSnapshot>>,
@@ -50,6 +54,8 @@ impl FakeZaloClient {
             captured_send_requests: Mutex::new(Vec::new()),
             captured_part_requests: Mutex::new(Vec::new()),
             captured_recall_requests: Mutex::new(Vec::new()),
+            captured_set_reaction_requests: Mutex::new(Vec::new()),
+            captured_forward_requests: Mutex::new(Vec::new()),
             captured_sticker_searches: Mutex::new(Vec::new()),
             captured_group_snapshot_requests: Mutex::new(Vec::new()),
             group_snapshots: Mutex::new(HashMap::new()),
@@ -163,6 +169,28 @@ impl ZaloClient for FakeZaloClient {
         })
     }
 
+    async fn forward_message(
+        &self,
+        request: crate::conversation::zalo::client::ProviderForwardRequest,
+    ) -> Result<ProviderSendResult, ProviderSendError> {
+        self.captured_forward_requests
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        let mut id = self.next_msg_id.lock().unwrap();
+        *id += 1;
+        let provider_message_id = id.to_string();
+        let provider_client_message_id = if !request.provider_client_message_id.is_empty() {
+            request.provider_client_message_id
+        } else {
+            provider_message_id.clone()
+        };
+        Ok(ProviderSendResult {
+            provider_message_id,
+            provider_client_message_id,
+        })
+    }
+
     async fn search_stickers(
         &self,
         keyword: &str,
@@ -177,6 +205,17 @@ impl ZaloClient for FakeZaloClient {
 
     async fn recall(&self, request: ProviderRecallRequest) -> Result<(), ProviderSendError> {
         self.captured_recall_requests.lock().unwrap().push(request);
+        Ok(())
+    }
+
+    async fn set_reaction(
+        &self,
+        request: crate::conversation::zalo::client::ProviderReactionRequest,
+    ) -> Result<(), ProviderSendError> {
+        self.captured_set_reaction_requests
+            .lock()
+            .unwrap()
+            .push(request);
         Ok(())
     }
 
@@ -501,4 +540,71 @@ async fn test_fake_client_captures_provider_send_request_and_recall() {
     let recalled = client.captured_recall_requests.lock().unwrap();
     assert_eq!(recalled.len(), 1);
     assert_eq!(recalled[0], recall_req);
+}
+
+#[tokio::test]
+async fn quote_reply_with_mentions_serializes_both() {
+    use crate::conversation::zalo::client::{
+        ProviderMention, ProviderOutboundContent, ProviderQuoteContext,
+    };
+
+    let client = FakeZaloClient::new();
+    let quote = ProviderQuoteContext {
+        provider_message_id: "p-msg-quote".into(),
+        provider_client_message_id: "cli-msg-quote".into(),
+        sender_external_id: "sender-1".into(),
+        content: "quoted text".into(),
+        message_type: 1,
+        property_ext: None,
+        provider_timestamp_ms: 1700000000000,
+        ttl: 0,
+    };
+
+    let mentions = vec![
+        ProviderMention {
+            pos: 6,
+            len: 14,
+            target_external_id: Some("user-501".into()),
+            is_all: false,
+        },
+        ProviderMention {
+            pos: 21,
+            len: 4,
+            target_external_id: None,
+            is_all: true,
+        },
+    ];
+
+    let req = ProviderSendRequest {
+        external_thread_id: "group-101".into(),
+        thread_type: ThreadType::Group,
+        provider_client_message_id: "1785491200999".into(),
+        content: ProviderOutboundContent::Text {
+            text: "Hello @Nguyễn Văn A @all".into(),
+            mentions: mentions.clone(),
+        },
+        quote: Some(quote),
+    };
+
+    let res = client.send_part(req.clone()).await.unwrap();
+    assert_eq!(res.provider_client_message_id, "1785491200999");
+
+    let captured = client.captured_part_requests.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].quote.as_ref().unwrap().provider_message_id,
+        "p-msg-quote"
+    );
+    if let ProviderOutboundContent::Text {
+        text,
+        mentions: cap_mentions,
+    } = &captured[0].content
+    {
+        assert_eq!(text, "Hello @Nguyễn Văn A @all");
+        assert_eq!(cap_mentions.len(), 2);
+        assert_eq!(cap_mentions[0], mentions[0]);
+        assert_eq!(cap_mentions[1], mentions[1]);
+    } else {
+        panic!("Expected ProviderOutboundContent::Text");
+    }
 }

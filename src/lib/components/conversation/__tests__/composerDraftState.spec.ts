@@ -55,6 +55,7 @@ describe('composerDraftState', () => {
     expect(snapshot).toEqual({
       text: 'First line',
       stagedAttachmentIds: ['staged-1'],
+      mentions: []
     });
 
     // User types more text after send starts
@@ -63,5 +64,19 @@ describe('composerDraftState', () => {
     cache.clearSnapshot('31:4', snapshot);
     expect(cache.get('31:4').text).toBe('First line and second line');
     expect(cache.get('31:4').attachments).toEqual([]);
+  });
+
+  it('preserves mentions in draft state and snapshot', () => {
+    const cache = new ComposerDraftCache();
+    const mention = { identityId: 1, displayText: '@Alice', startUtf16: 0, lengthUtf16: 6 };
+    cache.update('10:1', { text: '@Alice hi', mentions: [mention] });
+
+    expect(cache.get('10:1').mentions).toEqual([mention]);
+    const snapshot = cache.takeSnapshot('10:1');
+    expect(snapshot.mentions).toEqual([mention]);
+
+    cache.clearSnapshot('10:1', snapshot);
+    expect(cache.get('10:1').text).toBe('');
+    expect(cache.get('10:1').mentions).toEqual([]);
   });
 });

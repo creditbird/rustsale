@@ -3,20 +3,12 @@ use serde_json::Value;
 
 use crate::apis::Zalo;
 use crate::error::ZaloError;
+#[allow(unused_imports)]
 use crate::models::{
-    AttachmentSource, MessageContent, MessageMention, MessageStyle, Reactions, SendMessageQuote,
-    SendMessageResponse, SendMessageResult, ThreadType, Urgency,
+    AttachmentSource, ForwardMessageReceipt, ForwardMessageRequest, ForwardReference,
+    MessageContent, MessageMention, MessageStyle, ReactionRequest, ReactionType, Reactions,
+    SendMessageQuote, SendMessageResponse, SendMessageResult, ThreadType, Urgency,
 };
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ReactionType {
-    Standard(Reactions),
-    Custom {
-        r_type: i32,
-        source: i32,
-        icon: String,
-    },
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,15 +22,6 @@ pub struct SeenMessageParams {
     pub at: i32,
     pub cmd: i32,
     pub ts: serde_json::Value,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForwardReference {
-    pub id: String,
-    pub ts: u64,
-    pub log_src_type: i32,
-    pub fw_lvl: i32,
 }
 
 fn get_timestamp_ms() -> u64 {
@@ -157,7 +140,12 @@ impl Zalo {
                     ttl,
                 };
                 let msg_result = self
-                    .send_text_only_message_with_client_id(text_msg_content, thread_id, thread_type, client_id)
+                    .send_text_only_message_with_client_id(
+                        text_msg_content,
+                        thread_id,
+                        thread_type,
+                        client_id,
+                    )
                     .await?;
                 responses.message = Some(msg_result);
                 msg = String::new();
@@ -196,7 +184,12 @@ impl Zalo {
                 ttl,
             };
             let msg_result = self
-                .send_text_only_message_with_client_id(text_msg_content, thread_id, thread_type, client_id)
+                .send_text_only_message_with_client_id(
+                    text_msg_content,
+                    thread_id,
+                    thread_type,
+                    client_id,
+                )
                 .await?;
             responses.message = Some(msg_result);
         }
@@ -227,7 +220,10 @@ impl Zalo {
             && message
                 .mentions
                 .as_ref()
-                .map(|m| m.iter().any(|item| item.pos >= 0 && !item.uid.is_empty() && item.len > 0))
+                .map(|m| {
+                    m.iter()
+                        .any(|item| item.pos >= 0 && !item.uid.is_empty() && item.len > 0)
+                })
                 .unwrap_or(false);
 
         if let Some(st_list) = &message.styles {
@@ -633,7 +629,10 @@ impl Zalo {
                 .send_gif_chunk(&data, &filename, params, thread_type)
                 .await?;
             let msg_id = res_val.get("msgId").and_then(|v| v.as_u64()).unwrap_or(0);
-            let cli_msg_id = res_val.get("cliMsgId").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cli_msg_id = res_val
+                .get("cliMsgId")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             results.push(SendMessageResult { msg_id, cli_msg_id });
         }
 
@@ -931,6 +930,33 @@ impl Zalo {
         Ok(Vec::new())
     }
 
+    pub async fn set_reaction(&self, req: ReactionRequest) -> Result<Vec<u64>, ZaloError> {
+        let is_group = req.thread_type == ThreadType::Group;
+        let params = build_reaction_params(&req, &self.ctx.imei);
+
+        let service = "reaction";
+        let path = if is_group {
+            "api/group/reaction"
+        } else {
+            "api/message/reaction"
+        };
+
+        let res: Value = self.request_api_form(service, path, params).await?;
+
+        if let Some(msg_ids_val) = res.get("msgIds") {
+            if let Some(s) = msg_ids_val.as_str() {
+                let parsed: Vec<u64> = serde_json::from_str(s)?;
+                return Ok(parsed);
+            }
+            if let Some(arr) = msg_ids_val.as_array() {
+                let parsed: Vec<u64> = arr.iter().filter_map(|v| v.as_u64()).collect();
+                return Ok(parsed);
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
     pub async fn undo(
         &self,
         msg_id: &str,
@@ -1132,6 +1158,24 @@ impl Zalo {
         };
 
         self.request_api_form(service, path, params).await
+    }
+
+    pub async fn forward_message_one(
+        &self,
+        req: ForwardMessageRequest,
+    ) -> Result<ForwardMessageReceipt, ZaloError> {
+        let is_group = req.thread_type == ThreadType::Group;
+        let params = build_forward_one_params(&req, &self.ctx.imei)?;
+
+        let service = "file";
+        let path = if is_group {
+            "api/group/mforward"
+        } else {
+            "api/message/mforward"
+        };
+
+        let res: Value = self.request_api_form(service, path, params).await?;
+        ForwardMessageReceipt::normalize(&res)
     }
 
     pub async fn send_bank_card(
@@ -1877,6 +1921,143 @@ pub(crate) fn build_sticker_params(
     params
 }
 
+pub(crate) fn build_reaction_params(req: &ReactionRequest, imei: &str) -> serde_json::Value {
+    let (r_type, source, r_icon) = match &req.reaction {
+        Some(ReactionType::Standard(rec)) => {
+            let (t, s) = rec.to_type_and_source();
+            (t, s, rec.to_str().to_string())
+        }
+        Some(ReactionType::Custom {
+            r_type,
+            source,
+            icon,
+        }) => (*r_type, *source, icon.clone()),
+        None => (-1, 6, String::new()),
+    };
+
+    let client_id = req.client_id.unwrap_or_else(get_timestamp_ms);
+    let is_group = req.thread_type == ThreadType::Group;
+
+    let msg_obj = serde_json::json!({
+        "gMsgID": req.msg_id.parse::<u64>().unwrap_or(0),
+        "cMsgID": req.cli_msg_id.parse::<u64>().unwrap_or(0),
+        "msgType": 1,
+    });
+
+    let react_msg = serde_json::json!({
+        "rMsg": [msg_obj],
+        "rIcon": r_icon,
+        "rType": r_type,
+        "source": source,
+    });
+
+    let react_item = serde_json::json!({
+        "message": serde_json::to_string(&react_msg).unwrap_or_default(),
+        "clientId": client_id,
+    });
+
+    let mut params = serde_json::json!({
+        "react_list": [react_item],
+    });
+
+    if is_group {
+        params
+            .as_object_mut()
+            .map(|m| m.insert("grid".to_string(), serde_json::json!(req.thread_id)));
+        params
+            .as_object_mut()
+            .map(|m| m.insert("imei".to_string(), serde_json::json!(imei)));
+    } else {
+        params
+            .as_object_mut()
+            .map(|m| m.insert("toid".to_string(), serde_json::json!(req.thread_id)));
+    }
+
+    params
+}
+
+pub(crate) fn build_forward_one_params(
+    req: &ForwardMessageRequest,
+    imei: &str,
+) -> Result<serde_json::Value, ZaloError> {
+    if req.message.is_empty() {
+        return Err(ZaloError::PayloadFormat(
+            "Missing message content".to_string(),
+        ));
+    }
+    if req.thread_id.is_empty() {
+        return Err(ZaloError::PayloadFormat("Missing thread ID".to_string()));
+    }
+
+    let timestamp = get_timestamp_ms();
+    let client_id_str = req
+        .client_id
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| timestamp.to_string());
+
+    let msg_info = serde_json::json!({
+        "message": req.message,
+        "reference": req.reference.as_ref().map(|r| {
+            serde_json::json!({
+                "type": 3,
+                "data": serde_json::to_string(r).unwrap_or_default(),
+            }).to_string()
+        }),
+    });
+
+    let decor_log = req.reference.as_ref().map(|r| {
+        serde_json::json!({
+            "fw": {
+                "pmsg": {
+                    "st": 1,
+                    "ts": r.ts,
+                    "id": r.id,
+                },
+                "rmsg": {
+                    "st": 1,
+                    "ts": r.ts,
+                    "id": r.id,
+                },
+                "fwLvl": r.fw_lvl,
+            }
+        })
+    });
+
+    let is_group = req.thread_type == ThreadType::Group;
+    let params = if !is_group {
+        let to_ids = vec![serde_json::json!({
+            "clientId": client_id_str,
+            "toUid": req.thread_id,
+            "ttl": req.ttl.unwrap_or(0),
+        })];
+        serde_json::json!({
+            "toIds": to_ids,
+            "imei": imei,
+            "ttl": req.ttl.unwrap_or(0),
+            "msgType": "1",
+            "totalIds": 1,
+            "msgInfo": serde_json::to_string(&msg_info)?,
+            "decorLog": decor_log.map(|d| serde_json::to_string(&d).unwrap_or_default()).unwrap_or_else(|| "null".to_string()),
+        })
+    } else {
+        let grids = vec![serde_json::json!({
+            "clientId": client_id_str,
+            "grid": req.thread_id,
+            "ttl": req.ttl.unwrap_or(0),
+        })];
+        serde_json::json!({
+            "grids": grids,
+            "ttl": req.ttl.unwrap_or(0),
+            "msgType": "1",
+            "totalIds": 1,
+            "msgInfo": serde_json::to_string(&msg_info)?,
+            "decorLog": decor_log.map(|d| serde_json::to_string(&d).unwrap_or_default()).unwrap_or_else(|| "null".to_string()),
+        })
+    };
+
+    Ok(params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1913,5 +2094,141 @@ mod tests {
         assert_eq!(params["grid"], "group-1");
         assert_eq!(params["stickerId"], 100);
         assert_eq!(params["cateId"], 20);
+    }
+
+    #[test]
+    fn phase2a_reaction_request_uses_caller_client_id() {
+        let req = ReactionRequest {
+            client_id: Some(1_785_999_888_777),
+            reaction: Some(ReactionType::Standard(Reactions::Heart)),
+            msg_id: "msg-101".to_string(),
+            cli_msg_id: "cli-101".to_string(),
+            thread_id: "thread-101".to_string(),
+            thread_type: ThreadType::User,
+        };
+        let params = build_reaction_params(&req, "imei-test");
+        let react_list = params["react_list"].as_array().unwrap();
+        assert_eq!(react_list.len(), 1);
+        assert_eq!(react_list[0]["clientId"], 1_785_999_888_777_u64);
+        assert_eq!(params["toid"], "thread-101");
+    }
+
+    #[test]
+    fn phase2a_reaction_remove_matches_probe() {
+        let req_none = ReactionRequest {
+            client_id: Some(12345),
+            reaction: None,
+            msg_id: "msg-102".to_string(),
+            cli_msg_id: "cli-102".to_string(),
+            thread_id: "thread-102".to_string(),
+            thread_type: ThreadType::User,
+        };
+        let params_none = build_reaction_params(&req_none, "imei-test");
+        let msg_str_none = params_none["react_list"][0]["message"].as_str().unwrap();
+        let react_msg_none: serde_json::Value = serde_json::from_str(msg_str_none).unwrap();
+        assert_eq!(react_msg_none["rType"], -1);
+        assert_eq!(react_msg_none["rIcon"], "");
+
+        let req_enum = ReactionRequest {
+            client_id: Some(12345),
+            reaction: Some(ReactionType::Standard(Reactions::None)),
+            msg_id: "msg-102".to_string(),
+            cli_msg_id: "cli-102".to_string(),
+            thread_id: "thread-102".to_string(),
+            thread_type: ThreadType::User,
+        };
+        let params_enum = build_reaction_params(&req_enum, "imei-test");
+        let msg_str_enum = params_enum["react_list"][0]["message"].as_str().unwrap();
+        let react_msg_enum: serde_json::Value = serde_json::from_str(msg_str_enum).unwrap();
+        assert_eq!(react_msg_enum["rType"], -1);
+        assert_eq!(react_msg_enum["rIcon"], "");
+    }
+
+    #[test]
+    fn phase2a_forward_direct_uses_one_target() {
+        let req = ForwardMessageRequest {
+            client_id: Some(9_999_888_777),
+            message: "Hello world".to_string(),
+            thread_id: "user-101".to_string(),
+            thread_type: ThreadType::User,
+            reference: None,
+            ttl: Some(0),
+        };
+        let params = build_forward_one_params(&req, "imei-test").unwrap();
+        assert_eq!(params["totalIds"], 1);
+        let to_ids = params["toIds"].as_array().unwrap();
+        assert_eq!(to_ids.len(), 1);
+        assert_eq!(to_ids[0]["toUid"], "user-101");
+        assert_eq!(to_ids[0]["clientId"], "9999888777");
+    }
+
+    #[test]
+    fn phase2a_forward_group_uses_one_target() {
+        let req = ForwardMessageRequest {
+            client_id: Some(9_999_888_666),
+            message: "Group forward".to_string(),
+            thread_id: "group-202".to_string(),
+            thread_type: ThreadType::Group,
+            reference: None,
+            ttl: Some(0),
+        };
+        let params = build_forward_one_params(&req, "imei-test").unwrap();
+        assert_eq!(params["totalIds"], 1);
+        let grids = params["grids"].as_array().unwrap();
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0]["grid"], "group-202");
+        assert_eq!(grids[0]["clientId"], "9999888666");
+    }
+
+    #[test]
+    fn phase2a_forward_response_normalizes_ids() {
+        let v1 = serde_json::json!({ "msgId": 123456, "cliMsgId": 654321 });
+        let r1 = ForwardMessageReceipt::normalize(&v1).unwrap();
+        assert_eq!(r1.msg_id, "123456");
+        assert_eq!(r1.cli_msg_id, "654321");
+
+        let v2 = serde_json::json!({ "msg_id": "789", "cli_msg_id": "987" });
+        let r2 = ForwardMessageReceipt::normalize(&v2).unwrap();
+        assert_eq!(r2.msg_id, "789");
+        assert_eq!(r2.cli_msg_id, "987");
+
+        let v3 = serde_json::json!({
+            "error_code": 0,
+            "data": {
+                "msgId": "999",
+                "cliMsgId": 111
+            }
+        });
+        let r3 = ForwardMessageReceipt::normalize(&v3).unwrap();
+        assert_eq!(r3.msg_id, "999");
+        assert_eq!(r3.cli_msg_id, "111");
+    }
+
+    #[test]
+    fn phase2a_mentions_serialize_utf16_ranges() {
+        let mentions = vec![MessageMention {
+            pos: 11,
+            uid: "user-201".to_string(),
+            len: 14,
+        }];
+        let params = build_text_params(
+            "Xin chào 🙈 @Nguyễn Văn A",
+            "group-1",
+            ThreadType::Group,
+            12345678,
+            None,
+            Some(&mentions),
+            None,
+            "imei-test",
+        );
+
+        let mention_info_str = params["mentionInfo"].as_str().unwrap();
+        let parsed_mentions: serde_json::Value = serde_json::from_str(mention_info_str).unwrap();
+        let arr = parsed_mentions.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["pos"], 11);
+        assert_eq!(arr[0]["len"], 14);
+        assert_eq!(arr[0]["uid"], "user-201");
+        assert_eq!(arr[0]["type"], 0);
     }
 }

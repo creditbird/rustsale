@@ -1,9 +1,9 @@
 use super::migration::migrate;
 use super::repository::{
     ConversationRepository, NormalizedAttachment, NormalizedGroupParticipant,
-    NormalizedGroupSnapshot, NormalizedIdentity, NormalizedMessage, NormalizedReaction,
-    NormalizedReceipt, NormalizedUndo, ReceiptKind, ResolveDirectPhoneRecipientRequest,
-    StagedAttachmentRecord,
+    NormalizedGroupSnapshot, NormalizedIdentity, NormalizedMention, NormalizedMessage,
+    NormalizedReaction, NormalizedReceipt, NormalizedUndo, ReceiptKind,
+    ResolveDirectPhoneRecipientRequest, StagedAttachmentRecord,
 };
 use super::types::{Channel, ConversationKind, InboxItemKind, MessageDirection, MessageStatus};
 use crate::db::open_db_connection;
@@ -86,6 +86,7 @@ fn direct_message(account: &str, provider_message_id: &str) -> NormalizedMessage
         content: serde_json::json!({"text": "hello"}),
         attachments: Vec::new(),
         reply: None,
+        mentions: Vec::new(),
         raw_payload: None,
         provider_timestamp: Some("2026-07-31T00:00:00.000Z".to_string()),
         ingested_at: "2026-07-31T00:00:01.000Z".to_string(),
@@ -1510,6 +1511,7 @@ fn enqueue_batch_creates_batch_parts_attachments_and_jobs_in_one_transaction() {
                 client_part_id: "part-1".into(),
                 content: ConversationSendPartContent::Text {
                     text: "hello".into(),
+                    mentions: Vec::new(),
                 },
             },
             ConversationSendPartRequest {
@@ -1587,6 +1589,7 @@ fn repeated_client_batch_id_returns_existing_batch_without_duplicates() {
             client_part_id: "part-1".into(),
             content: ConversationSendPartContent::Text {
                 text: "hello".into(),
+                mentions: Vec::new(),
             },
         }],
     };
@@ -1635,6 +1638,7 @@ fn sticker_must_be_the_only_part_in_phase_one() {
                 client_part_id: "part-1".into(),
                 content: ConversationSendPartContent::Text {
                     text: "hello".into(),
+                    mentions: Vec::new(),
                 },
             },
             ConversationSendPartRequest {
@@ -1676,4 +1680,403 @@ fn sticker_must_be_the_only_part_in_phase_one() {
     assert_eq!(res.messages.len(), 1);
 
     let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn mention_incoming_mentions_upsert_without_duplicates() {
+    let harness = Harness::new();
+    let mut msg = direct_message("imei-a", "msg-mention-1");
+    msg.conversation_kind = ConversationKind::Group;
+    msg.external_thread_id = "group-100".to_string();
+    msg.text_content = Some("Xin chào @Alice và @Bob".to_string());
+    msg.mentions = vec![
+        NormalizedMention {
+            identity_id: None,
+            external_id: Some("user-101".to_string()),
+            display_text: "@Alice".to_string(),
+            start_utf16: 9,
+            length_utf16: 6,
+        },
+        NormalizedMention {
+            identity_id: None,
+            external_id: Some("user-102".to_string()),
+            display_text: "@Bob".to_string(),
+            start_utf16: 19,
+            length_utf16: 4,
+        },
+    ];
+
+    let res1 = harness.repository.apply_normalized_message(&msg).unwrap();
+    assert!(!res1.duplicate);
+
+    let res2 = harness.repository.apply_normalized_message(&msg).unwrap();
+    assert!(res2.duplicate);
+
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_mentions WHERE message_id = ?1",
+            [res1.message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn mention_message_projection_includes_mentions() {
+    let harness = Harness::new();
+    let mut msg = direct_message("imei-a", "msg-mention-proj");
+    msg.conversation_kind = ConversationKind::Group;
+    msg.external_thread_id = "group-200".to_string();
+    msg.text_content = Some("Hi @Alice!".to_string());
+    msg.mentions = vec![NormalizedMention {
+        identity_id: None,
+        external_id: Some("user-201".to_string()),
+        display_text: "@Alice".to_string(),
+        start_utf16: 3,
+        length_utf16: 6,
+    }];
+
+    let res = harness.repository.apply_normalized_message(&msg).unwrap();
+    let hydrated = harness
+        .repository
+        .get_message_by_id(res.message_id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(hydrated.mentions.len(), 1);
+    assert_eq!(hydrated.mentions[0].pos, 3);
+    assert_eq!(hydrated.mentions[0].len, 6);
+    assert_eq!(
+        hydrated.mentions[0].target_external_id.as_deref(),
+        Some("user-201")
+    );
+    assert_eq!(hydrated.mentions[0].display_name.as_deref(), Some("@Alice"));
+    assert!(!hydrated.mentions[0].is_all);
+}
+
+#[test]
+fn mention_authoritative_echo_replaces_stale_mentions() {
+    let harness = Harness::new();
+    let mut msg = direct_message("imei-a", "msg-echo-mention");
+    msg.conversation_kind = ConversationKind::Group;
+    msg.external_thread_id = "group-300".to_string();
+    msg.text_content = Some("Hi @Alice @Bob".to_string());
+    msg.mentions = vec![
+        NormalizedMention {
+            identity_id: None,
+            external_id: Some("user-1".to_string()),
+            display_text: "@Alice".to_string(),
+            start_utf16: 3,
+            length_utf16: 6,
+        },
+        NormalizedMention {
+            identity_id: None,
+            external_id: Some("user-2".to_string()),
+            display_text: "@Bob".to_string(),
+            start_utf16: 10,
+            length_utf16: 4,
+        },
+    ];
+
+    let res1 = harness.repository.apply_normalized_message(&msg).unwrap();
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    let count1: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_mentions WHERE message_id = ?1",
+            [res1.message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count1, 2);
+
+    msg.text_content = Some("Hi @Alice".to_string());
+    msg.raw_payload = Some(serde_json::json!({"echo": true}));
+    msg.mentions = vec![NormalizedMention {
+        identity_id: None,
+        external_id: Some("user-1".to_string()),
+        display_text: "@Alice".to_string(),
+        start_utf16: 3,
+        length_utf16: 6,
+    }];
+
+    let res2 = harness.repository.apply_normalized_message(&msg).unwrap();
+    assert!(res2.duplicate);
+
+    let hydrated = harness
+        .repository
+        .get_message_by_id(res1.message_id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(hydrated.mentions.len(), 1);
+    assert_eq!(
+        hydrated.mentions[0].target_external_id.as_deref(),
+        Some("user-1")
+    );
+}
+
+#[test]
+fn self_echo_does_not_double_count() {
+    let harness = Harness::new();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, self_external_id, created_at, updated_at)
+         VALUES (1, 'zalo', 'acc-1', 'Test Acc', 'self-uid', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (100, 1, 'thread-1', 'direct', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+         VALUES (10, 100, 'outbound', 'msg-10', 'text', 'Hello', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    let norm_react_local = NormalizedReaction {
+        provider_account_key: "acc-1".to_string(),
+        external_thread_id: "thread-1".to_string(),
+        is_group: false,
+        provider_event_id: None,
+        provider_message_id: "msg-10".to_string(),
+        provider_client_message_id: String::new(),
+        actor_external_id: "self-uid".to_string(),
+        reaction: "heart".to_string(),
+        removed: false,
+        occurred_at: "2026-08-02T12:00:00Z".to_string(),
+        raw_payload: serde_json::Value::Null,
+    };
+    harness
+        .repository
+        .apply_reaction(&norm_react_local)
+        .unwrap();
+
+    let norm_react_echo = NormalizedReaction {
+        provider_account_key: "acc-1".to_string(),
+        external_thread_id: "thread-1".to_string(),
+        is_group: false,
+        provider_event_id: Some("evt-1".to_string()),
+        provider_message_id: "msg-10".to_string(),
+        provider_client_message_id: String::new(),
+        actor_external_id: "self-uid".to_string(),
+        reaction: "heart".to_string(),
+        removed: false,
+        occurred_at: "2026-08-02T12:00:05Z".to_string(),
+        raw_payload: serde_json::Value::Null,
+    };
+    harness.repository.apply_reaction(&norm_react_echo).unwrap();
+
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM message_reactions WHERE message_id = 10 AND actor_external_id = 'self-uid' AND reaction = 'heart' AND removed_at IS NULL",
+        [],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn remove_echo_marks_exact_reaction_removed() {
+    let harness = Harness::new();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+         VALUES (1, 'zalo', 'acc-1', 'Test Acc', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (100, 1, 'thread-1', 'direct', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+         VALUES (10, 100, 'outbound', 'msg-10', 'text', 'Hello', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    let react_heart = NormalizedReaction {
+        provider_account_key: "acc-1".to_string(),
+        external_thread_id: "thread-1".to_string(),
+        is_group: false,
+        provider_event_id: None,
+        provider_message_id: "msg-10".to_string(),
+        provider_client_message_id: String::new(),
+        actor_external_id: "actor-1".to_string(),
+        reaction: "heart".to_string(),
+        removed: false,
+        occurred_at: "2026-08-02T12:00:00Z".to_string(),
+        raw_payload: serde_json::Value::Null,
+    };
+    let react_like = NormalizedReaction {
+        provider_account_key: "acc-1".to_string(),
+        external_thread_id: "thread-1".to_string(),
+        is_group: false,
+        provider_event_id: None,
+        provider_message_id: "msg-10".to_string(),
+        provider_client_message_id: String::new(),
+        actor_external_id: "actor-1".to_string(),
+        reaction: "like".to_string(),
+        removed: false,
+        occurred_at: "2026-08-02T12:00:00Z".to_string(),
+        raw_payload: serde_json::Value::Null,
+    };
+    harness.repository.apply_reaction(&react_heart).unwrap();
+    harness.repository.apply_reaction(&react_like).unwrap();
+
+    let remove_heart = NormalizedReaction {
+        provider_account_key: "acc-1".to_string(),
+        external_thread_id: "thread-1".to_string(),
+        is_group: false,
+        provider_event_id: None,
+        provider_message_id: "msg-10".to_string(),
+        provider_client_message_id: String::new(),
+        actor_external_id: "actor-1".to_string(),
+        reaction: "heart".to_string(),
+        removed: true,
+        occurred_at: "2026-08-02T12:01:00Z".to_string(),
+        raw_payload: serde_json::Value::Null,
+    };
+    harness.repository.apply_reaction(&remove_heart).unwrap();
+
+    let heart_active: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM message_reactions WHERE message_id = 10 AND actor_external_id = 'actor-1' AND reaction = 'heart' AND removed_at IS NULL",
+        [],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(heart_active, 0);
+
+    let like_active: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM message_reactions WHERE message_id = 10 AND actor_external_id = 'actor-1' AND reaction = 'like' AND removed_at IS NULL",
+        [],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(like_active, 1);
+}
+
+#[test]
+fn matching_reconciliation_completes_unknown_mutation() {
+    let harness = Harness::new();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+         VALUES (1, 'zalo', 'acc-1', 'Test Acc', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (100, 1, 'thread-1', 'direct', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+         VALUES (10, 100, 'outbound', 'msg-10', 'text', 'Hello', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO reaction_mutations (client_mutation_id, message_id, reaction_code, active, status, created_at, updated_at)
+         VALUES ('mut-unk-1', 10, 'haha', 1, 'delivery_unknown', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    ).unwrap();
+
+    let react_haha = NormalizedReaction {
+        provider_account_key: "acc-1".to_string(),
+        external_thread_id: "thread-1".to_string(),
+        is_group: false,
+        provider_event_id: None,
+        provider_message_id: "msg-10".to_string(),
+        provider_client_message_id: String::new(),
+        actor_external_id: "actor-1".to_string(),
+        reaction: "haha".to_string(),
+        removed: false,
+        occurred_at: "2026-08-02T12:00:00Z".to_string(),
+        raw_payload: serde_json::Value::Null,
+    };
+    harness.repository.apply_reaction(&react_haha).unwrap();
+
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM reaction_mutations WHERE client_mutation_id = 'mut-unk-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "succeeded");
+}
+
+#[test]
+fn forward_conversation_message_enqueues_batch() {
+    use crate::conversation::types::{ForwardConversationMessageRequest, ForwardOperationStatus};
+
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    let caps_json = serde_json::to_string(
+        &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
+    )
+    .unwrap();
+    let account_id: i64 = conn
+        .query_row(
+            "INSERT INTO channel_accounts (channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+             VALUES ('zalo', 'acc-repo-fwd', 'connected', ?1, '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')
+             RETURNING id",
+            [caps_json],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let conv_src: i64 = conn
+        .query_row(
+            "INSERT INTO channel_conversations (channel_account_id, external_thread_id, kind, title, status, last_synced_at, created_at, updated_at)
+             VALUES (?1, 't-src', 'direct', 'Source', 'active', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z') RETURNING id",
+            [account_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let conv_t1: i64 = conn
+        .query_row(
+            "INSERT INTO channel_conversations (channel_account_id, external_thread_id, kind, title, status, last_synced_at, created_at, updated_at)
+             VALUES (?1, 't-t1', 'direct', 'Target 1', 'active', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z') RETURNING id",
+            [account_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let src_msg_id: i64 = conn
+        .query_row(
+            "INSERT INTO messages (conversation_id, direction, provider_message_id, provider_client_message_id, content_type, text_content, ingested_at)
+             VALUES (?1, 'inbound', 'pmsg-repo-1', 'pcli-repo-1', 'text', 'Hello Repo Forward', '2026-08-02T10:00:00Z') RETURNING id",
+            [conv_src],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let req = ForwardConversationMessageRequest {
+        client_operation_id: "op-repo-fwd-1".to_string(),
+        source_message_id: src_msg_id,
+        target_conversation_ids: vec![conv_t1],
+    };
+
+    let res = harness
+        .repository
+        .forward_conversation_message(&req)
+        .unwrap();
+    assert_eq!(res.status, ForwardOperationStatus::Queued);
+    assert_eq!(res.targets.len(), 1);
+    assert!(res.targets[0].forwarded_message_id.is_some());
 }

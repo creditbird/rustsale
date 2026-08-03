@@ -1,0 +1,10 @@
+{
+  "msg_id": "msg-fwd-001",
+  "cli_msg_id": "cli-fwd-001",
+  "thread_id": "user-201",
+  "content_type": "text",
+  "content": "Đây là tin nhắn được chuyển tiếp",
+  "is_forwarded": true,
+  "original_msg_id": "msg-orig-888",
+  "occurred_at": 1785456020000
+}

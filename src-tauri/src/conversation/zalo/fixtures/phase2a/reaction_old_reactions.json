@@ -1,0 +1,21 @@
+{
+  "thread_id": "user-201",
+  "reactions_by_msg": {
+    "msg-101": [
+      {
+        "actor_id": "user-101",
+        "code": "/:heart",
+        "emoji": "❤️",
+        "removed": false
+      }
+    ],
+    "msg-102": [
+      {
+        "actor_id": "user-102",
+        "code": "/-like",
+        "emoji": "👍",
+        "removed": false
+      }
+    ]
+  }
+}

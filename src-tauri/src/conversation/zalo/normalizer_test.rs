@@ -319,3 +319,42 @@ fn photo_message_extracts_caption_text_content() {
         Some("Chào tháng 8 may mắn")
     );
 }
+
+#[test]
+fn mention_inbound_group_message_normalizes_mentions() {
+    let mut base = base_message(
+        "sender-uid",
+        "0",
+        "group-msg-mentions-1",
+        json!({
+            "text": "Xin chào @Nguyễn Văn A nhé",
+            "mentions": [
+                {
+                    "target_uid": "user-302",
+                    "utf16_offset": 9,
+                    "utf16_len": 13,
+                    "mention_text": "@Nguyễn Văn A"
+                }
+            ]
+        }),
+    );
+    base.msg_type = "chat.text".to_string();
+
+    let raw = TGroupMessage {
+        base,
+        mentions: None,
+    };
+    let group_msg = GroupMessage::new("group-thread-100", raw);
+
+    let event = ListenerEvent::Message(Box::new(Message::Group(group_msg)));
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+
+    assert_eq!(message.mentions.len(), 1);
+    assert_eq!(message.mentions[0].external_id.as_deref(), Some("user-302"));
+    assert_eq!(message.mentions[0].display_text, "@Nguyễn Văn A");
+    assert_eq!(message.mentions[0].start_utf16, 9);
+    assert_eq!(message.mentions[0].length_utf16, 13);
+}

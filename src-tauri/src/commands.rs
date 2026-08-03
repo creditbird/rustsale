@@ -200,6 +200,7 @@ pub fn resolve_outreach_lead_ids_internal(
     .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn get_outreach_leads_page(
     state: tauri::State<DbState>,
@@ -231,6 +232,7 @@ pub fn get_outreach_leads_page(
     get_outreach_leads_page_internal(&conn, &query, cursor, limit)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn resolve_outreach_lead_ids(
     state: tauri::State<DbState>,
@@ -927,9 +929,10 @@ fn emit_zalo_qr_error(app_handle: &tauri::AppHandle, message: &str) {
 }
 
 pub(crate) fn zalo_api_options() -> zca_rs::Options {
-    let mut options = zca_rs::Options::default();
-    options.auto_start_listener = false;
-    options
+    zca_rs::Options {
+        auto_start_listener: false,
+        ..Default::default()
+    }
 }
 
 pub fn persist_authenticated_zalo_session(
@@ -1786,10 +1789,7 @@ pub fn partition_outreach_leads(
         partitions[idx % num_imeis].push(lead_id);
     }
 
-    let result = dedup_imeis
-        .into_iter()
-        .zip(partitions.into_iter())
-        .collect();
+    let result = dedup_imeis.into_iter().zip(partitions).collect();
     Ok(result)
 }
 

@@ -2,7 +2,8 @@
   import { onMount, tick } from 'svelte';
   import type {
     ConversationCapabilities,
-    ConversationMessage
+    ConversationMessage,
+    ConversationReactionCode
   } from '$lib/services/conversationService';
   import MessageBubble from './MessageBubble.svelte';
   import MessageBatchGroup from './MessageBatchGroup.svelte';
@@ -19,8 +20,11 @@
     onLoadOlder,
     isGroup = false,
     capabilitiesForMessage = () => undefined,
+    pendingReactionsForMessage = () => [],
     onReply = () => {},
-    onRecall = () => {}
+    onRecall = () => {},
+    onForward = () => {},
+    onToggleReaction = () => {}
   }: {
     items: ConversationMessage[];
     loading?: boolean;
@@ -30,8 +34,15 @@
     onLoadOlder: () => void;
     isGroup?: boolean;
     capabilitiesForMessage?: (message: ConversationMessage) => ConversationCapabilities | undefined;
+    pendingReactionsForMessage?: (messageId: number) => ConversationReactionCode[];
     onReply?: (message: ConversationMessage) => void;
     onRecall?: (message: ConversationMessage) => void;
+    onForward?: (message: ConversationMessage) => void;
+    onToggleReaction?: (
+      message: ConversationMessage,
+      code: ConversationReactionCode,
+      currentActive?: boolean
+    ) => void;
   } = $props();
 
   let containerEl: HTMLElement | null = $state(null);
@@ -253,16 +264,22 @@
           messages={renderItem.messages}
           {isGroup}
           {capabilitiesForMessage}
+          {pendingReactionsForMessage}
           {onReply}
           {onRecall}
+          {onForward}
+          {onToggleReaction}
         />
       {:else}
         <MessageBubble
           message={renderItem.message}
           {isGroup}
           capabilities={capabilitiesForMessage(renderItem.message)}
+          pendingReactions={pendingReactionsForMessage(renderItem.message.id)}
           {onReply}
           {onRecall}
+          {onForward}
+          {onToggleReaction}
         />
       {/if}
     {/each}

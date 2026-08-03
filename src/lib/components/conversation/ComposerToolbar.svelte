@@ -6,13 +6,15 @@
     disabled = false,
     onToggleEmoji = () => {},
     onToggleSticker = () => {},
-    onPickAttachment = () => {}
+    onPickAttachment = () => {},
+    onToggleQuickTemplates = () => {}
   }: {
     capabilities: ConversationCapabilities;
     disabled?: boolean;
     onToggleEmoji?: () => void;
     onToggleSticker?: () => void;
     onPickAttachment?: () => void;
+    onToggleQuickTemplates?: () => void;
   } = $props();
 </script>
 
@@ -51,6 +53,19 @@
       data-testid="attach-file-btn"
     >
       📎
+    </button>
+  {/if}
+
+  {#if capabilities.quickTemplates?.enabled}
+    <button
+      type="button"
+      class="toolbar-btn font-mono font-bold text-xs"
+      {disabled}
+      aria-label="Manage quick templates"
+      onclick={onToggleQuickTemplates}
+      data-testid="toggle-quick-templates-btn"
+    >
+      ⚡
     </button>
   {/if}
 </div>

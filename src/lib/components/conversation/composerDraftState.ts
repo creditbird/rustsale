@@ -1,4 +1,5 @@
 import type { ConversationReplyTarget } from '$lib/services/conversationService';
+import type { ComposerMentionRange } from './mentionState';
 
 export interface ConversationReplySelection {
   messageId: number;
@@ -25,11 +26,13 @@ export interface ComposerDraft {
   text: string;
   reply: ConversationReplySelection | null;
   attachments: ComposerAttachmentItem[];
+  mentions: ComposerMentionRange[];
 }
 
 export interface ComposerDraftSnapshot {
   text: string;
   stagedAttachmentIds: string[];
+  mentions: ComposerMentionRange[];
 }
 
 export function composerDraftKey(conversationId: number, channelAccountId: number): string {
@@ -41,6 +44,7 @@ export function createEmptyComposerDraft(): ComposerDraft {
     text: '',
     reply: null,
     attachments: [],
+    mentions: []
   };
 }
 
@@ -75,12 +79,14 @@ export class ComposerDraftCache {
     return {
       text: draft.text,
       stagedAttachmentIds,
+      mentions: draft.mentions ? [...draft.mentions] : []
     };
   }
 
   clearSnapshot(key: string, snapshot: ComposerDraftSnapshot): void {
     const current = this.get(key);
     const newText = current.text === snapshot.text ? '' : current.text;
+    const newMentions = current.text === snapshot.text ? [] : current.mentions;
     const newAttachments = current.attachments.filter(
       (att) => !att.stagedAttachmentId || !snapshot.stagedAttachmentIds.includes(att.stagedAttachmentId)
     );
@@ -89,6 +95,7 @@ export class ComposerDraftCache {
       text: newText,
       attachments: newAttachments,
       reply: null,
+      mentions: newMentions
     });
   }
 

@@ -21,8 +21,16 @@ fn normalized_vn_mobile_phone(value: &str) -> Option<String> {
     matches!(&normalized[0..2], "03" | "05" | "07" | "08" | "09").then_some(normalized)
 }
 
+use super::error::ConversationResult;
+use super::quick_templates::QuickTemplateRepository;
 use super::staging::ConversationAttachmentStager;
-use super::types::{ConversationMessage, MessageDirection, MessageStatus};
+use super::types::{
+    ConversationMessage, ConversationQuickTemplate, CreateConversationQuickTemplateRequest,
+    DeleteConversationQuickTemplateRequest, ForwardConversationMessageRequest,
+    ForwardConversationMessageResult, ListConversationQuickTemplatesRequest,
+    MarkConversationQuickTemplateUsedRequest, MessageDirection, MessageStatus,
+    UpdateConversationQuickTemplateRequest,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedRecall {
@@ -41,6 +49,7 @@ pub struct ConversationService {
     pub repository: Arc<ConversationRepository>,
     pub events: Arc<ConversationEventPublisher>,
     pub stager: ConversationAttachmentStager,
+    pub quick_templates: QuickTemplateRepository,
 }
 
 impl ConversationService {
@@ -50,11 +59,111 @@ impl ConversationService {
         spool_root: std::path::PathBuf,
     ) -> Self {
         let stager = ConversationAttachmentStager::new(spool_root, repository.clone());
+        let quick_templates = QuickTemplateRepository::new(repository.db_path());
         Self {
             repository,
             events,
             stager,
+            quick_templates,
         }
+    }
+
+    pub fn list_quick_templates(
+        &self,
+        request: ListConversationQuickTemplatesRequest,
+    ) -> ConversationResult<Vec<ConversationQuickTemplate>> {
+        if let Some(query) = request
+            .search_query
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            let templates = self.quick_templates.search(query, 500)?;
+            if let Some(category) = request.category.as_deref().filter(|c| !c.trim().is_empty()) {
+                let cat_trimmed = category.trim();
+                Ok(templates
+                    .into_iter()
+                    .filter(|t| {
+                        t.category
+                            .as_deref()
+                            .map(|c| c.eq_ignore_ascii_case(cat_trimmed))
+                            .unwrap_or(false)
+                    })
+                    .collect())
+            } else {
+                Ok(templates)
+            }
+        } else {
+            let templates = self.quick_templates.list(false)?;
+            if let Some(category) = request.category.as_deref().filter(|c| !c.trim().is_empty()) {
+                let cat_trimmed = category.trim();
+                Ok(templates
+                    .into_iter()
+                    .filter(|t| {
+                        t.category
+                            .as_deref()
+                            .map(|c| c.eq_ignore_ascii_case(cat_trimmed))
+                            .unwrap_or(false)
+                    })
+                    .collect())
+            } else {
+                Ok(templates)
+            }
+        }
+    }
+
+    pub fn create_quick_template(
+        &self,
+        request: CreateConversationQuickTemplateRequest,
+    ) -> ConversationResult<ConversationQuickTemplate> {
+        self.quick_templates.create(request)
+    }
+
+    pub fn update_quick_template(
+        &self,
+        request: UpdateConversationQuickTemplateRequest,
+    ) -> ConversationResult<ConversationQuickTemplate> {
+        self.quick_templates.update(request)
+    }
+
+    pub fn delete_quick_template(
+        &self,
+        request: DeleteConversationQuickTemplateRequest,
+    ) -> ConversationResult<()> {
+        self.quick_templates.delete(request.id)
+    }
+
+    pub fn mark_quick_template_used(
+        &self,
+        request: MarkConversationQuickTemplateUsedRequest,
+    ) -> ConversationResult<()> {
+        self.quick_templates.mark_used(request.id).map(|_| ())
+    }
+
+    pub fn forward_conversation_message(
+        &self,
+        request: ForwardConversationMessageRequest,
+    ) -> ConversationResult<ForwardConversationMessageResult> {
+        self.repository.forward_conversation_message(&request)
+    }
+
+    pub fn retry_forward_target(
+        &self,
+        client_operation_id: &str,
+        target_conversation_id: i64,
+    ) -> ConversationResult<super::types::ConversationForwardTargetResult> {
+        self.repository
+            .retry_forward_target(client_operation_id, target_conversation_id)
+    }
+
+    pub fn list_mention_candidates(
+        &self,
+        conversation_id: i64,
+        query: Option<&str>,
+        limit: Option<usize>,
+    ) -> ConversationResult<Vec<super::types::ConversationMentionCandidate>> {
+        self.repository
+            .list_mention_candidates(conversation_id, query, limit)
+            .map_err(|e| e.into())
     }
 
     pub fn prepare_recall(&self, message_id: i64) -> Result<PreparedRecall> {
@@ -472,6 +581,7 @@ impl ConversationService {
                 client_part_id: "part-0".to_string(),
                 content: super::types::ConversationSendPartContent::Text {
                     text: request.text.clone(),
+                    mentions: Vec::new(),
                 },
             }],
         };
@@ -481,10 +591,20 @@ impl ConversationService {
         Ok(res.messages.into_iter().next().unwrap())
     }
 
-    pub fn recover_outbox_startup(&self) -> Result<u64> {
+    pub fn recover_startup(&self) -> Result<u64> {
+        let conn = crate::db::open_db_connection(self.repository.db_path())?;
+        crate::conversation::migration::migrate(&conn)?;
         let now = crate::conversation::types::utc_now();
+        let reaction_repo = crate::conversation::reactions::ReactionMutationRepository::new(
+            self.repository.db_path(),
+        );
+        let _ = reaction_repo.mark_running_delivery_unknown(&now);
         let count = self.repository.mark_running_jobs_delivery_unknown(&now)?;
         Ok(count)
+    }
+
+    pub fn recover_outbox_startup(&self) -> Result<u64> {
+        self.recover_startup()
     }
 
     pub async fn sync_identity_profiles_for_account(
@@ -615,169 +735,550 @@ impl ConversationService {
             job.external_thread_id.clone()
         };
 
-        let content_result: Result<crate::conversation::zalo::client::ProviderOutboundContent> =
-            match job.content_type.as_str() {
-                "text" => Ok(
-                    crate::conversation::zalo::client::ProviderOutboundContent::Text {
-                        text: job.text_content.clone().unwrap_or_default(),
-                    },
-                ),
-                "sticker" => {
-                    let sticker_id = job
-                        .content_json
-                        .get("stickerId")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u32;
-                    let cate_id = job
-                        .content_json
-                        .get("cateId")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u32;
-                    let sticker_type = job
-                        .content_json
-                        .get("type")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u32;
-                    if sticker_id == 0 {
-                        Err(anyhow::anyhow!("Invalid sticker payload missing stickerId"))
-                    } else {
-                        Ok(
-                            crate::conversation::zalo::client::ProviderOutboundContent::Sticker {
-                                sticker_id,
-                                cate_id,
-                                sticker_type,
-                            },
-                        )
-                    }
+        if job.content_type.as_str() == "forward" {
+            let source_message_id = job
+                .content_json
+                .get("sourceMessageId")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let client_operation_id = job
+                .content_json
+                .get("clientOperationId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let source_provider_msg_id = self
+                .repository
+                .get_source_provider_message_id(source_message_id)
+                .ok()
+                .flatten();
+
+            let source_p_msg_id = match source_provider_msg_id {
+                Some(id) if !id.trim().is_empty() => id,
+                _ => {
+                    let err_msg = format!(
+                        "Source message {} has no provider_message_id",
+                        source_message_id
+                    );
+                    self.repository.fail_outbox_job(
+                        &job.job_id,
+                        crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                        &err_msg,
+                        &now,
+                    )?;
+                    let _ = self.repository.update_forward_target_status(
+                        &client_operation_id,
+                        job.conversation_id,
+                        crate::conversation::types::ForwardTargetStatus::Failed,
+                        Some("provider_failure"),
+                        Some(&err_msg),
+                        &now,
+                    );
+                    self.publish_message_invalidation(
+                        job.message_id,
+                        ConversationInvalidationReason::Message,
+                    )?;
+                    return Ok(true);
                 }
-                "attachment" | "image" | "file" | "audio" | "video" => {
-                    if let Some(att) = &job.attachment {
-                        if let Some(path) = &att.local_path {
-                            match std::fs::read(path) {
-                            Ok(data) => Ok(crate::conversation::zalo::client::ProviderOutboundContent::Attachment {
-                                media_type: att.media_type.clone(),
-                                mime_type: att.mime_type.clone(),
-                                file_name: att.file_name.clone().unwrap_or_else(|| "attachment".into()),
-                                size_bytes: data.len() as u64,
-                                data,
-                            }),
-                            Err(e) => Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e)),
-                        }
-                        } else {
-                            Err(anyhow::anyhow!("Attachment job missing local_path"))
-                        }
-                    } else {
-                        Err(anyhow::anyhow!("Attachment job missing attachment record"))
-                    }
-                }
-                other => Err(anyhow::anyhow!("Unsupported content_type {}", other)),
             };
 
-        let content = match content_result {
-            Ok(c) => c,
-            Err(e) => {
-                let err_msg = e.to_string();
-                self.repository.fail_outbox_job(
-                    &job.job_id,
-                    crate::conversation::error::ConversationErrorCode::InvalidRequest,
-                    &err_msg,
-                    &now,
-                )?;
-                self.publish_message_invalidation(
-                    job.message_id,
-                    ConversationInvalidationReason::Message,
-                )?;
-                return Ok(true);
-            }
-        };
+            let _ = self.repository.update_forward_target_status(
+                &client_operation_id,
+                job.conversation_id,
+                crate::conversation::types::ForwardTargetStatus::Sending,
+                None,
+                None,
+                &now,
+            );
 
-        let provider_req = crate::conversation::zalo::client::ProviderSendRequest {
-            external_thread_id: target_thread_id,
-            thread_type,
-            provider_client_message_id: job.provider_client_message_id.clone(),
-            content,
-            quote: job.quote.clone(),
-        };
+            let provider_req = crate::conversation::zalo::client::ProviderForwardRequest {
+                external_thread_id: target_thread_id,
+                thread_type,
+                provider_client_message_id: job.provider_client_message_id.clone(),
+                source_provider_message_id: source_p_msg_id,
+            };
 
-        let retry_policy = crate::conversation::retry::RetryPolicy::default();
+            let retry_policy = crate::conversation::retry::RetryPolicy::default();
 
-        match client.send_part(provider_req).await {
-            Ok(res) => {
-                let message_id = self.repository.complete_outbox_job(
-                    &job.job_id,
-                    &res.provider_message_id,
-                    &res.provider_client_message_id,
-                    &now,
-                )?;
-                self.publish_message_invalidation(
-                    message_id,
-                    ConversationInvalidationReason::Message,
-                )?;
-                Ok(true)
-            }
-            Err(err) => {
-                let err_msg = err.message.clone();
-                match err.kind {
-                    crate::conversation::zalo::client::ProviderSendErrorKind::Authentication => {
-                        self.repository.fail_outbox_job(
-                            &job.job_id,
-                            crate::conversation::error::ConversationErrorCode::ProviderAuth,
-                            &err_msg,
-                            &now,
-                        )?;
-                        let _ = self.repository.set_account_status(
-                            &job.provider_account_key,
-                            crate::conversation::types::AccountConnectionStatus::Invalid,
-                            Some(&err_msg),
-                        );
-                        self.publish_message_invalidation(
-                            job.message_id,
-                            ConversationInvalidationReason::Message,
-                        )?;
-                    }
-                    crate::conversation::zalo::client::ProviderSendErrorKind::Permanent => {
-                        self.repository.fail_outbox_job(
-                            &job.job_id,
-                            crate::conversation::error::ConversationErrorCode::ProviderFailure,
-                            &err_msg,
-                            &now,
-                        )?;
-                        self.publish_message_invalidation(
-                            job.message_id,
-                            ConversationInvalidationReason::Message,
-                        )?;
-                    }
-                    crate::conversation::zalo::client::ProviderSendErrorKind::RateLimited
-                    | crate::conversation::zalo::client::ProviderSendErrorKind::Retryable => {
-                        if retry_policy.should_stop(job.attempt_count) {
+            match client.forward_message(provider_req).await {
+                Ok(res) => {
+                    let message_id = self.repository.complete_outbox_job(
+                        &job.job_id,
+                        &res.provider_message_id,
+                        &res.provider_client_message_id,
+                        &now,
+                    )?;
+
+                    let _ = self.repository.update_forward_target_status(
+                        &client_operation_id,
+                        job.conversation_id,
+                        crate::conversation::types::ForwardTargetStatus::Sent,
+                        None,
+                        None,
+                        &now,
+                    );
+
+                    self.publish_message_invalidation(
+                        message_id,
+                        ConversationInvalidationReason::Message,
+                    )?;
+                    Ok(true)
+                }
+                Err(err) => {
+                    let err_msg = err.message.clone();
+                    match err.kind {
+                        crate::conversation::zalo::client::ProviderSendErrorKind::Authentication => {
+                            self.repository.fail_outbox_job(
+                                &job.job_id,
+                                crate::conversation::error::ConversationErrorCode::ProviderAuth,
+                                &err_msg,
+                                &now,
+                            )?;
+                            let _ = self.repository.update_forward_target_status(
+                                &client_operation_id,
+                                job.conversation_id,
+                                crate::conversation::types::ForwardTargetStatus::Failed,
+                                Some("provider_auth"),
+                                Some(&err_msg),
+                                &now,
+                            );
+                            let _ = self.repository.set_account_status(
+                                &job.provider_account_key,
+                                crate::conversation::types::AccountConnectionStatus::Invalid,
+                                Some(&err_msg),
+                            );
+                            self.publish_message_invalidation(
+                                job.message_id,
+                                ConversationInvalidationReason::Message,
+                            )?;
+                        }
+                        crate::conversation::zalo::client::ProviderSendErrorKind::Permanent => {
                             self.repository.fail_outbox_job(
                                 &job.job_id,
                                 crate::conversation::error::ConversationErrorCode::ProviderFailure,
                                 &err_msg,
                                 &now,
                             )?;
+                            let _ = self.repository.update_forward_target_status(
+                                &client_operation_id,
+                                job.conversation_id,
+                                crate::conversation::types::ForwardTargetStatus::Failed,
+                                Some("provider_failure"),
+                                Some(&err_msg),
+                                &now,
+                            );
+                            self.publish_message_invalidation(
+                                job.message_id,
+                                ConversationInvalidationReason::Message,
+                            )?;
+                        }
+                        crate::conversation::zalo::client::ProviderSendErrorKind::RateLimited
+                        | crate::conversation::zalo::client::ProviderSendErrorKind::Retryable => {
+                            if retry_policy.should_stop(job.attempt_count) {
+                                self.repository.fail_outbox_job(
+                                    &job.job_id,
+                                    crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                                    &err_msg,
+                                    &now,
+                                )?;
+                                let _ = self.repository.update_forward_target_status(
+                                    &client_operation_id,
+                                    job.conversation_id,
+                                    crate::conversation::types::ForwardTargetStatus::Failed,
+                                    Some("provider_failure"),
+                                    Some(&err_msg),
+                                    &now,
+                                );
+                            } else {
+                                let delay =
+                                    retry_policy.delay(job.attempt_count, rand::random::<f64>());
+                                let next_at = (chrono::Utc::now()
+                                    + chrono::Duration::from_std(delay)
+                                        .unwrap_or(chrono::Duration::seconds(5)))
+                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                                self.repository.schedule_outbox_retry(
+                                    &job.job_id,
+                                    &next_at,
+                                    crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                                    &err_msg,
+                                    &now,
+                                )?;
+                            }
+                            self.publish_message_invalidation(
+                                job.message_id,
+                                ConversationInvalidationReason::Message,
+                            )?;
+                        }
+                    }
+                    Ok(true)
+                }
+            }
+        } else {
+            let content_result: Result<crate::conversation::zalo::client::ProviderOutboundContent> =
+                match job.content_type.as_str() {
+                    "text" => {
+                        let mentions = self
+                            .repository
+                            .get_message_mentions_for_provider(job.message_id)
+                            .map_err(|e| {
+                                anyhow::anyhow!("Failed to load mentions: {}", e.message)
+                            })?;
+                        Ok(
+                            crate::conversation::zalo::client::ProviderOutboundContent::Text {
+                                text: job.text_content.clone().unwrap_or_default(),
+                                mentions,
+                            },
+                        )
+                    }
+                    "sticker" => {
+                        let sticker_id = job
+                            .content_json
+                            .get("stickerId")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        let cate_id = job
+                            .content_json
+                            .get("cateId")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        let sticker_type = job
+                            .content_json
+                            .get("type")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        if sticker_id == 0 {
+                            Err(anyhow::anyhow!("Invalid sticker payload missing stickerId"))
                         } else {
-                            let delay =
-                                retry_policy.delay(job.attempt_count, rand::random::<f64>());
-                            let next_at = (chrono::Utc::now()
-                                + chrono::Duration::from_std(delay)
-                                    .unwrap_or(chrono::Duration::seconds(5)))
-                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                            self.repository.schedule_outbox_retry(
+                            Ok(
+                                crate::conversation::zalo::client::ProviderOutboundContent::Sticker {
+                                    sticker_id,
+                                    cate_id,
+                                    sticker_type,
+                                },
+                            )
+                        }
+                    }
+                    "attachment" | "image" | "file" | "audio" | "video" => {
+                        if let Some(att) = &job.attachment {
+                            if let Some(path) = &att.local_path {
+                                match std::fs::read(path) {
+                                Ok(data) => Ok(crate::conversation::zalo::client::ProviderOutboundContent::Attachment {
+                                    media_type: att.media_type.clone(),
+                                    mime_type: att.mime_type.clone(),
+                                    file_name: att.file_name.clone().unwrap_or_else(|| "attachment".into()),
+                                    size_bytes: data.len() as u64,
+                                    data,
+                                }),
+                                Err(e) => Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e)),
+                            }
+                            } else {
+                                Err(anyhow::anyhow!("Attachment job missing local_path"))
+                            }
+                        } else {
+                            Err(anyhow::anyhow!("Attachment job missing attachment record"))
+                        }
+                    }
+                    other => Err(anyhow::anyhow!("Unsupported content_type {}", other)),
+                };
+
+            let content = match content_result {
+                Ok(c) => c,
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    self.repository.fail_outbox_job(
+                        &job.job_id,
+                        crate::conversation::error::ConversationErrorCode::InvalidRequest,
+                        &err_msg,
+                        &now,
+                    )?;
+                    self.publish_message_invalidation(
+                        job.message_id,
+                        ConversationInvalidationReason::Message,
+                    )?;
+                    return Ok(true);
+                }
+            };
+
+            let provider_req = crate::conversation::zalo::client::ProviderSendRequest {
+                external_thread_id: target_thread_id,
+                thread_type,
+                provider_client_message_id: job.provider_client_message_id.clone(),
+                content,
+                quote: job.quote.clone(),
+            };
+
+            let retry_policy = crate::conversation::retry::RetryPolicy::default();
+
+            match client.send_part(provider_req).await {
+                Ok(res) => {
+                    let message_id = self.repository.complete_outbox_job(
+                        &job.job_id,
+                        &res.provider_message_id,
+                        &res.provider_client_message_id,
+                        &now,
+                    )?;
+                    self.publish_message_invalidation(
+                        message_id,
+                        ConversationInvalidationReason::Message,
+                    )?;
+                    Ok(true)
+                }
+                Err(err) => {
+                    let err_msg = err.message.clone();
+                    match err.kind {
+                        crate::conversation::zalo::client::ProviderSendErrorKind::Authentication => {
+                            self.repository.fail_outbox_job(
                                 &job.job_id,
-                                &next_at,
+                                crate::conversation::error::ConversationErrorCode::ProviderAuth,
+                                &err_msg,
+                                &now,
+                            )?;
+                            let _ = self.repository.set_account_status(
+                                &job.provider_account_key,
+                                crate::conversation::types::AccountConnectionStatus::Invalid,
+                                Some(&err_msg),
+                            );
+                            self.publish_message_invalidation(
+                                job.message_id,
+                                ConversationInvalidationReason::Message,
+                            )?;
+                        }
+                        crate::conversation::zalo::client::ProviderSendErrorKind::Permanent => {
+                            self.repository.fail_outbox_job(
+                                &job.job_id,
                                 crate::conversation::error::ConversationErrorCode::ProviderFailure,
                                 &err_msg,
                                 &now,
                             )?;
+                            self.publish_message_invalidation(
+                                job.message_id,
+                                ConversationInvalidationReason::Message,
+                            )?;
                         }
-                        self.publish_message_invalidation(
-                            job.message_id,
-                            ConversationInvalidationReason::Message,
-                        )?;
+                        crate::conversation::zalo::client::ProviderSendErrorKind::RateLimited
+                        | crate::conversation::zalo::client::ProviderSendErrorKind::Retryable => {
+                            if retry_policy.should_stop(job.attempt_count) {
+                                self.repository.fail_outbox_job(
+                                    &job.job_id,
+                                    crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                                    &err_msg,
+                                    &now,
+                                )?;
+                            } else {
+                                let delay =
+                                    retry_policy.delay(job.attempt_count, rand::random::<f64>());
+                                let next_at = (chrono::Utc::now()
+                                    + chrono::Duration::from_std(delay)
+                                        .unwrap_or(chrono::Duration::seconds(5)))
+                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                                self.repository.schedule_outbox_retry(
+                                    &job.job_id,
+                                    &next_at,
+                                    crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                                    &err_msg,
+                                    &now,
+                                )?;
+                            }
+                            self.publish_message_invalidation(
+                                job.message_id,
+                                ConversationInvalidationReason::Message,
+                            )?;
+                        }
                     }
+                    Ok(true)
                 }
-                Ok(true)
+            }
+        }
+    }
+
+    pub async fn set_conversation_reaction(
+        &self,
+        request: &super::types::SetConversationReactionRequest,
+        client: &dyn crate::conversation::zalo::client::ZaloClient,
+    ) -> ConversationResult<super::types::ConversationReactionMutationResult> {
+        use super::error::{ConversationError, ConversationErrorCode};
+        use super::projection::load_message_reaction_groups;
+        use super::reactions::ReactionMutationRepository;
+        use super::types::{
+            ConversationCapabilities, ConversationReactionMutationResult, ReactionMutationStatus,
+        };
+        use crate::db::open_db_connection;
+        use rusqlite::OptionalExtension;
+
+        let msg = match self.repository.get_message_by_id(request.message_id)? {
+            Some(m) => m,
+            None => {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::InvalidRequest,
+                    format!("Message {} not found", request.message_id),
+                ));
+            }
+        };
+
+        let (_provider_account_key, external_thread_id, is_group) = self
+            .repository
+            .lookup_message_thread_info(request.message_id)?;
+
+        let conn = open_db_connection(self.repository.db_path())?;
+        let (capabilities_json, self_external_id_opt): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT capabilities_json, self_external_id FROM channel_accounts WHERE id = ?1",
+                rusqlite::params![msg.channel_account_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((None, None));
+
+        let capabilities = capabilities_json
+            .as_deref()
+            .filter(|s| !s.trim().is_empty() && s.trim() != "{}")
+            .map(ConversationCapabilities::from_json)
+            .unwrap_or_else(ConversationCapabilities::zalo_phase_one);
+
+        if !capabilities.supports_reactions {
+            return Err(ConversationError::new(
+                ConversationErrorCode::ReactionNotSupported,
+                format!(
+                    "Reactions not supported for channel {}",
+                    msg.channel.as_str()
+                ),
+            ));
+        }
+
+        let self_external_id = self_external_id_opt
+            .or_else(|| client.own_external_id())
+            .unwrap_or_else(|| "self".to_string());
+
+        let provider_message_id = match msg
+            .provider_message_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(id) => id,
+            None => {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::ReactionNotSupported,
+                    format!(
+                        "Message {} is missing provider message ID",
+                        request.message_id
+                    ),
+                ));
+            }
+        };
+
+        let provider_client_message_id = match msg
+            .provider_client_message_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                msg.content
+                    .get("cliMsgId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(String::from)
+            }) {
+            Some(id) => id,
+            None => {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::ReactionNotSupported,
+                    format!(
+                        "Message {} is missing provider client message ID",
+                        request.message_id
+                    ),
+                ));
+            }
+        };
+
+        let thread_type = if is_group {
+            zca_rs::models::ThreadType::Group
+        } else {
+            zca_rs::models::ThreadType::User
+        };
+
+        let reaction_mutations = ReactionMutationRepository::new(self.repository.db_path());
+        let mutation = reaction_mutations.begin(request, msg.channel_account_id)?;
+
+        if mutation.is_existing
+            || mutation.status == "succeeded"
+            || mutation.status == "failed"
+            || mutation.status == "delivery_unknown"
+        {
+            let read_conn = open_db_connection(self.repository.db_path())?;
+            let groups = load_message_reaction_groups(&read_conn, request.message_id)?;
+            let status = match mutation.status.as_str() {
+                "succeeded" => ReactionMutationStatus::Succeeded,
+                "failed" => ReactionMutationStatus::Failed,
+                _ => ReactionMutationStatus::DeliveryUnknown,
+            };
+            return Ok(ConversationReactionMutationResult {
+                message_id: request.message_id,
+                reaction_code: request.reaction_code,
+                status,
+                reactions: groups,
+            });
+        }
+
+        let provider_req = crate::conversation::zalo::client::ProviderReactionRequest {
+            provider_message_id,
+            provider_client_message_id,
+            external_thread_id,
+            thread_type,
+            reaction_code: request.reaction_code,
+            client_mutation_id: Some(mutation.client_mutation_id.clone()),
+        };
+
+        let now = crate::conversation::types::utc_now();
+
+        match client.set_reaction(provider_req).await {
+            Ok(()) => {
+                let groups = reaction_mutations.succeed(
+                    &mutation.client_mutation_id,
+                    &self_external_id,
+                    &now,
+                )?;
+                self.publish_message_invalidation(
+                    request.message_id,
+                    super::events::ConversationInvalidationReason::Reaction,
+                )?;
+                Ok(ConversationReactionMutationResult {
+                    message_id: request.message_id,
+                    reaction_code: request.reaction_code,
+                    status: ReactionMutationStatus::Succeeded,
+                    reactions: groups,
+                })
+            }
+            Err(err) => {
+                use crate::conversation::zalo::client::ProviderSendErrorKind;
+                let (is_unknown, mutation_status) = match err.kind {
+                    ProviderSendErrorKind::Retryable | ProviderSendErrorKind::RateLimited => {
+                        (true, ReactionMutationStatus::DeliveryUnknown)
+                    }
+                    ProviderSendErrorKind::Authentication | ProviderSendErrorKind::Permanent => {
+                        (false, ReactionMutationStatus::Failed)
+                    }
+                };
+
+                reaction_mutations.fail(
+                    &mutation.client_mutation_id,
+                    &format!("{:?}", err.kind),
+                    &err.message,
+                    is_unknown,
+                )?;
+
+                if is_unknown {
+                    let _ = client.request_old_reactions(thread_type, None);
+                }
+
+                let read_conn = open_db_connection(self.repository.db_path())?;
+                let current_groups = load_message_reaction_groups(&read_conn, request.message_id)?;
+
+                Ok(ConversationReactionMutationResult {
+                    message_id: request.message_id,
+                    reaction_code: request.reaction_code,
+                    status: mutation_status,
+                    reactions: current_groups,
+                })
             }
         }
     }

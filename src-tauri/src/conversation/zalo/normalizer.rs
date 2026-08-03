@@ -1,5 +1,6 @@
 use crate::conversation::repository::{
-    NormalizedAttachment, NormalizedIdentity, NormalizedMessage, NormalizedReplyReference,
+    NormalizedAttachment, NormalizedIdentity, NormalizedMention, NormalizedMessage,
+    NormalizedReplyReference,
 };
 use crate::conversation::types::{Channel, ConversationKind, MessageDirection, MessageStatus};
 use anyhow::Result;
@@ -375,6 +376,7 @@ fn normalize_message(
         .as_ref()
         .and_then(|q| serde_json::to_value(q).ok());
     let parts = content_parts(&base.msg_type, &base.content, quote_val.as_ref());
+    let mentions = extract_zalo_mentions(parts.text_content.as_deref(), &parts.content);
 
     Ok(NormalizedMessage {
         channel: Channel::Zalo,
@@ -399,6 +401,7 @@ fn normalize_message(
         content: parts.content,
         attachments: parts.attachments,
         reply: parts.reply,
+        mentions,
         raw_payload: Some(serde_json::to_value(&base)?),
         provider_timestamp: Some(provider_time(&base.ts)),
         ingested_at: now,
@@ -408,6 +411,77 @@ fn normalize_message(
             MessageStatus::Received
         },
     })
+}
+
+fn extract_zalo_mentions(text: Option<&str>, content: &Value) -> Vec<NormalizedMention> {
+    let mut mentions = Vec::new();
+    let mentions_arr = content.get("mentions").and_then(Value::as_array);
+
+    let mentions_arr = match mentions_arr {
+        Some(arr) => arr,
+        None => return mentions,
+    };
+
+    for item in mentions_arr {
+        let obj = match item.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        let target_uid = obj
+            .get("target_uid")
+            .or_else(|| obj.get("uid"))
+            .or_else(|| obj.get("targetUid"))
+            .or_else(|| obj.get("userId"))
+            .or_else(|| obj.get("target_external_id"))
+            .and_then(Value::as_str);
+
+        let pos = obj
+            .get("utf16_offset")
+            .or_else(|| obj.get("offset"))
+            .or_else(|| obj.get("pos"))
+            .or_else(|| obj.get("start_utf16"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+
+        let len = obj
+            .get("utf16_len")
+            .or_else(|| obj.get("len"))
+            .or_else(|| obj.get("length_utf16"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+
+        let display_text = obj
+            .get("mention_text")
+            .or_else(|| obj.get("display_text"))
+            .or_else(|| obj.get("text"))
+            .and_then(Value::as_str)
+            .map(String::from)
+            .or_else(|| {
+                text.and_then(|txt| crate::conversation::mentions::utf16_slice(txt, pos, len))
+            })
+            .unwrap_or_default();
+
+        let is_all = target_uid == Some("-1")
+            || target_uid == Some("all")
+            || obj.get("is_all").and_then(Value::as_bool).unwrap_or(false);
+
+        let external_id = if is_all {
+            Some("all".to_string())
+        } else {
+            target_uid.map(String::from)
+        };
+
+        mentions.push(NormalizedMention {
+            identity_id: None,
+            external_id,
+            display_text,
+            start_utf16: pos,
+            length_utf16: len,
+        });
+    }
+
+    mentions
 }
 
 fn normalize_reaction(provider_account_key: &str, reaction: &Reaction) -> Vec<ZaloMutation> {

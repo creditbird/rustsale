@@ -1,5 +1,6 @@
 pub mod client;
 pub mod normalizer;
+pub mod phase2a_probe;
 pub mod probe;
 pub mod sticker_cache;
 pub mod supervisor;
@@ -17,6 +18,8 @@ pub(crate) const GROUP_REACTION_HISTORY_SCOPE: &str = "group_reaction_history";
 mod client_test;
 #[cfg(test)]
 mod normalizer_test;
+#[cfg(test)]
+mod phase2a_probe_test;
 #[cfg(test)]
 mod probe_test;
 #[cfg(test)]

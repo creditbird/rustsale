@@ -17,6 +17,19 @@ pub enum ConversationErrorCode {
     RecallNotAllowed,
     InvalidRequest,
     ProviderFailure,
+    ReactionNotSupported,
+    ReactionRemovalNotVerified,
+    ReactionDeliveryUnknown,
+    ForwardNotSupported,
+    ForwardSourceMissingProviderIds,
+    ForwardTargetAccountMismatch,
+    ForwardTargetLimitExceeded,
+    ForwardDeliveryUnknown,
+    TemplateLimitExceeded,
+    TemplateShortcutConflict,
+    InvalidMentionRange,
+    MentionParticipantNotFound,
+    MentionDirectConversationUnsupported,
 }
 
 impl ConversationErrorCode {
@@ -35,9 +48,24 @@ impl ConversationErrorCode {
             Self::RecallNotAllowed => "recall_not_allowed",
             Self::InvalidRequest => "invalid_request",
             Self::ProviderFailure => "provider_failure",
+            Self::ReactionNotSupported => "reaction_not_supported",
+            Self::ReactionRemovalNotVerified => "reaction_removal_not_verified",
+            Self::ReactionDeliveryUnknown => "reaction_delivery_unknown",
+            Self::ForwardNotSupported => "forward_not_supported",
+            Self::ForwardSourceMissingProviderIds => "forward_source_missing_provider_ids",
+            Self::ForwardTargetAccountMismatch => "forward_target_account_mismatch",
+            Self::ForwardTargetLimitExceeded => "forward_target_limit_exceeded",
+            Self::ForwardDeliveryUnknown => "forward_delivery_unknown",
+            Self::TemplateLimitExceeded => "template_limit_exceeded",
+            Self::TemplateShortcutConflict => "template_shortcut_conflict",
+            Self::InvalidMentionRange => "invalid_mention_range",
+            Self::MentionParticipantNotFound => "mention_participant_not_found",
+            Self::MentionDirectConversationUnsupported => "mention_direct_conversation_unsupported",
         }
     }
 }
+
+pub type ConversationResult<T> = Result<T, ConversationError>;
 
 #[derive(Debug, Clone)]
 pub struct ConversationError {

@@ -1,64 +1,53 @@
-# Task Report: Task 12 - Svelte frontend Outreach & Scraper Panels
+# Task 12 Summary Report - Dispatch Forward Parts and Recalculate Status
 
-## 1. Implementation Overview
+## Overview
+Implemented Task 12 of Zalo Rich Chat Phase 2A, completing the end-to-end forward message dispatch worker, aggregate status recalculation logic, startup recovery, manual target retry, and echo reconciliation.
 
-We have successfully implemented the Svelte 5 frontend panels for Google Maps Scraper and Zalo Outreach according to the task brief requirements.
+## Implemented Work
 
-### Google Maps Scraper (`src/lib/components/GoogleMapsScraper.svelte`)
-- **Mode Toggle**: Provides tab-based selection between **Keyword Search** and **Grid Crawl** modes.
-- **Form Inputs**:
-  - Keyword search input field (with storefront icon decoration).
-  - Location search input (only visible in Keyword Search mode).
-  - Bounding box inputs (Min/Max Lat, Min/Max Lng) and range-based step size slider (only visible in Grid Crawl mode).
-- **Campaign Execution**: Initiates scraping via the Tauri command `start_google_maps_scrape`.
-- **Real-Time Progress & Logs**:
-  - Listens to `"scrape-progress"` event to display a modern, animated progress bar (0% - 100%).
-  - Listens to `"scrape-log"` event to print detailed execution logs in a terminal-like monospace CLI container.
-  - Listens to `"scrape-complete"` to transition from active/scraping state to idle and output the final status.
+1. **Forward Outbox Worker (`src-tauri/src/conversation/service.rs`)**:
+   - Added support for `ConversationSendPartContent::Forward` / `content_type == "forward"`.
+   - Extracted `sourceMessageId` and `clientOperationId` from `job.content_json`.
+   - Checked source message's `provider_message_id`.
+   - Updated target status in `message_forward_targets` to `Sending` before dispatching.
+   - Built `ProviderForwardRequest` and dispatched via `ZaloClient.forward_message`.
+   - Updated target status to `Sent` upon success, or `Failed` / `Retryable` on errors.
 
-### Zalo Outreach (`src/lib/components/ZaloOutreach.svelte`)
-- **Session Manager Panel**:
-  - Displays linked Zalo sessions loaded dynamically via the `get_zalo_sessions` command.
-  - "Add Session (QR Login)" button: Opens a modal with backdrop blur overlay. Triggers the `start_zalo_qr_login` command and listens to Tauri events:
-    - `"zalo-qr-code"`: Displays the base64-encoded QR code image.
-    - `"zalo-qr-scanned"`: Displays the user's avatar and name to confirm scanning.
-    - `"zalo-qr-success"`: Displays login success, reloads linked sessions, and auto-closes the modal.
-  - "Delete Session": Invokes `delete_zalo_session` to remove active accounts.
-- **Outreach Template Panel**:
-  - Displays existing templates loaded via `get_outreach_templates`.
-  - Supports template Creation, Editing, and Deletion via standard form modals using `create_outreach_template`, `update_outreach_template`, and `delete_outreach_template` commands.
-- **Campaign Execution Panel**:
-  - Step 1: Active session selection dropdown.
-  - Step 2: Template selection dropdown.
-  - Step 3: Checkbox leads selection table/box populated with leads loaded from the local DB via `crmService.getLeads()`. Includes a search filter and "Select All / Deselect All" helper buttons.
-  - Launches outreach using `send_zalo_outreach` Tauri command.
-  - Campaign Progress Console: Displays active campaign status using `"outreach-progress"`, `"outreach-log"`, and `"outreach-complete"` event listeners.
+2. **Zalo Client Forwarding API (`src-tauri/src/conversation/zalo/client.rs`)**:
+   - Defined `ProviderForwardRequest` struct.
+   - Added `forward_message` method to `ZaloClient` trait and `RealZaloClient` calling `zca_rs::Zalo::forward_message_one`.
+   - Updated `FakeZaloClient` in test suites (`client_test.rs` & `service_test.rs`) to capture forward requests.
 
-### Sidebar & Page Routing
-- **Sidebar (`src/lib/components/Sidebar.svelte`)**: Included new menu items:
-  - `scraper` (label: "Google Maps Scraper", icon: "map")
-  - `outreach` (label: "Zalo Outreach", icon: "campaign")
-- **Main Shell Router (`src/routes/+page.svelte`)**:
-  - Keeps `<GoogleMapsScraper />` and `<ZaloOutreach />` components permanently mounted in the DOM to preserve active logs, progress states, and Tauri listeners, toggling their visibility using a CSS class (`.hidden`).
+3. **Status Recalculation & Target Helpers (`src-tauri/src/conversation/forwarding.rs`)**:
+   - Implemented `compute_aggregate_operation_status` handling all state combinations:
+     - `queued` when all targets are `queued`
+     - `sending` when all targets are `sending` (or sending/queued with 0 sent/failed/unknown)
+     - `sent` when all targets are `sent`
+     - `failed` when all targets are `failed`
+     - `delivery_unknown` when all targets are `delivery_unknown`
+     - `partial` for mixed states (e.g. sent + failed, sent + queued)
+   - Implemented `recalculate_forward_operation_status`, `update_forward_target_status`, and `retry_forward_target`.
 
----
+4. **Startup Recovery (`src-tauri/src/conversation/repository.rs`)**:
+   - Updated `mark_running_jobs_delivery_unknown` to update running/sending forward target jobs to `delivery_unknown` and recalculate forward operation aggregate status upon app launch.
 
-## 2. Design & Styling (Strict Light Mode)
+5. **Echo Reconciliation (`src-tauri/src/conversation/repository.rs`)**:
+   - Updated `apply_normalized_message` so that inbound echo matching a forwarded message updates target status to `sent` and recalculates operation status without duplicating message records.
 
-All styles comply with the strict light-mode vanilla CSS palette defined in `src/index.css`.
-- **Aesthetics**: Premium shadows, clean borders, retro-monospace output consoles, custom scrollbar styling, rounded cards, and responsive grid layouts.
-- **Interactions**: Interactive components are accessible buttons (`<button type="button">`) with hover feedback, disabled states, loading spinners, and smooth micro-animations.
+6. **Exposed Service Retry Method (`src-tauri/src/conversation/service.rs`)**:
+   - Exposed `retry_forward_target` on `ConversationService`.
 
----
+7. **Unit Test Suite**:
+   - Added all 7 required test cases in `service_test.rs`:
+     - `forward_worker_calls_one_target_with_stable_client_id`
+     - `forward_success_persists_provider_ids`
+     - `forward_echo_updates_queued_target_without_duplicate`
+     - `successful_target_is_not_requeued_when_sibling_fails`
+     - `forward_running_after_restart_becomes_delivery_unknown`
+     - `forward_operation_status_rules_cover_mixed_states`
+     - `manual_retry_requeues_only_failed_target`
 
-## 3. Verification & Compliance Summary
-
-- **Static Check**: Ran `bun run check` which finished successfully with **0 errors and 0 warnings**.
-- **Production Build**: Successfully compiled Vite static build (`bun run build`) with zero errors.
-- **GitNexus Integrity**: Verified scope with `gitnexus_detect_changes` showing a low-risk impact limited strictly to the 4 frontend files.
-
-## 4. Commits Created
-
-- **Commit**: `e30a5a3` - `feat(frontend): implement Google Maps Scraper and Zalo Outreach panels in Svelte 5`
-- **Commit**: `500d72e` - `fix(frontend): resolve tauri ipc mismatch, robust state derivation, and visibility toggling state preservation`
-- **Commit**: `b597f8d` - `fix(frontend): adjust tauri ipc parameter case, add failed progress checking, fix state references, and improve input/UA robustness`
+## Verification
+- `cargo test --manifest-path src-tauri/Cargo.toml forward_`: **Passed (14/14 tests)**
+- `cargo test --manifest-path src-tauri/Cargo.toml forwarding_test`: **Passed (7/7 tests)**
+- `bunx gitnexus analyze`: **Indexed successfully**

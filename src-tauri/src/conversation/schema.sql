@@ -217,3 +217,83 @@ CREATE TABLE IF NOT EXISTS conversation_staged_attachments (
 
 CREATE INDEX IF NOT EXISTS idx_staged_attachments_cleanup
 ON conversation_staged_attachments(status, expires_at, created_at);
+
+CREATE TABLE IF NOT EXISTS conversation_quick_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    shortcut TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    body_text TEXT NOT NULL,
+    category TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_quick_templates_active_shortcut
+ON conversation_quick_templates(is_active, shortcut);
+
+CREATE TABLE IF NOT EXISTS message_mentions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    identity_id INTEGER,
+    external_id TEXT,
+    display_text TEXT NOT NULL,
+    start_utf16 INTEGER NOT NULL,
+    length_utf16 INTEGER NOT NULL CHECK (length_utf16 > 0),
+    created_at TEXT NOT NULL,
+    UNIQUE(message_id, start_utf16, length_utf16),
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY(identity_id) REFERENCES channel_identities(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_mentions_message
+ON message_mentions(message_id);
+
+CREATE TABLE IF NOT EXISTS reaction_mutations (
+    client_mutation_id TEXT PRIMARY KEY,
+    message_id INTEGER NOT NULL,
+    reaction_code TEXT NOT NULL,
+    active INTEGER NOT NULL CHECK (active IN (0, 1)),
+    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'succeeded', 'failed', 'delivery_unknown')),
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_reaction_mutations_message
+ON reaction_mutations(message_id, created_at);
+
+CREATE TABLE IF NOT EXISTS message_forward_operations (
+    client_operation_id TEXT PRIMARY KEY,
+    source_message_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sending', 'partial', 'sent', 'failed', 'delivery_unknown')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(source_message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_forward_operations_source
+ON message_forward_operations(source_message_id);
+
+CREATE TABLE IF NOT EXISTS message_forward_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_operation_id TEXT NOT NULL,
+    target_conversation_id INTEGER NOT NULL,
+    send_batch_id TEXT,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sending', 'sent', 'failed', 'delivery_unknown')),
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(client_operation_id, target_conversation_id),
+    FOREIGN KEY(client_operation_id) REFERENCES message_forward_operations(client_operation_id) ON DELETE CASCADE,
+    FOREIGN KEY(target_conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY(send_batch_id) REFERENCES message_send_batches(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_forward_targets_operation
+ON message_forward_targets(client_operation_id, status);

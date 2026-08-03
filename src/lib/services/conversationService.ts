@@ -41,6 +41,155 @@ export interface InboxReplyTarget {
   lastMessageAt: string | null;
 }
 
+export type ConversationReactionCode = 'heart' | 'like' | 'haha' | 'wow' | 'cry' | 'angry';
+
+export interface ConversationMentionInput {
+  identityId: number;
+  displayText: string;
+  startUtf16: number;
+  lengthUtf16: number;
+}
+
+export interface ConversationMention {
+  identityId: number | null;
+  externalId: string;
+  displayText: string;
+  startUtf16: number;
+  lengthUtf16: number;
+}
+
+export interface ConversationMentionCandidate {
+  identityId: number;
+  externalId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  participantRole: string;
+}
+
+export interface ListConversationMentionCandidatesRequest {
+  conversationId: number;
+  query?: string;
+  limit?: number;
+}
+
+export interface ConversationQuickTemplate {
+  id: number;
+  shortcut: string;
+  title: string;
+  bodyText: string;
+  category: string | null;
+  isActive: boolean;
+  usageCount: number;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListConversationQuickTemplatesRequest {
+  category?: string;
+  searchQuery?: string;
+  includeInactive?: boolean;
+}
+
+export interface CreateConversationQuickTemplateRequest {
+  shortcut: string;
+  title: string;
+  bodyText: string;
+  category?: string | null;
+}
+
+export interface UpdateConversationQuickTemplateRequest {
+  id: number;
+  shortcut: string;
+  title: string;
+  bodyText: string;
+  category?: string | null;
+  isActive: boolean;
+}
+
+export interface DeleteConversationQuickTemplateRequest {
+  id: number;
+}
+
+export interface MarkConversationQuickTemplateUsedRequest {
+  id: number;
+}
+
+export interface SetConversationReactionRequest {
+  messageId: number;
+  reaction: ConversationReactionCode;
+  active: boolean;
+  clientMutationId: string;
+}
+
+export interface ConversationReactionMutationResult {
+  clientMutationId: string;
+  messageId: number;
+  reaction: ConversationReactionCode;
+  requestedActive: boolean;
+  status: 'running' | 'succeeded' | 'failed' | 'delivery_unknown';
+  reactions: ConversationReactionGroup[];
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+export interface ForwardConversationMessageRequest {
+  sourceMessageId: number;
+  targetConversationIds: number[];
+  clientOperationId: string;
+}
+
+export interface ConversationForwardTargetResult {
+  targetConversationId: number;
+  clientBatchId: string;
+  status: 'queued' | 'sending' | 'sent' | 'failed' | 'delivery_unknown';
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+export interface ForwardConversationMessageResult {
+  clientOperationId: string;
+  sourceMessageId: number;
+  status: 'queued' | 'sending' | 'partial' | 'sent' | 'failed' | 'delivery_unknown';
+  targets: ConversationForwardTargetResult[];
+}
+
+export interface RetryConversationForwardTargetRequest {
+  clientOperationId: string;
+  targetConversationId: number;
+}
+
+export interface ConversationMessageActions {
+  reply: boolean;
+  copy: boolean;
+  recall: boolean;
+  forward: boolean;
+  react: boolean;
+}
+
+export interface ConversationReactionCapabilities {
+  enabled?: boolean;
+  supported: ConversationReactionCode[];
+}
+
+export interface ConversationForwardCapabilities {
+  enabled: boolean;
+  maxTargetsPerForward?: number;
+  maxTargets?: number;
+}
+
+export interface ConversationMentionCapabilities {
+  enabled: boolean;
+  maxMentionsPerMessage?: number;
+  supportsAllMention?: boolean;
+  maxPerMessage?: number;
+}
+
+export interface ConversationQuickTemplateCapabilities {
+  enabled: boolean;
+  maxTemplates: number;
+}
+
 export interface ConversationCapabilities {
   maxTextLength: number;
   maxAttachmentsPerBatch: number;
@@ -54,6 +203,10 @@ export interface ConversationCapabilities {
   supportsRecall: boolean;
   recallWindowSeconds: number | null;
   supportsReactions: boolean;
+  reactions?: ConversationReactionCapabilities;
+  forward?: ConversationForwardCapabilities;
+  mentions?: ConversationMentionCapabilities;
+  quickTemplates?: ConversationQuickTemplateCapabilities;
 }
 
 export interface ConversationParticipantSummary {
@@ -150,6 +303,8 @@ export interface ConversationMessage {
   reactions: ConversationReactionGroup[];
   batchIndex: number | null;
   sendBatch: ConversationSendBatchSummary | null;
+  mentions?: ConversationMention[];
+  actions?: ConversationMessageActions;
 }
 
 export interface TimelinePage {
@@ -192,7 +347,7 @@ export interface StagedConversationAttachment {
 }
 
 export type SendPartContent =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; mentions?: ConversationMentionInput[] }
   | { type: 'sticker'; stickerId: number; cateId: number; stickerType: number }
   | { type: 'attachment'; stagedAttachmentId: string };
 
@@ -313,6 +468,33 @@ export const searchZaloStickers = (conversationId: number, query: string, limit 
 
 export const recallConversationMessage = (messageId: number) =>
   invoke<ConversationMessage>('recall_conversation_message', { request: { messageId } });
+
+export const setConversationReaction = (request: SetConversationReactionRequest) =>
+  invoke<ConversationReactionMutationResult>('set_conversation_reaction', { request });
+
+export const forwardConversationMessage = (request: ForwardConversationMessageRequest) =>
+  invoke<ForwardConversationMessageResult>('forward_conversation_message', { request });
+
+export const retryConversationForwardTarget = (request: RetryConversationForwardTargetRequest) =>
+  invoke<ConversationForwardTargetResult>('retry_conversation_forward_target', { request });
+
+export const listConversationQuickTemplates = (request: ListConversationQuickTemplatesRequest = {}) =>
+  invoke<ConversationQuickTemplate[]>('list_conversation_quick_templates', { request });
+
+export const createConversationQuickTemplate = (request: CreateConversationQuickTemplateRequest) =>
+  invoke<ConversationQuickTemplate>('create_conversation_quick_template', { request });
+
+export const updateConversationQuickTemplate = (request: UpdateConversationQuickTemplateRequest) =>
+  invoke<ConversationQuickTemplate>('update_conversation_quick_template', { request });
+
+export const deleteConversationQuickTemplate = (id: number) =>
+  invoke<void>('delete_conversation_quick_template', { request: { id } });
+
+export const markConversationQuickTemplateUsed = (id: number) =>
+  invoke<void>('mark_conversation_quick_template_used', { request: { id } });
+
+export const listConversationMentionCandidates = (request: ListConversationMentionCandidatesRequest) =>
+  invoke<ConversationMentionCandidate[]>('list_conversation_mention_candidates', { request });
 
 // Ref-counted Event Bridge Logic
 type InvalidationListener = (event: ConversationInvalidatedEvent) => void;

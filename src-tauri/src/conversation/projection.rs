@@ -1,5 +1,5 @@
 use crate::conversation::types::{
-    ConversationAttachment, ConversationMessage, ConversationReactionActor,
+    ConversationAttachment, ConversationMention, ConversationMessage, ConversationReactionActor,
     ConversationReactionGroup, ConversationReplyTarget, ConversationSendBatchSummary,
     MessageSendBatchStatus,
 };
@@ -205,6 +205,68 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         reactions_map.insert(msg_id, groups);
     }
 
+    let mut mentions_map: HashMap<i64, Vec<ConversationMention>> = HashMap::new();
+    let mentions_query = format!(
+        "SELECT mm.message_id, mm.start_utf16, mm.length_utf16, mm.identity_id, mm.external_id,
+                COALESCE(ci.display_name, mm.display_text) AS display_name
+         FROM message_mentions mm
+         LEFT JOIN channel_identities ci ON ci.id = mm.identity_id
+         WHERE mm.message_id IN ({placeholders})
+         ORDER BY mm.message_id ASC, mm.start_utf16 ASC"
+    );
+    let mut mentions_stmt = conn.prepare(&mentions_query)?;
+    let mut mentions_rows = mentions_stmt.query(params_ref.as_slice())?;
+    while let Some(row) = mentions_rows.next()? {
+        let msg_id: i64 = row.get(0)?;
+        let pos: i64 = row.get(1)?;
+        let len: i64 = row.get(2)?;
+        let target_identity_id: Option<i64> = row.get(3)?;
+        let target_external_id: Option<String> = row.get(4)?;
+        let display_name: Option<String> = row.get(5)?;
+        let is_all = target_external_id.as_deref() == Some("all")
+            || (target_identity_id.is_none()
+                && target_external_id.is_none()
+                && display_name.as_deref() == Some("all"));
+
+        mentions_map
+            .entry(msg_id)
+            .or_default()
+            .push(ConversationMention {
+                pos: pos as usize,
+                len: len as usize,
+                target_identity_id,
+                target_external_id,
+                display_name,
+                is_all,
+            });
+    }
+
+    let mut caps_map: HashMap<i64, crate::conversation::types::ConversationCapabilities> =
+        HashMap::new();
+    let caps_query = format!(
+        "SELECT DISTINCT ca.id, ca.capabilities_json
+         FROM channel_accounts ca
+         JOIN channel_conversations cc ON cc.channel_account_id = ca.id
+         JOIN messages m ON m.conversation_id = cc.id
+         WHERE m.id IN ({placeholders})"
+    );
+    let mut caps_stmt = conn.prepare(&caps_query)?;
+    let mut caps_rows = caps_stmt.query(params_ref.as_slice())?;
+    while let Some(row) = caps_rows.next()? {
+        let acc_id: i64 = row.get(0)?;
+        let json_str: String = row.get(1)?;
+        let caps = if json_str.trim().is_empty() || json_str.trim() == "{}" {
+            crate::conversation::types::ConversationCapabilities::zalo_phase_one()
+        } else {
+            crate::conversation::types::ConversationCapabilities::from_json(&json_str)
+        };
+        caps_map.insert(acc_id, caps);
+    }
+
+    let forwardable_types = [
+        "text", "image", "video", "audio", "file", "sticker", "link", "forward",
+    ];
+
     for msg in messages.iter_mut() {
         if let Some(atts) = attachments_map.remove(&msg.id) {
             msg.attachments = atts;
@@ -220,7 +282,100 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         if let Some(batch) = batch_map.remove(&msg.id) {
             msg.send_batch = Some(batch);
         }
+        if let Some(mentions) = mentions_map.remove(&msg.id) {
+            msg.mentions = mentions;
+        }
+
+        let has_provider_ids = msg
+            .provider_message_id
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+            && msg
+                .provider_client_message_id
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty());
+        let is_not_removed = msg.removed_at.is_none();
+        let caps = caps_map.get(&msg.channel_account_id);
+
+        let forward_enabled = caps.is_none_or(|c| c.forward.enabled);
+        let react_enabled = caps.is_none_or(|c| c.supports_reactions && c.reactions.enabled);
+        let reply_enabled = caps.is_none_or(|c| c.supports_quote_reply);
+        let recall_enabled = caps.is_none_or(|c| c.supports_recall);
+
+        msg.actions = crate::conversation::types::ConversationMessageActions {
+            reply: reply_enabled && is_not_removed && has_provider_ids,
+            recall: recall_enabled
+                && is_not_removed
+                && msg.direction == crate::conversation::types::MessageDirection::Outbound
+                && has_provider_ids,
+            forward: forward_enabled
+                && is_not_removed
+                && has_provider_ids
+                && forwardable_types.contains(&msg.content_type.as_str()),
+            react: react_enabled && is_not_removed && has_provider_ids,
+        };
     }
 
     Ok(())
+}
+
+pub fn load_message_reaction_groups(
+    conn: &rusqlite::Connection,
+    message_id: i64,
+) -> rusqlite::Result<Vec<ConversationReactionGroup>> {
+    let react_query = "SELECT mr.reaction, mr.actor_external_id,
+                ci.id, ci.display_name, ci.avatar_url, ca.self_external_id
+         FROM message_reactions mr
+         JOIN messages m ON m.id = mr.message_id
+         JOIN channel_conversations cc ON cc.id = m.conversation_id
+         JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+         LEFT JOIN channel_identities ci
+           ON ci.channel = ca.channel
+          AND ci.identity_namespace = 'zalo_uid'
+          AND ci.external_id = mr.actor_external_id
+         WHERE mr.message_id = ?1 AND mr.removed_at IS NULL
+         ORDER BY mr.reacted_at ASC";
+
+    let mut stmt = conn.prepare(react_query)?;
+    let mut rows = stmt.query(rusqlite::params![message_id])?;
+
+    let mut raw_reactions: std::collections::BTreeMap<
+        String,
+        (u32, bool, Vec<ConversationReactionActor>),
+    > = std::collections::BTreeMap::new();
+
+    while let Some(row) = rows.next()? {
+        let icon: String = row.get(0)?;
+        let actor_external_id: String = row.get(1)?;
+        let identity_id: Option<i64> = row.get(2)?;
+        let display_name: Option<String> = row.get(3)?;
+        let avatar_url: Option<String> = row.get(4)?;
+        let self_external_id: Option<String> = row.get(5)?;
+
+        let entry = raw_reactions
+            .entry(icon)
+            .or_insert_with(|| (0, false, Vec::new()));
+        entry.0 += 1;
+        entry.1 |= self_external_id.as_deref() == Some(actor_external_id.as_str());
+        entry.2.push(ConversationReactionActor {
+            identity_id,
+            external_id: actor_external_id,
+            display_name,
+            avatar_url,
+        });
+    }
+
+    let groups = raw_reactions
+        .into_iter()
+        .map(
+            |(reaction_icon, (count, includes_me, actors))| ConversationReactionGroup {
+                reaction_icon,
+                count,
+                includes_me,
+                actors,
+            },
+        )
+        .collect();
+
+    Ok(groups)
 }

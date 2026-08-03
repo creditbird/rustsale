@@ -100,6 +100,15 @@ import {
   discardConversationStagedAttachment,
   searchZaloStickers,
   recallConversationMessage,
+  setConversationReaction,
+  forwardConversationMessage,
+  retryConversationForwardTarget,
+  listConversationQuickTemplates,
+  createConversationQuickTemplate,
+  updateConversationQuickTemplate,
+  deleteConversationQuickTemplate,
+  markConversationQuickTemplateUsed,
+  listConversationMentionCandidates,
   getBridgeRefCount,
   getBridgePromise,
   type ConversationInvalidatedEvent
@@ -336,6 +345,118 @@ describe('conversationService IPC command wrappers', () => {
     expect(invokedCommands).toContainEqual({
       command: 'recall_conversation_message',
       args: { request: { messageId: 105 } }
+    });
+  });
+
+  test('setConversationReaction calls set_conversation_reaction with request', async () => {
+    const req = {
+      messageId: 10,
+      reaction: 'heart' as const,
+      active: true,
+      clientMutationId: 'mut-1'
+    };
+    await setConversationReaction(req);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'set_conversation_reaction',
+      args: { request: req }
+    });
+  });
+
+  test('forwardConversationMessage calls forward_conversation_message with request', async () => {
+    const req = {
+      sourceMessageId: 10,
+      targetConversationIds: [20, 21],
+      clientOperationId: 'op-1'
+    };
+    await forwardConversationMessage(req);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'forward_conversation_message',
+      args: { request: req }
+    });
+  });
+
+  test('retryConversationForwardTarget calls retry_conversation_forward_target with request', async () => {
+    const req = {
+      clientOperationId: 'op-1',
+      targetConversationId: 20
+    };
+    await retryConversationForwardTarget(req);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'retry_conversation_forward_target',
+      args: { request: req }
+    });
+  });
+
+  test('listConversationQuickTemplates calls list_conversation_quick_templates with request', async () => {
+    const req = { category: 'sales', includeInactive: false };
+    await listConversationQuickTemplates(req);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'list_conversation_quick_templates',
+      args: { request: req }
+    });
+  });
+
+  test('createConversationQuickTemplate calls create_conversation_quick_template with request', async () => {
+    const req = {
+      shortcut: 'hello',
+      title: 'Greeting',
+      bodyText: 'Hello world',
+      category: 'general'
+    };
+    await createConversationQuickTemplate(req);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'create_conversation_quick_template',
+      args: { request: req }
+    });
+  });
+
+  test('updateConversationQuickTemplate calls update_conversation_quick_template with request', async () => {
+    const req = {
+      id: 5,
+      shortcut: 'hello2',
+      title: 'Greeting updated',
+      bodyText: 'Hello world updated',
+      category: 'general',
+      isActive: true
+    };
+    await updateConversationQuickTemplate(req);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'update_conversation_quick_template',
+      args: { request: req }
+    });
+  });
+
+  test('deleteConversationQuickTemplate calls delete_conversation_quick_template with request id wrapper', async () => {
+    await deleteConversationQuickTemplate(5);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'delete_conversation_quick_template',
+      args: { request: { id: 5 } }
+    });
+  });
+
+  test('markConversationQuickTemplateUsed calls mark_conversation_quick_template_used with request id wrapper', async () => {
+    await markConversationQuickTemplateUsed(5);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'mark_conversation_quick_template_used',
+      args: { request: { id: 5 } }
+    });
+  });
+
+  test('listConversationMentionCandidates calls list_conversation_mention_candidates with request', async () => {
+    const req = { conversationId: 12, query: 'nam', limit: 10 };
+    await listConversationMentionCandidates(req);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'list_conversation_mention_candidates',
+      args: { request: req }
     });
   });
 });

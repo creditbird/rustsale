@@ -266,6 +266,296 @@ pub struct InboxItem {
     pub participants: Vec<ConversationParticipantSummary>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationReactionCode {
+    Heart,
+    Like,
+    Haha,
+    Wow,
+    Cry,
+    Angry,
+}
+
+impl ConversationReactionCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Heart => "heart",
+            Self::Like => "like",
+            Self::Haha => "haha",
+            Self::Wow => "wow",
+            Self::Cry => "cry",
+            Self::Angry => "angry",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMentionInput {
+    pub pos: usize,
+    pub len: usize,
+    pub target_identity_id: Option<i64>,
+    pub is_all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMention {
+    pub pos: usize,
+    pub len: usize,
+    pub target_identity_id: Option<i64>,
+    pub target_external_id: Option<String>,
+    pub display_name: Option<String>,
+    pub is_all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMentionCandidate {
+    pub identity_id: Option<i64>,
+    pub external_id: Option<String>,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub is_all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMentionCapabilities {
+    pub enabled: bool,
+    pub max_mentions_per_message: usize,
+    pub supports_all_mention: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationReactionRequest {
+    pub message_id: i64,
+    pub reaction_code: Option<ConversationReactionCode>,
+    #[serde(default)]
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReactionMutationStatus {
+    Succeeded,
+    Failed,
+    DeliveryUnknown,
+    Applied,
+    Removed,
+    AlreadySet,
+    AlreadyRemoved,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationReactionMutationResult {
+    pub message_id: i64,
+    pub reaction_code: Option<ConversationReactionCode>,
+    pub status: ReactionMutationStatus,
+    #[serde(default)]
+    pub reactions: Vec<ConversationReactionGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationReactionCapabilities {
+    pub enabled: bool,
+    pub supported: Vec<ConversationReactionCode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardConversationMessageRequest {
+    pub client_operation_id: String,
+    pub source_message_id: i64,
+    pub target_conversation_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardOperationStatus {
+    Queued,
+    Sending,
+    Partial,
+    Sent,
+    Completed,
+    Failed,
+    DeliveryUnknown,
+}
+
+impl ForwardOperationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ForwardOperationStatus::Queued => "queued",
+            ForwardOperationStatus::Sending => "sending",
+            ForwardOperationStatus::Partial => "partial",
+            ForwardOperationStatus::Sent => "sent",
+            ForwardOperationStatus::Completed => "completed",
+            ForwardOperationStatus::Failed => "failed",
+            ForwardOperationStatus::DeliveryUnknown => "delivery_unknown",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "queued" => ForwardOperationStatus::Queued,
+            "sending" => ForwardOperationStatus::Sending,
+            "partial" => ForwardOperationStatus::Partial,
+            "sent" => ForwardOperationStatus::Sent,
+            "completed" => ForwardOperationStatus::Completed,
+            "failed" => ForwardOperationStatus::Failed,
+            "delivery_unknown" => ForwardOperationStatus::DeliveryUnknown,
+            _ => ForwardOperationStatus::Queued,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardTargetStatus {
+    Queued,
+    Sending,
+    Sent,
+    Failed,
+    DeliveryUnknown,
+}
+
+impl ForwardTargetStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ForwardTargetStatus::Queued => "queued",
+            ForwardTargetStatus::Sending => "sending",
+            ForwardTargetStatus::Sent => "sent",
+            ForwardTargetStatus::Failed => "failed",
+            ForwardTargetStatus::DeliveryUnknown => "delivery_unknown",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "queued" => ForwardTargetStatus::Queued,
+            "sending" => ForwardTargetStatus::Sending,
+            "sent" => ForwardTargetStatus::Sent,
+            "failed" => ForwardTargetStatus::Failed,
+            "delivery_unknown" => ForwardTargetStatus::DeliveryUnknown,
+            _ => ForwardTargetStatus::Queued,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationForwardTargetResult {
+    pub conversation_id: i64,
+    pub status: ForwardTargetStatus,
+    pub forwarded_message_id: Option<i64>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardConversationMessageResult {
+    pub client_operation_id: String,
+    pub source_message_id: i64,
+    pub status: ForwardOperationStatus,
+    pub targets: Vec<ConversationForwardTargetResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationForwardCapabilities {
+    pub enabled: bool,
+    pub max_targets_per_forward: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationQuickTemplate {
+    pub id: i64,
+    pub shortcut: String,
+    pub title: String,
+    pub content: String,
+    pub category: Option<String>,
+    pub usage_count: u32,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateConversationQuickTemplateRequest {
+    pub shortcut: String,
+    pub title: String,
+    pub content: String,
+    pub category: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConversationQuickTemplateRequest {
+    pub id: i64,
+    pub shortcut: String,
+    pub title: String,
+    pub content: String,
+    pub category: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListConversationQuickTemplatesRequest {
+    pub category: Option<String>,
+    pub search_query: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteConversationQuickTemplateRequest {
+    pub id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkConversationQuickTemplateUsedRequest {
+    pub id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListConversationMentionCandidatesRequest {
+    pub conversation_id: i64,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryConversationForwardTargetRequest {
+    pub client_operation_id: String,
+    pub target_conversation_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationQuickTemplateCapabilities {
+    pub enabled: bool,
+    pub max_templates: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessageActions {
+    pub forward: bool,
+    pub react: bool,
+    pub recall: bool,
+    pub reply: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMessage {
@@ -292,6 +582,10 @@ pub struct ConversationMessage {
     pub reactions: Vec<ConversationReactionGroup>,
     pub batch_index: Option<u32>,
     pub send_batch: Option<ConversationSendBatchSummary>,
+    #[serde(default)]
+    pub mentions: Vec<ConversationMention>,
+    #[serde(default)]
+    pub actions: ConversationMessageActions,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -427,6 +721,10 @@ pub struct ConversationCapabilities {
     pub supports_recall: bool,
     pub recall_window_seconds: Option<u64>,
     pub supports_reactions: bool,
+    pub reactions: ConversationReactionCapabilities,
+    pub forward: ConversationForwardCapabilities,
+    pub mentions: ConversationMentionCapabilities,
+    pub quick_templates: ConversationQuickTemplateCapabilities,
 }
 
 impl ConversationCapabilities {
@@ -444,6 +742,23 @@ impl ConversationCapabilities {
             supports_recall: false,
             recall_window_seconds: None,
             supports_reactions: false,
+            reactions: ConversationReactionCapabilities {
+                enabled: false,
+                supported: Vec::new(),
+            },
+            forward: ConversationForwardCapabilities {
+                enabled: false,
+                max_targets_per_forward: 0,
+            },
+            mentions: ConversationMentionCapabilities {
+                enabled: false,
+                max_mentions_per_message: 0,
+                supports_all_mention: false,
+            },
+            quick_templates: ConversationQuickTemplateCapabilities {
+                enabled: false,
+                max_templates: 0,
+            },
         }
     }
 
@@ -474,6 +789,30 @@ impl ConversationCapabilities {
             supports_recall: true,
             recall_window_seconds: Some(86400),
             supports_reactions: true,
+            reactions: ConversationReactionCapabilities {
+                enabled: true,
+                supported: vec![
+                    ConversationReactionCode::Heart,
+                    ConversationReactionCode::Like,
+                    ConversationReactionCode::Haha,
+                    ConversationReactionCode::Wow,
+                    ConversationReactionCode::Cry,
+                    ConversationReactionCode::Angry,
+                ],
+            },
+            forward: ConversationForwardCapabilities {
+                enabled: true,
+                max_targets_per_forward: 10,
+            },
+            mentions: ConversationMentionCapabilities {
+                enabled: true,
+                max_mentions_per_message: 20,
+                supports_all_mention: true,
+            },
+            quick_templates: ConversationQuickTemplateCapabilities {
+                enabled: true,
+                max_templates: 500,
+            },
         }
     }
 }
@@ -482,7 +821,11 @@ impl ConversationCapabilities {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ConversationSendPartContent {
     #[serde(rename_all = "camelCase")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<ConversationMentionInput>,
+    },
     #[serde(rename_all = "camelCase")]
     Sticker {
         sticker_id: u32,
@@ -491,6 +834,8 @@ pub enum ConversationSendPartContent {
     },
     #[serde(rename_all = "camelCase")]
     Attachment { staged_attachment_id: String },
+    #[serde(rename_all = "camelCase")]
+    Forward { source_message_id: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -685,5 +1030,85 @@ mod tests {
         let json = serde_json::to_value(attachment).unwrap();
         assert!(json.get("localPath").is_none());
         assert_eq!(json["remoteUrl"], "https://cdn.example/safe.png");
+    }
+
+    #[test]
+    fn phase2a_contract_capabilities() {
+        let zalo = ConversationCapabilities::zalo_phase_one();
+        assert_eq!(zalo.reactions.supported.len(), 6);
+        assert!(zalo
+            .reactions
+            .supported
+            .contains(&ConversationReactionCode::Heart));
+        assert_eq!(zalo.forward.max_targets_per_forward, 10);
+        assert_eq!(zalo.mentions.max_mentions_per_message, 20);
+        assert_eq!(zalo.quick_templates.max_templates, 500);
+
+        let text_only = ConversationCapabilities::text_only();
+        assert!(!text_only.reactions.enabled);
+        assert!(text_only.reactions.supported.is_empty());
+        assert!(!text_only.forward.enabled);
+        assert_eq!(text_only.forward.max_targets_per_forward, 0);
+        assert!(!text_only.mentions.enabled);
+        assert_eq!(text_only.mentions.max_mentions_per_message, 0);
+        assert!(!text_only.quick_templates.enabled);
+        assert_eq!(text_only.quick_templates.max_templates, 0);
+    }
+
+    #[test]
+    fn phase2a_contract_serialization() {
+        let req = SetConversationReactionRequest {
+            message_id: 101,
+            reaction_code: Some(ConversationReactionCode::Heart),
+            client_mutation_id: None,
+        };
+        let val = serde_json::to_value(&req).unwrap();
+        assert_eq!(val["messageId"], 101);
+        assert_eq!(val["reactionCode"], "heart");
+
+        let fwd_req = ForwardConversationMessageRequest {
+            client_operation_id: "op-1".into(),
+            source_message_id: 50,
+            target_conversation_ids: vec![1, 2, 3],
+        };
+        let fwd_val = serde_json::to_value(&fwd_req).unwrap();
+        assert_eq!(fwd_val["clientOperationId"], "op-1");
+        assert_eq!(fwd_val["sourceMessageId"], 50);
+        assert_eq!(fwd_val["targetConversationIds"][0], 1);
+
+        let tmpl_req = CreateConversationQuickTemplateRequest {
+            shortcut: "hello".into(),
+            title: "Hello Template".into(),
+            content: "Hello there!".into(),
+            category: Some("greeting".into()),
+        };
+        let tmpl_val = serde_json::to_value(&tmpl_req).unwrap();
+        assert_eq!(tmpl_val["shortcut"], "hello");
+
+        let send_text_with_mentions = ConversationSendPartRequest {
+            client_part_id: "part-text-1".into(),
+            content: ConversationSendPartContent::Text {
+                text: "Hello @User".into(),
+                mentions: vec![ConversationMentionInput {
+                    pos: 6,
+                    len: 5,
+                    target_identity_id: Some(42),
+                    is_all: false,
+                }],
+            },
+        };
+        let part_val = serde_json::to_value(&send_text_with_mentions).unwrap();
+        assert_eq!(part_val["type"], "text");
+        assert_eq!(part_val["mentions"][0]["targetIdentityId"], 42);
+
+        let send_forward = ConversationSendPartRequest {
+            client_part_id: "part-fwd-1".into(),
+            content: ConversationSendPartContent::Forward {
+                source_message_id: 99,
+            },
+        };
+        let fwd_part_val = serde_json::to_value(&send_forward).unwrap();
+        assert_eq!(fwd_part_val["type"], "forward");
+        assert_eq!(fwd_part_val["sourceMessageId"], 99);
     }
 }

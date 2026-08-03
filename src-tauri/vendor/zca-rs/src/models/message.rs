@@ -498,6 +498,99 @@ pub struct SendMessageResponse {
     pub attachment: Vec<SendMessageResult>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ReactionType {
+    Standard(crate::models::Reactions),
+    Custom {
+        r_type: i32,
+        source: i32,
+        icon: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardReference {
+    pub id: String,
+    pub ts: u64,
+    pub log_src_type: i32,
+    pub fw_lvl: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReactionRequest {
+    pub client_id: Option<u64>,
+    pub reaction: Option<ReactionType>,
+    pub msg_id: String,
+    pub cli_msg_id: String,
+    pub thread_id: String,
+    pub thread_type: crate::models::ThreadType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardMessageRequest {
+    pub client_id: Option<u64>,
+    pub message: String,
+    pub thread_id: String,
+    pub thread_type: crate::models::ThreadType,
+    pub reference: Option<ForwardReference>,
+    pub ttl: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardMessageReceipt {
+    pub msg_id: String,
+    pub cli_msg_id: String,
+}
+
+impl ForwardMessageReceipt {
+    pub fn normalize(val: &serde_json::Value) -> Result<Self, crate::error::ZaloError> {
+        let root = if let Some(data) = val.get("data") {
+            if data.is_object() {
+                data
+            } else if let Some(first) = data.as_array().and_then(|a| a.first()) {
+                first
+            } else {
+                val
+            }
+        } else if let Some(msg) = val.get("message") {
+            if msg.is_object() {
+                msg
+            } else {
+                val
+            }
+        } else {
+            val
+        };
+
+        let extract_str = |keys: &[&str]| -> Option<String> {
+            for key in keys {
+                if let Some(v) = root.get(key) {
+                    if let Some(s) = v.as_str() {
+                        if !s.is_empty() {
+                            return Some(s.to_string());
+                        }
+                    } else if let Some(n) = v.as_u64() {
+                        return Some(n.to_string());
+                    } else if let Some(n) = v.as_i64() {
+                        return Some(n.to_string());
+                    }
+                }
+            }
+            None
+        };
+
+        let msg_id = extract_str(&["msgId", "msg_id", "gMsgID", "globalMsgId"]).unwrap_or_default();
+        let cli_msg_id =
+            extract_str(&["cliMsgId", "cli_msg_id", "cMsgID", "clientId"]).unwrap_or_default();
+
+        Ok(Self { msg_id, cli_msg_id })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

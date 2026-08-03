@@ -9,7 +9,8 @@ import type {
   TimelinePage,
   ConversationInvalidatedEvent,
   ConversationCapabilities,
-  SendConversationBatchRequest
+  SendConversationBatchRequest,
+  SetConversationReactionRequest
 } from '$lib/services/conversationService';
 import ConversationWorkspace from '../ConversationWorkspace.svelte';
 
@@ -304,6 +305,38 @@ const mockRecallConversationMessage = mock(async (messageId: number): Promise<Co
   textContent: null
 }));
 
+const mockSetConversationReaction = mock(async (req: SetConversationReactionRequest) => ({
+  clientMutationId: req.clientMutationId,
+  messageId: req.messageId,
+  reaction: req.reaction,
+  requestedActive: req.active,
+  status: 'succeeded' as const,
+  reactions: [
+    {
+      reactionIcon: '❤️',
+      count: 1,
+      includesMe: true,
+      actors: [{ identityId: 1, externalId: 'self', displayName: 'Self', avatarUrl: null }]
+    }
+  ],
+  errorCode: null,
+  errorMessage: null
+}));
+
+const mockForwardConversationMessage = mock(async (_request: any) => ({
+  clientOperationId: 'op-1',
+  sourceMessageId: 101,
+  status: 'sent',
+  targets: []
+}));
+const mockRetryConversationForwardTarget = mock(async (_request: any) => ({
+  targetConversationId: 10,
+  clientBatchId: 'b-1',
+  status: 'sent',
+  errorCode: null,
+  errorMessage: null
+}));
+
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
   getContactTimeline: (leadId: number, channels: any[], before: any, limit: number) =>
@@ -325,6 +358,9 @@ mock.module('$lib/services/conversationService', () => ({
   restartConversationAccount: mock(async () => {}),
   searchZaloStickers: mock(async () => []),
   recallConversationMessage: (messageId: number) => mockRecallConversationMessage(messageId),
+  setConversationReaction: (request: SetConversationReactionRequest) => mockSetConversationReaction(request),
+  forwardConversationMessage: (request: any) => mockForwardConversationMessage(request),
+  retryConversationForwardTarget: (request: any) => mockRetryConversationForwardTarget(request),
   linkConversationIdentity: mock(async () => {})
 }));
 
@@ -340,6 +376,7 @@ describe('ConversationWorkspace Component', () => {
     mockGetConversationRuntimeStatus.mockClear();
     mockSendConversationBatch.mockClear();
     mockRecallConversationMessage.mockClear();
+    mockSetConversationReaction.mockClear();
   });
 
   test('1. Mounting while activeTab !== "conversation" does not load inbox/runtime data', async () => {
@@ -747,5 +784,36 @@ describe('ConversationWorkspace Component', () => {
 
     expect(mockRecallConversationMessage).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Tin nhắn đã bị xóa')).toBeTruthy();
+  });
+
+  test('15. Toggling reaction calls setConversationReaction and updates reactions on success', async () => {
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getAllByTestId('message-actions-trigger')[0]);
+    await fireEvent.click(screen.getByRole('button', { name: /Thả cảm xúc ❤️/i }));
+    await tick();
+
+    expect(mockSetConversationReaction).toHaveBeenCalledTimes(1);
+    expect(mockSetConversationReaction.mock.calls[0][0].reaction).toBe('heart');
+    expect(mockSetConversationReaction.mock.calls[0][0].active).toBe(true);
+  });
+
+  test('16. Clicking "Chuyển tiếp" opens the ForwardConversationDialog with message preview', async () => {
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getAllByTestId('message-actions-trigger')[0]);
+    const forwardOption = screen.getByText('Chuyển tiếp');
+    expect(forwardOption).toBeTruthy();
+
+    await fireEvent.click(forwardOption);
+    await tick();
+
+    expect(await screen.findByTestId('forward-conversation-dialog')).toBeTruthy();
+    expect(screen.getByText('Chuyển tiếp tin nhắn')).toBeTruthy();
+    expect(screen.getAllByText('Chào shop').length).toBeGreaterThanOrEqual(1);
   });
 });

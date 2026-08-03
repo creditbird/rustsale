@@ -2,12 +2,16 @@
   import { tick } from 'svelte';
   import {
     discardConversationStagedAttachment,
+    listConversationQuickTemplates,
+    markConversationQuickTemplateUsed,
     restartConversationAccount,
     sendConversationBatch,
     stageConversationAttachmentPaths,
     stageConversationClipboardImage,
     type ConversationAccountRuntime,
     type ConversationCapabilities,
+    type ConversationMentionCandidate,
+    type ConversationQuickTemplate,
     type ConversationRuntimeStatus,
     type InboxItem,
     type InboxReplyTarget,
@@ -31,6 +35,9 @@
   import ComposerReplyBar from './ComposerReplyBar.svelte';
   import ComposerToolbar from './ComposerToolbar.svelte';
   import EmojiPicker from './EmojiPicker.svelte';
+  import MentionCandidatePopover from './MentionCandidatePopover.svelte';
+  import QuickTemplateManagerDialog from './QuickTemplateManagerDialog.svelte';
+  import QuickTemplatePopover from './QuickTemplatePopover.svelte';
   import ZaloStickerPicker from './ZaloStickerPicker.svelte';
   import {
     ComposerDraftCache,
@@ -39,6 +46,20 @@
     type ComposerAttachmentItem,
     type ConversationReplySelection
   } from './composerDraftState';
+  import {
+    applyTextEditToMentions,
+    findMentionToken,
+    insertMention,
+    toMentionInputs,
+    type ComposerMentionRange,
+    type MentionToken
+  } from './mentionState';
+  import {
+    findSlashToken,
+    rankQuickTemplates,
+    replaceSlashToken,
+    type SlashToken
+  } from './quickTemplateState';
   import { safeImagePreviewDataUrl } from './messageMedia';
 
   const MAX_BATCH_PARTS = 10;
@@ -93,6 +114,32 @@
   let recoveryError = $state<string | null>(null);
   let isDragActive = $state(false);
   let textareaElement = $state<HTMLTextAreaElement | null>(null);
+
+  let quickTemplates = $state<ConversationQuickTemplate[]>([]);
+  let showQuickTemplatePopover = $state(false);
+  let quickTemplateSlashToken = $state<SlashToken | null>(null);
+  let quickTemplateSelectedIndex = $state(0);
+  let showQuickTemplateManager = $state(false);
+
+  let mentions = $state<ComposerMentionRange[]>([]);
+  let showMentionPopover = $state(false);
+  let mentionToken = $state<MentionToken | null>(null);
+  let mentionSelectedIndex = $state(0);
+  let mentionCandidates = $state<ConversationMentionCandidate[]>([]);
+
+  $effect(() => {
+    if (selectedCapabilities.quickTemplates?.enabled) {
+      void loadQuickTemplates();
+    }
+  });
+
+  async function loadQuickTemplates(): Promise<void> {
+    try {
+      quickTemplates = await listConversationQuickTemplates({ includeInactive: false });
+    } catch {
+      quickTemplates = [];
+    }
+  }
 
   let selectedChannelAccountId = $state<number | null>(null);
   let selectedAccountIdString = $state('');
@@ -162,6 +209,11 @@
   let selectedCapabilities = $derived(
     selectedOption?.account?.capabilities ?? TEXT_ONLY_CAPABILITIES
   );
+  let maxMentions = $derived(
+    selectedCapabilities.mentions?.maxMentionsPerMessage ??
+      selectedCapabilities.mentions?.maxPerMessage ??
+      20
+  );
   let isTargetLocked = $derived(Boolean(replyTarget) || isGroupMode);
   let nextDraftKey = $derived(
     selectedOption && targetConversationId !== null
@@ -224,17 +276,19 @@
   $effect(() => {
     if (nextDraftKey === activeDraftKey) return;
     if (activeDraftKey) {
-      draftCache.update(activeDraftKey, { text, attachments: [...attachments] });
+      draftCache.update(activeDraftKey, { text, attachments: [...attachments], mentions: [...mentions] });
     }
     activeDraftKey = nextDraftKey;
     if (!activeDraftKey) {
       text = '';
       attachments = [];
+      mentions = [];
       return;
     }
     const draft = draftCache.get(activeDraftKey);
     text = draft.text;
     attachments = [...draft.attachments];
+    mentions = [...draft.mentions];
   });
 
   $effect(() => {
@@ -260,7 +314,7 @@
 
   function persistDraft(): void {
     if (!activeDraftKey) return;
-    draftCache.update(activeDraftKey, { text, attachments: [...attachments] });
+    draftCache.update(activeDraftKey, { text, attachments: [...attachments], mentions: [...mentions] });
   }
 
   function updateAttachments(nextItems: ComposerAttachmentItem[]): void {
@@ -477,10 +531,105 @@
     }
   }
 
+  function checkQuickTemplates(): void {
+    if (!selectedCapabilities.quickTemplates?.enabled || !textareaElement) {
+      showQuickTemplatePopover = false;
+      quickTemplateSlashToken = null;
+      return;
+    }
+
+    const caret = textareaElement.selectionStart || text.length;
+    const token = findSlashToken(text, caret);
+    if (token) {
+      quickTemplateSlashToken = token;
+      const ranked = rankQuickTemplates(quickTemplates, token.query);
+      if (ranked.length > 0) {
+        showQuickTemplatePopover = true;
+        quickTemplateSelectedIndex = 0;
+      } else {
+        showQuickTemplatePopover = false;
+      }
+    } else {
+      showQuickTemplatePopover = false;
+      quickTemplateSlashToken = null;
+    }
+  }
+
+  function applyQuickTemplate(template: ConversationQuickTemplate): void {
+    if (!quickTemplateSlashToken) return;
+
+    const result = replaceSlashToken(text, quickTemplateSlashToken, template.bodyText);
+    text = result.value;
+    persistDraft();
+    showQuickTemplatePopover = false;
+    quickTemplateSlashToken = null;
+
+    void markConversationQuickTemplateUsed(template.id);
+
+    void tick().then(() => {
+      if (textareaElement) {
+        textareaElement.focus();
+        textareaElement.setSelectionRange(result.caret, result.caret);
+      }
+    });
+  }
+
+  function checkMentions(): void {
+    if (!selectedCapabilities.mentions?.enabled || !isGroupMode || !textareaElement) {
+      showMentionPopover = false;
+      mentionToken = null;
+      return;
+    }
+
+    const caret = textareaElement.selectionStart || text.length;
+    const token = findMentionToken(text, caret);
+    if (token) {
+      mentionToken = token;
+      showMentionPopover = true;
+      mentionSelectedIndex = 0;
+    } else {
+      showMentionPopover = false;
+      mentionToken = null;
+    }
+  }
+
+  function applyMention(candidate: ConversationMentionCandidate): void {
+    if (!mentionToken) return;
+
+    const result = insertMention(text, mentionToken, candidate, mentions);
+    text = result.value;
+    mentions = result.mentions;
+    persistDraft();
+    showMentionPopover = false;
+    mentionToken = null;
+
+    void tick().then(() => {
+      if (textareaElement) {
+        textareaElement.focus();
+        textareaElement.setSelectionRange(result.caret, result.caret);
+      }
+    });
+  }
+
   function handleTextInput(event: Event): void {
-    text = (event.currentTarget as HTMLTextAreaElement).value;
+    const el = event.currentTarget as HTMLTextAreaElement;
+    const nextText = el.value;
+    const caret = el.selectionStart || nextText.length;
+
+    const prevText = text;
+    const lenDiff = nextText.length - prevText.length;
+    const edit = {
+      start: lenDiff < 0 ? caret : Math.max(0, caret - lenDiff),
+      deleteCount: lenDiff < 0 ? Math.abs(lenDiff) : 0,
+      insertedText: lenDiff > 0 ? nextText.slice(Math.max(0, caret - lenDiff), caret) : ''
+    };
+
+    mentions = applyTextEditToMentions(prevText, nextText, edit, mentions);
+    text = nextText;
     persistDraft();
     sendError = null;
+    checkQuickTemplates();
+    checkMentions();
   }
 
   async function handleEmojiSelect(emoji: string): Promise<void> {
@@ -549,11 +698,21 @@
       validationReason === null
   );
 
-  function buildParts(snapshotText: string, stagedAttachmentIds: string[]): SendPartRequest[] {
+  function buildParts(
+    snapshotText: string,
+    stagedAttachmentIds: string[],
+    snapshotMentions: ComposerMentionRange[]
+  ): SendPartRequest[] {
     const parts: SendPartRequest[] = [];
     const trimmed = snapshotText.trim();
     if (trimmed) {
-      parts.push({ clientPartId: newClientId('part'), type: 'text', text: trimmed });
+      const mentionInputs = toMentionInputs(snapshotMentions);
+      parts.push({
+        clientPartId: newClientId('part'),
+        type: 'text',
+        text: trimmed,
+        ...(mentionInputs.length > 0 ? { mentions: mentionInputs } : {})
+      });
     }
     for (const stagedAttachmentId of stagedAttachmentIds) {
       parts.push({
@@ -569,7 +728,7 @@
     if (!canSend || !activeDraftKey || targetConversationId === null) return;
     persistDraft();
     const snapshot = draftCache.takeSnapshot(activeDraftKey);
-    const parts = buildParts(snapshot.text, snapshot.stagedAttachmentIds);
+    const parts = buildParts(snapshot.text, snapshot.stagedAttachmentIds, snapshot.mentions);
     if (parts.length === 0) return;
 
     isSending = true;
@@ -585,6 +744,7 @@
       const nextDraft = draftCache.get(activeDraftKey);
       text = nextDraft.text;
       attachments = [...nextDraft.attachments];
+      mentions = [...nextDraft.mentions];
       onBatchQueued?.(result);
       if (replyTarget) onCancelReply();
     } catch (error) {
@@ -647,6 +807,63 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
+    if (showMentionPopover && mentionToken) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (mentionCandidates.length > 0) {
+          mentionSelectedIndex = (mentionSelectedIndex + 1) % mentionCandidates.length;
+        }
+        return;
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (mentionCandidates.length > 0) {
+          mentionSelectedIndex =
+            (mentionSelectedIndex - 1 + mentionCandidates.length) % mentionCandidates.length;
+        }
+        return;
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        if (mentionCandidates[mentionSelectedIndex]) {
+          applyMention(mentionCandidates[mentionSelectedIndex]);
+        }
+        return;
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        showMentionPopover = false;
+        return;
+      }
+    }
+
+    if (showQuickTemplatePopover && quickTemplateSlashToken) {
+      const ranked = rankQuickTemplates(quickTemplates, quickTemplateSlashToken.query);
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (ranked.length > 0) {
+          quickTemplateSelectedIndex = (quickTemplateSelectedIndex + 1) % ranked.length;
+        }
+        return;
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (ranked.length > 0) {
+          quickTemplateSelectedIndex =
+            (quickTemplateSelectedIndex - 1 + ranked.length) % ranked.length;
+        }
+        return;
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        if (ranked[quickTemplateSelectedIndex]) {
+          applyQuickTemplate(ranked[quickTemplateSelectedIndex]);
+        }
+        return;
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        showQuickTemplatePopover = false;
+        return;
+      }
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void handleSend();
@@ -699,6 +916,7 @@
         onToggleEmoji={() => (activePopover = activePopover === 'emoji' ? null : 'emoji')}
         onToggleSticker={() => (activePopover = activePopover === 'sticker' ? null : 'sticker')}
         onPickAttachment={handlePickAttachment}
+        onToggleQuickTemplates={() => (showQuickTemplateManager = true)}
       />
       {#if activePopover === 'emoji'}
         <div class="absolute right-0 top-full z-50 mt-2">
@@ -768,6 +986,37 @@
   <ComposerReplyBar reply={replyTarget} onCancel={onCancelReply} />
   <AttachmentPreviewQueue items={attachments} onRemove={handleRemoveAttachment} />
 
+  {#if showQuickTemplatePopover}
+    <div class="relative z-50 mb-1" data-testid="quick-template-popover-wrapper">
+      <QuickTemplatePopover
+        templates={quickTemplates}
+        query={quickTemplateSlashToken?.query ?? ''}
+        selectedIndex={quickTemplateSelectedIndex}
+        onSelect={applyQuickTemplate}
+        onOpenManager={() => {
+          showQuickTemplatePopover = false;
+          showQuickTemplateManager = true;
+        }}
+      />
+    </div>
+  {/if}
+
+  {#if showMentionPopover && mentionToken && targetConversationId !== null && selectedCapabilities.mentions?.enabled}
+    <div class="relative z-50 mb-1" data-testid="mention-candidate-popover-wrapper">
+      <MentionCandidatePopover
+        conversationId={targetConversationId}
+        query={mentionToken.query}
+        selectedIndex={mentionSelectedIndex}
+        maxMentions={maxMentions}
+        currentMentionCount={mentions.length}
+        onCandidatesLoaded={(list) => {
+          mentionCandidates = list;
+        }}
+        onSelect={applyMention}
+      />
+    </div>
+  {/if}
+
   <div class="flex items-end gap-2">
     <Textarea
       bind:ref={textareaElement}
@@ -791,3 +1040,10 @@
     </Button>
   </div>
 </div>
+
+{#if showQuickTemplateManager}
+  <QuickTemplateManagerDialog
+    bind:open={showQuickTemplateManager}
+    onTemplatesChanged={loadQuickTemplates}
+  />
+{/if}

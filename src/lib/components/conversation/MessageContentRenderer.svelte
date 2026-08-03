@@ -6,6 +6,7 @@
   import VideoMessageContent from './VideoMessageContent.svelte';
   import AudioMessageContent from './AudioMessageContent.svelte';
   import LinkMessageContent from './LinkMessageContent.svelte';
+  import MessageMentionText from './MessageMentionText.svelte';
   import { safeConversationUrl } from './messageMedia';
 
   let { message }: { message: ConversationMessage } = $props();
@@ -94,7 +95,11 @@
 
     {#if displayText && !isLinkContentType}
       <div class="message-text-content" data-testid="message-text-content">
-        {displayText}
+        {#if message.mentions && message.mentions.length > 0}
+          <MessageMentionText text={displayText} mentions={message.mentions} />
+        {:else}
+          {displayText}
+        {/if}
       </div>
     {:else if !message.attachments?.length && !legacyMediaUrl && message.contentType !== 'text'}
       <div class="flex items-center gap-2 p-2 rounded-md bg-muted/40 text-muted-foreground text-xs italic">

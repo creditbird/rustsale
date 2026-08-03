@@ -425,10 +425,7 @@ mod tests {
         ];
 
         for payload in payloads {
-            assert_eq!(
-                zlib_decompress(&payload).unwrap(),
-                b"zalo-history-payload"
-            );
+            assert_eq!(zlib_decompress(&payload).unwrap(), b"zalo-history-payload");
         }
     }
 

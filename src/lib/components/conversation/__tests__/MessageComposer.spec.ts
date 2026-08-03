@@ -5,8 +5,10 @@ import { tick } from 'svelte';
 import type {
   ConversationCapabilities,
   ConversationMessage,
+  ConversationQuickTemplate,
   ConversationRuntimeStatus,
   InboxItem,
+  ListConversationQuickTemplatesRequest,
   SendConversationBatchRequest,
   SendConversationBatchResult,
   StagedConversationAttachment
@@ -73,49 +75,43 @@ const mockSendConversationBatch = mock(
     messages: request.parts.map((_, index) => queuedMessage(request, index))
   })
 );
-const mockStagePaths = mock(async (
-  _conversationId: number,
-  _paths: string[]
-): Promise<StagedConversationAttachment[]> => [
-  {
-    stagedAttachmentId: 'stage-a',
+const mockStagePaths = mock(
+  async (
+    _conversationId: number,
+    paths: string[]
+  ): Promise<StagedConversationAttachment[]> =>
+    paths.map((path, index) => ({
+      stagedAttachmentId: index === 0 ? 'stage-a' : 'stage-b',
+      mediaType: index === 0 ? 'image' : 'file',
+      mimeType: index === 0 ? 'image/png' : 'application/pdf',
+      fileName: path.split('/').pop() ?? 'file',
+      fileSizeBytes: (index + 1) * 1024,
+      width: index === 0 ? 100 : null,
+      height: index === 0 ? 100 : null,
+      durationSeconds: null,
+      expiresAt: '2026-08-03T10:00:00.000Z'
+    }))
+);
+const mockStageClipboard = mock(
+  async (_request: unknown): Promise<StagedConversationAttachment> => ({
+    stagedAttachmentId: 'staged-clip',
     mediaType: 'image',
     mimeType: 'image/png',
-    fileName: 'a.png',
-    fileSizeBytes: 1024,
-    width: 100,
-    height: 100,
+    fileName: 'clipboard.png',
+    fileSizeBytes: 512,
+    width: 10,
+    height: 10,
     durationSeconds: null,
     expiresAt: '2026-08-03T10:00:00.000Z'
-  },
-  {
-    stagedAttachmentId: 'stage-b',
-    mediaType: 'file',
-    mimeType: 'application/pdf',
-    fileName: 'b.pdf',
-    fileSizeBytes: 2048,
-    width: null,
-    height: null,
-    durationSeconds: null,
-    expiresAt: '2026-08-03T10:00:00.000Z'
-  }
-]);
-const mockStageClipboard = mock(async (_request: unknown): Promise<StagedConversationAttachment> => ({
-  stagedAttachmentId: 'stage-clipboard',
-  mediaType: 'image',
-  mimeType: 'image/png',
-  fileName: 'clipboard.png',
-  fileSizeBytes: 128,
-  width: 10,
-  height: 10,
-  durationSeconds: null,
-  expiresAt: '2026-08-03T10:00:00.000Z'
-}));
+  })
+);
 const mockDiscard = mock(async (_id: string) => {});
-const mockRestart = mock(async (_providerAccountKey: string) => {});
-const mockSearchStickers = mock(async (_conversationId: number, _query: string, _limit: number) => [
-  { stickerId: 7, cateId: 8, stickerType: 1, url: 'https://cdn.example.com/7.png' }
-]);
+const mockRestart = mock(async (_key: string) => {});
+const mockSearchStickers = mock(
+  async (_conversationId?: number, _query?: string, _limit?: number) => [
+    { stickerId: 7, cateId: 8, stickerType: 1, url: 'https://cdn.example.com/7.png' }
+  ]
+);
 
 let dragDropHandler: ((paths: string[]) => void) | null = null;
 let dragActiveHandler: ((active: boolean) => void) | null = null;
@@ -126,6 +122,22 @@ const mockReadClipboardImage = mock(async () => null as {
   base64Data: string;
 } | null);
 
+const mockListQuickTemplates = mock(
+  async (_req?: ListConversationQuickTemplatesRequest): Promise<ConversationQuickTemplate[]> => []
+);
+const mockMarkQuickTemplateUsed = mock(async (_id: number) => {});
+const mockListMentionCandidates = mock(
+  async (_req?: unknown) => [
+    {
+      identityId: 501,
+      externalId: 'ext-501',
+      displayName: 'Nguyễn Văn A',
+      avatarUrl: null,
+      participantRole: 'admin'
+    }
+  ]
+);
+
 mock.module('$lib/services/conversationService', () => ({
   sendConversationBatch: (request: SendConversationBatchRequest) => mockSendConversationBatch(request),
   stageConversationAttachmentPaths: (conversationId: number, paths: string[]) =>
@@ -134,7 +146,14 @@ mock.module('$lib/services/conversationService', () => ({
   discardConversationStagedAttachment: (id: string) => mockDiscard(id),
   restartConversationAccount: (providerAccountKey: string) => mockRestart(providerAccountKey),
   searchZaloStickers: (conversationId: number, query: string, limit: number) =>
-    mockSearchStickers(conversationId, query, limit)
+    mockSearchStickers(conversationId, query, limit),
+  listConversationQuickTemplates: (request?: ListConversationQuickTemplatesRequest) =>
+    mockListQuickTemplates(request),
+  markConversationQuickTemplateUsed: (id: number) => mockMarkQuickTemplateUsed(id),
+  listConversationMentionCandidates: (req?: unknown) => mockListMentionCandidates(req),
+  createConversationQuickTemplate: mock(async () => ({})),
+  updateConversationQuickTemplate: mock(async () => ({})),
+  deleteConversationQuickTemplate: mock(async () => ({}))
 }));
 
 mock.module('$lib/services/conversationPlatform', () => ({
@@ -398,5 +417,195 @@ describe('MessageComposer', () => {
     expect(screen.getByTestId('attachment-drop-overlay')).toBeTruthy();
     dragDropHandler?.(['/tmp/a.png']);
     await waitFor(() => expect(mockStagePaths).toHaveBeenCalled());
+  });
+
+  describe('Quick Templates Integration', () => {
+    const runtimeWithQuickTemplates: ConversationRuntimeStatus = {
+      accounts: baseRuntime.accounts.map((account) => ({
+        ...account,
+        capabilities: {
+          ...account.capabilities,
+          quickTemplates: { enabled: true, maxTemplates: 500 }
+        }
+      }))
+    };
+
+    const mockTemplate = {
+      id: 55,
+      shortcut: 'gia',
+      title: 'Bảng giá 2026',
+      bodyText: 'Dưới đây là bảng giá mới nhất 2026',
+      category: 'Bán hàng',
+      isActive: true,
+      usageCount: 10,
+      lastUsedAt: null,
+      createdAt: '2026-08-01T00:00:00Z',
+      updatedAt: '2026-08-01T00:00:00Z'
+    };
+
+    test('opens quick template popover when typing slash token with quickTemplates enabled', async () => {
+      mockListQuickTemplates.mockImplementation(async () => [mockTemplate]);
+
+      render(MessageComposer, { item: baseItem, runtime: runtimeWithQuickTemplates });
+
+      await waitFor(() => expect(mockListQuickTemplates).toHaveBeenCalled());
+      await tick();
+
+      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: '/gia', selectionStart: 4, selectionEnd: 4 } });
+      await tick();
+
+      expect(screen.getByTestId('quick-template-popover')).toBeTruthy();
+      expect(screen.getByText('Bảng giá 2026')).toBeTruthy();
+    });
+
+    test('selects quick template via Enter key, inserts body, and marks used without auto-sending', async () => {
+      mockListQuickTemplates.mockImplementation(async () => [mockTemplate]);
+
+      render(MessageComposer, { item: baseItem, runtime: runtimeWithQuickTemplates });
+      await waitFor(() => expect(mockListQuickTemplates).toHaveBeenCalled());
+      await tick();
+
+      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: 'Xin /gia nhé', selectionStart: 8, selectionEnd: 8 } });
+      await tick();
+
+      await fireEvent.keyDown(textarea, { key: 'Enter' });
+      await tick();
+
+      expect(textarea.value).toBe('Xin Dưới đây là bảng giá mới nhất 2026 nhé');
+      expect(mockMarkQuickTemplateUsed).toHaveBeenCalledWith(55);
+      expect(mockSendConversationBatch).not.toHaveBeenCalled();
+    });
+
+    test('closes popover on Escape key without canceling quote reply', async () => {
+      mockListQuickTemplates.mockImplementation(async () => [mockTemplate]);
+      const onCancelReply = mock();
+
+      render(MessageComposer, {
+        item: baseItem,
+        runtime: runtimeWithQuickTemplates,
+        replyTarget: {
+          messageId: 10,
+          conversationId: 101,
+          channelAccountId: 1,
+          preview: {
+            messageId: 10,
+            providerMessageId: 'p-10',
+            senderDisplayName: 'User A',
+            contentType: 'text',
+            textContent: 'Quote text',
+            mediaType: null,
+            occurredAt: '2026-08-02T09:00:00.000Z'
+          }
+        },
+        onCancelReply
+      });
+      await waitFor(() => expect(mockListQuickTemplates).toHaveBeenCalled());
+      await tick();
+
+      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: '/gia', selectionStart: 4, selectionEnd: 4 } });
+      await tick();
+
+      expect(screen.getByTestId('quick-template-popover')).toBeTruthy();
+
+      await fireEvent.keyDown(textarea, { key: 'Escape' });
+      await tick();
+
+      expect(screen.queryByTestId('quick-template-popover')).toBeNull();
+      expect(onCancelReply).not.toHaveBeenCalled();
+    });
+
+    test('does not show quick template popover if quickTemplates capability is disabled', async () => {
+      render(MessageComposer, { item: baseItem, runtime: baseRuntime });
+
+      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: '/gia', selectionStart: 4, selectionEnd: 4 } });
+      await tick();
+
+      expect(screen.queryByTestId('quick-template-popover')).toBeNull();
+    });
+  });
+
+  describe('Mentions Support', () => {
+    const groupItem: InboxItem = {
+      ...baseItem,
+      kind: 'group',
+      replyTargets: [
+        {
+          conversationId: 101,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Account 1',
+          conversationKind: 'group',
+          lastInboundAt: '2026-08-01T12:00:00Z',
+          lastMessageAt: '2026-08-01T12:00:00Z'
+        }
+      ]
+    };
+
+    const runtimeWithMentions: ConversationRuntimeStatus = {
+      accounts: [
+        {
+          channelAccountId: 1,
+          channel: 'zalo',
+          providerAccountKey: 'zalo-key-1',
+          displayName: 'Zalo Account 1',
+          capabilities: {
+            ...richCapabilities,
+            mentions: { enabled: true, maxMentionsPerMessage: 20 }
+          },
+          status: 'connected',
+          lastConnectedAt: null,
+          lastError: null
+        }
+      ]
+    };
+
+    test('renders mention popover when typing @ in group chat with mentions enabled', async () => {
+      render(MessageComposer, { item: groupItem, runtime: runtimeWithMentions });
+
+      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: '@Nguyễn', selectionStart: 7, selectionEnd: 7 } });
+      await tick();
+
+      expect(screen.getByTestId('mention-candidate-popover-wrapper')).toBeTruthy();
+    });
+
+    test('selecting candidate inserts mention text and sends mention inputs batch request', async () => {
+      render(MessageComposer, { item: groupItem, runtime: runtimeWithMentions });
+
+      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: '@Nguyễn', selectionStart: 7, selectionEnd: 7 } });
+      await tick();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('mention-candidate-501')).toBeTruthy();
+      });
+
+      await fireEvent.click(screen.getByTestId('mention-candidate-501'));
+      await tick();
+
+      expect(textarea.value).toBe('@Nguyễn Văn A ');
+
+      await fireEvent.click(screen.getByRole('button', { name: /Gửi/i }));
+      await tick();
+
+      expect(mockSendConversationBatch).toHaveBeenCalled();
+      const lastCall = mockSendConversationBatch.mock.calls[mockSendConversationBatch.mock.calls.length - 1][0];
+      const textPart = lastCall.parts[0];
+      expect(textPart.type).toBe('text');
+      if (textPart.type === 'text') {
+        expect(textPart.mentions).toEqual([
+          {
+            identityId: 501,
+            displayText: '@Nguyễn Văn A',
+            startUtf16: 0,
+            lengthUtf16: 13
+          }
+        ]);
+      }
+    });
   });
 });

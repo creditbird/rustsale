@@ -15,7 +15,9 @@
     type ConversationRuntimeStatus,
     type ConversationMessage,
     type ConversationInvalidatedEvent,
-    type SendConversationBatchResult
+    type SendConversationBatchResult,
+    type ConversationReactionCode,
+    type ConversationReactionGroup
   } from '$lib/services/conversationService';
   import {
     TimelineCache,
@@ -34,6 +36,8 @@
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
   import RecallMessageDialog from './RecallMessageDialog.svelte';
+  import ForwardConversationDialog from './ForwardConversationDialog.svelte';
+  import MessageReactionMutationState from './MessageReactionMutationState.svelte';
   import type { ConversationReplySelection } from './composerDraftState';
   import { attachmentLabel } from './messageMedia';
   import { Button } from '$lib/components/ui/button';
@@ -75,10 +79,14 @@
   let hasBeenActivated = $state(false);
 
   let timelineRef = $state<ReturnType<typeof ConversationTimeline> | null>(null);
+  let mutationStateRef = $state<ReturnType<typeof MessageReactionMutationState> | null>(null);
+
   let replySelection = $state<ConversationReplySelection | null>(null);
   let recallCandidate = $state<ConversationMessage | null>(null);
   let recallBusy = $state(false);
   let recallError = $state<string | null>(null);
+  let forwardCandidate = $state<ConversationMessage | null>(null);
+  let forwardDialogOpen = $state(false);
   let actionItemKey = $state<string | null>(null);
 
   let inboxRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -92,6 +100,8 @@
       replySelection = null;
       recallCandidate = null;
       recallError = null;
+      forwardCandidate = null;
+      forwardDialogOpen = false;
     }
   });
 
@@ -511,6 +521,11 @@
     recallError = null;
   }
 
+  function handleForward(message: ConversationMessage): void {
+    forwardCandidate = message;
+    forwardDialogOpen = true;
+  }
+
   async function confirmRecall(): Promise<void> {
     if (!recallCandidate || recallBusy) return;
     recallBusy = true;
@@ -529,6 +544,55 @@
     } finally {
       recallBusy = false;
     }
+  }
+
+  function iconToCode(icon: string): ConversationReactionCode {
+    switch (icon) {
+      case '❤️':
+      case 'heart':
+        return 'heart';
+      case '👍':
+      case 'like':
+        return 'like';
+      case '😆':
+      case '😄':
+      case 'haha':
+        return 'haha';
+      case '😮':
+      case 'wow':
+        return 'wow';
+      case '😭':
+      case '😢':
+      case 'cry':
+        return 'cry';
+      case '😡':
+      case 'angry':
+        return 'angry';
+      default:
+        return 'like';
+    }
+  }
+
+  function handleReactionsUpdated(messageId: number, reactions: ConversationReactionGroup[]) {
+    const updated = currentVariant.items.map((msg) =>
+      msg.id === messageId ? { ...msg, reactions } : msg
+    );
+    currentVariant = { ...currentVariant, items: updated };
+    variantsCache.set(currentVariantKey, currentVariant);
+  }
+
+  function handleToggleReaction(
+    message: ConversationMessage,
+    code: ConversationReactionCode,
+    currentActive?: boolean
+  ) {
+    const isActive =
+      typeof currentActive === 'boolean'
+        ? currentActive
+        : message.reactions.some(
+            (g) => g.includesMe && (g.reactionIcon === code || iconToCode(g.reactionIcon) === code)
+          );
+    void mutationStateRef?.executeMutation(message.id, code, isActive);
   }
 
   function handleLinked(leadId: number) {
@@ -560,6 +624,11 @@
 </script>
 
 <div class="flex h-full w-full min-h-0 bg-background overflow-hidden">
+  <MessageReactionMutationState
+    bind:this={mutationStateRef}
+    onReactionsUpdated={handleReactionsUpdated}
+  />
+
   <!-- Column 1: Sidebar -->
   <div class="w-[320px] shrink-0 h-full min-h-0 border-r border-border flex flex-col">
     <ConversationSidebar
@@ -671,8 +740,11 @@
         onLoadOlder={handleLoadOlder}
         isGroup={selectedItem.kind === 'group'}
         {capabilitiesForMessage}
+        pendingReactionsForMessage={(msgId) => mutationStateRef?.getPendingReactionCodes(msgId) ?? []}
         onReply={handleReply}
         onRecall={handleRecall}
+        onForward={handleForward}
+        onToggleReaction={handleToggleReaction}
       />
 
       <!-- Message Composer -->
@@ -713,5 +785,10 @@
         recallError = null;
       }
     }}
+  />
+  <ForwardConversationDialog
+    bind:open={forwardDialogOpen}
+    sourceMessage={forwardCandidate}
+    inbox={inbox}
   />
 </div>

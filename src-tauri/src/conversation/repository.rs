@@ -2,10 +2,10 @@ use crate::conversation::error::{ConversationError, ConversationErrorCode};
 pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
     utc_now, Channel, ChannelBadgeSummary, ConversationAccountRuntime, ConversationKind,
-    ConversationMessage, ConversationParticipantSummary, ConversationReplyTarget,
-    ConversationRuntimeStatus, ConversationSendPartContent, InboxItem, InboxItemKind,
-    MessageDirection, MessageStatus, SendConversationBatchRequest, SendConversationBatchResult,
-    TimelineCursor, TimelinePage,
+    ConversationMessage, ConversationMessageActions, ConversationParticipantSummary,
+    ConversationReplyTarget, ConversationRuntimeStatus, ConversationSendPartContent, InboxItem,
+    InboxItemKind, MessageDirection, MessageStatus, SendConversationBatchRequest,
+    SendConversationBatchResult, TimelineCursor, TimelinePage,
 };
 pub use crate::conversation::zalo::normalizer::{
     NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
@@ -89,6 +89,15 @@ pub struct NormalizedReplyReference {
     pub raw_quote: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedMention {
+    pub identity_id: Option<i64>,
+    pub external_id: Option<String>,
+    pub display_text: String,
+    pub start_utf16: usize,
+    pub length_utf16: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct NormalizedMessage {
     pub channel: Channel,
@@ -108,6 +117,7 @@ pub struct NormalizedMessage {
     pub content: serde_json::Value,
     pub attachments: Vec<NormalizedAttachment>,
     pub reply: Option<NormalizedReplyReference>,
+    pub mentions: Vec<NormalizedMention>,
     pub raw_payload: Option<serde_json::Value>,
     pub provider_timestamp: Option<String>,
     pub ingested_at: String,
@@ -204,6 +214,10 @@ pub struct ConversationRepository {
 impl ConversationRepository {
     pub fn new(db_path: String) -> Self {
         Self { db_path }
+    }
+
+    pub fn db_path(&self) -> &str {
+        &self.db_path
     }
 
     pub fn update_account_identity_and_capabilities(
@@ -520,6 +534,29 @@ impl ConversationRepository {
 
             if let Some(batch_id) = send_batch_id {
                 Self::recalculate_send_batch_status_tx(&tx, &batch_id, now)?;
+
+                let fwd_target_info: Option<(String, i64)> = tx
+                    .query_row(
+                        "SELECT client_operation_id, target_conversation_id
+                         FROM message_forward_targets
+                         WHERE send_batch_id = ?1",
+                        [&batch_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+
+                if let Some((op_id, target_conv_id)) = fwd_target_info {
+                    crate::conversation::forwarding::update_forward_target_status(
+                        &tx,
+                        &op_id,
+                        target_conv_id,
+                        crate::conversation::types::ForwardTargetStatus::Sent,
+                        None,
+                        None,
+                        now,
+                    )
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                }
             }
 
             for att in &message.attachments {
@@ -570,6 +607,14 @@ impl ConversationRepository {
                     )?;
                 }
             }
+
+            Self::save_message_mentions_tx(
+                &tx,
+                message_id,
+                message.channel.as_str(),
+                &message.mentions,
+                now,
+            )?;
 
             tx.commit()?;
             return Ok(AppliedMessage {
@@ -627,6 +672,14 @@ impl ConversationRepository {
                 ],
             )?;
         }
+
+        Self::save_message_mentions_tx(
+            &tx,
+            message_id,
+            message.channel.as_str(),
+            &message.mentions,
+            now,
+        )?;
 
         tx.commit()?;
 
@@ -1503,6 +1556,15 @@ impl ConversationRepository {
             ],
         )?;
 
+        let active_flag = if reaction.removed { 0 } else { 1 };
+        let now = utc_now();
+        tx.execute(
+            "UPDATE reaction_mutations
+             SET status = 'succeeded', updated_at = ?1
+             WHERE message_id = ?2 AND reaction_code = ?3 AND active = ?4 AND status IN ('running', 'delivery_unknown')",
+            params![now, message_id, reaction.reaction, active_flag],
+        )?;
+
         tx.commit()?;
         Ok(Some(message_id))
     }
@@ -1608,14 +1670,18 @@ impl ConversationRepository {
         let tx = conn.transaction()?;
         let now = &snapshot.occurred_at;
 
+        let default_caps = serde_json::to_string(
+            &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
+        )
+        .unwrap_or_else(|_| "{}".to_string());
         let channel_account_id: i64 = tx.query_row(
             "INSERT INTO channel_accounts
              (channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
-             VALUES ('zalo', ?1, 'disconnected', '{}', ?2, ?2)
+             VALUES ('zalo', ?1, 'disconnected', ?2, ?3, ?3)
              ON CONFLICT(channel, provider_account_key) DO UPDATE SET
                  updated_at = excluded.updated_at
              RETURNING id",
-            params![snapshot.provider_account_key, now],
+            params![snapshot.provider_account_key, default_caps, now],
             |row| row.get(0),
         )?;
 
@@ -1835,10 +1901,14 @@ impl ConversationRepository {
             None
         };
 
+        let default_caps = serde_json::to_string(
+            &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
+        )
+        .unwrap_or_else(|_| "{}".to_string());
         let id: i64 = conn.query_row(
             "INSERT INTO channel_accounts
              (channel, provider_account_key, connection_status, last_error, last_connected_at, capabilities_json, created_at, updated_at)
-             VALUES ('zalo', ?1, ?2, ?3, ?4, '{}', ?5, ?5)
+             VALUES ('zalo', ?1, ?2, ?3, ?4, ?5, ?6, ?6)
              ON CONFLICT(channel, provider_account_key) DO UPDATE SET
                  connection_status = excluded.connection_status,
                  last_error = excluded.last_error,
@@ -1850,7 +1920,8 @@ impl ConversationRepository {
                 status_str,
                 error,
                 last_connected,
-                now
+                default_caps,
+                now,
             ],
             |row| row.get(0),
         )?;
@@ -2115,6 +2186,54 @@ impl ConversationRepository {
         Ok(message)
     }
 
+    fn save_message_mentions_tx(
+        tx: &rusqlite::Transaction<'_>,
+        message_id: i64,
+        channel: &str,
+        mentions: &[NormalizedMention],
+        now: &str,
+    ) -> Result<()> {
+        tx.execute(
+            "DELETE FROM message_mentions WHERE message_id = ?1",
+            [message_id],
+        )?;
+        for m in mentions {
+            let identity_id = if let Some(id) = m.identity_id {
+                Some(id)
+            } else if let Some(ext_id) = &m.external_id {
+                tx.query_row(
+                    "SELECT id FROM channel_identities
+                     WHERE channel = ?1 AND identity_namespace = 'zalo_uid' AND external_id = ?2",
+                    params![channel, ext_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+            } else {
+                None
+            };
+
+            tx.execute(
+                "INSERT INTO message_mentions
+                 (message_id, identity_id, external_id, display_text, start_utf16, length_utf16, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(message_id, start_utf16, length_utf16) DO UPDATE SET
+                     identity_id = excluded.identity_id,
+                     external_id = excluded.external_id,
+                     display_text = excluded.display_text",
+                params![
+                    message_id,
+                    identity_id,
+                    m.external_id,
+                    m.display_text,
+                    m.start_utf16 as i64,
+                    m.length_utf16 as i64,
+                    now,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
     fn recalculate_send_batch_status_tx(
         tx: &rusqlite::Transaction<'_>,
         send_batch_id: &str,
@@ -2171,11 +2290,11 @@ impl ConversationRepository {
             ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
         })?;
 
-        let channel_account_id: i64 = tx
+        let (channel_account_id, kind): (i64, String) = tx
             .query_row(
-                "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                "SELECT channel_account_id, kind FROM channel_conversations WHERE id = ?1",
                 [request.conversation_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|e| {
@@ -2187,6 +2306,59 @@ impl ConversationRepository {
                     "Target conversation does not exist",
                 )
             })?;
+
+        let participants = if kind == "group" {
+            let mut part_stmt = tx
+                .prepare(
+                    "SELECT cp.identity_id, ci.external_id, ci.display_name, CASE WHEN cp.left_at IS NULL THEN 1 ELSE 0 END AS is_active
+                     FROM conversation_participants cp
+                     JOIN channel_identities ci ON ci.id = cp.identity_id
+                     WHERE cp.conversation_id = ?1",
+                )
+                .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+            let rows = part_stmt
+                .query_map([request.conversation_id], |row| {
+                    let identity_id: i64 = row.get(0)?;
+                    let external_id: Option<String> = row.get(1)?;
+                    let display_name: String = row.get(2)?;
+                    let is_active_int: i32 = row.get(3)?;
+                    Ok(crate::conversation::mentions::MentionParticipant {
+                        identity_id,
+                        external_id,
+                        display_name,
+                        is_active: is_active_int != 0,
+                    })
+                })
+                .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
+
+            let mut list = Vec::new();
+            for r in rows {
+                list.push(r.map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?);
+            }
+            drop(part_stmt);
+            list
+        } else {
+            Vec::new()
+        };
+
+        let mut part_resolved_mentions = Vec::with_capacity(request.parts.len());
+        for part in &request.parts {
+            if let ConversationSendPartContent::Text { text, mentions } = &part.content {
+                let resolved = crate::conversation::mentions::validate_mentions(
+                    text,
+                    mentions,
+                    &participants,
+                )?;
+                part_resolved_mentions.push(resolved);
+            } else {
+                part_resolved_mentions.push(Vec::new());
+            }
+        }
 
         let existing_batch_id: Option<String> = tx
             .query_row(
@@ -2360,10 +2532,15 @@ impl ConversationRepository {
             };
 
             let (content_type, text_content, content_json) = match &part.content {
-                ConversationSendPartContent::Text { text } => (
+                ConversationSendPartContent::Text { text, .. } => (
                     "text",
                     Some(text.clone()),
                     serde_json::json!({ "text": text }).to_string(),
+                ),
+                ConversationSendPartContent::Forward { source_message_id } => (
+                    "forward",
+                    None,
+                    serde_json::json!({ "sourceMessageId": source_message_id }).to_string(),
                 ),
                 ConversationSendPartContent::Sticker {
                     sticker_id,
@@ -2412,6 +2589,45 @@ impl ConversationRepository {
             ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
 
             created_message_ids.push(message_id);
+
+            let resolved_mentions = &part_resolved_mentions[idx];
+            if !resolved_mentions.is_empty() {
+                if let ConversationSendPartContent::Text { text, .. } = &part.content {
+                    let normalized_mentions: Vec<NormalizedMention> = resolved_mentions
+                        .iter()
+                        .map(|rm| {
+                            let display_text =
+                                crate::conversation::mentions::utf16_slice(text, rm.pos, rm.len)
+                                    .unwrap_or_else(|| rm.display_name.clone().unwrap_or_default());
+                            NormalizedMention {
+                                identity_id: rm.target_identity_id,
+                                external_id: if rm.is_all {
+                                    Some("all".to_string())
+                                } else {
+                                    rm.target_external_id.clone()
+                                },
+                                display_text,
+                                start_utf16: rm.pos,
+                                length_utf16: rm.len,
+                            }
+                        })
+                        .collect();
+
+                    Self::save_message_mentions_tx(
+                        &tx,
+                        message_id,
+                        "zalo",
+                        &normalized_mentions,
+                        now,
+                    )
+                    .map_err(|e| {
+                        ConversationError::new(
+                            ConversationErrorCode::ProviderFailure,
+                            e.to_string(),
+                        )
+                    })?;
+                }
+            }
 
             if let ConversationSendPartContent::Attachment {
                 staged_attachment_id,
@@ -2507,6 +2723,79 @@ impl ConversationRepository {
             client_batch_id: request.client_batch_id.clone(),
             messages,
         })
+    }
+
+    pub fn forward_conversation_message(
+        &self,
+        request: &crate::conversation::types::ForwardConversationMessageRequest,
+    ) -> crate::conversation::error::ConversationResult<
+        crate::conversation::types::ForwardConversationMessageResult,
+    > {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = utc_now();
+        let result =
+            crate::conversation::forwarding::enqueue_forward_operation(&tx, request, &now)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub fn update_forward_target_status(
+        &self,
+        client_operation_id: &str,
+        target_conversation_id: i64,
+        status: crate::conversation::types::ForwardTargetStatus,
+        error_code: Option<&str>,
+        error_message: Option<&str>,
+        now: &str,
+    ) -> crate::conversation::error::ConversationResult<
+        crate::conversation::types::ForwardOperationStatus,
+    > {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let res = crate::conversation::forwarding::update_forward_target_status(
+            &tx,
+            client_operation_id,
+            target_conversation_id,
+            status,
+            error_code,
+            error_message,
+            now,
+        )?;
+        tx.commit()?;
+        Ok(res)
+    }
+
+    pub fn retry_forward_target(
+        &self,
+        client_operation_id: &str,
+        target_conversation_id: i64,
+    ) -> crate::conversation::error::ConversationResult<
+        crate::conversation::types::ConversationForwardTargetResult,
+    > {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = utc_now();
+        let res = crate::conversation::forwarding::retry_forward_target(
+            &tx,
+            client_operation_id,
+            target_conversation_id,
+            &now,
+        )?;
+        tx.commit()?;
+        Ok(res)
+    }
+
+    pub fn get_source_provider_message_id(&self, source_message_id: i64) -> Result<Option<String>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let p_id: Option<String> = conn
+            .query_row(
+                "SELECT provider_message_id FROM messages WHERE id = ?1",
+                params![source_message_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(p_id)
     }
 
     pub fn delete_conversation(
@@ -3323,6 +3612,35 @@ impl ConversationRepository {
 
         let error_msg = "Delivery state unknown after application restart; manual retry required.";
 
+        let mut stmt = tx.prepare(
+            "SELECT DISTINCT client_operation_id
+             FROM message_forward_targets
+             WHERE status IN ('sending', 'running')
+                OR send_batch_id IN (
+                    SELECT m.send_batch_id
+                    FROM messages m
+                    JOIN message_outbox_jobs j ON j.message_id = m.id
+                    WHERE j.status = 'running' AND m.send_batch_id IS NOT NULL
+                )",
+        )?;
+        let affected_ops: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        tx.execute(
+            "UPDATE message_forward_targets
+             SET status = 'delivery_unknown', error_code = 'delivery_unknown', error_message = ?1, updated_at = ?2
+             WHERE status IN ('sending', 'running')
+                OR send_batch_id IN (
+                    SELECT m.send_batch_id
+                    FROM messages m
+                    JOIN message_outbox_jobs j ON j.message_id = m.id
+                    WHERE j.status = 'running' AND m.send_batch_id IS NOT NULL
+                )",
+            params![error_msg, now],
+        )?;
+
         tx.execute(
             "UPDATE messages
              SET status = 'failed', error_code = 'delivery_unknown', error_message = ?1
@@ -3336,6 +3654,12 @@ impl ConversationRepository {
              WHERE status = 'running'",
             params![error_msg, now],
         )?;
+
+        for op_id in affected_ops {
+            let _ = crate::conversation::forwarding::recalculate_forward_operation_status(
+                &tx, &op_id, now,
+            );
+        }
 
         tx.commit()?;
         Ok(count as u64)
@@ -3474,6 +3798,150 @@ impl ConversationRepository {
 
         tx.commit()?;
         Ok(updated)
+    }
+
+    pub fn get_message_mentions_for_provider(
+        &self,
+        message_id: i64,
+    ) -> Result<Vec<crate::conversation::zalo::client::ProviderMention>, ConversationError> {
+        let conn = open_db_connection(&self.db_path).map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+        })?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT start_utf16, length_utf16, identity_id, external_id, display_text
+                 FROM message_mentions
+                 WHERE message_id = ?1
+                 ORDER BY start_utf16 ASC",
+            )
+            .map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?;
+
+        let rows = stmt
+            .query_map([message_id], |row| {
+                let pos: i64 = row.get(0)?;
+                let len: i64 = row.get(1)?;
+                let target_identity_id: Option<i64> = row.get(2)?;
+                let target_external_id: Option<String> = row.get(3)?;
+                let display_text: Option<String> = row.get(4)?;
+
+                let is_all = target_external_id.as_deref() == Some("all")
+                    || (target_identity_id.is_none()
+                        && target_external_id.is_none()
+                        && display_text.as_deref() == Some("all"));
+
+                let final_external_id = if is_all { None } else { target_external_id };
+
+                Ok(crate::conversation::zalo::client::ProviderMention {
+                    pos: pos as usize,
+                    len: len as usize,
+                    target_external_id: final_external_id,
+                    is_all,
+                })
+            })
+            .map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?;
+
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r.map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?);
+        }
+        Ok(result)
+    }
+
+    pub fn list_mention_candidates(
+        &self,
+        conversation_id: i64,
+        query: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::conversation::types::ConversationMentionCandidate>> {
+        let conn = open_db_connection(&self.db_path)?;
+
+        let kind: Option<String> = conn
+            .query_row(
+                "SELECT kind FROM channel_conversations WHERE id = ?1",
+                [conversation_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let is_group = kind.as_deref() == Some("group");
+        let query_clean = query.unwrap_or("").trim().to_lowercase();
+
+        let mut candidates = Vec::new();
+
+        if is_group
+            && (query_clean.is_empty()
+                || "all".contains(&query_clean)
+                || "all".starts_with(&query_clean))
+        {
+            candidates.push(crate::conversation::types::ConversationMentionCandidate {
+                identity_id: None,
+                external_id: None,
+                display_name: "all".to_string(),
+                avatar_url: None,
+                is_all: true,
+            });
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT ci.id, ci.external_id, ci.display_name, ci.avatar_url, ci.normalized_address, l.phone
+             FROM conversation_participants cp
+             JOIN channel_identities ci ON ci.id = cp.identity_id
+             LEFT JOIN leads l ON l.id = ci.lead_id
+             WHERE cp.conversation_id = ?1 AND cp.left_at IS NULL
+             ORDER BY ci.display_name ASC",
+        )?;
+
+        let rows = stmt.query_map([conversation_id], |row| {
+            let identity_id: i64 = row.get(0)?;
+            let external_id: Option<String> = row.get(1)?;
+            let display_name: Option<String> = row.get(2)?;
+            let avatar_url: Option<String> = row.get(3)?;
+            let normalized_address: Option<String> = row.get(4)?;
+            let phone: Option<String> = row.get(5)?;
+            Ok((
+                identity_id,
+                external_id,
+                display_name,
+                avatar_url,
+                normalized_address,
+                phone,
+            ))
+        })?;
+
+        for row in rows {
+            let (id, ext_id, name, avatar, norm_addr, phone) = row?;
+            let name_str = name.unwrap_or_else(|| format!("User {}", id));
+            let name_lower = name_str.to_lowercase();
+            let phone_lower = phone.as_deref().unwrap_or("").to_lowercase();
+            let addr_lower = norm_addr.as_deref().unwrap_or("").to_lowercase();
+
+            let matches = query_clean.is_empty()
+                || name_lower.contains(&query_clean)
+                || (!phone_lower.is_empty() && phone_lower.contains(&query_clean))
+                || (!addr_lower.is_empty() && addr_lower.contains(&query_clean));
+
+            if matches {
+                candidates.push(crate::conversation::types::ConversationMentionCandidate {
+                    identity_id: Some(id),
+                    external_id: ext_id,
+                    display_name: name_str,
+                    avatar_url: avatar,
+                    is_all: false,
+                });
+            }
+        }
+
+        if let Some(lim) = limit {
+            candidates.truncate(lim);
+        }
+
+        Ok(candidates)
     }
 }
 
@@ -3619,6 +4087,8 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         reactions: Vec::new(),
         batch_index: row.get(18)?,
         send_batch: None,
+        mentions: Vec::new(),
+        actions: ConversationMessageActions::default(),
     })
 }
 
