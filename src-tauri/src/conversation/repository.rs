@@ -1396,7 +1396,9 @@ impl ConversationRepository {
                 map_conversation_message,
             )?
             .collect::<Result<Vec<_>>>()?;
-        Ok(page_from_descending_rows(rows, clamped_limit))
+        let mut page = page_from_descending_rows(rows, clamped_limit);
+        crate::conversation::projection::hydrate_messages(&conn, &mut page.items)?;
+        Ok(page)
     }
 
     pub fn get_identity_timeline(

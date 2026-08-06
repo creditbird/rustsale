@@ -304,7 +304,7 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
             .provider_message_id
             .as_deref()
             .is_some_and(|s| !s.trim().is_empty())
-            && msg
+            || msg
                 .provider_client_message_id
                 .as_deref()
                 .is_some_and(|s| !s.trim().is_empty());

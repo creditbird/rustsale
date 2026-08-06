@@ -255,6 +255,14 @@ fn linking_identity_moves_direct_messages_into_contact_timeline_without_copying(
         .apply_normalized_message(&direct_message("imei-a", "message-1"))
         .unwrap();
 
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET connection_status = 'connected' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+    drop(conn);
+
     harness
         .repository
         .link_identity(applied.identity_id.expect("direct message identity"), 7)
@@ -269,6 +277,7 @@ fn linking_identity_moves_direct_messages_into_contact_timeline_without_copying(
         page.items[0].provider_message_id.as_deref(),
         Some("message-1")
     );
+    assert!(page.items[0].actions.react);
 }
 
 #[test]
@@ -500,7 +509,7 @@ fn hydrated_reactions_normalize_provider_aliases_to_canonical_emoji() {
 }
 
 #[test]
-fn phase2a_message_actions_require_both_provider_ids() {
+fn phase2a_message_actions_require_at_least_one_provider_id() {
     let harness = Harness::new();
 
     let mut provider_only = direct_message_for_peer("imei-a", "provider-only", "peer-provider");
@@ -515,6 +524,14 @@ fn phase2a_message_actions_require_both_provider_ids() {
     let client_only = harness
         .repository
         .apply_normalized_message(&client_only)
+        .unwrap();
+
+    let mut neither = direct_message_for_peer("imei-a", "neither-id", "peer-neither");
+    neither.provider_message_id = None;
+    neither.provider_client_message_id = None;
+    let neither = harness
+        .repository
+        .apply_normalized_message(&neither)
         .unwrap();
 
     let complete = harness
@@ -554,14 +571,20 @@ fn phase2a_message_actions_require_both_provider_ids() {
         .get_message_by_id(client_only.message_id)
         .unwrap()
         .unwrap();
+    let neither = harness
+        .repository
+        .get_message_by_id(neither.message_id)
+        .unwrap()
+        .unwrap();
     let complete = harness
         .repository
         .get_message_by_id(complete.message_id)
         .unwrap()
         .unwrap();
 
-    assert!(!provider_only.actions.react);
-    assert!(!client_only.actions.react);
+    assert!(provider_only.actions.react);
+    assert!(client_only.actions.react);
+    assert!(!neither.actions.react);
     assert!(complete.actions.react);
 }
 
