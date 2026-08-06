@@ -17,6 +17,7 @@
 
   import NewChatDialog from './NewChatDialog.svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
+  import { parseEmoticons } from './emoticonUtils';
 
   let {
     items,
@@ -187,7 +188,7 @@
 
                     {#if item.lastMessagePreview}
                       <p class="text-xs text-muted-foreground truncate mt-0.5">
-                        {item.lastMessagePreview}
+                        {parseEmoticons(item.lastMessagePreview)}
                       </p>
                     {/if}
 
@@ -268,7 +269,7 @@
 
                     {#if item.lastMessagePreview}
                       <p class="text-xs text-muted-foreground truncate mt-0.5">
-                        {item.lastMessagePreview}
+                        {parseEmoticons(item.lastMessagePreview)}
                       </p>
                     {/if}
 

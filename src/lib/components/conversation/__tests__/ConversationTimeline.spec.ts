@@ -38,8 +38,6 @@ describe('ConversationTimeline Component', () => {
       senderIdentityId: 10,
       senderDisplayName: `User ${startId + i}`,
       direction: (startId + i) % 2 === 0 ? 'outbound' : 'inbound',
-      providerMessageId: `p-${startId + i}`,
-      providerClientMessageId: `client-${startId + i}`,
       contentType: 'text',
       textContent: `Message content ${startId + i}`,
       content: {},

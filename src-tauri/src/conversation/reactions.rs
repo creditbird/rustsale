@@ -4,8 +4,60 @@ use crate::conversation::types::{
     utc_now, ConversationReactionGroup, SetConversationReactionRequest,
 };
 use crate::db::open_db_connection;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use std::path::PathBuf;
+
+pub(crate) fn canonical_reaction_code(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "❤️" | "❤" | "/-heart" | "/:heart" | "heart" => Some("heart"),
+        "👍" | "/-strong" | "/-like" | "like" => Some("like"),
+        "😆" | "😄" | ":>" | "/-haha" | "haha" => Some("haha"),
+        "😮" | ":o" | "/-wow" | "wow" => Some("wow"),
+        "😭" | "😢" | ":-((" | ":((" | "--b" | "/-cry" | "cry" | "sad" => Some("cry"),
+        "😡" | ":-h" | "/-angry" | "angry" => Some("angry"),
+        _ => None,
+    }
+}
+
+pub(crate) fn mark_reaction_removed(
+    tx: &Transaction<'_>,
+    message_id: i64,
+    actor_external_id: &str,
+    reaction_code: Option<&str>,
+    occurred_at: &str,
+) -> rusqlite::Result<usize> {
+    let target = reaction_code
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("unknown"))
+        .map(|value| canonical_reaction_code(value).unwrap_or(value).to_string());
+
+    let rows = {
+        let mut stmt = tx.prepare(
+            "SELECT rowid, reaction FROM message_reactions
+             WHERE message_id = ?1 AND actor_external_id = ?2 AND removed_at IS NULL",
+        )?;
+        let mapped_rows = stmt.query_map(params![message_id, actor_external_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        mapped_rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let mut updated = 0;
+    for (row_id, stored_reaction) in rows {
+        let stored_code = canonical_reaction_code(&stored_reaction).unwrap_or(&stored_reaction);
+        if target
+            .as_deref()
+            .is_none_or(|target_code| stored_code.eq_ignore_ascii_case(target_code))
+        {
+            updated += tx.execute(
+                "UPDATE message_reactions SET removed_at = ?1 WHERE rowid = ?2",
+                params![occurred_at, row_id],
+            )?;
+        }
+    }
+
+    Ok(updated)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeginReactionMutation {
@@ -14,6 +66,8 @@ pub struct BeginReactionMutation {
     pub reaction_code: String,
     pub active: bool,
     pub status: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
     pub is_existing: bool,
 }
 
@@ -38,70 +92,84 @@ impl ReactionMutationRepository {
         request: &SetConversationReactionRequest,
         _account_id: i64,
     ) -> ConversationResult<BeginReactionMutation> {
-        let client_mutation_id = match &request.client_mutation_id {
-            Some(id) if !id.trim().is_empty() => id.trim().to_string(),
-            _ => format!("mut-{}-{}", rand::random::<u64>(), rand::random::<u64>()),
-        };
-
-        let reaction_code = request
-            .reaction_code
-            .map(|c| c.as_str().to_string())
-            .unwrap_or_default();
-        let active = request.reaction_code.is_some();
-
-        let conn = open_db_connection(self.db_path_str())?;
-
-        let existing: Option<(i64, String, bool, String)> = conn
-            .query_row(
-                "SELECT message_id, reaction_code, active, status FROM reaction_mutations WHERE client_mutation_id = ?1",
-                params![client_mutation_id],
-                |row| {
-                    let active_int: i32 = row.get(2)?;
-                    Ok((row.get(0)?, row.get(1)?, active_int != 0, row.get(3)?))
-                },
-            )
-            .optional()?;
-
-        if let Some((ex_msg_id, ex_code, ex_active, ex_status)) = existing {
-            if ex_msg_id != request.message_id || ex_code != reaction_code || ex_active != active {
-                return Err(ConversationError::new(
-                    ConversationErrorCode::InvalidRequest,
-                    format!(
-                        "Conflicting request for client_mutation_id '{}'",
-                        client_mutation_id
-                    ),
-                ));
-            }
-            return Ok(BeginReactionMutation {
-                client_mutation_id,
-                message_id: request.message_id,
-                reaction_code,
-                active,
-                status: ex_status,
-                is_existing: true,
-            });
+        let client_mutation_id = request.client_mutation_id.trim().to_string();
+        if client_mutation_id.is_empty() {
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                "client_mutation_id must not be empty",
+            ));
         }
 
+        let reaction_code = request.reaction.as_str().to_string();
+        let active = request.active;
+
+        let conn = open_db_connection(self.db_path_str())?;
         let now = utc_now();
-        conn.execute(
+        let inserted = conn.execute(
             "INSERT INTO reaction_mutations (client_mutation_id, message_id, reaction_code, active, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?5)",
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?5)
+             ON CONFLICT(client_mutation_id) DO NOTHING",
             params![
-                client_mutation_id,
+                &client_mutation_id,
                 request.message_id,
-                reaction_code,
+                &reaction_code,
                 if active { 1 } else { 0 },
                 now,
             ],
         )?;
 
+        let existing: (i64, String, bool, String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT message_id, reaction_code, active, status, error_code, error_message
+                 FROM reaction_mutations WHERE client_mutation_id = ?1",
+                params![&client_mutation_id],
+                |row| {
+                    let active_int: i32 = row.get(2)?;
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        active_int != 0,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| {
+                ConversationError::new(
+                    ConversationErrorCode::InvalidRequest,
+                    format!(
+                        "Mutation client_id '{}' was not persisted",
+                        client_mutation_id
+                    ),
+                )
+            })?;
+
+        let (message_id, existing_code, existing_active, status, error_code, error_message) =
+            existing;
+        if message_id != request.message_id
+            || existing_code != reaction_code
+            || existing_active != active
+        {
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                format!(
+                    "Conflicting request for client_mutation_id '{}'",
+                    client_mutation_id
+                ),
+            ));
+        }
+
         Ok(BeginReactionMutation {
             client_mutation_id,
-            message_id: request.message_id,
-            reaction_code,
-            active,
-            status: "running".to_string(),
-            is_existing: false,
+            message_id,
+            reaction_code: existing_code,
+            active: existing_active,
+            status,
+            error_code,
+            error_message,
+            is_existing: inserted == 0,
         })
     }
 
@@ -142,26 +210,29 @@ impl ReactionMutationRepository {
         )?;
 
         if active {
+            let stored_reaction_code =
+                canonical_reaction_code(&reaction_code).unwrap_or(&reaction_code);
             tx.execute(
                 "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
                  VALUES (?1, ?2, ?3, ?4, NULL)
                  ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
                      reacted_at = COALESCE(message_reactions.reacted_at, excluded.reacted_at),
                      removed_at = NULL",
-                params![message_id, self_external_id, reaction_code, occurred_at],
+                params![
+                    message_id,
+                    self_external_id,
+                    stored_reaction_code,
+                    occurred_at
+                ],
             )?;
         } else {
-            if reaction_code.is_empty() {
-                tx.execute(
-                    "UPDATE message_reactions SET removed_at = ?1 WHERE message_id = ?2 AND actor_external_id = ?3 AND removed_at IS NULL",
-                    params![occurred_at, message_id, self_external_id],
-                )?;
-            } else {
-                tx.execute(
-                    "UPDATE message_reactions SET removed_at = ?1 WHERE message_id = ?2 AND actor_external_id = ?3 AND reaction = ?4 AND removed_at IS NULL",
-                    params![occurred_at, message_id, self_external_id, reaction_code],
-                )?;
-            }
+            mark_reaction_removed(
+                &tx,
+                message_id,
+                self_external_id,
+                (!reaction_code.is_empty()).then_some(reaction_code.as_str()),
+                occurred_at,
+            )?;
         }
 
         tx.commit()?;

@@ -6,8 +6,9 @@ use zca_rs::listener::ListenerEvent;
 use zca_rs::models::ThreadType;
 
 use crate::conversation::zalo::client::{
-    normalize_group_info, ProviderRecallRequest, ProviderSendError, ProviderSendRequest,
-    ProviderSendResult, ZaloClient, ZaloStickerReference,
+    build_forward_message_request, normalize_group_info, ProviderForwardRequest,
+    ProviderRecallRequest, ProviderSendError, ProviderSendRequest, ProviderSendResult, ZaloClient,
+    ZaloStickerReference,
 };
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
 
@@ -227,6 +228,28 @@ impl ZaloClient for FakeZaloClient {
         let mut stopped = self.stopped.lock().unwrap();
         *stopped = true;
     }
+}
+
+#[test]
+fn native_forward_request_preserves_source_body_and_reference_metadata() {
+    let request = ProviderForwardRequest {
+        external_thread_id: "target-user".to_string(),
+        thread_type: ThreadType::User,
+        provider_client_message_id: "1785750219147".to_string(),
+        source_provider_message_id: "8110983721631".to_string(),
+        source_message: "Nội dung gốc cần chuyển tiếp".to_string(),
+        source_timestamp_ms: 1_785_667_688_951,
+    };
+
+    let provider_request = build_forward_message_request(&request);
+    let reference = provider_request.reference.expect("forward reference");
+
+    assert_eq!(provider_request.message, "Nội dung gốc cần chuyển tiếp");
+    assert_eq!(provider_request.client_id, Some(1_785_750_219_147));
+    assert_eq!(reference.id, "8110983721631");
+    assert_eq!(reference.ts, 1_785_667_688_951);
+    assert_eq!(reference.log_src_type, 0);
+    assert_eq!(reference.fw_lvl, 0);
 }
 
 #[tokio::test]

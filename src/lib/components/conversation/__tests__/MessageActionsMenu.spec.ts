@@ -65,4 +65,31 @@ describe('MessageActionsMenu', () => {
     await fireEvent.click(forwardBtn);
     expect(onForward).toHaveBeenCalledTimes(1);
   });
+
+  it('closes when clicking outside the menu', async () => {
+    render(MessageActionsMenu, {
+      canReply: true,
+      canCopy: true,
+      canRecall: false,
+      onReply: () => {},
+      onCopy: () => {},
+      onRecall: () => {}
+    });
+
+    await fireEvent.click(screen.getByTestId('message-actions-trigger'));
+    expect(screen.getByText('Trả lời')).toBeTruthy();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    document.body.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerType: 'mouse',
+        clientX: 100,
+        clientY: 100
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByTestId('message-actions-trigger').getAttribute('aria-expanded')).toBe('false');
+  });
 });

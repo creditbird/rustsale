@@ -55,4 +55,16 @@ describe('MessageMentionText.svelte', () => {
     expect(root.textContent).toBe('<script>alert("xss")</script> @Hacker');
     expect(container.querySelector('script')).toBeNull();
   });
+
+  it('converts text emoticons to unicode emojis in message text', () => {
+    const { getByTestId } = render(MessageMentionText, {
+      props: {
+        text: "Hok lẽ lôi gemini ra xài luôn trời :') :)",
+        mentions: []
+      }
+    });
+
+    const root = getByTestId('message-mention-text');
+    expect(root.textContent).toBe('Hok lẽ lôi gemini ra xài luôn trời 🥲 😊');
+  });
 });

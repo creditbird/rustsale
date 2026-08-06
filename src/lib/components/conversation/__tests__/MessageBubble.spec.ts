@@ -18,8 +18,6 @@ describe('MessageBubble Component', () => {
     senderIdentityId: 201,
     senderDisplayName: 'Trần Văn B',
     direction: 'inbound',
-    providerMessageId: 'p-101',
-    providerClientMessageId: 'client-101',
     contentType: 'text',
     textContent: 'Xin chào shop, em muốn tư vấn sản phẩm',
     content: {},
@@ -32,7 +30,8 @@ describe('MessageBubble Component', () => {
     replyTarget: null,
     reactions: [],
     batchIndex: null,
-    sendBatch: null
+    sendBatch: null,
+    actions: { reply: true, copy: true, recall: true, forward: true, react: true }
   };
 
   const richCapabilities: ConversationCapabilities = {
@@ -47,7 +46,15 @@ describe('MessageBubble Component', () => {
     supportsQuoteReply: true,
     supportsRecall: true,
     recallWindowSeconds: 86400,
-    supportsReactions: true
+    supportsReactions: true,
+    reactions: {
+      read: true,
+      write: true,
+      supported: ['heart', 'like', 'haha', 'wow', 'cry', 'angry']
+    },
+    forward: { enabled: true, maxTargets: 10 },
+    mentions: { enabled: false, maxPerMessage: 0 },
+    quickTemplates: { enabled: false, maxTemplates: 0 }
   };
 
   test('inbound text shows sender, channel, account, and Vietnamese-localized timestamp', () => {
@@ -133,7 +140,7 @@ describe('MessageBubble Component', () => {
     expect(screen.queryByTestId('message-reaction-summary')).toBeNull();
   });
 
-  test('reply and recall eligibility are capability and provider-ID driven', async () => {
+  test('reply and recall eligibility are backend-action driven', async () => {
     const onReply = mock(() => {});
     const onRecall = mock(() => {});
     const outbound: ConversationMessage = {
@@ -156,6 +163,36 @@ describe('MessageBubble Component', () => {
     expect(onRecall).toHaveBeenCalledWith(outbound);
   });
 
+  test('write-disabled reactions remain visible but expose no mutation action', async () => {
+    const message: ConversationMessage = {
+      ...baseMessage,
+      reactions: [
+        {
+          reactionIcon: '❤️',
+          count: 1,
+          includesMe: false,
+          actors: []
+        }
+      ],
+      actions: undefined
+    };
+    const capabilities: ConversationCapabilities = {
+      ...richCapabilities,
+      reactions: {
+        read: true,
+        write: false,
+        supported: ['heart']
+      }
+    };
+
+    render(MessageBubble, { message, capabilities });
+
+    expect(screen.getByRole('button', { name: /❤️ 1/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Thả cảm xúc' })).toBeNull();
+    await fireEvent.click(screen.getByTestId('message-actions-trigger'));
+    expect(screen.queryByText(/Thả cảm xúc ❤️/)).toBeNull();
+  });
+
   test('right-click and Shift+F10 open the same explicit actions', async () => {
     const onReply = mock(() => {});
     const { container } = render(MessageBubble, {
@@ -175,6 +212,26 @@ describe('MessageBubble Component', () => {
     });
     await fireEvent.click(screen.getByText('Trả lời'));
     expect(onReply).toHaveBeenCalledTimes(2);
+  });
+
+  test('reaction picker closes when clicking outside', async () => {
+    render(MessageBubble, {
+      message: baseMessage,
+      capabilities: richCapabilities
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Thả cảm xúc' }));
+    expect(screen.getByRole('toolbar', { name: /Chọn cảm xúc/i })).toBeTruthy();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await fireEvent.pointerDown(document.body, {
+      pointerType: 'mouse',
+      clientX: 100,
+      clientY: 100
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.queryByRole('toolbar', { name: /Chọn cảm xúc/i })).toBeNull();
   });
 
   test('contentType = email renders a card using content.subject, content.from, content.to without {@html}', () => {

@@ -245,6 +245,7 @@ pub fn run() {
             conversation::commands::mark_conversation_quick_template_used,
             conversation::commands::set_conversation_reaction,
             conversation::commands::forward_conversation_message,
+            conversation::commands::get_conversation_forward_operation,
             conversation::commands::retry_conversation_forward_target,
             conversation::commands::list_conversation_mention_candidates
         ])

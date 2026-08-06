@@ -11,6 +11,8 @@
   import MessageReactionSummary from './MessageReactionSummary.svelte';
   import MessageReactionPicker from './MessageReactionPicker.svelte';
   import { safeConversationUrl } from './messageMedia';
+  import { reactionIconToCode } from './reactionDisplay';
+  import * as Popover from '$lib/components/ui/popover';
   import { Smile } from 'lucide-svelte';
 
   let {
@@ -75,33 +77,6 @@
     }
   }
 
-  function iconToCode(icon: string): ConversationReactionCode {
-    switch (icon) {
-      case '❤️':
-      case 'heart':
-        return 'heart';
-      case '👍':
-      case 'like':
-        return 'like';
-      case '😆':
-      case '😄':
-      case 'haha':
-        return 'haha';
-      case '😮':
-      case 'wow':
-        return 'wow';
-      case '😭':
-      case '😢':
-      case 'cry':
-        return 'cry';
-      case '😡':
-      case 'angry':
-        return 'angry';
-      default:
-        return 'like';
-    }
-  }
-
   let isOutbound = $derived(message.direction === 'outbound');
   let isRemoved = $derived(message.status === 'removed' || message.removedAt !== null);
 
@@ -161,13 +136,10 @@
     return null;
   });
 
-  let hasBothProviderIds = $derived(
-    Boolean(message.providerMessageId && message.providerClientMessageId)
+  let canReply = $derived(!isRemoved && (message.actions?.reply ?? true));
+  let canCopy = $derived(
+    !isRemoved && Boolean(message.actions?.copy ?? true) && copyValue !== null
   );
-  let canReply = $derived(
-    !isRemoved && Boolean(capabilities?.supportsQuoteReply) && hasBothProviderIds
-  );
-  let canCopy = $derived(!isRemoved && copyValue !== null);
   let withinRecallWindow = $derived.by(() => {
     const windowSeconds = capabilities?.recallWindowSeconds;
     if (windowSeconds === null || windowSeconds === undefined) return true;
@@ -178,23 +150,22 @@
   let canRecall = $derived(
     isOutbound &&
       !isRemoved &&
-      Boolean(capabilities?.supportsRecall) &&
-      hasBothProviderIds &&
+      Boolean(message.actions?.recall ?? true) &&
       ['sent', 'delivered', 'read'].includes(message.status) &&
       withinRecallWindow
   );
   let canReact = $derived(
-    !isRemoved && (message.actions ? message.actions.react : Boolean(capabilities?.reactions?.enabled ?? capabilities?.supportsReactions ?? true))
+    !isRemoved && (message.actions?.react ?? capabilities?.reactions.write ?? true)
   );
   let canForward = $derived(
-    !isRemoved && (message.actions ? message.actions.forward : Boolean(capabilities?.forward?.enabled ?? true))
+    !isRemoved && (message.actions?.forward ?? capabilities?.forward.enabled ?? true)
   );
 
   let activeReactionCodes = $derived.by(() => {
     const codes: ConversationReactionCode[] = [];
     for (const group of message.reactions) {
       if (group.includesMe) {
-        const code = iconToCode(group.reactionIcon);
+        const code = reactionIconToCode(group.reactionIcon);
         if (!codes.includes(code)) codes.push(code);
       }
     }
@@ -242,19 +213,6 @@
       ? 'bg-primary text-primary-foreground rounded-tr-xs'
       : 'bg-muted/60 text-foreground border border-border/50 rounded-tl-xs'}"
   >
-    <!-- Floating reaction picker popover -->
-    {#if showPicker}
-      <div class="absolute bottom-full left-0 z-40 mb-1">
-        <MessageReactionPicker
-          messageId={message.id}
-          activeReactions={activeReactionCodes}
-          disabledReactions={pendingReactions}
-          onSelect={handleSelectReaction}
-          onClose={() => (showPicker = false)}
-        />
-      </div>
-    {/if}
-
     <!-- Header info: Sender name / Channel / Account -->
     <div class="flex items-start justify-between gap-2">
       <div class="flex items-center gap-2 text-xs opacity-75 font-medium flex-wrap">
@@ -279,15 +237,30 @@
 
       <div class="flex items-center gap-1">
         {#if canReact}
-          <button
-            type="button"
-            aria-label="Thả cảm xúc"
-            title="Thả cảm xúc"
-            class="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground opacity-0 group-hover/bubble:opacity-100 focus:opacity-100 transition-opacity"
-            onclick={() => (showPicker = !showPicker)}
-          >
-            <Smile class="size-4" />
-          </button>
+          <Popover.Root bind:open={showPicker}>
+            <Popover.Trigger
+              aria-label="Thả cảm xúc"
+              title="Thả cảm xúc"
+              class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {showPicker ? 'opacity-100 bg-muted text-foreground' : 'opacity-0'}"
+            >
+              <Smile class="size-4" />
+            </Popover.Trigger>
+            <Popover.Content
+              side="top"
+              align="start"
+              sideOffset={4}
+              class="w-auto rounded-full bg-transparent p-0 shadow-none ring-0"
+            >
+        <MessageReactionPicker
+          messageId={message.id}
+          activeReactions={activeReactionCodes}
+          disabledReactions={pendingReactions}
+          supportedReactions={capabilities?.reactions.supported ?? []}
+          onSelect={handleSelectReaction}
+          onClose={() => (showPicker = false)}
+        />
+            </Popover.Content>
+          </Popover.Root>
         {/if}
 
         <MessageActionsMenu

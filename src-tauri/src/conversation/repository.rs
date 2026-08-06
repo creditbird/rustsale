@@ -1,4 +1,5 @@
 use crate::conversation::error::{ConversationError, ConversationErrorCode};
+use crate::conversation::reactions::{canonical_reaction_code, mark_reaction_removed};
 pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
     utc_now, Channel, ChannelBadgeSummary, ConversationAccountRuntime, ConversationKind,
@@ -1535,35 +1536,50 @@ impl ConversationRepository {
             None => return Ok(None),
         };
 
-        let removed_at = if reaction.removed {
-            Some(reaction.occurred_at.as_str())
-        } else {
-            None
-        };
+        let canonical_code = canonical_reaction_code(&reaction.reaction);
+        let stored_reaction = canonical_code.unwrap_or(reaction.reaction.trim());
 
-        tx.execute(
-            "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
-                 reacted_at = COALESCE(message_reactions.reacted_at, excluded.reacted_at),
-                 removed_at = excluded.removed_at",
-            params![
+        if reaction.removed {
+            mark_reaction_removed(
+                &tx,
                 message_id,
-                reaction.actor_external_id,
-                reaction.reaction,
-                reaction.occurred_at,
-                removed_at,
-            ],
-        )?;
+                &reaction.actor_external_id,
+                canonical_code,
+                &reaction.occurred_at,
+            )?;
+        } else {
+            tx.execute(
+                "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL)
+                 ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
+                     reacted_at = COALESCE(message_reactions.reacted_at, excluded.reacted_at),
+                     removed_at = NULL",
+                params![
+                    message_id,
+                    reaction.actor_external_id,
+                    stored_reaction,
+                    reaction.occurred_at,
+                ],
+            )?;
+        }
 
         let active_flag = if reaction.removed { 0 } else { 1 };
         let now = utc_now();
-        tx.execute(
-            "UPDATE reaction_mutations
-             SET status = 'succeeded', updated_at = ?1
-             WHERE message_id = ?2 AND reaction_code = ?3 AND active = ?4 AND status IN ('running', 'delivery_unknown')",
-            params![now, message_id, reaction.reaction, active_flag],
-        )?;
+        if let Some(reaction_code) = canonical_code {
+            tx.execute(
+                "UPDATE reaction_mutations
+                 SET status = 'succeeded', updated_at = ?1
+                 WHERE message_id = ?2 AND reaction_code = ?3 AND active = ?4 AND status IN ('running', 'delivery_unknown')",
+                params![now, message_id, reaction_code, active_flag],
+            )?;
+        } else if reaction.removed {
+            tx.execute(
+                "UPDATE reaction_mutations
+                 SET status = 'succeeded', updated_at = ?1
+                 WHERE message_id = ?2 AND active = 0 AND status IN ('running', 'delivery_unknown')",
+                params![now, message_id],
+            )?;
+        }
 
         tx.commit()?;
         Ok(Some(message_id))
@@ -2141,15 +2157,17 @@ impl ConversationRepository {
         }
 
         let content_json = serde_json::json!({ "text": request.text }).to_string();
+        let provider_client_message_id = next_provider_client_message_id();
         let message_id: i64 = tx.query_row(
             "INSERT INTO messages
              (conversation_id, sender_identity_id, direction, provider_message_id, provider_client_message_id,
               local_request_id, content_type, text_content, content_json, raw_payload_json, provider_timestamp,
               ingested_at, sent_at, edited_at, removed_at, status, error_code, error_message, reply_to_message_id)
-             VALUES (?1, NULL, 'outbound', NULL, NULL, ?2, 'text', ?3, ?4, NULL, NULL, ?5, NULL, NULL, NULL, 'queued', NULL, NULL, ?6)
+             VALUES (?1, NULL, 'outbound', NULL, ?2, ?3, 'text', ?4, ?5, NULL, NULL, ?6, NULL, NULL, NULL, 'queued', NULL, NULL, ?7)
              RETURNING id",
             params![
                 request.conversation_id,
+                provider_client_message_id,
                 local_request_id,
                 request.text,
                 content_json,
@@ -2738,6 +2756,16 @@ impl ConversationRepository {
             crate::conversation::forwarding::enqueue_forward_operation(&tx, request, &now)?;
         tx.commit()?;
         Ok(result)
+    }
+
+    pub fn get_forward_operation(
+        &self,
+        client_operation_id: &str,
+    ) -> crate::conversation::error::ConversationResult<
+        crate::conversation::types::ForwardConversationMessageResult,
+    > {
+        let conn = open_db_connection(&self.db_path)?;
+        crate::conversation::forwarding::load_forward_operation(&conn, client_operation_id)
     }
 
     pub fn update_forward_target_status(
@@ -4055,7 +4083,6 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
     let reply_to_message_id: Option<i64> = row.get(16)?;
     let reply_target = reply_to_message_id.map(|id| ConversationReplyTarget {
         message_id: Some(id),
-        provider_message_id: None,
         sender_display_name: None,
         content_type: "text".into(),
         text_content: None,

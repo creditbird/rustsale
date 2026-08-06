@@ -29,8 +29,6 @@ function createMessage(
     senderIdentityId: 100,
     senderDisplayName: 'Customer',
     direction: 'inbound',
-    providerMessageId: `prov-${id}`,
-    providerClientMessageId: `client-${id}`,
     contentType: 'text',
     textContent,
     content: {},
@@ -150,14 +148,12 @@ describe('timelineState', () => {
       const staleFailed = {
         ...createMessage(428, '2026-08-02T00:45:54Z'),
         direction: 'outbound' as const,
-        status: 'failed' as const,
-        providerMessageId: null
+        status: 'failed' as const
       };
       const optimisticQueued = {
         ...createMessage(999, '2026-08-02T01:01:00Z'),
         direction: 'outbound' as const,
-        status: 'queued' as const,
-        providerMessageId: null
+        status: 'queued' as const
       };
       const serverLatest = createMessage(2, '2026-08-02T01:00:00Z');
 

@@ -93,7 +93,7 @@ impl ConversationService {
                 Ok(templates)
             }
         } else {
-            let templates = self.quick_templates.list(false)?;
+            let templates = self.quick_templates.list(request.include_inactive)?;
             if let Some(category) = request.category.as_deref().filter(|c| !c.trim().is_empty()) {
                 let cat_trimmed = category.trim();
                 Ok(templates
@@ -144,6 +144,13 @@ impl ConversationService {
         request: ForwardConversationMessageRequest,
     ) -> ConversationResult<ForwardConversationMessageResult> {
         self.repository.forward_conversation_message(&request)
+    }
+
+    pub fn get_forward_operation(
+        &self,
+        client_operation_id: &str,
+    ) -> ConversationResult<ForwardConversationMessageResult> {
+        self.repository.get_forward_operation(client_operation_id)
     }
 
     pub fn retry_forward_target(
@@ -748,17 +755,54 @@ impl ConversationService {
                 .unwrap_or("")
                 .to_string();
 
-            let source_provider_msg_id = self
-                .repository
-                .get_source_provider_message_id(source_message_id)
-                .ok()
-                .flatten();
+            let source = self.repository.get_message_by_id(source_message_id)?;
+            let source_p_msg_id = job
+                .content_json
+                .get("sourceProviderMessageId")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    source
+                        .as_ref()
+                        .and_then(|message| message.provider_message_id.clone())
+                });
+            let source_message = job
+                .content_json
+                .get("sourceMessage")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    source
+                        .as_ref()
+                        .and_then(|message| message.text_content.clone())
+                });
+            let source_timestamp_ms = job
+                .content_json
+                .get("sourceTimestampMs")
+                .and_then(|value| value.as_u64())
+                .or_else(|| {
+                    source.as_ref().and_then(|message| {
+                        chrono::DateTime::parse_from_rfc3339(&message.occurred_at)
+                            .ok()
+                            .map(|timestamp| timestamp.timestamp_millis())
+                            .filter(|timestamp| *timestamp > 0)
+                            .map(|timestamp| timestamp as u64)
+                    })
+                });
 
-            let source_p_msg_id = match source_provider_msg_id {
-                Some(id) if !id.trim().is_empty() => id,
+            let (source_p_msg_id, source_message, source_timestamp_ms) = match (
+                source_p_msg_id.filter(|value| !value.trim().is_empty()),
+                source_message.filter(|value| !value.trim().is_empty()),
+                source_timestamp_ms.filter(|value| *value > 0),
+            ) {
+                (Some(provider_message_id), Some(message), Some(timestamp_ms)) => {
+                    (provider_message_id, message, timestamp_ms)
+                }
                 _ => {
                     let err_msg = format!(
-                        "Source message {} has no provider_message_id",
+                        "Source message {} is missing native Forward metadata",
                         source_message_id
                     );
                     self.repository.fail_outbox_job(
@@ -797,6 +841,8 @@ impl ConversationService {
                 thread_type,
                 provider_client_message_id: job.provider_client_message_id.clone(),
                 source_provider_message_id: source_p_msg_id,
+                source_message,
+                source_timestamp_ms,
             };
 
             let retry_policy = crate::conversation::retry::RetryPolicy::default();
@@ -1136,7 +1182,10 @@ impl ConversationService {
             .map(ConversationCapabilities::from_json)
             .unwrap_or_else(ConversationCapabilities::zalo_phase_one);
 
-        if !capabilities.supports_reactions {
+        if !capabilities.supports_reactions
+            || !capabilities.reactions.write
+            || !capabilities.reactions.supported.contains(&request.reaction)
+        {
             return Err(ConversationError::new(
                 ConversationErrorCode::ReactionNotSupported,
                 format!(
@@ -1199,23 +1248,24 @@ impl ConversationService {
         let reaction_mutations = ReactionMutationRepository::new(self.repository.db_path());
         let mutation = reaction_mutations.begin(request, msg.channel_account_id)?;
 
-        if mutation.is_existing
-            || mutation.status == "succeeded"
-            || mutation.status == "failed"
-            || mutation.status == "delivery_unknown"
-        {
+        if mutation.is_existing {
             let read_conn = open_db_connection(self.repository.db_path())?;
             let groups = load_message_reaction_groups(&read_conn, request.message_id)?;
             let status = match mutation.status.as_str() {
+                "running" => ReactionMutationStatus::Running,
                 "succeeded" => ReactionMutationStatus::Succeeded,
                 "failed" => ReactionMutationStatus::Failed,
                 _ => ReactionMutationStatus::DeliveryUnknown,
             };
             return Ok(ConversationReactionMutationResult {
+                client_mutation_id: mutation.client_mutation_id,
                 message_id: request.message_id,
-                reaction_code: request.reaction_code,
+                reaction: request.reaction,
+                requested_active: request.active,
                 status,
                 reactions: groups,
+                error_code: mutation.error_code,
+                error_message: mutation.error_message,
             });
         }
 
@@ -1224,7 +1274,11 @@ impl ConversationService {
             provider_client_message_id,
             external_thread_id,
             thread_type,
-            reaction_code: request.reaction_code,
+            reaction_code: if request.active {
+                Some(request.reaction)
+            } else {
+                None
+            },
             client_mutation_id: Some(mutation.client_mutation_id.clone()),
         };
 
@@ -1242,10 +1296,14 @@ impl ConversationService {
                     super::events::ConversationInvalidationReason::Reaction,
                 )?;
                 Ok(ConversationReactionMutationResult {
+                    client_mutation_id: mutation.client_mutation_id,
                     message_id: request.message_id,
-                    reaction_code: request.reaction_code,
+                    reaction: request.reaction,
+                    requested_active: request.active,
                     status: ReactionMutationStatus::Succeeded,
                     reactions: groups,
+                    error_code: None,
+                    error_message: None,
                 })
             }
             Err(err) => {
@@ -1259,9 +1317,10 @@ impl ConversationService {
                     }
                 };
 
+                let error_code = format!("{:?}", err.kind);
                 reaction_mutations.fail(
                     &mutation.client_mutation_id,
-                    &format!("{:?}", err.kind),
+                    &error_code,
                     &err.message,
                     is_unknown,
                 )?;
@@ -1274,10 +1333,14 @@ impl ConversationService {
                 let current_groups = load_message_reaction_groups(&read_conn, request.message_id)?;
 
                 Ok(ConversationReactionMutationResult {
+                    client_mutation_id: mutation.client_mutation_id,
                     message_id: request.message_id,
-                    reaction_code: request.reaction_code,
+                    reaction: request.reaction,
+                    requested_active: request.active,
                     status: mutation_status,
                     reactions: current_groups,
+                    error_code: Some(error_code),
+                    error_message: Some(err.message),
                 })
             }
         }

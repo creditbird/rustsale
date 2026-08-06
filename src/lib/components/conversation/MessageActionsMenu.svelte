@@ -1,6 +1,7 @@
 <script lang="ts">
   import Ellipsis from 'lucide-svelte/icons/ellipsis';
   import type { ConversationReactionCode } from '$lib/services/conversationService';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 
   const QUICK_REACTIONS: Array<{ code: ConversationReactionCode; icon: string; label: string }> = [
     { code: 'heart', icon: '❤️', label: 'Thả cảm xúc ❤️' },
@@ -37,6 +38,8 @@
     onToggleReaction?: (code: ConversationReactionCode) => void;
   } = $props();
 
+  let contentElement = $state<HTMLElement | null>(null);
+
   function run(action: () => void) {
     open = false;
     action();
@@ -54,6 +57,21 @@
     }
   }
 
+  function dismissOnOutside(node: HTMLElement) {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!open || !(event.target instanceof Node)) return;
+      if (node.contains(event.target) || contentElement?.contains(event.target)) return;
+      open = false;
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return {
+      destroy() {
+        document.removeEventListener('pointerdown', handlePointerDown, true);
+      }
+    };
+  }
+
   let actions = $derived([
     ...(canReply ? [{ label: 'Trả lời', action: onReply, destructive: false }] : []),
     ...(canCopy ? [{ label: 'Sao chép', action: onCopy, destructive: false }] : []),
@@ -63,27 +81,32 @@
 </script>
 
 {#if canReply || canCopy || canRecall || canReact || canForward}
-  <div class="relative">
-    <button
-      type="button"
-      data-testid="message-actions-trigger"
-      aria-label="Thao tác tin nhắn"
-      aria-expanded={open}
-      class="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
-      onclick={() => (open = !open)}
-      onkeydown={handleTriggerKeydown}
-    >
-      <Ellipsis class="size-4" />
-    </button>
-    {#if open}
-      <div class="absolute right-0 top-full z-30 mt-1 min-w-36 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md">
+  <div class="relative" use:dismissOnOutside>
+    <DropdownMenu.Root bind:open>
+      <DropdownMenu.Trigger
+        type="button"
+        data-testid="message-actions-trigger"
+        aria-label="Thao tác tin nhắn"
+        aria-expanded={open}
+        class="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+        onkeydown={handleTriggerKeydown}
+      >
+        <Ellipsis class="size-4" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content
+        bind:ref={contentElement}
+        align="end"
+        side="bottom"
+        sideOffset={4}
+        class="z-50 min-w-36 w-auto rounded-md border p-1 text-sm shadow-md ring-0"
+      >
         {#if canReact}
-          <div class="flex items-center justify-between border-b border-border/50 px-1 py-1 mb-1">
+          <div class="mb-1 flex items-center justify-between border-b border-border/50 px-1 py-1">
             {#each QUICK_REACTIONS as react (react.code)}
               <button
                 type="button"
                 aria-label={react.label}
-                class="flex size-6 items-center justify-center rounded-sm text-xs hover:bg-muted transition-transform hover:scale-125"
+                class="flex size-6 items-center justify-center rounded-sm text-xs transition-transform hover:scale-125 hover:bg-muted"
                 onclick={() => handleQuickReaction(react.code)}
               >
                 {react.icon}
@@ -92,15 +115,15 @@
           </div>
         {/if}
         {#each actions as action (action.label)}
-          <button
-            type="button"
-            class="w-full rounded-sm px-2 py-1.5 text-left hover:bg-muted {action.destructive ? 'text-destructive' : ''}"
+          <DropdownMenu.Item
+            variant={action.destructive ? 'destructive' : 'default'}
+            class="rounded-sm px-2 py-1.5"
             onclick={() => run(action.action)}
           >
             {action.label}
-          </button>
+          </DropdownMenu.Item>
         {/each}
-      </div>
-    {/if}
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
   </div>
 {/if}

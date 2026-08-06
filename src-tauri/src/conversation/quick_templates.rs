@@ -128,6 +128,7 @@ impl QuickTemplateRepository {
                     title,
                     content: body_text,
                     category,
+                    is_active: true,
                     usage_count: 0,
                     last_used_at: None,
                     created_at: now.clone(),
@@ -164,17 +165,29 @@ impl QuickTemplateRepository {
             )
             .optional()?;
 
-        let (_is_active, usage_count, last_used_at, created_at) = match current {
-            Some((active, usage, last_used, created)) if active == 1 => {
-                (active, usage, last_used, created)
-            }
-            _ => {
+        let (current_is_active, usage_count, last_used_at, created_at) = match current {
+            Some((active, usage, last_used, created)) => (active == 1, usage, last_used, created),
+            None => {
                 return Err(ConversationError::new(
                     ConversationErrorCode::InvalidRequest,
                     "Template not found",
                 ));
             }
         };
+
+        if req.is_active && !current_is_active {
+            let active_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM conversation_quick_templates WHERE is_active = 1",
+                [],
+                |row| row.get(0),
+            )?;
+            if active_count >= 500 {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::TemplateLimitExceeded,
+                    "Template limit of 500 active templates reached",
+                ));
+            }
+        }
 
         let existing: Option<(i64, i32)> = conn
             .query_row(
@@ -201,9 +214,17 @@ impl QuickTemplateRepository {
         let now = utc_now();
         conn.execute(
             "UPDATE conversation_quick_templates
-             SET shortcut = ?1, title = ?2, body_text = ?3, category = ?4, updated_at = ?5
-             WHERE id = ?6",
-            params![norm_sc, title, body_text, category, now, req.id],
+             SET shortcut = ?1, title = ?2, body_text = ?3, category = ?4, is_active = ?5, updated_at = ?6
+             WHERE id = ?7",
+            params![
+                norm_sc,
+                title,
+                body_text,
+                category,
+                req.is_active,
+                now,
+                req.id
+            ],
         )?;
 
         Ok(ConversationQuickTemplate {
@@ -212,6 +233,7 @@ impl QuickTemplateRepository {
             title,
             content: body_text,
             category,
+            is_active: req.is_active,
             usage_count,
             last_used_at,
             created_at,
@@ -221,27 +243,17 @@ impl QuickTemplateRepository {
 
     pub fn delete(&self, id: i64) -> ConversationResult<()> {
         let conn = open_db_connection(&self.db_path)?;
-        let is_active: Option<i32> = conn
-            .query_row(
-                "SELECT is_active FROM conversation_quick_templates WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        match is_active {
-            Some(1) => {
-                let now = utc_now();
-                conn.execute(
-                    "UPDATE conversation_quick_templates SET is_active = 0, updated_at = ?1 WHERE id = ?2",
-                    params![now, id],
-                )?;
-                Ok(())
-            }
-            _ => Err(ConversationError::new(
+        let deleted = conn.execute(
+            "DELETE FROM conversation_quick_templates WHERE id = ?1",
+            params![id],
+        )?;
+        if deleted == 0 {
+            Err(ConversationError::new(
                 ConversationErrorCode::InvalidRequest,
                 "Template not found",
-            )),
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -271,7 +283,7 @@ impl QuickTemplateRepository {
         )?;
 
         let tmpl = conn.query_row(
-            "SELECT id, shortcut, title, body_text, category, usage_count, last_used_at, created_at, updated_at
+            "SELECT id, shortcut, title, body_text, category, is_active, usage_count, last_used_at, created_at, updated_at
              FROM conversation_quick_templates WHERE id = ?1",
             params![id],
             |row| {
@@ -281,10 +293,11 @@ impl QuickTemplateRepository {
                     title: row.get(2)?,
                     content: row.get(3)?,
                     category: row.get(4)?,
-                    usage_count: row.get(5)?,
-                    last_used_at: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
+                    is_active: row.get(5)?,
+                    usage_count: row.get(6)?,
+                    last_used_at: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             },
         )?;
@@ -298,10 +311,10 @@ impl QuickTemplateRepository {
     ) -> ConversationResult<Vec<ConversationQuickTemplate>> {
         let conn = open_db_connection(&self.db_path)?;
         let sql = if include_inactive {
-            "SELECT id, shortcut, title, body_text, category, usage_count, last_used_at, created_at, updated_at
+            "SELECT id, shortcut, title, body_text, category, is_active, usage_count, last_used_at, created_at, updated_at
              FROM conversation_quick_templates ORDER BY shortcut ASC, id ASC"
         } else {
-            "SELECT id, shortcut, title, body_text, category, usage_count, last_used_at, created_at, updated_at
+            "SELECT id, shortcut, title, body_text, category, is_active, usage_count, last_used_at, created_at, updated_at
              FROM conversation_quick_templates WHERE is_active = 1 ORDER BY shortcut ASC, id ASC"
         };
 
@@ -313,10 +326,11 @@ impl QuickTemplateRepository {
                 title: row.get(2)?,
                 content: row.get(3)?,
                 category: row.get(4)?,
-                usage_count: row.get(5)?,
-                last_used_at: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                is_active: row.get(5)?,
+                usage_count: row.get(6)?,
+                last_used_at: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
             })
         })?;
 

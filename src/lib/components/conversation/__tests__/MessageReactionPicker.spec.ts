@@ -91,4 +91,16 @@ describe('MessageReactionPicker Component', () => {
     const likeBtn = screen.getByRole('button', { name: /^Thích$/i });
     expect(likeBtn.hasAttribute('disabled')).toBe(true);
   });
+
+  it('renders only reactions allowed by capability', () => {
+    render(MessageReactionPicker, {
+      messageId: 101,
+      supportedReactions: ['heart', 'like']
+    });
+
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /Yêu thích/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Thích$/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Cười/i })).toBeNull();
+  });
 });

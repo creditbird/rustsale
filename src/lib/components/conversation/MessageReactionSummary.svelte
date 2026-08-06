@@ -3,6 +3,7 @@
     ConversationReactionCode,
     ConversationReactionGroup
   } from '$lib/services/conversationService';
+  import { normalizeReactionIcon, reactionIconToCode } from './reactionDisplay';
 
   let {
     groups,
@@ -18,37 +19,9 @@
 
   let expandedIcon = $state<string | null>(null);
 
-  function iconToCode(icon: string): ConversationReactionCode {
-    switch (icon) {
-      case '❤️':
-      case 'heart':
-        return 'heart';
-      case '👍':
-      case 'like':
-        return 'like';
-      case '😆':
-      case '😄':
-      case 'haha':
-        return 'haha';
-      case '😮':
-      case 'wow':
-        return 'wow';
-      case '😭':
-      case '😢':
-      case 'cry':
-      case 'sad':
-        return 'cry';
-      case '😡':
-      case 'angry':
-        return 'angry';
-      default:
-        return 'like';
-    }
-  }
-
   function handleChipClick(group: ConversationReactionGroup) {
     if (canReact) {
-      const code = iconToCode(group.reactionIcon);
+      const code = reactionIconToCode(group.reactionIcon);
       onToggleReaction(code, group.includesMe);
     } else {
       toggleGroup(group.reactionIcon);
@@ -63,7 +36,8 @@
 {#if groups.length > 0}
   <div class="flex flex-wrap items-center gap-1 pt-1" data-testid="message-reaction-summary">
     {#each groups as group (group.reactionIcon)}
-      {@const code = iconToCode(group.reactionIcon)}
+      {@const code = reactionIconToCode(group.reactionIcon)}
+      {@const displayIcon = normalizeReactionIcon(group.reactionIcon)}
       {@const pending = pendingReactions.includes(code)}
       <div class="relative">
         <button
@@ -78,7 +52,7 @@
           onmouseenter={() => (expandedIcon = group.reactionIcon)}
           onmouseleave={() => (expandedIcon = null)}
         >
-          {group.reactionIcon} {group.count}
+          {displayIcon} {group.count}
         </button>
         {#if expandedIcon === group.reactionIcon}
           <div class="absolute bottom-full left-0 z-20 mb-1 min-w-40 rounded-md border bg-popover p-2 text-popover-foreground shadow-md">

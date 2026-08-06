@@ -68,23 +68,26 @@
   let mountedItems = $derived(items.slice(virtualWindow.start, virtualWindow.end));
   let renderItems = $derived(groupTimelineItems(mountedItems));
 
-  // Auto-scroll tracking for new live messages
-  let previousItemsLength = $state<number | null>(null);
+  // Auto-scroll tracking for new live messages and conversation switching
+  let previousItemsRef: ConversationMessage[] | null = null;
 
   $effect(() => {
-    const currentLen = items.length;
-    if (previousItemsLength !== null && currentLen > previousItemsLength) {
-      // If a new live message was appended to the bottom
-      const wasNear = isNearBottom();
-      previousItemsLength = currentLen;
+    const currentItems = items;
+    if (previousItemsRef !== currentItems) {
+      const isInitialOrSelection =
+        previousItemsRef === null ||
+        currentItems.length === 0 ||
+        previousItemsRef.length === 0 ||
+        currentItems[0]?.conversationId !== previousItemsRef[0]?.conversationId;
 
-      if (wasNear) {
+      const wasNear = isNearBottom();
+      previousItemsRef = currentItems;
+
+      if (isInitialOrSelection || wasNear) {
         tick().then(() => {
           scrollToBottom();
         });
       }
-    } else {
-      previousItemsLength = currentLen;
     }
   });
 
@@ -154,7 +157,7 @@
 
   export function isNearBottom(): boolean {
     if (!containerEl) return true;
-    const threshold = 80;
+    const threshold = 180;
     const distance =
       containerEl.scrollHeight - containerEl.scrollTop - containerEl.clientHeight;
     return distance <= threshold;
@@ -192,7 +195,7 @@
 <div
   bind:this={containerEl}
   onscroll={handleScroll}
-  class="flex-1 overflow-y-auto p-4 space-y-2 relative scroll-smooth"
+  class="flex-1 overflow-y-auto p-4 pb-6 space-y-2 relative scroll-smooth"
   data-timeline-container
 >
   <!-- Loading older indicator / Top Sentinel -->
@@ -283,5 +286,7 @@
         />
       {/if}
     {/each}
+    <!-- Bottom margin spacer for easy viewing & interaction above composer -->
+    <div class="h-6 w-full shrink-0" aria-hidden="true" data-slot="timeline-bottom-spacer"></div>
   {/if}
 </div>

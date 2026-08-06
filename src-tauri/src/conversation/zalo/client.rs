@@ -165,6 +165,26 @@ pub struct ProviderForwardRequest {
     pub thread_type: zca_rs::models::ThreadType,
     pub provider_client_message_id: String,
     pub source_provider_message_id: String,
+    pub source_message: String,
+    pub source_timestamp_ms: u64,
+}
+
+pub(crate) fn build_forward_message_request(
+    request: &ProviderForwardRequest,
+) -> zca_rs::models::ForwardMessageRequest {
+    zca_rs::models::ForwardMessageRequest {
+        client_id: request.provider_client_message_id.parse::<u64>().ok(),
+        message: request.source_message.clone(),
+        thread_id: request.external_thread_id.clone(),
+        thread_type: request.thread_type,
+        reference: Some(zca_rs::models::ForwardReference {
+            id: request.source_provider_message_id.clone(),
+            ts: request.source_timestamp_ms,
+            log_src_type: 0,
+            fw_lvl: 0,
+        }),
+        ttl: Some(0),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -690,21 +710,7 @@ impl ZaloClient for RealZaloClient {
         &self,
         request: ProviderForwardRequest,
     ) -> Result<ProviderSendResult, ProviderSendError> {
-        let cli_msg_id = request.provider_client_message_id.parse::<u64>().ok();
-
-        let forward_req = zca_rs::models::ForwardMessageRequest {
-            client_id: cli_msg_id,
-            message: "Đã chuyển tiếp một tin nhắn".to_string(),
-            thread_id: request.external_thread_id.clone(),
-            thread_type: request.thread_type,
-            reference: Some(zca_rs::models::ForwardReference {
-                id: request.source_provider_message_id,
-                ts: 0,
-                log_src_type: 0,
-                fw_lvl: 1,
-            }),
-            ttl: Some(0),
-        };
+        let forward_req = build_forward_message_request(&request);
 
         let receipt = self.inner.forward_message_one(forward_req).await?;
         Ok(ProviderSendResult {

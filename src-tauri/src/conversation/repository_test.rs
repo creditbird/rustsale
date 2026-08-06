@@ -5,7 +5,10 @@ use super::repository::{
     NormalizedReaction, NormalizedReceipt, NormalizedUndo, ReceiptKind,
     ResolveDirectPhoneRecipientRequest, StagedAttachmentRecord,
 };
-use super::types::{Channel, ConversationKind, InboxItemKind, MessageDirection, MessageStatus};
+use super::types::{
+    Channel, ConversationCapabilities, ConversationKind, InboxItemKind, MessageDirection,
+    MessageStatus,
+};
 use crate::db::open_db_connection;
 use rusqlite::{params, OptionalExtension};
 
@@ -451,6 +454,237 @@ fn hydrated_reactions_mark_current_account_and_keep_external_id_fallback() {
         .actors
         .iter()
         .any(|actor| actor.external_id == "peer-1" && actor.identity_id.is_some()));
+}
+
+#[test]
+fn hydrated_reactions_normalize_provider_aliases_to_canonical_emoji() {
+    let harness = Harness::new();
+    harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-reaction-aliases"))
+        .unwrap();
+
+    for (index, reaction) in ["/-heart", "/:heart", "heart"].iter().enumerate() {
+        harness
+            .repository
+            .apply_reaction(&NormalizedReaction {
+                provider_account_key: "imei-a".to_string(),
+                external_thread_id: "peer-1".to_string(),
+                is_group: false,
+                provider_event_id: Some(format!("event-reaction-alias-{index}")),
+                provider_message_id: "message-reaction-aliases".to_string(),
+                provider_client_message_id: "client-message-reaction-aliases".to_string(),
+                actor_external_id: format!("actor-{index}"),
+                reaction: (*reaction).to_string(),
+                removed: false,
+                occurred_at: format!("2026-08-02T10:01:0{index}.000Z"),
+                raw_payload: serde_json::json!({}),
+            })
+            .unwrap();
+    }
+
+    let conversation_id = harness.scalar("SELECT id FROM channel_conversations LIMIT 1");
+    let page = harness
+        .repository
+        .get_conversation_timeline(conversation_id, None, 50)
+        .unwrap();
+
+    assert_eq!(
+        page.items[0].reactions.len(),
+        1,
+        "groups: {:?}",
+        page.items[0].reactions
+    );
+    assert_eq!(page.items[0].reactions[0].reaction_icon, "❤️");
+    assert_eq!(page.items[0].reactions[0].count, 3);
+}
+
+#[test]
+fn phase2a_message_actions_require_both_provider_ids() {
+    let harness = Harness::new();
+
+    let mut provider_only = direct_message_for_peer("imei-a", "provider-only", "peer-provider");
+    provider_only.provider_client_message_id = None;
+    let provider_only = harness
+        .repository
+        .apply_normalized_message(&provider_only)
+        .unwrap();
+
+    let mut client_only = direct_message_for_peer("imei-a", "client-only", "peer-client");
+    client_only.provider_message_id = None;
+    let client_only = harness
+        .repository
+        .apply_normalized_message(&client_only)
+        .unwrap();
+
+    let complete = harness
+        .repository
+        .apply_normalized_message(&direct_message_for_peer(
+            "imei-a",
+            "provider-complete",
+            "peer-complete",
+        ))
+        .unwrap();
+
+    let capabilities_json =
+        serde_json::to_string(&ConversationCapabilities::zalo_phase_one()).unwrap();
+    harness
+        .repository
+        .update_account_identity_and_capabilities(
+            complete.channel_account_id,
+            Some("own-zuid-1"),
+            &capabilities_json,
+            "2026-08-03T10:00:00.000Z",
+        )
+        .unwrap();
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET connection_status = 'connected' WHERE id = ?1",
+        [complete.channel_account_id],
+    )
+    .unwrap();
+
+    let provider_only = harness
+        .repository
+        .get_message_by_id(provider_only.message_id)
+        .unwrap()
+        .unwrap();
+    let client_only = harness
+        .repository
+        .get_message_by_id(client_only.message_id)
+        .unwrap()
+        .unwrap();
+    let complete = harness
+        .repository
+        .get_message_by_id(complete.message_id)
+        .unwrap()
+        .unwrap();
+
+    assert!(!provider_only.actions.react);
+    assert!(!client_only.actions.react);
+    assert!(complete.actions.react);
+}
+
+#[test]
+fn phase2a_capability_rollback_preserves_phase1_actions_and_read_only_reactions() {
+    let harness = Harness::new();
+    let mut message = direct_message("imei-a", "message-capability-rollback");
+    message.direction = MessageDirection::Outbound;
+    message.status = MessageStatus::Sent;
+    let applied = harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+
+    let mut capabilities = ConversationCapabilities::zalo_phase_one();
+    capabilities.reactions.write = false;
+    capabilities.forward.enabled = false;
+    capabilities.mentions.enabled = false;
+    capabilities.quick_templates.enabled = false;
+    capabilities.recall_window_seconds = None;
+    let capabilities_json = serde_json::to_string(&capabilities).unwrap();
+    harness
+        .repository
+        .update_account_identity_and_capabilities(
+            applied.channel_account_id,
+            Some("own-zuid-1"),
+            &capabilities_json,
+            "2026-08-03T10:00:00.000Z",
+        )
+        .unwrap();
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET connection_status = 'connected' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+
+    harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("event-capability-rollback".to_string()),
+            provider_message_id: "message-capability-rollback".to_string(),
+            provider_client_message_id: "client-message-capability-rollback".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-08-03T10:01:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    let hydrated = harness
+        .repository
+        .get_message_by_id(applied.message_id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(hydrated.reactions.len(), 1);
+    assert!(hydrated.actions.copy);
+    assert!(!hydrated.actions.react);
+    assert!(!hydrated.actions.forward);
+    assert!(hydrated.actions.reply);
+    assert!(hydrated.actions.recall);
+}
+
+#[test]
+fn phase2a_message_actions_require_connection_and_enforce_recall_window() {
+    let harness = Harness::new();
+    let mut message = direct_message("imei-a", "message-action-policy");
+    message.direction = MessageDirection::Outbound;
+    message.status = MessageStatus::Sent;
+    let applied = harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+
+    let capabilities = ConversationCapabilities::zalo_phase_one();
+    let capabilities_json = serde_json::to_string(&capabilities).unwrap();
+    harness
+        .repository
+        .update_account_identity_and_capabilities(
+            applied.channel_account_id,
+            Some("own-zuid-1"),
+            &capabilities_json,
+            "2026-08-03T10:00:00.000Z",
+        )
+        .unwrap();
+
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET connection_status = 'disconnected' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+
+    let disconnected = harness
+        .repository
+        .get_message_by_id(applied.message_id)
+        .unwrap()
+        .unwrap();
+    assert!(!disconnected.actions.reply);
+    assert!(!disconnected.actions.recall);
+    assert!(!disconnected.actions.forward);
+    assert!(!disconnected.actions.react);
+
+    conn.execute(
+        "UPDATE channel_accounts SET connection_status = 'connected' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+
+    let connected = harness
+        .repository
+        .get_message_by_id(applied.message_id)
+        .unwrap()
+        .unwrap();
+    assert!(connected.actions.reply);
+    assert!(!connected.actions.recall);
+    assert!(connected.actions.forward);
+    assert!(connected.actions.react);
 }
 
 #[test]
@@ -1017,6 +1251,45 @@ fn delete_conversation_and_start_direct_conversation_execute_without_sql_errors(
     };
 
     harness.repository.delete_conversation(&del_req).unwrap();
+}
+
+#[test]
+fn start_direct_conversation_assigns_numeric_provider_client_message_id() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (809, 'zalo', 'imei-client-id', 'Sale Account', 'connected', '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let request = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 809,
+        phone_or_external_id: "0949743369".to_string(),
+        display_name: Some("Hồ Ngọc Phương Thảo".to_string()),
+        initial_message: "Tin nhắn kiểm thử".to_string(),
+    };
+
+    let message = harness
+        .repository
+        .start_direct_conversation(&request, "2026-08-03T09:34:58.278Z")
+        .unwrap();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let provider_client_message_id: Option<String> = conn
+        .query_row(
+            "SELECT provider_client_message_id FROM messages WHERE id = ?1",
+            [message.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let provider_client_message_id = provider_client_message_id
+        .expect("new direct message must have a provider client message id");
+    assert!(provider_client_message_id.parse::<u64>().is_ok());
 }
 
 #[test]
@@ -1965,6 +2238,72 @@ fn remove_echo_marks_exact_reaction_removed() {
 }
 
 #[test]
+fn unknown_remove_echo_clears_actor_reaction_without_unknown_badge() {
+    let harness = Harness::new();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+         VALUES (1, 'zalo', 'acc-1', 'Test Acc', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (100, 1, 'thread-1', 'direct', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+         VALUES (10, 100, 'outbound', 'msg-10', 'text', 'Hello', '2026-08-02T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+         VALUES (10, 'actor-1', '/-heart', '2026-08-02T12:00:00Z', NULL)",
+        [],
+    )
+    .unwrap();
+
+    let remove_unknown = NormalizedReaction {
+        provider_account_key: "acc-1".to_string(),
+        external_thread_id: "thread-1".to_string(),
+        is_group: false,
+        provider_event_id: None,
+        provider_message_id: "msg-10".to_string(),
+        provider_client_message_id: String::new(),
+        actor_external_id: "actor-1".to_string(),
+        reaction: "Unknown".to_string(),
+        removed: true,
+        occurred_at: "2026-08-02T12:01:00Z".to_string(),
+        raw_payload: serde_json::Value::Null,
+    };
+    harness.repository.apply_reaction(&remove_unknown).unwrap();
+
+    let active_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_reactions
+             WHERE message_id = 10 AND actor_external_id = 'actor-1' AND removed_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(active_count, 0);
+
+    let unknown_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_reactions
+             WHERE message_id = 10 AND actor_external_id = 'actor-1' AND reaction = 'Unknown'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unknown_count, 0);
+}
+
+#[test]
 fn matching_reconciliation_completes_unknown_mutation() {
     let harness = Harness::new();
 
@@ -2020,7 +2359,9 @@ fn matching_reconciliation_completes_unknown_mutation() {
 
 #[test]
 fn forward_conversation_message_enqueues_batch() {
-    use crate::conversation::types::{ForwardConversationMessageRequest, ForwardOperationStatus};
+    use crate::conversation::types::{
+        ForwardConversationMessageRequest, ForwardOperationStatus, ForwardTargetStatus,
+    };
 
     let harness = Harness::new();
     let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
@@ -2059,8 +2400,8 @@ fn forward_conversation_message_enqueues_batch() {
 
     let src_msg_id: i64 = conn
         .query_row(
-            "INSERT INTO messages (conversation_id, direction, provider_message_id, provider_client_message_id, content_type, text_content, ingested_at)
-             VALUES (?1, 'inbound', 'pmsg-repo-1', 'pcli-repo-1', 'text', 'Hello Repo Forward', '2026-08-02T10:00:00Z') RETURNING id",
+            "INSERT INTO messages (conversation_id, direction, provider_message_id, provider_client_message_id, content_type, text_content, provider_timestamp, ingested_at)
+             VALUES (?1, 'inbound', 'pmsg-repo-1', 'pcli-repo-1', 'text', 'Hello Repo Forward', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z') RETURNING id",
             [conv_src],
             |r| r.get(0),
         )
@@ -2078,5 +2419,28 @@ fn forward_conversation_message_enqueues_batch() {
         .unwrap();
     assert_eq!(res.status, ForwardOperationStatus::Queued);
     assert_eq!(res.targets.len(), 1);
-    assert!(res.targets[0].forwarded_message_id.is_some());
+    assert_eq!(res.targets[0].target_conversation_id, conv_t1);
+    assert_eq!(
+        res.targets[0].client_batch_id,
+        format!("op-repo-fwd-1:{conv_t1}")
+    );
+
+    harness
+        .repository
+        .update_forward_target_status(
+            "op-repo-fwd-1",
+            conv_t1,
+            ForwardTargetStatus::Sent,
+            None,
+            None,
+            "2026-08-02T10:01:00Z",
+        )
+        .unwrap();
+
+    let latest = harness
+        .repository
+        .get_forward_operation("op-repo-fwd-1")
+        .unwrap();
+    assert_eq!(latest.status, ForwardOperationStatus::Sent);
+    assert_eq!(latest.targets[0].status, ForwardTargetStatus::Sent);
 }

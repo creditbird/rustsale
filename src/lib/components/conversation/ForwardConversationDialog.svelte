@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     forwardConversationMessage,
+    getConversationForwardOperation,
     retryConversationForwardTarget,
     type ConversationMessage,
     type ForwardConversationMessageResult,
@@ -35,10 +36,15 @@
   let submitting = $state(false);
   let retryingTargetId = $state<number | null>(null);
   let snapshot = $state<ForwardDialogSnapshot>(createForwardSnapshot(0));
+  let pollGeneration = 0;
+
+  const FORWARD_POLL_INTERVAL_MS = 250;
+  const FORWARD_POLL_ATTEMPTS = 40;
 
   // Reset snapshot whenever sourceMessage changes or dialog opens
   $effect(() => {
     if (open && sourceMessage) {
+      pollGeneration += 1;
       snapshot = createForwardSnapshot(sourceMessage.id);
       searchQuery = '';
       submitting = false;
@@ -97,6 +103,10 @@
       });
       snapshot = mergeForwardResult(snapshot, res);
       onForwarded(res);
+      if (res.status === 'queued' || res.status === 'sending') {
+        const generation = ++pollGeneration;
+        void pollForwardOperation(res.clientOperationId, generation);
+      }
     } catch (err) {
       snapshot = {
         ...snapshot,
@@ -105,6 +115,28 @@
       };
     } finally {
       submitting = false;
+    }
+  }
+
+  async function pollForwardOperation(clientOperationId: string, generation: number) {
+    for (let attempt = 0; attempt < FORWARD_POLL_ATTEMPTS; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, FORWARD_POLL_INTERVAL_MS));
+      if (!open || generation !== pollGeneration) return;
+
+      try {
+        const result = await getConversationForwardOperation(clientOperationId);
+        if (!open || generation !== pollGeneration) return;
+        snapshot = mergeForwardResult(snapshot, result);
+        onForwarded(result);
+        if (result.status !== 'queued' && result.status !== 'sending') return;
+      } catch (err) {
+        if (attempt === FORWARD_POLL_ATTEMPTS - 1 && generation === pollGeneration) {
+          snapshot = {
+            ...snapshot,
+            error: err instanceof Error ? err.message : String(err)
+          };
+        }
+      }
     }
   }
 
@@ -132,6 +164,7 @@
   }
 
   function handleClose() {
+    pollGeneration += 1;
     open = false;
   }
 

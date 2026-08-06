@@ -116,13 +116,19 @@ fn forward_operation_enqueues_one_batch_job_per_target() {
     assert_eq!(res.status, ForwardOperationStatus::Queued);
     assert_eq!(res.targets.len(), 2);
 
-    assert_eq!(res.targets[0].conversation_id, conv_t1);
+    assert_eq!(res.targets[0].target_conversation_id, conv_t1);
     assert_eq!(res.targets[0].status, ForwardTargetStatus::Queued);
-    assert!(res.targets[0].forwarded_message_id.is_some());
+    assert_eq!(
+        res.targets[0].client_batch_id,
+        format!("op-fwd-test-1:{conv_t1}")
+    );
 
-    assert_eq!(res.targets[1].conversation_id, conv_t2);
+    assert_eq!(res.targets[1].target_conversation_id, conv_t2);
     assert_eq!(res.targets[1].status, ForwardTargetStatus::Queued);
-    assert!(res.targets[1].forwarded_message_id.is_some());
+    assert_eq!(
+        res.targets[1].client_batch_id,
+        format!("op-fwd-test-1:{conv_t2}")
+    );
 
     let op_count: i64 = conn
         .query_row(
@@ -153,7 +159,7 @@ fn forward_operation_enqueues_one_batch_job_per_target() {
 
     let fwd_msg_count: i64 = conn
         .query_row(
-            "SELECT count(*) FROM messages WHERE content_type = 'forward' AND text_content = 'Đã chuyển tiếp một tin nhắn'",
+            "SELECT count(*) FROM messages WHERE content_type = 'forward' AND text_content = 'Hello World'",
             [],
             |row| row.get(0),
         )
@@ -524,5 +530,36 @@ fn forward_operation_unsupported_content_type_rejected() {
     let tx = conn.transaction().unwrap();
     let err = enqueue_forward_operation(&tx, &req, &now).unwrap_err();
     tx.rollback().unwrap();
+    assert_eq!(err.code, ConversationErrorCode::ForwardNotSupported);
+}
+
+#[test]
+fn forward_operation_unproven_media_type_rejected() {
+    let harness = TestHarness::new();
+    let mut conn = harness.open_conn();
+    let account_id = seed_zalo_account(&conn, "acc-fwd-image", None);
+    let conv_src = seed_conversation(&conn, account_id, "thread-src-image");
+    let conv_target = seed_conversation(&conn, account_id, "thread-target-image");
+    let src_msg_id = seed_source_message(
+        &conn,
+        conv_src,
+        Some("pmsg-fwd-image"),
+        Some("pcli-fwd-image"),
+    );
+    conn.execute(
+        "UPDATE messages SET content_type = 'image' WHERE id = ?1",
+        params![src_msg_id],
+    )
+    .unwrap();
+
+    let req = ForwardConversationMessageRequest {
+        client_operation_id: "op-fwd-image".to_string(),
+        source_message_id: src_msg_id,
+        target_conversation_ids: vec![conv_target],
+    };
+    let now = utc_now();
+    let tx = conn.transaction().unwrap();
+    let err = enqueue_forward_operation(&tx, &req, &now).unwrap_err();
+
     assert_eq!(err.code, ConversationErrorCode::ForwardNotSupported);
 }

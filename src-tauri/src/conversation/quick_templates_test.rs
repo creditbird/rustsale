@@ -80,6 +80,7 @@ fn test_update_quick_template() {
         title: "Greeting Updated".into(),
         content: "Hello updated!".into(),
         category: Some("Updated".into()),
+        is_active: true,
     };
     let updated = harness.repo.update(update_req).unwrap();
     assert_eq!(updated.shortcut, "hello_updated");
@@ -236,7 +237,17 @@ fn test_active_filtering_and_deletion() {
         })
         .unwrap();
 
-    harness.repo.delete(t1.id).unwrap();
+    harness
+        .repo
+        .update(UpdateConversationQuickTemplateRequest {
+            id: t1.id,
+            shortcut: t1.shortcut.clone(),
+            title: t1.title.clone(),
+            content: t1.content.clone(),
+            category: t1.category.clone(),
+            is_active: false,
+        })
+        .unwrap();
 
     let active = harness.repo.list(false).unwrap();
     assert_eq!(active.len(), 1);
@@ -244,6 +255,10 @@ fn test_active_filtering_and_deletion() {
 
     let all = harness.repo.list(true).unwrap();
     assert_eq!(all.len(), 2);
+
+    harness.repo.delete(t1.id).unwrap();
+    let after_delete = harness.repo.list(true).unwrap();
+    assert_eq!(after_delete.len(), 1);
 }
 
 #[test]

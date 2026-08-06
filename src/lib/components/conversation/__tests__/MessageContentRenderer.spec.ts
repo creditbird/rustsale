@@ -15,8 +15,6 @@ describe('MessageContentRenderer', () => {
     senderIdentityId: 1,
     senderDisplayName: 'Nguyen Van A',
     direction: 'inbound',
-    providerMessageId: 'p-101',
-    providerClientMessageId: null,
     contentType: 'text',
     textContent: 'Xin chào bạn',
     content: {},

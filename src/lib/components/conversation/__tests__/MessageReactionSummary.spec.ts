@@ -63,4 +63,26 @@ describe('MessageReactionSummary', () => {
     await fireEvent.click(likeChip);
     expect(onToggleReaction).toHaveBeenCalledWith('like', false);
   });
+
+  it('renders provider aliases as emoji and toggles the canonical reaction', async () => {
+    const onToggleReaction = mock(() => {});
+
+    render(MessageReactionSummary, {
+      groups: [
+        {
+          reactionIcon: '/-heart',
+          count: 1,
+          includesMe: true,
+          actors: []
+        }
+      ],
+      canReact: true,
+      onToggleReaction
+    });
+
+    const chip = screen.getByRole('button', { name: /❤️ 1/ });
+    await fireEvent.click(chip);
+    expect(onToggleReaction).toHaveBeenCalledWith('heart', true);
+    expect(screen.queryByText(/\/-heart/)).toBeNull();
+  });
 });

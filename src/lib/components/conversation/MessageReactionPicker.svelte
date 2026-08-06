@@ -20,18 +20,23 @@
     messageId,
     activeReactions = [],
     disabledReactions = [],
+    supportedReactions = REACTION_OPTIONS.map((option) => option.code),
     onSelect = () => {},
     onClose = () => {}
   }: {
     messageId?: number;
     activeReactions?: ConversationReactionCode[];
     disabledReactions?: ConversationReactionCode[];
+    supportedReactions?: ConversationReactionCode[];
     onSelect?: (code: ConversationReactionCode, active: boolean) => void;
     onClose?: () => void;
   } = $props();
 
   let focusedIndex = $state(0);
   let buttonRefs: (HTMLButtonElement | null)[] = $state([]);
+  let visibleOptions = $derived(
+    REACTION_OPTIONS.filter((option) => supportedReactions.includes(option.code))
+  );
 
   function isCodeActive(code: ConversationReactionCode): boolean {
     return activeReactions.includes(code);
@@ -48,7 +53,8 @@
   }
 
   function focusIndex(index: number) {
-    const nextIndex = (index + REACTION_OPTIONS.length) % REACTION_OPTIONS.length;
+    if (visibleOptions.length === 0) return;
+    const nextIndex = (index + visibleOptions.length) % visibleOptions.length;
     focusedIndex = nextIndex;
     buttonRefs[nextIndex]?.focus();
   }
@@ -83,7 +89,7 @@
   onkeydown={handleKeydown}
   data-testid="message-reaction-picker"
 >
-  {#each REACTION_OPTIONS as option, index (option.code)}
+  {#each visibleOptions as option, index (option.code)}
     {@const active = isCodeActive(option.code)}
     {@const disabled = isCodeDisabled(option.code)}
     <button

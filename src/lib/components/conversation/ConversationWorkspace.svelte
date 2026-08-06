@@ -232,7 +232,7 @@
       activeChannelsPerKey.set(item.key, activeChannels);
     }
 
-    loadOrFetchVariant(item, activeChannels);
+    loadOrFetchVariant(item, activeChannels, true);
   }
 
   function handleSidebarSelect(item: InboxItem) {
@@ -260,7 +260,11 @@
     loadOrFetchVariant(selectedItem, updated);
   }
 
-  async function loadOrFetchVariant(item: InboxItem, channels: Channel[]) {
+  async function loadOrFetchVariant(
+    item: InboxItem,
+    channels: Channel[],
+    isNewSelection = false
+  ) {
     if (item.kind !== 'group' && item.leadId !== null && channels.length === 0) {
       currentVariant = {
         items: [],
@@ -276,7 +280,7 @@
         ? `${item.key}:group`
         : `${item.key}:${channelSetKey(channels)}`;
 
-    const anchor = timelineRef?.captureAnchor() ?? null;
+    const anchor = isNewSelection ? null : (timelineRef?.captureAnchor() ?? null);
 
     if (variantsCache.has(key)) {
       const cached = variantsCache.get(key)!;
@@ -285,9 +289,13 @@
         const survivingId = nearestSurvivingAnchor(currentVariant.items, cached.items, anchor.messageId);
         if (survivingId !== null) {
           timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
+        } else {
+          tick().then(() => timelineRef?.scrollToBottom());
         }
+      } else {
+        tick().then(() => timelineRef?.scrollToBottom());
       }
-      if (!cached.hasLoaded && !cached.loading) {
+      if ((timelineStale.has(key) || !cached.hasLoaded) && !cached.loading) {
         fetchVariantFirstPage(item, channels, key, anchor);
       }
     } else {
@@ -344,6 +352,7 @@
 
       const updated = mergeTimelinePage(currentVariant, page, 'refresh');
       variantsCache.set(key, updated);
+      timelineStale.delete(key);
 
       if (currentVariantKey === key) {
         currentVariant = updated;
@@ -355,13 +364,18 @@
           );
           if (survivingId !== null) {
             timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
+          } else {
+            tick().then(() => timelineRef?.scrollToBottom());
           }
+        } else {
+          tick().then(() => timelineRef?.scrollToBottom());
         }
       }
     } catch (err) {
       console.error('Failed to fetch timeline variant', err);
       const failed = { ...currentVariant, loading: false };
       variantsCache.set(key, failed);
+      timelineStale.add(key);
       if (currentVariantKey === key) {
         currentVariant = failed;
       }
@@ -429,6 +443,15 @@
 
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     const isActive = activeTab === 'conversation';
+    const affectedItems = inbox.filter((item) => eventAffectsItem(item, event));
+
+    for (const item of affectedItems) {
+      for (const key of variantsCache.keys()) {
+        if (key.startsWith(`${item.key}:`)) {
+          timelineStale.add(key);
+        }
+      }
+    }
 
     if (isActive) {
       if (inboxRefreshTimer) clearTimeout(inboxRefreshTimer);
@@ -439,6 +462,7 @@
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
       if (affectsOpenItem) {
+        timelineStale.delete(currentVariantKey);
         if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
         timelineRefreshTimer = setTimeout(() => {
           refreshOpenTimeline();
@@ -506,7 +530,6 @@
       channelAccountId: message.channelAccountId,
       preview: {
         messageId: message.id,
-        providerMessageId: message.providerMessageId,
         senderDisplayName: message.senderDisplayName,
         contentType: message.contentType,
         textContent: message.textContent,
@@ -790,5 +813,8 @@
     bind:open={forwardDialogOpen}
     sourceMessage={forwardCandidate}
     inbox={inbox}
+    maxTargets={forwardCandidate
+      ? capabilitiesForMessage(forwardCandidate)?.forward.maxTargets ?? 10
+      : 10}
   />
 </div>

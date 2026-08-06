@@ -38,7 +38,15 @@ const richCapabilities: ConversationCapabilities = {
   supportsQuoteReply: true,
   supportsRecall: true,
   recallWindowSeconds: 86400,
-  supportsReactions: true
+  supportsReactions: true,
+  reactions: {
+    read: true,
+    write: true,
+    supported: ['heart', 'like', 'haha', 'wow', 'cry', 'angry']
+  },
+  forward: { enabled: true, maxTargets: 10 },
+  mentions: { enabled: false, maxPerMessage: 0 },
+  quickTemplates: { enabled: false, maxTemplates: 0 }
 };
 
 function emitInvalidated(event: ConversationInvalidatedEvent) {
@@ -139,8 +147,6 @@ const mockMsg1: ConversationMessage = {
   senderIdentityId: 100,
   senderDisplayName: 'Nguyễn Văn A',
   direction: 'inbound',
-  providerMessageId: 'p-101',
-  providerClientMessageId: 'client-101',
   contentType: 'text',
   textContent: 'Chào shop',
   content: { text: 'Chào shop' },
@@ -153,7 +159,8 @@ const mockMsg1: ConversationMessage = {
   replyTarget: null,
   reactions: [],
   batchIndex: null,
-  sendBatch: null
+  sendBatch: null,
+  actions: { reply: true, copy: true, recall: false, forward: true, react: true }
 };
 
 const mockMsg2: ConversationMessage = {
@@ -165,8 +172,6 @@ const mockMsg2: ConversationMessage = {
   senderIdentityId: 100,
   senderDisplayName: 'Nguyễn Văn A',
   direction: 'inbound',
-  providerMessageId: 'p-102',
-  providerClientMessageId: 'client-102',
   contentType: 'text',
   textContent: 'Nhắn qua FB',
   content: { text: 'Nhắn qua FB' },
@@ -213,8 +218,6 @@ const mockGetConversationTimeline = mock(
           senderIdentityId: 1,
           senderDisplayName: 'Minh',
           direction: 'inbound',
-          providerMessageId: 'p-201',
-          providerClientMessageId: 'client-201',
           contentType: 'text',
           textContent: 'Tin nhắn nhóm',
           content: { text: 'Tin nhắn nhóm' },
@@ -227,7 +230,8 @@ const mockGetConversationTimeline = mock(
           replyTarget: null,
           reactions: [],
           batchIndex: null,
-          sendBatch: null
+          sendBatch: null,
+          actions: { reply: true, copy: true, recall: false, forward: true, react: true }
         }
       ],
       nextCursor: null
@@ -273,8 +277,6 @@ const mockSendConversationBatch = mock(async (request: SendConversationBatchRequ
     senderIdentityId: 1,
     senderDisplayName: 'Agent',
     direction: 'outbound',
-    providerMessageId: null,
-    providerClientMessageId: `client-${999 + index}`,
     contentType: part.type,
     textContent: part.type === 'text' ? part.text : null,
     content: {},
@@ -598,7 +600,6 @@ describe('ConversationWorkspace Component', () => {
       ...mockMsg1,
       id: 428,
       direction: 'outbound',
-      providerMessageId: null,
       textContent: 'hohoho',
       content: { text: 'hohoho' },
       occurredAt: '2026-08-02T00:45:54Z',
@@ -649,6 +650,63 @@ describe('ConversationWorkspace Component', () => {
     expect(screen.queryByText('hohoho')).toBeNull();
     expect(screen.getByText('ua alo')).toBeTruthy();
     expect(screen.getByText('kekke')).toBeTruthy();
+  });
+
+  test('8d. Invalidation marks a cached closed conversation stale and refreshes it when selected', async () => {
+    const refreshedGroupMessage: ConversationMessage = {
+      ...mockMsg1,
+      id: 855,
+      conversationId: 30,
+      direction: 'outbound',
+      textContent: 'Nội dung đã chuyển tiếp',
+      content: { text: 'Nội dung đã chuyển tiếp' },
+      occurredAt: '2026-08-03T09:00:00Z',
+      status: 'sent'
+    };
+    mockGetConversationTimeline
+      .mockImplementationOnce(async () => ({
+        items: [
+          {
+            ...mockMsg1,
+            id: 201,
+            conversationId: 30,
+            textContent: 'Tin nhắn nhóm cũ',
+            content: { text: 'Tin nhắn nhóm cũ' }
+          }
+        ],
+        nextCursor: null
+      }))
+      .mockImplementationOnce(async () => ({ items: [refreshedGroupMessage], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await fireEvent.click(screen.getByText('Nhóm VIP'));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByText('Tin nhắn nhóm cũ')).toBeTruthy();
+
+    await fireEvent.click(screen.getAllByText('Nguyễn Văn A')[0]);
+    await tick();
+    mockGetConversationTimeline.mockClear();
+
+    emitInvalidated({
+      conversationId: 30,
+      leadId: null,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 855
+    });
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect(mockGetConversationTimeline).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByText('Nhóm VIP'));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(mockGetConversationTimeline).toHaveBeenCalledWith(30, null, 50);
+    expect(screen.getByText('Nội dung đã chuyển tiếp')).toBeTruthy();
   });
 
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {
@@ -768,7 +826,8 @@ describe('ConversationWorkspace Component', () => {
           ...mockMsg1,
           direction: 'outbound',
           status: 'sent',
-          occurredAt: new Date().toISOString()
+          occurredAt: new Date().toISOString(),
+          actions: { ...mockMsg1.actions!, recall: true }
         }
       ],
       nextCursor: null

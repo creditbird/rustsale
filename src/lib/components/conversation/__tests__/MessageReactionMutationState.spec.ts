@@ -69,4 +69,19 @@ describe('MessageReactionMutationState Component', () => {
     expect(screen.getByTestId('reaction-mutation-errors')).toBeTruthy();
     expect(screen.getByText('Không thể gửi thả cảm xúc tới Zalo')).toBeTruthy();
   });
+
+  it('renders the message from a typed Tauri error object', async () => {
+    mockSetConversationReaction.mockImplementationOnce(async () => {
+      throw {
+        code: 'REACTION_NOT_SUPPORTED',
+        message: 'Tin nhắn thiếu provider client message ID'
+      };
+    });
+
+    const { component } = render(MessageReactionMutationState, {});
+    await component.executeMutation(101, 'heart', false);
+
+    expect(screen.getByText('Tin nhắn thiếu provider client message ID')).toBeTruthy();
+    expect(screen.queryByText('[object Object]')).toBeNull();
+  });
 });

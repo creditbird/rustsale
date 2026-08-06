@@ -686,6 +686,30 @@ async fn restart_account_cancels_old_task_before_connecting_again() {
 }
 
 #[tokio::test]
+async fn ready_client_is_registered_for_commands_and_removed_after_stop() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    assert!(harness
+        .supervisor
+        .connected_client("imei-a")
+        .await
+        .is_some());
+
+    harness.supervisor.stop_account("imei-a").await;
+    assert!(harness
+        .supervisor
+        .connected_client("imei-a")
+        .await
+        .is_none());
+}
+
+#[tokio::test]
 async fn stop_account_terminates_session_task_and_removes_from_supervisor() {
     let harness = SupervisorHarness::new().await;
     harness.supervisor.start_all().await.unwrap();

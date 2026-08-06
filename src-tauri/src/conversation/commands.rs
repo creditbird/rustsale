@@ -405,6 +405,17 @@ pub fn forward_conversation_message(
 }
 
 #[tauri::command]
+pub fn get_conversation_forward_operation(
+    state: tauri::State<'_, ConversationState>,
+    client_operation_id: String,
+) -> Result<ForwardConversationMessageResult, ConversationCommandError> {
+    state
+        .service
+        .get_forward_operation(&client_operation_id)
+        .map_err(|error| error.command_error())
+}
+
+#[tauri::command]
 pub fn retry_conversation_forward_target(
     state: tauri::State<'_, ConversationState>,
     request: RetryConversationForwardTargetRequest,

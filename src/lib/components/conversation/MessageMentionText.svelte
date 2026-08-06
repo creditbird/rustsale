@@ -4,6 +4,7 @@
     ConversationMentionInput
   } from '$lib/services/conversationService';
   import { sliceUtf16 } from './mentionState';
+  import { parseEmoticons } from './emoticonUtils';
 
   let {
     text,
@@ -69,7 +70,7 @@
         data-mention-id={chunk.identityId ?? ''}
       >{chunk.text}</span>
     {:else}
-      <span>{chunk.text}</span>
+      <span>{parseEmoticons(chunk.text)}</span>
     {/if}
   {/each}
 </span>

@@ -95,11 +95,7 @@
 
     {#if displayText && !isLinkContentType}
       <div class="message-text-content" data-testid="message-text-content">
-        {#if message.mentions && message.mentions.length > 0}
-          <MessageMentionText text={displayText} mentions={message.mentions} />
-        {:else}
-          {displayText}
-        {/if}
+        <MessageMentionText text={displayText} mentions={message.mentions ?? []} />
       </div>
     {:else if !message.attachments?.length && !legacyMediaUrl && message.contentType !== 'text'}
       <div class="flex items-center gap-2 p-2 rounded-md bg-muted/40 text-muted-foreground text-xs italic">

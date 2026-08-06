@@ -12,8 +12,6 @@ const makeMessage = (id: number, status: ConversationMessage['status']): Convers
   senderIdentityId: null,
   senderDisplayName: null,
   direction: 'outbound',
-  providerMessageId: null,
-  providerClientMessageId: `client-${id}`,
   contentType: 'text',
   textContent: `Part ${id}`,
   content: {},

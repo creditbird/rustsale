@@ -1,8 +1,8 @@
 # Task 1 Report: Capture Phase 2A Provider Contract
 
-**Date:** 2026-08-02  
-**Module:** `conversation::zalo::phase2a_probe`  
-**Status:** Completed  
+**Date:** 2026-08-02
+**Module:** `conversation::zalo::phase2a_probe`
+**Status:** Completed
 
 ---
 

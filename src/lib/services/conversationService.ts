@@ -168,21 +168,22 @@ export interface ConversationMessageActions {
 }
 
 export interface ConversationReactionCapabilities {
-  enabled?: boolean;
+  read: boolean;
+  write: boolean;
   supported: ConversationReactionCode[];
 }
 
 export interface ConversationForwardCapabilities {
   enabled: boolean;
+  maxTargets: number;
   maxTargetsPerForward?: number;
-  maxTargets?: number;
 }
 
 export interface ConversationMentionCapabilities {
   enabled: boolean;
+  maxPerMessage: number;
   maxMentionsPerMessage?: number;
   supportsAllMention?: boolean;
-  maxPerMessage?: number;
 }
 
 export interface ConversationQuickTemplateCapabilities {
@@ -203,10 +204,10 @@ export interface ConversationCapabilities {
   supportsRecall: boolean;
   recallWindowSeconds: number | null;
   supportsReactions: boolean;
-  reactions?: ConversationReactionCapabilities;
-  forward?: ConversationForwardCapabilities;
-  mentions?: ConversationMentionCapabilities;
-  quickTemplates?: ConversationQuickTemplateCapabilities;
+  reactions: ConversationReactionCapabilities;
+  forward: ConversationForwardCapabilities;
+  mentions: ConversationMentionCapabilities;
+  quickTemplates: ConversationQuickTemplateCapabilities;
 }
 
 export interface ConversationParticipantSummary {
@@ -247,7 +248,6 @@ export interface ConversationAttachment {
 
 export interface ConversationReplyTarget {
   messageId: number | null;
-  providerMessageId: string | null;
   senderDisplayName: string | null;
   contentType: string;
   textContent: string | null;
@@ -288,8 +288,6 @@ export interface ConversationMessage {
   senderIdentityId: number | null;
   senderDisplayName: string | null;
   direction: MessageDirection;
-  providerMessageId: string | null;
-  providerClientMessageId: string | null;
   contentType: string;
   textContent: string | null;
   content: Record<string, unknown>;
@@ -474,6 +472,11 @@ export const setConversationReaction = (request: SetConversationReactionRequest)
 
 export const forwardConversationMessage = (request: ForwardConversationMessageRequest) =>
   invoke<ForwardConversationMessageResult>('forward_conversation_message', { request });
+
+export const getConversationForwardOperation = (clientOperationId: string) =>
+  invoke<ForwardConversationMessageResult>('get_conversation_forward_operation', {
+    clientOperationId
+  });
 
 export const retryConversationForwardTarget = (request: RetryConversationForwardTargetRequest) =>
   invoke<ConversationForwardTargetResult>('retry_conversation_forward_target', { request });

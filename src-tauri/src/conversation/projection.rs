@@ -9,6 +9,17 @@ use std::collections::HashMap;
 type ReactionAggregate = (u32, bool, Vec<ConversationReactionActor>);
 type ReactionGroupsByIcon = HashMap<String, ReactionAggregate>;
 
+fn is_within_recall_window(occurred_at: &str, window_seconds: Option<u64>) -> bool {
+    let Some(window_seconds) = window_seconds else {
+        return true;
+    };
+    let Ok(occurred_at) = chrono::DateTime::parse_from_rfc3339(occurred_at) else {
+        return false;
+    };
+    let elapsed = chrono::Utc::now().signed_duration_since(occurred_at.with_timezone(&chrono::Utc));
+    elapsed.num_seconds() >= 0 && elapsed.num_seconds() <= window_seconds as i64
+}
+
 pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage]) -> Result<()> {
     if messages.is_empty() {
         return Ok(());
@@ -80,7 +91,7 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
     if !reply_ids.is_empty() {
         let reply_placeholders = reply_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let reply_query = format!(
-            "SELECT m.id, m.provider_message_id, ci.display_name, m.text_content, m.content_type, m.provider_timestamp
+            "SELECT m.id, ci.display_name, m.text_content, m.content_type, m.provider_timestamp
              FROM messages m
              LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
              WHERE m.id IN ({reply_placeholders})"
@@ -93,17 +104,15 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         let mut r_rows = r_stmt.query(r_params.as_slice())?;
         while let Some(row) = r_rows.next()? {
             let id: i64 = row.get(0)?;
-            let p_msg_id: Option<String> = row.get(1)?;
-            let sender_name: Option<String> = row.get(2)?;
-            let text: Option<String> = row.get(3)?;
-            let c_type: String = row.get(4)?;
-            let occurred_at: Option<String> = row.get(5)?;
+            let sender_name: Option<String> = row.get(1)?;
+            let text: Option<String> = row.get(2)?;
+            let c_type: String = row.get(3)?;
+            let occurred_at: Option<String> = row.get(4)?;
 
             reply_targets_map.insert(
                 id,
                 ConversationReplyTarget {
                     message_id: Some(id),
-                    provider_message_id: p_msg_id,
                     sender_display_name: sender_name,
                     content_type: c_type,
                     text_content: text,
@@ -161,7 +170,9 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
            ON ci.channel = ca.channel
           AND ci.identity_namespace = 'zalo_uid'
           AND ci.external_id = mr.actor_external_id
-         WHERE mr.message_id IN ({placeholders}) AND mr.removed_at IS NULL
+         WHERE mr.message_id IN ({placeholders})
+           AND mr.removed_at IS NULL
+           AND lower(trim(mr.reaction)) <> 'unknown'
          ORDER BY mr.message_id ASC"
     );
     let mut react_stmt = conn.prepare(&react_query)?;
@@ -170,6 +181,7 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
     while let Some(row) = react_rows.next()? {
         let msg_id: i64 = row.get(0)?;
         let icon: String = row.get(1)?;
+        let icon = canonical_reaction_icon(&icon);
         let actor_external_id: String = row.get(2)?;
         let identity_id: Option<i64> = row.get(3)?;
         let display_name: Option<String> = row.get(4)?;
@@ -241,10 +253,10 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
             });
     }
 
-    let mut caps_map: HashMap<i64, crate::conversation::types::ConversationCapabilities> =
+    let mut caps_map: HashMap<i64, (crate::conversation::types::ConversationCapabilities, bool)> =
         HashMap::new();
     let caps_query = format!(
-        "SELECT DISTINCT ca.id, ca.capabilities_json
+        "SELECT DISTINCT ca.id, ca.channel, ca.connection_status, ca.capabilities_json
          FROM channel_accounts ca
          JOIN channel_conversations cc ON cc.channel_account_id = ca.id
          JOIN messages m ON m.conversation_id = cc.id
@@ -254,18 +266,20 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
     let mut caps_rows = caps_stmt.query(params_ref.as_slice())?;
     while let Some(row) = caps_rows.next()? {
         let acc_id: i64 = row.get(0)?;
-        let json_str: String = row.get(1)?;
+        let channel: String = row.get(1)?;
+        let connection_status: String = row.get(2)?;
+        let json_str: String = row.get(3)?;
         let caps = if json_str.trim().is_empty() || json_str.trim() == "{}" {
-            crate::conversation::types::ConversationCapabilities::zalo_phase_one()
+            if channel == "zalo" {
+                crate::conversation::types::ConversationCapabilities::zalo_phase_one()
+            } else {
+                crate::conversation::types::ConversationCapabilities::text_only()
+            }
         } else {
             crate::conversation::types::ConversationCapabilities::from_json(&json_str)
         };
-        caps_map.insert(acc_id, caps);
+        caps_map.insert(acc_id, (caps, connection_status == "connected"));
     }
-
-    let forwardable_types = [
-        "text", "image", "video", "audio", "file", "sticker", "link", "forward",
-    ];
 
     for msg in messages.iter_mut() {
         if let Some(atts) = attachments_map.remove(&msg.id) {
@@ -295,28 +309,58 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
                 .as_deref()
                 .is_some_and(|s| !s.trim().is_empty());
         let is_not_removed = msg.removed_at.is_none();
-        let caps = caps_map.get(&msg.channel_account_id);
+        let account = caps_map.get(&msg.channel_account_id);
+        let caps = account.map(|(caps, _)| caps);
+        let account_connected = account.is_none_or(|(_, connected)| *connected);
 
-        let forward_enabled = caps.is_none_or(|c| c.forward.enabled);
-        let react_enabled = caps.is_none_or(|c| c.supports_reactions && c.reactions.enabled);
-        let reply_enabled = caps.is_none_or(|c| c.supports_quote_reply);
-        let recall_enabled = caps.is_none_or(|c| c.supports_recall);
+        let reaction_read_enabled = caps.is_none_or(|c| c.supports_reactions && c.reactions.read);
+        let react_enabled =
+            account_connected && caps.is_none_or(|c| c.supports_reactions && c.reactions.write);
+        if !reaction_read_enabled {
+            msg.reactions.clear();
+        }
+        let forward_enabled = account_connected && caps.is_none_or(|c| c.forward.enabled);
+        let reply_enabled = account_connected && caps.is_none_or(|c| c.supports_quote_reply);
+        let recall_enabled = account_connected && caps.is_none_or(|c| c.supports_recall);
+        let recall_window_ok =
+            is_within_recall_window(&msg.occurred_at, caps.and_then(|c| c.recall_window_seconds));
+        let recall_status_ok = matches!(
+            msg.status,
+            crate::conversation::types::MessageStatus::Sent
+                | crate::conversation::types::MessageStatus::Delivered
+                | crate::conversation::types::MessageStatus::Read
+        );
 
         msg.actions = crate::conversation::types::ConversationMessageActions {
+            copy: is_not_removed,
             reply: reply_enabled && is_not_removed && has_provider_ids,
             recall: recall_enabled
                 && is_not_removed
                 && msg.direction == crate::conversation::types::MessageDirection::Outbound
-                && has_provider_ids,
+                && has_provider_ids
+                && recall_status_ok
+                && recall_window_ok,
             forward: forward_enabled
                 && is_not_removed
                 && has_provider_ids
-                && forwardable_types.contains(&msg.content_type.as_str()),
+                && msg.content_type == "text",
             react: react_enabled && is_not_removed && has_provider_ids,
         };
     }
 
     Ok(())
+}
+
+fn canonical_reaction_icon(icon: &str) -> String {
+    match icon.trim().to_ascii_lowercase().as_str() {
+        "❤️" | "❤" | "/-heart" | "/:heart" | "heart" => "❤️".to_string(),
+        "👍" | "/-strong" | "/-like" | "like" => "👍".to_string(),
+        "😆" | "😄" | ":>" | "/-haha" | "haha" => "😆".to_string(),
+        "😮" | ":o" | "/-wow" | "wow" => "😮".to_string(),
+        "😭" | "😢" | ":-((" | ":((" | "--b" | "/-cry" | "cry" | "sad" => "😭".to_string(),
+        "😡" | ":-h" | "/-angry" | "angry" => "😡".to_string(),
+        _ => icon.to_string(),
+    }
 }
 
 pub fn load_message_reaction_groups(
@@ -333,7 +377,9 @@ pub fn load_message_reaction_groups(
            ON ci.channel = ca.channel
           AND ci.identity_namespace = 'zalo_uid'
           AND ci.external_id = mr.actor_external_id
-         WHERE mr.message_id = ?1 AND mr.removed_at IS NULL
+         WHERE mr.message_id = ?1
+           AND mr.removed_at IS NULL
+           AND lower(trim(mr.reaction)) <> 'unknown'
          ORDER BY mr.reacted_at ASC";
 
     let mut stmt = conn.prepare(react_query)?;
@@ -346,6 +392,7 @@ pub fn load_message_reaction_groups(
 
     while let Some(row) = rows.next()? {
         let icon: String = row.get(0)?;
+        let icon = canonical_reaction_icon(&icon);
         let actor_external_id: String = row.get(1)?;
         let identity_id: Option<i64> = row.get(2)?;
         let display_name: Option<String> = row.get(3)?;

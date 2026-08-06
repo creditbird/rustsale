@@ -17,6 +17,8 @@ use crate::db::open_db_connection;
 use crate::models::ZaloSession;
 
 const MAX_HISTORY_PAGES: usize = 5;
+type ConnectedClients =
+    Arc<Mutex<HashMap<String, Arc<dyn crate::conversation::zalo::client::ZaloClient>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum HistoryStream {
@@ -215,7 +217,7 @@ pub struct ZaloSessionSupervisor {
     service: Arc<ConversationService>,
     factory: Arc<dyn ZaloClientFactory>,
     tasks: Mutex<HashMap<String, SessionTask>>,
-    clients: Mutex<HashMap<String, Arc<dyn crate::conversation::zalo::client::ZaloClient>>>,
+    clients: ConnectedClients,
     sticker_cache: std::sync::Mutex<crate::conversation::zalo::sticker_cache::ZaloStickerCache>,
 }
 
@@ -230,7 +232,7 @@ impl ZaloSessionSupervisor {
             service,
             factory,
             tasks: Mutex::new(HashMap::new()),
-            clients: Mutex::new(HashMap::new()),
+            clients: Arc::new(Mutex::new(HashMap::new())),
             sticker_cache: std::sync::Mutex::new(
                 crate::conversation::zalo::sticker_cache::ZaloStickerCache::new(),
             ),
@@ -305,9 +307,10 @@ impl ZaloSessionSupervisor {
         let task_cancel = cancellation.clone();
         let service = self.service.clone();
         let factory = self.factory.clone();
+        let clients = self.clients.clone();
 
         let handle = tokio::spawn(async move {
-            run_session_loop(service, factory, session, task_cancel).await;
+            run_session_loop(service, factory, clients, session, task_cancel).await;
         });
 
         tasks.insert(
@@ -330,6 +333,7 @@ impl ZaloSessionSupervisor {
             task.cancellation.cancel();
             let _ = task.handle.await;
         }
+        self.clients.lock().await.remove(provider_account_key);
 
         let conn = open_db_connection(&self.db_path)?;
         let sessions = crate::db::get_all_zalo_sessions(&conn)
@@ -343,9 +347,10 @@ impl ZaloSessionSupervisor {
             let task_cancel = cancellation.clone();
             let service = self.service.clone();
             let factory = self.factory.clone();
+            let clients = self.clients.clone();
 
             let handle = tokio::spawn(async move {
-                run_session_loop(service, factory, session, task_cancel).await;
+                run_session_loop(service, factory, clients, session, task_cancel).await;
             });
 
             let mut tasks = self.tasks.lock().await;
@@ -371,6 +376,7 @@ impl ZaloSessionSupervisor {
             task.cancellation.cancel();
             let _ = task.handle.await;
         }
+        self.clients.lock().await.remove(provider_account_key);
     }
 
     pub async fn stop_all(&self) {
@@ -383,6 +389,7 @@ impl ZaloSessionSupervisor {
             task.cancellation.cancel();
             let _ = task.handle.await;
         }
+        self.clients.lock().await.clear();
     }
 
     pub async fn runtime_status(&self) -> anyhow::Result<ConversationRuntimeStatus> {
@@ -393,6 +400,7 @@ impl ZaloSessionSupervisor {
 async fn run_session_loop(
     service: Arc<ConversationService>,
     factory: Arc<dyn ZaloClientFactory>,
+    connected_clients: ConnectedClients,
     session: ZaloSession,
     cancellation: CancellationToken,
 ) {
@@ -489,6 +497,11 @@ async fn run_session_loop(
             continue;
         }
 
+        connected_clients
+            .lock()
+            .await
+            .insert(imei.clone(), client.clone());
+
         // 4. Mark account connected after the protocol cipher is ready
         let account_id = service
             .repository
@@ -521,6 +534,7 @@ async fn run_session_loop(
             match send_initial_history_requests(client.as_ref(), service.as_ref(), account_id) {
                 Ok(pagination) => pagination,
                 Err(error) => {
+                    unregister_connected_client(&connected_clients, &imei, &client).await;
                     mark_account_degraded(service.as_ref(), &imei, &error);
                     client.stop();
                     tokio::select! {
@@ -561,6 +575,7 @@ async fn run_session_loop(
                     if let Some(h) = profile_sync_handle.take() {
                         h.abort();
                     }
+                    unregister_connected_client(&connected_clients, &imei, &client).await;
                     client.stop();
                     return;
                 }
@@ -571,6 +586,7 @@ async fn run_session_loop(
                                 if let Some(h) = profile_sync_handle.take() {
                                     h.abort();
                                 }
+                                unregister_connected_client(&connected_clients, &imei, &client).await;
                                 client.stop();
                                 return;
                             }
@@ -686,6 +702,8 @@ async fn run_session_loop(
             }
         };
 
+        unregister_connected_client(&connected_clients, &imei, &client).await;
+
         if should_reconnect {
             // 13. Drop client, sleep backoff, reconnect inside same task
             let _ = service.repository.set_account_status(
@@ -700,6 +718,20 @@ async fn run_session_loop(
             }
             backoff_secs = (backoff_secs * 2).min(30);
         }
+    }
+}
+
+async fn unregister_connected_client(
+    connected_clients: &ConnectedClients,
+    provider_account_key: &str,
+    client: &Arc<dyn crate::conversation::zalo::client::ZaloClient>,
+) {
+    let mut clients = connected_clients.lock().await;
+    let is_current = clients
+        .get(provider_account_key)
+        .is_some_and(|registered| Arc::ptr_eq(registered, client));
+    if is_current {
+        clients.remove(provider_account_key);
     }
 }
 

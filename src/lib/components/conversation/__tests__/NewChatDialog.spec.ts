@@ -41,7 +41,6 @@ describe('NewChatDialog Component', () => {
         senderIdentityId: null,
         senderDisplayName: null,
         direction: 'outbound' as const,
-        providerMessageId: null,
         contentType: 'text',
         textContent: 'Hello new phone',
         content: { text: 'Hello new phone' },

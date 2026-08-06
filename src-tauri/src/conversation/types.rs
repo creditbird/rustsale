@@ -1,8 +1,12 @@
 use chrono::SecondsFormat;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 pub fn utc_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -161,7 +165,6 @@ pub struct ConversationAttachment {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationReplyTarget {
     pub message_id: Option<i64>,
-    pub provider_message_id: Option<String>,
     pub sender_display_name: Option<String>,
     pub content_type: String,
     pub text_content: Option<String>,
@@ -324,6 +327,7 @@ pub struct ConversationMentionCandidate {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMentionCapabilities {
     pub enabled: bool,
+    #[serde(rename = "maxPerMessage", alias = "maxMentionsPerMessage")]
     pub max_mentions_per_message: usize,
     pub supports_all_mention: bool,
 }
@@ -332,38 +336,68 @@ pub struct ConversationMentionCapabilities {
 #[serde(rename_all = "camelCase")]
 pub struct SetConversationReactionRequest {
     pub message_id: i64,
-    pub reaction_code: Option<ConversationReactionCode>,
-    #[serde(default)]
-    pub client_mutation_id: Option<String>,
+    pub reaction: ConversationReactionCode,
+    pub active: bool,
+    pub client_mutation_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReactionMutationStatus {
+    Running,
     Succeeded,
     Failed,
     DeliveryUnknown,
-    Applied,
-    Removed,
-    AlreadySet,
-    AlreadyRemoved,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationReactionMutationResult {
+    pub client_mutation_id: String,
     pub message_id: i64,
-    pub reaction_code: Option<ConversationReactionCode>,
+    pub reaction: ConversationReactionCode,
+    pub requested_active: bool,
     pub status: ReactionMutationStatus,
     #[serde(default)]
     pub reactions: Vec<ConversationReactionGroup>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationReactionCapabilities {
-    pub enabled: bool,
+    pub read: bool,
+    pub write: bool,
     pub supported: Vec<ConversationReactionCode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationReactionCapabilitiesWire {
+    #[serde(default)]
+    read: Option<bool>,
+    #[serde(default)]
+    write: Option<bool>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    supported: Vec<ConversationReactionCode>,
+}
+
+impl<'de> Deserialize<'de> for ConversationReactionCapabilities {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ConversationReactionCapabilitiesWire::deserialize(deserializer)?;
+        let legacy_enabled = wire.enabled.unwrap_or(false);
+        Ok(Self {
+            read: wire.read.unwrap_or(legacy_enabled),
+            write: wire.write.unwrap_or(legacy_enabled),
+            supported: wire.supported,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,7 +415,6 @@ pub enum ForwardOperationStatus {
     Sending,
     Partial,
     Sent,
-    Completed,
     Failed,
     DeliveryUnknown,
 }
@@ -393,7 +426,6 @@ impl ForwardOperationStatus {
             ForwardOperationStatus::Sending => "sending",
             ForwardOperationStatus::Partial => "partial",
             ForwardOperationStatus::Sent => "sent",
-            ForwardOperationStatus::Completed => "completed",
             ForwardOperationStatus::Failed => "failed",
             ForwardOperationStatus::DeliveryUnknown => "delivery_unknown",
         }
@@ -405,7 +437,6 @@ impl ForwardOperationStatus {
             "sending" => ForwardOperationStatus::Sending,
             "partial" => ForwardOperationStatus::Partial,
             "sent" => ForwardOperationStatus::Sent,
-            "completed" => ForwardOperationStatus::Completed,
             "failed" => ForwardOperationStatus::Failed,
             "delivery_unknown" => ForwardOperationStatus::DeliveryUnknown,
             _ => ForwardOperationStatus::Queued,
@@ -449,9 +480,10 @@ impl ForwardTargetStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationForwardTargetResult {
-    pub conversation_id: i64,
+    pub target_conversation_id: i64,
+    pub client_batch_id: String,
     pub status: ForwardTargetStatus,
-    pub forwarded_message_id: Option<i64>,
+    pub error_code: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -468,6 +500,7 @@ pub struct ForwardConversationMessageResult {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationForwardCapabilities {
     pub enabled: bool,
+    #[serde(rename = "maxTargets", alias = "maxTargetsPerForward")]
     pub max_targets_per_forward: usize,
 }
 
@@ -477,8 +510,10 @@ pub struct ConversationQuickTemplate {
     pub id: i64,
     pub shortcut: String,
     pub title: String,
+    #[serde(rename = "bodyText", alias = "content")]
     pub content: String,
     pub category: Option<String>,
+    pub is_active: bool,
     pub usage_count: u32,
     pub last_used_at: Option<String>,
     pub created_at: String,
@@ -490,6 +525,7 @@ pub struct ConversationQuickTemplate {
 pub struct CreateConversationQuickTemplateRequest {
     pub shortcut: String,
     pub title: String,
+    #[serde(rename = "bodyText", alias = "content")]
     pub content: String,
     pub category: Option<String>,
 }
@@ -500,8 +536,11 @@ pub struct UpdateConversationQuickTemplateRequest {
     pub id: i64,
     pub shortcut: String,
     pub title: String,
+    #[serde(rename = "bodyText", alias = "content")]
     pub content: String,
     pub category: Option<String>,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -509,6 +548,8 @@ pub struct UpdateConversationQuickTemplateRequest {
 pub struct ListConversationQuickTemplatesRequest {
     pub category: Option<String>,
     pub search_query: Option<String>,
+    #[serde(default)]
+    pub include_inactive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,6 +591,7 @@ pub struct ConversationQuickTemplateCapabilities {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMessageActions {
+    pub copy: bool,
     pub forward: bool,
     pub react: bool,
     pub recall: bool,
@@ -567,7 +609,9 @@ pub struct ConversationMessage {
     pub sender_identity_id: Option<i64>,
     pub sender_display_name: Option<String>,
     pub direction: MessageDirection,
+    #[serde(skip_serializing)]
     pub provider_message_id: Option<String>,
+    #[serde(skip_serializing)]
     pub provider_client_message_id: Option<String>,
     pub content_type: String,
     pub text_content: Option<String>,
@@ -743,7 +787,8 @@ impl ConversationCapabilities {
             recall_window_seconds: None,
             supports_reactions: false,
             reactions: ConversationReactionCapabilities {
-                enabled: false,
+                read: false,
+                write: false,
                 supported: Vec::new(),
             },
             forward: ConversationForwardCapabilities {
@@ -790,7 +835,8 @@ impl ConversationCapabilities {
             recall_window_seconds: Some(86400),
             supports_reactions: true,
             reactions: ConversationReactionCapabilities {
-                enabled: true,
+                read: true,
+                write: true,
                 supported: vec![
                     ConversationReactionCode::Heart,
                     ConversationReactionCode::Like,
@@ -1035,6 +1081,8 @@ mod tests {
     #[test]
     fn phase2a_contract_capabilities() {
         let zalo = ConversationCapabilities::zalo_phase_one();
+        assert!(zalo.reactions.read);
+        assert!(zalo.reactions.write);
         assert_eq!(zalo.reactions.supported.len(), 6);
         assert!(zalo
             .reactions
@@ -1045,7 +1093,8 @@ mod tests {
         assert_eq!(zalo.quick_templates.max_templates, 500);
 
         let text_only = ConversationCapabilities::text_only();
-        assert!(!text_only.reactions.enabled);
+        assert!(!text_only.reactions.read);
+        assert!(!text_only.reactions.write);
         assert!(text_only.reactions.supported.is_empty());
         assert!(!text_only.forward.enabled);
         assert_eq!(text_only.forward.max_targets_per_forward, 0);
@@ -1059,12 +1108,43 @@ mod tests {
     fn phase2a_contract_serialization() {
         let req = SetConversationReactionRequest {
             message_id: 101,
-            reaction_code: Some(ConversationReactionCode::Heart),
-            client_mutation_id: None,
+            reaction: ConversationReactionCode::Heart,
+            active: true,
+            client_mutation_id: "mut-101".into(),
         };
         let val = serde_json::to_value(&req).unwrap();
         assert_eq!(val["messageId"], 101);
-        assert_eq!(val["reactionCode"], "heart");
+        assert_eq!(val["reaction"], "heart");
+        assert_eq!(val["active"], true);
+        assert_eq!(val["clientMutationId"], "mut-101");
+        assert!(val.get("reactionCode").is_none());
+
+        let parsed: SetConversationReactionRequest = serde_json::from_value(serde_json::json!({
+            "messageId": 101,
+            "reaction": "heart",
+            "active": false,
+            "clientMutationId": "mut-102"
+        }))
+        .unwrap();
+        assert_eq!(parsed.reaction, ConversationReactionCode::Heart);
+        assert!(!parsed.active);
+        assert_eq!(parsed.client_mutation_id, "mut-102");
+
+        let reaction_result = ConversationReactionMutationResult {
+            client_mutation_id: "mut-101".into(),
+            message_id: 101,
+            reaction: ConversationReactionCode::Heart,
+            requested_active: true,
+            status: ReactionMutationStatus::Running,
+            reactions: Vec::new(),
+            error_code: None,
+            error_message: None,
+        };
+        let reaction_result_val = serde_json::to_value(reaction_result).unwrap();
+        assert_eq!(reaction_result_val["clientMutationId"], "mut-101");
+        assert_eq!(reaction_result_val["reaction"], "heart");
+        assert_eq!(reaction_result_val["requestedActive"], true);
+        assert_eq!(reaction_result_val["status"], "running");
 
         let fwd_req = ForwardConversationMessageRequest {
             client_operation_id: "op-1".into(),
@@ -1075,6 +1155,33 @@ mod tests {
         assert_eq!(fwd_val["clientOperationId"], "op-1");
         assert_eq!(fwd_val["sourceMessageId"], 50);
         assert_eq!(fwd_val["targetConversationIds"][0], 1);
+
+        let target_result = ConversationForwardTargetResult {
+            target_conversation_id: 1,
+            client_batch_id: "op-1:1".into(),
+            status: ForwardTargetStatus::Queued,
+            error_code: None,
+            error_message: None,
+        };
+        let target_result_val = serde_json::to_value(target_result).unwrap();
+        assert_eq!(target_result_val["targetConversationId"], 1);
+        assert_eq!(target_result_val["clientBatchId"], "op-1:1");
+        assert!(target_result_val.get("conversationId").is_none());
+        assert!(target_result_val.get("forwardedMessageId").is_none());
+
+        let capabilities =
+            serde_json::to_value(ConversationCapabilities::zalo_phase_one()).unwrap();
+        assert_eq!(capabilities["forward"]["maxTargets"], 10);
+        assert!(capabilities["forward"]
+            .get("maxTargetsPerForward")
+            .is_none());
+        assert_eq!(capabilities["mentions"]["maxPerMessage"], 20);
+        assert!(capabilities["mentions"]
+            .get("maxMentionsPerMessage")
+            .is_none());
+
+        let actions = serde_json::to_value(ConversationMessageActions::default()).unwrap();
+        assert_eq!(actions["copy"], false);
 
         let tmpl_req = CreateConversationQuickTemplateRequest {
             shortcut: "hello".into(),
@@ -1110,5 +1217,111 @@ mod tests {
         let fwd_part_val = serde_json::to_value(&send_forward).unwrap();
         assert_eq!(fwd_part_val["type"], "forward");
         assert_eq!(fwd_part_val["sourceMessageId"], 99);
+    }
+
+    #[test]
+    fn quick_template_frontend_contract_serialization() {
+        let create = serde_json::from_value::<CreateConversationQuickTemplateRequest>(
+            serde_json::json!({
+                "shortcut": "hello",
+                "title": "Greeting",
+                "bodyText": "Hello world",
+                "category": "general"
+            }),
+        );
+        assert!(create.is_ok());
+
+        let update = serde_json::from_value::<UpdateConversationQuickTemplateRequest>(
+            serde_json::json!({
+                "id": 5,
+                "shortcut": "hello",
+                "title": "Greeting",
+                "bodyText": "Hello world",
+                "category": "general",
+                "isActive": false
+            }),
+        );
+        assert!(update.is_ok());
+
+        let list = serde_json::from_value::<ListConversationQuickTemplatesRequest>(
+            serde_json::json!({ "includeInactive": true }),
+        )
+        .unwrap();
+        let list_value = serde_json::to_value(list).unwrap();
+        assert_eq!(list_value["includeInactive"], true);
+
+        let template = serde_json::from_value::<ConversationQuickTemplate>(serde_json::json!({
+            "id": 5,
+            "shortcut": "hello",
+            "title": "Greeting",
+            "bodyText": "Hello world",
+            "category": "general",
+            "isActive": true,
+            "usageCount": 0,
+            "lastUsedAt": null,
+            "createdAt": "2026-08-03T00:00:00Z",
+            "updatedAt": "2026-08-03T00:00:00Z"
+        }))
+        .unwrap();
+        let template_value = serde_json::to_value(template).unwrap();
+        assert_eq!(template_value["bodyText"], "Hello world");
+        assert_eq!(template_value["isActive"], true);
+    }
+
+    #[test]
+    fn phase2a_legacy_reaction_capability_json_maps_enabled_to_read_and_write() {
+        let capabilities: ConversationReactionCapabilities =
+            serde_json::from_value(serde_json::json!({
+                "enabled": true,
+                "supported": ["heart", "like"]
+            }))
+            .unwrap();
+
+        assert!(capabilities.read);
+        assert!(capabilities.write);
+        assert_eq!(capabilities.supported.len(), 2);
+    }
+
+    #[test]
+    fn conversation_message_json_keeps_provider_ids_backend_owned() {
+        let message = ConversationMessage {
+            id: 1,
+            conversation_id: 2,
+            channel_account_id: 3,
+            channel: Channel::Zalo,
+            account_display_name: Some("Sales".into()),
+            sender_identity_id: None,
+            sender_display_name: Some("Peer".into()),
+            direction: MessageDirection::Inbound,
+            provider_message_id: Some("provider-message".into()),
+            provider_client_message_id: Some("provider-client-message".into()),
+            content_type: "text".into(),
+            text_content: Some("Hello".into()),
+            content: serde_json::json!({"text": "Hello"}),
+            occurred_at: "2026-08-03T10:00:00.000Z".into(),
+            status: MessageStatus::Received,
+            removed_at: None,
+            error_message: None,
+            reply_to_message_id: Some(9),
+            attachments: Vec::new(),
+            reply_target: Some(ConversationReplyTarget {
+                message_id: Some(9),
+                sender_display_name: Some("Peer".into()),
+                content_type: "text".into(),
+                text_content: Some("Previous".into()),
+                media_type: None,
+                occurred_at: Some("2026-08-03T09:59:00.000Z".into()),
+            }),
+            reactions: Vec::new(),
+            batch_index: None,
+            send_batch: None,
+            mentions: Vec::new(),
+            actions: ConversationMessageActions::default(),
+        };
+
+        let value = serde_json::to_value(message).unwrap();
+        assert!(value.get("providerMessageId").is_none());
+        assert!(value.get("providerClientMessageId").is_none());
+        assert!(value["replyTarget"].get("providerMessageId").is_none());
     }
 }

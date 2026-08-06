@@ -1255,8 +1255,9 @@ async fn set_reaction_success_local_apply() {
     let client = FakeZaloClient::with_provider_message_id("msg-react-1");
     let req = SetConversationReactionRequest {
         message_id: applied.message_id,
-        reaction_code: Some(ConversationReactionCode::Heart),
-        client_mutation_id: Some("mut-101-1".to_string()),
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-101-1".to_string(),
     };
 
     let res = harness
@@ -1267,7 +1268,9 @@ async fn set_reaction_success_local_apply() {
 
     assert_eq!(res.status, ReactionMutationStatus::Succeeded);
     assert_eq!(res.message_id, applied.message_id);
-    assert_eq!(res.reaction_code, Some(ConversationReactionCode::Heart));
+    assert_eq!(res.reaction, ConversationReactionCode::Heart);
+    assert!(res.requested_active);
+    assert_eq!(res.client_mutation_id, "mut-101-1");
     assert!(!res.reactions.is_empty());
     assert!(res.reactions.iter().any(|r| r.includes_me));
 
@@ -1291,8 +1294,9 @@ async fn set_reaction_missing_ids_fails() {
     let client = FakeZaloClient::with_provider_message_id("msg-missing");
     let req = SetConversationReactionRequest {
         message_id: 999999,
-        reaction_code: Some(ConversationReactionCode::Like),
-        client_mutation_id: None,
+        reaction: ConversationReactionCode::Like,
+        active: true,
+        client_mutation_id: "mut-missing-ids".to_string(),
     };
 
     let err = harness
@@ -1305,7 +1309,7 @@ async fn set_reaction_missing_ids_fails() {
 }
 
 #[tokio::test]
-async fn set_reaction_disconnected_channel_fails() {
+async fn set_reaction_write_disabled_fails() {
     use crate::conversation::commands_test::direct_message;
     use crate::conversation::error::ConversationErrorCode;
     use crate::conversation::types::{
@@ -1318,7 +1322,8 @@ async fn set_reaction_disconnected_channel_fails() {
         .apply_normalized_message(&direct_message("imei-a", "msg-no-react"))
         .unwrap();
 
-    let disabled_caps = ConversationCapabilities::text_only();
+    let mut disabled_caps = ConversationCapabilities::zalo_phase_one();
+    disabled_caps.reactions.write = false;
     let caps_json = serde_json::to_string(&disabled_caps).unwrap();
     let conn = open_db_connection(&harness.db_path).unwrap();
     conn.execute(
@@ -1330,8 +1335,9 @@ async fn set_reaction_disconnected_channel_fails() {
     let client = FakeZaloClient::with_provider_message_id("msg-no-react");
     let req = SetConversationReactionRequest {
         message_id: applied.message_id,
-        reaction_code: Some(ConversationReactionCode::Haha),
-        client_mutation_id: None,
+        reaction: ConversationReactionCode::Haha,
+        active: true,
+        client_mutation_id: "mut-no-react".to_string(),
     };
 
     let err = harness
@@ -1341,6 +1347,49 @@ async fn set_reaction_disconnected_channel_fails() {
         .unwrap_err();
 
     assert_eq!(err.code, ConversationErrorCode::ReactionNotSupported);
+    assert_eq!(client.captured_reaction_requests.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn set_reaction_outside_capability_allowlist_fails() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::error::ConversationErrorCode;
+    use crate::conversation::types::{
+        ConversationCapabilities, ConversationReactionCode, SetConversationReactionRequest,
+    };
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-reaction-allowlist"))
+        .unwrap();
+
+    let mut capabilities = ConversationCapabilities::zalo_phase_one();
+    capabilities.reactions.supported = vec![ConversationReactionCode::Heart];
+    let capabilities_json = serde_json::to_string(&capabilities).unwrap();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET capabilities_json = ?1 WHERE id = ?2",
+        rusqlite::params![capabilities_json, applied.channel_account_id],
+    )
+    .unwrap();
+
+    let client = FakeZaloClient::with_provider_message_id("msg-reaction-allowlist");
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Angry,
+        active: true,
+        client_mutation_id: "mut-reaction-allowlist".to_string(),
+    };
+
+    let error = harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ConversationErrorCode::ReactionNotSupported);
+    assert_eq!(client.captured_reaction_requests.lock().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -1359,8 +1408,9 @@ async fn set_reaction_duplicate_client_id_idempotent() {
     let client = FakeZaloClient::with_provider_message_id("msg-dup-react");
     let req = SetConversationReactionRequest {
         message_id: applied.message_id,
-        reaction_code: Some(ConversationReactionCode::Wow),
-        client_mutation_id: Some("mut-dup-100".to_string()),
+        reaction: ConversationReactionCode::Wow,
+        active: true,
+        client_mutation_id: "mut-dup-100".to_string(),
     };
 
     let res1 = harness
@@ -1399,8 +1449,9 @@ async fn set_reaction_permanent_failure_recorded() {
         FakeZaloClient::failing_with_kind(ProviderSendErrorKind::Permanent, "Zalo API error 400");
     let req = SetConversationReactionRequest {
         message_id: applied.message_id,
-        reaction_code: Some(ConversationReactionCode::Angry),
-        client_mutation_id: Some("mut-perm-fail-1".to_string()),
+        reaction: ConversationReactionCode::Angry,
+        active: true,
+        client_mutation_id: "mut-perm-fail-1".to_string(),
     };
 
     let res = harness
@@ -1440,8 +1491,9 @@ async fn set_reaction_timeout_delivery_unknown_triggers_poll_no_auto_resend() {
         FakeZaloClient::failing_with_kind(ProviderSendErrorKind::Retryable, "Network timeout");
     let req = SetConversationReactionRequest {
         message_id: applied.message_id,
-        reaction_code: Some(ConversationReactionCode::Cry),
-        client_mutation_id: Some("mut-timeout-1".to_string()),
+        reaction: ConversationReactionCode::Cry,
+        active: true,
+        client_mutation_id: "mut-timeout-1".to_string(),
     };
 
     let res = harness
@@ -1493,8 +1545,9 @@ async fn set_reaction_running_status_duplicate_call_does_not_resend() {
     let client = FakeZaloClient::with_provider_message_id("pmsg-running");
     let req = SetConversationReactionRequest {
         message_id: applied.message_id,
-        reaction_code: Some(ConversationReactionCode::Heart),
-        client_mutation_id: Some("mut-running-1".to_string()),
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-running-1".to_string(),
     };
 
     // Pre-insert a mutation in 'running' status
@@ -1504,13 +1557,19 @@ async fn set_reaction_running_status_duplicate_call_does_not_resend() {
     assert!(!begin_res.is_existing);
 
     // Now call service with the same request
-    let _res = harness
+    let res = harness
         .service
         .set_conversation_reaction(&req, &client)
         .await
         .unwrap();
 
-    // Should return existing without calling provider
+    assert_eq!(
+        res.status,
+        crate::conversation::types::ReactionMutationStatus::Running
+    );
+    assert_eq!(res.client_mutation_id, "mut-running-1");
+    assert_eq!(res.reaction, ConversationReactionCode::Heart);
+    assert!(res.requested_active);
     assert_eq!(client.captured_reaction_requests.lock().unwrap().len(), 0);
 }
 
@@ -1561,6 +1620,20 @@ async fn forward_worker_calls_one_target_with_stable_client_id() {
     let conv_t1 = harness.seed_conversation(account_id, "thread-target-w1");
     let src_msg_id =
         harness.seed_source_message(conv_src, Some("src-pmsg-w1"), Some("src-pcli-w1"));
+    harness
+        .open_conn()
+        .execute(
+            "UPDATE messages
+             SET text_content = ?1, content_json = ?2, provider_timestamp = ?3
+             WHERE id = ?4",
+            rusqlite::params![
+                "Nội dung gốc cần chuyển tiếp",
+                serde_json::json!({"text": "Nội dung gốc cần chuyển tiếp"}).to_string(),
+                "2026-08-02T08:28:08.951Z",
+                src_msg_id,
+            ],
+        )
+        .unwrap();
 
     let req = ForwardConversationMessageRequest {
         client_operation_id: "op-worker-1".to_string(),
@@ -1569,7 +1642,16 @@ async fn forward_worker_calls_one_target_with_stable_client_id() {
     };
 
     let fwd_res = harness.service.forward_conversation_message(req).unwrap();
-    let fwd_msg_id = fwd_res.targets[0].forwarded_message_id.unwrap();
+    let fwd_msg_id: i64 = harness
+        .open_conn()
+        .query_row(
+            "SELECT m.id FROM messages m
+             JOIN message_send_batches b ON b.id = m.send_batch_id
+             WHERE b.client_batch_id = ?1",
+            rusqlite::params![&fwd_res.targets[0].client_batch_id],
+            |r| r.get(0),
+        )
+        .unwrap();
 
     let conn = harness.open_conn();
     let expected_cli_id: String = conn
@@ -1579,7 +1661,16 @@ async fn forward_worker_calls_one_target_with_stable_client_id() {
             |r| r.get(0),
         )
         .unwrap();
+    let queued_text: String = conn
+        .query_row(
+            "SELECT text_content FROM messages WHERE id = ?1",
+            rusqlite::params![fwd_msg_id],
+            |r| r.get(0),
+        )
+        .unwrap();
     drop(conn);
+
+    assert_eq!(queued_text, "Nội dung gốc cần chuyển tiếp");
 
     let client = FakeZaloClient::with_provider_message_id("pmsg-fwd-res-1");
     let processed = harness
@@ -1594,6 +1685,13 @@ async fn forward_worker_calls_one_target_with_stable_client_id() {
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].external_thread_id, "thread-target-w1");
     assert_eq!(captured[0].source_provider_message_id, "src-pmsg-w1");
+    assert_eq!(captured[0].source_message, "Nội dung gốc cần chuyển tiếp");
+    assert_eq!(
+        captured[0].source_timestamp_ms,
+        chrono::DateTime::parse_from_rfc3339("2026-08-02T08:28:08.951Z")
+            .unwrap()
+            .timestamp_millis() as u64
+    );
     assert_eq!(captured[0].provider_client_message_id, expected_cli_id);
 }
 
@@ -1613,7 +1711,16 @@ async fn forward_success_persists_provider_ids() {
     };
 
     let fwd_res = harness.service.forward_conversation_message(req).unwrap();
-    let fwd_msg_id = fwd_res.targets[0].forwarded_message_id.unwrap();
+    let fwd_msg_id: i64 = harness
+        .open_conn()
+        .query_row(
+            "SELECT m.id FROM messages m
+             JOIN message_send_batches b ON b.id = m.send_batch_id
+             WHERE b.client_batch_id = ?1",
+            rusqlite::params![&fwd_res.targets[0].client_batch_id],
+            |r| r.get(0),
+        )
+        .unwrap();
 
     let client = FakeZaloClient::with_provider_message_id("pmsg-persisted-99");
     harness
@@ -1664,7 +1771,16 @@ async fn forward_echo_updates_queued_target_without_duplicate() {
     };
 
     let fwd_res = harness.service.forward_conversation_message(req).unwrap();
-    let fwd_msg_id = fwd_res.targets[0].forwarded_message_id.unwrap();
+    let fwd_msg_id: i64 = harness
+        .open_conn()
+        .query_row(
+            "SELECT m.id FROM messages m
+             JOIN message_send_batches b ON b.id = m.send_batch_id
+             WHERE b.client_batch_id = ?1",
+            rusqlite::params![&fwd_res.targets[0].client_batch_id],
+            |r| r.get(0),
+        )
+        .unwrap();
 
     let conn = harness.open_conn();
     let cli_msg_id: String = conn
@@ -1844,7 +1960,16 @@ async fn forward_running_after_restart_becomes_delivery_unknown() {
     };
 
     let fwd_res = harness.service.forward_conversation_message(req).unwrap();
-    let fwd_msg_id = fwd_res.targets[0].forwarded_message_id.unwrap();
+    let fwd_msg_id: i64 = harness
+        .open_conn()
+        .query_row(
+            "SELECT m.id FROM messages m
+             JOIN message_send_batches b ON b.id = m.send_batch_id
+             WHERE b.client_batch_id = ?1",
+            rusqlite::params![&fwd_res.targets[0].client_batch_id],
+            |r| r.get(0),
+        )
+        .unwrap();
 
     let conn = harness.open_conn();
     conn.execute(

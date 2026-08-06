@@ -519,6 +519,7 @@ async fn quick_template_command_list_active_and_all() {
         ListConversationQuickTemplatesRequest {
             category: None,
             search_query: None,
+            include_inactive: false,
         },
     )
     .unwrap();
@@ -532,6 +533,7 @@ async fn quick_template_command_list_active_and_all() {
         ListConversationQuickTemplatesRequest {
             category: None,
             search_query: Some("hello".into()),
+            include_inactive: false,
         },
     )
     .unwrap();
@@ -543,6 +545,7 @@ async fn quick_template_command_list_active_and_all() {
         ListConversationQuickTemplatesRequest {
             category: Some("General".into()),
             search_query: None,
+            include_inactive: false,
         },
     )
     .unwrap();
@@ -655,6 +658,7 @@ async fn quick_template_command_update_validation() {
             title: "FAQ 1".into(),
             content: "Updated content".into(),
             category: Some("FAQ".into()),
+            is_active: true,
         },
     )
     .unwrap();
@@ -669,6 +673,7 @@ async fn quick_template_command_update_validation() {
             title: "   ".into(),
             content: "Updated content".into(),
             category: None,
+            is_active: true,
         },
     )
     .unwrap_err();
@@ -682,6 +687,7 @@ async fn quick_template_command_update_validation() {
             title: "Title".into(),
             content: "Content".into(),
             category: None,
+            is_active: true,
         },
     )
     .unwrap_err();
@@ -746,6 +752,7 @@ async fn quick_template_command_delete_success() {
         ListConversationQuickTemplatesRequest {
             category: None,
             search_query: None,
+            include_inactive: false,
         },
     )
     .unwrap();
@@ -818,6 +825,7 @@ async fn quick_template_command_mark_used_updates_usage() {
         ListConversationQuickTemplatesRequest {
             category: None,
             search_query: None,
+            include_inactive: false,
         },
     )
     .unwrap();
@@ -843,11 +851,11 @@ async fn phase2a_command_registration() {
         update_conversation_quick_template, ConversationState,
     };
     use super::types::{
-        CreateConversationQuickTemplateRequest, DeleteConversationQuickTemplateRequest,
-        ForwardConversationMessageRequest, ListConversationMentionCandidatesRequest,
-        ListConversationQuickTemplatesRequest, MarkConversationQuickTemplateUsedRequest,
-        RetryConversationForwardTargetRequest, SetConversationReactionRequest,
-        UpdateConversationQuickTemplateRequest,
+        ConversationReactionCode, CreateConversationQuickTemplateRequest,
+        DeleteConversationQuickTemplateRequest, ForwardConversationMessageRequest,
+        ListConversationMentionCandidatesRequest, ListConversationQuickTemplatesRequest,
+        MarkConversationQuickTemplateUsedRequest, RetryConversationForwardTargetRequest,
+        SetConversationReactionRequest, UpdateConversationQuickTemplateRequest,
     };
     use crate::conversation::zalo::client::RealZaloClientFactory;
     use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
@@ -880,6 +888,7 @@ async fn phase2a_command_registration() {
         ListConversationQuickTemplatesRequest {
             category: None,
             search_query: None,
+            include_inactive: false,
         },
     )
     .unwrap();
@@ -907,6 +916,7 @@ async fn phase2a_command_registration() {
             title: "Hello Updated".into(),
             content: "Hello World!".into(),
             category: Some("greeting".into()),
+            is_active: true,
         },
     )
     .unwrap();
@@ -972,8 +982,9 @@ async fn phase2a_command_registration() {
         state.clone(),
         SetConversationReactionRequest {
             message_id: 9999,
-            reaction_code: None,
-            client_mutation_id: None,
+            reaction: ConversationReactionCode::Like,
+            active: true,
+            client_mutation_id: "mut-command-missing".to_string(),
         },
     )
     .await

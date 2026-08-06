@@ -15,7 +15,15 @@ const richCapabilities: ConversationCapabilities = {
   supportsQuoteReply: true,
   supportsRecall: true,
   recallWindowSeconds: 86400,
-  supportsReactions: true
+  supportsReactions: true,
+  reactions: {
+    read: true,
+    write: true,
+    supported: ['heart', 'like', 'haha', 'wow', 'cry', 'angry']
+  },
+  forward: { enabled: true, maxTargets: 10 },
+  mentions: { enabled: false, maxPerMessage: 0 },
+  quickTemplates: { enabled: false, maxTemplates: 0 }
 };
 
 describe('ComposerToolbar', () => {

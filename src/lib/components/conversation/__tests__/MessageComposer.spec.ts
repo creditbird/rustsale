@@ -27,7 +27,15 @@ const richCapabilities: ConversationCapabilities = {
   supportsQuoteReply: true,
   supportsRecall: true,
   recallWindowSeconds: 86400,
-  supportsReactions: true
+  supportsReactions: true,
+  reactions: {
+    read: true,
+    write: true,
+    supported: ['heart', 'like', 'haha', 'wow', 'cry', 'angry']
+  },
+  forward: { enabled: true, maxTargets: 10 },
+  mentions: { enabled: false, maxPerMessage: 0 },
+  quickTemplates: { enabled: false, maxTemplates: 0 }
 };
 
 function queuedMessage(
@@ -44,8 +52,6 @@ function queuedMessage(
     senderIdentityId: null,
     senderDisplayName: null,
     direction: 'outbound',
-    providerMessageId: null,
-    providerClientMessageId: `client-${index}`,
     contentType: part.type,
     textContent: part.type === 'text' ? part.text : null,
     content: {},
@@ -294,7 +300,6 @@ describe('MessageComposer', () => {
       channelAccountId: 1,
       preview: {
         messageId: 9,
-        providerMessageId: 'provider-9',
         senderDisplayName: 'Khách hàng',
         contentType: 'text',
         textContent: 'Tin gốc',
@@ -327,12 +332,31 @@ describe('MessageComposer', () => {
     textarea.setSelectionRange(2, 4);
 
     await fireEvent.click(screen.getByTestId('toggle-emoji-btn'));
-    await fireEvent.click(screen.getAllByTestId('emoji-option')[0]);
+    const emojiOption = screen.getAllByTestId('emoji-option')[0];
+    await fireEvent.pointerDown(emojiOption);
+    await fireEvent.click(emojiOption);
     await tick();
 
     expect(textarea.value).toBe('he😀o');
     expect(textarea.selectionStart).toBe(4);
     expect(document.activeElement).toBe(textarea);
+  });
+
+  test('closes emoji popover on click outside or Escape key', async () => {
+    render(MessageComposer, { item: baseItem, runtime: baseRuntime });
+    await fireEvent.click(screen.getByTestId('toggle-emoji-btn'));
+    expect(screen.getByTestId('emoji-picker')).toBeTruthy();
+
+    await fireEvent.pointerDown(document.body);
+    await tick();
+    expect(screen.queryByTestId('emoji-picker')).toBeNull();
+
+    await fireEvent.click(screen.getByTestId('toggle-emoji-btn'));
+    expect(screen.getByTestId('emoji-picker')).toBeTruthy();
+
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    await tick();
+    expect(screen.queryByTestId('emoji-picker')).toBeNull();
   });
 
   test('sends a selected sticker as one immediate sticker-only batch', async () => {
@@ -491,7 +515,6 @@ describe('MessageComposer', () => {
           channelAccountId: 1,
           preview: {
             messageId: 10,
-            providerMessageId: 'p-10',
             senderDisplayName: 'User A',
             contentType: 'text',
             textContent: 'Quote text',
@@ -554,7 +577,7 @@ describe('MessageComposer', () => {
           displayName: 'Zalo Account 1',
           capabilities: {
             ...richCapabilities,
-            mentions: { enabled: true, maxMentionsPerMessage: 20 }
+            mentions: { enabled: true, maxPerMessage: 20 }
           },
           status: 'connected',
           lastConnectedAt: null,
@@ -605,6 +628,45 @@ describe('MessageComposer', () => {
             lengthUtf16: 13
           }
         ]);
+      }
+    });
+
+    test('disabled mention and template capabilities preserve plain text send', async () => {
+      const runtime: ConversationRuntimeStatus = {
+        accounts: [
+          {
+            ...runtimeWithMentions.accounts[0],
+            capabilities: {
+              ...richCapabilities,
+              mentions: { enabled: false, maxPerMessage: 20 },
+              quickTemplates: { enabled: false, maxTemplates: 500 }
+            }
+          }
+        ]
+      };
+
+      render(MessageComposer, { item: groupItem, runtime });
+
+      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, {
+        target: { value: '/gia @Nguyễn', selectionStart: 13, selectionEnd: 13 }
+      });
+      await tick();
+
+      expect(screen.queryByTestId('quick-template-popover')).toBeNull();
+      expect(screen.queryByTestId('mention-candidate-popover-wrapper')).toBeNull();
+
+      await fireEvent.click(screen.getByRole('button', { name: /Gửi/i }));
+      await tick();
+
+      expect(mockSendConversationBatch).toHaveBeenCalledTimes(1);
+      const request = mockSendConversationBatch.mock.calls[0][0];
+      expect(request.parts[0]).toMatchObject({
+        type: 'text',
+        text: '/gia @Nguyễn'
+      });
+      if (request.parts[0].type === 'text') {
+        expect(request.parts[0].mentions ?? []).toEqual([]);
       }
     });
   });

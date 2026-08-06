@@ -1,97 +1,53 @@
 <script lang="ts">
   import { EMOJI_CATEGORIES } from './emojiData';
+  import * as Tabs from '$lib/components/ui/tabs';
+  import { Check, Heart, Smile, Sparkles, ThumbsUp, User } from 'lucide-svelte';
+  import type { Component } from 'svelte';
 
   let { onSelect = () => {} }: { onSelect?: (emoji: string) => void } = $props();
   let activeTab = $state('smileys');
+
+  const CATEGORY_ICONS: Record<string, Component> = {
+    smileys: Smile,
+    gestures: ThumbsUp,
+    hearts: Heart,
+    people: User,
+    objects: Sparkles,
+    symbols: Check
+  };
+
+  let activeCategory = $derived(
+    EMOJI_CATEGORIES.find((cat) => cat.id === activeTab) ?? EMOJI_CATEGORIES[0]
+  );
 </script>
 
-<div class="emoji-picker-container" data-testid="emoji-picker">
-  <div class="category-tabs">
-    {#each EMOJI_CATEGORIES as cat (cat.id)}
-      <button
-        type="button"
-        class="tab-btn"
-        class:active={activeTab === cat.id}
-        title={cat.label}
-        onclick={() => (activeTab = cat.id)}
-      >
-        {cat.emojis[0]}
-      </button>
-    {/each}
-  </div>
+<div
+  class="flex h-[260px] w-[280px] flex-col overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg"
+  data-testid="emoji-picker"
+>
+  <Tabs.Root bind:value={activeTab} class="flex h-full flex-col">
+    <Tabs.List class="grid w-full grid-cols-6 border-b bg-muted/50 p-1">
+      {#each EMOJI_CATEGORIES as cat (cat.id)}
+        {@const Icon = CATEGORY_ICONS[cat.id] ?? Smile}
+        <Tabs.Trigger value={cat.id} title={cat.label} class="h-7 px-0 py-0">
+          <Icon class="size-3.5" />
+        </Tabs.Trigger>
+      {/each}
+    </Tabs.List>
 
-  <div class="emoji-grid">
-    {#each EMOJI_CATEGORIES.find((c) => c.id === activeTab)?.emojis ?? [] as emoji}
-      <button
-        type="button"
-        class="emoji-btn"
-        onclick={() => onSelect(emoji)}
-        data-testid="emoji-option"
-      >
-        {emoji}
-      </button>
-    {/each}
-  </div>
+    <div class="flex-1 overflow-y-auto p-2">
+      <div class="grid grid-cols-6 gap-1">
+        {#each activeCategory.emojis as emoji (emoji)}
+          <button
+            type="button"
+            class="inline-flex size-9 items-center justify-center rounded-md text-xl hover:bg-accent hover:text-accent-foreground cursor-pointer transition-colors select-none focus:outline-none focus:ring-1 focus:ring-ring"
+            onclick={() => onSelect(emoji)}
+            data-testid="emoji-option"
+          >
+            {emoji}
+          </button>
+        {/each}
+      </div>
+    </div>
+  </Tabs.Root>
 </div>
-
-<style>
-  .emoji-picker-container {
-    width: 280px;
-    height: 220px;
-    display: flex;
-    flex-direction: column;
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-    overflow: hidden;
-  }
-
-  .category-tabs {
-    display: flex;
-    border-bottom: 1px solid #e5e7eb;
-    background: #f9fafb;
-    padding: 4px;
-    gap: 2px;
-  }
-
-  .tab-btn {
-    flex: 1;
-    border: none;
-    background: none;
-    font-size: 16px;
-    padding: 4px;
-    cursor: pointer;
-    border-radius: 4px;
-  }
-
-  .tab-btn.active {
-    background: #ffffff;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-  }
-
-  .emoji-grid {
-    display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 4px;
-    padding: 8px;
-    overflow-y: auto;
-    flex: 1;
-  }
-
-  .emoji-btn {
-    border: none;
-    background: none;
-    font-size: 20px;
-    padding: 4px;
-    cursor: pointer;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .emoji-btn:hover {
-    background: #f3f4f6;
-  }
-</style>

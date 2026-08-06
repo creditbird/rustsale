@@ -28,6 +28,7 @@
   import { Textarea } from '$lib/components/ui/textarea';
   import { Button } from '$lib/components/ui/button';
   import * as Select from '$lib/components/ui/select';
+  import * as Popover from '$lib/components/ui/popover';
   import { Badge } from '$lib/components/ui/badge';
   import { AlertCircle, RefreshCw, Send, Settings2 } from 'lucide-svelte';
   import AttachmentDropOverlay from './AttachmentDropOverlay.svelte';
@@ -76,7 +77,11 @@
     supportsQuoteReply: false,
     supportsRecall: false,
     recallWindowSeconds: null,
-    supportsReactions: false
+    supportsReactions: false,
+    reactions: { read: false, write: false, supported: [] },
+    forward: { enabled: false, maxTargets: 0 },
+    mentions: { enabled: false, maxPerMessage: 0 },
+    quickTemplates: { enabled: false, maxTemplates: 0 }
   };
 
   let fallbackId = 0;
@@ -108,6 +113,7 @@
   let attachments = $state<ComposerAttachmentItem[]>([]);
   let activeDraftKey = $state<string | null>(null);
   let activePopover = $state<'emoji' | 'sticker' | null>(null);
+  let popoverContainerEl = $state<HTMLElement | null>(null);
   let isSending = $state(false);
   let sendError = $state<string | null>(null);
   let reconnecting = $state(false);
@@ -131,6 +137,32 @@
     if (selectedCapabilities.quickTemplates?.enabled) {
       void loadQuickTemplates();
     }
+  });
+
+  $effect(() => {
+    if (!activePopover) return;
+
+    function handlePointerDown(event: PointerEvent | MouseEvent) {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (popoverContainerEl && popoverContainerEl.contains(target)) return;
+      if (target instanceof Element && target.closest('[data-slot="popover-content"]')) return;
+      activePopover = null;
+    }
+
+    function handleWindowKeydown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        activePopover = null;
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleWindowKeydown);
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleWindowKeydown);
+    };
   });
 
   async function loadQuickTemplates(): Promise<void> {
@@ -210,8 +242,8 @@
     selectedOption?.account?.capabilities ?? TEXT_ONLY_CAPABILITIES
   );
   let maxMentions = $derived(
-    selectedCapabilities.mentions?.maxMentionsPerMessage ??
-      selectedCapabilities.mentions?.maxPerMessage ??
+    selectedCapabilities.mentions.maxPerMessage ??
+      selectedCapabilities.mentions.maxMentionsPerMessage ??
       20
   );
   let isTargetLocked = $derived(Boolean(replyTarget) || isGroupMode);
@@ -632,15 +664,20 @@
     checkMentions();
   }
 
-  async function handleEmojiSelect(emoji: string): Promise<void> {
-    const start = textareaElement?.selectionStart ?? text.length;
-    const end = textareaElement?.selectionEnd ?? start;
-    const inserted = insertTextAtSelection(text, emoji, start, end);
+  function handleEmojiSelect(emoji: string): void {
+    const el = textareaElement;
+    const currentText = text;
+    const start = el?.selectionStart ?? currentText.length;
+    const end = el?.selectionEnd ?? start;
+    const inserted = insertTextAtSelection(currentText, emoji, start, end);
+
     text = inserted.value;
+    if (el) {
+      el.value = inserted.value;
+      el.focus();
+      el.setSelectionRange(inserted.caret, inserted.caret);
+    }
     persistDraft();
-    await tick();
-    textareaElement?.focus();
-    textareaElement?.setSelectionRange(inserted.caret, inserted.caret);
   }
 
   let statusReason = $derived.by(() => {
@@ -909,28 +946,19 @@
       <span></span>
     {/if}
 
-    <div class="relative ml-auto shrink-0">
+    <div bind:this={popoverContainerEl} class="ml-auto shrink-0">
       <ComposerToolbar
         capabilities={selectedCapabilities}
+        targetConversationId={targetConversationId}
         disabled={disabled || isSending || !selectedOption?.isEligible}
+        {activePopover}
+        onEmojiSelect={handleEmojiSelect}
+        onStickerSelect={handleStickerSelect}
         onToggleEmoji={() => (activePopover = activePopover === 'emoji' ? null : 'emoji')}
         onToggleSticker={() => (activePopover = activePopover === 'sticker' ? null : 'sticker')}
         onPickAttachment={handlePickAttachment}
         onToggleQuickTemplates={() => (showQuickTemplateManager = true)}
       />
-      {#if activePopover === 'emoji'}
-        <div class="absolute right-0 top-full z-50 mt-2">
-          <EmojiPicker onSelect={handleEmojiSelect} />
-        </div>
-      {:else if activePopover === 'sticker' && targetConversationId !== null}
-        <div class="absolute right-0 top-full z-50 mt-2">
-          <ZaloStickerPicker
-            conversationId={targetConversationId}
-            disabled={isSending}
-            onSelect={handleStickerSelect}
-          />
-        </div>
-      {/if}
     </div>
   </div>
 

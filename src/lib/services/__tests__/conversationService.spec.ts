@@ -46,7 +46,6 @@ mock.module('@tauri-apps/api/core', () => ({
         senderIdentityId: null,
         senderDisplayName: null,
         direction: 'outbound',
-        providerMessageId: null,
         contentType: 'text',
         textContent: args?.request ? (args.request as Record<string, unknown>).text : '',
         content: {},
@@ -102,6 +101,7 @@ import {
   recallConversationMessage,
   setConversationReaction,
   forwardConversationMessage,
+  getConversationForwardOperation,
   retryConversationForwardTarget,
   listConversationQuickTemplates,
   createConversationQuickTemplate,
@@ -374,6 +374,15 @@ describe('conversationService IPC command wrappers', () => {
     expect(invokedCommands).toContainEqual({
       command: 'forward_conversation_message',
       args: { request: req }
+    });
+  });
+
+  test('getConversationForwardOperation calls get_conversation_forward_operation', async () => {
+    await getConversationForwardOperation('op-1');
+
+    expect(invokedCommands).toContainEqual({
+      command: 'get_conversation_forward_operation',
+      args: { clientOperationId: 'op-1' }
     });
   });
 

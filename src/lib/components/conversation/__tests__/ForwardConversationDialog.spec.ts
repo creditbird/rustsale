@@ -4,10 +4,12 @@ import ForwardConversationDialog from '../ForwardConversationDialog.svelte';
 import type { ConversationMessage, InboxItem } from '$lib/services/conversationService';
 
 const mockForwardConversationMessage = mock();
+const mockGetConversationForwardOperation = mock();
 const mockRetryConversationForwardTarget = mock();
 
 mock.module('$lib/services/conversationService', () => ({
   forwardConversationMessage: mockForwardConversationMessage,
+  getConversationForwardOperation: mockGetConversationForwardOperation,
   retryConversationForwardTarget: mockRetryConversationForwardTarget
 }));
 
@@ -21,8 +23,6 @@ describe('ForwardConversationDialog', () => {
     senderIdentityId: 100,
     senderDisplayName: 'Sender A',
     direction: 'inbound',
-    providerMessageId: 'prov-999',
-    providerClientMessageId: 'cli-999',
     contentType: 'text',
     textContent: 'Hello, this is a test message to forward',
     content: {},
@@ -123,6 +123,7 @@ describe('ForwardConversationDialog', () => {
 
   beforeEach(() => {
     mockForwardConversationMessage.mockReset();
+    mockGetConversationForwardOperation.mockReset();
     mockRetryConversationForwardTarget.mockReset();
   });
 
@@ -218,6 +219,53 @@ describe('ForwardConversationDialog', () => {
     expect(screen.getByTestId('forward-target-result-30')).toBeTruthy();
     expect(screen.getByText('Lỗi gửi tin')).toBeTruthy();
     expect(onForwarded).toHaveBeenCalledTimes(1);
+  });
+
+  test('polls queued operation until target reaches terminal status', async () => {
+    mockForwardConversationMessage.mockResolvedValueOnce({
+      clientOperationId: 'op-test-poll',
+      sourceMessageId: 999,
+      status: 'queued',
+      targets: [
+        {
+          targetConversationId: 20,
+          clientBatchId: 'b-20',
+          status: 'queued',
+          errorCode: null,
+          errorMessage: null
+        }
+      ]
+    });
+    mockGetConversationForwardOperation.mockResolvedValueOnce({
+      clientOperationId: 'op-test-poll',
+      sourceMessageId: 999,
+      status: 'sent',
+      targets: [
+        {
+          targetConversationId: 20,
+          clientBatchId: 'b-20',
+          status: 'sent',
+          errorCode: null,
+          errorMessage: null
+        }
+      ]
+    });
+
+    render(ForwardConversationDialog, {
+      props: {
+        open: true,
+        sourceMessage: mockSourceMessage,
+        inbox: mockInbox
+      }
+    });
+
+    const target20 = screen.getByTestId('forward-target-item-20');
+    const checkbox20 = target20.querySelector('input[type="checkbox"]')!;
+    await fireEvent.click(checkbox20);
+    await fireEvent.click(screen.getByTestId('submit-forward-button'));
+
+    expect(await screen.findByText('Đã gửi', {}, { timeout: 2000 })).toBeTruthy();
+    expect(mockGetConversationForwardOperation).toHaveBeenCalledWith('op-test-poll');
   });
 
   test('retries failed target when retry button clicked', async () => {

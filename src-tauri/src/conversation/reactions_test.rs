@@ -40,8 +40,9 @@ fn begin_mutation_is_idempotent_by_client_id() {
     let (_path, repo) = setup_test_repo();
     let req = SetConversationReactionRequest {
         message_id: 10,
-        reaction_code: Some(ConversationReactionCode::Heart),
-        client_mutation_id: Some("mut-1".to_string()),
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-1".to_string(),
     };
 
     let first = repo.begin(&req, 1).unwrap();
@@ -64,16 +65,18 @@ fn same_client_id_with_different_payload_is_rejected() {
     let (_path, repo) = setup_test_repo();
     let req1 = SetConversationReactionRequest {
         message_id: 10,
-        reaction_code: Some(ConversationReactionCode::Heart),
-        client_mutation_id: Some("mut-1".to_string()),
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-1".to_string(),
     };
 
     repo.begin(&req1, 1).unwrap();
 
     let req2 = SetConversationReactionRequest {
         message_id: 10,
-        reaction_code: Some(ConversationReactionCode::Like),
-        client_mutation_id: Some("mut-1".to_string()),
+        reaction: ConversationReactionCode::Like,
+        active: true,
+        client_mutation_id: "mut-1".to_string(),
     };
 
     let err = repo.begin(&req2, 1).unwrap_err();
@@ -85,8 +88,9 @@ fn successful_local_apply_upserts_self_actor_once() {
     let (path, repo) = setup_test_repo();
     let req = SetConversationReactionRequest {
         message_id: 10,
-        reaction_code: Some(ConversationReactionCode::Heart),
-        client_mutation_id: Some("mut-1".to_string()),
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-1".to_string(),
     };
 
     repo.begin(&req, 1).unwrap();
@@ -95,7 +99,7 @@ fn successful_local_apply_upserts_self_actor_once() {
         .unwrap();
 
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].reaction_icon, "heart");
+    assert_eq!(groups[0].reaction_icon, "❤️");
     assert_eq!(groups[0].count, 1);
     assert!(groups[0].includes_me);
 
@@ -114,6 +118,47 @@ fn successful_local_apply_upserts_self_actor_once() {
         )
         .unwrap();
     assert_eq!(status, "succeeded");
+}
+
+#[test]
+fn successful_local_remove_matches_provider_reaction_alias() {
+    let (path, repo) = setup_test_repo();
+    let conn = open_db_connection(path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+         VALUES (10, 'self-uid', '/-heart', '2026-08-02T11:00:00Z', NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+         VALUES (10, 'self-uid', 'Unknown', '2026-08-02T11:30:00Z', NULL)",
+        [],
+    )
+    .unwrap();
+
+    let request = SetConversationReactionRequest {
+        message_id: 10,
+        reaction: ConversationReactionCode::Heart,
+        active: false,
+        client_mutation_id: "mut-remove-heart".to_string(),
+    };
+
+    repo.begin(&request, 1).unwrap();
+    let groups = repo
+        .succeed("mut-remove-heart", "self-uid", "2026-08-02T12:00:00Z")
+        .unwrap();
+
+    assert!(groups.is_empty());
+    let removed_at: Option<String> = conn
+        .query_row(
+            "SELECT removed_at FROM message_reactions
+             WHERE message_id = 10 AND actor_external_id = 'self-uid' AND reaction = '/-heart'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(removed_at.as_deref(), Some("2026-08-02T12:00:00Z"));
 }
 
 #[test]

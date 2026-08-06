@@ -19,4 +19,4 @@
 - Task 16: Build Mention State, Popup, and Rendering — [x] complete
 - Task 17: Add Reaction Write UI — [x] complete
 - Task 18: Add Native Forward Dialog and Target Results — [x] complete
-- Task 19: Full Verification and Live Gate — [x] complete
+- Task 19: Full Verification and Live Gate — [ ] automated gates complete; live Heart and group-text Forward verified; 8 cases not run and 1 case partial

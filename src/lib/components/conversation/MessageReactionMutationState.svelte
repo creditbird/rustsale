@@ -32,6 +32,16 @@
     }>
   >([]);
 
+  function mutationErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message.trim()) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+      const message = Reflect.get(error, 'message');
+      if (typeof message === 'string' && message.trim()) return message;
+    }
+    if (typeof error === 'string' && error.trim()) return error;
+    return 'Không thể thả cảm xúc';
+  }
+
   export function isPending(messageId: number, reactionCode: ConversationReactionCode): boolean {
     return pendingReactions.has(`${messageId}:${reactionCode}`);
   }
@@ -107,7 +117,7 @@
       clearedPending.delete(key);
       pendingReactions = clearedPending;
 
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = mutationErrorMessage(err);
       const errorItem = {
         id: clientMutationId,
         messageId,

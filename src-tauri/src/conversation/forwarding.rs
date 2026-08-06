@@ -7,6 +7,76 @@ use crate::conversation::types::{
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
+pub fn load_forward_operation(
+    conn: &rusqlite::Connection,
+    client_operation_id: &str,
+) -> ConversationResult<ForwardConversationMessageResult> {
+    let operation: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT source_message_id, status
+             FROM message_forward_operations
+             WHERE client_operation_id = ?1",
+            params![client_operation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    let Some((source_message_id, stored_status)) = operation else {
+        return Err(ConversationError::new(
+            ConversationErrorCode::InvalidRequest,
+            format!("Forward operation '{}' not found", client_operation_id),
+        ));
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT t.target_conversation_id, t.send_batch_id, b.client_batch_id,
+                t.status, t.error_code, t.error_message
+         FROM message_forward_targets t
+         LEFT JOIN message_send_batches b ON b.id = t.send_batch_id
+         WHERE t.client_operation_id = ?1
+         ORDER BY t.id ASC",
+    )?;
+    let rows = stmt.query_map(params![client_operation_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+
+    let mut targets = Vec::new();
+    let mut target_statuses = Vec::new();
+    for row in rows {
+        let (target_id, batch_id, client_batch_id, status, error_code, error_message) = row?;
+        target_statuses.push(status.clone());
+        targets.push(ConversationForwardTargetResult {
+            target_conversation_id: target_id,
+            client_batch_id: client_batch_id
+                .or(batch_id)
+                .unwrap_or_else(|| format!("{}:{}", client_operation_id, target_id)),
+            status: ForwardTargetStatus::from_db_str(&status),
+            error_code,
+            error_message,
+        });
+    }
+
+    let status = if target_statuses.is_empty() {
+        ForwardOperationStatus::from_db_str(&stored_status)
+    } else {
+        ForwardOperationStatus::from_db_str(compute_aggregate_operation_status(&target_statuses))
+    };
+
+    Ok(ForwardConversationMessageResult {
+        client_operation_id: client_operation_id.to_string(),
+        source_message_id,
+        status,
+        targets,
+    })
+}
+
 pub fn enqueue_forward_operation(
     tx: &rusqlite::Transaction<'_>,
     request: &ForwardConversationMessageRequest,
@@ -55,17 +125,21 @@ pub fn enqueue_forward_operation(
         }
 
         let mut stmt = tx.prepare(
-            "SELECT target_conversation_id, send_batch_id, status, error_message
-             FROM message_forward_targets
-             WHERE client_operation_id = ?1
-             ORDER BY id ASC",
+            "SELECT t.target_conversation_id, t.send_batch_id, b.client_batch_id,
+                    t.status, t.error_code, t.error_message
+             FROM message_forward_targets t
+             LEFT JOIN message_send_batches b ON b.id = t.send_batch_id
+             WHERE t.client_operation_id = ?1
+             ORDER BY t.id ASC",
         )?;
         let target_rows = stmt.query_map(params![request.client_operation_id], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?;
 
@@ -74,26 +148,19 @@ pub fn enqueue_forward_operation(
         let mut existing_target_ids = Vec::new();
 
         for tr in target_rows {
-            let (t_id, batch_id, t_status_str, err_msg) = tr?;
+            let (t_id, batch_id, client_batch_id, t_status_str, err_code, err_msg) = tr?;
             existing_target_ids.push(t_id);
-            let fwd_msg_id: Option<i64> = if let Some(ref b_id) = batch_id {
-                tx.query_row(
-                    "SELECT id FROM messages WHERE send_batch_id = ?1 AND conversation_id = ?2",
-                    params![b_id, t_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-            } else {
-                None
-            };
 
             target_statuses.push(t_status_str.clone());
             let target_status = ForwardTargetStatus::from_db_str(&t_status_str);
 
             target_results.push(ConversationForwardTargetResult {
-                conversation_id: t_id,
+                target_conversation_id: t_id,
+                client_batch_id: client_batch_id
+                    .or(batch_id)
+                    .unwrap_or_else(|| format!("{}:{}", request.client_operation_id, t_id)),
                 status: target_status,
-                forwarded_message_id: fwd_msg_id,
+                error_code: err_code,
                 error_message: err_msg,
             });
         }
@@ -127,12 +194,15 @@ pub fn enqueue_forward_operation(
         source_account_id: i64,
         capabilities_json: String,
         content_type: String,
+        text_content: Option<String>,
+        provider_timestamp: Option<String>,
     }
 
     let src_row: Option<SourceMsgRow> = tx
         .query_row(
             "SELECT m.conversation_id, m.provider_message_id, m.provider_client_message_id,
-                    cc.channel_account_id, ca.capabilities_json, m.content_type
+                    cc.channel_account_id, ca.capabilities_json, m.content_type,
+                    m.text_content, m.provider_timestamp
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -146,6 +216,8 @@ pub fn enqueue_forward_operation(
                     source_account_id: row.get(3)?,
                     capabilities_json: row.get(4)?,
                     content_type: row.get(5)?,
+                    text_content: row.get(6)?,
+                    provider_timestamp: row.get(7)?,
                 })
             },
         )
@@ -158,6 +230,8 @@ pub fn enqueue_forward_operation(
         source_account_id,
         capabilities_json,
         content_type,
+        text_content,
+        provider_timestamp,
     } = match src_row {
         Some(row) => row,
         None => {
@@ -168,13 +242,13 @@ pub fn enqueue_forward_operation(
         }
     };
 
-    let forwardable_types = [
-        "text", "image", "video", "audio", "file", "sticker", "link", "forward",
-    ];
-    if !forwardable_types.contains(&content_type.as_str()) {
+    if content_type != "text" {
         return Err(ConversationError::new(
             ConversationErrorCode::ForwardNotSupported,
-            format!("Content type '{}' cannot be forwarded", content_type),
+            format!(
+                "Content type '{}' is not enabled until its native Forward contract is verified",
+                content_type
+            ),
         ));
     }
 
@@ -189,6 +263,34 @@ pub fn enqueue_forward_operation(
             ),
         ));
     }
+
+    let source_message = text_content
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::ForwardNotSupported,
+                format!(
+                    "Source message {} has no text content for native Forward",
+                    request.source_message_id
+                ),
+            )
+        })?;
+    let source_timestamp_ms = provider_timestamp
+        .as_deref()
+        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp_millis())
+        .filter(|timestamp| *timestamp > 0)
+        .map(|timestamp| timestamp as u64)
+        .ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::ForwardNotSupported,
+                format!(
+                    "Source message {} has no valid provider timestamp for native Forward",
+                    request.source_message_id
+                ),
+            )
+        })?;
+    let source_provider_message_id = p_msg_id.expect("provider message ID validated above");
 
     let caps = if capabilities_json.trim().is_empty() || capabilities_json.trim() == "{}" {
         ConversationCapabilities::zalo_phase_one()
@@ -274,6 +376,10 @@ pub fn enqueue_forward_operation(
         let content_json = serde_json::json!({
             "sourceMessageId": request.source_message_id,
             "clientOperationId": request.client_operation_id,
+            "sourceProviderMessageId": source_provider_message_id,
+            "sourceMessage": source_message,
+            "sourceTimestampMs": source_timestamp_ms,
+            "text": source_message,
         })
         .to_string();
 
@@ -289,7 +395,7 @@ pub fn enqueue_forward_operation(
                 target_id,
                 cli_msg_id,
                 local_req_id,
-                "Đã chuyển tiếp một tin nhắn",
+                source_message,
                 content_json,
                 now,
                 batch_id,
@@ -307,9 +413,10 @@ pub fn enqueue_forward_operation(
         )?;
 
         target_results.push(ConversationForwardTargetResult {
-            conversation_id: target_id,
+            target_conversation_id: target_id,
+            client_batch_id: batch_id.clone(),
             status: ForwardTargetStatus::Queued,
-            forwarded_message_id: Some(target_msg_id),
+            error_code: None,
             error_message: None,
         });
     }
@@ -418,15 +525,16 @@ pub fn retry_forward_target(
 ) -> ConversationResult<ConversationForwardTargetResult> {
     let row: Option<(String, Option<String>, Option<String>)> = tx
         .query_row(
-            "SELECT status, send_batch_id, error_message
-             FROM message_forward_targets
-             WHERE client_operation_id = ?1 AND target_conversation_id = ?2",
+            "SELECT t.status, t.send_batch_id, b.client_batch_id
+             FROM message_forward_targets t
+             LEFT JOIN message_send_batches b ON b.id = t.send_batch_id
+             WHERE t.client_operation_id = ?1 AND t.target_conversation_id = ?2",
             params![client_operation_id, target_conversation_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
 
-    let (current_status, batch_id, _err_msg) = match row {
+    let (current_status, batch_id, client_batch_id) = match row {
         Some(r) => r,
         None => {
             return Err(ConversationError::new(
@@ -499,9 +607,12 @@ pub fn retry_forward_target(
     recalculate_forward_operation_status(tx, client_operation_id, now)?;
 
     Ok(ConversationForwardTargetResult {
-        conversation_id: target_conversation_id,
+        target_conversation_id,
+        client_batch_id: client_batch_id
+            .or(Some(batch_id))
+            .unwrap_or_else(|| format!("{}:{}", client_operation_id, target_conversation_id)),
         status: ForwardTargetStatus::Queued,
-        forwarded_message_id: Some(target_msg_id),
+        error_code: None,
         error_message: None,
     })
 }
