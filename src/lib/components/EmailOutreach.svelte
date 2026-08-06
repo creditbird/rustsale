@@ -24,7 +24,7 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import * as Select from '$lib/components/ui/select';
   import { Progress } from '$lib/components/ui/progress';
-  import { Mail, Plus, Server, Edit, Trash2, Send, FileText, Settings2 } from 'lucide-svelte';
+  import { Mail, Plus, Server, Edit, Trash2, Send, FileText, Settings2, RefreshCw } from 'lucide-svelte';
 
   interface EmailTemplate {
     id?: number;
@@ -80,6 +80,7 @@
   let leadRequestId = 0;
   let loadedLeadFilterKey = '';
   let isDisposed = false;
+  let lastTab: string | null = null;
 
   let selectedLeadSet = $derived(new Set(selectedLeadIds));
   let excludedLeadSet = $derived(new Set(excludedLeadIds));
@@ -138,11 +139,10 @@
   }
 
   function selectValidEmail() {
-    const emailLeads = leads.filter(l => l.email && l.email.includes('@'));
-    if (selectAllMatching) return;
-    const newIds = new Set(selectedLeadIds);
-    emailLeads.forEach(l => { if (l.id != null) newIds.add(l.id); });
-    selectedLeadIds = Array.from(newIds);
+    const emailLeads = leads.filter(l => l.email && l.email.trim() !== '' && l.email.includes('@'));
+    selectAllMatching = false;
+    excludedLeadIds = [];
+    selectedLeadIds = emailLeads.map(l => l.id).filter((id): id is number => id != null);
   }
 
   function selectUnreached() {
@@ -350,7 +350,11 @@
   });
 
   $effect(() => {
-    const isActive = activeTab === 'email_outreach';
+    const currentTab = activeTab;
+    const isActive = currentTab === 'email_outreach';
+    const wasInSettings = untrack(() => lastTab === 'settings');
+    lastTab = currentTab;
+
     const cacheState = untrack(() => ({ hasLoaded, isStale }));
 
     if (isActive) {
@@ -358,6 +362,8 @@
         void refreshData();
       } else if (cacheState.isStale) {
         void refreshCrmData();
+      } else if (wasInSettings) {
+        void loadSmtpServers();
       }
     } else {
       if (reloadTimer) {
@@ -520,7 +526,7 @@
       ]);
       campaignUnlistens.push(progressUnlisten, logUnlisten, completeUnlisten);
 
-      await invoke('send_email_outreach', { smtp_id: activeSmtpId, template_id: selectedTemplateId, lead_ids: campaignLeadIds });
+      await invoke('send_email_outreach', { smtpId: activeSmtpId, templateId: selectedTemplateId, leadIds: campaignLeadIds });
     } catch (e) { isCampaignRunning = false; appendCampaignLog(`Error: ${e}`); }
   }
 </script>
@@ -544,9 +550,14 @@
           <Card.Title class="text-sm font-bold flex items-center gap-2">
             <Server class="size-4 text-emerald-600" /> Available Email Accounts
           </Card.Title>
-          <Button variant="outline" size="sm" class="h-7 text-[11px] px-2 gap-1" onclick={onOpenSettings}>
-            <Settings2 class="size-3" /> Manage accounts in Settings
-          </Button>
+          <div class="flex items-center gap-1">
+            <Button variant="ghost" size="icon" class="size-7" onclick={() => loadSmtpServers()} title="Refresh accounts">
+              <RefreshCw class="size-3.5" />
+            </Button>
+            <Button variant="outline" size="sm" class="h-7 text-[11px] px-2 gap-1" onclick={onOpenSettings}>
+              <Settings2 class="size-3" /> Manage accounts in Settings
+            </Button>
+          </div>
         </Card.Header>
         <Card.Content class="p-3 flex flex-col gap-2 text-xs max-h-56 overflow-y-auto">
           {#if smtpServers.length === 0}

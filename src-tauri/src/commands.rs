@@ -79,6 +79,8 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
 
     if query.filter_verified_zalo {
         sql.push_str(" AND l.has_zalo = 1");
+    } else if query.channel != "email" {
+        sql.push_str(" AND COALESCE(l.has_zalo, 1) != 0");
     }
     if query.filter_unreached {
         sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
@@ -1703,7 +1705,7 @@ fn render_zalo_template(template: &str, lead_name: &str) -> String {
 fn should_rotate_zalo_session(error: &zca_rs::ZaloError) -> bool {
     match error {
         zca_rs::ZaloError::ApiError { message, code } => {
-            if matches!(code, Some(102 | 221 | 401 | 403 | 429)) {
+            if matches!(code, Some(102 | 221 | 312 | 401 | 403 | 429)) {
                 return true;
             }
 
@@ -1712,6 +1714,8 @@ fn should_rotate_zalo_session(error: &zca_rs::ZaloError) -> bool {
                 "rate limit",
                 "too many request",
                 "vượt quá số request",
+                "tìm số điện thoại quá nhiều lần",
+                "hoạt động bất thường",
                 "session",
                 "login",
                 "unauthorized",
@@ -2246,6 +2250,7 @@ pub async fn send_zalo_outreach_internal(
 
     let mut total_sent = 0;
     let mut burst_counter: u32 = 0;
+    let mut was_rate_limited = false;
     for (idx, lead_id) in lead_ids.iter().enumerate() {
         let (lead_name, phone) = {
             let conn_guard = conn_mutex.lock().unwrap();
@@ -2344,6 +2349,13 @@ pub async fn send_zalo_outreach_internal(
                 let now: String = chrono::Utc::now().to_rfc3339();
                 let conn_guard = conn_mutex.lock();
                 if let Ok(conn) = conn_guard {
+                    let is_rate_limit = should_rotate_zalo_session(&e);
+                    if is_rate_limit {
+                        let _ = conn.execute(
+                            "UPDATE leads SET zalo_status = 'RATE_LIMITED' WHERE id = ?1 AND (zalo_status IS NULL OR zalo_status = 'UNTESTED')",
+                            rusqlite::params![lead_id],
+                        );
+                    }
                     let _ = conn.execute(
                         "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                         rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
@@ -2372,8 +2384,20 @@ pub async fn send_zalo_outreach_internal(
                 if should_rotate_zalo_session(&e) {
                     let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần tra cứu/gửi tin ({:?}). Tạm dừng chiến dịch...", e);
                     if let Some(app) = app_handle {
-                        let _ = app.emit("outreach-log", OutreachLogPayload { message: rate_msg });
+                        let _ = app.emit("outreach-log", OutreachLogPayload { message: rate_msg.clone() });
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "rate_limited".to_string(),
+                                message: rate_msg,
+                            },
+                        );
                     }
+                    was_rate_limited = true;
+                    break;
                 }
 
                 continue;
@@ -2554,8 +2578,21 @@ pub async fn send_zalo_outreach_internal(
                         lead_name, sanitized_phone, e
                     );
                     let now: String = chrono::Utc::now().to_rfc3339();
+                    let err_str = format!("{:?}", e).to_ascii_lowercase();
+                    let status_str = if err_str.contains("người lạ") || err_str.contains("stranger") || err_str.contains("privacy") {
+                        "BLOCKED_STRANGER"
+                    } else if should_rotate_zalo_session(&e) {
+                        "RATE_LIMITED"
+                    } else {
+                        "SEND_FAILED"
+                    };
+
                     let conn_guard = conn_mutex.lock();
                     if let Ok(conn) = conn_guard {
+                        let _ = conn.execute(
+                            "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
+                            rusqlite::params![status_str, lead_id],
+                        );
                         let _ = conn.execute(
                             "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                             rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
@@ -2569,6 +2606,25 @@ pub async fn send_zalo_outreach_internal(
                             },
                         );
                     }
+
+                    if should_rotate_zalo_session(&e) {
+                        let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần gửi tin ({:?}). Tạm dừng chiến dịch...", e);
+                        if let Some(app) = app_handle {
+                            let _ = app.emit("outreach-log", OutreachLogPayload { message: rate_msg.clone() });
+                            let current_num = processed_offset + idx + 1;
+                            let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                            let _ = app.emit(
+                                "outreach-progress",
+                                OutreachProgressPayload {
+                                    progress: progress_val,
+                                    status: "rate_limited".to_string(),
+                                    message: rate_msg,
+                                },
+                            );
+                        }
+                        was_rate_limited = true;
+                        break;
+                    }
                 }
             }
         } else {
@@ -2580,7 +2636,7 @@ pub async fn send_zalo_outreach_internal(
             let conn_guard = conn_mutex.lock();
             if let Ok(conn) = conn_guard {
                 let _ = conn.execute(
-                    "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                    "UPDATE leads SET has_zalo = 0, zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
                     rusqlite::params![lead_id],
                 );
                 let _ = conn.execute(
@@ -2636,17 +2692,24 @@ pub async fn send_zalo_outreach_internal(
     }
 
     let overall_sent = progress_scope.sent_offset + total_sent;
-    let final_msg = format!(
-        "Outreach complete! Sent {} messages out of {} leads.",
-        overall_sent, display_total
-    );
+    let final_msg = if was_rate_limited {
+        format!(
+            "Outreach paused due to Zalo rate limit. Sent {} messages out of {} leads.",
+            overall_sent, display_total
+        )
+    } else {
+        format!(
+            "Outreach complete! Sent {} messages out of {} leads.",
+            overall_sent, display_total
+        )
+    };
     if let Some(app) = app_handle {
         if emit_complete {
             let _ = app.emit(
                 "outreach-progress",
                 OutreachProgressPayload {
-                    progress: 100.0,
-                    status: "completed".to_string(),
+                    progress: if was_rate_limited { ((processed_offset + total_sent) as f64 / display_total.max(1) as f64) * 100.0 } else { 100.0 },
+                    status: if was_rate_limited { "rate_limited".to_string() } else { "completed".to_string() },
                     message: final_msg.clone(),
                 },
             );
@@ -3713,6 +3776,43 @@ pub async fn send_email_outreach_internal(
             }
         };
 
+        let trimmed_email = lead.email.trim();
+        if trimmed_email.is_empty() || !trimmed_email.contains('@') {
+            let log_msg = format!(
+                "Skipping lead '{}' (ID {}): No valid email address",
+                lead.name, lead_id
+            );
+            let history = EmailOutreachHistory {
+                id: None,
+                lead_id,
+                template_id,
+                smtp_id,
+                status: "SKIPPED".to_string(),
+                error_message: Some("No valid email address".to_string()),
+                sent_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            };
+            {
+                let conn_guard = conn_mutex.lock().unwrap();
+                let _ = crate::db::log_email_outreach_attempt(&conn_guard, &history);
+            }
+            if let Some(app) = app_handle {
+                let _ = app.emit(
+                    "email-outreach-log",
+                    EmailOutreachLogPayload { message: log_msg },
+                );
+                let progress_val = ((idx + 1) as f64 / lead_ids.len() as f64) * 100.0;
+                let _ = app.emit(
+                    "email-outreach-progress",
+                    EmailOutreachProgressPayload {
+                        progress: progress_val,
+                        status: "running".to_string(),
+                        message: format!("Processed {}/{} leads", idx + 1, lead_ids.len()),
+                    },
+                );
+            }
+            continue;
+        }
+
         let interpolated_subject = replace_email_template_variables(&template.subject, &lead);
         let interpolated_body = replace_email_template_variables(&template.content, &lead);
 
@@ -3723,20 +3823,45 @@ pub async fn send_email_outreach_internal(
         };
 
         let to_str = if lead.name.trim().is_empty() {
-            lead.email.clone()
+            trimmed_email.to_string()
         } else {
-            format!("{} <{}>", lead.name, lead.email)
+            format!("{} <{}>", lead.name, trimmed_email)
+        };
+
+        let from_header = match from_str.parse() {
+            Ok(h) => h,
+            Err(e) => {
+                let err_msg = format!("Invalid from header: {}", e);
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "email-outreach-log",
+                        EmailOutreachLogPayload { message: err_msg },
+                    );
+                }
+                continue;
+            }
+        };
+
+        let to_header = match to_str.parse() {
+            Ok(h) => h,
+            Err(_) => match trimmed_email.parse() {
+                Ok(h) => h,
+                Err(e) => {
+                    let err_msg = format!("Invalid recipient email address for {}: {}", lead.name, e);
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "email-outreach-log",
+                            EmailOutreachLogPayload { message: err_msg },
+                        );
+                    }
+                    continue;
+                }
+            },
         };
 
         let email_builder = Message::builder()
-            .from(
-                from_str
-                    .parse()
-                    .map_err(|e| format!("Invalid from header: {}", e))?,
-            )
-            .to(to_str
-                .parse()
-                .unwrap_or_else(|_| lead.email.parse().unwrap()))
+            .from(from_header)
+            .to(to_header)
             .subject(interpolated_subject)
             .header(ContentType::TEXT_HTML)
             .body(interpolated_body);

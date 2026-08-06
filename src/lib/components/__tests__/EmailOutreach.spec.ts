@@ -331,9 +331,9 @@ test('Lead selection and triggers Email Campaign execution with logs and progres
   const resolverCmd = invokedCommands.find(c => c.command === 'resolve_outreach_lead_ids');
   expect(resolverCmd?.args.excludedLeadIds).toEqual([2]);
   expect(resolverCmd?.args.channel).toBe('email');
-  expect(sendCmd?.args.smtp_id).toBe(1);
-  expect(sendCmd?.args.template_id).toBe(1);
-  expect(sendCmd?.args.lead_ids).toEqual([1]);
+  expect(sendCmd?.args.smtpId).toBe(1);
+  expect(sendCmd?.args.templateId).toBe(1);
+  expect(sendCmd?.args.leadIds).toEqual([1]);
 
   const logListener = eventListeners.get('email-outreach-log');
   const progressListener = eventListeners.get('email-outreach-progress');

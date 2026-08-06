@@ -115,6 +115,7 @@
   let leadRequestId = 0;
   let loadedLeadFilterKey = '';
   let isDisposed = false;
+  let lastTab: string | null = null;
 
   let selectedLeadSet = $derived(new Set(selectedLeadIds));
   let excludedLeadSet = $derived(new Set(excludedLeadIds));
@@ -378,7 +379,11 @@
   });
 
   $effect(() => {
-    const isActive = activeTab === 'outreach';
+    const currentTab = activeTab;
+    const isActive = currentTab === 'outreach';
+    const wasInSettings = untrack(() => lastTab === 'settings');
+    lastTab = currentTab;
+
     const cacheState = untrack(() => ({ hasLoaded, isStale }));
 
     if (isActive) {
@@ -386,6 +391,8 @@
         void refreshData();
       } else if (cacheState.isStale) {
         void refreshCrmData();
+      } else if (wasInSettings) {
+        void loadSessions();
       }
     } else {
       if (reloadTimer) {
