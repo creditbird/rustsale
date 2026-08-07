@@ -229,6 +229,11 @@ impl ConversationService {
         Ok(self.repository.list_inbox()?)
     }
 
+    pub fn mark_conversation_read(&self, key: &str) -> Result<u64> {
+        Ok(self.repository.mark_conversation_read(key)?)
+    }
+
+
     pub fn get_contact_timeline(
         &self,
         lead_id: i64,
@@ -1345,4 +1350,26 @@ impl ConversationService {
             }
         }
     }
+
+    pub fn pin_message(
+        &self,
+        conversation_id: i64,
+        message_id: i64,
+        pinned_by: Option<&str>,
+    ) -> Result<crate::conversation::types::PinnedMessage> {
+        Ok(self.repository.pin_message(conversation_id, message_id, pinned_by)?)
+    }
+
+    pub fn unpin_message(&self, conversation_id: i64, message_id: i64) -> Result<()> {
+        Ok(self.repository.unpin_message(conversation_id, message_id)?)
+    }
+
+    pub fn list_pinned_messages(
+        &self,
+        conversation_id: i64,
+    ) -> Result<Vec<crate::conversation::types::PinnedMessage>> {
+        Ok(self.repository.list_pinned_messages(conversation_id)?)
+    }
+
+
 }

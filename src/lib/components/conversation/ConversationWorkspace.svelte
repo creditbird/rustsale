@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from 'svelte';
   import {
     listConversationInbox,
+    markConversationRead,
     getContactTimeline,
     getConversationTimeline,
     getIdentityTimeline,
@@ -9,7 +10,11 @@
     initConversationEventBridge,
     onConversationInvalidated,
     recallConversationMessage,
+    pinConversationMessage,
+    unpinConversationMessage,
+    listConversationPinnedMessages,
     type InboxItem,
+
     type Channel,
     type ConversationCapabilities,
     type ConversationRuntimeStatus,
@@ -17,7 +22,8 @@
     type ConversationInvalidatedEvent,
     type SendConversationBatchResult,
     type ConversationReactionCode,
-    type ConversationReactionGroup
+    type ConversationReactionGroup,
+    type PinnedMessage
   } from '$lib/services/conversationService';
   import {
     TimelineCache,
@@ -38,12 +44,15 @@
   import RecallMessageDialog from './RecallMessageDialog.svelte';
   import ForwardConversationDialog from './ForwardConversationDialog.svelte';
   import MessageReactionMutationState from './MessageReactionMutationState.svelte';
+  import PinnedMessageBanner from './PinnedMessageBanner.svelte';
+  import InThreadSearchBar from './InThreadSearchBar.svelte';
   import type { ConversationReplySelection } from './composerDraftState';
   import { attachmentLabel, safeConversationUrl, extractGalleryImages } from './messageMedia';
   import { Button } from '$lib/components/ui/button';
-  import { AlertCircle, RefreshCw, Users, MessageSquare, Trash2 } from 'lucide-svelte';
+  import { AlertCircle, RefreshCw, Users, MessageSquare, Trash2, Search } from 'lucide-svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
   import ImageGalleryModal, { type GalleryImage } from './ImageGalleryModal.svelte';
+
 
   let {
     activeTab = 'conversation',
@@ -109,10 +118,93 @@
   let forwardDialogOpen = $state(false);
   let actionItemKey = $state<string | null>(null);
 
+  let pinnedMessages = $state<PinnedMessage[]>([]);
+  let pinnedMessageIds = $derived(new Set(pinnedMessages.map((p) => p.messageId)));
+  let inThreadSearchOpen = $state(false);
+
+  let inThreadQuery = $state('');
+  let inThreadMatchIndex = $state(0);
+
   let inboxRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let timelineRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   let selectedItem = $derived(inbox.find((i) => i.key === selectedKey) ?? null);
+
+  $effect(() => {
+    const convId = selectedItem?.conversationId;
+    if (convId) {
+      void loadPinnedMessages(convId);
+    } else {
+      pinnedMessages = [];
+    }
+  });
+
+  async function loadPinnedMessages(conversationId: number) {
+    try {
+      pinnedMessages = await listConversationPinnedMessages(conversationId);
+    } catch {
+      pinnedMessages = [];
+    }
+  }
+
+  async function handlePinMessage(message: ConversationMessage) {
+    const convId = message.conversationId || selectedItem?.conversationId;
+    if (!convId) return;
+    try {
+      const isAlreadyPinned = pinnedMessages.some((p) => p.messageId === message.id);
+      if (isAlreadyPinned) {
+        await unpinConversationMessage(convId, message.id);
+      } else {
+        await pinConversationMessage(convId, message.id, 'user');
+      }
+      await loadPinnedMessages(convId);
+    } catch (err) {
+      console.error('Failed to pin/unpin message', err);
+    }
+  }
+
+  async function handleUnpinMessage(messageId: number) {
+    const convId = selectedItem?.conversationId;
+    if (!convId) return;
+    try {
+      await unpinConversationMessage(convId, messageId);
+      await loadPinnedMessages(convId);
+    } catch (err) {
+      console.error('Failed to unpin message', err);
+    }
+  }
+
+  let inThreadMatches = $derived.by(() => {
+    if (!inThreadQuery.trim()) return [];
+    const q = inThreadQuery.toLowerCase().trim();
+    const items = currentVariant?.items ?? [];
+    return items.filter((msg) => {
+      const text = msg.textContent || '';
+      return text.toLowerCase().includes(q);
+    });
+  });
+
+  function handleSearchNext() {
+    if (inThreadMatches.length === 0) return;
+    inThreadMatchIndex = (inThreadMatchIndex + 1) % inThreadMatches.length;
+    scrollToMatchedMessage(inThreadMatches[inThreadMatchIndex]?.id);
+  }
+
+  function handleSearchPrev() {
+    if (inThreadMatches.length === 0) return;
+    inThreadMatchIndex = (inThreadMatchIndex - 1 + inThreadMatches.length) % inThreadMatches.length;
+    scrollToMatchedMessage(inThreadMatches[inThreadMatchIndex]?.id);
+  }
+
+  function scrollToMatchedMessage(messageId?: number) {
+    if (!messageId) return;
+    const el = document.querySelector(`[data-message-id="${messageId}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('ring-2', 'ring-primary');
+      setTimeout(() => el.classList.remove('ring-2', 'ring-primary'), 2000);
+    }
+  }
 
   $effect(() => {
     if (selectedKey !== actionItemKey) {
@@ -122,8 +214,11 @@
       recallError = null;
       forwardCandidate = null;
       forwardDialogOpen = false;
+      inThreadSearchOpen = false;
+      inThreadQuery = '';
     }
   });
+
 
   let currentVariantKey = $derived.by(() => {
     if (!selectedItem) return '';
@@ -241,7 +336,17 @@
   function selectItem(item: InboxItem) {
     selectedKey = item.key;
 
+    item.unreadCount = 0;
+    if (item.channels) {
+      item.channels = item.channels.map((ch) => ({ ...ch, unreadCount: 0 }));
+    }
+
+    markConversationRead(item.key).catch((err) => {
+      console.error('Failed to mark conversation read', err);
+    });
+
     if (item.kind === 'group') {
+
       activeChannels = [];
     } else {
       const availableChannels = item.channels.map((channel) => channel.channel);
@@ -729,6 +834,16 @@
             <Button
               variant="outline"
               size="icon"
+              title="Tìm trong cuộc trò chuyện (Ctrl+F)"
+              onclick={() => (inThreadSearchOpen = !inThreadSearchOpen)}
+              class="h-8 w-8 text-muted-foreground hover:text-foreground"
+            >
+              <Search class="w-4 h-4" />
+            </Button>
+
+            <Button
+              variant="outline"
+              size="icon"
               title="Xóa cuộc trò chuyện này"
               onclick={() => (deleteHeaderDialogOpen = true)}
               class="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
@@ -746,6 +861,23 @@
           />
         {/if}
       </div>
+
+      <!-- In-Thread Search Bar & Pinned Banner -->
+      <InThreadSearchBar
+        bind:open={inThreadSearchOpen}
+        bind:searchQuery={inThreadQuery}
+        matchCount={inThreadMatches.length}
+        currentIndex={inThreadMatchIndex}
+        onNext={handleSearchNext}
+        onPrev={handleSearchPrev}
+        onClose={() => (inThreadSearchOpen = false)}
+      />
+
+      <PinnedMessageBanner
+        pinnedMessages={pinnedMessages}
+        onJumpToMessage={scrollToMatchedMessage}
+        onUnpin={handleUnpinMessage}
+      />
 
       <!-- Runtime status error notice if any -->
       {#if runtimeError}
@@ -784,12 +916,16 @@
         isGroup={selectedItem.kind === 'group'}
         {capabilitiesForMessage}
         pendingReactionsForMessage={(msgId) => mutationStateRef?.getPendingReactionCodes(msgId) ?? []}
+        {pinnedMessageIds}
         onReply={handleReply}
+
         onRecall={handleRecall}
         onForward={handleForward}
+        onPin={handlePinMessage}
         onToggleReaction={handleToggleReaction}
         onImageClick={handleImageClick}
       />
+
 
       <!-- Message Composer -->
       <MessageComposer

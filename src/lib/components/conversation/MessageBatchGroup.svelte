@@ -15,6 +15,7 @@
     onReply = () => {},
     onRecall = () => {},
     onForward = () => {},
+    onPin = () => {},
     onToggleReaction = () => {},
     onImageClick = () => {}
   }: {
@@ -25,7 +26,9 @@
     onReply?: (message: ConversationMessage) => void;
     onRecall?: (message: ConversationMessage) => void;
     onForward?: (message: ConversationMessage) => void;
+    onPin?: (message: ConversationMessage) => void;
     onToggleReaction?: (
+
       message: ConversationMessage,
       code: ConversationReactionCode,
       currentActive?: boolean
@@ -72,7 +75,9 @@
       {onReply}
       {onRecall}
       {onForward}
+      {onPin}
       {onToggleReaction}
+
       {onImageClick}
     />
     {#if message.status === 'failed' && message.errorMessage}

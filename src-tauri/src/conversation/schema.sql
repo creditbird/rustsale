@@ -297,3 +297,18 @@ CREATE TABLE IF NOT EXISTS message_forward_targets (
 
 CREATE INDEX IF NOT EXISTS idx_forward_targets_operation
 ON message_forward_targets(client_operation_id, status);
+
+CREATE TABLE IF NOT EXISTS conversation_pinned_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    pinned_by TEXT,
+    pinned_at TEXT NOT NULL,
+    UNIQUE(conversation_id, message_id),
+    FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_pinned_messages_conversation
+ON conversation_pinned_messages(conversation_id, pinned_at DESC);
+

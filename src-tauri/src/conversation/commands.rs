@@ -7,12 +7,14 @@ use super::types::{
     DeleteConversationRequest, ForwardConversationMessageRequest, ForwardConversationMessageResult,
     InboxItem, LinkIdentityRequest, ListConversationMentionCandidatesRequest,
     ListConversationQuickTemplatesRequest, MarkConversationQuickTemplateUsedRequest,
-    RelinkLeadRequest, RetryConversationForwardTargetRequest, SendConversationBatchRequest,
-    SendConversationBatchResult, SendConversationMessageRequest, SetConversationReactionRequest,
-    StageConversationClipboardImageRequest, StagedAttachmentResponse,
-    StartDirectConversationRequest, TimelineCursor, TimelinePage, UnlinkIdentityRequest,
-    UnlinkLeadRequest, UpdateConversationQuickTemplateRequest,
+    PinMessageRequest, PinnedMessage, RelinkLeadRequest, RetryConversationForwardTargetRequest,
+    SendConversationBatchRequest, SendConversationBatchResult, SendConversationMessageRequest,
+    SetConversationReactionRequest, StageConversationClipboardImageRequest,
+    StagedAttachmentResponse, StartDirectConversationRequest, TimelineCursor, TimelinePage,
+    UnlinkIdentityRequest, UnlinkLeadRequest, UnpinMessageRequest,
+    UpdateConversationQuickTemplateRequest,
 };
+
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
 
@@ -30,6 +32,18 @@ pub fn list_conversation_inbox(
         .list_inbox()
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub fn mark_conversation_read(
+    state: tauri::State<'_, ConversationState>,
+    key: String,
+) -> Result<u64, String> {
+    state
+        .service
+        .mark_conversation_read(&key)
+        .map_err(|error| error.to_string())
+}
+
 
 #[tauri::command]
 pub fn get_contact_timeline(
@@ -440,3 +454,38 @@ pub fn list_conversation_mention_candidates(
         )
         .map_err(|error| error.command_error())
 }
+
+#[tauri::command]
+pub fn pin_conversation_message(
+    state: tauri::State<'_, ConversationState>,
+    request: PinMessageRequest,
+) -> Result<PinnedMessage, String> {
+    state
+        .service
+        .pin_message(request.conversation_id, request.message_id, request.pinned_by.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn unpin_conversation_message(
+    state: tauri::State<'_, ConversationState>,
+    request: UnpinMessageRequest,
+) -> Result<(), String> {
+    state
+        .service
+        .unpin_message(request.conversation_id, request.message_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_conversation_pinned_messages(
+    state: tauri::State<'_, ConversationState>,
+    conversation_id: i64,
+) -> Result<Vec<PinnedMessage>, String> {
+    state
+        .service
+        .list_pinned_messages(conversation_id)
+        .map_err(|error| error.to_string())
+}
+
+

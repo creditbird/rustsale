@@ -13,7 +13,7 @@
   import { safeConversationUrl } from './messageMedia';
   import { reactionIconToCode } from './reactionDisplay';
   import * as Popover from '$lib/components/ui/popover';
-  import { Smile } from 'lucide-svelte';
+  import { Smile, Check, CheckCheck, Clock, AlertCircle, Pin } from 'lucide-svelte';
 
   let {
     message,
@@ -21,9 +21,11 @@
     showStatus = true,
     capabilities,
     pendingReactions = [],
+    isPinned = false,
     onReply = () => {},
     onRecall = () => {},
     onForward = () => {},
+    onPin = () => {},
     onToggleReaction = () => {},
     onImageClick = () => {}
   }: {
@@ -32,10 +34,14 @@
     showStatus?: boolean;
     capabilities?: ConversationCapabilities;
     pendingReactions?: ConversationReactionCode[];
+    isPinned?: boolean;
     onReply?: (message: ConversationMessage) => void;
     onRecall?: (message: ConversationMessage) => void;
     onForward?: (message: ConversationMessage) => void;
+    onPin?: (message: ConversationMessage) => void;
     onToggleReaction?: (
+
+
       message: ConversationMessage,
       code: ConversationReactionCode,
       currentActive?: boolean
@@ -73,7 +79,7 @@
       case 'read':
         return 'Đã xem';
       case 'failed':
-        return 'Thất bại';
+        return message.errorMessage ? `Thất bại: ${message.errorMessage}` : 'Thất bại';
       default:
         return status;
     }
@@ -265,6 +271,16 @@
           </Popover.Root>
         {/if}
 
+        <button
+          type="button"
+          aria-label={isPinned ? 'Bỏ ghim tin nhắn' : 'Ghim tin nhắn'}
+          title={isPinned ? 'Bỏ ghim tin nhắn' : 'Ghim tin nhắn'}
+          class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {isPinned ? 'opacity-100 text-amber-500 bg-amber-500/10' : 'opacity-0'}"
+          onclick={() => onPin(message)}
+        >
+          <Pin class="size-3.5 {isPinned ? 'fill-amber-500' : ''}" />
+        </button>
+
         <MessageActionsMenu
           bind:open={actionsOpen}
           {canReply}
@@ -272,12 +288,16 @@
           {canRecall}
           {canReact}
           {canForward}
+          {isPinned}
           onReply={() => onReply(message)}
           onCopy={() => void handleCopy()}
           onRecall={() => onRecall(message)}
           onForward={() => onForward(message)}
+          onPin={() => onPin(message)}
           onToggleReaction={(code) => onToggleReaction(message, code)}
         />
+
+
       </div>
     </div>
 
@@ -344,13 +364,26 @@
     {/if}
 
     <!-- Footer info: Timestamp & Status (for outbound) -->
-    <div class="flex items-center justify-end gap-1.5 text-[11px] opacity-70 mt-1 select-none">
+    <div class="flex items-center justify-end gap-1.5 text-[11px] opacity-75 mt-1 select-none">
       <span>{formatTimestamp(message.occurredAt)}</span>
       {#if showStatus && isOutbound && !isRemoved}
-        <span class="font-medium" data-slot="status-label">
-          · {getStatusLabel(message.status)}
+        <span class="inline-flex items-center gap-0.5 font-medium" data-slot="status-label" title={getStatusLabel(message.status)}>
+          {#if message.status === 'read'}
+            <CheckCheck class="size-3.5 text-sky-300 font-bold" />
+          {:else if message.status === 'delivered'}
+            <CheckCheck class="size-3.5 text-foreground/70" />
+          {:else if message.status === 'sent'}
+            <Check class="size-3.5 text-foreground/70" />
+          {:else if message.status === 'sending' || message.status === 'queued'}
+            <Clock class="size-3 text-foreground/60 animate-spin" />
+          {:else if message.status === 'failed'}
+            <AlertCircle class="size-3.5 text-destructive-foreground font-bold" />
+          {/if}
+          <span class="sr-only">{getStatusLabel(message.status)}</span>
         </span>
       {/if}
+
     </div>
+
   </div>
 </div>

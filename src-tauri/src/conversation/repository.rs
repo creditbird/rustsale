@@ -674,6 +674,28 @@ impl ConversationRepository {
             )?;
         }
 
+        if message.direction == MessageDirection::Inbound {
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'read'
+                 WHERE conversation_id = ?1
+                   AND direction = 'outbound'
+                   AND status IN ('sent', 'delivered')",
+                params![conversation_id],
+            )?;
+        } else if message.direction == MessageDirection::Outbound {
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'read'
+                 WHERE conversation_id = ?1
+                   AND direction = 'inbound'
+                   AND status != 'read'",
+                params![conversation_id],
+            )?;
+        }
+
+
+
         Self::save_message_mentions_tx(
             &tx,
             message_id,
@@ -836,7 +858,10 @@ impl ConversationRepository {
                 ));
 
             let mut badge_stmt = conn.prepare(
-                "SELECT ca.channel, COUNT(m.id)
+                "SELECT ca.channel, COUNT(m.id),
+                        SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
+                                      AND (m.ingested_at > COALESCE((SELECT MAX(m2.ingested_at) FROM messages m2 WHERE m2.conversation_id = cc.id AND m2.direction = 'outbound'), ''))
+                                 THEN 1 ELSE 0 END)
                  FROM channel_conversations cc
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                  JOIN conversation_participants cp ON cp.conversation_id = cc.id
@@ -845,17 +870,22 @@ impl ConversationRepository {
                  WHERE ci.lead_id = ?1 AND cc.kind IN ('direct', 'email_thread')
                  GROUP BY ca.channel",
             )?;
+
             let channels = badge_stmt
                 .query_map([lead_id], |row| {
                     let channel_str: String = row.get(0)?;
                     let channel = Channel::from_str(&channel_str).unwrap_or(Channel::Zalo);
                     let count: i64 = row.get(1)?;
+                    let unread: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
                     Ok(ChannelBadgeSummary {
                         channel,
                         message_count: count as u64,
+                        unread_count: unread as u64,
                     })
                 })?
                 .collect::<Result<Vec<_>>>()?;
+
+            let unread_count: u64 = channels.iter().map(|c| c.unread_count).sum();
 
             items.push(InboxItem {
                 key: format!("lead:{lead_id}"),
@@ -867,11 +897,13 @@ impl ConversationRepository {
                 avatar_url,
                 last_message_preview,
                 last_message_at,
+                unread_count,
                 channels,
                 reply_targets,
                 participant_count: 0,
                 participants: Vec::new(),
             });
+
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
@@ -1031,7 +1063,10 @@ impl ConversationRepository {
                 ));
 
             let mut badge_stmt = conn.prepare(
-                "SELECT ca.channel, COUNT(m.id)
+                "SELECT ca.channel, COUNT(m.id),
+                        SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
+                                      AND (m.ingested_at > COALESCE((SELECT MAX(m2.ingested_at) FROM messages m2 WHERE m2.conversation_id = cc.id AND m2.direction = 'outbound'), ''))
+                                 THEN 1 ELSE 0 END)
                  FROM channel_conversations cc
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                  JOIN conversation_participants cp ON cp.conversation_id = cc.id
@@ -1039,17 +1074,22 @@ impl ConversationRepository {
                  WHERE cp.identity_id = ?1 AND cc.kind IN ('direct', 'email_thread')
                  GROUP BY ca.channel",
             )?;
+
             let channels = badge_stmt
                 .query_map([identity_id], |row| {
                     let channel_str: String = row.get(0)?;
                     let channel = Channel::from_str(&channel_str).unwrap_or(Channel::Zalo);
                     let count: i64 = row.get(1)?;
+                    let unread: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
                     Ok(ChannelBadgeSummary {
                         channel,
                         message_count: count as u64,
+                        unread_count: unread as u64,
                     })
                 })?
                 .collect::<Result<Vec<_>>>()?;
+
+            let unread_count: u64 = channels.iter().map(|c| c.unread_count).sum();
 
             items.push(InboxItem {
                 key: format!("identity:{identity_id}"),
@@ -1061,11 +1101,13 @@ impl ConversationRepository {
                 avatar_url,
                 last_message_preview,
                 last_message_at,
+                unread_count,
                 channels,
                 reply_targets,
                 participant_count: 0,
                 participants: Vec::new(),
             });
+
         }
 
         // 3. Group rows: Group conversations (key: "conversation:{conversation_id}")
@@ -1147,16 +1189,22 @@ impl ConversationRepository {
                 .optional()?
                 .unwrap_or((None, last_msg_at.clone()));
 
-            let msg_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            let (msg_count, unread_cnt): (i64, i64) = conn.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN direction = 'inbound' AND status != 'read'
+                                                         AND (ingested_at > COALESCE((SELECT MAX(m2.ingested_at) FROM messages m2 WHERE m2.conversation_id = ?1 AND m2.direction = 'outbound'), ''))
+                                                    THEN 1 ELSE 0 END), 0)
+                 FROM messages WHERE conversation_id = ?1",
                 [conv_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
+
 
             let channels = vec![ChannelBadgeSummary {
                 channel,
                 message_count: msg_count as u64,
+                unread_count: unread_cnt as u64,
             }];
+
 
             let participant_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = ?1 AND left_at IS NULL",
@@ -1194,11 +1242,13 @@ impl ConversationRepository {
                 avatar_url,
                 last_message_preview,
                 last_message_at: msg_last_at.or(last_msg_at),
+                unread_count: unread_cnt as u64,
                 channels,
                 reply_targets: vec![reply_target],
                 participant_count: participant_count as u64,
                 participants,
             });
+
         }
 
         // Sort all aggregated rows by last_message_at DESC
@@ -1211,6 +1261,64 @@ impl ConversationRepository {
 
         Ok(items)
     }
+
+    pub fn mark_conversation_read(&self, key: &str) -> Result<u64> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+
+        let rows_affected = if let Some(lead_id_str) = key.strip_prefix("lead:") {
+            let lead_id: i64 = lead_id_str
+                .parse()
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'read'
+                 WHERE direction = 'inbound' AND status != 'read'
+                   AND conversation_id IN (
+                       SELECT cc.id
+                       FROM channel_conversations cc
+                       JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                       JOIN channel_identities ci ON ci.id = cp.identity_id
+                       WHERE ci.lead_id = ?1
+                   )",
+                params![lead_id],
+            )?
+        } else if let Some(identity_id_str) = key.strip_prefix("identity:") {
+            let identity_id: i64 = identity_id_str
+                .parse()
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'read'
+                 WHERE direction = 'inbound' AND status != 'read'
+                   AND conversation_id IN (
+                       SELECT cc.id
+                       FROM channel_conversations cc
+                       JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                       WHERE cp.identity_id = ?1
+                   )",
+                params![identity_id],
+            )?
+        } else if let Some(conv_id_str) = key.strip_prefix("conversation:") {
+            let conv_id: i64 = conv_id_str
+                .parse()
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'read'
+                 WHERE conversation_id = ?1 AND direction = 'inbound' AND status != 'read'",
+                params![conv_id],
+            )?
+        } else {
+            0
+        };
+
+        tx.commit()?;
+        Ok(rows_affected as u64)
+    }
+
+
+
 
     pub fn link_identity(&self, identity_id: i64, lead_id: i64) -> Result<i64> {
         let mut conn = open_db_connection(&self.db_path)?;
@@ -3973,6 +4081,90 @@ impl ConversationRepository {
 
         Ok(candidates)
     }
+
+    pub fn pin_message(
+        &self,
+        conversation_id: i64,
+        message_id: i64,
+        pinned_by: Option<&str>,
+    ) -> Result<crate::conversation::types::PinnedMessage> {
+        let conn = open_db_connection(&self.db_path)?;
+        let now = crate::conversation::types::utc_now();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO conversation_pinned_messages (conversation_id, message_id, pinned_by, pinned_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![conversation_id, message_id, pinned_by, now],
+        )?;
+
+        let id = conn.last_insert_rowid();
+
+        let (text_content, sender_name): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT m.text_content, ci.display_name
+                 FROM messages m
+                 LEFT JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                 WHERE m.id = ?1",
+                rusqlite::params![message_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap_or((None, None));
+
+        Ok(crate::conversation::types::PinnedMessage {
+            id,
+            conversation_id,
+            message_id,
+            pinned_by: pinned_by.map(String::from),
+            pinned_at: now,
+            message_text: text_content,
+            sender_name,
+        })
+    }
+
+    pub fn unpin_message(&self, conversation_id: i64, message_id: i64) -> Result<()> {
+        let conn = open_db_connection(&self.db_path)?;
+        conn.execute(
+            "DELETE FROM conversation_pinned_messages WHERE conversation_id = ?1 AND message_id = ?2",
+            rusqlite::params![conversation_id, message_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_pinned_messages(
+        &self,
+        conversation_id: i64,
+    ) -> Result<Vec<crate::conversation::types::PinnedMessage>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT cpm.id, cpm.conversation_id, cpm.message_id, cpm.pinned_by, cpm.pinned_at,
+                    m.text_content, ci.display_name
+             FROM conversation_pinned_messages cpm
+             JOIN messages m ON cpm.message_id = m.id
+             LEFT JOIN channel_identities ci ON m.sender_identity_id = ci.id
+             WHERE cpm.conversation_id = ?1
+             ORDER BY cpm.pinned_at DESC",
+        )?;
+
+        let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+            Ok(crate::conversation::types::PinnedMessage {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                message_id: row.get(2)?,
+                pinned_by: row.get(3)?,
+                pinned_at: row.get(4)?,
+                message_text: row.get(5)?,
+                sender_name: row.get(6)?,
+            })
+        })?;
+
+        let mut pinned = Vec::new();
+        for r in rows {
+            pinned.push(r?);
+        }
+        Ok(pinned)
+    }
+
+
 }
 
 fn resolve_message_id(

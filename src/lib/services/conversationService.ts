@@ -29,9 +29,11 @@ export interface TimelineCursor {
 export interface ChannelBadgeSummary {
   channel: Channel;
   messageCount: number;
+  unreadCount?: number;
 }
 
 export interface InboxReplyTarget {
+
   conversationId: number;
   channelAccountId: number;
   channel: Channel;
@@ -107,13 +109,20 @@ export interface UpdateConversationQuickTemplateRequest {
   isActive: boolean;
 }
 
-export interface DeleteConversationQuickTemplateRequest {
+export interface PinnedMessage {
   id: number;
+  conversationId: number;
+  messageId: number;
+  pinnedBy: string | null;
+  pinnedAt: string;
+  messageText: string | null;
+  senderName: string | null;
 }
 
 export interface MarkConversationQuickTemplateUsedRequest {
   id: number;
 }
+
 
 export interface SetConversationReactionRequest {
   messageId: number;
@@ -227,11 +236,13 @@ export interface InboxItem {
   avatarUrl: string | null;
   lastMessagePreview: string | null;
   lastMessageAt: string | null;
+  unreadCount?: number;
   channels: ChannelBadgeSummary[];
   replyTargets: InboxReplyTarget[];
   participantCount: number;
   participants: ConversationParticipantSummary[];
 }
+
 
 export interface ConversationAttachment {
   id: number;
@@ -390,6 +401,10 @@ export interface ConversationInvalidatedEvent {
 export const listConversationInbox = () =>
   invoke<InboxItem[]>('list_conversation_inbox');
 
+export const markConversationRead = (key: string) =>
+  invoke<number>('mark_conversation_read', { key });
+
+
 export const getContactTimeline = (
   leadId: number,
   activeChannels: Channel[],
@@ -455,6 +470,28 @@ export const stageConversationAttachmentPaths = (conversationId: number, paths: 
 export const stageConversationClipboardImage = (request: StageClipboardImageRequest) =>
   invoke<StagedConversationAttachment>('stage_conversation_clipboard_image', { request });
 
+export async function stageConversationAudioBlob(
+  conversationId: number,
+  file: File | Blob,
+  fileName = 'voice_recording.webm'
+): Promise<StagedConversationAttachment> {
+  const arrayBuffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64Data = btoa(binary);
+  const mimeType = file.type || 'audio/webm';
+  return await stageConversationClipboardImage({
+    conversationId,
+    fileName,
+    mimeType,
+    base64Data
+  });
+}
+
+
 export const discardConversationStagedAttachment = (stagedAttachmentId: string) =>
   invoke<void>('discard_conversation_staged_attachment', { stagedAttachmentId });
 
@@ -498,6 +535,16 @@ export const markConversationQuickTemplateUsed = (id: number) =>
 
 export const listConversationMentionCandidates = (request: ListConversationMentionCandidatesRequest) =>
   invoke<ConversationMentionCandidate[]>('list_conversation_mention_candidates', { request });
+
+export const pinConversationMessage = (conversationId: number, messageId: number, pinnedBy?: string) =>
+  invoke<PinnedMessage>('pin_conversation_message', { request: { conversationId, messageId, pinnedBy: pinnedBy ?? null } });
+
+export const unpinConversationMessage = (conversationId: number, messageId: number) =>
+  invoke<void>('unpin_conversation_message', { request: { conversationId, messageId } });
+
+export const listConversationPinnedMessages = (conversationId: number) =>
+  invoke<PinnedMessage[]>('list_conversation_pinned_messages', { conversationId });
+
 
 // Ref-counted Event Bridge Logic
 type InvalidationListener = (event: ConversationInvalidatedEvent) => void;

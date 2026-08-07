@@ -221,6 +221,7 @@ pub fn run() {
             commands::delete_email_template,
             commands::send_email_outreach,
             conversation::commands::list_conversation_inbox,
+            conversation::commands::mark_conversation_read,
             conversation::commands::get_contact_timeline,
             conversation::commands::get_conversation_timeline,
             conversation::commands::get_identity_timeline,
@@ -248,8 +249,12 @@ pub fn run() {
             conversation::commands::forward_conversation_message,
             conversation::commands::get_conversation_forward_operation,
             conversation::commands::retry_conversation_forward_target,
-            conversation::commands::list_conversation_mention_candidates
+            conversation::commands::list_conversation_mention_candidates,
+            conversation::commands::pin_conversation_message,
+            conversation::commands::unpin_conversation_message,
+            conversation::commands::list_conversation_pinned_messages
         ])
+
 
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

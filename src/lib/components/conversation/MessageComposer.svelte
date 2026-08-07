@@ -7,6 +7,7 @@
     restartConversationAccount,
     sendConversationBatch,
     stageConversationAttachmentPaths,
+    stageConversationAudioBlob,
     stageConversationClipboardImage,
     type ConversationAccountRuntime,
     type ConversationCapabilities,
@@ -108,6 +109,8 @@
     onRuntimeRefresh?: () => void | Promise<void>;
   } = $props();
 
+  import VoiceRecorderBar from './VoiceRecorderBar.svelte';
+
   const draftCache = new ComposerDraftCache();
   let text = $state('');
   let attachments = $state<ComposerAttachmentItem[]>([]);
@@ -119,7 +122,9 @@
   let reconnecting = $state(false);
   let recoveryError = $state<string | null>(null);
   let isDragActive = $state(false);
+  let isVoiceRecording = $state(false);
   let textareaElement = $state<HTMLTextAreaElement | null>(null);
+
 
   let quickTemplates = $state<ConversationQuickTemplate[]>([]);
   let showQuickTemplatePopover = $state(false);
@@ -482,7 +487,25 @@
     }
   }
 
+  function handleVoiceRecordingComplete(file: File): void {
+    isVoiceRecording = false;
+    const localId = newClientId('voice-attachment');
+    const placeholder: ComposerAttachmentItem = {
+      localId,
+      stagedAttachmentId: localId,
+      fileName: file.name,
+      mimeType: file.type || 'audio/webm',
+      sizeBytes: file.size,
+      attachmentType: 'audio',
+      previewDataUrl: null,
+      status: 'ready',
+      errorMessage: null
+    };
+    updateAttachments([...attachments, placeholder]);
+  }
+
   async function handlePickAttachment(): Promise<void> {
+
     try {
       const paths = await openFilePicker({ multiple: true });
       await stagePaths(paths);
@@ -958,9 +981,60 @@
         onToggleSticker={() => (activePopover = activePopover === 'sticker' ? null : 'sticker')}
         onPickAttachment={handlePickAttachment}
         onToggleQuickTemplates={() => (showQuickTemplateManager = true)}
+        onToggleVoiceRecord={() => (isVoiceRecording = !isVoiceRecording)}
       />
     </div>
   </div>
+
+  {#if isVoiceRecording}
+    <div class="p-2 border rounded-md bg-muted/40 my-1 animate-in fade-in duration-150">
+      <VoiceRecorderBar
+        onRecordingComplete={async (file: File) => {
+          isVoiceRecording = false;
+          const localId = newClientId('voice-attachment');
+          const placeholder: ComposerAttachmentItem = {
+            localId,
+            stagedAttachmentId: null,
+            fileName: file.name || 'voice_recording.webm',
+            mimeType: file.type || 'audio/webm',
+            sizeBytes: file.size,
+            attachmentType: 'audio',
+            previewDataUrl: URL.createObjectURL(file),
+            status: 'staging',
+            errorMessage: null
+          };
+          updateAttachments([...attachments, placeholder]);
+          if (!targetConversationId) {
+            updateAttachments(
+              attachments.map((item) =>
+                item.localId === localId
+                  ? { ...item, status: 'error', errorMessage: 'Chưa chọn cuộc hội thoại' }
+                  : item
+              )
+            );
+            return;
+          }
+          try {
+            const staged = await stageConversationAudioBlob(targetConversationId, file, placeholder.fileName);
+            await applyStagedResults([placeholder], [staged], placeholder.previewDataUrl);
+          } catch (error) {
+            const message = formatError(error);
+            updateAttachments(
+              attachments.map((item) =>
+                item.localId === localId
+                  ? { ...item, status: 'error', errorMessage: message }
+                  : item
+              )
+            );
+            sendError = message;
+          }
+        }}
+        onCancel={() => (isVoiceRecording = false)}
+      />
+    </div>
+  {/if}
+
+
 
   {#if statusReason}
     <div class="flex flex-wrap items-center justify-between gap-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive" role="alert">

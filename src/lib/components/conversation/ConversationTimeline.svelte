@@ -21,9 +21,11 @@
     isGroup = false,
     capabilitiesForMessage = () => undefined,
     pendingReactionsForMessage = () => [],
+    pinnedMessageIds = new Set<number>(),
     onReply = () => {},
     onRecall = () => {},
     onForward = () => {},
+    onPin = () => {},
     onToggleReaction = () => {},
     onImageClick = () => {}
   }: {
@@ -36,10 +38,14 @@
     isGroup?: boolean;
     capabilitiesForMessage?: (message: ConversationMessage) => ConversationCapabilities | undefined;
     pendingReactionsForMessage?: (messageId: number) => ConversationReactionCode[];
+    pinnedMessageIds?: Set<number>;
     onReply?: (message: ConversationMessage) => void;
+
     onRecall?: (message: ConversationMessage) => void;
     onForward?: (message: ConversationMessage) => void;
+    onPin?: (message: ConversationMessage) => void;
     onToggleReaction?: (
+
       message: ConversationMessage,
       code: ConversationReactionCode,
       currentActive?: boolean
@@ -273,6 +279,7 @@
           {onReply}
           {onRecall}
           {onForward}
+          {onPin}
           {onToggleReaction}
           {onImageClick}
         />
@@ -282,12 +289,16 @@
           {isGroup}
           capabilities={capabilitiesForMessage(renderItem.message)}
           pendingReactions={pendingReactionsForMessage(renderItem.message.id)}
+          isPinned={pinnedMessageIds.has(renderItem.message.id)}
           {onReply}
           {onRecall}
           {onForward}
+          {onPin}
           {onToggleReaction}
           {onImageClick}
         />
+
+
       {/if}
     {/each}
     <!-- Bottom margin spacer for easy viewing & interaction above composer -->

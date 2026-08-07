@@ -130,6 +130,24 @@ fn duplicate_provider_message_is_idempotent() {
 }
 
 #[test]
+fn test_mark_conversation_read_resets_unread_count() {
+    let harness = Harness::new();
+    let msg = direct_message("imei-a", "msg-unread-1");
+    let _applied = harness.repository.apply_normalized_message(&msg).unwrap();
+
+    let inbox_before = harness.repository.list_inbox().unwrap();
+    assert!(!inbox_before.is_empty());
+    let item_key = &inbox_before[0].key;
+
+    let updated_rows = harness.repository.mark_conversation_read(item_key).unwrap();
+    assert!(updated_rows > 0);
+
+    let inbox_after = harness.repository.list_inbox().unwrap();
+    assert_eq!(inbox_after[0].unread_count, 0);
+}
+
+
+#[test]
 fn normalized_attachment_persists_created_at_and_duplicate_is_idempotent() {
     let harness = Harness::new();
     let mut message = direct_message("imei-a", "message-with-attachment");
@@ -2467,3 +2485,28 @@ fn forward_conversation_message_enqueues_batch() {
     assert_eq!(latest.status, ForwardOperationStatus::Sent);
     assert_eq!(latest.targets[0].status, ForwardTargetStatus::Sent);
 }
+
+#[test]
+fn test_pin_unpin_and_list_pinned_messages() {
+    let harness = Harness::new();
+    let msg = direct_message("acc-1", "msg-pin-1");
+    let result = harness.repository.apply_normalized_message(&msg).unwrap();
+    let conv_id = result.conversation_id;
+    let msg_id = result.message_id;
+
+    let pinned = harness.repository.pin_message(conv_id, msg_id, Some("user_1")).unwrap();
+    assert_eq!(pinned.conversation_id, conv_id);
+    assert_eq!(pinned.message_id, msg_id);
+    assert_eq!(pinned.pinned_by.as_deref(), Some("user_1"));
+    assert_eq!(pinned.message_text.as_deref(), Some("hello"));
+
+    let list = harness.repository.list_pinned_messages(conv_id).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].message_id, msg_id);
+
+    harness.repository.unpin_message(conv_id, msg_id).unwrap();
+    let empty_list = harness.repository.list_pinned_messages(conv_id).unwrap();
+    assert!(empty_list.is_empty());
+}
+
+

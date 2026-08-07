@@ -142,7 +142,10 @@ pub struct TimelineCursor {
 pub struct ChannelBadgeSummary {
     pub channel: Channel,
     pub message_count: u64,
+    #[serde(default)]
+    pub unread_count: u64,
 }
+
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -263,7 +266,10 @@ pub struct InboxItem {
     pub avatar_url: Option<String>,
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<String>,
+    #[serde(default)]
+    pub unread_count: u64,
     pub channels: Vec<ChannelBadgeSummary>,
+
     pub reply_targets: Vec<InboxReplyTarget>,
     pub participant_count: u64,
     pub participants: Vec<ConversationParticipantSummary>,
@@ -503,6 +509,34 @@ pub struct ConversationForwardCapabilities {
     #[serde(rename = "maxTargets", alias = "maxTargetsPerForward")]
     pub max_targets_per_forward: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedMessage {
+    pub id: i64,
+    pub conversation_id: i64,
+    pub message_id: i64,
+    pub pinned_by: Option<String>,
+    pub pinned_at: String,
+    pub message_text: Option<String>,
+    pub sender_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinMessageRequest {
+    pub conversation_id: i64,
+    pub message_id: i64,
+    pub pinned_by: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnpinMessageRequest {
+    pub conversation_id: i64,
+    pub message_id: i64,
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

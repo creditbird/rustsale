@@ -4,7 +4,7 @@
   import * as Popover from '$lib/components/ui/popover';
   import EmojiPicker from './EmojiPicker.svelte';
   import ZaloStickerPicker from './ZaloStickerPicker.svelte';
-  import { Paperclip, Smile, Tag, Zap } from 'lucide-svelte';
+  import { Mic, Paperclip, Smile, Tag, Zap } from 'lucide-svelte';
 
   let {
     capabilities,
@@ -16,7 +16,8 @@
     onToggleEmoji = () => {},
     onToggleSticker = () => {},
     onPickAttachment = () => {},
-    onToggleQuickTemplates = () => {}
+    onToggleQuickTemplates = () => {},
+    onToggleVoiceRecord = () => {}
   }: {
     capabilities: ConversationCapabilities;
     targetConversationId?: number | null;
@@ -28,7 +29,9 @@
     onToggleSticker?: () => void;
     onPickAttachment?: () => void;
     onToggleQuickTemplates?: () => void;
+    onToggleVoiceRecord?: () => void;
   } = $props();
+
 
   let emojiOpen = $derived(activePopover === 'emoji');
   let stickerOpen = $derived(activePopover === 'sticker');
@@ -112,7 +115,23 @@
     </Button>
   {/if}
 
+  {#if capabilities.maxAttachmentsPerBatch > 0}
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      class="size-8 text-muted-foreground hover:text-foreground"
+      {disabled}
+      aria-label="Ghi âm tin nhắn"
+      onclick={onToggleVoiceRecord}
+      data-testid="voice-record-btn"
+    >
+      <Mic class="size-4 text-destructive/80 hover:text-destructive" />
+    </Button>
+  {/if}
+
   {#if capabilities.quickTemplates?.enabled}
+
     <Button
       type="button"
       variant="ghost"

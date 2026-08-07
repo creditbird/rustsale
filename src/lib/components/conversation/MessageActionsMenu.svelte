@@ -19,10 +19,12 @@
     canRecall,
     canReact = false,
     canForward = false,
+    isPinned = false,
     onReply,
     onCopy,
     onRecall,
     onForward = () => {},
+    onPin = () => {},
     onToggleReaction = () => {}
   }: {
     open?: boolean;
@@ -31,12 +33,15 @@
     canRecall: boolean;
     canReact?: boolean;
     canForward?: boolean;
+    isPinned?: boolean;
     onReply: () => void;
     onCopy: () => void;
     onRecall: () => void;
     onForward?: () => void;
+    onPin?: () => void;
     onToggleReaction?: (code: ConversationReactionCode) => void;
   } = $props();
+
 
   let contentElement = $state<HTMLElement | null>(null);
 
@@ -75,12 +80,15 @@
   let actions = $derived([
     ...(canReply ? [{ label: 'Trả lời', action: onReply, destructive: false }] : []),
     ...(canCopy ? [{ label: 'Sao chép', action: onCopy, destructive: false }] : []),
+    { label: isPinned ? 'Bỏ ghim' : 'Ghim tin nhắn', action: onPin, destructive: false },
     ...(canForward ? [{ label: 'Chuyển tiếp', action: onForward, destructive: false }] : []),
     ...(canRecall ? [{ label: 'Thu hồi', action: onRecall, destructive: true }] : [])
   ]);
+
 </script>
 
-{#if canReply || canCopy || canRecall || canReact || canForward}
+{#if canReply || canCopy || canRecall || canReact || canForward || Boolean(onPin)}
+
   <div class="relative" use:dismissOnOutside>
     <DropdownMenu.Root bind:open>
       <DropdownMenu.Trigger
