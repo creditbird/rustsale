@@ -2736,6 +2736,19 @@ pub fn get_categories(state: tauri::State<'_, DbState>) -> Result<Vec<Category>,
     crate::db::get_categories(&conn).map_err(|e| format!("Database error: {}", e))
 }
 
+/// Retrieves categories associated with a specific lead.
+#[tauri::command]
+pub fn get_categories_for_lead(
+    state: tauri::State<'_, DbState>,
+    lead_id: i32,
+) -> Result<Vec<Category>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_categories_for_lead(&conn, lead_id).map_err(|e| format!("Database error: {}", e))
+}
+
 /// Creates a new category in the database.
 ///
 /// Returns an error if the category name is empty or contains only whitespace.

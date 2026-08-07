@@ -24,7 +24,8 @@
     onReply = () => {},
     onRecall = () => {},
     onForward = () => {},
-    onToggleReaction = () => {}
+    onToggleReaction = () => {},
+    onImageClick = () => {}
   }: {
     items: ConversationMessage[];
     loading?: boolean;
@@ -43,6 +44,7 @@
       code: ConversationReactionCode,
       currentActive?: boolean
     ) => void;
+    onImageClick?: (url: string, message: ConversationMessage) => void;
   } = $props();
 
   let containerEl: HTMLElement | null = $state(null);
@@ -272,6 +274,7 @@
           {onRecall}
           {onForward}
           {onToggleReaction}
+          {onImageClick}
         />
       {:else}
         <MessageBubble
@@ -283,6 +286,7 @@
           {onRecall}
           {onForward}
           {onToggleReaction}
+          {onImageClick}
         />
       {/if}
     {/each}

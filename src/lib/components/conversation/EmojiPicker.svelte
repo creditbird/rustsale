@@ -7,7 +7,7 @@
   let { onSelect = () => {} }: { onSelect?: (emoji: string) => void } = $props();
   let activeTab = $state('smileys');
 
-  const CATEGORY_ICONS: Record<string, Component> = {
+  const CATEGORY_ICONS: Record<string, any> = {
     smileys: Smile,
     gestures: ThumbsUp,
     hearts: Heart,

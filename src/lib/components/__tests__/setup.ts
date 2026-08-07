@@ -79,6 +79,11 @@ Object.getOwnPropertyNames(dom.window).forEach((key) => {
   globalThis[key] = dom.window[key];
 });
 
+// Mock __TAURI_INTERNALS__ for unit test environment
+(globalThis.window as any).__TAURI_INTERNALS__ = {
+  invoke: async (_cmd: string, _args: any) => []
+};
+
 // Polyfill svelte module for Bun test runner to use client implementation
 import { mock } from "bun:test";
 // @ts-ignore

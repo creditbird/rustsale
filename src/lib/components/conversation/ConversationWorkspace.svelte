@@ -39,10 +39,11 @@
   import ForwardConversationDialog from './ForwardConversationDialog.svelte';
   import MessageReactionMutationState from './MessageReactionMutationState.svelte';
   import type { ConversationReplySelection } from './composerDraftState';
-  import { attachmentLabel } from './messageMedia';
+  import { attachmentLabel, safeConversationUrl, extractGalleryImages } from './messageMedia';
   import { Button } from '$lib/components/ui/button';
   import { AlertCircle, RefreshCw, Users, MessageSquare, Trash2 } from 'lucide-svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
+  import ImageGalleryModal, { type GalleryImage } from './ImageGalleryModal.svelte';
 
   let {
     activeTab = 'conversation',
@@ -53,6 +54,25 @@
     onOpenSettings?: () => void;
     runtimeRefreshIntervalMs?: number;
   } = $props();
+
+  let galleryOpen = $state(false);
+  let galleryImages = $state<GalleryImage[]>([]);
+  let galleryIndex = $state(0);
+
+  function handleImageClick(clickedUrl: string, _clickedMessage: ConversationMessage) {
+    const items = currentVariant?.items ?? [];
+    const images = extractGalleryImages(items);
+
+    const safeClicked = safeConversationUrl(clickedUrl) ?? clickedUrl;
+    if (images.length === 0 && safeClicked) {
+      images.push({ url: safeClicked, alt: 'Hình ảnh' });
+    }
+
+    galleryImages = images;
+    const foundIdx = images.findIndex((img) => img.url === safeClicked || img.url === clickedUrl);
+    galleryIndex = foundIdx >= 0 ? foundIdx : 0;
+    galleryOpen = true;
+  }
 
   let inbox = $state<InboxItem[]>([]);
   let inboxLoading = $state(false);
@@ -768,6 +788,7 @@
         onRecall={handleRecall}
         onForward={handleForward}
         onToggleReaction={handleToggleReaction}
+        onImageClick={handleImageClick}
       />
 
       <!-- Message Composer -->
@@ -816,5 +837,12 @@
     maxTargets={forwardCandidate
       ? capabilitiesForMessage(forwardCandidate)?.forward.maxTargets ?? 10
       : 10}
+  />
+  <ImageGalleryModal
+    open={galleryOpen}
+    images={galleryImages}
+    initialIndex={galleryIndex}
+    onClose={() => (galleryOpen = false)}
+    onIndexChange={(idx) => (galleryIndex = idx)}
   />
 </div>

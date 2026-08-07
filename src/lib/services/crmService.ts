@@ -329,6 +329,10 @@ export async function getCategories(): Promise<Category[]> {
   return invoke<Category[]>('get_categories');
 }
 
+export async function getCategoriesForLead(leadId: number): Promise<Category[]> {
+  return invoke<Category[]>('get_categories_for_lead', { leadId });
+}
+
 export async function createCategory(name: string): Promise<number> {
   const result = await invoke<number>('create_category', { name });
   notifyLeadsChanged();

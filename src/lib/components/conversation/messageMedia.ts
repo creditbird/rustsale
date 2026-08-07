@@ -59,3 +59,67 @@ export function formatMediaDuration(seconds: number | null | undefined): string 
   const ss = String(secs).padStart(2, '0');
   return `${mm}:${ss}`;
 }
+
+export function extractLegacyImageUrl(content: Record<string, unknown> | null | undefined): string | null {
+  if (!content) return null;
+  const url =
+    typeof content.url === 'string'
+      ? content.url
+      : typeof content.src === 'string'
+        ? content.src
+        : typeof content.href === 'string'
+          ? content.href
+          : typeof content.path === 'string'
+            ? content.path
+            : null;
+  return safeConversationUrl(url);
+}
+
+export interface ExtractedGalleryImage {
+  url: string;
+  alt?: string;
+  caption?: string;
+  timestamp?: string;
+}
+
+export function extractGalleryImages(messages: Array<{
+  attachments?: Array<{ mediaType: string; remoteUrl?: string | null; fileName?: string | null }>;
+  contentType?: string;
+  content?: Record<string, unknown> | null;
+  textContent?: string | null;
+  occurredAt?: string;
+}>): ExtractedGalleryImage[] {
+  const images: ExtractedGalleryImage[] = [];
+
+  for (const msg of messages) {
+    if (msg.attachments && msg.attachments.length > 0) {
+      for (const att of msg.attachments) {
+        if (att.mediaType === 'image') {
+          const safeUrl = safeConversationUrl(att.remoteUrl);
+          if (safeUrl) {
+            images.push({
+              url: safeUrl,
+              alt: att.fileName ?? 'Hình ảnh',
+              caption: msg.textContent || att.fileName || 'Hình ảnh',
+              timestamp: msg.occurredAt
+            });
+          }
+        }
+      }
+    }
+
+    if (msg.contentType === 'image' || (msg.contentType && msg.contentType.startsWith('image/'))) {
+      const legacyUrl = extractLegacyImageUrl(msg.content);
+      if (legacyUrl && !images.some((img) => img.url === legacyUrl)) {
+        images.push({
+          url: legacyUrl,
+          alt: msg.textContent || 'Hình ảnh',
+          caption: msg.textContent || 'Hình ảnh',
+          timestamp: msg.occurredAt
+        });
+      }
+    }
+  }
+
+  return images;
+}

@@ -366,6 +366,16 @@ mock.module('$lib/services/conversationService', () => ({
   linkConversationIdentity: mock(async () => {})
 }));
 
+mock.module('$lib/services/crmService', () => ({
+  getLeads: mock(async () => []),
+  getCategories: mock(async () => []),
+  getCategoriesForLead: mock(async () => []),
+  addLeadsToCategory: mock(async () => {}),
+  removeLeadsFromCategory: mock(async () => {}),
+  createCategory: mock(async () => 1),
+  onLeadsChanged: mock((_listener: any) => () => {})
+}));
+
 describe('ConversationWorkspace Component', () => {
   afterEach(() => {
     cleanup();
@@ -874,5 +884,64 @@ describe('ConversationWorkspace Component', () => {
     expect(await screen.findByTestId('forward-conversation-dialog')).toBeTruthy();
     expect(screen.getByText('Chuyển tiếp tin nhắn')).toBeTruthy();
     expect(screen.getAllByText('Chào shop').length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('17. Clicking an image message opens the ImageGalleryModal with image preview', async () => {
+    mockGetContactTimeline.mockImplementation(() => Promise.resolve({
+      items: [
+        {
+          id: 101,
+          conversationId: 10,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          senderIdentityId: 100,
+          senderDisplayName: 'Nguyễn Văn A',
+          direction: 'inbound',
+          contentType: 'image',
+          textContent: 'Ảnh sản phẩm',
+          content: { url: 'https://cdn.example.com/photo1.png' },
+          occurredAt: '2026-07-31T10:00:00Z',
+          status: 'received',
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [
+            {
+              id: 1,
+              mediaType: 'image',
+              fileName: 'photo1.png',
+              remoteUrl: 'https://cdn.example.com/photo1.png',
+              fileSizeBytes: 1000,
+              sizeBytes: 1000,
+              thumbnailUrl: null,
+              width: null,
+              height: null,
+              mimeType: 'image/png',
+              durationSeconds: null
+            }
+          ],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: null,
+          sendBatch: null,
+          actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+        }
+      ],
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const imageContent = screen.getByTestId('image-message-content');
+    expect(imageContent).toBeTruthy();
+
+    await fireEvent.click(imageContent);
+    await tick();
+
+    expect(screen.getByTestId('image-gallery-modal')).toBeTruthy();
+    expect(screen.getByTestId('gallery-main-image').getAttribute('src')).toBe('https://cdn.example.com/photo1.png');
   });
 });

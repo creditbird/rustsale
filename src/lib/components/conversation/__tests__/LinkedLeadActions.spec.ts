@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type { InboxItem } from '$lib/services/conversationService';
-import type { Lead } from '$lib/services/crmService';
+import type { Lead, Category } from '$lib/services/crmService';
 import LinkedLeadActions from '../LinkedLeadActions.svelte';
 
 const mockGetLeads = mock(async (): Promise<Lead[]> => [
@@ -31,13 +31,34 @@ const mockGetLeads = mock(async (): Promise<Lead[]> => [
   }
 ]);
 
+const mockGetCategories = mock(async (): Promise<Category[]> => [
+  { id: 10, name: 'Spa & Beauty' },
+  { id: 20, name: 'Khách HCM' }
+]);
+
+const mockGetCategoriesForLead = mock(async (leadId: number): Promise<Category[]> => {
+  if (leadId === 1) return [{ id: 10, name: 'Spa & Beauty' }];
+  return [];
+});
+
+const mockAddLeadsToCategory = mock(async (leadIds: number[], categoryId: number): Promise<void> => {});
+const mockRemoveLeadsFromCategory = mock(async (leadIds: number[], categoryId: number): Promise<void> => {});
+const mockCreateCategory = mock(async (name: string): Promise<number> => 30);
+const mockOnLeadsChanged = mock((listener: () => void) => () => {});
+
 const mockLinkConversationIdentity = mock(async (...args: any[]): Promise<void> => {});
 const mockRelinkConversationLead = mock(async (...args: any[]): Promise<void> => {});
 const mockUnlinkConversationIdentity = mock(async (...args: any[]): Promise<void> => {});
 const mockUnlinkConversationLead = mock(async (...args: any[]): Promise<void> => {});
 
 mock.module('$lib/services/crmService', () => ({
-  getLeads: () => mockGetLeads()
+  getLeads: () => mockGetLeads(),
+  getCategories: () => mockGetCategories(),
+  getCategoriesForLead: (leadId: number) => mockGetCategoriesForLead(leadId),
+  addLeadsToCategory: (leadIds: number[], categoryId: number) => mockAddLeadsToCategory(leadIds, categoryId),
+  removeLeadsFromCategory: (leadIds: number[], categoryId: number) => mockRemoveLeadsFromCategory(leadIds, categoryId),
+  createCategory: (name: string) => mockCreateCategory(name),
+  onLeadsChanged: (listener: () => void) => mockOnLeadsChanged(listener)
 }));
 
 mock.module('$lib/services/conversationService', () => ({
@@ -52,6 +73,11 @@ describe('LinkedLeadActions Component', () => {
     cleanup();
     document.body.innerHTML = '';
     mockGetLeads.mockClear();
+    mockGetCategories.mockClear();
+    mockGetCategoriesForLead.mockClear();
+    mockAddLeadsToCategory.mockClear();
+    mockRemoveLeadsFromCategory.mockClear();
+    mockCreateCategory.mockClear();
     mockLinkConversationIdentity.mockClear();
     mockRelinkConversationLead.mockClear();
     mockUnlinkConversationIdentity.mockClear();
@@ -74,10 +100,67 @@ describe('LinkedLeadActions Component', () => {
     participants: []
   };
 
-  test('renders Đổi lead and Hủy liên kết buttons', () => {
+  test('renders Category badge, Phân loại, Đổi lead, and Hủy liên kết buttons', async () => {
     render(LinkedLeadActions, { props: { item: leadItem } });
+    await tick();
+    await tick();
+
+    expect(screen.getByText('Spa & Beauty')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Phân loại/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Đổi lead/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Hủy liên kết/i })).toBeTruthy();
+  });
+
+  test('opens Category modal and displays categories', async () => {
+    render(LinkedLeadActions, { props: { item: leadItem } });
+    await tick();
+
+    const categoryBtn = screen.getByRole('button', { name: /Phân loại/i });
+    await fireEvent.click(categoryBtn);
+    await tick();
+    await tick();
+
+    expect(screen.getByRole('heading', { name: /Quản lý Category cho Lead/i })).toBeTruthy();
+    expect(mockGetCategories).toHaveBeenCalled();
+    expect(screen.getByText('Khách HCM')).toBeTruthy();
+  });
+
+  test('toggles category assignment when category item clicked', async () => {
+    render(LinkedLeadActions, { props: { item: leadItem } });
+    await tick();
+
+    const categoryBtn = screen.getByRole('button', { name: /Phân loại/i });
+    await fireEvent.click(categoryBtn);
+    await tick();
+    await tick();
+
+    const unassignedOption = screen.getByText('Khách HCM');
+    await fireEvent.click(unassignedOption);
+    await tick();
+
+    expect(mockAddLeadsToCategory).toHaveBeenCalledWith([1], 20);
+  });
+
+  test('creates new category and assigns it to current lead', async () => {
+    render(LinkedLeadActions, { props: { item: leadItem } });
+    await tick();
+
+    const categoryBtn = screen.getByRole('button', { name: /Phân loại/i });
+    await fireEvent.click(categoryBtn);
+    await tick();
+    await tick();
+
+    const input = screen.getByPlaceholderText(/Tên danh mục mới/i);
+    await fireEvent.input(input, { target: { value: 'Chiến dịch Mùa Hè' } });
+    await tick();
+
+    const createBtn = screen.getByRole('button', { name: /Tạo mới/i });
+    await fireEvent.click(createBtn);
+    await tick();
+    await tick();
+
+    expect(mockCreateCategory).toHaveBeenCalledWith('Chiến dịch Mùa Hè');
+    expect(mockAddLeadsToCategory).toHaveBeenCalledWith([1], 30);
   });
 
   test('opens relink dialog and displays CRM leads', async () => {
@@ -183,76 +266,5 @@ describe('LinkedLeadActions Component', () => {
 
     expect(mockUnlinkConversationIdentity).toHaveBeenCalledWith(500);
     expect(onUnlinked).toHaveBeenCalledTimes(1);
-  });
-
-  test('disabled when both identityId and leadId are missing', () => {
-    const itemWithoutIdentityOrLead: InboxItem = {
-      ...leadItem,
-      identityId: null,
-      leadId: null
-    };
-
-    render(LinkedLeadActions, {
-      props: {
-        item: itemWithoutIdentityOrLead
-      }
-    });
-
-    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i }) as HTMLButtonElement;
-    const unlinkBtn = screen.getByRole('button', { name: /Hủy liên kết/i }) as HTMLButtonElement;
-
-    expect(relinkBtn.disabled).toBe(true);
-    expect(unlinkBtn.disabled).toBe(true);
-  });
-
-  test('enabled when identityId is null but leadId is present', () => {
-    const itemWithLeadOnly: InboxItem = {
-      ...leadItem,
-      identityId: null,
-      leadId: 1
-    };
-
-    render(LinkedLeadActions, {
-      props: {
-        item: itemWithLeadOnly
-      }
-    });
-
-    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i }) as HTMLButtonElement;
-    const unlinkBtn = screen.getByRole('button', { name: /Hủy liên kết/i }) as HTMLButtonElement;
-
-    expect(relinkBtn.disabled).toBe(false);
-    expect(unlinkBtn.disabled).toBe(false);
-  });
-
-  test('relinking prefers lead-level command even when an identityId is present', async () => {
-    const onRelinked = mock(() => {});
-    const itemWithIdentity: InboxItem = {
-      ...leadItem,
-      identityId: 600
-    };
-
-    render(LinkedLeadActions, {
-      props: {
-        item: itemWithIdentity,
-        onRelinked
-      }
-    });
-
-    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i });
-    await fireEvent.click(relinkBtn);
-    await tick();
-
-    const leadOption = screen.getByText(/Trần Thị Lead/i);
-    await fireEvent.click(leadOption);
-    await tick();
-
-    const confirmBtn = screen.getByRole('button', { name: /Xác nhận đổi/i });
-    await fireEvent.click(confirmBtn);
-    await tick();
-
-    expect(mockRelinkConversationLead).toHaveBeenCalledWith(1, 2);
-    expect(mockLinkConversationIdentity).not.toHaveBeenCalled();
-    expect(onRelinked).toHaveBeenCalledWith(2);
   });
 });

@@ -627,6 +627,30 @@ pub fn get_categories(conn: &Connection) -> Result<Vec<crate::models::Category>>
     Ok(categories)
 }
 
+pub fn get_categories_for_lead(
+    conn: &Connection,
+    lead_id: i32,
+) -> Result<Vec<crate::models::Category>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.name
+         FROM categories c
+         JOIN lead_categories lc ON c.id = lc.category_id
+         WHERE lc.lead_id = ?1
+         ORDER BY lower(c.name)",
+    )?;
+    let rows = stmt.query_map([lead_id], |row| {
+        Ok(crate::models::Category {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+        })
+    })?;
+    let mut categories = Vec::new();
+    for row in rows {
+        categories.push(row?);
+    }
+    Ok(categories)
+}
+
 pub fn get_leads_by_category(
     conn: &Connection,
     category_id: i32,

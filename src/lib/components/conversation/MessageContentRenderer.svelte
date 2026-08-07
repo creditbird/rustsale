@@ -7,9 +7,15 @@
   import AudioMessageContent from './AudioMessageContent.svelte';
   import LinkMessageContent from './LinkMessageContent.svelte';
   import MessageMentionText from './MessageMentionText.svelte';
-  import { safeConversationUrl } from './messageMedia';
+  import { safeConversationUrl, extractLegacyImageUrl } from './messageMedia';
 
-  let { message }: { message: ConversationMessage } = $props();
+  let {
+    message,
+    onImageClick = () => {}
+  }: {
+    message: ConversationMessage;
+    onImageClick?: (url: string) => void;
+  } = $props();
 
   let displayText = $derived(
     typeof message.textContent === 'string' && message.textContent.trim() !== ''
@@ -29,7 +35,12 @@
                   : null
   );
 
-  let legacyMediaUrl = $derived(
+  let isImageContentType = $derived(
+    message.contentType === 'image' || message.contentType.startsWith('image/')
+  );
+  let isLinkContentType = $derived(message.contentType === 'link');
+
+  let rawLegacyUrl = $derived(
     typeof message.content?.url === 'string'
       ? message.content.url
       : typeof message.content?.src === 'string'
@@ -41,12 +52,8 @@
             : null
   );
 
-  let isImageContentType = $derived(
-    message.contentType === 'image' || message.contentType.startsWith('image/')
-  );
-  let isLinkContentType = $derived(message.contentType === 'link');
-
-  let safeLegacyUrl = $derived(safeConversationUrl(legacyMediaUrl));
+  let legacyMediaUrl = $derived(rawLegacyUrl);
+  let safeLegacyUrl = $derived(extractLegacyImageUrl(message.content));
   let isUnsafeLegacyImage = $derived(
     isImageContentType && legacyMediaUrl !== null && safeLegacyUrl === null
   );
@@ -60,7 +67,7 @@
       <div class="message-attachments-list">
         {#each message.attachments as att (att.id)}
           {#if att.mediaType === 'image'}
-            <ImageMessageContent attachment={att} />
+            <ImageMessageContent attachment={att} {onImageClick} />
           {:else if att.mediaType === 'sticker'}
             <StickerMessageContent attachment={att} />
           {:else if att.mediaType === 'video'}
@@ -74,7 +81,12 @@
       </div>
     {:else if isImageContentType}
       {#if safeLegacyUrl}
-        <div class="overflow-hidden rounded-lg border border-border/30 my-1">
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="overflow-hidden rounded-lg border border-border/30 my-1 cursor-pointer transition-transform hover:scale-[1.02]"
+          onclick={() => safeLegacyUrl && onImageClick(safeLegacyUrl)}
+        >
           <img
             src={safeLegacyUrl}
             alt={displayText || 'Hình ảnh'}

@@ -15,7 +15,8 @@
     onReply = () => {},
     onRecall = () => {},
     onForward = () => {},
-    onToggleReaction = () => {}
+    onToggleReaction = () => {},
+    onImageClick = () => {}
   }: {
     messages: ConversationMessage[];
     isGroup?: boolean;
@@ -29,6 +30,7 @@
       code: ConversationReactionCode,
       currentActive?: boolean
     ) => void;
+    onImageClick?: (url: string, message: ConversationMessage) => void;
   } = $props();
 
   function getBatchStatus(batchMessages: ConversationMessage[]): MessageSendBatchStatus {
@@ -71,6 +73,7 @@
       {onRecall}
       {onForward}
       {onToggleReaction}
+      {onImageClick}
     />
     {#if message.status === 'failed' && message.errorMessage}
       <p class="ml-auto max-w-[70%] px-3 text-xs text-destructive">{message.errorMessage}</p>

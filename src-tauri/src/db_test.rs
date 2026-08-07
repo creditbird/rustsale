@@ -373,9 +373,16 @@ mod tests {
         assert_eq!(leads[0].name, "John Doe");
         assert_eq!(leads[0].zalo_status.as_deref(), Some("UNTESTED"));
 
+        let lead_cats = db::get_categories_for_lead(&conn, lead_id).unwrap();
+        assert_eq!(lead_cats.len(), 1);
+        assert_eq!(lead_cats[0].name, "Hot Leads");
+        assert_eq!(lead_cats[0].id, Some(cat_id));
+
         db::remove_lead_from_category(&conn, lead_id, cat_id).unwrap();
         let leads_after = db::get_leads_by_category(&conn, cat_id).unwrap();
         assert!(leads_after.is_empty());
+        let lead_cats_after = db::get_categories_for_lead(&conn, lead_id).unwrap();
+        assert!(lead_cats_after.is_empty());
     }
 
     #[test]

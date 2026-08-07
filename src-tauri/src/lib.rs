@@ -202,6 +202,7 @@ pub fn run() {
             commands::send_zalo_outreach,
             commands::start_zalo_outreach,
             commands::get_categories,
+            commands::get_categories_for_lead,
             commands::create_category,
             commands::delete_category,
             commands::add_leads_to_category,

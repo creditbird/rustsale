@@ -24,7 +24,8 @@
     onReply = () => {},
     onRecall = () => {},
     onForward = () => {},
-    onToggleReaction = () => {}
+    onToggleReaction = () => {},
+    onImageClick = () => {}
   }: {
     message: ConversationMessage;
     isGroup?: boolean;
@@ -39,6 +40,7 @@
       code: ConversationReactionCode,
       currentActive?: boolean
     ) => void;
+    onImageClick?: (url: string, message: ConversationMessage) => void;
   } = $props();
 
   let actionsOpen = $state(false);
@@ -329,7 +331,7 @@
       {#if message.replyTarget}
         <MessageReplyPreview replyTarget={message.replyTarget} />
       {/if}
-      <MessageContentRenderer {message} />
+      <MessageContentRenderer {message} onImageClick={(url) => onImageClick(url, message)} />
     {/if}
 
     {#if !isRemoved && message.reactions.length > 0}
