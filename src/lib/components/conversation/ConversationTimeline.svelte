@@ -75,6 +75,7 @@
   });
   let mountedItems = $derived(items.slice(virtualWindow.start, virtualWindow.end));
   let renderItems = $derived(groupTimelineItems(mountedItems));
+  let renderItemsReversed = $derived([...renderItems].reverse());
 
   // Auto-scroll tracking for new live messages and conversation switching
   let previousItemsRef: ConversationMessage[] | null = null;
@@ -132,9 +133,10 @@
   // Exported Component Methods for bind:this
   export function captureAnchor(): { messageId: number; offsetTop: number } | null {
     if (!containerEl) return null;
+    const containerRect = containerEl.getBoundingClientRect();
     const bubbles = containerEl.querySelectorAll<HTMLElement>('[data-message-id]');
     for (const el of Array.from(bubbles)) {
-      const relTop = el.offsetTop - containerEl.scrollTop;
+      const relTop = el.getBoundingClientRect().top - containerRect.top;
       if (relTop >= 0) {
         const id = Number(el.getAttribute('data-message-id'));
         if (!isNaN(id)) {
@@ -146,7 +148,10 @@
     if (first) {
       const id = Number(first.getAttribute('data-message-id'));
       if (!isNaN(id)) {
-        return { messageId: id, offsetTop: first.offsetTop - containerEl.scrollTop };
+        return {
+          messageId: id,
+          offsetTop: first.getBoundingClientRect().top - containerRect.top
+        };
       }
     }
     return null;
@@ -159,30 +164,32 @@
     await tick();
     const el = containerEl.querySelector<HTMLElement>(`[data-message-id="${anchor.messageId}"]`);
     if (el) {
-      containerEl.scrollTop = el.offsetTop - anchor.offsetTop;
+      const containerRect = containerEl.getBoundingClientRect();
+      const currentRelTop = el.getBoundingClientRect().top - containerRect.top;
+      const diff = currentRelTop - anchor.offsetTop;
+      containerEl.scrollTop += diff;
     }
   }
 
   export function isNearBottom(): boolean {
     if (!containerEl) return true;
     const threshold = 180;
-    const distance =
-      containerEl.scrollHeight - containerEl.scrollTop - containerEl.clientHeight;
+    const distance = Math.abs(containerEl.scrollTop);
     return distance <= threshold;
   }
 
   export async function scrollToBottom(): Promise<void> {
     await tick();
     if (containerEl) {
-      containerEl.scrollTop = containerEl.scrollHeight;
+      containerEl.scrollTop = 0;
     }
   }
 
   function handleScroll() {
     if (!containerEl) return;
-    const distanceToBottom =
-      containerEl.scrollHeight - containerEl.scrollTop - containerEl.clientHeight;
-    const distanceToTop = containerEl.scrollTop;
+    const distanceToBottom = Math.abs(containerEl.scrollTop);
+    const distanceToTop =
+      containerEl.scrollHeight - containerEl.clientHeight - distanceToBottom;
 
     // Expand window when scrolling up/down if timeline > MAX_DOM_ITEMS
     if (items.length > MAX_DOM_ITEMS) {
@@ -203,37 +210,11 @@
 <div
   bind:this={containerEl}
   onscroll={handleScroll}
-  class="flex-1 overflow-y-auto p-4 pb-6 space-y-2 relative bg-[#efeae2]/65 dark:bg-[#0b141a] bg-[radial-gradient(#0000000b_1px,transparent_1px)] [background-size:20px_20px] dark:bg-[radial-gradient(#ffffff0a_1px,transparent_1px)] transition-colors"
+  class="flex-1 overflow-y-auto p-4 pb-6 relative flex flex-col-reverse gap-2 bg-[#efeae2]/65 dark:bg-[#0b141a] bg-[radial-gradient(#0000000b_1px,transparent_1px)] [background-size:20px_20px] dark:bg-[radial-gradient(#ffffff0a_1px,transparent_1px)] transition-colors"
   data-timeline-container
 >
-  <!-- Loading older indicator / Top Sentinel -->
-  <div bind:this={topSentinelEl} class="w-full min-h-[1px] py-1 flex justify-center">
-    {#if loadingOlder}
-      <div class="flex items-center gap-2 text-xs text-muted-foreground py-2" data-slot="loading-older">
-        <svg
-          class="animate-spin h-4 w-4 text-primary"
-          xmlns="http://www.w3.org/2000/svg"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
-          <circle
-            class="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="4"
-          ></circle>
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-          ></path>
-        </svg>
-        <span>Đang tải tin nhắn cũ...</span>
-      </div>
-    {/if}
-  </div>
+  <!-- Bottom margin spacer for easy viewing & interaction above composer -->
+  <div class="h-6 w-full shrink-0" aria-hidden="true" data-slot="timeline-bottom-spacer"></div>
 
   {#if loading && items.length === 0}
     <!-- Initial Loading Skeleton -->
@@ -268,8 +249,8 @@
       <span>{emptyMessage}</span>
     </div>
   {:else}
-    <!-- Mounted Bounded Bubbles -->
-    {#each renderItems as renderItem (renderItem.kind === 'batch' ? `${renderItem.batchId}:${renderItem.messages[0]?.id}` : `message:${renderItem.message.id}`)}
+    <!-- Mounted Bounded Bubbles (Reversed for column-reverse layout) -->
+    {#each renderItemsReversed as renderItem (renderItem.kind === 'batch' ? `${renderItem.batchId}:${renderItem.messages[0]?.id}` : `message:${renderItem.message.id}`)}
       {#if renderItem.kind === 'batch'}
         <MessageBatchGroup
           messages={renderItem.messages}
@@ -297,11 +278,36 @@
           {onToggleReaction}
           {onImageClick}
         />
-
-
       {/if}
     {/each}
-    <!-- Bottom margin spacer for easy viewing & interaction above composer -->
-    <div class="h-6 w-full shrink-0" aria-hidden="true" data-slot="timeline-bottom-spacer"></div>
   {/if}
+
+  <!-- Loading older indicator / Top Sentinel (visually top in flex-col-reverse) -->
+  <div bind:this={topSentinelEl} class="w-full min-h-[1px] py-1 flex justify-center">
+    {#if loadingOlder}
+      <div class="flex items-center gap-2 text-xs text-muted-foreground py-2" data-slot="loading-older">
+        <svg
+          class="animate-spin h-4 w-4 text-primary"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle
+            class="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            stroke-width="4"
+          ></circle>
+          <path
+            class="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          ></path>
+        </svg>
+        <span>Đang tải tin nhắn cũ...</span>
+      </div>
+    {/if}
+  </div>
 </div>
