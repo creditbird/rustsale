@@ -54,7 +54,7 @@ describe('ConversationTimeline Component', () => {
     }));
   }
 
-  test('items render in ascending chronological order', () => {
+  test('items render in ascending chronological order visually in column-reverse', () => {
     const items = makeMessages(3);
     const { container } = render(ConversationTimeline, {
       props: {
@@ -66,9 +66,10 @@ describe('ConversationTimeline Component', () => {
 
     const bubbles = container.querySelectorAll('[data-message-id]');
     expect(bubbles.length).toBe(3);
-    expect(bubbles[0].getAttribute('data-message-id')).toBe('1');
+    // In column-reverse, first HTML child is at the bottom (newest item)
+    expect(bubbles[0].getAttribute('data-message-id')).toBe('3');
     expect(bubbles[1].getAttribute('data-message-id')).toBe('2');
-    expect(bubbles[2].getAttribute('data-message-id')).toBe('3');
+    expect(bubbles[2].getAttribute('data-message-id')).toBe('1');
   });
 
   test('top sentinel calls onLoadOlder() only when hasMore && !loadingOlder', async () => {
@@ -158,10 +159,10 @@ describe('ConversationTimeline Component', () => {
     const scrollContainer = container.querySelector('[data-timeline-container]') as HTMLElement;
     expect(scrollContainer).toBeTruthy();
 
-    // Mock scroll properties to be near bottom (<= 80px)
+    // Mock scroll properties to be near bottom in column-reverse (scrollTop near 0)
     Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, configurable: true });
     Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, configurable: true });
-    Object.defineProperty(scrollContainer, 'scrollTop', { value: 450, writable: true, configurable: true }); // distance from bottom = 1000 - 450 - 500 = 50px (<= 80px)
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 20, writable: true, configurable: true }); // distance from bottom <= 180px
 
     // Add a new message
     const updatedItems = makeMessages(11);
@@ -173,8 +174,8 @@ describe('ConversationTimeline Component', () => {
 
     await tick();
 
-    // Check that scrollTop was set towards bottom
-    expect(scrollContainer.scrollTop).toBeGreaterThanOrEqual(450);
+    // Check that scrollTop was set to 0 (bottom in column-reverse)
+    expect(scrollContainer.scrollTop).toBe(0);
   });
 
   test('captures and restores { messageId, offsetTop } anchor', async () => {
