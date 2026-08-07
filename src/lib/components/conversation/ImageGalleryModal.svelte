@@ -117,6 +117,7 @@
     role="dialog"
     aria-modal="true"
     aria-label="Image Gallery Modal"
+    tabindex="-1"
     onclick={handleBackdropClick}
   >
     <!-- Header bar -->

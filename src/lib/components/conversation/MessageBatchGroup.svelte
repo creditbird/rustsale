@@ -42,8 +42,8 @@
     ).length;
     const failedParts = batchMessages.filter((message) => message.status === 'failed').length;
     if (failedParts === batchMessages.length && batchMessages.length > 0) return 'failed';
-    if (sentParts > 0 && sentParts + failedParts === batchMessages.length) return 'partial';
     if (sentParts === batchMessages.length && batchMessages.length > 0) return 'sent';
+    if (sentParts > 0 && failedParts > 0 && sentParts + failedParts === batchMessages.length) return 'partial';
     if (sentParts > 0 || batchMessages.some((message) => message.status === 'sending')) return 'sending';
     return 'queued';
   }

@@ -36,7 +36,12 @@ const makeMessage = (id: number, status: ConversationMessage['status']): Convers
 describe('MessageBatchGroup', () => {
   afterEach(cleanup);
 
-  it('renders one aggregate footer and a failed-part warning', () => {
+  it('renders "Đã gửi" when all messages are sent successfully', () => {
+    render(MessageBatchGroup, { messages: [makeMessage(1, 'sent')] });
+    expect(screen.getAllByText('Đã gửi')).toHaveLength(1);
+  });
+
+  it('renders one aggregate footer and a failed-part warning for partial batches', () => {
     render(MessageBatchGroup, { messages: [makeMessage(1, 'sent'), makeMessage(2, 'failed')] });
     expect(screen.getAllByText('Đã gửi một phần')).toHaveLength(1);
     expect(screen.getByText('Network error')).toBeTruthy();

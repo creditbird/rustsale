@@ -558,7 +558,10 @@
 
   function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
     if (item.kind === 'customer') {
-      return item.leadId !== null && event.leadId === item.leadId;
+      return (
+        (item.leadId !== null && event.leadId === item.leadId) ||
+        item.replyTargets.some((target) => target.conversationId === event.conversationId)
+      );
     }
     if (item.kind === 'group') {
       return item.conversationId !== null && event.conversationId === item.conversationId;
@@ -617,7 +620,22 @@
   function handleBatchQueued(result: SendConversationBatchResult) {
     if (!selectedItem || result.messages.length === 0) return;
 
-    const merged = mergeMessages(currentVariant.items, result.messages);
+    const realBatchIds = new Set(
+      result.messages
+        .filter((m) => m.id > 0)
+        .map((m) => m.sendBatch?.sendBatchId)
+        .filter(Boolean)
+    );
+    const cleanedItems = currentVariant.items.filter(
+      (item) =>
+        !(
+          item.id < 0 &&
+          item.sendBatch?.sendBatchId &&
+          realBatchIds.has(item.sendBatch.sendBatchId)
+        )
+    );
+
+    const merged = mergeMessages(cleanedItems, result.messages);
     currentVariant = { ...currentVariant, items: merged };
     variantsCache.set(currentVariantKey, currentVariant);
 

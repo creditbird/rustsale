@@ -567,13 +567,10 @@ impl ConversationService {
         let now = crate::conversation::types::utc_now();
         let res = self.repository.enqueue_outbound_batch(request, &now)?;
         for msg in &res.messages {
-            self.events.publish(ConversationInvalidatedEvent {
-                conversation_id: msg.conversation_id,
-                lead_id: None,
-                channel: msg.channel,
-                reason: ConversationInvalidationReason::Message,
-                message_id: Some(msg.id),
-            });
+            let _ = self.publish_message_invalidation(
+                msg.id,
+                ConversationInvalidationReason::Message,
+            );
         }
         Ok(res)
     }

@@ -217,27 +217,34 @@
   }}
 >
   <div
-    class="relative max-w-[80%] sm:max-w-[70%] rounded-2xl p-3 shadow-xs transition-colors text-sm font-sans space-y-1.5 {isOutbound
-      ? 'bg-primary text-primary-foreground rounded-tr-xs'
-      : 'bg-muted/60 text-foreground border border-border/50 rounded-tl-xs'}"
+    class="relative max-w-[82%] sm:max-w-[72%] rounded-2xl px-3.5 py-2.5 transition-colors text-[13.5px] leading-relaxed font-sans space-y-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] {isOutbound
+      ? 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#111b21] dark:text-[#e9edef] border border-[#b7e4b1]/60 dark:border-[#005c4b]/80 rounded-tr-xs font-normal'
+      : 'bg-white dark:bg-[#202c33] text-[#111b21] dark:text-[#e9edef] border border-slate-200/80 dark:border-slate-700/60 rounded-tl-xs font-normal'}"
   >
     <!-- Header info: Sender name / Channel / Account -->
     <div class="flex items-start justify-between gap-2">
-      <div class="flex items-center gap-2 text-xs opacity-75 font-medium flex-wrap">
+      <div class="flex items-center gap-2 text-xs opacity-90 font-medium flex-wrap">
         {#if !isOutbound && (isGroup || message.senderDisplayName)}
-          <span class="font-semibold text-foreground/90" data-slot="sender-name">
+          <span class="font-bold text-[#075e54] dark:text-[#25d366]" data-slot="sender-name">
             {message.senderDisplayName || 'Khách hàng'}
           </span>
         {/if}
 
         {#if message.channel}
-          <span class="capitalize px-1.5 py-0.5 rounded-sm bg-background/20 text-[10px] uppercase tracking-wider font-semibold">
+          {@const ch = message.channel.toLowerCase()}
+          <span class={ch === 'zalo'
+            ? 'px-1.5 py-0.5 rounded-md bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-400/30 text-[10px] uppercase tracking-wider font-bold'
+            : ch === 'whatsapp'
+              ? 'px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30 text-[10px] uppercase tracking-wider font-bold'
+              : ch === 'messenger'
+                ? 'px-1.5 py-0.5 rounded-md bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-400/30 text-[10px] uppercase tracking-wider font-bold'
+                : 'px-1.5 py-0.5 rounded-md bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-400/30 text-[10px] uppercase tracking-wider font-bold'}>
             {message.channel}
           </span>
         {/if}
 
         {#if message.accountDisplayName}
-          <span class="truncate max-w-[150px]" title={message.accountDisplayName}>
+          <span class="truncate max-w-[150px] opacity-75" title={message.accountDisplayName}>
             {message.accountDisplayName}
           </span>
         {/if}
@@ -249,7 +256,7 @@
             <Popover.Trigger
               aria-label="Thả cảm xúc"
               title="Thả cảm xúc"
-              class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {showPicker ? 'opacity-100 bg-muted text-foreground' : 'opacity-0'}"
+              class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted/50 hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {showPicker ? 'opacity-100 bg-muted/50 text-foreground' : 'opacity-0'}"
             >
               <Smile class="size-4" />
             </Popover.Trigger>
@@ -275,7 +282,7 @@
           type="button"
           aria-label={isPinned ? 'Bỏ ghim tin nhắn' : 'Ghim tin nhắn'}
           title={isPinned ? 'Bỏ ghim tin nhắn' : 'Ghim tin nhắn'}
-          class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {isPinned ? 'opacity-100 text-amber-500 bg-amber-500/10' : 'opacity-0'}"
+          class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted/50 hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {isPinned ? 'opacity-100 text-amber-500 bg-amber-500/10' : 'opacity-0'}"
           onclick={() => onPin(message)}
         >
           <Pin class="size-3.5 {isPinned ? 'fill-amber-500' : ''}" />
@@ -364,20 +371,20 @@
     {/if}
 
     <!-- Footer info: Timestamp & Status (for outbound) -->
-    <div class="flex items-center justify-end gap-1.5 text-[11px] opacity-75 mt-1 select-none">
+    <div class="flex items-center justify-end gap-1.5 text-[11px] opacity-70 mt-1 select-none font-medium">
       <span>{formatTimestamp(message.occurredAt)}</span>
       {#if showStatus && isOutbound && !isRemoved}
         <span class="inline-flex items-center gap-0.5 font-medium" data-slot="status-label" title={getStatusLabel(message.status)}>
           {#if message.status === 'read'}
-            <CheckCheck class="size-3.5 text-sky-300 font-bold" />
+            <CheckCheck class="size-3.5 text-[#53bdeb] font-bold" />
           {:else if message.status === 'delivered'}
-            <CheckCheck class="size-3.5 text-foreground/70" />
+            <CheckCheck class="size-3.5 text-[#667781] dark:text-[#8696a0]" />
           {:else if message.status === 'sent'}
-            <Check class="size-3.5 text-foreground/70" />
+            <Check class="size-3.5 text-[#667781] dark:text-[#8696a0]" />
           {:else if message.status === 'sending' || message.status === 'queued'}
-            <Clock class="size-3 text-foreground/60 animate-spin" />
+            <Clock class="size-3 text-muted-foreground animate-spin" />
           {:else if message.status === 'failed'}
-            <AlertCircle class="size-3.5 text-destructive-foreground font-bold" />
+            <AlertCircle class="size-3.5 text-destructive font-bold" />
           {/if}
           <span class="sr-only">{getStatusLabel(message.status)}</span>
         </span>

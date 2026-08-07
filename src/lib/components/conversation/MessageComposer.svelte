@@ -791,23 +791,44 @@
     const parts = buildParts(snapshot.text, snapshot.stagedAttachmentIds, snapshot.mentions);
     if (parts.length === 0) return;
 
-    isSending = true;
+    const currentReplyTarget = replyTarget;
+    const previousAttachments = [...attachments];
+
+    // Zero-latency optimistic reset: Clear input text and attachments immediately for instant UI response (~0s latency)
+    draftCache.clearSnapshot(activeDraftKey, snapshot);
+    const nextDraft = draftCache.get(activeDraftKey);
+    text = nextDraft.text;
+    attachments = [...nextDraft.attachments];
+    mentions = [...nextDraft.mentions];
     sendError = null;
+
+    void tick().then(() => {
+      if (textareaElement) {
+        textareaElement.focus();
+      }
+    });
+
+    isSending = true;
     try {
       const result = await sendConversationBatch({
         conversationId: targetConversationId,
         clientBatchId: newClientId('batch'),
-        replyToMessageId: replyTarget?.messageId ?? null,
+        replyToMessageId: currentReplyTarget?.messageId ?? null,
         parts
       });
-      draftCache.clearSnapshot(activeDraftKey, snapshot);
-      const nextDraft = draftCache.get(activeDraftKey);
-      text = nextDraft.text;
-      attachments = [...nextDraft.attachments];
-      mentions = [...nextDraft.mentions];
       onBatchQueued?.(result);
-      if (replyTarget) onCancelReply();
+      if (currentReplyTarget) onCancelReply();
     } catch (error) {
+      // On network / send error, restore snapshot back into draft state
+      draftCache.update(activeDraftKey, {
+        text: snapshot.text,
+        attachments: previousAttachments,
+        mentions: snapshot.mentions
+      });
+      const restored = draftCache.get(activeDraftKey);
+      text = restored.text;
+      attachments = [...restored.attachments];
+      mentions = [...restored.mentions];
       sendError = formatError(error);
     } finally {
       isSending = false;
@@ -1119,7 +1140,7 @@
     </div>
   {/if}
 
-  <div class="flex items-end gap-2">
+  <div class="flex items-center gap-2.5">
     <Textarea
       bind:ref={textareaElement}
       bind:value={text}
@@ -1128,17 +1149,21 @@
       onpaste={() => void handlePaste()}
       maxlength={selectedCapabilities.maxTextLength > 0 ? selectedCapabilities.maxTextLength + 1 : undefined}
       placeholder="Nhập tin nhắn..."
-      disabled={disabled || isSending || (selectedOption !== null && !selectedOption.isEligible)}
-      class="min-h-[70px] resize-none"
+      disabled={disabled || (selectedOption !== null && !selectedOption.isEligible)}
+      class="min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-full border border-input/80 bg-background text-sm text-foreground focus-visible:ring-1 focus-visible:ring-primary shadow-2xs resize-none"
     />
     <Button
       type="button"
       onclick={handleSend}
       disabled={!canSend}
-      class="h-[70px] px-4 shrink-0 flex items-center justify-center gap-1.5"
+      aria-label="Gửi"
+      title="Gửi tin nhắn (Enter)"
+      class="size-10 rounded-full shrink-0 bg-[#00a884] hover:bg-[#008f70] dark:bg-[#00a884] dark:hover:bg-[#008f70] text-white shadow-xs flex items-center justify-center transition-all duration-150 active:scale-95 disabled:opacity-40 disabled:active:scale-100 cursor-pointer p-0"
     >
-      <Send class="size-4" />
-      <span>Gửi</span>
+      <svg viewBox="0 0 24 24" class="size-5 fill-current text-white translate-x-[1.5px]" aria-hidden="true">
+        <path d="M1.101 21.757L23.8 12.028 1.101 2.3v7.572l12.769 2.156-12.769 2.157v7.572z"></path>
+      </svg>
+      <span class="sr-only">Gửi</span>
     </Button>
   </div>
 </div>

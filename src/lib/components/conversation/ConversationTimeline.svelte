@@ -203,7 +203,7 @@
 <div
   bind:this={containerEl}
   onscroll={handleScroll}
-  class="flex-1 overflow-y-auto p-4 pb-6 space-y-2 relative scroll-smooth"
+  class="flex-1 overflow-y-auto p-4 pb-6 space-y-2 relative bg-[#efeae2]/65 dark:bg-[#0b141a] bg-[radial-gradient(#0000000b_1px,transparent_1px)] [background-size:20px_20px] dark:bg-[radial-gradient(#ffffff0a_1px,transparent_1px)] transition-colors"
   data-timeline-container
 >
   <!-- Loading older indicator / Top Sentinel -->

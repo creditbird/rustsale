@@ -566,7 +566,7 @@ async fn run_session_loop(
         }
 
         // 7. Drain receiver loop with reactive pagination state machine
-        let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(50));
         let mut profile_ticker = tokio::time::interval(std::time::Duration::from_secs(5));
 
         let should_reconnect = loop {

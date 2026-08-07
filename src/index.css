@@ -38,6 +38,14 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* WhatsApp-inspired Chat Canvas & Contrast Tokens */
+  --chat-canvas-bg: #efeae2;
+  --chat-bubble-inbound-bg: #ffffff;
+  --chat-bubble-inbound-fg: #111b21;
+  --chat-bubble-outbound-bg: #d9fdd3;
+  --chat-bubble-outbound-fg: #111b21;
+  --chat-bubble-outbound-meta: #667781;
 }
 
 .dark {
@@ -72,6 +80,14 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* WhatsApp Dark Theme Canvas & Tokens */
+  --chat-canvas-bg: #0b141a;
+  --chat-bubble-inbound-bg: #202c33;
+  --chat-bubble-inbound-fg: #e9edef;
+  --chat-bubble-outbound-bg: #005c4b;
+  --chat-bubble-outbound-fg: #e9edef;
+  --chat-bubble-outbound-meta: #8696a0;
 }
 
 @theme inline {

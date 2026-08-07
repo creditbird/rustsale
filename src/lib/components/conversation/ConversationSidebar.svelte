@@ -445,12 +445,19 @@
                         {#each item.channels as ch (ch.channel)}
                           {@const Icon = channelIcons[ch.channel] || MessageSquare}
                           {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
+                          {@const chName = ch.channel.toLowerCase()}
                           <span
                             class={cn(
-                              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-colors",
+                              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
                               count > 0
-                                ? "bg-destructive/15 text-destructive font-bold ring-1 ring-destructive/30"
-                                : "bg-muted/80 text-muted-foreground"
+                                ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
+                                : chName === 'zalo'
+                                  ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
+                                  : chName === 'whatsapp'
+                                    ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
+                                    : chName === 'messenger'
+                                      ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
+                                      : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
                             )}
                           >
                             <Icon class="w-3 h-3" />
