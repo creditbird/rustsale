@@ -5,6 +5,7 @@
   } from '$lib/services/conversationService';
   import { sliceUtf16 } from './mentionState';
   import { parseEmoticons } from './emoticonUtils';
+  import { openExternalUrl } from './messageMedia';
 
   let {
     text,
@@ -133,7 +134,11 @@
             target="_blank"
             rel="noopener noreferrer"
             class="text-blue-600 dark:text-blue-400 underline font-medium hover:opacity-80 break-all"
-            onclick={(e) => e.stopPropagation()}
+            onclick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              void openExternalUrl(subPart.value);
+            }}
           >{subPart.value}</a>
         {:else}
           <span>{parseEmoticons(subPart.value)}</span>

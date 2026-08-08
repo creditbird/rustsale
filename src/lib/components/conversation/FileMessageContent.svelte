@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ConversationAttachment } from '$lib/services/conversationService';
-  import { formatBytes, safeConversationUrl } from './messageMedia';
+  import { formatBytes, safeConversationUrl, openExternalUrl } from './messageMedia';
 
   let { attachment }: { attachment: ConversationAttachment } = $props();
   let safeUrl = $derived(safeConversationUrl(attachment.remoteUrl));
@@ -10,7 +10,17 @@
   <div class="file-icon">📄</div>
   <div class="file-details">
     {#if safeUrl}
-      <a href={safeUrl} target="_blank" rel="noopener noreferrer" class="file-name">
+      <a
+        href={safeUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="file-name"
+        onclick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          void openExternalUrl(safeUrl);
+        }}
+      >
         {attachment.fileName ?? 'Tập tin'}
       </a>
     {:else}

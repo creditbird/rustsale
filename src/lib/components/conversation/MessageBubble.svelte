@@ -224,9 +224,9 @@
     <!-- Header info: Sender name / Channel / Account -->
     <div class="flex items-start justify-between gap-2">
       <div class="flex items-center gap-2 text-xs opacity-90 font-medium flex-wrap">
-        {#if !isOutbound && (isGroup || message.senderDisplayName)}
+        {#if !isOutbound && (isGroup || message.senderDisplayName) && message.senderDisplayName !== message.accountDisplayName}
           <span class="font-bold text-[#075e54] dark:text-[#25d366]" data-slot="sender-name">
-            {message.senderDisplayName || 'Khách hàng'}
+            {message.senderDisplayName}
           </span>
         {/if}
 

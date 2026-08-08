@@ -379,11 +379,23 @@ fn normalize_message(
     let now = crate::conversation::types::utc_now();
     let (base, external_thread_id, is_self, kind, participant) = match message {
         Message::User(message) => {
+            let display_name = if !message.is_self && !message.data.d_name.trim().is_empty() {
+                let d_name = message.data.d_name.trim();
+                let matches_account = account_display_name
+                    .map(|acc| acc.trim().eq_ignore_ascii_case(d_name))
+                    .unwrap_or(false);
+                if matches_account {
+                    None
+                } else {
+                    Some(d_name.to_string())
+                }
+            } else {
+                None
+            };
             let participant = Some(NormalizedIdentity {
                 identity_namespace: "zalo_uid".to_string(),
                 external_id: message.thread_id.clone(),
-                display_name: (!message.is_self && !message.data.d_name.is_empty())
-                    .then(|| message.data.d_name.clone()),
+                display_name,
                 avatar_url: None,
                 lead_id: None,
             });

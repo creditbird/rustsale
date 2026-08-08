@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { safeConversationUrl } from './messageMedia';
+  import { safeConversationUrl, openExternalUrl } from './messageMedia';
 
   let {
     content,
@@ -47,8 +47,13 @@
     href={safeUrl}
     target="_blank"
     rel="noopener noreferrer"
-    class="flex overflow-hidden rounded-lg border border-border/40 bg-background/30 text-foreground no-underline hover:bg-background/50"
+    class="flex overflow-hidden rounded-lg border border-border/40 bg-background/30 text-foreground no-underline hover:bg-background/50 cursor-pointer"
     data-testid="link-message-content"
+    onclick={(e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      void openExternalUrl(safeUrl);
+    }}
   >
     {#if thumbnailUrl}
       <img src={thumbnailUrl} alt="" class="h-20 w-20 shrink-0 object-cover" loading="lazy" />

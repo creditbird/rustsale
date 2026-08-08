@@ -320,6 +320,24 @@ describe('MessageBubble Component', () => {
     expect(screen.getByText('Tin nhắn gửi đi')).toBeTruthy();
   });
 
+  test('inbound message matching account display name does not display account name as sender', () => {
+    const pollutedMessage: ConversationMessage = {
+      ...baseMessage,
+      accountDisplayName: 'Thanh Truyền',
+      senderDisplayName: 'Thanh Truyền',
+      textContent: 'Cuộc gọi'
+    };
+
+    const { container } = render(MessageBubble, {
+      props: {
+        message: pollutedMessage,
+        isGroup: false
+      }
+    });
+
+    expect(container.querySelector('[data-slot="sender-name"]')).toBeNull();
+  });
+
   test('validates safe image media schemes and renders fallback card for unsafe schemes', () => {
     // Safe image URL
     const safeImageMsg: ConversationMessage = {

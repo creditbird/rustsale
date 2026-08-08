@@ -4288,14 +4288,29 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         occurred_at: None,
     });
 
+    let account_display_name: Option<String> = row.get(4)?;
+    let sender_display_name_raw: Option<String> = row.get(6)?;
+    let sender_display_name = match (
+        &direction,
+        sender_display_name_raw.as_deref(),
+        account_display_name.as_deref(),
+    ) {
+        (MessageDirection::Inbound, Some(s), Some(a))
+            if s.trim().eq_ignore_ascii_case(a.trim()) =>
+        {
+            None
+        }
+        (_, s, _) => s.map(str::to_string),
+    };
+
     Ok(ConversationMessage {
         id: row.get(0)?,
         conversation_id: row.get(1)?,
         channel_account_id: row.get(2)?,
         channel,
-        account_display_name: row.get(4)?,
+        account_display_name,
         sender_identity_id: row.get(5)?,
-        sender_display_name: row.get(6)?,
+        sender_display_name,
         direction,
         provider_message_id: row.get(8)?,
         provider_client_message_id: row.get(17)?,

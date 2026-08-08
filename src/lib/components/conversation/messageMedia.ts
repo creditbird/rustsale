@@ -10,6 +10,20 @@ export function safeConversationUrl(url: string | null | undefined): string | nu
   return null;
 }
 
+export async function openExternalUrl(url: string | null | undefined): Promise<void> {
+  if (!url) return;
+  const safe = safeConversationUrl(url);
+  if (!safe) return;
+  try {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(safe);
+  } catch {
+    if (typeof window !== 'undefined') {
+      window.open(safe, '_blank', 'noopener,noreferrer');
+    }
+  }
+}
+
 export function isImageUrl(url: string | null | undefined): boolean {
   if (!url) return false;
   const clean = url.split('?')[0].split('#')[0].toLowerCase();
