@@ -501,6 +501,9 @@ export const sendConversationBatch = (request: SendConversationBatchRequest) =>
 export const searchZaloStickers = (conversationId: number, query: string, limit = 50) =>
   invoke<ZaloStickerReference[]>('search_zalo_stickers', { conversationId, query, limit });
 
+export const getZaloStickerDetail = (conversationId: number, stickerId: number) =>
+  invoke<ZaloStickerReference | null>('get_zalo_sticker_detail', { conversationId, stickerId });
+
 export const recallConversationMessage = (messageId: number) =>
   invoke<ConversationMessage>('recall_conversation_message', { request: { messageId } });
 

@@ -119,7 +119,7 @@
   let actionItemKey = $state<string | null>(null);
 
   let pinnedMessages = $state<PinnedMessage[]>([]);
-  let pinnedMessageIds = $derived(new Set(pinnedMessages.map((p) => p.messageId)));
+  let pinnedMessageIds = $derived(new Set((pinnedMessages || []).map((p) => p.messageId)));
   let inThreadSearchOpen = $state(false);
 
   let inThreadQuery = $state('');

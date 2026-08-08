@@ -282,6 +282,23 @@ impl ZaloSessionSupervisor {
         Ok(stickers)
     }
 
+    pub async fn get_sticker_detail(
+        &self,
+        provider_account_key: &str,
+        sticker_id: u32,
+    ) -> anyhow::Result<Option<crate::conversation::zalo::client::ZaloStickerReference>> {
+        let client = self
+            .connected_client(provider_account_key)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!("Zalo account {provider_account_key} is not connected")
+            })?;
+        client
+            .get_sticker_detail(sticker_id)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.message))
+    }
+
     pub async fn start_all(&self) -> anyhow::Result<()> {
         let _ = self.service.recover_outbox_startup();
         let conn = open_db_connection(&self.db_path)?;

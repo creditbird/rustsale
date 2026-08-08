@@ -67,4 +67,31 @@ describe('MessageMentionText.svelte', () => {
     const root = getByTestId('message-mention-text');
     expect(root.textContent).toBe('Hok lẽ lôi gemini ra xài luôn trời 🥲 😊');
   });
+
+  it('uses fallback regex to highlight @mention when mentions prop is empty', () => {
+    const { getAllByTestId } = render(MessageMentionText, {
+      props: {
+        text: '@Hoàng Thọ Nghĩa biến web à xếp, k có toolcall á',
+        mentions: []
+      }
+    });
+
+    const mentionSpans = getAllByTestId('mention-span');
+    expect(mentionSpans).toHaveLength(1);
+    expect(mentionSpans[0].textContent).toBe('@Hoàng Thọ Nghĩa');
+  });
+
+  it('renders HTTP/HTTPS URLs as clickable anchor links', () => {
+    const { container } = render(MessageMentionText, {
+      props: {
+        text: 'Xem thêm tại https://zalo.me/g/vibe-coding và https://google.com nhé',
+        mentions: []
+      }
+    });
+
+    const links = container.querySelectorAll('a');
+    expect(links).toHaveLength(2);
+    expect(links[0].getAttribute('href')).toBe('https://zalo.me/g/vibe-coding');
+    expect(links[1].getAttribute('href')).toBe('https://google.com');
+  });
 });

@@ -464,7 +464,12 @@ fn test_normalize_group_info_mapping() {
         },
     };
 
-    let snapshot = normalize_group_info("imei_test", group_info);
+    let info_with_ver = zca_rs::apis::group::GroupInfoWithVer {
+        info: group_info,
+        mem_ver_list: Some(vec!["user_owner_0".to_string(), "user_mem_0".to_string()]),
+        pending_approve: None,
+    };
+    let snapshot = normalize_group_info("imei_test", info_with_ver);
 
     assert_eq!(snapshot.provider_account_key, "imei_test");
     assert_eq!(snapshot.external_thread_id, "g_100");

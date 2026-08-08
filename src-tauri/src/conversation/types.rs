@@ -911,6 +911,8 @@ pub enum ConversationSendPartContent {
         sticker_id: u32,
         cate_id: u32,
         sticker_type: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Attachment { staged_attachment_id: String },

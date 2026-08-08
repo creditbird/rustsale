@@ -14,7 +14,9 @@
       ? content.url
       : typeof content.href === 'string'
         ? content.href
-        : null
+        : typeof content.link === 'string'
+          ? content.link
+          : null
   );
   let safeUrl = $derived(safeConversationUrl(rawUrl));
   let title = $derived(
@@ -33,7 +35,9 @@
         ? content.thumbnailUrl
         : typeof content.thumbnail === 'string'
           ? content.thumbnail
-          : null
+          : typeof content.thumb === 'string'
+            ? content.thumb
+            : null
     )
   );
 </script>

@@ -859,7 +859,8 @@
             type: 'sticker',
             stickerId: sticker.stickerId,
             cateId: sticker.cateId,
-            stickerType: sticker.stickerType
+            stickerType: sticker.stickerType,
+            url: sticker.url
           }
         ]
       });

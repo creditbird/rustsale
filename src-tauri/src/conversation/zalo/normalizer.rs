@@ -110,15 +110,28 @@ fn content_parts(
     content: &Value,
     quote_obj: Option<&Value>,
 ) -> NormalizedContentParts {
-    if let Some(text) = content.as_str() {
-        let reply = extract_reply(quote_obj);
-        return NormalizedContentParts {
-            content_type: "text".to_string(),
-            text_content: Some(text.to_string()),
-            content: serde_json::json!({ "text": text }),
-            attachments: Vec::new(),
-            reply,
-        };
+    let parsed_content_buf = content
+        .as_str()
+        .filter(|s| s.trim().starts_with('{'))
+        .and_then(|s| serde_json::from_str::<Value>(s).ok());
+    let effective_content = parsed_content_buf.as_ref().unwrap_or(content);
+
+    let is_rich_media_type = matches!(
+        message_type,
+        "chat.photo" | "chat.video.msg" | "chat.voice" | "share.file" | "chat.sticker"
+    );
+
+    if let Some(text) = effective_content.as_str() {
+        if !is_rich_media_type {
+            let reply = extract_reply(quote_obj);
+            return NormalizedContentParts {
+                content_type: "text".to_string(),
+                text_content: Some(text.to_string()),
+                content: serde_json::json!({ "text": text }),
+                attachments: Vec::new(),
+                reply,
+            };
+        }
     }
     let content_type = match message_type {
         "chat.photo" => "image",
@@ -130,13 +143,13 @@ fn content_parts(
         _ => "unsupported",
     };
 
-    let text_content = content
+    let text_content = effective_content
         .get("caption")
-        .or_else(|| content.get("description"))
-        .or_else(|| content.get("title"))
-        .or_else(|| content.get("text"))
-        .or_else(|| content.get("message"))
-        .or_else(|| content.get("subTitle"))
+        .or_else(|| effective_content.get("description"))
+        .or_else(|| effective_content.get("title"))
+        .or_else(|| effective_content.get("text"))
+        .or_else(|| effective_content.get("message"))
+        .or_else(|| effective_content.get("subTitle"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string());
@@ -144,15 +157,15 @@ fn content_parts(
     let mut attachments = Vec::new();
     match content_type {
         "image" => {
-            let url = content
+            let url = effective_content
                 .get("url")
-                .or_else(|| content.get("href"))
-                .or_else(|| content.get("hdUrl"))
+                .or_else(|| effective_content.get("href"))
+                .or_else(|| effective_content.get("hdUrl"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let thumb = content
+            let thumb = effective_content
                 .get("thumbUrl")
-                .or_else(|| content.get("thumb_url"))
+                .or_else(|| effective_content.get("thumb_url"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             if url.is_some() || thumb.is_some() {
@@ -164,29 +177,29 @@ fn content_parts(
                     size_bytes: None,
                     remote_url: url,
                     thumbnail_url: thumb,
-                    metadata_json: Some(content.clone()),
+                    metadata_json: Some(effective_content.clone()),
                 });
             }
         }
         "video" => {
-            let url = content
+            let url = effective_content
                 .get("href")
-                .or_else(|| content.get("url"))
+                .or_else(|| effective_content.get("url"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let thumb = content
+            let thumb = effective_content
                 .get("thumbUrl")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let name = content
+            let name = effective_content
                 .get("file_name")
-                .or_else(|| content.get("fileName"))
-                .or_else(|| content.get("title"))
+                .or_else(|| effective_content.get("fileName"))
+                .or_else(|| effective_content.get("title"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let size = content
+            let size = effective_content
                 .get("fileSize")
-                .or_else(|| content.get("size"))
+                .or_else(|| effective_content.get("size"))
                 .and_then(|v| v.as_u64());
             if url.is_some() || thumb.is_some() {
                 attachments.push(NormalizedAttachment {
@@ -197,14 +210,14 @@ fn content_parts(
                     size_bytes: size,
                     remote_url: url,
                     thumbnail_url: thumb,
-                    metadata_json: Some(content.clone()),
+                    metadata_json: Some(effective_content.clone()),
                 });
             }
         }
         "audio" => {
-            let url = content
+            let url = effective_content
                 .get("href")
-                .or_else(|| content.get("url"))
+                .or_else(|| effective_content.get("url"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             if let Some(url) = url {
@@ -216,25 +229,25 @@ fn content_parts(
                     size_bytes: None,
                     remote_url: Some(url),
                     thumbnail_url: None,
-                    metadata_json: Some(content.clone()),
+                    metadata_json: Some(effective_content.clone()),
                 });
             }
         }
         "file" => {
-            let url = content
+            let url = effective_content
                 .get("href")
-                .or_else(|| content.get("url"))
+                .or_else(|| effective_content.get("url"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let name = content
+            let name = effective_content
                 .get("title")
-                .or_else(|| content.get("file_name"))
-                .or_else(|| content.get("fileName"))
+                .or_else(|| effective_content.get("file_name"))
+                .or_else(|| effective_content.get("fileName"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let size = content
+            let size = effective_content
                 .get("fileSize")
-                .or_else(|| content.get("size"))
+                .or_else(|| effective_content.get("size"))
                 .and_then(|v| v.as_u64());
             if url.is_some() || name.is_some() {
                 attachments.push(NormalizedAttachment {
@@ -245,27 +258,56 @@ fn content_parts(
                     size_bytes: size,
                     remote_url: url,
                     thumbnail_url: None,
-                    metadata_json: Some(content.clone()),
+                    metadata_json: Some(effective_content.clone()),
                 });
             }
         }
         "sticker" => {
-            let url = content
+            let url = effective_content
                 .get("url")
+                .or_else(|| effective_content.get("spriteUrl"))
+                .or_else(|| effective_content.get("sprite_url"))
+                .or_else(|| effective_content.get("stickerSpriteUrl"))
+                .or_else(|| effective_content.get("sticker_sprite_url"))
+                .or_else(|| effective_content.get("staticUrl"))
+                .or_else(|| effective_content.get("static_url"))
+                .or_else(|| effective_content.get("webpUrl"))
+                .or_else(|| effective_content.get("webp_url"))
+                .or_else(|| effective_content.get("stickerWebpUrl"))
+                .or_else(|| effective_content.get("sticker_webp_url"))
+                .or_else(|| effective_content.get("webUrl"))
+                .or_else(|| effective_content.get("web_url"))
+                .or_else(|| effective_content.get("stickerUrl"))
+                .or_else(|| effective_content.get("sticker_url"))
+                .or_else(|| effective_content.get("thumbUrl"))
+                .or_else(|| effective_content.get("thumb_url"))
+                .or_else(|| effective_content.get("thumbnailUrl"))
+                .or_else(|| effective_content.get("thumbnail_url"))
+                .or_else(|| effective_content.get("previewUrl"))
+                .or_else(|| effective_content.get("preview_url"))
+                .or_else(|| effective_content.get("src"))
+                .or_else(|| effective_content.get("href"))
+                .or_else(|| effective_content.get("path"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            let provider_attachment_id = effective_content
+                .get("id")
+                .or_else(|| effective_content.get("stickerId"))
+                .or_else(|| effective_content.get("sticker_id"))
+                .and_then(|v| {
+                    v.as_u64()
+                        .map(|id| id.to_string())
+                        .or_else(|| v.as_str().map(str::to_string))
+                });
             attachments.push(NormalizedAttachment {
-                provider_attachment_id: content
-                    .get("id")
-                    .and_then(|v| v.as_u64())
-                    .map(|id| id.to_string()),
+                provider_attachment_id,
                 media_type: "sticker".to_string(),
                 mime_type: "image/webp".to_string(),
                 file_name: None,
                 size_bytes: None,
                 remote_url: url,
                 thumbnail_url: None,
-                metadata_json: Some(content.clone()),
+                metadata_json: Some(effective_content.clone()),
             });
         }
         _ => {}
@@ -415,11 +457,30 @@ fn normalize_message(
 
 fn extract_zalo_mentions(text: Option<&str>, content: &Value) -> Vec<NormalizedMention> {
     let mut mentions = Vec::new();
-    let mentions_arr = content.get("mentions").and_then(Value::as_array);
+    let mut mentions_arr = content.get("mentions").and_then(Value::as_array).cloned();
+
+    if mentions_arr.as_ref().map_or(true, |a| a.is_empty()) {
+        let ext_val = content
+            .get("propertyExt")
+            .or_else(|| content.get("property_ext"))
+            .and_then(|p| p.get("ext"));
+        if let Some(ext) = ext_val {
+            let parsed_ext = if let Some(s) = ext.as_str() {
+                serde_json::from_str::<Value>(s).ok()
+            } else {
+                Some(ext.clone())
+            };
+            if let Some(pe) = parsed_ext {
+                if let Some(arr) = pe.get("mentions").and_then(Value::as_array) {
+                    mentions_arr = Some(arr.clone());
+                }
+            }
+        }
+    }
 
     let mentions_arr = match mentions_arr {
-        Some(arr) => arr,
-        None => return mentions,
+        Some(arr) if !arr.is_empty() => arr,
+        _ => return mentions,
     };
 
     for item in mentions_arr {

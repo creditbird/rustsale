@@ -115,4 +115,50 @@ describe('MessageContentRenderer', () => {
     expect(queryByRole('link')).toBeNull();
     expect(getByText('Liên kết không hợp lệ')).toBeTruthy();
   });
+
+  it('renders sticker message with image when URL is present in content object or attachments', () => {
+    const stickerMsgWithContentUrl: ConversationMessage = {
+      ...baseMessage,
+      contentType: 'text',
+      textContent: '[Sticker]',
+      content: { spriteUrl: 'https://cdn.example.com/sticker-sprite.png' },
+      attachments: [],
+    };
+
+    const { getByTestId } = render(MessageContentRenderer, { message: stickerMsgWithContentUrl });
+    expect(getByTestId('sticker-message-content')).toBeTruthy();
+  });
+
+  it('suppresses link preview card for video links and video attachments', () => {
+    const zaloVideoMsg: ConversationMessage = {
+      ...baseMessage,
+      contentType: 'video',
+      textContent: null,
+      content: {
+        href: 'https://video-stal-7.dlmd.me/no/b2cc1e68da491c174558/2aOboQq1lpmg2o0f39pSouiyKjfpjfkQdTHn1SvQ',
+        title: 'https://video-stal-7.dlmd.me/no/b2cc1e68da491c174558/2aOboQq1lpmg2o0f39pSouiyKjfpjfkQdTHn1SvQ',
+        description: 'https://video-stal-7.dlmd.me/no/b2cc1e68da491c174558/2aOboQq1lpmg2o0f39pSouiyKjfpjfkQdTHn1SvQ',
+        thumbUrl: 'https://photo-stal-7.dlmd.me/thumb.jpg'
+      },
+      attachments: [
+        {
+          id: 99,
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          fileName: 'video.mp4',
+          sizeBytes: 5000,
+          remoteUrl: 'https://video-stal-7.dlmd.me/no/b2cc1e68da491c174558/2aOboQq1lpmg2o0f39pSouiyKjfpjfkQdTHn1SvQ',
+          thumbnailUrl: 'https://photo-stal-7.dlmd.me/thumb.jpg',
+          width: 720,
+          height: 1280,
+          durationSeconds: 15
+        }
+      ]
+    };
+
+    const { getByTestId, queryByTestId } = render(MessageContentRenderer, { message: zaloVideoMsg });
+    expect(getByTestId('video-message-content')).toBeTruthy();
+    expect(queryByTestId('link-message-content')).toBeNull();
+    expect(queryByTestId('message-text-content')).toBeNull();
+  });
 });

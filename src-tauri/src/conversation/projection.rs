@@ -285,6 +285,68 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         if let Some(atts) = attachments_map.remove(&msg.id) {
             msg.attachments = atts;
         }
+
+        let is_sticker_candidate = msg.content_type == "sticker"
+            || msg.text_content.as_deref() == Some("[Sticker]")
+            || msg.content.get("stickerId").is_some()
+            || msg.content.get("cateId").is_some();
+
+        if is_sticker_candidate {
+            let extracted_url = msg
+                .content
+                .get("url")
+                .or_else(|| msg.content.get("spriteUrl"))
+                .or_else(|| msg.content.get("sprite_url"))
+                .or_else(|| msg.content.get("stickerSpriteUrl"))
+                .or_else(|| msg.content.get("sticker_sprite_url"))
+                .or_else(|| msg.content.get("staticUrl"))
+                .or_else(|| msg.content.get("static_url"))
+                .or_else(|| msg.content.get("webpUrl"))
+                .or_else(|| msg.content.get("webp_url"))
+                .or_else(|| msg.content.get("stickerWebpUrl"))
+                .or_else(|| msg.content.get("sticker_webp_url"))
+                .or_else(|| msg.content.get("webUrl"))
+                .or_else(|| msg.content.get("web_url"))
+                .or_else(|| msg.content.get("stickerUrl"))
+                .or_else(|| msg.content.get("sticker_url"))
+                .or_else(|| msg.content.get("thumbUrl"))
+                .or_else(|| msg.content.get("thumb_url"))
+                .or_else(|| msg.content.get("thumbnailUrl"))
+                .or_else(|| msg.content.get("thumbnail_url"))
+                .or_else(|| msg.content.get("previewUrl"))
+                .or_else(|| msg.content.get("preview_url"))
+                .or_else(|| msg.content.get("src"))
+                .or_else(|| msg.content.get("href"))
+                .or_else(|| msg.content.get("path"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+
+            if msg.content_type != "sticker"
+                && (extracted_url.is_some() || msg.content.get("stickerId").is_some())
+            {
+                msg.content_type = "sticker".to_string();
+            }
+
+            if let Some(url) = extracted_url {
+                if msg.attachments.is_empty() {
+                    msg.attachments.push(ConversationAttachment {
+                        id: 0,
+                        media_type: "sticker".to_string(),
+                        mime_type: "image/webp".to_string(),
+                        file_name: None,
+                        size_bytes: None,
+                        local_path: None,
+                        remote_url: Some(url),
+                        thumbnail_url: None,
+                        width: None,
+                        height: None,
+                        duration_seconds: None,
+                    });
+                } else if msg.attachments[0].remote_url.is_none() {
+                    msg.attachments[0].remote_url = Some(url);
+                }
+            }
+        }
         if let Some(tid) = msg.reply_to_message_id {
             if let Some(hydrated) = reply_targets_map.get(&tid) {
                 msg.reply_target = Some(hydrated.clone());

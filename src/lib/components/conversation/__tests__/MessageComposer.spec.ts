@@ -371,7 +371,8 @@ describe('MessageComposer', () => {
         type: 'sticker',
         stickerId: 7,
         cateId: 8,
-        stickerType: 1
+        stickerType: 1,
+        url: 'https://cdn.example.com/7.png'
       }
     ]);
   });

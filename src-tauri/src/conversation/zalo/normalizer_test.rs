@@ -358,3 +358,56 @@ fn mention_inbound_group_message_normalizes_mentions() {
     assert_eq!(message.mentions[0].start_utf16, 9);
     assert_eq!(message.mentions[0].length_utf16, 13);
 }
+
+#[test]
+fn sticker_message_normalizes_correctly_with_url_variants() {
+    let mut base = base_message(
+        "peer-uid",
+        "0",
+        "sticker-msg-1",
+        json!({
+            "id": 12345,
+            "cateId": 678,
+            "type": 1,
+            "spriteUrl": "https://stc-laban.zdn.vn/sticker/sprite.png"
+        }),
+    );
+    base.msg_type = "chat.sticker".to_string();
+
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", base))));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+    assert_eq!(message.content_type, "sticker");
+    assert_eq!(message.attachments.len(), 1);
+    assert_eq!(
+        message.attachments[0].remote_url.as_deref(),
+        Some("https://stc-laban.zdn.vn/sticker/sprite.png")
+    );
+}
+
+#[test]
+fn sticker_message_with_stringified_json_content_normalizes_attachment() {
+    let mut base = base_message(
+        "peer-uid",
+        "0",
+        "sticker-msg-2",
+        json!("{\"id\":999,\"stickerUrl\":\"https://stc-laban.zdn.vn/sticker/sample.webp\"}"),
+    );
+    base.msg_type = "chat.sticker".to_string();
+
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", base))));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+    assert_eq!(message.content_type, "sticker");
+    assert_eq!(message.attachments.len(), 1);
+    assert_eq!(
+        message.attachments[0].remote_url.as_deref(),
+        Some("https://stc-laban.zdn.vn/sticker/sample.webp")
+    );
+}

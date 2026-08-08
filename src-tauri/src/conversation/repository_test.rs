@@ -1961,6 +1961,7 @@ fn sticker_must_be_the_only_part_in_phase_one() {
                     sticker_id: 1,
                     cate_id: 2,
                     sticker_type: 1,
+                    url: None,
                 },
             },
         ],
@@ -1984,6 +1985,7 @@ fn sticker_must_be_the_only_part_in_phase_one() {
                 sticker_id: 1,
                 cate_id: 2,
                 sticker_type: 1,
+                url: None,
             },
         }],
     };

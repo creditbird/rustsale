@@ -2674,6 +2674,7 @@ impl ConversationRepository {
                     sticker_id,
                     cate_id,
                     sticker_type,
+                    url,
                 } => (
                     "sticker",
                     None,
@@ -2681,6 +2682,7 @@ impl ConversationRepository {
                         "stickerId": sticker_id,
                         "cateId": cate_id,
                         "type": sticker_type,
+                        "url": url,
                     })
                     .to_string(),
                 ),
@@ -2791,20 +2793,22 @@ impl ConversationRepository {
                 sticker_id,
                 cate_id,
                 sticker_type,
+                url,
             } = &part.content
             {
                 let meta = serde_json::json!({
                     "stickerId": sticker_id,
                     "cateId": cate_id,
                     "type": sticker_type,
+                    "url": url,
                 })
                 .to_string();
 
                 tx.execute(
                     "INSERT INTO message_attachments
-                     (message_id, provider_attachment_id, attachment_type, file_name, mime_type, size_bytes, local_path, thumbnail_url, metadata_json, created_at)
-                     VALUES (?1, NULL, 'sticker', NULL, NULL, NULL, NULL, NULL, ?2, ?3)",
-                    params![message_id, meta, now],
+                     (message_id, provider_attachment_id, attachment_type, file_name, mime_type, size_bytes, local_path, remote_url, thumbnail_url, metadata_json, created_at)
+                     VALUES (?1, NULL, 'sticker', NULL, NULL, NULL, NULL, ?2, NULL, ?3, ?4)",
+                    params![message_id, url, meta, now],
                 ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
             }
 

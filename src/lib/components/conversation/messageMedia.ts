@@ -10,6 +10,118 @@ export function safeConversationUrl(url: string | null | undefined): string | nu
   return null;
 }
 
+export function isImageUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const clean = url.split('?')[0].split('#')[0].toLowerCase();
+  if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(clean)) return true;
+  if (clean.includes('zdn.vn/gr/jpg/') || clean.includes('/photo-stal-') || clean.includes('/photo-')) return true;
+  return false;
+}
+
+export function isVideoUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const clean = url.split('?')[0].split('#')[0].toLowerCase();
+  if (/\.(mp4|webm|ogg|mov|m4v|mkv|avi|3gp|flv)$/i.test(clean)) return true;
+  if (
+    clean.includes('/video-stal-') ||
+    clean.includes('/video-') ||
+    clean.includes('video.zdn.vn') ||
+    clean.includes('zalo-video')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function extractStickerUrl(
+  attachment?: { remoteUrl?: string | null; thumbnailUrl?: string | null; metadata_json?: string | null } | null,
+  content?: Record<string, unknown> | null
+): string | null {
+  const fromAtt = safeConversationUrl(attachment?.remoteUrl) ?? safeConversationUrl(attachment?.thumbnailUrl);
+  if (fromAtt) return fromAtt;
+
+  if (attachment && 'metadata_json' in attachment && typeof (attachment as Record<string, unknown>).metadata_json === 'string') {
+    try {
+      const parsed = JSON.parse((attachment as Record<string, unknown>).metadata_json as string);
+      const urlFromMeta = extractStickerUrlFromObject(parsed);
+      if (urlFromMeta) return urlFromMeta;
+    } catch {
+      // Ignore invalid metadata_json
+    }
+  }
+
+  if (!content) return null;
+  return extractStickerUrlFromObject(content);
+}
+
+function extractStickerUrlFromObject(obj: Record<string, unknown> | null | undefined, depth = 0): string | null {
+  if (!obj || typeof obj !== 'object' || depth > 5) return null;
+
+  const candidateKeys = [
+    'url',
+    'spriteUrl',
+    'sprite_url',
+    'stickerSpriteUrl',
+    'sticker_sprite_url',
+    'staticUrl',
+    'static_url',
+    'webpUrl',
+    'webp_url',
+    'stickerWebpUrl',
+    'sticker_webp_url',
+    'webUrl',
+    'web_url',
+    'stickerUrl',
+    'sticker_url',
+    'thumbUrl',
+    'thumb_url',
+    'thumbnailUrl',
+    'thumbnail_url',
+    'hdUrl',
+    'hd_url',
+    'previewUrl',
+    'preview_url',
+    'fullUrl',
+    'full_url',
+    'mediaUrl',
+    'media_url',
+    'imageUrl',
+    'image_url',
+    'src',
+    'href',
+    'path'
+  ];
+
+  for (const key of candidateKeys) {
+    if (typeof obj[key] === 'string') {
+      const safe = safeConversationUrl(obj[key] as string);
+      if (safe) return safe;
+    }
+  }
+
+  const subObjectKeys = ['sticker', 'data', 'payload', 'params', 'media', 'attachment', 'content'];
+  for (const subKey of subObjectKeys) {
+    if (obj[subKey] && typeof obj[subKey] === 'object' && !Array.isArray(obj[subKey])) {
+      const nestedUrl = extractStickerUrlFromObject(obj[subKey] as Record<string, unknown>, depth + 1);
+      if (nestedUrl) return nestedUrl;
+    }
+  }
+
+  for (const key of Object.keys(obj)) {
+    if (candidateKeys.includes(key) || subObjectKeys.includes(key)) continue;
+    const val = obj[key];
+    if (typeof val === 'string') {
+      const safe = safeConversationUrl(val);
+      if (safe) return safe;
+    } else if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const nestedUrl = extractStickerUrlFromObject(val as Record<string, unknown>, depth + 1);
+      if (nestedUrl) return nestedUrl;
+    }
+  }
+
+  return null;
+}
+
 const MAX_IMAGE_PREVIEW_BYTES = 10 * 1024 * 1024;
 const RASTER_IMAGE_DATA_URL = /^data:image\/(?:png|jpe?g|webp|gif);base64,([a-z0-9+/]+={0,2})$/i;
 

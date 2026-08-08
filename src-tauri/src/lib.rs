@@ -239,6 +239,7 @@ pub fn run() {
             conversation::commands::stage_conversation_clipboard_image,
             conversation::commands::discard_conversation_staged_attachment,
             conversation::commands::search_zalo_stickers,
+            conversation::commands::get_zalo_sticker_detail,
             conversation::commands::recall_conversation_message,
             conversation::commands::list_conversation_quick_templates,
             conversation::commands::create_conversation_quick_template,

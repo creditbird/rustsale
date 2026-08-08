@@ -8,8 +8,9 @@ use crate::conversation::zalo::normalizer::{NormalizedGroupParticipant, Normaliz
 
 pub fn normalize_group_info(
     provider_account_key: &str,
-    info: zca_rs::models::GroupInfo,
+    info_with_ver: zca_rs::apis::group::GroupInfoWithVer,
 ) -> NormalizedGroupSnapshot {
+    let info = info_with_ver.info;
     let title = info.name;
     let avatar_url = if !info.full_avt.is_empty() {
         Some(info.full_avt)
@@ -19,34 +20,73 @@ pub fn normalize_group_info(
         None
     };
 
-    let participants = info
+    let mut mem_map: std::collections::HashMap<String, zca_rs::models::GroupCurrentMem> = info
         .current_mems
         .into_iter()
-        .map(|mem| {
-            let role = if info.admin_ids.contains(&mem.id) {
+        .map(|m| (m.id.clone(), m))
+        .collect();
+
+    let mut all_uids: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(ver_list) = info_with_ver.mem_ver_list {
+        for entry in ver_list {
+            let uid = entry
+                .rsplit_once('_')
+                .map(|(u, _v)| u)
+                .unwrap_or(&entry)
+                .to_string();
+            if !uid.is_empty() && seen.insert(uid.clone()) {
+                all_uids.push(uid);
+            }
+        }
+    }
+
+    for uid in &info.member_ids {
+        if !uid.is_empty() && seen.insert(uid.clone()) {
+            all_uids.push(uid.clone());
+        }
+    }
+
+    for uid in mem_map.keys() {
+        if !uid.is_empty() && seen.insert(uid.clone()) {
+            all_uids.push(uid.clone());
+        }
+    }
+
+    let participants = all_uids
+        .into_iter()
+        .map(|uid| {
+            let role = if info.admin_ids.contains(&uid) || info.creator_id == uid {
                 "admin".to_string()
             } else {
                 "member".to_string()
             };
-            let display_name = if !mem.d_name.is_empty() {
-                Some(mem.d_name)
-            } else if !mem.zalo_name.is_empty() {
-                Some(mem.zalo_name)
+
+            let (display_name, avatar) = if let Some(mem) = mem_map.remove(&uid) {
+                let dname = if !mem.d_name.is_empty() {
+                    Some(mem.d_name)
+                } else if !mem.zalo_name.is_empty() {
+                    Some(mem.zalo_name)
+                } else {
+                    None
+                };
+                let avt = if !mem.avatar.is_empty() {
+                    Some(mem.avatar)
+                } else if !mem.avatar_25.is_empty() {
+                    Some(mem.avatar_25)
+                } else {
+                    None
+                };
+                (dname, avt)
             } else {
-                None
-            };
-            let avatar = if !mem.avatar.is_empty() {
-                Some(mem.avatar)
-            } else if !mem.avatar_25.is_empty() {
-                Some(mem.avatar_25)
-            } else {
-                None
+                (None, None)
             };
 
             NormalizedGroupParticipant {
                 identity: NormalizedIdentity {
                     identity_namespace: "zalo_uid".to_string(),
-                    external_id: mem.id,
+                    external_id: uid,
                     display_name,
                     avatar_url: avatar,
                     lead_id: None,
@@ -291,6 +331,12 @@ pub trait ZaloClient: Send + Sync {
     ) -> Result<Vec<ZaloStickerReference>, ProviderSendError> {
         Ok(Vec::new())
     }
+    async fn get_sticker_detail(
+        &self,
+        _sticker_id: u32,
+    ) -> Result<Option<ZaloStickerReference>, ProviderSendError> {
+        Ok(None)
+    }
     async fn recall(&self, _request: ProviderRecallRequest) -> Result<(), ProviderSendError> {
         Ok(())
     }
@@ -396,7 +442,7 @@ impl ZaloClient for RealZaloClient {
             for (_gid, info_with_ver) in info_response.grid_info_map {
                 snapshots.push(normalize_group_info(
                     &self.provider_account_key,
-                    info_with_ver.info,
+                    info_with_ver,
                 ));
             }
         }
@@ -417,12 +463,12 @@ impl ZaloClient for RealZaloClient {
         if let Some(info_with_ver) = info_response.grid_info_map.remove(group_id) {
             Ok(Some(normalize_group_info(
                 &self.provider_account_key,
-                info_with_ver.info,
+                info_with_ver,
             )))
         } else if let Some(info_with_ver) = info_response.grid_info_map.into_values().next() {
             Ok(Some(normalize_group_info(
                 &self.provider_account_key,
-                info_with_ver.info,
+                info_with_ver,
             )))
         } else {
             Ok(None)
@@ -752,6 +798,30 @@ impl ZaloClient for RealZaloClient {
             }
         }
         Ok(results)
+    }
+
+    async fn get_sticker_detail(
+        &self,
+        sticker_id: u32,
+    ) -> Result<Option<ZaloStickerReference>, ProviderSendError> {
+        let details = self
+            .inner
+            .get_stickers_detail(&[sticker_id])
+            .await?;
+        if let Some(d) = details.first() {
+            Ok(Some(ZaloStickerReference {
+                sticker_id: d.id,
+                cate_id: d.cate_id,
+                sticker_type: d.r#type,
+                url: if !d.sticker_url.is_empty() {
+                    d.sticker_url.clone()
+                } else {
+                    d.sticker_sprite_url.clone()
+                },
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn recall(&self, request: ProviderRecallRequest) -> Result<(), ProviderSendError> {

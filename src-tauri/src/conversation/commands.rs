@@ -270,6 +270,38 @@ pub async fn search_zalo_stickers(
 }
 
 #[tauri::command]
+pub async fn get_zalo_sticker_detail(
+    state: tauri::State<'_, ConversationState>,
+    conversation_id: i64,
+    sticker_id: u32,
+) -> Result<Option<crate::conversation::zalo::client::ZaloStickerReference>, ConversationCommandError>
+{
+    use crate::conversation::error::{ConversationError, ConversationErrorCode};
+
+    let account_key = state
+        .service
+        .repository
+        .get_conversation_account_key(conversation_id)
+        .map_err(|e| ConversationError::from(e).command_error())?
+        .ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                format!("conversation {conversation_id} has no channel account"),
+            )
+            .command_error()
+        })?;
+
+    state
+        .zalo_supervisor
+        .get_sticker_detail(&account_key, sticker_id)
+        .await
+        .map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                .command_error()
+        })
+}
+
+#[tauri::command]
 pub async fn recall_conversation_message(
     state: tauri::State<'_, ConversationState>,
     request: crate::conversation::types::RecallMessageRequest,
