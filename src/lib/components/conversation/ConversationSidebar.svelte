@@ -38,6 +38,7 @@
   } = $props();
 
   let searchQuery = $state('');
+  let activeKindTab = $state<'all' | 'customer' | 'group'>('all');
   let activeFilterTab = $state<'all' | 'unread' | 'priority' | 'stuck'>('all');
   let newChatOpen = $state(false);
   let deleteDialogOpen = $state(false);
@@ -107,6 +108,10 @@
   let priorityCount = $derived(items.filter(isPriorityItem).length);
   let stuckCount = $derived(items.filter(isStuckItem).length);
 
+  let allCount = $derived(items.length);
+  let customerCount = $derived(items.filter((i) => i.kind === 'customer' || i.kind === 'unknown').length);
+  let groupCount = $derived(items.filter((i) => i.kind === 'group').length);
+
   let filteredItems = $derived(
     items.filter((item) => {
       // 1. Text search filter
@@ -126,6 +131,14 @@
     })
   );
 
+  let filteredByKindItems = $derived(
+    filteredItems.filter((item) => {
+      if (activeKindTab === 'customer') return item.kind === 'customer' || item.kind === 'unknown';
+      if (activeKindTab === 'group') return item.kind === 'group';
+      return true;
+    })
+  );
+
 
   function sortByLatest(a: InboxItem, b: InboxItem): number {
     const aAt = a.lastMessageAt ?? '';
@@ -137,16 +150,21 @@
 
 
   let pinnedItems = $derived(
-    filteredItems.filter((i) => pinnedKeys.has(i.key)).slice().sort(sortByLatest)
+    filteredByKindItems.filter((i) => pinnedKeys.has(i.key)).slice().sort(sortByLatest)
+  );
+
+  let unpinnedItems = $derived(
+    filteredByKindItems.filter((i) => !pinnedKeys.has(i.key)).slice().sort(sortByLatest)
   );
 
   let customerItems = $derived(
-    filteredItems.filter((i) => !pinnedKeys.has(i.key) && (i.kind === 'customer' || i.kind === 'unknown')).slice().sort(sortByLatest)
+    filteredByKindItems.filter((i) => !pinnedKeys.has(i.key) && (i.kind === 'customer' || i.kind === 'unknown')).slice().sort(sortByLatest)
   );
 
   let groupItems = $derived(
-    filteredItems.filter((i) => !pinnedKeys.has(i.key) && i.kind === 'group').slice().sort(sortByLatest)
+    filteredByKindItems.filter((i) => !pinnedKeys.has(i.key) && i.kind === 'group').slice().sort(sortByLatest)
   );
+
 
 
 
@@ -199,6 +217,51 @@
         class="pl-9 text-sm h-8"
       />
     </div>
+
+    <!-- Kind Filter Tabs (Option A: Tất cả / Khách hàng / Nhóm) -->
+    <div class="flex items-center gap-1 bg-muted/60 p-1 rounded-lg border border-border/40 select-none text-xs font-medium">
+      <button
+        type="button"
+        data-kind-tab="all"
+        class={cn(
+          "flex-1 py-1 px-2 rounded-md transition-all text-center cursor-pointer",
+          activeKindTab === 'all'
+            ? "bg-background text-foreground font-semibold shadow-xs border border-border/50"
+            : "text-muted-foreground hover:text-foreground"
+        )}
+        onclick={() => (activeKindTab = 'all')}
+      >
+        Tất cả ({allCount})
+      </button>
+      <button
+        type="button"
+        data-kind-tab="customer"
+        class={cn(
+          "flex-1 py-1 px-2 rounded-md transition-all text-center cursor-pointer",
+          activeKindTab === 'customer'
+            ? "bg-background text-foreground font-semibold shadow-xs border border-border/50"
+            : "text-muted-foreground hover:text-foreground"
+        )}
+        onclick={() => (activeKindTab = 'customer')}
+      >
+        Khách hàng ({customerCount})
+      </button>
+      <button
+        type="button"
+        data-kind-tab="group"
+        class={cn(
+          "flex-1 py-1 px-2 rounded-md transition-all text-center cursor-pointer",
+          activeKindTab === 'group'
+            ? "bg-background text-foreground font-semibold shadow-xs border border-border/50"
+            : "text-muted-foreground hover:text-foreground"
+        )}
+        onclick={() => (activeKindTab = 'group')}
+      >
+        Nhóm ({groupCount})
+      </button>
+    </div>
+
+
 
     <!-- Triage Filter Bar -->
     <div class="flex items-center gap-1 overflow-x-auto no-scrollbar pt-1 select-none">
@@ -369,225 +432,340 @@
           </div>
         {/if}
 
-        {#if customerItems.length > 0}
-          <div>
-            <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
-              Khách hàng
-            </h3>
-            <div class="space-y-1">
-              {#each customerItems as item (item.key)}
-                {@const isSelected = selectedKey === item.key}
-                <div
-                  role="button"
-                  tabindex="0"
-                  data-inbox-item
-                  data-key={item.key}
-                  aria-current={isSelected ? 'true' : 'false'}
-                  onclick={() => onSelect(item)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onSelect(item);
-                    }
-                  }}
-                  class={cn(
-                    'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                    isSelected
-                      ? 'bg-accent text-accent-foreground font-medium'
-                      : 'hover:bg-muted/60 text-foreground'
-                  )}
-                >
-                  {#if item.avatarUrl}
-                    <img
-                      src={item.avatarUrl}
-                      alt={item.title}
-                      class="w-10 h-10 rounded-full object-cover shrink-0"
-                    />
-                  {:else}
-                    <div
-                      class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
-                    >
-                      {getInitials(item.title)}
-                    </div>
-                  {/if}
-
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center justify-between gap-1 group/item">
-                      <span class="font-semibold text-sm truncate">{item.title}</span>
-                      <div class="flex items-center gap-0.5 shrink-0">
-                        <button
-                          type="button"
-                          title="Ghim cuộc trò chuyện lên đầu"
-                          onclick={(e) => togglePinConversation(e, item)}
-                          class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
-                        >
-                          <Pin class="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          title="Xóa cuộc trò chuyện"
-                          onclick={(e) => promptDelete(e, item)}
-                          class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                        >
-                          <Trash2 class="w-3.5 h-3.5" />
-                        </button>
+        {#if activeKindTab === 'all'}
+          {#if unpinnedItems.length > 0}
+            <div>
+              <div class="space-y-1">
+                {#each unpinnedItems as item (item.key)}
+                  {@const isSelected = selectedKey === item.key}
+                  <div
+                    role="button"
+                    tabindex="0"
+                    data-inbox-item
+                    data-key={item.key}
+                    aria-current={isSelected ? 'true' : 'false'}
+                    onclick={() => onSelect(item)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelect(item);
+                      }
+                    }}
+                    class={cn(
+                      'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
+                      isSelected
+                        ? 'bg-accent text-accent-foreground font-medium'
+                        : 'hover:bg-muted/60 text-foreground'
+                    )}
+                  >
+                    {#if item.avatarUrl}
+                      <img
+                        src={item.avatarUrl}
+                        alt={item.title}
+                        class="w-10 h-10 rounded-full object-cover shrink-0"
+                      />
+                    {:else}
+                      <div
+                        class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
+                      >
+                        {getInitials(item.title)}
                       </div>
-                    </div>
-
-                    {#if item.lastMessagePreview}
-                      <p class="text-xs text-muted-foreground truncate mt-0.5">
-                        {parseEmoticons(item.lastMessagePreview)}
-                      </p>
                     {/if}
 
-                    {#if item.channels && item.channels.length > 0}
-                      <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                        {#each item.channels as ch (ch.channel)}
-                          {@const Icon = channelIcons[ch.channel] || MessageSquare}
-                          {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
-                          {@const chName = ch.channel.toLowerCase()}
-                          <span
-                            class={cn(
-                              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
-                              count > 0
-                                ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
-                                : chName === 'zalo'
-                                  ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
-                                  : chName === 'whatsapp'
-                                    ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
-                                    : chName === 'messenger'
-                                      ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
-                                      : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
-                            )}
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center justify-between gap-1 group/item">
+                        <span class="font-semibold text-sm truncate">{item.title}</span>
+                        <div class="flex items-center gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            title="Ghim cuộc trò chuyện lên đầu"
+                            onclick={(e) => togglePinConversation(e, item)}
+                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
                           >
-                            <Icon class="w-3 h-3" />
-                            {#if count > 0}
-                              <span class="font-bold">{count}</span>
-                            {/if}
-                          </span>
-                        {/each}
+                            <Pin class="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Xóa cuộc trò chuyện"
+                            onclick={(e) => promptDelete(e, item)}
+                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                          >
+                            <Trash2 class="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
 
-        {#if groupItems.length > 0}
-          <div>
-            <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
-              Nhóm
-            </h3>
-            <div class="space-y-1">
-              {#each groupItems as item (item.key)}
-                {@const isSelected = selectedKey === item.key}
-                <div
-                  role="button"
-                  tabindex="0"
-                  data-inbox-item
-                  data-key={item.key}
-                  aria-current={isSelected ? 'true' : 'false'}
-                  onclick={() => onSelect(item)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onSelect(item);
-                    }
-                  }}
-                  class={cn(
-                    'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                    isSelected
-                      ? 'bg-accent text-accent-foreground font-medium'
-                      : 'hover:bg-muted/60 text-foreground'
-                  )}
-                >
-                  {#if item.avatarUrl}
-                    <img
-                      src={item.avatarUrl}
-                      alt={item.title}
-                      class="w-10 h-10 rounded-full object-cover shrink-0"
-                    />
-                  {:else}
-                    <div
-                      class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
-                    >
-                      {getInitials(item.title)}
-                    </div>
-                  {/if}
+                      {#if item.lastMessagePreview}
+                        <p class="text-xs text-muted-foreground truncate mt-0.5">
+                          {parseEmoticons(item.lastMessagePreview)}
+                        </p>
+                      {/if}
 
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center justify-between gap-1 group/item">
-                      <span class="font-semibold text-sm truncate">{item.title}</span>
-                      <div class="flex items-center gap-0.5 shrink-0">
-                        <button
-                          type="button"
-                          title="Ghim cuộc trò chuyện lên đầu"
-                          onclick={(e) => togglePinConversation(e, item)}
-                          class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
-                        >
-                          <Pin class="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          title="Xóa cuộc trò chuyện"
-                          onclick={(e) => promptDelete(e, item)}
-                          class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                        >
-                          <Trash2 class="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
+                      {#if item.kind === 'group'}
+                        <div class="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
+                          <Users class="w-3.5 h-3.5 shrink-0" />
+                          <span class="shrink-0 font-medium">{item.participantCount}</span>
+                          {#if getParticipantsPreview(item)}
+                            <span class="truncate">({getParticipantsPreview(item)})</span>
+                          {/if}
+                        </div>
+                      {/if}
 
-
-                    {#if item.lastMessagePreview}
-                      <p class="text-xs text-muted-foreground truncate mt-0.5">
-                        {parseEmoticons(item.lastMessagePreview)}
-                      </p>
-                    {/if}
-
-                    <div class="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
-                      <Users class="w-3.5 h-3.5 shrink-0" />
-                      <span class="shrink-0 font-medium">{item.participantCount}</span>
-                      {#if getParticipantsPreview(item)}
-                        <span class="truncate">({getParticipantsPreview(item)})</span>
+                      {#if item.channels && item.channels.length > 0}
+                        <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          {#each item.channels as ch (ch.channel)}
+                            {@const Icon = channelIcons[ch.channel] || MessageSquare}
+                            {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
+                            {@const chName = ch.channel.toLowerCase()}
+                            <span
+                              class={cn(
+                                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
+                                count > 0
+                                  ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
+                                  : chName === 'zalo'
+                                    ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
+                                    : chName === 'whatsapp'
+                                      ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
+                                      : chName === 'messenger'
+                                        ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
+                                        : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
+                              )}
+                            >
+                              <Icon class="w-3 h-3" />
+                              {#if count > 0}
+                                <span class="font-bold">{count}</span>
+                              {/if}
+                            </span>
+                          {/each}
+                        </div>
                       {/if}
                     </div>
-
-                    {#if item.channels && item.channels.length > 0}
-                      <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                        {#each item.channels as ch (ch.channel)}
-                          {@const Icon = channelIcons[ch.channel] || MessageSquare}
-                          {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
-                          <span
-                            class={cn(
-                              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-colors",
-                              count > 0
-                                ? "bg-destructive/15 text-destructive font-bold ring-1 ring-destructive/30"
-                                : "bg-muted/80 text-muted-foreground"
-                            )}
-                          >
-                            <Icon class="w-3 h-3" />
-                            {#if count > 0}
-                              <span class="font-bold">{count}</span>
-                            {/if}
-                          </span>
-                        {/each}
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        {:else if activeKindTab === 'customer'}
+          {#if customerItems.length > 0}
+            <div>
+              <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
+                Khách hàng ({customerItems.length})
+              </h3>
+              <div class="space-y-1">
+                {#each customerItems as item (item.key)}
+                  {@const isSelected = selectedKey === item.key}
+                  <div
+                    role="button"
+                    tabindex="0"
+                    data-inbox-item
+                    data-key={item.key}
+                    aria-current={isSelected ? 'true' : 'false'}
+                    onclick={() => onSelect(item)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelect(item);
+                      }
+                    }}
+                    class={cn(
+                      'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
+                      isSelected
+                        ? 'bg-accent text-accent-foreground font-medium'
+                        : 'hover:bg-muted/60 text-foreground'
+                    )}
+                  >
+                    {#if item.avatarUrl}
+                      <img
+                        src={item.avatarUrl}
+                        alt={item.title}
+                        class="w-10 h-10 rounded-full object-cover shrink-0"
+                      />
+                    {:else}
+                      <div
+                        class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
+                      >
+                        {getInitials(item.title)}
                       </div>
                     {/if}
+
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center justify-between gap-1 group/item">
+                        <span class="font-semibold text-sm truncate">{item.title}</span>
+                        <div class="flex items-center gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            title="Ghim cuộc trò chuyện lên đầu"
+                            onclick={(e) => togglePinConversation(e, item)}
+                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
+                          >
+                            <Pin class="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Xóa cuộc trò chuyện"
+                            onclick={(e) => promptDelete(e, item)}
+                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                          >
+                            <Trash2 class="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {#if item.lastMessagePreview}
+                        <p class="text-xs text-muted-foreground truncate mt-0.5">
+                          {parseEmoticons(item.lastMessagePreview)}
+                        </p>
+                      {/if}
+
+                      {#if item.channels && item.channels.length > 0}
+                        <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          {#each item.channels as ch (ch.channel)}
+                            {@const Icon = channelIcons[ch.channel] || MessageSquare}
+                            {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
+                            {@const chName = ch.channel.toLowerCase()}
+                            <span
+                              class={cn(
+                                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
+                                count > 0
+                                  ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
+                                  : chName === 'zalo'
+                                    ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
+                                    : chName === 'whatsapp'
+                                      ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
+                                      : chName === 'messenger'
+                                        ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
+                                        : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
+                              )}
+                            >
+                              <Icon class="w-3 h-3" />
+                              {#if count > 0}
+                                <span class="font-bold">{count}</span>
+                              {/if}
+                            </span>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
                   </div>
-                </div>
-              {/each}
+                {/each}
+              </div>
             </div>
-          </div>
+          {/if}
+        {:else if activeKindTab === 'group'}
+          {#if groupItems.length > 0}
+            <div>
+              <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
+                Nhóm ({groupItems.length})
+              </h3>
+              <div class="space-y-1">
+                {#each groupItems as item (item.key)}
+                  {@const isSelected = selectedKey === item.key}
+                  <div
+                    role="button"
+                    tabindex="0"
+                    data-inbox-item
+                    data-key={item.key}
+                    aria-current={isSelected ? 'true' : 'false'}
+                    onclick={() => onSelect(item)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelect(item);
+                      }
+                    }}
+                    class={cn(
+                      'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
+                      isSelected
+                        ? 'bg-accent text-accent-foreground font-medium'
+                        : 'hover:bg-muted/60 text-foreground'
+                    )}
+                  >
+                    {#if item.avatarUrl}
+                      <img
+                        src={item.avatarUrl}
+                        alt={item.title}
+                        class="w-10 h-10 rounded-full object-cover shrink-0"
+                      />
+                    {:else}
+                      <div
+                        class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
+                      >
+                        {getInitials(item.title)}
+                      </div>
+                    {/if}
+
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center justify-between gap-1 group/item">
+                        <span class="font-semibold text-sm truncate">{item.title}</span>
+                        <div class="flex items-center gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            title="Ghim cuộc trò chuyện lên đầu"
+                            onclick={(e) => togglePinConversation(e, item)}
+                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
+                          >
+                            <Pin class="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Xóa cuộc trò chuyện"
+                            onclick={(e) => promptDelete(e, item)}
+                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                          >
+                            <Trash2 class="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {#if item.lastMessagePreview}
+                        <p class="text-xs text-muted-foreground truncate mt-0.5">
+                          {parseEmoticons(item.lastMessagePreview)}
+                        </p>
+                      {/if}
+
+                      <div class="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
+                        <Users class="w-3.5 h-3.5 shrink-0" />
+                        <span class="shrink-0 font-medium">{item.participantCount}</span>
+                        {#if getParticipantsPreview(item)}
+                          <span class="truncate">({getParticipantsPreview(item)})</span>
+                        {/if}
+                      </div>
+
+                      {#if item.channels && item.channels.length > 0}
+                        <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          {#each item.channels as ch (ch.channel)}
+                            {@const Icon = channelIcons[ch.channel] || MessageSquare}
+                            {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
+                            <span
+                              class={cn(
+                                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-colors",
+                                count > 0
+                                  ? "bg-destructive/15 text-destructive font-bold ring-1 ring-destructive/30"
+                                  : "bg-muted/80 text-muted-foreground"
+                              )}
+                            >
+                              <Icon class="w-3 h-3" />
+                              {#if count > 0}
+                                <span class="font-bold">{count}</span>
+                              {/if}
+                            </span>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
         {/if}
 
-        {#if customerItems.length === 0 && groupItems.length === 0}
+        {#if unpinnedItems.length === 0 && pinnedItems.length === 0}
           <div class="p-4 text-center text-sm text-muted-foreground">
             Không tìm thấy cuộc trò chuyện nào
           </div>
         {/if}
+
       </div>
     {/if}
   </ScrollArea>

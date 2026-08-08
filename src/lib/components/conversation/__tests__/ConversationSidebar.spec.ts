@@ -82,7 +82,7 @@ describe('ConversationSidebar Component', () => {
     cleanup();
   });
 
-  test('renders section headers and categorizes customer/unknown vs group rows', () => {
+  test('renders conversation kind tabs and categorizes customer/unknown vs group rows', () => {
     render(ConversationSidebar, {
       props: {
         items,
@@ -92,8 +92,8 @@ describe('ConversationSidebar Component', () => {
       }
     });
 
-    expect(screen.getByText('Khách hàng')).toBeTruthy();
-    expect(screen.getByText('Nhóm')).toBeTruthy();
+    expect(screen.getByText('Khách hàng (2)')).toBeTruthy();
+    expect(screen.getByText('Nhóm (1)')).toBeTruthy();
 
     expect(screen.getByText('Nguyễn Văn A')).toBeTruthy();
     expect(screen.getByText('0901234567')).toBeTruthy();
@@ -232,4 +232,64 @@ describe('ConversationSidebar Component', () => {
 
     expect(container.querySelectorAll('.animate-pulse, [data-slot="skeleton"]').length).toBeGreaterThan(0);
   });
+
+  test('renders conversation kind tabs (Tất cả, Khách hàng, Nhóm) and filters accordingly', async () => {
+    const { container } = render(ConversationSidebar, {
+      props: {
+        items,
+        selectedKey: null,
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    const tabAll = container.querySelector('[data-kind-tab="all"]');
+    const tabCustomer = container.querySelector('[data-kind-tab="customer"]');
+    const tabGroup = container.querySelector('[data-kind-tab="group"]');
+
+    expect(tabAll).toBeTruthy();
+    expect(tabCustomer).toBeTruthy();
+    expect(tabGroup).toBeTruthy();
+
+    // Default 'all' tab shows all items
+    expect(screen.getByText('Nguyễn Văn A')).toBeTruthy();
+    expect(screen.getByText('0901234567')).toBeTruthy();
+    expect(screen.getByText('Nhóm Khách Hàng VIP')).toBeTruthy();
+
+    // Click 'Khách hàng' tab -> shows only customer and unknown items
+    await fireEvent.click(tabCustomer!);
+    expect(screen.getByText('Nguyễn Văn A')).toBeTruthy();
+    expect(screen.getByText('0901234567')).toBeTruthy();
+    expect(screen.queryByText('Nhóm Khách Hàng VIP')).toBeNull();
+
+    // Click 'Nhóm' tab -> shows only group items
+    await fireEvent.click(tabGroup!);
+    expect(screen.queryByText('Nguyễn Văn A')).toBeNull();
+    expect(screen.queryByText('0901234567')).toBeNull();
+    expect(screen.getByText('Nhóm Khách Hàng VIP')).toBeTruthy();
+  });
+
+
+  test('sorts unpinned items in All tab strictly by lastMessageAt DESC regardless of kind', () => {
+    // itemGroup has lastMessageAt 12:00 (newest)
+    // itemUnknown has lastMessageAt 11:00
+    // itemCustomer has lastMessageAt 10:00 (oldest)
+    render(ConversationSidebar, {
+      props: {
+        items,
+        selectedKey: null,
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    const rowElements = screen.getAllByRole('button').filter((el) => el.hasAttribute('data-inbox-item'));
+    expect(rowElements.length).toBe(3);
+
+    // Verify ordering: Group (12:00) comes first, then Unknown (11:00), then Customer (10:00)
+    expect(rowElements[0].textContent).toContain('Nhóm Khách Hàng VIP');
+    expect(rowElements[1].textContent).toContain('0901234567');
+    expect(rowElements[2].textContent).toContain('Nguyễn Văn A');
+  });
 });
+
