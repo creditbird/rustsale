@@ -48,6 +48,7 @@
   import InThreadSearchBar from './InThreadSearchBar.svelte';
   import type { ConversationReplySelection } from './composerDraftState';
   import { attachmentLabel, safeConversationUrl, extractGalleryImages } from './messageMedia';
+  import { reactionIconToCode } from './reactionDisplay';
   import { Button } from '$lib/components/ui/button';
   import { AlertCircle, RefreshCw, Users, MessageSquare, Trash2, Search } from 'lucide-svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
@@ -714,33 +715,6 @@
     }
   }
 
-  function iconToCode(icon: string): ConversationReactionCode {
-    switch (icon) {
-      case '❤️':
-      case 'heart':
-        return 'heart';
-      case '👍':
-      case 'like':
-        return 'like';
-      case '😆':
-      case '😄':
-      case 'haha':
-        return 'haha';
-      case '😮':
-      case 'wow':
-        return 'wow';
-      case '😭':
-      case '😢':
-      case 'cry':
-        return 'cry';
-      case '😡':
-      case 'angry':
-        return 'angry';
-      default:
-        return 'like';
-    }
-  }
-
   function handleReactionsUpdated(messageId: number, reactions: ConversationReactionGroup[]) {
     const updated = currentVariant.items.map((msg) =>
       msg.id === messageId ? { ...msg, reactions } : msg
@@ -758,7 +732,7 @@
       typeof currentActive === 'boolean'
         ? currentActive
         : message.reactions.some(
-            (g) => g.includesMe && (g.reactionIcon === code || iconToCode(g.reactionIcon) === code)
+            (g) => g.includesMe && reactionIconToCode(g.reactionIcon) === code
           );
     void mutationStateRef?.executeMutation(message.id, code, isActive);
   }

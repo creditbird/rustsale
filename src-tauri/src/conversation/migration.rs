@@ -97,6 +97,41 @@ pub fn migrate(conn: &Connection) -> Result<()> {
            WHERE channel = 'zalo' AND self_external_id IS NOT NULL AND self_external_id != '';",
     )?;
 
+    reset_zalo_reaction_history_once(conn)?;
+
+    Ok(())
+}
+
+fn reset_zalo_reaction_history_once(conn: &Connection) -> Result<()> {
+    const MIGRATION_KEY: &str = "zalo_reaction_history_recovery_v1";
+
+    conn.execute(
+        "DELETE FROM channel_sync_checkpoints
+         WHERE scope IN ('direct_reaction_history', 'group_reaction_history')
+           AND channel_account_id IN (
+               SELECT ca.id
+               FROM channel_accounts ca
+               WHERE ca.channel = 'zalo'
+                 AND NOT EXISTS (
+                     SELECT 1
+                     FROM channel_account_migration_markers marker
+                     WHERE marker.channel_account_id = ca.id
+                       AND marker.migration_key = ?1
+                 )
+           )",
+        [MIGRATION_KEY],
+    )?;
+
+    conn.execute(
+        "INSERT INTO channel_account_migration_markers
+            (channel_account_id, migration_key, applied_at)
+         SELECT id, ?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM channel_accounts
+         WHERE channel = 'zalo'
+         ON CONFLICT(channel_account_id, migration_key) DO NOTHING",
+        [MIGRATION_KEY],
+    )?;
+
     Ok(())
 }
 
@@ -1108,6 +1143,64 @@ fn merge_checkpoints(
     Ok(())
 }
 
+fn merge_pending_message_reactions(
+    conn: &Connection,
+    canonical_account_id: i64,
+    duplicate_account_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pending_message_reactions
+            (channel_account_id, external_thread_id, conversation_kind, provider_event_id,
+             provider_message_id, provider_client_message_id, actor_external_id, reaction,
+             removed, occurred_at, raw_payload_json, created_at, updated_at)
+         SELECT ?1, external_thread_id, conversation_kind, provider_event_id,
+                provider_message_id, provider_client_message_id, actor_external_id, reaction,
+                removed, occurred_at, raw_payload_json, created_at, updated_at
+         FROM pending_message_reactions
+         WHERE channel_account_id = ?2
+         ON CONFLICT(
+             channel_account_id, external_thread_id, conversation_kind, provider_event_id,
+             provider_message_id, provider_client_message_id, actor_external_id, reaction, removed
+         ) DO UPDATE SET
+             occurred_at = MAX(pending_message_reactions.occurred_at, excluded.occurred_at),
+             raw_payload_json = CASE
+                 WHEN excluded.occurred_at >= pending_message_reactions.occurred_at
+                 THEN excluded.raw_payload_json
+                 ELSE pending_message_reactions.raw_payload_json
+             END,
+             created_at = MIN(pending_message_reactions.created_at, excluded.created_at),
+             updated_at = MAX(pending_message_reactions.updated_at, excluded.updated_at)",
+        params![canonical_account_id, duplicate_account_id],
+    )?;
+    conn.execute(
+        "DELETE FROM pending_message_reactions WHERE channel_account_id = ?1",
+        [duplicate_account_id],
+    )?;
+    Ok(())
+}
+
+fn merge_channel_account_migration_markers(
+    conn: &Connection,
+    canonical_account_id: i64,
+    duplicate_account_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO channel_account_migration_markers
+            (channel_account_id, migration_key, applied_at)
+         SELECT ?1, migration_key, applied_at
+         FROM channel_account_migration_markers
+         WHERE channel_account_id = ?2
+         ON CONFLICT(channel_account_id, migration_key) DO UPDATE SET
+             applied_at = MIN(channel_account_migration_markers.applied_at, excluded.applied_at)",
+        params![canonical_account_id, duplicate_account_id],
+    )?;
+    conn.execute(
+        "DELETE FROM channel_account_migration_markers WHERE channel_account_id = ?1",
+        [duplicate_account_id],
+    )?;
+    Ok(())
+}
+
 fn merge_account_into(
     conn: &Connection,
     canonical_id: i64,
@@ -1171,11 +1264,15 @@ fn merge_account_into(
         params![canonical_id, duplicate.id],
     )?;
     merge_checkpoints(conn, canonical_id, duplicate.id)?;
+    merge_pending_message_reactions(conn, canonical_id, duplicate.id)?;
+    merge_channel_account_migration_markers(conn, canonical_id, duplicate.id)?;
 
     let remaining_children: i64 = conn.query_row(
         "SELECT
             (SELECT COUNT(*) FROM channel_conversations WHERE channel_account_id = ?1) +
             (SELECT COUNT(*) FROM channel_sync_checkpoints WHERE channel_account_id = ?1) +
+            (SELECT COUNT(*) FROM pending_message_reactions WHERE channel_account_id = ?1) +
+            (SELECT COUNT(*) FROM channel_account_migration_markers WHERE channel_account_id = ?1) +
             (SELECT COUNT(*) FROM message_outbox_jobs WHERE channel_account_id = ?1) +
             (SELECT COUNT(*) FROM message_send_batches WHERE channel_account_id = ?1) +
             (SELECT COUNT(*) FROM zalo_sessions WHERE channel_account_id = ?1)",

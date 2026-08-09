@@ -413,6 +413,30 @@ impl SupervisorHarness {
             _clean_path: clean_path,
         }
     }
+
+    pub async fn wait_for_checkpoint(&self, scope: &str, expected: &str) {
+        let start = std::time::Instant::now();
+        loop {
+            let account_id = self
+                .repository
+                .get_channel_account_id("imei-a")
+                .unwrap()
+                .unwrap();
+            if self
+                .repository
+                .get_checkpoint(account_id, scope)
+                .unwrap()
+                .as_deref()
+                == Some(expected)
+            {
+                return;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(1) {
+                panic!("Timed out waiting for checkpoint {scope}={expected}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
 }
 
 impl Drop for SupervisorHarness {
@@ -673,21 +697,28 @@ async fn reactive_history_requests_exactly_five_pages_and_persists_the_last_curs
         }
     }
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    harness
+        .wait_for_checkpoint("direct_message_history", "history-page-5")
+        .await;
     let requests = harness.factory.history_requests("imei-a").await;
-    assert_eq!(requests.len(), 8);
+    assert!((8..=9).contains(&requests.len()));
+    let cursors = requests
+        .iter()
+        .filter_map(|request| request.cursor.as_deref())
+        .collect::<Vec<_>>();
     assert_eq!(
-        requests
-            .iter()
-            .filter_map(|request| request.cursor.as_deref())
-            .collect::<Vec<_>>(),
-        vec![
+        &cursors[..4],
+        [
             "history-page-1",
             "history-page-2",
             "history-page-3",
             "history-page-4"
         ]
     );
+    assert!(cursors
+        .iter()
+        .skip(4)
+        .all(|cursor| *cursor == "history-page-5"));
 
     let account_id = harness
         .repository
@@ -741,7 +772,7 @@ async fn failed_history_ingest_does_not_request_the_next_page() {
 }
 
 #[tokio::test]
-async fn reactive_reaction_history_requests_exactly_five_pages() {
+async fn reaction_history_pauses_after_five_pages_then_resumes_from_next_cursor() {
     let harness = SupervisorHarness::new().await;
     harness.supervisor.start_all().await.unwrap();
     harness.factory.wait_for_connect_count("imei-a", 1).await;
@@ -765,11 +796,13 @@ async fn reactive_reaction_history_requests_exactly_five_pages() {
         }
     }
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    harness
+        .wait_for_checkpoint("direct_reaction_history", "reaction-event-reaction-page-5")
+        .await;
     let requests = harness.factory.history_requests("imei-a").await;
-    assert_eq!(requests.len(), 8);
+    assert!((8..=9).contains(&requests.len()));
     assert_eq!(
-        requests
+        requests[..8]
             .iter()
             .filter_map(|request| request.cursor.as_deref())
             .collect::<Vec<_>>(),
@@ -794,6 +827,45 @@ async fn reactive_reaction_history_requests_exactly_five_pages() {
         Some("reaction-event-reaction-page-5".to_string())
     );
 
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 9)
+        .await;
+    let resumed_requests = harness.factory.history_requests("imei-a").await;
+    assert_eq!(
+        resumed_requests
+            .last()
+            .and_then(|request| request.cursor.as_deref()),
+        Some("reaction-event-reaction-page-5")
+    );
+
+    harness
+        .factory
+        .emit("imei-a", direct_old_reactions_event(&["reaction-page-5"]))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    assert_eq!(harness.factory.history_requests("imei-a").await.len(), 9);
+
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn empty_reaction_history_page_completes_without_resume() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    harness
+        .factory
+        .emit("imei-a", direct_old_reactions_event(&[]))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+
+    assert_eq!(harness.factory.history_requests("imei-a").await.len(), 4);
     harness.supervisor.stop_account("imei-a").await;
 }
 

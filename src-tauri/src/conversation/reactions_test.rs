@@ -150,15 +150,91 @@ fn successful_local_remove_matches_provider_reaction_alias() {
         .unwrap();
 
     assert!(groups.is_empty());
-    let removed_at: Option<String> = conn
+    let count: i64 = conn
         .query_row(
-            "SELECT removed_at FROM message_reactions
+            "SELECT COUNT(*) FROM message_reactions
              WHERE message_id = 10 AND actor_external_id = 'self-uid' AND reaction = '/-heart'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(removed_at.as_deref(), Some("2026-08-02T12:00:00Z"));
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn multi_emoji_remove_hard_deletes_only_selected_reaction() {
+    let (path, repo) = setup_test_repo();
+    let conn = open_db_connection(path.to_str().unwrap()).unwrap();
+
+    let req_heart = SetConversationReactionRequest {
+        message_id: 10,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-heart".to_string(),
+    };
+    repo.begin(&req_heart, 1).unwrap();
+    repo.succeed("mut-heart", "self-uid", "2026-08-02T12:00:00Z")
+        .unwrap();
+
+    let req_haha = SetConversationReactionRequest {
+        message_id: 10,
+        reaction: ConversationReactionCode::Haha,
+        active: true,
+        client_mutation_id: "mut-haha".to_string(),
+    };
+    repo.begin(&req_haha, 1).unwrap();
+    repo.succeed("mut-haha", "self-uid", "2026-08-02T12:01:00Z")
+        .unwrap();
+
+    let req_remove_heart = SetConversationReactionRequest {
+        message_id: 10,
+        reaction: ConversationReactionCode::Heart,
+        active: false,
+        client_mutation_id: "mut-remove-heart-2".to_string(),
+    };
+    repo.begin(&req_remove_heart, 1).unwrap();
+    repo.succeed("mut-remove-heart-2", "self-uid", "2026-08-02T12:02:00Z")
+        .unwrap();
+
+    let stored: Vec<String> = conn
+        .prepare(
+            "SELECT reaction FROM message_reactions
+             WHERE message_id = 10 AND actor_external_id = 'self-uid'
+             ORDER BY reaction",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(stored, vec!["haha".to_string()]);
+}
+
+#[test]
+fn echo_cache_is_scoped_by_account_and_consumes_once() {
+    use crate::conversation::echo_cache::ReactionEchoCache;
+
+    let cache = ReactionEchoCache::new();
+    cache.mark_expected(1, "zalo-msg-123", "heart", "self-uid");
+
+    assert!(!cache.consume_if_expected(2, "zalo-msg-123", "heart", "self-uid"));
+    assert!(cache.consume_if_expected(1, "zalo-msg-123", "heart", "self-uid"));
+    assert!(!cache.consume_if_expected(1, "zalo-msg-123", "heart", "self-uid"));
+}
+
+#[test]
+fn echo_cache_clear_removes_all_failed_request_aliases() {
+    use crate::conversation::echo_cache::ReactionEchoCache;
+
+    let cache = ReactionEchoCache::new();
+    cache.mark_expected(1, "server-id", "heart", "self-uid");
+    cache.mark_expected(1, "client-id", "heart", "self-uid");
+
+    cache.clear_expected(1, "server-id", "heart", "self-uid");
+    cache.clear_expected(1, "client-id", "heart", "self-uid");
+
+    assert!(!cache.consume_if_expected(1, "server-id", "heart", "self-uid"));
+    assert!(!cache.consume_if_expected(1, "client-id", "heart", "self-uid"));
 }
 
 #[test]

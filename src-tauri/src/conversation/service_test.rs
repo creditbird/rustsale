@@ -54,6 +54,13 @@ fn direct_message_event(message_id: &str) -> ListenerEvent {
 }
 
 fn direct_reaction_event(target_message_id: &str) -> ListenerEvent {
+    direct_reaction_event_with_client_id(target_message_id, "old-client-message")
+}
+
+fn direct_reaction_event_with_client_id(
+    target_message_id: &str,
+    target_client_message_id: &str,
+) -> ListenerEvent {
     ListenerEvent::Reaction(Reaction::new(
         "self-uid",
         TReaction {
@@ -67,12 +74,44 @@ fn direct_reaction_event(target_message_id: &str) -> ListenerEvent {
             content: TReactionContent {
                 r_msg: vec![TReactionMsg {
                     g_msg_id: target_message_id.to_string(),
-                    c_msg_id: "old-client-message".to_string(),
+                    c_msg_id: target_client_message_id.to_string(),
                     msg_type: 1,
                 }],
                 r_icon: EventReactions::Heart,
                 r_type: 1,
                 source: 1,
+            },
+            ts: "1785495600000".to_string(),
+            ttl: 0,
+        },
+        false,
+    ))
+}
+
+fn self_reaction_event(
+    target_message_id: &str,
+    target_client_message_id: &str,
+    reaction: EventReactions,
+) -> ListenerEvent {
+    ListenerEvent::Reaction(Reaction::new(
+        "self-uid",
+        TReaction {
+            action_id: "self-reaction-action".to_string(),
+            msg_id: "self-reaction-event".to_string(),
+            cli_msg_id: "self-reaction-client".to_string(),
+            msg_type: "1".to_string(),
+            uid_from: "self-uid".to_string(),
+            id_to: "peer-1".to_string(),
+            d_name: Some("Self".to_string()),
+            content: TReactionContent {
+                r_msg: vec![TReactionMsg {
+                    g_msg_id: target_message_id.to_string(),
+                    c_msg_id: target_client_message_id.to_string(),
+                    msg_type: 1,
+                }],
+                r_icon: reaction,
+                r_type: 1,
+                source: 6,
             },
             ts: "1785495600000".to_string(),
             ttl: 0,
@@ -93,6 +132,7 @@ pub struct FakeZaloClient {
     pub captured_reaction_requests:
         std::sync::Mutex<Vec<crate::conversation::zalo::client::ProviderReactionRequest>>,
     pub captured_old_reaction_polls: std::sync::Mutex<Vec<(ThreadType, Option<String>)>>,
+    pub own_external_id: Option<String>,
 }
 
 impl FakeZaloClient {
@@ -106,6 +146,7 @@ impl FakeZaloClient {
             captured_forward_requests: std::sync::Mutex::new(Vec::new()),
             captured_reaction_requests: std::sync::Mutex::new(Vec::new()),
             captured_old_reaction_polls: std::sync::Mutex::new(Vec::new()),
+            own_external_id: Some("self-uid".to_string()),
         }
     }
 
@@ -119,6 +160,7 @@ impl FakeZaloClient {
             captured_forward_requests: std::sync::Mutex::new(Vec::new()),
             captured_reaction_requests: std::sync::Mutex::new(Vec::new()),
             captured_old_reaction_polls: std::sync::Mutex::new(Vec::new()),
+            own_external_id: Some("self-uid".to_string()),
         }
     }
 
@@ -135,6 +177,7 @@ impl FakeZaloClient {
             captured_forward_requests: std::sync::Mutex::new(Vec::new()),
             captured_reaction_requests: std::sync::Mutex::new(Vec::new()),
             captured_old_reaction_polls: std::sync::Mutex::new(Vec::new()),
+            own_external_id: Some("self-uid".to_string()),
         }
     }
 }
@@ -269,6 +312,10 @@ impl ZaloClient for FakeZaloClient {
             });
         }
         Ok(())
+    }
+
+    fn own_external_id(&self) -> Option<String> {
+        self.own_external_id.clone()
     }
 
     fn stop(&self) {}
@@ -710,6 +757,7 @@ async fn publish_outreach_success_emits_event_when_not_duplicate() {
             conversation_id: 10,
             message_id: 100,
             duplicate: false,
+            replayed_reaction_count: 0,
         },
         lead_id: 42,
     };
@@ -739,6 +787,7 @@ async fn publish_outreach_success_skips_duplicate() {
             conversation_id: 10,
             message_id: 100,
             duplicate: true,
+            replayed_reaction_count: 0,
         },
         lead_id: 42,
     };
@@ -931,6 +980,69 @@ async fn reaction_checkpoint_is_isolated_from_message_watermark() {
             .unwrap(),
         Some("reaction-event".to_string())
     );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn duplicate_message_replay_emits_reaction_invalidation() {
+    let harness = ServiceHarness::new();
+    let account_id = harness
+        .service
+        .repository
+        .set_account_status(
+            "imei-test",
+            crate::conversation::types::AccountConnectionStatus::Connected,
+            None,
+        )
+        .unwrap();
+    let conversation_id = harness.seed_conversation(account_id, "peer-uid");
+    let message_id = harness.seed_source_message(
+        conversation_id,
+        Some("message-replay"),
+        Some("client-before-replay"),
+    );
+
+    harness
+        .service
+        .ingest_zalo_event(
+            "imei-test",
+            Some("Sale 1"),
+            direct_reaction_event_with_client_id("0", "client-message-replay"),
+        )
+        .unwrap();
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+
+    let mut receiver = harness.events.subscribe();
+    harness
+        .service
+        .ingest_zalo_event(
+            "imei-test",
+            Some("Sale 1"),
+            direct_message_event("message-replay"),
+        )
+        .unwrap();
+
+    let event = tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv())
+        .await
+        .expect("duplicate replay must emit an invalidation")
+        .unwrap();
+    assert_eq!(event.conversation_id, conversation_id);
+    assert_eq!(event.message_id, Some(message_id));
+    assert_eq!(
+        event.reason,
+        crate::conversation::events::ConversationInvalidationReason::Reaction
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 1);
 }
 
 #[tokio::test]
@@ -1283,6 +1395,313 @@ async fn set_reaction_success_local_apply() {
         )
         .unwrap();
     assert_eq!(status, "succeeded");
+}
+
+#[tokio::test]
+async fn remove_one_local_reaction_preserves_other_emoji_without_provider_remove() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-selective-remove"))
+        .unwrap();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET self_external_id = 'self-uid' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+         VALUES (?1, 'self-uid', 'heart', '2026-08-02T12:00:00Z', NULL),
+                (?1, 'self-uid', 'haha', '2026-08-02T12:01:00Z', NULL)",
+        [applied.message_id],
+    )
+    .unwrap();
+
+    let client = FakeZaloClient::with_provider_message_id("msg-selective-remove");
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Heart,
+        active: false,
+        client_mutation_id: "mut-selective-remove".to_string(),
+    };
+
+    let result = harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap();
+
+    assert_eq!(client.captured_reaction_requests.lock().unwrap().len(), 0);
+    assert_eq!(result.reactions.len(), 1);
+    assert_eq!(result.reactions[0].reaction_icon, "😆");
+    assert!(result.reactions[0].includes_me);
+    let stored: Vec<String> = conn
+        .prepare(
+            "SELECT reaction FROM message_reactions
+             WHERE message_id = ?1 AND actor_external_id = 'self-uid'
+             ORDER BY reaction",
+        )
+        .unwrap()
+        .query_map([applied.message_id], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(stored, vec!["haha".to_string()]);
+}
+
+#[tokio::test]
+async fn local_remove_does_not_require_provider_message_ids() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::events::ConversationInvalidationReason;
+    use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message(
+            "imei-a",
+            "msg-local-remove-no-provider-ids",
+        ))
+        .unwrap();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET self_external_id = 'self-uid' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE messages
+         SET provider_message_id = NULL,
+             provider_client_message_id = NULL,
+             content_json = '{}'
+         WHERE id = ?1",
+        [applied.message_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+         VALUES (?1, 'self-uid', 'heart', '2026-08-02T12:00:00Z', NULL)",
+        [applied.message_id],
+    )
+    .unwrap();
+
+    let client = FakeZaloClient::with_provider_message_id("unused-provider-id");
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Heart,
+        active: false,
+        client_mutation_id: "mut-local-remove-no-provider-ids".to_string(),
+    };
+    let mut receiver = harness.events.subscribe();
+
+    let result = harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap();
+
+    assert!(client.captured_reaction_requests.lock().unwrap().is_empty());
+    assert!(result.reactions.is_empty());
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_reactions WHERE message_id = ?1",
+            [applied.message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let invalidation = receiver.try_recv().unwrap();
+    assert_eq!(invalidation.message_id, Some(applied.message_id));
+    assert_eq!(
+        invalidation.reason,
+        ConversationInvalidationReason::Reaction
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn successful_add_self_echo_is_suppressed_without_second_invalidation() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-self-echo"))
+        .unwrap();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET self_external_id = 'self-uid' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+    let client = FakeZaloClient::with_provider_message_id("msg-self-echo");
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-self-echo".to_string(),
+    };
+    let mut receiver = harness.events.subscribe();
+
+    harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap();
+    receiver.try_recv().unwrap();
+    harness
+        .service
+        .ingest_zalo_event(
+            "imei-a",
+            Some("Sale 1"),
+            self_reaction_event(
+                "msg-self-echo",
+                "client-msg-self-echo",
+                EventReactions::Heart,
+            ),
+        )
+        .unwrap();
+
+    assert!(receiver.try_recv().is_err());
+    let reaction_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_reactions WHERE message_id = ?1",
+            [applied.message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reaction_count, 1);
+}
+
+#[tokio::test]
+async fn provider_failure_clears_expected_echo_so_later_event_is_applied() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
+    use crate::conversation::zalo::client::ProviderSendErrorKind;
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-failed-echo"))
+        .unwrap();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET self_external_id = 'self-uid' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+    let client = FakeZaloClient::failing_with_kind(
+        ProviderSendErrorKind::Permanent,
+        "provider rejected reaction",
+    );
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        client_mutation_id: "mut-failed-echo".to_string(),
+    };
+    let mut receiver = harness.events.subscribe();
+
+    harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap();
+    harness
+        .service
+        .ingest_zalo_event(
+            "imei-a",
+            Some("Sale 1"),
+            self_reaction_event(
+                "msg-failed-echo",
+                "client-msg-failed-echo",
+                EventReactions::Heart,
+            ),
+        )
+        .unwrap();
+
+    let invalidation = receiver.try_recv().unwrap();
+    assert_eq!(invalidation.message_id, Some(applied.message_id));
+    let reaction_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_reactions WHERE message_id = ?1",
+            [applied.message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reaction_count, 1);
+}
+
+#[tokio::test]
+async fn client_self_identity_is_persisted_for_includes_me_projection() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-client-self-id"))
+        .unwrap();
+    let client = FakeZaloClient::with_provider_message_id("msg-client-self-id");
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Like,
+        active: true,
+        client_mutation_id: "mut-client-self-id".to_string(),
+    };
+
+    let result = harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap();
+
+    assert_eq!(result.reactions.len(), 1);
+    assert!(result.reactions[0].includes_me);
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    let persisted: Option<String> = conn
+        .query_row(
+            "SELECT self_external_id FROM channel_accounts WHERE id = ?1",
+            [applied.channel_account_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(persisted.as_deref(), Some("self-uid"));
+}
+
+#[tokio::test]
+async fn missing_self_identity_rejects_reaction_before_provider_call() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::error::ConversationErrorCode;
+    use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-missing-self-id"))
+        .unwrap();
+    let mut client = FakeZaloClient::with_provider_message_id("msg-missing-self-id");
+    client.own_external_id = None;
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Like,
+        active: true,
+        client_mutation_id: "mut-missing-self-id".to_string(),
+    };
+
+    let error = harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ConversationErrorCode::InvalidRequest);
+    assert!(client.captured_reaction_requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

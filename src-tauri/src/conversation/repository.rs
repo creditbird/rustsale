@@ -140,6 +140,16 @@ pub struct AppliedMessage {
     pub conversation_id: i64,
     pub message_id: i64,
     pub duplicate: bool,
+    pub replayed_reaction_count: usize,
+}
+
+#[derive(Debug)]
+struct PendingMessageReaction {
+    id: i64,
+    actor_external_id: String,
+    reaction: String,
+    removed: bool,
+    occurred_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -609,6 +619,9 @@ impl ConversationRepository {
                 now,
             )?;
 
+            let replayed_reaction_count =
+                replay_pending_reactions_tx(&tx, channel_account_id, message_id, message)?;
+
             tx.commit()?;
             return Ok(AppliedMessage {
                 channel_account_id,
@@ -616,6 +629,7 @@ impl ConversationRepository {
                 conversation_id,
                 message_id,
                 duplicate: true,
+                replayed_reaction_count,
             });
         }
 
@@ -694,6 +708,9 @@ impl ConversationRepository {
             now,
         )?;
 
+        let replayed_reaction_count =
+            replay_pending_reactions_tx(&tx, channel_account_id, message_id, message)?;
+
         tx.commit()?;
 
         Ok(AppliedMessage {
@@ -702,6 +719,7 @@ impl ConversationRepository {
             conversation_id,
             message_id,
             duplicate: false,
+            replayed_reaction_count,
         })
     }
 
@@ -1616,6 +1634,10 @@ impl ConversationRepository {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
+        let channel_account_id =
+            find_channel_account_id_by_key(&tx, "zalo", &reaction.provider_account_key)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
         let message_id = match resolve_message_id(
             &tx,
             &reaction.provider_account_key,
@@ -1625,53 +1647,21 @@ impl ConversationRepository {
             &reaction.provider_client_message_id,
         )? {
             Some(id) => id,
-            None => return Ok(None),
+            None => {
+                stage_pending_reaction_tx(&tx, channel_account_id, reaction)?;
+                tx.commit()?;
+                return Ok(None);
+            }
         };
 
-        let canonical_code = canonical_reaction_code(&reaction.reaction);
-        let stored_reaction = canonical_code.unwrap_or(reaction.reaction.trim());
-
-        if reaction.removed {
-            mark_reaction_removed(
-                &tx,
-                message_id,
-                &reaction.actor_external_id,
-                canonical_code,
-                &reaction.occurred_at,
-            )?;
-        } else {
-            tx.execute(
-                "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
-                 VALUES (?1, ?2, ?3, ?4, NULL)
-                 ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
-                     reacted_at = COALESCE(message_reactions.reacted_at, excluded.reacted_at),
-                     removed_at = NULL",
-                params![
-                    message_id,
-                    reaction.actor_external_id,
-                    stored_reaction,
-                    reaction.occurred_at,
-                ],
-            )?;
-        }
-
-        let active_flag = if reaction.removed { 0 } else { 1 };
-        let now = utc_now();
-        if let Some(reaction_code) = canonical_code {
-            tx.execute(
-                "UPDATE reaction_mutations
-                 SET status = 'succeeded', updated_at = ?1
-                 WHERE message_id = ?2 AND reaction_code = ?3 AND active = ?4 AND status IN ('running', 'delivery_unknown')",
-                params![now, message_id, reaction_code, active_flag],
-            )?;
-        } else if reaction.removed {
-            tx.execute(
-                "UPDATE reaction_mutations
-                 SET status = 'succeeded', updated_at = ?1
-                 WHERE message_id = ?2 AND active = 0 AND status IN ('running', 'delivery_unknown')",
-                params![now, message_id],
-            )?;
-        }
+        apply_reaction_to_message_tx(
+            &tx,
+            message_id,
+            &reaction.actor_external_id,
+            &reaction.reaction,
+            reaction.removed,
+            &reaction.occurred_at,
+        )?;
 
         tx.commit()?;
         Ok(Some(message_id))
@@ -4375,7 +4365,7 @@ fn resolve_message_id(
         None => return Ok(None),
     };
 
-    if !provider_message_id.is_empty() {
+    if !provider_message_id.is_empty() && provider_message_id != "0" {
         let msg_id: Option<i64> = tx
             .query_row(
                 "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
@@ -4402,6 +4392,179 @@ fn resolve_message_id(
     }
 
     Ok(None)
+}
+
+fn stage_pending_reaction_tx(
+    tx: &rusqlite::Transaction<'_>,
+    channel_account_id: i64,
+    reaction: &NormalizedReaction,
+) -> Result<()> {
+    let provider_message_id = reaction.provider_message_id.trim();
+    let provider_client_message_id = reaction.provider_client_message_id.trim();
+    if provider_message_id.is_empty() && provider_client_message_id.is_empty() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+
+    let now = utc_now();
+    tx.execute(
+        "INSERT INTO pending_message_reactions
+            (channel_account_id, external_thread_id, conversation_kind, provider_event_id,
+             provider_message_id, provider_client_message_id, actor_external_id, reaction,
+             removed, occurred_at, raw_payload_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+         ON CONFLICT(
+             channel_account_id, external_thread_id, conversation_kind, provider_event_id,
+             provider_message_id, provider_client_message_id, actor_external_id, reaction, removed
+         ) DO UPDATE SET
+             occurred_at = MAX(pending_message_reactions.occurred_at, excluded.occurred_at),
+             raw_payload_json = CASE
+                 WHEN excluded.occurred_at >= pending_message_reactions.occurred_at
+                 THEN excluded.raw_payload_json
+                 ELSE pending_message_reactions.raw_payload_json
+             END,
+             updated_at = excluded.updated_at",
+        params![
+            channel_account_id,
+            reaction.external_thread_id,
+            if reaction.is_group { "group" } else { "direct" },
+            reaction.provider_event_id.as_deref().unwrap_or("").trim(),
+            provider_message_id,
+            provider_client_message_id,
+            reaction.actor_external_id,
+            reaction.reaction.trim(),
+            if reaction.removed { 1 } else { 0 },
+            reaction.occurred_at,
+            reaction.raw_payload.to_string(),
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+fn replay_pending_reactions_tx(
+    tx: &rusqlite::Transaction<'_>,
+    channel_account_id: i64,
+    message_id: i64,
+    message: &NormalizedMessage,
+) -> Result<usize> {
+    let provider_message_id = message
+        .provider_message_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    let provider_client_message_id = message
+        .provider_client_message_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    if provider_message_id.is_empty() && provider_client_message_id.is_empty() {
+        return Ok(0);
+    }
+
+    let pending = {
+        let mut statement = tx.prepare(
+            "SELECT id, actor_external_id, reaction, removed, occurred_at
+             FROM pending_message_reactions
+             WHERE channel_account_id = ?1
+               AND external_thread_id = ?2
+               AND conversation_kind = ?3
+               AND (
+                   (?4 != '' AND provider_message_id = ?4)
+                   OR (?5 != '' AND provider_client_message_id = ?5)
+               )
+             ORDER BY occurred_at, id",
+        )?;
+        let rows = statement.query_map(
+            params![
+                channel_account_id,
+                message.external_thread_id,
+                message.conversation_kind.as_str(),
+                provider_message_id,
+                provider_client_message_id,
+            ],
+            |row| {
+                Ok(PendingMessageReaction {
+                    id: row.get(0)?,
+                    actor_external_id: row.get(1)?,
+                    reaction: row.get(2)?,
+                    removed: row.get::<_, i64>(3)? != 0,
+                    occurred_at: row.get(4)?,
+                })
+            },
+        )?;
+        rows.collect::<Result<Vec<_>>>()?
+    };
+
+    for pending_reaction in &pending {
+        apply_reaction_to_message_tx(
+            tx,
+            message_id,
+            &pending_reaction.actor_external_id,
+            &pending_reaction.reaction,
+            pending_reaction.removed,
+            &pending_reaction.occurred_at,
+        )?;
+    }
+
+    for pending_reaction in &pending {
+        tx.execute(
+            "DELETE FROM pending_message_reactions WHERE id = ?1",
+            [pending_reaction.id],
+        )?;
+    }
+
+    Ok(pending.len())
+}
+
+fn apply_reaction_to_message_tx(
+    tx: &rusqlite::Transaction<'_>,
+    message_id: i64,
+    actor_external_id: &str,
+    reaction: &str,
+    removed: bool,
+    occurred_at: &str,
+) -> Result<()> {
+    let canonical_code = canonical_reaction_code(reaction);
+    let stored_reaction = canonical_code.unwrap_or(reaction.trim());
+
+    if removed {
+        mark_reaction_removed(
+            tx,
+            message_id,
+            actor_external_id,
+            canonical_code,
+            occurred_at,
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+             VALUES (?1, ?2, ?3, ?4, NULL)
+             ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
+                 reacted_at = COALESCE(message_reactions.reacted_at, excluded.reacted_at),
+                 removed_at = NULL",
+            params![message_id, actor_external_id, stored_reaction, occurred_at],
+        )?;
+    }
+
+    let active_flag = if removed { 0 } else { 1 };
+    let now = utc_now();
+    if let Some(reaction_code) = canonical_code {
+        tx.execute(
+            "UPDATE reaction_mutations
+             SET status = 'succeeded', updated_at = ?1
+             WHERE message_id = ?2 AND reaction_code = ?3 AND active = ?4 AND status IN ('running', 'delivery_unknown')",
+            params![now, message_id, reaction_code, active_flag],
+        )?;
+    } else if removed {
+        tx.execute(
+            "UPDATE reaction_mutations
+             SET status = 'succeeded', updated_at = ?1
+             WHERE message_id = ?2 AND active = 0 AND status IN ('running', 'delivery_unknown')",
+            params![now, message_id],
+        )?;
+    }
+
+    Ok(())
 }
 
 fn status_rank(status: &str) -> i32 {

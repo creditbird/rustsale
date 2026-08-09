@@ -416,11 +416,14 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
 fn canonical_reaction_icon(icon: &str) -> String {
     match icon.trim().to_ascii_lowercase().as_str() {
         "❤️" | "❤" | "/-heart" | "/:heart" | "heart" => "❤️".to_string(),
-        "👍" | "/-strong" | "/-like" | "like" => "👍".to_string(),
-        "😆" | "😄" | ":>" | "/-haha" | "haha" => "😆".to_string(),
-        "😮" | ":o" | "/-wow" | "wow" => "😮".to_string(),
-        "😭" | "😢" | ":-((" | ":((" | "--b" | "/-cry" | "cry" | "sad" => "😭".to_string(),
-        "😡" | ":-h" | "/-angry" | "angry" => "😡".to_string(),
+        "👍" | "/-strong" | "/:strong" | "/-like" | "/:like" | "like" => "👍".to_string(),
+        "😆" | "😄" | ":>" | "/-haha" | "/:haha" | "haha" => "😆".to_string(),
+        "😮" | ":o" | "/-wow" | "/:wow" | "wow" => "😮".to_string(),
+        ":-(" | ":-[" | "/-sad" | "/:sad" => "😭".to_string(),
+        "😭" | "😢" | ":-((" | ":((" | "--b" | "/-cry" | "/:cry" | "cry" | "sad" => {
+            "😭".to_string()
+        }
+        "😡" | ":-h" | "/-angry" | "/:angry" | "angry" => "😡".to_string(),
         _ => icon.to_string(),
     }
 }

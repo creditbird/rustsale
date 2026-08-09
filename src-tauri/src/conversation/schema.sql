@@ -149,6 +149,63 @@ CREATE TABLE IF NOT EXISTS channel_sync_checkpoints (
     FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS channel_account_migration_markers (
+    channel_account_id INTEGER NOT NULL,
+    migration_key TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    PRIMARY KEY(channel_account_id, migration_key),
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS pending_message_reactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL,
+    external_thread_id TEXT NOT NULL,
+    conversation_kind TEXT NOT NULL CHECK (conversation_kind IN ('direct', 'group')),
+    provider_event_id TEXT NOT NULL DEFAULT '',
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    provider_client_message_id TEXT NOT NULL DEFAULT '',
+    actor_external_id TEXT NOT NULL,
+    reaction TEXT NOT NULL,
+    removed INTEGER NOT NULL CHECK (removed IN (0, 1)),
+    occurred_at TEXT NOT NULL,
+    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(
+        channel_account_id,
+        external_thread_id,
+        conversation_kind,
+        provider_event_id,
+        provider_message_id,
+        provider_client_message_id,
+        actor_external_id,
+        reaction,
+        removed
+    ),
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_message_reactions_provider_message
+ON pending_message_reactions(
+    channel_account_id,
+    external_thread_id,
+    conversation_kind,
+    provider_message_id,
+    occurred_at,
+    id
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_message_reactions_provider_client
+ON pending_message_reactions(
+    channel_account_id,
+    external_thread_id,
+    conversation_kind,
+    provider_client_message_id,
+    occurred_at,
+    id
+);
+
 CREATE TABLE IF NOT EXISTS message_outbox_jobs (
     id TEXT PRIMARY KEY,
     message_id INTEGER NOT NULL UNIQUE,
@@ -311,4 +368,3 @@ CREATE TABLE IF NOT EXISTS conversation_pinned_messages (
 
 CREATE INDEX IF NOT EXISTS idx_pinned_messages_conversation
 ON conversation_pinned_messages(conversation_id, pinned_at DESC);
-

@@ -820,6 +820,7 @@ impl Undo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum EventReactions {
     #[serde(rename = "/-heart")]
     Heart,
@@ -929,8 +930,137 @@ pub enum EventReactions {
     Rich,
     #[serde(rename = "/-beer")]
     Beer,
-    #[serde(other)]
-    Unknown,
+    Unknown(String),
+}
+
+impl EventReactions {
+    pub fn as_provider_str(&self) -> &str {
+        match self {
+            Self::Heart => "/-heart",
+            Self::Like => "/-strong",
+            Self::Haha => ":>",
+            Self::Wow => ":o",
+            Self::Cry => ":-((",
+            Self::Angry => ":-h",
+            Self::Kiss => ":-*",
+            Self::TearsOfJoy => ":')",
+            Self::Shit => "/-shit",
+            Self::Rose => "/-rose",
+            Self::BrokenHeart => "/-break",
+            Self::Dislike => "/-weak",
+            Self::Love => ";xx",
+            Self::Confused => ";-/",
+            Self::Wink => ";-)",
+            Self::Fade => "/-fade",
+            Self::Sun => "/-li",
+            Self::Birthday => "/-bd",
+            Self::Bomb => "/-bome",
+            Self::Ok => "/-ok",
+            Self::Peace => "/-v",
+            Self::Thanks => "/-thanks",
+            Self::Punch => "/-punch",
+            Self::Share => "/-share",
+            Self::Pray => "_()_",
+            Self::No => "/-no",
+            Self::Bad => "/-bad",
+            Self::LoveYou => "/-loveu",
+            Self::Sad => "--b",
+            Self::VerySad => ":((",
+            Self::Cool => "x-)",
+            Self::Nerd => "8-)",
+            Self::BigSmile => ";-d",
+            Self::Sunglasses => "b-)",
+            Self::Neutral => ":--|",
+            Self::SadFace => "p-(",
+            Self::Bye => ":-bye",
+            Self::Sleepy => "|-)",
+            Self::Wipe => ":wipe",
+            Self::Dig => ":-dig",
+            Self::Anguish => "&-(",
+            Self::Handclap => ":handclap",
+            Self::AngryFace => ">-|",
+            Self::FChair => ":-f",
+            Self::LChair => ":-l",
+            Self::RChair => ":-r",
+            Self::Silent => ";-x",
+            Self::Surprise => ":-o",
+            Self::Embarrassed => ";-s",
+            Self::Afraid => ";-a",
+            Self::Sad2 => ":-<",
+            Self::BigLaugh => ":))",
+            Self::Rich => "$-)",
+            Self::Beer => "/-beer",
+            Self::Unknown(raw_value) => raw_value,
+        }
+    }
+}
+
+impl From<String> for EventReactions {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "/-heart" => Self::Heart,
+            "/-strong" => Self::Like,
+            ":>" => Self::Haha,
+            ":o" => Self::Wow,
+            ":-((" => Self::Cry,
+            ":-h" => Self::Angry,
+            ":-*" => Self::Kiss,
+            ":')" => Self::TearsOfJoy,
+            "/-shit" => Self::Shit,
+            "/-rose" => Self::Rose,
+            "/-break" => Self::BrokenHeart,
+            "/-weak" => Self::Dislike,
+            ";xx" => Self::Love,
+            ";-/" => Self::Confused,
+            ";-)" => Self::Wink,
+            "/-fade" => Self::Fade,
+            "/-li" => Self::Sun,
+            "/-bd" => Self::Birthday,
+            "/-bome" => Self::Bomb,
+            "/-ok" => Self::Ok,
+            "/-v" => Self::Peace,
+            "/-thanks" => Self::Thanks,
+            "/-punch" => Self::Punch,
+            "/-share" => Self::Share,
+            "_()_" => Self::Pray,
+            "/-no" => Self::No,
+            "/-bad" => Self::Bad,
+            "/-loveu" => Self::LoveYou,
+            "--b" => Self::Sad,
+            ":((" => Self::VerySad,
+            "x-)" => Self::Cool,
+            "8-)" => Self::Nerd,
+            ";-d" => Self::BigSmile,
+            "b-)" => Self::Sunglasses,
+            ":--|" => Self::Neutral,
+            "p-(" => Self::SadFace,
+            ":-bye" => Self::Bye,
+            "|-)" => Self::Sleepy,
+            ":wipe" => Self::Wipe,
+            ":-dig" => Self::Dig,
+            "&-(" => Self::Anguish,
+            ":handclap" => Self::Handclap,
+            ">-|" => Self::AngryFace,
+            ":-f" => Self::FChair,
+            ":-l" => Self::LChair,
+            ":-r" => Self::RChair,
+            ";-x" => Self::Silent,
+            ":-o" => Self::Surprise,
+            ";-s" => Self::Embarrassed,
+            ";-a" => Self::Afraid,
+            ":-<" => Self::Sad2,
+            ":))" => Self::BigLaugh,
+            "$-)" => Self::Rich,
+            "/-beer" => Self::Beer,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<EventReactions> for String {
+    fn from(value: EventReactions) -> Self {
+        value.as_provider_str().to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -980,8 +1110,8 @@ pub struct Reaction {
 
 impl Reaction {
     pub fn new(uid: &str, mut data: TReaction, is_group: bool) -> Self {
-        let is_self = data.uid_from == "0";
-        let thread_id = if is_group || data.uid_from == "0" {
+        let is_self = data.uid_from == "0" || data.uid_from == uid;
+        let thread_id = if is_group || is_self {
             data.id_to.clone()
         } else {
             data.uid_from.clone()
@@ -1179,6 +1309,17 @@ mod tests {
         assert_eq!(reaction.ts, "1785483160459");
         assert_eq!(reaction.content.r_msg[0].g_msg_id, "1785483160459");
         assert_eq!(reaction.content.r_msg[0].c_msg_id, "1785483160460");
+    }
+
+    #[test]
+    fn unknown_reaction_icon_round_trips_raw_provider_value() {
+        let raw_icon = "/:new-haha";
+        let reaction: EventReactions = serde_json::from_value(serde_json::json!(raw_icon)).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&reaction).unwrap(),
+            serde_json::json!(raw_icon)
+        );
     }
 
     #[test]

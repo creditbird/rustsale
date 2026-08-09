@@ -10,11 +10,12 @@ use std::path::PathBuf;
 pub(crate) fn canonical_reaction_code(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "❤️" | "❤" | "/-heart" | "/:heart" | "heart" => Some("heart"),
-        "👍" | "/-strong" | "/-like" | "like" => Some("like"),
-        "😆" | "😄" | ":>" | "/-haha" | "haha" => Some("haha"),
-        "😮" | ":o" | "/-wow" | "wow" => Some("wow"),
-        "😭" | "😢" | ":-((" | ":((" | "--b" | "/-cry" | "cry" | "sad" => Some("cry"),
-        "😡" | ":-h" | "/-angry" | "angry" => Some("angry"),
+        "👍" | "/-strong" | "/:strong" | "/-like" | "/:like" | "like" => Some("like"),
+        "😆" | "😄" | ":>" | "/-haha" | "/:haha" | "haha" => Some("haha"),
+        "😮" | ":o" | "/-wow" | "/:wow" | "wow" => Some("wow"),
+        ":-(" | ":-[" | "/-sad" | "/:sad" => Some("cry"),
+        "😭" | "😢" | ":-((" | ":((" | "--b" | "/-cry" | "/:cry" | "cry" | "sad" => Some("cry"),
+        "😡" | ":-h" | "/-angry" | "/:angry" | "angry" => Some("angry"),
         _ => None,
     }
 }
@@ -24,7 +25,7 @@ pub(crate) fn mark_reaction_removed(
     message_id: i64,
     actor_external_id: &str,
     reaction_code: Option<&str>,
-    occurred_at: &str,
+    _occurred_at: &str,
 ) -> rusqlite::Result<usize> {
     let target = reaction_code
         .map(str::trim)
@@ -50,8 +51,8 @@ pub(crate) fn mark_reaction_removed(
             .is_none_or(|target_code| stored_code.eq_ignore_ascii_case(target_code))
         {
             updated += tx.execute(
-                "UPDATE message_reactions SET removed_at = ?1 WHERE rowid = ?2",
-                params![occurred_at, row_id],
+                "DELETE FROM message_reactions WHERE rowid = ?1",
+                params![row_id],
             )?;
         }
     }

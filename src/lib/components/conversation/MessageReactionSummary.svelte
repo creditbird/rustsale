@@ -20,8 +20,8 @@
   let expandedIcon = $state<string | null>(null);
 
   function handleChipClick(group: ConversationReactionGroup) {
-    if (canReact) {
-      const code = reactionIconToCode(group.reactionIcon);
+    const code = reactionIconToCode(group.reactionIcon);
+    if (canReact && code !== null) {
       onToggleReaction(code, group.includesMe);
     } else {
       toggleGroup(group.reactionIcon);
@@ -38,7 +38,7 @@
     {#each groups as group (group.reactionIcon)}
       {@const code = reactionIconToCode(group.reactionIcon)}
       {@const displayIcon = normalizeReactionIcon(group.reactionIcon)}
-      {@const pending = pendingReactions.includes(code)}
+      {@const pending = code !== null && pendingReactions.includes(code)}
       <div class="relative">
         <button
           type="button"

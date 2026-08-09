@@ -453,6 +453,40 @@ fn direct_message_with_client_id(
     msg
 }
 
+fn insert_zalo_account(harness: &Harness, provider_account_key: &str) {
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts
+            (channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES
+            ('zalo', ?1, 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z')",
+        [provider_account_key],
+    )
+    .unwrap();
+}
+
+fn reaction_event(
+    event_id: &str,
+    provider_message_id: &str,
+    provider_client_message_id: &str,
+    removed: bool,
+    occurred_at: &str,
+) -> NormalizedReaction {
+    NormalizedReaction {
+        provider_account_key: "imei-a".to_string(),
+        external_thread_id: "peer-1".to_string(),
+        is_group: false,
+        provider_event_id: Some(event_id.to_string()),
+        provider_message_id: provider_message_id.to_string(),
+        provider_client_message_id: provider_client_message_id.to_string(),
+        actor_external_id: "peer-1".to_string(),
+        reaction: "heart".to_string(),
+        removed,
+        occurred_at: occurred_at.to_string(),
+        raw_payload: serde_json::json!({"eventId": event_id}),
+    }
+}
+
 #[test]
 fn reaction_upsert_targets_provider_or_client_message_id() {
     let harness = Harness::new();
@@ -476,6 +510,238 @@ fn reaction_upsert_targets_provider_or_client_message_id() {
     harness.repository.apply_reaction(&reaction).unwrap();
     harness.repository.apply_reaction(&reaction).unwrap();
     assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 1);
+}
+
+#[test]
+fn reaction_without_known_account_returns_ingest_error() {
+    let harness = Harness::new();
+    let result = harness.repository.apply_reaction(&reaction_event(
+        "event-missing-account",
+        "message-missing-account",
+        "client-missing-account",
+        false,
+        "2026-08-09T00:01:00Z",
+    ));
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn reaction_before_message_is_staged_then_replayed_by_provider_message_id() {
+    let harness = Harness::new();
+    insert_zalo_account(&harness, "imei-a");
+
+    let result = harness
+        .repository
+        .apply_reaction(&reaction_event(
+            "event-provider-late",
+            "message-provider-late",
+            "client-provider-late",
+            false,
+            "2026-08-09T00:01:00Z",
+        ))
+        .unwrap();
+
+    assert_eq!(result, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 0);
+
+    harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id(
+            "message-provider-late",
+            "client-provider-late",
+        ))
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+    assert_eq!(
+        harness.scalar(
+            "SELECT COUNT(*) FROM message_reactions WHERE reaction = 'heart' AND removed_at IS NULL"
+        ),
+        1
+    );
+}
+
+#[test]
+fn reaction_with_zero_provider_message_id_replays_by_client_message_id() {
+    let harness = Harness::new();
+    insert_zalo_account(&harness, "imei-a");
+
+    harness
+        .repository
+        .apply_reaction(&reaction_event(
+            "event-client-late",
+            "0",
+            "client-message-late",
+            false,
+            "2026-08-09T00:01:00Z",
+        ))
+        .unwrap();
+
+    harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id(
+            "server-message-late",
+            "client-message-late",
+        ))
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+    assert_eq!(
+        harness.scalar(
+            "SELECT COUNT(*) FROM message_reactions WHERE reaction = 'heart' AND removed_at IS NULL"
+        ),
+        1
+    );
+}
+
+#[test]
+fn pending_reaction_replay_is_chronological_and_idempotent() {
+    let harness = Harness::new();
+    insert_zalo_account(&harness, "imei-a");
+
+    let events = [
+        reaction_event(
+            "event-add-latest",
+            "message-ordered",
+            "client-ordered",
+            false,
+            "2026-08-09T00:03:00Z",
+        ),
+        reaction_event(
+            "event-add-earliest",
+            "message-ordered",
+            "client-ordered",
+            false,
+            "2026-08-09T00:01:00Z",
+        ),
+        reaction_event(
+            "event-remove-middle",
+            "message-ordered",
+            "client-ordered",
+            true,
+            "2026-08-09T00:02:00Z",
+        ),
+    ];
+
+    for event in &events {
+        harness.repository.apply_reaction(event).unwrap();
+        harness.repository.apply_reaction(event).unwrap();
+    }
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        3
+    );
+
+    harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id(
+            "message-ordered",
+            "client-ordered",
+        ))
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 1);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_reactions WHERE removed_at IS NULL"),
+        1
+    );
+}
+
+#[test]
+fn duplicate_message_reconciliation_replays_pending_reactions() {
+    let harness = Harness::new();
+    let mut initial = direct_message("imei-a", "unused-initial-provider-id");
+    initial.provider_message_id = None;
+    initial.provider_client_message_id = Some("client-initial".to_string());
+    initial.local_request_id = Some("local-request-replay".to_string());
+    harness
+        .repository
+        .apply_normalized_message(&initial)
+        .unwrap();
+
+    harness
+        .repository
+        .apply_reaction(&reaction_event(
+            "event-duplicate-replay",
+            "message-reconciled",
+            "client-reconciled",
+            false,
+            "2026-08-09T00:01:00Z",
+        ))
+        .unwrap();
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+
+    let mut echo = direct_message_with_client_id("message-reconciled", "client-reconciled");
+    echo.local_request_id = Some("local-request-replay".to_string());
+    let applied = harness.repository.apply_normalized_message(&echo).unwrap();
+
+    assert!(applied.duplicate);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 1);
+}
+
+#[test]
+fn pending_reaction_replay_rolls_back_message_when_cleanup_fails() {
+    let harness = Harness::new();
+    insert_zalo_account(&harness, "imei-a");
+    harness
+        .repository
+        .apply_reaction(&reaction_event(
+            "event-rollback",
+            "message-rollback",
+            "client-rollback",
+            false,
+            "2026-08-09T00:01:00Z",
+        ))
+        .unwrap();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER block_pending_reaction_cleanup
+         BEFORE DELETE ON pending_message_reactions
+         BEGIN
+             SELECT RAISE(ABORT, 'pending reaction cleanup blocked');
+         END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let result = harness
+        .repository
+        .apply_normalized_message(&direct_message_with_client_id(
+            "message-rollback",
+            "client-rollback",
+        ));
+
+    assert!(result.is_err());
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM messages"), 0);
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 0);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
 }
 
 #[test]
@@ -606,6 +872,63 @@ fn hydrated_reactions_normalize_provider_aliases_to_canonical_emoji() {
     );
     assert_eq!(page.items[0].reactions[0].reaction_icon, "❤️");
     assert_eq!(page.items[0].reactions[0].count, 3);
+}
+
+#[test]
+fn hydrated_reactions_normalize_slash_colon_provider_aliases() {
+    let harness = Harness::new();
+    harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-slash-colon-aliases"))
+        .unwrap();
+
+    for (index, reaction) in [
+        "/:heart", "/:strong", "/:haha", "/:wow", "/:cry", "/:sad", "/:angry",
+    ]
+    .iter()
+    .enumerate()
+    {
+        harness
+            .repository
+            .apply_reaction(&NormalizedReaction {
+                provider_account_key: "imei-a".to_string(),
+                external_thread_id: "peer-1".to_string(),
+                is_group: false,
+                provider_event_id: Some(format!("event-slash-colon-alias-{index}")),
+                provider_message_id: "message-slash-colon-aliases".to_string(),
+                provider_client_message_id: "client-message-slash-colon-aliases".to_string(),
+                actor_external_id: format!("actor-{index}"),
+                reaction: (*reaction).to_string(),
+                removed: false,
+                occurred_at: format!("2026-08-09T10:01:0{index}.000Z"),
+                raw_payload: serde_json::json!({}),
+            })
+            .unwrap();
+    }
+
+    let conversation_id = harness.scalar("SELECT id FROM channel_conversations LIMIT 1");
+    let page = harness
+        .repository
+        .get_conversation_timeline(conversation_id, None, 50)
+        .unwrap();
+    let reaction_icons = page.items[0]
+        .reactions
+        .iter()
+        .map(|group| group.reaction_icon.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(
+        reaction_icons,
+        std::collections::BTreeSet::from(["❤️", "👍", "😆", "😮", "😭", "😡"])
+    );
+    assert_eq!(
+        page.items[0]
+            .reactions
+            .iter()
+            .find(|group| group.reaction_icon == "😭")
+            .map(|group| group.count),
+        Some(2)
+    );
 }
 
 #[test]

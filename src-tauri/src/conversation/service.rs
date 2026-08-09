@@ -415,18 +415,56 @@ impl ConversationService {
                             reason: ConversationInvalidationReason::Message,
                             message_id: Some(applied.message_id),
                         });
-                    }
-                }
-                ZaloMutation::Reaction(reaction) => {
-                    if let Some(message_id) = self.repository.apply_reaction(&reaction)? {
+                    } else if applied.replayed_reaction_count > 0 {
                         self.publish_message_invalidation(
-                            message_id,
+                            applied.message_id,
                             ConversationInvalidationReason::Reaction,
                         )?;
                     }
-                    if let Ok(Some(account_id)) =
-                        self.repository.get_channel_account_id(provider_account_key)
-                    {
+                }
+                ZaloMutation::Reaction(reaction) => {
+                    use crate::conversation::reactions::canonical_reaction_code;
+                    let reaction_str = reaction.reaction.as_str();
+                    let canonical = canonical_reaction_code(reaction_str).unwrap_or(reaction_str);
+                    let account_id = self
+                        .repository
+                        .get_channel_account_id(provider_account_key)
+                        .ok()
+                        .flatten();
+
+                    let is_echo = if !reaction.removed {
+                        account_id.is_some_and(|account_id| {
+                            let cache =
+                                crate::conversation::echo_cache::ReactionEchoCache::global();
+                            let provider_message_match = cache.consume_if_expected(
+                                account_id,
+                                &reaction.provider_message_id,
+                                canonical,
+                                &reaction.actor_external_id,
+                            );
+                            let provider_client_message_match =
+                                !reaction.provider_client_message_id.is_empty()
+                                    && cache.consume_if_expected(
+                                        account_id,
+                                        &reaction.provider_client_message_id,
+                                        canonical,
+                                        &reaction.actor_external_id,
+                                    );
+                            provider_message_match || provider_client_message_match
+                        })
+                    } else {
+                        false
+                    };
+
+                    if !is_echo {
+                        if let Some(message_id) = self.repository.apply_reaction(&reaction)? {
+                            self.publish_message_invalidation(
+                                message_id,
+                                ConversationInvalidationReason::Reaction,
+                            )?;
+                        }
+                    }
+                    if let Some(account_id) = account_id {
                         let scope = if reaction.is_group {
                             GROUP_REACTION_WATERMARK_SCOPE
                         } else {
@@ -1194,9 +1232,80 @@ impl ConversationService {
             ));
         }
 
-        let self_external_id = self_external_id_opt
-            .or_else(|| client.own_external_id())
-            .unwrap_or_else(|| "self".to_string());
+        let self_external_id = if let Some(self_external_id) =
+            self_external_id_opt.filter(|value| !value.trim().is_empty())
+        {
+            self_external_id
+        } else if let Some(self_external_id) = client
+            .own_external_id()
+            .filter(|value| !value.trim().is_empty())
+        {
+            let capabilities_json = serde_json::to_string(&capabilities).map_err(|error| {
+                ConversationError::new(
+                    ConversationErrorCode::ProviderFailure,
+                    format!("Failed to serialize account capabilities: {error}"),
+                )
+            })?;
+            self.repository.update_account_identity_and_capabilities(
+                msg.channel_account_id,
+                Some(&self_external_id),
+                &capabilities_json,
+                &crate::conversation::types::utc_now(),
+            )?;
+            self_external_id
+        } else {
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                "Zalo account is missing its own external user ID",
+            ));
+        };
+
+        let reaction_mutations = ReactionMutationRepository::new(self.repository.db_path());
+        let mutation = reaction_mutations.begin(request, msg.channel_account_id)?;
+
+        if mutation.is_existing {
+            let read_conn = open_db_connection(self.repository.db_path())?;
+            let groups = load_message_reaction_groups(&read_conn, request.message_id)?;
+            let status = match mutation.status.as_str() {
+                "running" => ReactionMutationStatus::Running,
+                "succeeded" => ReactionMutationStatus::Succeeded,
+                "failed" => ReactionMutationStatus::Failed,
+                _ => ReactionMutationStatus::DeliveryUnknown,
+            };
+            return Ok(ConversationReactionMutationResult {
+                client_mutation_id: mutation.client_mutation_id,
+                message_id: request.message_id,
+                reaction: request.reaction,
+                requested_active: request.active,
+                status,
+                reactions: groups,
+                error_code: mutation.error_code,
+                error_message: mutation.error_message,
+            });
+        }
+
+        let now = crate::conversation::types::utc_now();
+        if !request.active {
+            let groups = reaction_mutations.succeed(
+                &mutation.client_mutation_id,
+                &self_external_id,
+                &now,
+            )?;
+            self.publish_message_invalidation(
+                request.message_id,
+                super::events::ConversationInvalidationReason::Reaction,
+            )?;
+            return Ok(ConversationReactionMutationResult {
+                client_mutation_id: mutation.client_mutation_id,
+                message_id: request.message_id,
+                reaction: request.reaction,
+                requested_active: request.active,
+                status: ReactionMutationStatus::Succeeded,
+                reactions: groups,
+                error_code: None,
+                error_message: None,
+            });
+        }
 
         let provider_message_id = match msg
             .provider_message_id
@@ -1244,44 +1353,36 @@ impl ConversationService {
             zca_rs::models::ThreadType::User
         };
 
-        let reaction_mutations = ReactionMutationRepository::new(self.repository.db_path());
-        let mutation = reaction_mutations.begin(request, msg.channel_account_id)?;
-
-        if mutation.is_existing {
-            let read_conn = open_db_connection(self.repository.db_path())?;
-            let groups = load_message_reaction_groups(&read_conn, request.message_id)?;
-            let status = match mutation.status.as_str() {
-                "running" => ReactionMutationStatus::Running,
-                "succeeded" => ReactionMutationStatus::Succeeded,
-                "failed" => ReactionMutationStatus::Failed,
-                _ => ReactionMutationStatus::DeliveryUnknown,
-            };
-            return Ok(ConversationReactionMutationResult {
-                client_mutation_id: mutation.client_mutation_id,
-                message_id: request.message_id,
-                reaction: request.reaction,
-                requested_active: request.active,
-                status,
-                reactions: groups,
-                error_code: mutation.error_code,
-                error_message: mutation.error_message,
-            });
+        let req_reaction_str = request.reaction.as_str();
+        use crate::conversation::reactions::canonical_reaction_code;
+        let reaction_code_str =
+            canonical_reaction_code(req_reaction_str).unwrap_or(req_reaction_str);
+        let echo_cache = crate::conversation::echo_cache::ReactionEchoCache::global();
+        echo_cache.mark_expected(
+            msg.channel_account_id,
+            &provider_message_id,
+            reaction_code_str,
+            &self_external_id,
+        );
+        if !provider_client_message_id.is_empty()
+            && provider_client_message_id != provider_message_id
+        {
+            echo_cache.mark_expected(
+                msg.channel_account_id,
+                &provider_client_message_id,
+                reaction_code_str,
+                &self_external_id,
+            );
         }
 
         let provider_req = crate::conversation::zalo::client::ProviderReactionRequest {
-            provider_message_id,
-            provider_client_message_id,
+            provider_message_id: provider_message_id.clone(),
+            provider_client_message_id: provider_client_message_id.clone(),
             external_thread_id,
             thread_type,
-            reaction_code: if request.active {
-                Some(request.reaction)
-            } else {
-                None
-            },
+            reaction_code: Some(request.reaction),
             client_mutation_id: Some(mutation.client_mutation_id.clone()),
         };
-
-        let now = crate::conversation::types::utc_now();
 
         match client.set_reaction(provider_req).await {
             Ok(()) => {
@@ -1306,6 +1407,22 @@ impl ConversationService {
                 })
             }
             Err(err) => {
+                echo_cache.clear_expected(
+                    msg.channel_account_id,
+                    &provider_message_id,
+                    reaction_code_str,
+                    &self_external_id,
+                );
+                if !provider_client_message_id.is_empty()
+                    && provider_client_message_id != provider_message_id
+                {
+                    echo_cache.clear_expected(
+                        msg.channel_account_id,
+                        &provider_client_message_id,
+                        reaction_code_str,
+                        &self_external_id,
+                    );
+                }
                 use crate::conversation::zalo::client::ProviderSendErrorKind;
                 let (is_unknown, mutation_status) = match err.kind {
                     ProviderSendErrorKind::Retryable | ProviderSendErrorKind::RateLimited => {

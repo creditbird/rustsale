@@ -85,4 +85,60 @@ describe('MessageReactionSummary', () => {
     expect(onToggleReaction).toHaveBeenCalledWith('heart', true);
     expect(screen.queryByText(/\/-heart/)).toBeNull();
   });
+
+  it('renders slash-colon provider aliases as canonical writable reactions', async () => {
+    const onToggleReaction = mock(() => {});
+
+    render(MessageReactionSummary, {
+      groups: [
+        {
+          reactionIcon: '/:haha',
+          count: 5,
+          includesMe: false,
+          actors: []
+        },
+        {
+          reactionIcon: '/:sad',
+          count: 2,
+          includesMe: false,
+          actors: []
+        }
+      ],
+      canReact: true,
+      onToggleReaction
+    });
+
+    const chip = screen.getByRole('button', { name: /😆 5/ });
+    await fireEvent.click(chip);
+
+    expect(onToggleReaction).toHaveBeenCalledWith('haha', false);
+    const sadChip = screen.getByRole('button', { name: /😭 2/ });
+    await fireEvent.click(sadChip);
+    expect(onToggleReaction).toHaveBeenCalledWith('cry', false);
+  });
+
+  it('renders unsupported provider icons read-only without defaulting to Like', async () => {
+    const onToggleReaction = mock(() => {});
+
+    render(MessageReactionSummary, {
+      groups: [
+        {
+          reactionIcon: '/:new-haha',
+          count: 5,
+          includesMe: false,
+          actors: [
+            { identityId: null, externalId: 'actor-1', displayName: 'Người thả emoji', avatarUrl: null }
+          ]
+        }
+      ],
+      canReact: true,
+      onToggleReaction
+    });
+
+    const chip = screen.getByRole('button', { name: /\/:new-haha 5/ });
+    await fireEvent.click(chip);
+
+    expect(onToggleReaction).not.toHaveBeenCalled();
+    expect(screen.getByText('Người thả emoji')).toBeTruthy();
+  });
 });

@@ -770,3 +770,227 @@ fn phase2a_migration_preserves_phase1_rows() {
         .unwrap();
     assert_eq!(msg_count, 1);
 }
+
+#[test]
+fn reaction_reliability_migration_creates_pending_storage_and_repair_markers() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    migrate(&conn).unwrap();
+
+    let tables = table_names(&conn);
+    for expected in [
+        "pending_message_reactions",
+        "channel_account_migration_markers",
+    ] {
+        assert!(tables.contains(&expected.to_string()), "missing {expected}");
+    }
+
+    let pending_columns = column_names(&conn, "pending_message_reactions");
+    for expected in [
+        "channel_account_id",
+        "external_thread_id",
+        "conversation_kind",
+        "provider_event_id",
+        "provider_message_id",
+        "provider_client_message_id",
+        "actor_external_id",
+        "reaction",
+        "removed",
+        "occurred_at",
+        "raw_payload_json",
+    ] {
+        assert!(
+            pending_columns.contains(&expected.to_string()),
+            "missing pending reaction column {expected}"
+        );
+    }
+}
+
+#[test]
+fn reaction_history_recovery_resets_only_zalo_history_scopes() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    migrate(&conn).unwrap();
+
+    conn.execute_batch(
+        "INSERT INTO channel_accounts
+            (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES
+            (1, 'zalo', 'zalo-existing', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z'),
+            (2, 'email', 'email-existing', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z');
+         INSERT INTO channel_sync_checkpoints
+            (channel_account_id, scope, cursor, updated_at)
+         VALUES
+            (1, 'direct_reaction_history', 'direct-history-cursor', '2026-08-09T00:00:00Z'),
+            (1, 'group_reaction_history', 'group-history-cursor', '2026-08-09T00:00:00Z'),
+            (1, 'direct_reactions', 'direct-realtime-watermark', '2026-08-09T00:00:00Z'),
+            (1, 'group_reactions', 'group-realtime-watermark', '2026-08-09T00:00:00Z'),
+            (1, 'direct_message_history', 'message-history-cursor', '2026-08-09T00:00:00Z'),
+            (2, 'direct_reaction_history', 'email-history-cursor', '2026-08-09T00:00:00Z');",
+    )
+    .unwrap();
+
+    migrate(&conn).unwrap();
+
+    let mut statement = conn
+        .prepare(
+            "SELECT channel_account_id, scope, cursor
+             FROM channel_sync_checkpoints
+             ORDER BY channel_account_id, scope",
+        )
+        .unwrap();
+    let remaining = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        remaining,
+        vec![
+            (
+                1,
+                "direct_message_history".to_string(),
+                "message-history-cursor".to_string(),
+            ),
+            (
+                1,
+                "direct_reactions".to_string(),
+                "direct-realtime-watermark".to_string(),
+            ),
+            (
+                1,
+                "group_reactions".to_string(),
+                "group-realtime-watermark".to_string(),
+            ),
+            (
+                2,
+                "direct_reaction_history".to_string(),
+                "email-history-cursor".to_string(),
+            ),
+        ]
+    );
+
+    let marker_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM channel_account_migration_markers
+             WHERE channel_account_id = 1
+               AND migration_key = 'zalo_reaction_history_recovery_v1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker_count, 1);
+}
+
+#[test]
+fn reaction_history_recovery_does_not_reset_new_cursor_after_marker() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    migrate(&conn).unwrap();
+    conn.execute_batch(
+        "INSERT INTO channel_accounts
+            (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES
+            (1, 'zalo', 'zalo-existing', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z');
+         INSERT INTO channel_sync_checkpoints
+            (channel_account_id, scope, cursor, updated_at)
+         VALUES
+            (1, 'direct_reaction_history', 'stale-cursor', '2026-08-09T00:00:00Z');",
+    )
+    .unwrap();
+
+    migrate(&conn).unwrap();
+    let stale_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM channel_sync_checkpoints
+             WHERE channel_account_id = 1 AND scope = 'direct_reaction_history'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale_count, 0);
+
+    conn.execute(
+        "INSERT INTO channel_sync_checkpoints
+            (channel_account_id, scope, cursor, updated_at)
+         VALUES
+            (1, 'direct_reaction_history', 'fresh-cursor', '2026-08-09T01:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    migrate(&conn).unwrap();
+
+    let cursor: String = conn
+        .query_row(
+            "SELECT cursor
+             FROM channel_sync_checkpoints
+             WHERE channel_account_id = 1 AND scope = 'direct_reaction_history'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cursor, "fresh-cursor");
+}
+
+#[test]
+fn duplicate_zalo_merge_preserves_pending_reactions_and_repair_markers() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+    migrate(&conn).unwrap();
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_channel_accounts_zalo_self_ext_id",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "INSERT INTO channel_accounts
+            (id, channel, provider_account_key, self_external_id, connection_status, capabilities_json, created_at, updated_at)
+         VALUES
+            (1, 'zalo', 'uid-merge-reactions', 'uid-merge-reactions', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z'),
+            (2, 'zalo', 'imei-merge-reactions', 'uid-merge-reactions', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z');
+         INSERT INTO pending_message_reactions
+            (channel_account_id, external_thread_id, conversation_kind, provider_event_id,
+             provider_message_id, provider_client_message_id, actor_external_id, reaction,
+             removed, occurred_at, raw_payload_json, created_at, updated_at)
+         VALUES
+            (2, 'peer-merge', 'direct', 'event-merge', 'message-merge', 'client-merge',
+             'actor-merge', 'heart', 0, '2026-08-09T00:01:00Z', '{}',
+             '2026-08-09T00:01:00Z', '2026-08-09T00:01:00Z');
+         INSERT INTO channel_account_migration_markers
+            (channel_account_id, migration_key, applied_at)
+         VALUES
+            (2, 'zalo_reaction_history_recovery_v1', '2026-08-09T00:00:00Z');",
+    )
+    .unwrap();
+
+    super::migration::reconcile_duplicate_zalo_channel_accounts(&conn).unwrap();
+
+    let pending_account_id: i64 = conn
+        .query_row(
+            "SELECT channel_account_id FROM pending_message_reactions",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending_account_id, 1);
+
+    let marker_account_id: i64 = conn
+        .query_row(
+            "SELECT channel_account_id
+             FROM channel_account_migration_markers
+             WHERE migration_key = 'zalo_reaction_history_recovery_v1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker_account_id, 1);
+}

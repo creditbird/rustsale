@@ -157,6 +157,7 @@ pub fn record_outreach_success_in_transaction(
                 conversation_id,
                 message_id,
                 duplicate: true,
+                replayed_reaction_count: 0,
             },
             lead_id: record.lead_id,
         });
@@ -205,6 +206,7 @@ pub fn record_outreach_success_in_transaction(
             conversation_id,
             message_id,
             duplicate: false,
+            replayed_reaction_count: 0,
         },
         lead_id: record.lead_id,
     })

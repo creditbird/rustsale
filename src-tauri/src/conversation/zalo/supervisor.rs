@@ -19,6 +19,10 @@ use crate::models::ZaloSession;
 
 const MAX_HISTORY_PAGES: usize = 5;
 #[cfg(not(test))]
+const HISTORY_RESUME_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(test)]
+const HISTORY_RESUME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+#[cfg(not(test))]
 const ACCOUNT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(test)]
 const ACCOUNT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
@@ -100,6 +104,7 @@ impl HistoryStream {
 struct HistoryStreamState {
     pages_requested: usize,
     last_requested_cursor: Option<String>,
+    paused_cursor: Option<String>,
     completed: bool,
 }
 
@@ -127,6 +132,7 @@ impl HistoryPaginationState {
                 HistoryStreamState {
                     pages_requested: 1,
                     last_requested_cursor: cursor,
+                    paused_cursor: None,
                     completed: false,
                 },
             );
@@ -141,22 +147,56 @@ impl HistoryPaginationState {
         cursor: &str,
     ) -> anyhow::Result<()> {
         let state = self.streams.entry(stream).or_default();
-        if state.completed
-            || state.pages_requested >= MAX_HISTORY_PAGES
-            || state.last_requested_cursor.as_deref() == Some(cursor)
-        {
+        let cursor = cursor.trim();
+        if state.completed {
+            return Ok(());
+        }
+        if cursor.is_empty() || state.last_requested_cursor.as_deref() == Some(cursor) {
             state.completed = true;
+            state.paused_cursor = None;
+            return Ok(());
+        }
+        if state.pages_requested >= MAX_HISTORY_PAGES {
+            state.paused_cursor = Some(cursor.to_string());
             return Ok(());
         }
 
         stream.request(client, Some(cursor))?;
         state.pages_requested += 1;
         state.last_requested_cursor = Some(cursor.to_string());
+        state.paused_cursor = None;
         Ok(())
     }
 
     fn complete(&mut self, stream: HistoryStream) {
-        self.streams.entry(stream).or_default().completed = true;
+        let state = self.streams.entry(stream).or_default();
+        state.completed = true;
+        state.paused_cursor = None;
+    }
+
+    fn resume_paused(
+        &mut self,
+        client: &dyn crate::conversation::zalo::client::ZaloClient,
+    ) -> anyhow::Result<usize> {
+        let mut resumed = 0;
+        for stream in HistoryStream::ALL {
+            let paused_cursor = self.streams.get(&stream).and_then(|state| {
+                (!state.completed)
+                    .then(|| state.paused_cursor.clone())
+                    .flatten()
+            });
+            let Some(cursor) = paused_cursor else {
+                continue;
+            };
+
+            stream.request(client, Some(&cursor))?;
+            let state = self.streams.entry(stream).or_default();
+            state.pages_requested = 1;
+            state.last_requested_cursor = Some(cursor);
+            state.paused_cursor = None;
+            resumed += 1;
+        }
+        Ok(resumed)
     }
 }
 
@@ -710,6 +750,11 @@ async fn run_session_loop(
         // 7. Drain receiver loop with reactive pagination state machine
         let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(50));
         let mut profile_ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut history_ticker = tokio::time::interval_at(
+            tokio::time::Instant::now() + HISTORY_RESUME_INTERVAL,
+            HISTORY_RESUME_INTERVAL,
+        );
+        history_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let should_reconnect = loop {
             tokio::select! {
@@ -757,6 +802,17 @@ async fn run_session_loop(
                                 }
                             }));
                         }
+                    }
+                }
+                _ = history_ticker.tick() => {
+                    if let Err(error) = pagination.resume_paused(client.as_ref()) {
+                        mark_account_degraded(
+                            service.as_ref(),
+                            &provider_account_key,
+                            &error,
+                        );
+                        client.stop();
+                        break true;
                     }
                 }
                 res = rx.recv() => {

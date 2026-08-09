@@ -159,6 +159,141 @@ fn reaction_event_normalizes_correctly() {
 }
 
 #[test]
+fn haha_reaction_type_zero_is_addition() {
+    let reaction_data = TReaction {
+        action_id: "act-haha".to_string(),
+        msg_id: "event-haha".to_string(),
+        cli_msg_id: "cli-haha".to_string(),
+        msg_type: "1".to_string(),
+        uid_from: "self-uid".to_string(),
+        id_to: "peer-uid".to_string(),
+        d_name: Some("Self".to_string()),
+        content: TReactionContent {
+            r_msg: vec![TReactionMsg {
+                g_msg_id: "gmsg-haha".to_string(),
+                c_msg_id: "cmsg-haha".to_string(),
+                msg_type: 1,
+            }],
+            r_icon: EventReactions::Haha,
+            r_type: 0,
+            source: 6,
+        },
+        ts: "1786269310941".to_string(),
+        ttl: 0,
+    };
+    let event = ListenerEvent::Reaction(Reaction::new("self-uid", reaction_data, false));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Reaction(normalized) = &mutations[0] else {
+        panic!("expected reaction mutation");
+    };
+
+    assert_eq!(normalized.reaction, ":>");
+    assert!(!normalized.removed);
+}
+
+#[test]
+fn empty_reaction_icon_marks_removal_even_with_non_negative_type() {
+    let reaction_data = TReaction {
+        action_id: "act-empty-remove".to_string(),
+        msg_id: "event-empty-remove".to_string(),
+        cli_msg_id: "cli-empty-remove".to_string(),
+        msg_type: "1".to_string(),
+        uid_from: "self-uid".to_string(),
+        id_to: "peer-uid".to_string(),
+        d_name: Some("Self".to_string()),
+        content: TReactionContent {
+            r_msg: vec![TReactionMsg {
+                g_msg_id: "gmsg-empty-remove".to_string(),
+                c_msg_id: "cmsg-empty-remove".to_string(),
+                msg_type: 1,
+            }],
+            r_icon: EventReactions::Unknown(String::new()),
+            r_type: 0,
+            source: 6,
+        },
+        ts: "1786269311941".to_string(),
+        ttl: 0,
+    };
+    let event = ListenerEvent::Reaction(Reaction::new("self-uid", reaction_data, false));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Reaction(normalized) = &mutations[0] else {
+        panic!("expected reaction mutation");
+    };
+
+    assert_eq!(normalized.reaction, "");
+    assert!(normalized.removed);
+}
+
+#[test]
+fn negative_reaction_type_marks_removal() {
+    let reaction_data = TReaction {
+        action_id: "act-remove".to_string(),
+        msg_id: "event-remove".to_string(),
+        cli_msg_id: "cli-remove".to_string(),
+        msg_type: "1".to_string(),
+        uid_from: "self-uid".to_string(),
+        id_to: "peer-uid".to_string(),
+        d_name: Some("Self".to_string()),
+        content: TReactionContent {
+            r_msg: vec![TReactionMsg {
+                g_msg_id: "gmsg-remove".to_string(),
+                c_msg_id: "cmsg-remove".to_string(),
+                msg_type: 1,
+            }],
+            r_icon: EventReactions::Unknown(String::new()),
+            r_type: -1,
+            source: 6,
+        },
+        ts: "1786269311941".to_string(),
+        ttl: 0,
+    };
+    let event = ListenerEvent::Reaction(Reaction::new("self-uid", reaction_data, false));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Reaction(normalized) = &mutations[0] else {
+        panic!("expected reaction mutation");
+    };
+
+    assert!(normalized.removed);
+}
+
+#[test]
+fn unknown_reaction_icon_preserves_raw_provider_value() {
+    let reaction_data: TReaction = serde_json::from_value(json!({
+        "actionId": "act-unknown-reaction",
+        "msgId": "event-unknown-reaction",
+        "cliMsgId": "cli-unknown-reaction",
+        "msgType": "1",
+        "uidFrom": "peer-uid",
+        "idTo": "0",
+        "dName": "Peer",
+        "content": {
+            "rMsg": [{
+                "gMsgID": "gmsg-unknown-reaction",
+                "cMsgID": "cmsg-unknown-reaction",
+                "msgType": 1
+            }],
+            "rIcon": "/:new-haha",
+            "rType": 1,
+            "source": 1
+        },
+        "ts": "1785456000000",
+        "ttl": 0
+    }))
+    .unwrap();
+    let event = ListenerEvent::Reaction(Reaction::new("self-uid", reaction_data, false));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Reaction(normalized) = &mutations[0] else {
+        panic!("expected reaction mutation");
+    };
+
+    assert_eq!(normalized.reaction, "/:new-haha");
+}
+
+#[test]
 fn undo_event_normalizes_correctly() {
     let undo_data = TUndo {
         action_id: "act-2".to_string(),
@@ -410,4 +545,37 @@ fn sticker_message_with_stringified_json_content_normalizes_attachment() {
         message.attachments[0].remote_url.as_deref(),
         Some("https://stc-laban.zdn.vn/sticker/sample.webp")
     );
+}
+
+#[test]
+fn self_reaction_in_direct_chat_resolves_to_peer_thread_id() {
+    let reaction_data = TReaction {
+        action_id: "act-self-react".to_string(),
+        msg_id: "event-self-react".to_string(),
+        cli_msg_id: "cli-self-react".to_string(),
+        msg_type: "1".to_string(),
+        uid_from: "self-uid".to_string(),
+        id_to: "peer-uid".to_string(),
+        d_name: Some("Self".to_string()),
+        content: TReactionContent {
+            r_msg: vec![TReactionMsg {
+                g_msg_id: "gmsg-self-react".to_string(),
+                c_msg_id: "cmsg-self-react".to_string(),
+                msg_type: 1,
+            }],
+            r_icon: EventReactions::Heart,
+            r_type: 1,
+            source: 6,
+        },
+        ts: "1786269310941".to_string(),
+        ttl: 0,
+    };
+    let event = ListenerEvent::Reaction(Reaction::new("self-uid", reaction_data, false));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Reaction(normalized) = &mutations[0] else {
+        panic!("expected reaction mutation");
+    };
+
+    assert_eq!(normalized.external_thread_id, "peer-uid");
 }

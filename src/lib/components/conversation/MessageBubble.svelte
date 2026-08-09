@@ -174,7 +174,7 @@
     for (const group of message.reactions) {
       if (group.includesMe) {
         const code = reactionIconToCode(group.reactionIcon);
-        if (!codes.includes(code)) codes.push(code);
+        if (code !== null && !codes.includes(code)) codes.push(code);
       }
     }
     return codes;

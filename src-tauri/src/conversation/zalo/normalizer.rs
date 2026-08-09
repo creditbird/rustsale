@@ -558,15 +558,7 @@ fn extract_zalo_mentions(text: Option<&str>, content: &Value) -> Vec<NormalizedM
 }
 
 fn normalize_reaction(provider_account_key: &str, reaction: &Reaction) -> Vec<ZaloMutation> {
-    let reaction_str = serde_json::to_value(&reaction.data.content.r_icon)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| {
-            serde_json::to_string(&reaction.data.content.r_icon)
-                .unwrap_or_default()
-                .trim_matches('"')
-                .to_string()
-        });
+    let reaction_str = reaction.data.content.r_icon.as_provider_str().to_string();
 
     let occurred_at = provider_time(&reaction.data.ts);
     let raw_payload = serde_json::to_value(&reaction.data).unwrap_or_default();
@@ -587,7 +579,7 @@ fn normalize_reaction(provider_account_key: &str, reaction: &Reaction) -> Vec<Za
                 provider_client_message_id: r_msg.c_msg_id.clone(),
                 actor_external_id: reaction.data.uid_from.clone(),
                 reaction: reaction_str.clone(),
-                removed: reaction.data.content.r_type == 0,
+                removed: reaction_str.trim().is_empty() || reaction.data.content.r_type < 0,
                 occurred_at: occurred_at.clone(),
                 raw_payload: raw_payload.clone(),
             })

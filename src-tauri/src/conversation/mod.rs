@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod commands;
+pub mod echo_cache;
 pub mod error;
 pub mod events;
 pub mod forwarding;
