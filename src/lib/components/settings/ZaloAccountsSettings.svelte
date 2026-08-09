@@ -146,6 +146,10 @@
     qrUnlistens = [];
   }
 
+  export function triggerQrLogin() {
+    beginQrLogin();
+  }
+
   async function beginQrLogin() {
     cleanupQrListeners();
     qrOpen = true;

@@ -471,7 +471,7 @@ fn extract_zalo_mentions(text: Option<&str>, content: &Value) -> Vec<NormalizedM
     let mut mentions = Vec::new();
     let mut mentions_arr = content.get("mentions").and_then(Value::as_array).cloned();
 
-    if mentions_arr.as_ref().map_or(true, |a| a.is_empty()) {
+    if mentions_arr.as_ref().is_none_or(|items| items.is_empty()) {
         let ext_val = content
             .get("propertyExt")
             .or_else(|| content.get("property_ext"))

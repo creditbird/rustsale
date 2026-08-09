@@ -277,7 +277,7 @@ async fn test_conversation_state_commands_integration() {
 
     // 2. restart_conversation_account
     let res = restart_conversation_account(state.clone(), "non-existent-account".to_string()).await;
-    assert!(res.is_ok());
+    assert!(res.is_err());
 
     // 3. send_conversation_message
     let req = SendConversationMessageRequest {

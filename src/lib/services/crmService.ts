@@ -15,6 +15,7 @@ export interface Lead {
   address?: string | null;
   has_zalo?: number | null; // null = unchecked, 0 = no, 1 = yes
   zalo_reached?: number;     // 0 = no, 1 = yes
+  zalo_status?: string | null;
 }
 
 export interface OutreachLeadFilters {

@@ -146,7 +146,6 @@ fn test_mark_conversation_read_resets_unread_count() {
     assert_eq!(inbox_after[0].unread_count, 0);
 }
 
-
 #[test]
 fn normalized_attachment_persists_created_at_and_duplicate_is_idempotent() {
     let harness = Harness::new();
@@ -199,6 +198,89 @@ fn same_peer_on_two_zalo_accounts_creates_two_provider_conversations() {
     assert_ne!(first.channel_account_id, second.channel_account_id);
     assert_ne!(first.conversation_id, second.conversation_id);
     assert_eq!(first.identity_id, second.identity_id);
+}
+
+#[test]
+fn mapped_zalo_imei_reuses_canonical_account_for_messages_groups_and_mutations() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO channel_accounts
+            (id, channel, provider_account_key, self_external_id, display_name, connection_status, capabilities_json, created_at, updated_at)
+         VALUES
+            (900, 'zalo', 'uid-stable', 'uid-stable', 'Stable Zalo', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z');
+         INSERT INTO zalo_sessions
+            (imei, user_agent, cookies_json, language, display_name, zalo_uid, channel_account_id)
+         VALUES
+            ('imei-relogin', 'UA/1.0', '[]', 'vi', 'Stable Zalo', 'uid-stable', 900);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-relogin", "message-stable"))
+        .unwrap();
+    assert_eq!(applied.channel_account_id, 900);
+
+    harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-relogin".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("reaction-stable".to_string()),
+            provider_message_id: "message-stable".to_string(),
+            provider_client_message_id: "client-message-stable".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-08-09T00:01:00Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-relogin".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "message-stable".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-08-09T00:02:00Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    let group_conversation_id = harness
+        .repository
+        .apply_group_snapshot(&NormalizedGroupSnapshot {
+            provider_account_key: "imei-relogin".to_string(),
+            external_thread_id: "group-stable".to_string(),
+            title: "Stable Group".to_string(),
+            avatar_url: None,
+            participants: Vec::new(),
+            membership_complete: true,
+            occurred_at: "2026-08-09T00:03:00Z".to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM channel_accounts WHERE channel = 'zalo'"),
+        1
+    );
+    assert_eq!(
+        harness.scalar(&format!(
+            "SELECT channel_account_id FROM channel_conversations WHERE id = {group_conversation_id}"
+        )),
+        900
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_reactions"), 1);
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 1);
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE id = 1"),
+        "read"
+    );
 }
 
 #[test]
@@ -2496,7 +2578,10 @@ fn test_pin_unpin_and_list_pinned_messages() {
     let conv_id = result.conversation_id;
     let msg_id = result.message_id;
 
-    let pinned = harness.repository.pin_message(conv_id, msg_id, Some("user_1")).unwrap();
+    let pinned = harness
+        .repository
+        .pin_message(conv_id, msg_id, Some("user_1"))
+        .unwrap();
     assert_eq!(pinned.conversation_id, conv_id);
     assert_eq!(pinned.message_id, msg_id);
     assert_eq!(pinned.pinned_by.as_deref(), Some("user_1"));
@@ -2511,4 +2596,193 @@ fn test_pin_unpin_and_list_pinned_messages() {
     assert!(empty_list.is_empty());
 }
 
+#[test]
+fn reconcile_zalo_channel_account_reuses_existing_account_and_updates_provider_key() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
 
+    let acc_id = harness
+        .repository
+        .reconcile_zalo_channel_account("imei_1", Some("uid_100"), Some("Hello World"), None)
+        .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (10, ?1, 'thread_1', 'direct', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z')",
+        params![acc_id],
+    )
+    .unwrap();
+
+    let reconciled_id = harness
+        .repository
+        .reconcile_zalo_channel_account("imei_2", Some("uid_100"), Some("Hello World 2"), None)
+        .unwrap();
+
+    assert_eq!(reconciled_id, acc_id);
+
+    let conv_acc_id: i64 = conn
+        .query_row(
+            "SELECT channel_account_id FROM channel_conversations WHERE id = 10",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(conv_acc_id, acc_id);
+}
+
+#[test]
+fn reconcile_duplicate_zalo_channel_accounts_merges_conversations_to_canonical_account() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_channel_accounts_zalo_self_ext_id",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, self_external_id, display_name, created_at, updated_at)
+         VALUES (1, 'zalo', 'imei_old', 'uid_200', 'Account 1', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, self_external_id, display_name, created_at, updated_at)
+         VALUES (2, 'zalo', 'imei_new', 'uid_200', 'Account 2', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (20, 2, 'thread_2', 'direct', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    crate::conversation::migration::reconcile_duplicate_zalo_channel_accounts(&conn).unwrap();
+
+    let remaining_accounts: Vec<i64> = conn
+        .prepare("SELECT id FROM channel_accounts WHERE self_external_id = 'uid_200'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(remaining_accounts, vec![2]);
+
+    let conv_acc_id: i64 = conn
+        .query_row(
+            "SELECT channel_account_id FROM channel_conversations WHERE id = 20",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(conv_acc_id, 2);
+}
+
+#[test]
+fn test_reconcile_duplicate_accounts_preserves_messages_participants_attachments_reactions() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_channel_accounts_zalo_self_ext_id",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, self_external_id, display_name, created_at, updated_at)
+         VALUES (1, 'zalo', 'imei_old', 'uid_300', 'Account 1', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, self_external_id, display_name, created_at, updated_at)
+         VALUES (2, 'zalo', 'imei_new', 'uid_300', 'Account 2', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (101, 1, 'shared_thread', 'direct', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (102, 2, 'shared_thread', 'direct', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+         VALUES (500, 102, 'inbound', 'msg_500', 'text', 'Important Message on Dup', '2026-08-02T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (60, 'zalo', 'user', 'user_600', 'User 600', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, joined_at)
+         VALUES (102, 60, '2026-08-02T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO message_attachments (id, message_id, attachment_type, created_at)
+         VALUES (700, 500, 'image', '2026-08-02T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    crate::conversation::migration::reconcile_duplicate_zalo_channel_accounts(&conn).unwrap();
+
+    let message_conv_id: i64 = conn
+        .query_row(
+            "SELECT conversation_id FROM messages WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let canonical_conv_id: i64 = conn
+        .query_row(
+            "SELECT id FROM channel_conversations WHERE external_thread_id = 'shared_thread'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(message_conv_id, canonical_conv_id);
+
+    let part_conv_id: i64 = conn
+        .query_row(
+            "SELECT conversation_id FROM conversation_participants WHERE identity_id = 60",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(part_conv_id, canonical_conv_id);
+
+    let att_conv_id: i64 = conn
+        .query_row(
+            "SELECT m.conversation_id FROM message_attachments a JOIN messages m ON a.message_id = m.id WHERE a.id = 700",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(att_conv_id, canonical_conv_id);
+}

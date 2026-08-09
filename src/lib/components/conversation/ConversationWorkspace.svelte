@@ -57,10 +57,12 @@
   let {
     activeTab = 'conversation',
     onOpenSettings = () => {},
+    onOpenQrLogin = () => {},
     runtimeRefreshIntervalMs = 5_000
   }: {
     activeTab?: string;
     onOpenSettings?: () => void;
+    onOpenQrLogin?: (accountKey?: string) => void;
     runtimeRefreshIntervalMs?: number;
   } = $props();
 
@@ -954,6 +956,7 @@
         onCancelReply={() => (replySelection = null)}
         onBatchQueued={handleBatchQueued}
         {onOpenSettings}
+        {onOpenQrLogin}
         onRuntimeRefresh={() => refreshRuntimeStatus()}
       />
     {:else}

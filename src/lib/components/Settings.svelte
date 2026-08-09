@@ -6,7 +6,17 @@
   import { Badge } from '$lib/components/ui/badge';
   import { Mail, MessageCircleMore, MessagesSquare, Settings2 } from 'lucide-svelte';
 
+  import { tick } from 'svelte';
+
   let activeChannel = $state('zalo');
+  let zaloSettingsRef = $state<{ triggerQrLogin?: () => void } | null>(null);
+
+  export function openQrLogin() {
+    activeChannel = 'zalo';
+    tick().then(() => {
+      zaloSettingsRef?.triggerQrLogin?.();
+    });
+  }
 </script>
 
 <div class="flex h-full min-h-0 flex-col gap-5 overflow-y-auto">
@@ -40,7 +50,7 @@
       </Tabs.Trigger>
     </Tabs.List>
 
-    <Tabs.Content value="zalo" class="min-h-0"><ZaloAccountsSettings /></Tabs.Content>
+    <Tabs.Content value="zalo" class="min-h-0"><ZaloAccountsSettings bind:this={zaloSettingsRef} /></Tabs.Content>
     <Tabs.Content value="email" class="min-h-0"><EmailAccountsSettings /></Tabs.Content>
   </Tabs.Root>
 </div>

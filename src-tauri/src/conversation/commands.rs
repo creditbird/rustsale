@@ -44,7 +44,6 @@ pub fn mark_conversation_read(
         .map_err(|error| error.to_string())
 }
 
-
 #[tauri::command]
 pub fn get_contact_timeline(
     state: tauri::State<'_, ConversationState>,
@@ -494,7 +493,11 @@ pub fn pin_conversation_message(
 ) -> Result<PinnedMessage, String> {
     state
         .service
-        .pin_message(request.conversation_id, request.message_id, request.pinned_by.as_deref())
+        .pin_message(
+            request.conversation_id,
+            request.message_id,
+            request.pinned_by.as_deref(),
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -519,5 +522,3 @@ pub fn list_conversation_pinned_messages(
         .list_pinned_messages(conversation_id)
         .map_err(|error| error.to_string())
 }
-
-

@@ -35,7 +35,7 @@
     att?: ConversationAttachment | null,
     cnt?: Record<string, unknown> | null
   ): number | null {
-    const rawId = cnt?.stickerId ?? cnt?.id ?? cnt?.sticker_id ?? att?.providerAttachmentId;
+    const rawId = cnt?.stickerId ?? cnt?.id ?? cnt?.sticker_id ?? (att as Record<string, unknown> | undefined)?.providerAttachmentId;
     if (typeof rawId === 'number') return rawId;
     if (typeof rawId === 'string' && /^\d+$/.test(rawId)) return parseInt(rawId, 10);
     return null;

@@ -233,7 +233,6 @@ impl ConversationService {
         Ok(self.repository.mark_conversation_read(key)?)
     }
 
-
     pub fn get_contact_timeline(
         &self,
         lead_id: i64,
@@ -567,10 +566,8 @@ impl ConversationService {
         let now = crate::conversation::types::utc_now();
         let res = self.repository.enqueue_outbound_batch(request, &now)?;
         for msg in &res.messages {
-            let _ = self.publish_message_invalidation(
-                msg.id,
-                ConversationInvalidationReason::Message,
-            );
+            let _ =
+                self.publish_message_invalidation(msg.id, ConversationInvalidationReason::Message);
         }
         Ok(res)
     }
@@ -1354,7 +1351,9 @@ impl ConversationService {
         message_id: i64,
         pinned_by: Option<&str>,
     ) -> Result<crate::conversation::types::PinnedMessage> {
-        Ok(self.repository.pin_message(conversation_id, message_id, pinned_by)?)
+        Ok(self
+            .repository
+            .pin_message(conversation_id, message_id, pinned_by)?)
     }
 
     pub fn unpin_message(&self, conversation_id: i64, message_id: i64) -> Result<()> {
@@ -1367,6 +1366,4 @@ impl ConversationService {
     ) -> Result<Vec<crate::conversation::types::PinnedMessage>> {
         Ok(self.repository.list_pinned_messages(conversation_id)?)
     }
-
-
 }

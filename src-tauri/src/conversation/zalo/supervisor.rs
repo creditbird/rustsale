@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -17,6 +18,10 @@ use crate::db::open_db_connection;
 use crate::models::ZaloSession;
 
 const MAX_HISTORY_PAGES: usize = 5;
+#[cfg(not(test))]
+const ACCOUNT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+#[cfg(test)]
+const ACCOUNT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 type ConnectedClients =
     Arc<Mutex<HashMap<String, Arc<dyn crate::conversation::zalo::client::ZaloClient>>>>;
 
@@ -198,10 +203,14 @@ fn history_batch(event: &ListenerEvent) -> Option<HistoryBatch> {
     }
 }
 
-fn mark_account_degraded(service: &ConversationService, imei: &str, error: &dyn std::fmt::Display) {
-    tracing::warn!(provider_account_key = imei, error = %error, "Zalo conversation session degraded");
+fn mark_account_degraded(
+    service: &ConversationService,
+    provider_account_key: &str,
+    error: &dyn std::fmt::Display,
+) {
+    tracing::warn!(provider_account_key, error = %error, "Zalo conversation session degraded");
     let _ = service.repository.set_account_status(
-        imei,
+        provider_account_key,
         AccountConnectionStatus::Degraded,
         Some(&error.to_string()),
     );
@@ -314,9 +323,10 @@ impl ZaloSessionSupervisor {
 
     async fn start_account_task(&self, session: ZaloSession) {
         let imei = session.imei.clone();
+        let provider_account_key = session.provider_account_key().to_string();
         let mut tasks = self.tasks.lock().await;
 
-        if tasks.contains_key(&imei) {
+        if tasks.contains_key(&provider_account_key) || tasks.contains_key(&imei) {
             return;
         }
 
@@ -331,7 +341,7 @@ impl ZaloSessionSupervisor {
         });
 
         tasks.insert(
-            imei,
+            provider_account_key,
             SessionTask {
                 cancellation,
                 handle,
@@ -340,60 +350,138 @@ impl ZaloSessionSupervisor {
     }
 
     pub async fn restart_account(&self, provider_account_key: &str) -> anyhow::Result<()> {
-        // MUST NEVER await a task while holding tasks lock!
-        let old_task = {
+        let conn = open_db_connection(&self.db_path)?;
+        let target_imei: Option<String> = conn
+            .query_row(
+                "SELECT zs.imei FROM zalo_sessions zs
+                 LEFT JOIN channel_accounts ca ON ca.id = zs.channel_account_id OR (ca.self_external_id IS NOT NULL AND ca.self_external_id = zs.zalo_uid)
+                 WHERE zs.imei = ?1 OR zs.zalo_uid = ?1 OR ca.provider_account_key = ?1 OR ca.self_external_id = ?1
+                 ORDER BY zs.rowid DESC LIMIT 1",
+                rusqlite::params![provider_account_key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let target_imei = target_imei.ok_or_else(|| {
+            anyhow::anyhow!("No Zalo session matches account key {provider_account_key}")
+        })?;
+        let session = crate::db::get_zalo_session(&conn, &target_imei)?
+            .ok_or_else(|| anyhow::anyhow!("No Zalo session found for IMEI {target_imei}"))?;
+        let runtime_key = session.provider_account_key().to_string();
+
+        let old_tasks = {
             let mut tasks = self.tasks.lock().await;
-            tasks.remove(provider_account_key)
+            let mut removed = Vec::new();
+            for key in [
+                provider_account_key,
+                target_imei.as_str(),
+                runtime_key.as_str(),
+            ] {
+                if let Some(task) = tasks.remove(key) {
+                    removed.push(task);
+                }
+            }
+            removed
         };
 
-        if let Some(task) = old_task {
+        for task in old_tasks {
             task.cancellation.cancel();
             let _ = task.handle.await;
         }
-        self.clients.lock().await.remove(provider_account_key);
-
-        let conn = open_db_connection(&self.db_path)?;
-        let sessions = crate::db::get_all_zalo_sessions(&conn)
-            .map_err(|e| anyhow::anyhow!("Failed to fetch Zalo sessions: {e}"))?;
-
-        if let Some(session) = sessions
-            .into_iter()
-            .find(|s| s.imei == provider_account_key)
         {
-            let cancellation = CancellationToken::new();
-            let task_cancel = cancellation.clone();
-            let service = self.service.clone();
-            let factory = self.factory.clone();
-            let clients = self.clients.clone();
+            let mut clients = self.clients.lock().await;
+            clients.remove(provider_account_key);
+            clients.remove(&target_imei);
+            clients.remove(&runtime_key);
+        }
 
-            let handle = tokio::spawn(async move {
-                run_session_loop(service, factory, clients, session, task_cancel).await;
-            });
+        let cancellation = CancellationToken::new();
+        let task_cancel = cancellation.clone();
+        let service = self.service.clone();
+        let factory = self.factory.clone();
+        let clients = self.clients.clone();
 
-            let mut tasks = self.tasks.lock().await;
-            tasks.insert(
-                provider_account_key.to_string(),
-                SessionTask {
-                    cancellation,
-                    handle,
-                },
-            );
+        let handle = tokio::spawn(async move {
+            run_session_loop(service, factory, clients, session, task_cancel).await;
+        });
+
+        self.tasks.lock().await.insert(
+            runtime_key.clone(),
+            SessionTask {
+                cancellation,
+                handle,
+            },
+        );
+
+        let ready = tokio::time::timeout(ACCOUNT_READY_TIMEOUT, async {
+            loop {
+                if self.connected_client(&runtime_key).await.is_some() {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                let task_finished = self
+                    .tasks
+                    .lock()
+                    .await
+                    .get(&runtime_key)
+                    .is_none_or(|task| task.handle.is_finished());
+                if task_finished {
+                    anyhow::bail!("Zalo session task stopped before becoming ready");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        match ready {
+            Ok(result) => result?,
+            Err(_) => {
+                self.stop_account(&runtime_key).await;
+                anyhow::bail!("Timed out waiting for Zalo account {runtime_key} to become ready");
+            }
         }
 
         Ok(())
     }
 
     pub async fn stop_account(&self, provider_account_key: &str) {
-        let old_task = {
+        let mut aliases = vec![provider_account_key.to_string()];
+        if let Ok(conn) = open_db_connection(&self.db_path) {
+            if let Ok(Some((imei, zalo_uid))) = conn
+                .query_row(
+                    "SELECT imei, zalo_uid FROM zalo_sessions
+                     WHERE imei = ?1 OR zalo_uid = ?1
+                        OR channel_account_id IN (
+                            SELECT id FROM channel_accounts
+                            WHERE channel = 'zalo' AND (provider_account_key = ?1 OR self_external_id = ?1)
+                        )
+                     ORDER BY rowid DESC LIMIT 1",
+                    [provider_account_key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()
+            {
+                aliases.push(imei);
+                if let Some(zalo_uid) = zalo_uid {
+                    aliases.push(zalo_uid);
+                }
+            }
+        }
+
+        let old_tasks = {
             let mut tasks = self.tasks.lock().await;
-            tasks.remove(provider_account_key)
+            aliases
+                .iter()
+                .filter_map(|key| tasks.remove(key))
+                .collect::<Vec<_>>()
         };
 
-        if let Some(task) = old_task {
+        for task in old_tasks {
             task.cancellation.cancel();
             let _ = task.handle.await;
         }
-        self.clients.lock().await.remove(provider_account_key);
+        let mut clients = self.clients.lock().await;
+        for key in aliases {
+            clients.remove(&key);
+        }
     }
 
     pub async fn stop_all(&self) {
@@ -422,6 +510,7 @@ async fn run_session_loop(
     cancellation: CancellationToken,
 ) {
     let imei = session.imei.clone();
+    let mut provider_account_key = session.provider_account_key().to_string();
     let mut backoff_secs = 1u64;
 
     loop {
@@ -430,9 +519,13 @@ async fn run_session_loop(
         }
 
         // 1. Mark account connecting
-        let account_id = service
+        let mut account_id = service
             .repository
-            .set_account_status(&imei, AccountConnectionStatus::Connecting, None)
+            .set_account_status(
+                &provider_account_key,
+                AccountConnectionStatus::Connecting,
+                None,
+            )
             .ok();
 
         // 2. Connect through factory
@@ -443,7 +536,7 @@ async fn run_session_loop(
                 service
                     .repository
                     .set_account_status(
-                        &imei,
+                        &provider_account_key,
                         AccountConnectionStatus::Disconnected,
                         Some(&err_msg),
                     )
@@ -464,7 +557,7 @@ async fn run_session_loop(
         let mut rx = client.subscribe();
 
         if let Err(error) = client.start() {
-            mark_account_degraded(service.as_ref(), &imei, &error);
+            mark_account_degraded(service.as_ref(), &provider_account_key, &error);
             client.stop();
             tokio::select! {
                 _ = cancellation.cancelled() => return,
@@ -504,7 +597,7 @@ async fn run_session_loop(
         };
 
         if let Err(error) = ready_result {
-            mark_account_degraded(service.as_ref(), &imei, &error);
+            mark_account_degraded(service.as_ref(), &provider_account_key, &error);
             client.stop();
             tokio::select! {
                 _ = cancellation.cancelled() => return,
@@ -514,15 +607,46 @@ async fn run_session_loop(
             continue;
         }
 
+        if let Some(own_external_id) = client
+            .own_external_id()
+            .filter(|value| !value.trim().is_empty())
+        {
+            match service.repository.reconcile_zalo_channel_account(
+                &imei,
+                Some(&own_external_id),
+                session.display_name.as_deref(),
+                None,
+            ) {
+                Ok(reconciled_account_id) => {
+                    provider_account_key = own_external_id;
+                    account_id = Some(reconciled_account_id);
+                }
+                Err(error) => {
+                    mark_account_degraded(service.as_ref(), &provider_account_key, &error);
+                    client.stop();
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+                    }
+                    backoff_secs = (backoff_secs * 2).min(30);
+                    continue;
+                }
+            }
+        }
+
         connected_clients
             .lock()
             .await
-            .insert(imei.clone(), client.clone());
+            .insert(provider_account_key.clone(), client.clone());
 
         // 4. Mark account connected after the protocol cipher is ready
-        let account_id = service
+        account_id = service
             .repository
-            .set_account_status(&imei, AccountConnectionStatus::Connected, None)
+            .set_account_status(
+                &provider_account_key,
+                AccountConnectionStatus::Connected,
+                None,
+            )
             .ok()
             .or(account_id);
 
@@ -551,8 +675,9 @@ async fn run_session_loop(
             match send_initial_history_requests(client.as_ref(), service.as_ref(), account_id) {
                 Ok(pagination) => pagination,
                 Err(error) => {
-                    unregister_connected_client(&connected_clients, &imei, &client).await;
-                    mark_account_degraded(service.as_ref(), &imei, &error);
+                    unregister_connected_client(&connected_clients, &provider_account_key, &client)
+                        .await;
+                    mark_account_degraded(service.as_ref(), &provider_account_key, &error);
                     client.stop();
                     tokio::select! {
                         _ = cancellation.cancelled() => return,
@@ -592,7 +717,12 @@ async fn run_session_loop(
                     if let Some(h) = profile_sync_handle.take() {
                         h.abort();
                     }
-                    unregister_connected_client(&connected_clients, &imei, &client).await;
+                    unregister_connected_client(
+                        &connected_clients,
+                        &provider_account_key,
+                        &client,
+                    )
+                    .await;
                     client.stop();
                     return;
                 }
@@ -603,7 +733,12 @@ async fn run_session_loop(
                                 if let Some(h) = profile_sync_handle.take() {
                                     h.abort();
                                 }
-                                unregister_connected_client(&connected_clients, &imei, &client).await;
+                                unregister_connected_client(
+                                    &connected_clients,
+                                    &provider_account_key,
+                                    &client,
+                                )
+                                .await;
                                 client.stop();
                                 return;
                             }
@@ -646,8 +781,16 @@ async fn run_session_loop(
 
                             // 10. Call service.ingest_zalo_event before publishing UI events
                             let display_name = session.display_name.as_deref();
-                            if let Err(error) = service.ingest_zalo_event(&imei, display_name, event) {
-                                mark_account_degraded(service.as_ref(), &imei, &error);
+                            if let Err(error) = service.ingest_zalo_event(
+                                &provider_account_key,
+                                display_name,
+                                event,
+                            ) {
+                                mark_account_degraded(
+                                    service.as_ref(),
+                                    &provider_account_key,
+                                    &error,
+                                );
                                 client.stop();
                                 break true;
                             }
@@ -657,7 +800,11 @@ async fn run_session_loop(
                                 if let Some(cursor) = batch.cursor {
                                     let Some(account_id) = account_id else {
                                         let error = anyhow::anyhow!("Missing channel account ID during history backfill");
-                                        mark_account_degraded(service.as_ref(), &imei, &error);
+                                        mark_account_degraded(
+                                            service.as_ref(),
+                                            &provider_account_key,
+                                            &error,
+                                        );
                                         client.stop();
                                         break true;
                                     };
@@ -666,7 +813,11 @@ async fn run_session_loop(
                                         batch.stream.checkpoint_scope(),
                                         &cursor,
                                     ) {
-                                        mark_account_degraded(service.as_ref(), &imei, &error);
+                                        mark_account_degraded(
+                                            service.as_ref(),
+                                            &provider_account_key,
+                                            &error,
+                                        );
                                         client.stop();
                                         break true;
                                     }
@@ -675,7 +826,11 @@ async fn run_session_loop(
                                         batch.stream,
                                         &cursor,
                                     ) {
-                                        mark_account_degraded(service.as_ref(), &imei, &error);
+                                        mark_account_degraded(
+                                            service.as_ref(),
+                                            &provider_account_key,
+                                            &error,
+                                        );
                                         client.stop();
                                         break true;
                                     }
@@ -692,7 +847,7 @@ async fn run_session_loop(
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             // 12. On Lagged, request direct/group reconciliation and mark account degraded
                             let _ = service.repository.set_account_status(
-                                &imei,
+                                &provider_account_key,
                                 AccountConnectionStatus::Degraded,
                                 Some("Receiver lagged"),
                             );
@@ -704,7 +859,11 @@ async fn run_session_loop(
                             ) {
                                 Ok(next_pagination) => pagination = next_pagination,
                                 Err(error) => {
-                                    mark_account_degraded(service.as_ref(), &imei, &error);
+                                    mark_account_degraded(
+                                        service.as_ref(),
+                                        &provider_account_key,
+                                        &error,
+                                    );
                                     client.stop();
                                     break true;
                                 }
@@ -719,12 +878,12 @@ async fn run_session_loop(
             }
         };
 
-        unregister_connected_client(&connected_clients, &imei, &client).await;
+        unregister_connected_client(&connected_clients, &provider_account_key, &client).await;
 
         if should_reconnect {
             // 13. Drop client, sleep backoff, reconnect inside same task
             let _ = service.repository.set_account_status(
-                &imei,
+                &provider_account_key,
                 AccountConnectionStatus::Disconnected,
                 None,
             );

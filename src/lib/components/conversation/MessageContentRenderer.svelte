@@ -162,12 +162,12 @@
   let displayText = $derived(shouldSuppressVideoText ? null : rawDisplayText);
 </script>
 
-<div class="message-content-renderer" data-testid="message-content-renderer">
+<div class="message-content-renderer flex flex-col gap-1" data-testid="message-content-renderer">
   {#if isStickerMessage}
     <StickerMessageContent attachment={stickerAttachment} content={message.content} conversationId={message.conversationId} />
   {:else}
     {#if message.attachments && message.attachments.length > 0}
-      <div class="message-attachments-list">
+      <div class="message-attachments-list flex flex-col gap-[6px]">
         {#each message.attachments as att (att.id)}
           {#if att.mediaType === 'image'}
             <ImageMessageContent attachment={att} {onImageClick} />
@@ -183,7 +183,7 @@
         {/each}
       </div>
     {:else if syntheticVideoAttachment}
-      <div class="message-attachments-list">
+      <div class="message-attachments-list flex flex-col gap-[6px]">
         <VideoMessageContent attachment={syntheticVideoAttachment} />
       </div>
     {:else if isImageContentType}
@@ -214,7 +214,7 @@
     {/if}
 
     {#if displayText}
-      <div class="message-text-content" data-testid="message-text-content">
+      <div class="message-text-content whitespace-pre-wrap [word-break:break-word]" data-testid="message-text-content">
         <MessageMentionText text={displayText} mentions={message.mentions ?? []} />
       </div>
     {:else if !message.attachments?.length && !syntheticVideoAttachment && !legacyMediaUrl && message.contentType !== 'text' && !isLinkContentType}
@@ -225,21 +225,3 @@
   {/if}
 </div>
 
-<style>
-  .message-content-renderer {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .message-attachments-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .message-text-content {
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-</style>

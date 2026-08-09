@@ -31,7 +31,7 @@
   import * as Select from '$lib/components/ui/select';
   import * as Popover from '$lib/components/ui/popover';
   import { Badge } from '$lib/components/ui/badge';
-  import { AlertCircle, RefreshCw, Send, Settings2 } from 'lucide-svelte';
+  import { AlertCircle, QrCode, RefreshCw, Send, Settings2 } from 'lucide-svelte';
   import AttachmentDropOverlay from './AttachmentDropOverlay.svelte';
   import AttachmentPreviewQueue from './AttachmentPreviewQueue.svelte';
   import ComposerReplyBar from './ComposerReplyBar.svelte';
@@ -96,6 +96,7 @@
     onTargetResolved,
     onBatchQueued,
     onOpenSettings = () => {},
+    onOpenQrLogin = () => {},
     onRuntimeRefresh = () => {}
   }: {
     item: InboxItem;
@@ -106,6 +107,7 @@
     onTargetResolved?: (target: InboxReplyTarget) => void;
     onBatchQueued?: (result: SendConversationBatchResult) => void;
     onOpenSettings?: () => void;
+    onOpenQrLogin?: (accountKey?: string) => void;
     onRuntimeRefresh?: () => void | Promise<void>;
   } = $props();
 
@@ -239,6 +241,11 @@
   let selectedOption = $derived(
     pinnedOption ?? options.find((option) => option.id === selectedChannelAccountId) ?? options[0] ?? null
   );
+
+  let isSessionKeyExpired = $derived.by(() => {
+    const err = selectedOption?.lastError || '';
+    return err.includes('102') || err.toLowerCase().includes('session key');
+  });
 
   let targetConversationId = $derived(
     replyTarget?.conversationId ?? selectedOption?.target.conversationId ?? item.conversationId ?? null
@@ -1056,8 +1063,6 @@
     </div>
   {/if}
 
-
-
   {#if statusReason}
     <div class="flex flex-wrap items-center justify-between gap-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive" role="alert">
       <div class="flex min-w-0 items-center gap-1.5">
@@ -1065,7 +1070,18 @@
         <span>{statusReason}</span>
       </div>
       <div class="flex shrink-0 items-center gap-1.5">
-        {#if selectedOption?.account?.providerAccountKey}
+        {#if isSessionKeyExpired}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            class="h-7 gap-1 text-xs font-medium"
+            aria-label="Re-authenticate Zalo QR"
+            onclick={() => onOpenQrLogin(selectedOption?.account?.providerAccountKey)}
+          >
+            <QrCode class="size-3" /> Đăng nhập lại QR
+          </Button>
+        {:else if selectedOption?.account?.providerAccountKey}
           <Button
             type="button"
             variant="outline"

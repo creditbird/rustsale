@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import Dashboard from '$lib/components/Dashboard.svelte';
   import LeadsList from '$lib/components/LeadsList.svelte';
@@ -92,6 +92,15 @@
       if (reloadTimer) clearTimeout(reloadTimer);
     };
   });
+
+  let settingsRef = $state<{ openQrLogin?: () => void } | null>(null);
+
+  function handleOpenQrLogin() {
+    activeTab = 'settings';
+    tick().then(() => {
+      settingsRef?.openQrLogin?.();
+    });
+  }
 </script>
 
 <div class="flex w-screen h-screen overflow-hidden bg-background text-foreground antialiased font-sans">
@@ -146,7 +155,7 @@
       {/if}
 
       <div class={activeTab === 'conversation' ? 'h-full' : 'hidden'}>
-        <ConversationWorkspace {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
+        <ConversationWorkspace {activeTab} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
       </div>
       <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
         <Dashboard {activeTab} />
@@ -173,7 +182,7 @@
         <KanbanBoard />
       </div>
       <div class={activeTab === 'settings' ? '' : 'hidden'}>
-        <Settings />
+        <Settings bind:this={settingsRef} />
       </div>
     </div>
   </main>

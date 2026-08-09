@@ -3,43 +3,16 @@
 </script>
 
 {#if active}
-  <div class="attachment-drop-overlay" data-testid="attachment-drop-overlay">
-    <div class="drop-message">
-      <span class="drop-icon">📁</span>
+  <div
+    class="attachment-drop-overlay pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-500 bg-blue-500/15 backdrop-blur-[2px]"
+    data-testid="attachment-drop-overlay"
+  >
+    <div
+      class="drop-message flex flex-col items-center gap-2 rounded-xl bg-background p-4 px-6 font-semibold text-blue-600 shadow-lg border border-border/40 dark:text-blue-400"
+    >
+      <span class="drop-icon text-3xl">📁</span>
       <span>Thả file vào đây để gửi</span>
     </div>
   </div>
 {/if}
 
-<style>
-  .attachment-drop-overlay {
-    position: absolute;
-    inset: 0;
-    z-index: 50;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(59, 130, 246, 0.15);
-    border: 2px dashed #3b82f6;
-    border-radius: 8px;
-    backdrop-filter: blur(2px);
-    pointer-events: none;
-  }
-
-  .drop-message {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    background: #ffffff;
-    padding: 16px 24px;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-    font-weight: 600;
-    color: #1d4ed8;
-  }
-
-  .drop-icon {
-    font-size: 32px;
-  }
-</style>

@@ -36,7 +36,7 @@
       while ((match = MENTION_REGEX.exec(text)) !== null) {
         mentionItems.push({
           identityId: null,
-          externalId: null,
+          externalId: '',
           displayText: match[0],
           startUtf16: match.index,
           lengthUtf16: match[0].length

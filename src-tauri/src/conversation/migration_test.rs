@@ -109,6 +109,274 @@ fn rich_chat_migration_preserves_existing_messages() {
 }
 
 #[test]
+fn duplicate_zalo_merge_preserves_conflicting_state_and_all_dependents() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+    migrate(&conn).unwrap();
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_channel_accounts_zalo_self_ext_id",
+        [],
+    )
+    .unwrap();
+
+    conn.execute_batch(
+        "INSERT INTO channel_accounts
+            (id, channel, provider_account_key, self_external_id, display_name, connection_status, capabilities_json, created_at, updated_at)
+         VALUES
+            (1, 'zalo', 'uid-merge', 'uid-merge', 'Canonical', 'disconnected', '{}', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
+            (2, 'zalo', 'imei-relogin', 'uid-merge', 'Relogin', 'connected', '{\"canSendText\":true}', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z');
+         INSERT INTO zalo_sessions
+            (imei, user_agent, cookies_json, language, display_name)
+         VALUES ('imei-relogin', 'UA/1.0', '[]', 'vi', 'Relogin');
+         INSERT INTO channel_conversations
+            (id, channel_account_id, external_thread_id, kind, title, status, last_message_at, last_synced_at, created_at, updated_at)
+         VALUES
+            (10, 1, 'shared-thread', 'direct', NULL, 'active', '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T10:00:00Z'),
+            (20, 2, 'shared-thread', 'direct', 'Peer Name', 'active', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z', '2026-08-02T00:00:00Z', '2026-08-02T10:00:00Z');
+         INSERT INTO channel_identities
+            (id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (50, 'zalo', 'zalo_uid', 'peer-1', 'Peer One', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z');
+         INSERT INTO conversation_participants
+            (conversation_id, identity_id, participant_role, joined_at, left_at)
+         VALUES
+            (10, 50, 'member', '2026-08-02T00:00:00Z', '2026-08-03T00:00:00Z'),
+            (20, 50, 'admin', '2026-08-01T00:00:00Z', NULL);
+         INSERT INTO messages
+            (id, conversation_id, direction, provider_message_id, provider_client_message_id, content_type, text_content, content_json, ingested_at, sent_at, status)
+         VALUES
+            (100, 10, 'outbound', 'provider-1', 'client-1', 'text', NULL, '{}', '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z', 'sent'),
+            (200, 20, 'outbound', 'provider-1', 'client-1', 'text', 'richer payload', '{\"text\":\"richer payload\"}', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z', 'read'),
+            (201, 20, 'inbound', 'provider-2', 'client-2', 'text', 'replying message', '{}', '2026-08-02T11:00:00Z', NULL, 'received');
+         UPDATE messages SET reply_to_message_id = 200 WHERE id = 201;
+         INSERT INTO message_attachments
+            (id, message_id, attachment_type, file_name, created_at)
+         VALUES (300, 200, 'image', 'proof.png', '2026-08-02T10:00:00Z');
+         INSERT INTO message_reactions
+            (message_id, actor_external_id, reaction, reacted_at)
+         VALUES (200, 'peer-1', 'heart', '2026-08-02T10:01:00Z');
+         INSERT INTO message_receipts
+            (message_id, recipient_external_id, receipt_type, occurred_at)
+         VALUES (200, 'peer-1', 'read', '2026-08-02T10:02:00Z');
+         INSERT INTO message_mentions
+            (id, message_id, identity_id, external_id, display_text, start_utf16, length_utf16, created_at)
+         VALUES (400, 200, 50, 'peer-1', '@Peer', 0, 5, '2026-08-02T10:00:00Z');
+         INSERT INTO reaction_mutations
+            (client_mutation_id, message_id, reaction_code, active, status, created_at, updated_at)
+         VALUES ('mutation-1', 200, 'heart', 1, 'succeeded', '2026-08-02T10:00:00Z', '2026-08-02T10:01:00Z');
+         INSERT INTO message_forward_operations
+            (client_operation_id, source_message_id, status, created_at, updated_at)
+         VALUES ('forward-1', 200, 'sent', '2026-08-02T10:00:00Z', '2026-08-02T10:01:00Z');
+         INSERT INTO message_outbox_jobs
+            (id, message_id, channel_account_id, status, attempt_count, created_at, updated_at, completed_at)
+         VALUES
+            ('outbox-canonical', 100, 1, 'pending', 1, '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z', NULL),
+            ('outbox-duplicate', 200, 2, 'completed', 3, '2026-08-02T10:00:00Z', '2026-08-02T10:03:00Z', '2026-08-02T10:03:00Z');
+         INSERT INTO message_send_batches
+            (id, conversation_id, channel_account_id, client_batch_id, reply_to_message_id, part_count, status, created_at, updated_at, completed_at)
+         VALUES
+            ('batch-canonical', 10, 1, 'client-batch-1', 100, 1, 'queued', '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z', NULL),
+            ('batch-duplicate', 20, 2, 'client-batch-1', 200, 1, 'sent', '2026-08-02T10:00:00Z', '2026-08-02T10:03:00Z', '2026-08-02T10:03:00Z');
+         INSERT INTO conversation_staged_attachments
+            (id, conversation_id, staged_attachment_id, media_type, mime_type, file_name, file_size_bytes, local_path, status, expires_at, created_at)
+         VALUES ('stage-1', 20, 'staged-1', 'image', 'image/png', 'upload.png', 42, '/tmp/upload.png', 'staged', '2026-08-10T00:00:00Z', '2026-08-02T10:00:00Z');
+         INSERT INTO message_forward_targets
+            (id, client_operation_id, target_conversation_id, send_batch_id, status, created_at, updated_at)
+         VALUES
+            (1, 'forward-1', 10, 'batch-canonical', 'queued', '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z'),
+            (2, 'forward-1', 20, 'batch-duplicate', 'sent', '2026-08-02T10:00:00Z', '2026-08-02T10:03:00Z');
+         INSERT INTO conversation_pinned_messages
+            (id, conversation_id, message_id, pinned_by, pinned_at)
+         VALUES
+            (1, 10, 100, 'canonical', '2026-08-01T10:00:00Z'),
+            (2, 20, 200, 'duplicate', '2026-08-02T10:00:00Z');
+         INSERT INTO channel_sync_checkpoints
+            (channel_account_id, scope, cursor, last_event_at, last_success_at, reconnect_count, last_error, updated_at)
+         VALUES
+            (1, 'direct_messages', 'cursor-old', '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z', 1, 'old error', '2026-08-01T10:00:00Z'),
+            (2, 'direct_messages', 'cursor-new', '2026-08-02T10:00:00Z', '2026-08-02T10:00:00Z', 3, NULL, '2026-08-02T10:00:00Z');",
+    )
+    .unwrap();
+
+    super::migration::reconcile_duplicate_zalo_channel_accounts(&conn).unwrap();
+
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM channel_accounts WHERE channel = 'zalo' AND self_external_id = 'uid-merge'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT provider_account_key FROM channel_accounts WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "uid-merge"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT connection_status FROM channel_accounts WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "connected"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT zalo_uid, channel_account_id FROM zalo_sessions WHERE imei = 'imei-relogin'",
+            [],
+            |row| Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+            )),
+        )
+        .unwrap(),
+        (Some("uid-merge".to_string()), Some(1))
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE external_thread_id = 'shared-thread'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT title FROM channel_conversations WHERE id = 10",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "Peer Name"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT status, text_content FROM messages WHERE id = 100",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .unwrap(),
+        ("read".to_string(), Some("richer payload".to_string()))
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT conversation_id, reply_to_message_id FROM messages WHERE id = 201",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .unwrap(),
+        (10, Some(100))
+    );
+
+    for (table, foreign_key) in [
+        ("message_attachments", "message_id"),
+        ("message_reactions", "message_id"),
+        ("message_receipts", "message_id"),
+        ("message_mentions", "message_id"),
+        ("reaction_mutations", "message_id"),
+        ("message_forward_operations", "source_message_id"),
+    ] {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE {foreign_key} = 100");
+        assert_eq!(
+            conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "{table} was not preserved"
+        );
+    }
+
+    assert_eq!(
+        conn.query_row(
+            "SELECT participant_role, joined_at, left_at FROM conversation_participants WHERE conversation_id = 10 AND identity_id = 50",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?)),
+        )
+        .unwrap(),
+        ("admin".to_string(), Some("2026-08-01T00:00:00Z".to_string()), None)
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT message_id, channel_account_id, status, attempt_count FROM message_outbox_jobs",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            )),
+        )
+        .unwrap(),
+        (100, 1, "completed".to_string(), 3)
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT conversation_id, channel_account_id, reply_to_message_id, status FROM message_send_batches",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<i64>>(2)?, row.get::<_, String>(3)?)),
+        )
+        .unwrap(),
+        (10, 1, Some(100), "sent".to_string())
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT conversation_id FROM conversation_staged_attachments WHERE id = 'stage-1'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        10
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT target_conversation_id, send_batch_id, status FROM message_forward_targets",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            )),
+        )
+        .unwrap(),
+        (10, Some("batch-canonical".to_string()), "sent".to_string())
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT conversation_id, message_id FROM conversation_pinned_messages",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap(),
+        (10, 100)
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT cursor, reconnect_count FROM channel_sync_checkpoints WHERE channel_account_id = 1 AND scope = 'direct_messages'",
+            [],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap(),
+        (Some("cursor-new".to_string()), 3)
+    );
+
+    let foreign_key_violations: i64 = conn
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query_map([], |_| Ok(()))
+        .unwrap()
+        .count() as i64;
+    assert_eq!(foreign_key_violations, 0);
+}
+
+#[test]
 fn provider_message_id_is_unique_within_conversation() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();

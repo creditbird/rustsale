@@ -198,6 +198,8 @@ mod tests {
             language: "vi".to_string(),
             avatar: None,
             display_name: None,
+            zalo_uid: None,
+            channel_account_id: None,
         };
 
         let verify_res = commands::verify_zalo_session_internal(invalid_session)
@@ -381,6 +383,95 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].imei, "imei-final");
         assert_eq!(sessions[0].user_agent, "Mozilla/FinalUA");
+    }
+
+    #[test]
+    fn test_require_zalo_uid_rejects_missing_identity_and_normalizes_valid_uid() {
+        let missing_error = commands::require_zalo_uid(None).unwrap_err();
+        assert!(missing_error.contains("account UID could not be determined"));
+
+        let blank_error = commands::require_zalo_uid(Some("   ".to_string())).unwrap_err();
+        assert_eq!(blank_error, missing_error);
+
+        assert_eq!(
+            commands::require_zalo_uid(Some(" 1503088233761505331 ".to_string())).unwrap(),
+            "1503088233761505331"
+        );
+    }
+
+    #[test]
+    fn test_zalo_qr_persistence_rollback_restores_existing_session_or_removes_new_one() {
+        let conn = db::init_db(":memory:").unwrap();
+        conn.execute(
+            "INSERT INTO channel_accounts
+             (id, channel, provider_account_key, self_external_id, display_name, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (55, 'zalo', 'uid-55', 'uid-55', 'Old Account', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO zalo_sessions
+             (imei, user_agent, cookies_json, language, display_name, avatar, auth_status, auth_checked_at, auth_error, zalo_uid, channel_account_id)
+             VALUES ('imei-existing', 'old-agent', '[{\"old\":true}]', 'vi', 'Old Account', 'old.png', 'valid', '2026-08-09T00:00:00Z', NULL, 'uid-55', 55)",
+            [],
+        )
+        .unwrap();
+
+        let existing_snapshot =
+            commands::capture_zalo_session_snapshot(&conn, "imei-existing").unwrap();
+        db::save_zalo_session(
+            &conn,
+            "imei-existing",
+            "new-agent",
+            "[{\"new\":true}]",
+            "vi",
+        )
+        .unwrap();
+        db::update_zalo_session_profile(&conn, "imei-existing", Some("New Account"), None).unwrap();
+        commands::rollback_zalo_session_persistence(&conn, "imei-existing", existing_snapshot)
+            .unwrap();
+
+        let restored: (String, String, Option<String>, Option<String>, Option<String>, Option<i64>) =
+            conn.query_row(
+                "SELECT user_agent, cookies_json, display_name, avatar, zalo_uid, channel_account_id
+                 FROM zalo_sessions WHERE imei = 'imei-existing'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            restored,
+            (
+                "old-agent".to_string(),
+                "[{\"old\":true}]".to_string(),
+                Some("Old Account".to_string()),
+                Some("old.png".to_string()),
+                Some("uid-55".to_string()),
+                Some(55),
+            )
+        );
+
+        let new_snapshot = commands::capture_zalo_session_snapshot(&conn, "imei-new").unwrap();
+        db::save_zalo_session(&conn, "imei-new", "new-agent", "[]", "vi").unwrap();
+        commands::rollback_zalo_session_persistence(&conn, "imei-new", new_snapshot).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM zalo_sessions WHERE imei = 'imei-new'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -1570,6 +1661,50 @@ mod tests {
         conn.execute("UPDATE leads SET zalo_reached = 1 WHERE id = ?1", [lead_2])
             .unwrap();
 
+        // Create lead_4 with zalo_status = 'BLOCKED_STRANGER'
+        let lead_4 = commands::add_lead_internal(
+            &mut conn,
+            "Blocked Stranger Lead".into(),
+            "Inc".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "l4@test.com".into(),
+            "0944444444".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_status = 'BLOCKED_STRANGER' WHERE id = ?1",
+            [lead_4],
+        )
+        .unwrap();
+
+        // Create lead_5 with zalo_status = 'VERIFIED_NOT_EXIST'
+        let lead_5 = commands::add_lead_internal(
+            &mut conn,
+            "Not Exist Lead".into(),
+            "Inc".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "l5@test.com".into(),
+            "0955555555".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
+            [lead_5],
+        )
+        .unwrap();
+
+        for lead_id in &[lead_1, lead_2, lead_3, lead_4, lead_5] {
+            crate::db::add_lead_to_category(&conn, *lead_id, cat_id).unwrap();
+        }
+
         // Create template
         let tpl_id = crate::db::create_outreach_template(&conn, "Test Tpl", "Hello", None).unwrap();
 
@@ -1579,16 +1714,20 @@ mod tests {
             rusqlite::params![lead_3, tpl_id],
         ).unwrap();
 
-        let query_str = "SELECT l.id FROM leads l JOIN lead_categories lc ON l.id = lc.lead_id WHERE lc.category_id = ?1 AND COALESCE(l.zalo_reached, 0) = 0 AND l.id NOT IN (SELECT DISTINCT lead_id FROM outreach_history WHERE status = 'SUCCESS')";
-        let mut stmt = conn.prepare(query_str).unwrap();
-        let leads: Vec<i32> = stmt
-            .query_map([cat_id], |row| row.get::<_, i32>(0))
-            .unwrap()
-            .collect::<Result<Vec<i32>, _>>()
-            .unwrap();
+        let query = commands::OutreachLeadQuery {
+            category_id: Some(cat_id),
+            segmentation: "never_sent".to_string(),
+            filter_template_id: None,
+            channel: "zalo".to_string(),
+            search: None,
+            filter_verified_zalo: false,
+            filter_unreached: false,
+            filter_mobile_only: false,
+        };
 
-        assert_eq!(leads.len(), 1);
-        assert_eq!(leads[0], lead_1);
+        let page = commands::get_outreach_leads_page_internal(&conn, &query, None, 50).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, Some(lead_1));
     }
 
     fn default_outreach_query() -> commands::OutreachLeadQuery {

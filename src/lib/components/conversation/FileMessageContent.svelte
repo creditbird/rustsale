@@ -6,15 +6,15 @@
   let safeUrl = $derived(safeConversationUrl(attachment.remoteUrl));
 </script>
 
-<div class="file-message-content" data-testid="file-message-content">
-  <div class="file-icon">📄</div>
-  <div class="file-details">
+<div class="file-message-content flex items-center gap-2 rounded-lg border border-border/40 bg-muted/20 p-2" data-testid="file-message-content">
+  <div class="file-icon text-2xl">📄</div>
+  <div class="file-details flex flex-col">
     {#if safeUrl}
       <a
         href={safeUrl}
         target="_blank"
         rel="noopener noreferrer"
-        class="file-name"
+        class="file-name text-[13px] font-medium text-primary no-underline hover:underline"
         onclick={(e) => {
           e.stopPropagation();
           e.preventDefault();
@@ -24,45 +24,9 @@
         {attachment.fileName ?? 'Tập tin'}
       </a>
     {:else}
-      <span class="file-name">{attachment.fileName ?? 'Tập tin'}</span>
+      <span class="file-name text-[13px] font-medium text-foreground">{attachment.fileName ?? 'Tập tin'}</span>
     {/if}
-    <span class="file-size">{formatBytes(attachment.sizeBytes)}</span>
+    <span class="file-size text-[11px] text-muted-foreground">{formatBytes(attachment.sizeBytes)}</span>
   </div>
 </div>
 
-<style>
-  .file-message-content {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    background: rgba(0, 0, 0, 0.03);
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 8px;
-  }
-
-  .file-icon {
-    font-size: 24px;
-  }
-
-  .file-details {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .file-name {
-    font-size: 13px;
-    font-weight: 500;
-    color: #2563eb;
-    text-decoration: none;
-  }
-
-  .file-name:hover {
-    text-decoration: underline;
-  }
-
-  .file-size {
-    font-size: 11px;
-    color: #6b7280;
-  }
-</style>

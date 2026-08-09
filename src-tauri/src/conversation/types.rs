@@ -146,7 +146,6 @@ pub struct ChannelBadgeSummary {
     pub unread_count: u64,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAttachment {
@@ -536,7 +535,6 @@ pub struct UnpinMessageRequest {
     pub conversation_id: i64,
     pub message_id: i64,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1257,26 +1255,24 @@ mod tests {
 
     #[test]
     fn quick_template_frontend_contract_serialization() {
-        let create = serde_json::from_value::<CreateConversationQuickTemplateRequest>(
-            serde_json::json!({
+        let create =
+            serde_json::from_value::<CreateConversationQuickTemplateRequest>(serde_json::json!({
                 "shortcut": "hello",
                 "title": "Greeting",
                 "bodyText": "Hello world",
                 "category": "general"
-            }),
-        );
+            }));
         assert!(create.is_ok());
 
-        let update = serde_json::from_value::<UpdateConversationQuickTemplateRequest>(
-            serde_json::json!({
+        let update =
+            serde_json::from_value::<UpdateConversationQuickTemplateRequest>(serde_json::json!({
                 "id": 5,
                 "shortcut": "hello",
                 "title": "Greeting",
                 "bodyText": "Hello world",
                 "category": "general",
                 "isActive": false
-            }),
-        );
+            }));
         assert!(update.is_ok());
 
         let list = serde_json::from_value::<ListConversationQuickTemplatesRequest>(

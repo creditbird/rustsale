@@ -18,14 +18,18 @@
 </script>
 
 {#if items.length > 0}
-  <div class="attachment-preview-queue" data-testid="attachment-preview-queue">
+  <div class="attachment-preview-queue flex flex-wrap gap-2 border-t border-border/40 bg-muted/30 p-2" data-testid="attachment-preview-queue">
     {#each items as item (item.localId)}
       {@const safePreview = safeImagePreviewDataUrl(item.previewDataUrl)}
-      <div class="attachment-chip" data-status={item.status} data-testid="attachment-item">
+      <div
+        class="attachment-chip inline-flex max-w-[200px] items-center gap-2 rounded-md border border-border bg-background p-1 px-2 text-xs data-[status=error]:border-destructive data-[status=error]:bg-destructive/10"
+        data-status={item.status}
+        data-testid="attachment-item"
+      >
         {#if safePreview}
-          <img src={safePreview} alt={item.fileName} class="chip-thumbnail" />
+          <img src={safePreview} alt={item.fileName} class="chip-thumbnail h-7 w-7 rounded object-cover" />
         {:else}
-          <div class="chip-icon">
+          <div class="chip-icon text-base">
             {#if item.attachmentType === 'image'}
               🖼️
             {:else if item.attachmentType === 'video'}
@@ -38,24 +42,24 @@
           </div>
         {/if}
 
-        <div class="chip-info">
-          <span class="chip-filename" title={item.fileName}>{item.fileName}</span>
-          <span class="chip-size">{formatBytes(item.sizeBytes)}</span>
+        <div class="chip-info flex flex-col overflow-hidden">
+          <span class="chip-filename truncate font-medium text-foreground" title={item.fileName}>{item.fileName}</span>
+          <span class="chip-size text-[10px] text-muted-foreground">{formatBytes(item.sizeBytes)}</span>
         </div>
 
         {#if item.status === 'staging'}
-          <span class="chip-status staging" data-testid="status-staging">Staging...</span>
+          <span class="chip-status staging text-[10px] font-semibold text-blue-500" data-testid="status-staging">Staging...</span>
         {:else if item.status === 'error'}
-          <span class="chip-status error" title={item.errorMessage ?? 'Error'} data-testid="status-error">
+          <span class="chip-status error text-[10px] font-semibold text-destructive" title={item.errorMessage ?? 'Error'} data-testid="status-error">
             Failed
           </span>
         {:else if item.status === 'removing'}
-          <span class="chip-status staging" data-testid="status-removing">Removing...</span>
+          <span class="chip-status staging text-[10px] font-semibold text-blue-500" data-testid="status-removing">Removing...</span>
         {/if}
 
         <button
           type="button"
-          class="chip-remove-btn"
+          class="chip-remove-btn cursor-pointer rounded border-none bg-transparent px-1 py-[2px] text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
           aria-label={`Remove ${item.fileName}`}
           onclick={() => handleRemove(item)}
           data-testid="remove-attachment-btn"
@@ -67,88 +71,3 @@
   </div>
 {/if}
 
-<style>
-  .attachment-preview-queue {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 8px 12px;
-    background-color: var(--surface-secondary, #f3f4f6);
-    border-top: 1px solid var(--border-color, #e5e7eb);
-  }
-
-  .attachment-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    background: #ffffff;
-    border: 1px solid var(--border-color, #d1d5db);
-    border-radius: 6px;
-    font-size: 12px;
-    max-width: 200px;
-  }
-
-  .attachment-chip[data-status='error'] {
-    border-color: #ef4444;
-    background: #fef2f2;
-  }
-
-  .chip-thumbnail {
-    width: 28px;
-    height: 28px;
-    object-fit: cover;
-    border-radius: 4px;
-  }
-
-  .chip-icon {
-    font-size: 16px;
-  }
-
-  .chip-info {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .chip-filename {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-weight: 500;
-    color: #374151;
-  }
-
-  .chip-size {
-    font-size: 10px;
-    color: #6b7280;
-  }
-
-  .chip-status {
-    font-size: 10px;
-    font-weight: 600;
-  }
-
-  .chip-status.staging {
-    color: #3b82f6;
-  }
-
-  .chip-status.error {
-    color: #ef4444;
-  }
-
-  .chip-remove-btn {
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: #9ca3af;
-    padding: 2px 4px;
-    font-size: 12px;
-    border-radius: 4px;
-  }
-
-  .chip-remove-btn:hover {
-    color: #ef4444;
-    background: #fee2e2;
-  }
-</style>

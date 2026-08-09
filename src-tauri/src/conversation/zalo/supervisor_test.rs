@@ -204,6 +204,15 @@ pub struct FakeZaloClientFactory {
     max_simultaneous: Mutex<HashMap<String, usize>>,
 }
 
+struct AlwaysFailZaloClientFactory;
+
+#[async_trait]
+impl ZaloClientFactory for AlwaysFailZaloClientFactory {
+    async fn connect(&self, _session: ZaloSession) -> anyhow::Result<Arc<dyn ZaloClient>> {
+        anyhow::bail!("forced Zalo connection failure")
+    }
+}
+
 impl FakeZaloClientFactory {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -431,6 +440,123 @@ async fn supervisor_persists_fake_direct_message_and_publishes_invalidation() {
     assert_eq!(event.reason, ConversationInvalidationReason::Message);
     assert_eq!(harness.repository.message_count(), 1);
     harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn mapped_session_registers_and_ingests_under_stable_zalo_uid() {
+    let harness = SupervisorHarness::new().await;
+    let conn = crate::db::open_db_connection(&harness._db_path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO channel_accounts
+            (id, channel, provider_account_key, self_external_id, display_name, connection_status, capabilities_json, created_at, updated_at)
+         VALUES
+            (900, 'zalo', 'uid-stable', 'uid-stable', 'Stable Zalo', 'disconnected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z');
+         UPDATE zalo_sessions
+         SET zalo_uid = 'uid-stable', channel_account_id = 900
+         WHERE imei = 'imei-a';",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut events = harness.events.subscribe();
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    assert!(harness
+        .supervisor
+        .connected_client("uid-stable")
+        .await
+        .is_some());
+
+    harness
+        .factory
+        .emit("imei-a", direct_listener_event("message-stable"))
+        .await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let conn = crate::db::open_db_connection(&harness._db_path).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM channel_accounts WHERE channel = 'zalo'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT ca.provider_account_key
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             WHERE m.provider_message_id = 'message-stable'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "uid-stable"
+    );
+    drop(conn);
+
+    harness.supervisor.stop_account("uid-stable").await;
+}
+
+#[tokio::test]
+async fn restart_account_fails_when_no_session_matches_account_key() {
+    let harness = SupervisorHarness::new().await;
+    let error = harness
+        .supervisor
+        .restart_account("missing-zalo-account")
+        .await
+        .expect_err("missing session must fail restart");
+    assert!(error.to_string().contains("No Zalo session"));
+}
+
+#[tokio::test]
+async fn restart_account_returns_error_when_runtime_never_becomes_ready() {
+    let clean_path = std::env::temp_dir().join(format!(
+        "rustsale-supervisor-failure-{}.db",
+        rand::random::<u64>()
+    ));
+    let db_path = clean_path.to_string_lossy().to_string();
+    let conn = crate::db::init_db(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, display_name)
+         VALUES ('imei-fail', 'UA/1.0', '[]', 'vi', 'Failure Account')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let repository = Arc::new(ConversationRepository::new(db_path.clone()));
+    let events = Arc::new(ConversationEventPublisher::new(10));
+    let service = Arc::new(ConversationService::new(
+        repository,
+        events,
+        clean_path.parent().unwrap().join("spool-failure"),
+    ));
+    let supervisor =
+        ZaloSessionSupervisor::new(db_path, service, Arc::new(AlwaysFailZaloClientFactory));
+
+    let error = supervisor
+        .restart_account("imei-fail")
+        .await
+        .expect_err("restart must fail when no client becomes ready");
+    assert!(error
+        .to_string()
+        .contains("Timed out waiting for Zalo account"));
+
+    let _ = std::fs::remove_file(&clean_path);
+    let _ = std::fs::remove_file(clean_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(clean_path.with_extension("db-shm"));
 }
 
 #[tokio::test]

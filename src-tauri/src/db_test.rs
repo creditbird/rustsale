@@ -37,6 +37,85 @@ mod tests {
     }
 
     #[test]
+    fn legacy_zalo_session_schema_upgrades_before_duplicate_reconciliation() {
+        let path = std::env::temp_dir().join(format!(
+            "rustsale-legacy-zalo-upgrade-{}.db",
+            rand::random::<u64>()
+        ));
+        let path_str = path.to_string_lossy().to_string();
+
+        let conn = db::init_db(&path_str).expect("initial database setup succeeds");
+        conn.execute(
+            "DROP INDEX IF EXISTS idx_channel_accounts_zalo_self_ext_id",
+            [],
+        )
+        .unwrap();
+        conn.execute("DROP TABLE zalo_sessions", []).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE zalo_sessions (
+                imei TEXT PRIMARY KEY,
+                user_agent TEXT NOT NULL,
+                cookies_json TEXT NOT NULL,
+                language TEXT NOT NULL,
+                display_name TEXT,
+                avatar TEXT,
+                auth_status TEXT NOT NULL DEFAULT 'unknown',
+                auth_checked_at TEXT,
+                auth_error TEXT
+             );
+             INSERT INTO zalo_sessions
+                (imei, user_agent, cookies_json, language, display_name)
+             VALUES ('imei-new', 'UA/1.0', '[]', 'vi', 'Zalo Account');
+             INSERT INTO channel_accounts
+                (id, channel, provider_account_key, self_external_id, display_name, connection_status, capabilities_json, created_at, updated_at)
+             VALUES
+                (100, 'zalo', 'uid-legacy', 'uid-legacy', 'Canonical', 'disconnected', '{}', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
+                (200, 'zalo', 'imei-new', 'uid-legacy', 'Relogin', 'connected', '{}', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z');
+             INSERT INTO channel_conversations
+                (id, channel_account_id, external_thread_id, kind, status, created_at, updated_at)
+             VALUES
+                (1000, 100, 'peer-existing', 'direct', 'active', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let upgraded = db::init_db(&path_str).expect("legacy Zalo schema must upgrade safely");
+        let columns: Vec<String> = upgraded
+            .prepare("PRAGMA table_info(zalo_sessions)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(columns.contains(&"zalo_uid".to_string()));
+        assert!(columns.contains(&"channel_account_id".to_string()));
+
+        let mapping: (Option<String>, Option<i64>) = upgraded
+            .query_row(
+                "SELECT zalo_uid, channel_account_id FROM zalo_sessions WHERE imei = 'imei-new'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mapping, (Some("uid-legacy".to_string()), Some(100)));
+        assert_eq!(
+            upgraded
+                .query_row(
+                    "SELECT COUNT(*) FROM channel_accounts WHERE channel = 'zalo' AND self_external_id = 'uid-legacy'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        drop(upgraded);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
     fn smtp_update_with_empty_password_preserves_secret() {
         let conn = db::init_db(":memory:").expect("Failed to init db");
         let server = crate::models::SmtpServer {
@@ -209,6 +288,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(content, "Hello, {{name}}!");
+    }
+
+    #[test]
+    fn saving_refreshed_zalo_credentials_preserves_profile_and_account_mapping() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+        conn.execute(
+            "INSERT INTO channel_accounts
+             (id, channel, provider_account_key, self_external_id, display_name, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (77, 'zalo', 'uid-77', 'uid-77', 'Mapped Account', 'connected', '{}', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO zalo_sessions
+             (imei, user_agent, cookies_json, language, display_name, avatar, auth_status, zalo_uid, channel_account_id)
+             VALUES ('imei-77', 'old-agent', '[{\"old\":true}]', 'vi', 'Mapped Account', 'avatar.png', 'valid', 'uid-77', 77)",
+            [],
+        )
+        .unwrap();
+
+        db::save_zalo_session(&conn, "imei-77", "new-agent", "[{\"new\":true}]", "vi").unwrap();
+
+        let saved = conn
+            .query_row(
+                "SELECT user_agent, cookies_json, display_name, avatar, auth_status, zalo_uid, channel_account_id
+                 FROM zalo_sessions WHERE imei = 'imei-77'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            saved,
+            (
+                "new-agent".to_string(),
+                "[{\"new\":true}]".to_string(),
+                Some("Mapped Account".to_string()),
+                Some("avatar.png".to_string()),
+                "valid".to_string(),
+                Some("uid-77".to_string()),
+                Some(77),
+            )
+        );
     }
 
     #[test]

@@ -802,6 +802,7 @@
             <label class="flex items-center gap-2 cursor-pointer">
               <input type="radio" value="never_sent" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
               <span>Never Sent Successfully</span>
+              <span class="text-[10px] text-muted-foreground font-normal">(Bỏ qua số chặn / không Zalo)</span>
             </label>
             <label class="flex items-center gap-2 cursor-pointer">
               <input type="radio" value="last_failed" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
@@ -925,6 +926,10 @@
                     <span class="font-medium text-foreground truncate">{lead.name}</span>
                     {#if lead.has_zalo === 1}
                       <Badge variant="secondary" class="text-[9px] px-1 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/20">Zalo Verified</Badge>
+                    {:else if lead.zalo_status === 'BLOCKED_STRANGER'}
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-amber-500/10 text-amber-600 border-amber-500/20">Chặn người lạ</Badge>
+                    {:else if lead.zalo_status === 'VERIFIED_NOT_EXIST' || lead.zalo_status === 'NOT_FOUND'}
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-muted text-muted-foreground border-border">Không có Zalo</Badge>
                     {/if}
                   </div>
                   <div class="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">

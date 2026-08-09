@@ -425,6 +425,30 @@ describe('MessageComposer', () => {
     expect(screen.getByPlaceholderText('Nhập tin nhắn...')).toBeTruthy();
   });
 
+  test('Zalo code 102 opens direct QR re-authentication for the selected account', async () => {
+    const onOpenQrLogin = mock((_accountKey?: string) => {});
+    const runtime: ConversationRuntimeStatus = {
+      accounts: [
+        {
+          ...baseRuntime.accounts[0],
+          status: 'invalid',
+          lastError:
+            'Zalo API Error: The session key was improperly submitted or has reached its timeout (code: Some(102))'
+        }
+      ]
+    };
+    render(MessageComposer, {
+      item: { ...baseItem, replyTargets: [baseItem.replyTargets[0]] },
+      runtime,
+      onOpenQrLogin
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Re-authenticate Zalo QR' }));
+
+    expect(onOpenQrLogin).toHaveBeenCalledWith('zalo-1');
+    expect(mockRestart).not.toHaveBeenCalled();
+  });
+
   test('stages clipboard images and drag-drop paths through platform bridges', async () => {
     mockReadClipboardImage.mockImplementationOnce(async () => ({
       fileName: 'clipboard.png',

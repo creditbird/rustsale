@@ -24,23 +24,10 @@
       src={safeUrl}
       alt={attachment.fileName ?? 'Hình ảnh'}
       loading="lazy"
-      class="message-image"
+      class="message-image max-h-[260px] max-w-[260px] rounded-lg object-cover"
     />
   </div>
 {:else}
-  <div class="image-fallback">[Hình ảnh không khả dụng]</div>
+  <div class="image-fallback text-xs italic text-muted-foreground">[Hình ảnh không khả dụng]</div>
 {/if}
 
-<style>
-  .message-image {
-    max-width: 260px;
-    max-height: 260px;
-    border-radius: 8px;
-    object-fit: cover;
-  }
-  .image-fallback {
-    font-size: 12px;
-    color: #6b7280;
-    font-style: italic;
-  }
-</style>

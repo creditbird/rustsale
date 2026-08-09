@@ -2,7 +2,7 @@ use crate::models::{
     Activity, Category, Deal, EmailTemplate, Lead, ManagedSmtpAccount, ManagedZaloAccount,
     SmtpServer, ZaloSessionStatus,
 };
-use rusqlite::{params_from_iter, types::Value, Connection, Row};
+use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
 use std::sync::Mutex;
 
@@ -102,6 +102,7 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
             "never_sent" => {
                 if query.channel != "email" {
                     sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
+                    sql.push_str(" AND COALESCE(l.zalo_status, '') NOT IN ('BLOCKED_STRANGER', 'VERIFIED_NOT_EXIST', 'NOT_FOUND', 'INVALID_PHONE')");
                 }
                 sql.push_str(&format!(
                     " AND NOT EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.status = 'SUCCESS')"
@@ -957,134 +958,335 @@ pub fn persist_authenticated_zalo_session(
     })
 }
 
+pub(crate) fn require_zalo_uid(zalo_uid: Option<String>) -> Result<String, String> {
+    zalo_uid
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "Zalo login succeeded, but the account UID could not be determined. No session was saved. Please try again."
+                .to_string()
+        })
+}
+
+#[derive(Clone)]
+pub(crate) struct ZaloSessionSnapshot {
+    session: crate::models::ZaloSession,
+    auth_status: String,
+    auth_checked_at: Option<String>,
+    auth_error: Option<String>,
+}
+
+pub(crate) fn capture_zalo_session_snapshot(
+    conn: &Connection,
+    imei: &str,
+) -> Result<Option<ZaloSessionSnapshot>, String> {
+    conn.query_row(
+        "SELECT imei, user_agent, cookies_json, language, display_name, avatar,
+                zalo_uid, channel_account_id, COALESCE(auth_status, 'unknown'),
+                auth_checked_at, auth_error
+         FROM zalo_sessions WHERE imei = ?1",
+        [imei],
+        |row| {
+            Ok(ZaloSessionSnapshot {
+                session: crate::models::ZaloSession {
+                    imei: row.get(0)?,
+                    user_agent: row.get(1)?,
+                    cookies_json: row.get(2)?,
+                    language: row.get(3)?,
+                    display_name: row.get(4)?,
+                    avatar: row.get(5)?,
+                    zalo_uid: row.get(6)?,
+                    channel_account_id: row.get(7)?,
+                },
+                auth_status: row.get(8)?,
+                auth_checked_at: row.get(9)?,
+                auth_error: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn rollback_zalo_session_persistence(
+    conn: &Connection,
+    imei: &str,
+    snapshot: Option<ZaloSessionSnapshot>,
+) -> Result<(), String> {
+    if let Some(snapshot) = snapshot {
+        conn.execute(
+            "INSERT INTO zalo_sessions
+                (imei, user_agent, cookies_json, language, display_name, avatar,
+                 auth_status, auth_checked_at, auth_error, zalo_uid, channel_account_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(imei) DO UPDATE SET
+                user_agent = excluded.user_agent,
+                cookies_json = excluded.cookies_json,
+                language = excluded.language,
+                display_name = excluded.display_name,
+                avatar = excluded.avatar,
+                auth_status = excluded.auth_status,
+                auth_checked_at = excluded.auth_checked_at,
+                auth_error = excluded.auth_error,
+                zalo_uid = excluded.zalo_uid,
+                channel_account_id = excluded.channel_account_id",
+            rusqlite::params![
+                snapshot.session.imei,
+                snapshot.session.user_agent,
+                snapshot.session.cookies_json,
+                snapshot.session.language,
+                snapshot.session.display_name,
+                snapshot.session.avatar,
+                snapshot.auth_status,
+                snapshot.auth_checked_at,
+                snapshot.auth_error,
+                snapshot.session.zalo_uid,
+                snapshot.session.channel_account_id,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    } else {
+        crate::db::delete_zalo_session(conn, imei).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn existing_zalo_account_for_login(
+    conn: &Connection,
+    imei: &str,
+    zalo_uid: Option<&str>,
+) -> Result<Option<i64>, String> {
+    let uid = zalo_uid.unwrap_or("");
+    conn.query_row(
+        "SELECT ca.id
+         FROM channel_accounts ca
+         WHERE ca.channel = 'zalo'
+           AND (
+                (?2 != '' AND (ca.provider_account_key = ?2 OR ca.self_external_id = ?2))
+                OR ca.provider_account_key = ?1
+                OR ca.id IN (
+                    SELECT channel_account_id FROM zalo_sessions
+                    WHERE imei = ?1 AND channel_account_id IS NOT NULL
+                )
+           )
+         ORDER BY CASE WHEN ?2 != '' AND ca.provider_account_key = ?2 THEN 0 ELSE 1 END,
+                  ca.id
+         LIMIT 1",
+        rusqlite::params![imei, uid],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+fn rollback_failed_zalo_login(
+    conn: &Connection,
+    imei: &str,
+    snapshot: Option<ZaloSessionSnapshot>,
+    newly_created_account_id: Option<i64>,
+) -> Result<(), String> {
+    rollback_zalo_session_persistence(conn, imei, snapshot)?;
+    if let Some(account_id) = newly_created_account_id {
+        conn.execute(
+            "DELETE FROM channel_accounts
+             WHERE id = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM channel_conversations WHERE channel_account_id = ?1
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM zalo_sessions WHERE channel_account_id = ?1
+               )",
+            [account_id],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn start_zalo_qr_login(
     app_handle: tauri::AppHandle,
     _state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let app_handle_clone = app_handle.clone();
-
-    tokio::spawn(async move {
-        let callback_app_handle = app_handle_clone.clone();
-
-        let callback =
-            move |event: zca_rs::apis::auth::LoginQREvent| -> zca_rs::apis::auth::QRCallbackResult {
-                let is_declined =
-                    matches!(&event, zca_rs::apis::auth::LoginQREvent::QRCodeDeclined);
-
-                if matches!(
-                    &event,
-                    zca_rs::apis::auth::LoginQREvent::GotLoginInfo { .. }
-                ) {
-                    return zca_rs::apis::auth::QRCallbackResult::Continue;
-                }
-
-                match handle_zalo_qr_event(event, None) {
-                    Ok((event_name, payload)) => {
-                        let _ = callback_app_handle.emit(&event_name, payload);
-                    }
-                    Err(e) => {
-                        eprintln!("Error handling Zalo QR event: {}", e);
-                        emit_zalo_qr_error(
-                            &callback_app_handle,
-                            "Zalo confirmed the scan but did not create a usable session. Please try again.",
-                        );
-                    }
-                }
-
-                if is_declined {
-                    zca_rs::apis::auth::QRCallbackResult::Cancel
-                } else {
-                    zca_rs::apis::auth::QRCallbackResult::Continue
-                }
-            };
-
-        let options = zalo_api_options();
-        match zca_rs::Zalo::login_qr(options, callback).await {
-            Ok(zalo) => {
-                let cookies = zalo.ctx.cookie_jar.to_vec();
-
-                let mut display_name = None;
-                let mut avatar = None;
-                if let Ok(info) = zalo.fetch_account_info().await {
-                    let (n, p, a) = extract_zalo_profile_info(&info);
-                    display_name = n.or(p);
-                    avatar = a;
-                }
-
-                let db_state = app_handle_clone.state::<DbState>();
-                let conn = match db_state.conn.lock() {
-                    Ok(conn) => conn,
-                    Err(error) => {
-                        eprintln!("Failed to lock database for Zalo session: {}", error);
-                        emit_zalo_qr_error(
-                            &app_handle_clone,
-                            "Zalo login succeeded, but the session could not be saved. Please try again.",
-                        );
-                        return;
-                    }
-                };
-
-                match persist_authenticated_zalo_session(
-                    &conn,
-                    &zalo.ctx.imei,
-                    &zalo.ctx.user_agent,
-                    &cookies,
-                ) {
-                    Ok(payload) => {
-                        if display_name.is_some() || avatar.is_some() {
-                            let _ = crate::db::update_zalo_session_profile(
-                                &conn,
-                                &zalo.ctx.imei,
-                                display_name.as_deref(),
-                                avatar.as_deref(),
-                            );
-                        }
-                        if let Some(conv_state) = app_handle_clone
-                            .try_state::<crate::conversation::commands::ConversationState>(
-                        ) {
-                            let supervisor = conv_state.zalo_supervisor.clone();
-                            let imei_clone = zalo.ctx.imei.clone();
-                            tokio::spawn(async move {
-                                let _ = supervisor.restart_account(&imei_clone).await;
-                            });
-                        }
-                        match serde_json::to_value(payload) {
-                            Ok(payload) => {
-                                let _ = app_handle_clone.emit("zalo-qr-success", payload);
-                            }
-                            Err(error) => {
-                                eprintln!("Failed to serialize Zalo QR success event: {}", error);
-                                emit_zalo_qr_error(
-                                    &app_handle_clone,
-                                    "Zalo login succeeded, but the session could not be saved. Please try again.",
-                                );
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("Failed to persist Zalo session: {}", error);
-                        emit_zalo_qr_error(
-                            &app_handle_clone,
-                            "Zalo login succeeded, but the session could not be saved. Please try again.",
-                        );
-                    }
-                }
+    let callback_app_handle = app_handle.clone();
+    let callback =
+        move |event: zca_rs::apis::auth::LoginQREvent| -> zca_rs::apis::auth::QRCallbackResult {
+            let is_declined = matches!(&event, zca_rs::apis::auth::LoginQREvent::QRCodeDeclined);
+            if matches!(
+                &event,
+                zca_rs::apis::auth::LoginQREvent::GotLoginInfo { .. }
+            ) {
+                return zca_rs::apis::auth::QRCallbackResult::Continue;
             }
-            Err(error) => {
-                eprintln!("Zalo QR login failed or cancelled: {:?}", error);
-                if !matches!(
-                    error,
-                    zca_rs::ZaloError::LoginQRAborted | zca_rs::ZaloError::LoginQRDeclined
-                ) {
+
+            match handle_zalo_qr_event(event, None) {
+                Ok((event_name, payload)) => {
+                    let _ = callback_app_handle.emit(&event_name, payload);
+                }
+                Err(error) => {
+                    eprintln!("Error handling Zalo QR event: {error}");
                     emit_zalo_qr_error(
-                        &app_handle_clone,
-                        "Zalo could not complete the login session. No session was saved. Please try again.",
+                        &callback_app_handle,
+                        "Zalo confirmed the scan but did not create a usable session. Please try again.",
                     );
                 }
             }
+
+            if is_declined {
+                zca_rs::apis::auth::QRCallbackResult::Cancel
+            } else {
+                zca_rs::apis::auth::QRCallbackResult::Continue
+            }
+        };
+
+    let zalo = match zca_rs::Zalo::login_qr(zalo_api_options(), callback).await {
+        Ok(zalo) => zalo,
+        Err(zca_rs::ZaloError::LoginQRAborted | zca_rs::ZaloError::LoginQRDeclined) => {
+            return Ok(());
         }
-    });
+        Err(error) => {
+            eprintln!("Zalo QR login failed: {error:?}");
+            let message =
+                "Zalo could not complete the login session. No session was saved. Please try again.";
+            emit_zalo_qr_error(&app_handle, message);
+            return Err(message.to_string());
+        }
+    };
+
+    let cookies = zalo.ctx.cookie_jar.to_vec();
+    let mut display_name = None;
+    let mut avatar = None;
+    let mut zalo_uid = zalo.get_own_id().filter(|value| !value.trim().is_empty());
+    if let Ok(info) = zalo.fetch_account_info().await {
+        let (name, phone, profile_avatar) = extract_zalo_profile_info(&info);
+        display_name = name.or(phone);
+        avatar = profile_avatar;
+        zalo_uid = extract_zalo_uid(&info, &cookies).or(zalo_uid);
+    }
+    if zalo_uid.is_none() {
+        zalo_uid = extract_zalo_uid(&serde_json::Value::Null, &cookies);
+    }
+    let zalo_uid = require_zalo_uid(zalo_uid).inspect_err(|message| {
+        emit_zalo_qr_error(&app_handle, message);
+    })?;
+
+    let imei = zalo.ctx.imei.clone();
+    let user_agent = zalo.ctx.user_agent.clone();
+    drop(zalo);
+
+    let (conversation_service, supervisor) = app_handle
+        .try_state::<crate::conversation::commands::ConversationState>()
+        .map(|state| (state.service.clone(), state.zalo_supervisor.clone()))
+        .ok_or_else(|| {
+            let message = "Conversation runtime is unavailable. Zalo login was not saved.";
+            emit_zalo_qr_error(&app_handle, message);
+            message.to_string()
+        })?;
+
+    let (session_snapshot, existing_account_id, payload) = {
+        let db_state = app_handle.state::<DbState>();
+        let conn = db_state.conn.lock().map_err(|error| {
+            eprintln!("Failed to lock database for Zalo session: {error}");
+            let message =
+                "Zalo login succeeded, but the session could not be saved. Please try again.";
+            emit_zalo_qr_error(&app_handle, message);
+            message.to_string()
+        })?;
+        let session_snapshot = capture_zalo_session_snapshot(&conn, &imei)?;
+        let existing_account_id = existing_zalo_account_for_login(&conn, &imei, Some(&zalo_uid))?;
+        let payload = match persist_authenticated_zalo_session(&conn, &imei, &user_agent, &cookies)
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                eprintln!("Failed to persist Zalo session: {error}");
+                let message =
+                    "Zalo login succeeded, but the session could not be saved. Please try again.";
+                emit_zalo_qr_error(&app_handle, message);
+                return Err(message.to_string());
+            }
+        };
+        if let Err(error) = crate::db::update_zalo_session_profile(
+            &conn,
+            &imei,
+            display_name.as_deref(),
+            avatar.as_deref(),
+        )
+        .and_then(|_| crate::db::update_zalo_session_auth_status(&conn, &imei, "valid", None))
+        {
+            let _ = rollback_zalo_session_persistence(&conn, &imei, session_snapshot.clone());
+            eprintln!("Failed to update Zalo session metadata: {error}");
+            let message =
+                "Zalo login succeeded, but the session metadata could not be saved. Please try again.";
+            emit_zalo_qr_error(&app_handle, message);
+            return Err(message.to_string());
+        }
+        (session_snapshot, existing_account_id, payload)
+    };
+
+    let account_id = match conversation_service
+        .repository
+        .reconcile_zalo_channel_account(
+            &imei,
+            Some(&zalo_uid),
+            display_name.as_deref(),
+            avatar.as_deref(),
+        ) {
+        Ok(account_id) => account_id,
+        Err(error) => {
+            let db_state = app_handle.state::<DbState>();
+            if let Ok(conn) = db_state.conn.lock() {
+                let _ = rollback_failed_zalo_login(&conn, &imei, session_snapshot, None);
+            }
+            eprintln!("Failed to reconcile Zalo channel account: {error}");
+            let message = "Failed to reconcile Zalo account. Please try logging in again.";
+            emit_zalo_qr_error(&app_handle, message);
+            return Err(message.to_string());
+        }
+    };
+
+    let target_key = zalo_uid;
+    if let Err(error) = supervisor.restart_account(&target_key).await {
+        let _ = conversation_service.repository.set_account_status(
+            &target_key,
+            crate::conversation::types::AccountConnectionStatus::Disconnected,
+            Some(&error.to_string()),
+        );
+        let db_state = app_handle.state::<DbState>();
+        let rollback_error = db_state
+            .conn
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())
+            .and_then(|conn| {
+                rollback_failed_zalo_login(
+                    &conn,
+                    &imei,
+                    session_snapshot,
+                    existing_account_id.is_none().then_some(account_id),
+                )
+            })
+            .err();
+        if let Some(rollback_error) = rollback_error {
+            eprintln!("Failed to rollback Zalo login state: {rollback_error}");
+        }
+        eprintln!("Failed to start Zalo supervisor session: {error}");
+        let message =
+            "Zalo login was saved but the realtime connection could not start. Please try again.";
+        emit_zalo_qr_error(&app_handle, message);
+        return Err(message.to_string());
+    }
+
+    let payload = serde_json::to_value(payload).map_err(|error| {
+        eprintln!("Failed to serialize Zalo QR success event: {error}");
+        let message = "Zalo login succeeded, but the success response could not be created.";
+        emit_zalo_qr_error(&app_handle, message);
+        message.to_string()
+    })?;
+    app_handle
+        .emit("zalo-qr-success", payload)
+        .map_err(|error| {
+            eprintln!("Failed to emit Zalo QR success event: {error}");
+            "Zalo login succeeded, but the UI could not be notified.".to_string()
+        })?;
 
     Ok(())
 }
@@ -1166,14 +1368,16 @@ pub fn get_managed_zalo_accounts_internal(
 ) -> Result<Vec<ManagedZaloAccount>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT zs.imei, zs.display_name, zs.avatar,
+            "SELECT COALESCE(ca.provider_account_key, zs.zalo_uid, zs.imei),
+                    COALESCE(zs.display_name, ca.display_name),
+                    COALESCE(zs.avatar, ca.avatar_url),
                     COALESCE(zs.auth_status, 'unknown'), zs.auth_checked_at, zs.auth_error,
                     COALESCE(ca.connection_status, 'disconnected'),
                     ca.last_connected_at, ca.last_error
              FROM zalo_sessions zs
              LEFT JOIN channel_accounts ca
-               ON ca.channel = 'zalo' AND ca.provider_account_key = zs.imei
-             ORDER BY lower(COALESCE(zs.display_name, zs.imei)), zs.imei",
+               ON ca.channel = 'zalo' AND (ca.id = zs.channel_account_id OR ca.provider_account_key = zs.imei OR (ca.self_external_id IS NOT NULL AND ca.self_external_id = zs.zalo_uid))
+             ORDER BY lower(COALESCE(zs.display_name, ca.display_name, zs.imei)), zs.imei",
         )
         .map_err(|e| format!("Database error: {}", e))?;
     let rows = stmt
@@ -1364,6 +1568,55 @@ fn extract_zalo_profile_info(
     }
 
     (name, phone, avatar)
+}
+
+pub fn extract_zalo_uid(
+    val: &serde_json::Value,
+    cookies: &[zca_rs::context::ZaloCookie],
+) -> Option<String> {
+    for c in cookies {
+        if (c.name == "zalo_id" || c.name == "uid" || c.name == "zalo_uid")
+            && !c.value.trim().is_empty()
+        {
+            return Some(c.value.trim().to_string());
+        }
+    }
+
+    let mut targets = vec![val];
+    if let Some(d) = val.get("data") {
+        targets.push(d);
+    }
+    if let Some(u) = val.get("userInfo") {
+        targets.push(u);
+    }
+    if let Some(u) = val.get("data").and_then(|d| d.get("userInfo")) {
+        targets.push(u);
+    }
+    if let Some(p) = val.get("profile") {
+        targets.push(p);
+    }
+
+    for t in targets {
+        for key in &["userId", "uid", "zaloId", "zalo_id", "zalo_uid"] {
+            if let Some(v) = t.get(*key) {
+                if let Some(s) = v.as_str() {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() && trimmed != "0" {
+                        return Some(trimmed.to_string());
+                    }
+                } else if let Some(n) = v.as_i64() {
+                    if n > 0 {
+                        return Some(n.to_string());
+                    }
+                } else if let Some(n) = v.as_u64() {
+                    if n > 0 {
+                        return Some(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 pub async fn verify_zalo_session_internal(
@@ -2252,12 +2505,18 @@ pub async fn send_zalo_outreach_internal(
     let mut burst_counter: u32 = 0;
     let mut was_rate_limited = false;
     for (idx, lead_id) in lead_ids.iter().enumerate() {
-        let (lead_name, phone) = {
+        let (lead_name, phone, lead_zalo_status) = {
             let conn_guard = conn_mutex.lock().unwrap();
             let res = conn_guard.query_row(
-                "SELECT name, phone FROM leads WHERE id = ?1",
+                "SELECT name, phone, zalo_status FROM leads WHERE id = ?1",
                 [lead_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             );
             match res {
                 Ok(val) => val,
@@ -2327,6 +2586,37 @@ pub async fn send_zalo_outreach_internal(
             continue;
         }
 
+        if let Some(ref zs) = lead_zalo_status {
+            if matches!(
+                zs.as_str(),
+                "BLOCKED_STRANGER" | "VERIFIED_NOT_EXIST" | "NOT_FOUND" | "INVALID_PHONE"
+            ) {
+                let msg = format!(
+                    "Skipped Zalo lookup for {} ({}): Previously marked as {}",
+                    lead_name, sanitized_phone, zs
+                );
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                    let current_num = processed_offset + idx + 1;
+                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                    let _ = app.emit(
+                        "outreach-progress",
+                        OutreachProgressPayload {
+                            progress: progress_val,
+                            status: "running".to_string(),
+                            message: msg,
+                        },
+                    );
+                }
+                continue;
+            }
+        }
+
         if let Some(app) = app_handle {
             let _ = app.emit(
                 "outreach-log",
@@ -2347,12 +2637,36 @@ pub async fn send_zalo_outreach_internal(
                     sanitized_phone, lead_name, e
                 );
                 let now: String = chrono::Utc::now().to_rfc3339();
+                let err_str = format!("{:?}", e).to_lowercase();
+                let is_rate_limit = should_rotate_zalo_session(&e);
+
+                let status_str = if err_str.contains("không tìm thấy")
+                    || err_str.contains("not found")
+                    || err_str.contains("212")
+                {
+                    "VERIFIED_NOT_EXIST"
+                } else if err_str.contains("chặn")
+                    || err_str.contains("người lạ")
+                    || err_str.contains("stranger")
+                    || err_str.contains("privacy")
+                    || err_str.contains("122")
+                {
+                    "BLOCKED_STRANGER"
+                } else if is_rate_limit {
+                    "RATE_LIMITED"
+                } else {
+                    "LOOKUP_FAILED"
+                };
+
                 let conn_guard = conn_mutex.lock();
                 if let Ok(conn) = conn_guard {
-                    let is_rate_limit = should_rotate_zalo_session(&e);
-                    if is_rate_limit {
+                    let _ = conn.execute(
+                        "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
+                        rusqlite::params![status_str, lead_id],
+                    );
+                    if status_str == "VERIFIED_NOT_EXIST" {
                         let _ = conn.execute(
-                            "UPDATE leads SET zalo_status = 'RATE_LIMITED' WHERE id = ?1 AND (zalo_status IS NULL OR zalo_status = 'UNTESTED')",
+                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
                             rusqlite::params![lead_id],
                         );
                     }
@@ -2384,9 +2698,15 @@ pub async fn send_zalo_outreach_internal(
                 if should_rotate_zalo_session(&e) {
                     let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần tra cứu/gửi tin ({:?}). Tạm dừng chiến dịch...", e);
                     if let Some(app) = app_handle {
-                        let _ = app.emit("outreach-log", OutreachLogPayload { message: rate_msg.clone() });
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: rate_msg.clone(),
+                            },
+                        );
                         let current_num = processed_offset + idx + 1;
-                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
                         let _ = app.emit(
                             "outreach-progress",
                             OutreachProgressPayload {
@@ -2578,9 +2898,19 @@ pub async fn send_zalo_outreach_internal(
                         lead_name, sanitized_phone, e
                     );
                     let now: String = chrono::Utc::now().to_rfc3339();
-                    let err_str = format!("{:?}", e).to_ascii_lowercase();
-                    let status_str = if err_str.contains("người lạ") || err_str.contains("stranger") || err_str.contains("privacy") {
+                    let err_str = format!("{:?}", e).to_lowercase();
+                    let status_str = if err_str.contains("người lạ")
+                        || err_str.contains("stranger")
+                        || err_str.contains("privacy")
+                        || err_str.contains("chặn")
+                        || err_str.contains("122")
+                    {
                         "BLOCKED_STRANGER"
+                    } else if err_str.contains("không tìm thấy")
+                        || err_str.contains("not found")
+                        || err_str.contains("212")
+                    {
+                        "VERIFIED_NOT_EXIST"
                     } else if should_rotate_zalo_session(&e) {
                         "RATE_LIMITED"
                     } else {
@@ -2610,9 +2940,15 @@ pub async fn send_zalo_outreach_internal(
                     if should_rotate_zalo_session(&e) {
                         let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần gửi tin ({:?}). Tạm dừng chiến dịch...", e);
                         if let Some(app) = app_handle {
-                            let _ = app.emit("outreach-log", OutreachLogPayload { message: rate_msg.clone() });
+                            let _ = app.emit(
+                                "outreach-log",
+                                OutreachLogPayload {
+                                    message: rate_msg.clone(),
+                                },
+                            );
                             let current_num = processed_offset + idx + 1;
-                            let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                            let progress_val =
+                                (current_num as f64 / display_total.max(1) as f64) * 100.0;
                             let _ = app.emit(
                                 "outreach-progress",
                                 OutreachProgressPayload {
@@ -2708,8 +3044,17 @@ pub async fn send_zalo_outreach_internal(
             let _ = app.emit(
                 "outreach-progress",
                 OutreachProgressPayload {
-                    progress: if was_rate_limited { ((processed_offset + total_sent) as f64 / display_total.max(1) as f64) * 100.0 } else { 100.0 },
-                    status: if was_rate_limited { "rate_limited".to_string() } else { "completed".to_string() },
+                    progress: if was_rate_limited {
+                        ((processed_offset + total_sent) as f64 / display_total.max(1) as f64)
+                            * 100.0
+                    } else {
+                        100.0
+                    },
+                    status: if was_rate_limited {
+                        "rate_limited".to_string()
+                    } else {
+                        "completed".to_string()
+                    },
                     message: final_msg.clone(),
                 },
             );
@@ -3476,6 +3821,7 @@ pub async fn get_campaign_leads(
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  WHERE lc.category_id = ?1
                    AND COALESCE(l.zalo_reached, 0) = 0
+                   AND COALESCE(l.zalo_status, '') NOT IN ('BLOCKED_STRANGER', 'VERIFIED_NOT_EXIST', 'NOT_FOUND', 'INVALID_PHONE')
                    AND l.id NOT IN (SELECT DISTINCT lead_id FROM outreach_history WHERE status = 'SUCCESS')"
             }
         },
@@ -3860,7 +4206,8 @@ pub async fn send_email_outreach_internal(
             Err(_) => match trimmed_email.parse() {
                 Ok(h) => h,
                 Err(e) => {
-                    let err_msg = format!("Invalid recipient email address for {}: {}", lead.name, e);
+                    let err_msg =
+                        format!("Invalid recipient email address for {}: {}", lead.name, e);
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "email-outreach-log",

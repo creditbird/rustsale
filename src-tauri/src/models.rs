@@ -77,6 +77,18 @@ pub struct ZaloSession {
     pub language: String,
     pub display_name: Option<String>,
     pub avatar: Option<String>,
+    pub zalo_uid: Option<String>,
+    pub channel_account_id: Option<i64>,
+}
+
+impl ZaloSession {
+    pub fn provider_account_key(&self) -> &str {
+        self.zalo_uid
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&self.imei)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

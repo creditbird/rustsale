@@ -14,7 +14,7 @@ pub use crate::conversation::zalo::normalizer::{
 };
 use crate::db::open_db_connection;
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static LAST_PROVIDER_CLIENT_ID: AtomicU64 = AtomicU64::new(0);
@@ -370,21 +370,13 @@ impl ConversationRepository {
         let tx = conn.transaction()?;
         let now = &message.ingested_at;
 
-        let channel_account_id: i64 = tx.query_row(
-            "INSERT INTO channel_accounts
-             (channel, provider_account_key, display_name, connection_status, capabilities_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'disconnected', '{}', ?4, ?4)
-             ON CONFLICT(channel, provider_account_key) DO UPDATE SET
-                 display_name = COALESCE(excluded.display_name, channel_accounts.display_name),
-                 updated_at = excluded.updated_at
-             RETURNING id",
-            params![
-                message.channel.as_str(),
-                message.provider_account_key,
-                message.account_display_name,
-                now
-            ],
-            |row| row.get(0),
+        let channel_account_id = ensure_channel_account(
+            &tx,
+            message.channel.as_str(),
+            &message.provider_account_key,
+            message.account_display_name.as_deref(),
+            "{}",
+            now,
         )?;
 
         let identity_id = if let Some(identity) = &message.participant {
@@ -694,8 +686,6 @@ impl ConversationRepository {
             )?;
         }
 
-
-
         Self::save_message_mentions_tx(
             &tx,
             message_id,
@@ -903,7 +893,6 @@ impl ConversationRepository {
                 participant_count: 0,
                 participants: Vec::new(),
             });
-
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
@@ -1107,7 +1096,6 @@ impl ConversationRepository {
                 participant_count: 0,
                 participants: Vec::new(),
             });
-
         }
 
         // 3. Group rows: Group conversations (key: "conversation:{conversation_id}")
@@ -1198,13 +1186,11 @@ impl ConversationRepository {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
 
-
             let channels = vec![ChannelBadgeSummary {
                 channel,
                 message_count: msg_count as u64,
                 unread_count: unread_cnt as u64,
             }];
-
 
             let participant_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = ?1 AND left_at IS NULL",
@@ -1248,7 +1234,6 @@ impl ConversationRepository {
                 participant_count: participant_count as u64,
                 participants,
             });
-
         }
 
         // Sort all aggregated rows by last_message_at DESC
@@ -1316,9 +1301,6 @@ impl ConversationRepository {
         tx.commit()?;
         Ok(rows_affected as u64)
     }
-
-
-
 
     pub fn link_identity(&self, identity_id: i64, lead_id: i64) -> Result<i64> {
         let mut conn = open_db_connection(&self.db_path)?;
@@ -1800,15 +1782,13 @@ impl ConversationRepository {
             &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
         )
         .unwrap_or_else(|_| "{}".to_string());
-        let channel_account_id: i64 = tx.query_row(
-            "INSERT INTO channel_accounts
-             (channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
-             VALUES ('zalo', ?1, 'disconnected', ?2, ?3, ?3)
-             ON CONFLICT(channel, provider_account_key) DO UPDATE SET
-                 updated_at = excluded.updated_at
-             RETURNING id",
-            params![snapshot.provider_account_key, default_caps, now],
-            |row| row.get(0),
+        let channel_account_id = ensure_channel_account(
+            &tx,
+            "zalo",
+            &snapshot.provider_account_key,
+            None,
+            &default_caps,
+            now,
         )?;
 
         let conversation_id: i64 = tx.query_row(
@@ -2031,28 +2011,106 @@ impl ConversationRepository {
             &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
         )
         .unwrap_or_else(|_| "{}".to_string());
-        let id: i64 = conn.query_row(
-            "INSERT INTO channel_accounts
-             (channel, provider_account_key, connection_status, last_error, last_connected_at, capabilities_json, created_at, updated_at)
-             VALUES ('zalo', ?1, ?2, ?3, ?4, ?5, ?6, ?6)
-             ON CONFLICT(channel, provider_account_key) DO UPDATE SET
-                 connection_status = excluded.connection_status,
-                 last_error = excluded.last_error,
-                 last_connected_at = COALESCE(excluded.last_connected_at, channel_accounts.last_connected_at),
-                 updated_at = excluded.updated_at
-             RETURNING id",
-            params![
-                provider_account_key,
-                status_str,
-                error,
-                last_connected,
-                default_caps,
-                now,
-            ],
-            |row| row.get(0),
-        )?;
+
+        let account_id_opt = find_channel_account_id_by_key(&conn, "zalo", provider_account_key)?;
+
+        let id: i64 = if let Some(acc_id) = account_id_opt {
+            conn.execute(
+                "UPDATE channel_accounts
+                 SET connection_status = ?2,
+                     last_error = ?3,
+                     last_connected_at = COALESCE(?4, last_connected_at),
+                     updated_at = ?5
+                 WHERE id = ?1",
+                params![acc_id, status_str, error, last_connected, now],
+            )?;
+            acc_id
+        } else {
+            conn.query_row(
+                "INSERT INTO channel_accounts
+                 (channel, provider_account_key, connection_status, last_error, last_connected_at, capabilities_json, created_at, updated_at)
+                 VALUES ('zalo', ?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 ON CONFLICT(channel, provider_account_key) DO UPDATE SET
+                     connection_status = excluded.connection_status,
+                     last_error = excluded.last_error,
+                     last_connected_at = COALESCE(excluded.last_connected_at, channel_accounts.last_connected_at),
+                     updated_at = excluded.updated_at
+                 RETURNING id",
+                params![
+                    provider_account_key,
+                    status_str,
+                    error,
+                    last_connected,
+                    default_caps,
+                    now,
+                ],
+                |row| row.get(0),
+            )?
+        };
+
+        link_zalo_sessions_to_account(&conn, provider_account_key, id)?;
 
         Ok(id)
+    }
+
+    pub fn reconcile_zalo_channel_account(
+        &self,
+        imei: &str,
+        zalo_uid: Option<&str>,
+        display_name: Option<&str>,
+        avatar_url: Option<&str>,
+    ) -> Result<i64> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = utc_now();
+
+        let target_key = zalo_uid.unwrap_or(imei);
+
+        let existing_id = find_channel_account_id_by_key(&tx, "zalo", target_key)?
+            .or(find_channel_account_id_by_key(&tx, "zalo", imei)?);
+
+        let acc_id = if let Some(acc_id) = existing_id {
+            tx.execute(
+                "UPDATE channel_accounts
+                 SET provider_account_key = ?2,
+                     self_external_id = COALESCE(?3, self_external_id),
+                     display_name = COALESCE(?4, display_name),
+                     avatar_url = COALESCE(?5, avatar_url),
+                     updated_at = ?6
+                 WHERE id = ?1",
+                params![acc_id, target_key, zalo_uid, display_name, avatar_url, now],
+            )?;
+            acc_id
+        } else {
+            let default_caps = serde_json::to_string(
+                &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
+            )
+            .unwrap_or_else(|_| "{}".to_string());
+
+            tx.query_row(
+                "INSERT INTO channel_accounts
+                 (channel, provider_account_key, self_external_id, display_name, avatar_url, connection_status, capabilities_json, created_at, updated_at)
+                 VALUES ('zalo', ?1, ?2, ?3, ?4, 'disconnected', ?5, ?6, ?6)
+                 ON CONFLICT(channel, provider_account_key) DO UPDATE SET
+                     self_external_id = COALESCE(excluded.self_external_id, channel_accounts.self_external_id),
+                     display_name = COALESCE(excluded.display_name, channel_accounts.display_name),
+                     avatar_url = COALESCE(excluded.avatar_url, channel_accounts.avatar_url),
+                     updated_at = excluded.updated_at
+                 RETURNING id",
+                params![target_key, zalo_uid, display_name, avatar_url, default_caps, now],
+                |row| row.get(0),
+            )?
+        };
+
+        tx.execute(
+            "UPDATE zalo_sessions
+             SET zalo_uid = COALESCE(?2, zalo_uid), channel_account_id = ?3
+             WHERE imei = ?1 OR (?2 IS NOT NULL AND zalo_uid = ?2)",
+            params![imei, zalo_uid, acc_id],
+        )?;
+        tx.commit()?;
+
+        Ok(acc_id)
     }
 
     pub fn lead_id_for_identity(&self, identity_id: i64) -> Result<Option<i64>> {
@@ -4110,7 +4168,12 @@ impl ConversationRepository {
                  LEFT JOIN channel_identities ci ON m.sender_identity_id = ci.id
                  WHERE m.id = ?1",
                 rusqlite::params![message_id],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
             )
             .unwrap_or((None, None));
 
@@ -4167,8 +4230,120 @@ impl ConversationRepository {
         }
         Ok(pinned)
     }
+}
 
+fn find_channel_account_id_by_key(
+    conn: &Connection,
+    channel: &str,
+    provider_account_key: &str,
+) -> Result<Option<i64>> {
+    if channel != "zalo" {
+        return conn
+            .query_row(
+                "SELECT id FROM channel_accounts WHERE channel = ?1 AND provider_account_key = ?2",
+                params![channel, provider_account_key],
+                |row| row.get(0),
+            )
+            .optional();
+    }
 
+    conn.query_row(
+        "SELECT ca.id
+         FROM channel_accounts ca
+         WHERE ca.channel = 'zalo'
+           AND (
+                ca.provider_account_key = ?1
+                OR ca.self_external_id = ?1
+                OR ca.id IN (
+                    SELECT channel_account_id FROM zalo_sessions
+                    WHERE channel_account_id IS NOT NULL AND (imei = ?1 OR zalo_uid = ?1)
+                )
+                OR ca.provider_account_key IN (
+                    SELECT zalo_uid FROM zalo_sessions
+                    WHERE zalo_uid IS NOT NULL AND zalo_uid != '' AND (imei = ?1 OR zalo_uid = ?1)
+                )
+                OR ca.self_external_id IN (
+                    SELECT zalo_uid FROM zalo_sessions
+                    WHERE zalo_uid IS NOT NULL AND zalo_uid != '' AND (imei = ?1 OR zalo_uid = ?1)
+                )
+           )
+         ORDER BY CASE
+                    WHEN ca.provider_account_key = ?1 THEN 0
+                    WHEN ca.self_external_id = ?1 THEN 1
+                    ELSE 2
+                  END,
+                  ca.id
+         LIMIT 1",
+        [provider_account_key],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+fn link_zalo_sessions_to_account(
+    conn: &Connection,
+    provider_account_key: &str,
+    channel_account_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE zalo_sessions
+         SET channel_account_id = ?2,
+             zalo_uid = COALESCE(
+                 zalo_uid,
+                 (SELECT self_external_id FROM channel_accounts WHERE id = ?2)
+             )
+         WHERE imei = ?1 OR zalo_uid = ?1 OR channel_account_id = ?2",
+        params![provider_account_key, channel_account_id],
+    )?;
+    Ok(())
+}
+
+fn ensure_channel_account(
+    conn: &Connection,
+    channel: &str,
+    provider_account_key: &str,
+    display_name: Option<&str>,
+    capabilities_json: &str,
+    now: &str,
+) -> Result<i64> {
+    if let Some(account_id) = find_channel_account_id_by_key(conn, channel, provider_account_key)? {
+        conn.execute(
+            "UPDATE channel_accounts
+             SET display_name = COALESCE(?2, display_name),
+                 capabilities_json = CASE
+                     WHEN capabilities_json = '{}' AND ?3 != '{}' THEN ?3
+                     ELSE capabilities_json
+                 END,
+                 updated_at = ?4
+             WHERE id = ?1",
+            params![account_id, display_name, capabilities_json, now],
+        )?;
+        if channel == "zalo" {
+            link_zalo_sessions_to_account(conn, provider_account_key, account_id)?;
+        }
+        return Ok(account_id);
+    }
+
+    conn.query_row(
+        "INSERT INTO channel_accounts
+         (channel, provider_account_key, display_name, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'disconnected', ?4, ?5, ?5)
+         ON CONFLICT(channel, provider_account_key) DO UPDATE SET
+             display_name = COALESCE(excluded.display_name, channel_accounts.display_name),
+             capabilities_json = CASE
+                 WHEN channel_accounts.capabilities_json = '{}' AND excluded.capabilities_json != '{}'
+                 THEN excluded.capabilities_json ELSE channel_accounts.capabilities_json END,
+             updated_at = excluded.updated_at
+         RETURNING id",
+        params![
+            channel,
+            provider_account_key,
+            display_name,
+            capabilities_json,
+            now
+        ],
+        |row| row.get(0),
+    )
 }
 
 fn resolve_message_id(
@@ -4179,13 +4354,7 @@ fn resolve_message_id(
     provider_message_id: &str,
     provider_client_message_id: &str,
 ) -> Result<Option<i64>> {
-    let channel_account_id: Option<i64> = tx
-        .query_row(
-            "SELECT id FROM channel_accounts WHERE channel = 'zalo' AND provider_account_key = ?1",
-            [provider_account_key],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let channel_account_id = find_channel_account_id_by_key(tx, "zalo", provider_account_key)?;
 
     let channel_account_id = match channel_account_id {
         Some(id) => id,

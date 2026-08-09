@@ -11,15 +11,15 @@
 </script>
 
 {#if reply}
-  <div class="composer-reply-bar" data-testid="composer-reply-bar">
-    <div class="reply-indicator"></div>
-    <div class="reply-content">
-      <span class="reply-sender">{reply.preview.senderDisplayName ?? 'Tin nhắn'}</span>
-      <span class="reply-text">{reply.preview.textContent ?? reply.preview.contentType}</span>
+  <div class="composer-reply-bar flex items-center gap-2 border-t border-border/40 bg-muted/30 p-2 text-xs" data-testid="composer-reply-bar">
+    <div class="reply-indicator h-6 w-[3px] rounded-sm bg-blue-500"></div>
+    <div class="reply-content flex flex-1 flex-col overflow-hidden">
+      <span class="reply-sender font-semibold text-blue-500">{reply.preview.senderDisplayName ?? 'Tin nhắn'}</span>
+      <span class="reply-text truncate text-muted-foreground">{reply.preview.textContent ?? reply.preview.contentType}</span>
     </div>
     <button
       type="button"
-      class="reply-cancel-btn"
+      class="reply-cancel-btn cursor-pointer rounded border-none bg-transparent px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
       aria-label="Cancel reply"
       onclick={onCancel}
       data-testid="cancel-reply-btn"
@@ -29,55 +29,3 @@
   </div>
 {/if}
 
-<style>
-  .composer-reply-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    background: var(--surface-secondary, #f3f4f6);
-    border-top: 1px solid var(--border-color, #e5e7eb);
-    font-size: 12px;
-  }
-
-  .reply-indicator {
-    width: 3px;
-    height: 24px;
-    background-color: #3b82f6;
-    border-radius: 2px;
-  }
-
-  .reply-content {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    overflow: hidden;
-  }
-
-  .reply-sender {
-    font-weight: 600;
-    color: #3b82f6;
-  }
-
-  .reply-text {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: #4b5563;
-  }
-
-  .reply-cancel-btn {
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: #9ca3af;
-    padding: 2px 6px;
-    font-size: 12px;
-    border-radius: 4px;
-  }
-
-  .reply-cancel-btn:hover {
-    color: #ef4444;
-    background: #fee2e2;
-  }
-</style>

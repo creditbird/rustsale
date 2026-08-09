@@ -804,10 +804,7 @@ impl ZaloClient for RealZaloClient {
         &self,
         sticker_id: u32,
     ) -> Result<Option<ZaloStickerReference>, ProviderSendError> {
-        let details = self
-            .inner
-            .get_stickers_detail(&[sticker_id])
-            .await?;
+        let details = self.inner.get_stickers_detail(&[sticker_id]).await?;
         if let Some(d) = details.first() {
             Ok(Some(ZaloStickerReference {
                 sticker_id: d.id,
@@ -925,6 +922,20 @@ impl ZaloClientFactory for RealZaloClientFactory {
             .await
             .map_err(|e| anyhow::anyhow!("Zalo login failed: {e}"))?;
 
-        Ok(Arc::new(RealZaloClient::new(Arc::new(zalo), session.imei)))
+        let provider_account_key = zalo
+            .get_own_id()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                session
+                    .zalo_uid
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .unwrap_or_else(|| session.imei.clone());
+
+        Ok(Arc::new(RealZaloClient::new(
+            Arc::new(zalo),
+            provider_account_key,
+        )))
     }
 }

@@ -357,7 +357,7 @@ export interface StagedConversationAttachment {
 
 export type SendPartContent =
   | { type: 'text'; text: string; mentions?: ConversationMentionInput[] }
-  | { type: 'sticker'; stickerId: number; cateId: number; stickerType: number }
+  | { type: 'sticker'; stickerId: number; cateId: number; stickerType: number; url?: string }
   | { type: 'attachment'; stagedAttachmentId: string };
 
 export type SendPartRequest = { clientPartId: string } & SendPartContent;
