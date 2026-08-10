@@ -456,7 +456,12 @@ pub fn update_zalo_session_profile(
     avatar: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE zalo_sessions SET display_name = ?1, avatar = ?2 WHERE imei = ?3",
+        "UPDATE zalo_sessions
+         SET display_name = ?1, avatar = ?2
+         WHERE imei = ?3 OR zalo_uid = ?3
+            OR channel_account_id IN (
+                SELECT id FROM channel_accounts WHERE channel = 'zalo' AND (provider_account_key = ?3 OR self_external_id = ?3)
+            )",
         rusqlite::params![display_name, avatar, imei],
     )?;
     Ok(())
@@ -473,7 +478,10 @@ pub fn update_zalo_session_auth_status(
          SET auth_status = ?1,
              auth_checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
              auth_error = ?2
-         WHERE imei = ?3",
+         WHERE imei = ?3 OR zalo_uid = ?3
+            OR channel_account_id IN (
+                SELECT id FROM channel_accounts WHERE channel = 'zalo' AND (provider_account_key = ?3 OR self_external_id = ?3)
+            )",
         rusqlite::params![auth_status, auth_error, imei],
     )?;
     Ok(())
@@ -485,7 +493,13 @@ pub fn get_zalo_session(
     imei: &str,
 ) -> Result<Option<crate::models::ZaloSession>> {
     let mut stmt = conn.prepare(
-        "SELECT imei, user_agent, cookies_json, language, display_name, avatar, zalo_uid, channel_account_id FROM zalo_sessions WHERE imei = ?1",
+        "SELECT zs.imei, zs.user_agent, zs.cookies_json, zs.language, zs.display_name, zs.avatar, zs.zalo_uid, zs.channel_account_id
+         FROM zalo_sessions zs
+         LEFT JOIN channel_accounts ca ON ca.id = zs.channel_account_id AND ca.channel = 'zalo'
+         WHERE zs.imei = ?1 OR zs.zalo_uid = ?1
+            OR (ca.provider_account_key IS NOT NULL AND ca.provider_account_key = ?1)
+            OR (ca.self_external_id IS NOT NULL AND ca.self_external_id = ?1)
+         ORDER BY zs.rowid DESC LIMIT 1",
     )?;
     let mut rows = stmt.query([imei])?;
     if let Some(row) = rows.next()? {
@@ -528,7 +542,25 @@ pub fn get_all_zalo_sessions(conn: &Connection) -> Result<Vec<crate::models::Zal
 }
 
 pub fn delete_zalo_session(conn: &Connection, imei: &str) -> Result<()> {
-    conn.execute("DELETE FROM zalo_sessions WHERE imei = ?1", [imei])?;
+    conn.execute(
+        "DELETE FROM channel_accounts
+         WHERE channel = 'zalo' AND (
+             provider_account_key = ?1 OR self_external_id = ?1
+             OR id IN (
+                 SELECT channel_account_id FROM zalo_sessions
+                 WHERE imei = ?1 OR zalo_uid = ?1
+             )
+         )",
+        [imei],
+    )?;
+    conn.execute(
+        "DELETE FROM zalo_sessions
+         WHERE imei = ?1 OR zalo_uid = ?1
+            OR channel_account_id IN (
+                SELECT id FROM channel_accounts WHERE channel = 'zalo' AND (provider_account_key = ?1 OR self_external_id = ?1)
+            )",
+        [imei],
+    )?;
     Ok(())
 }
 

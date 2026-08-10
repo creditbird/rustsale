@@ -419,6 +419,31 @@ mod tests {
         let all_after = db::get_all_zalo_sessions(&conn).unwrap();
         assert_eq!(all_after.len(), 1);
         assert_eq!(all_after[0].imei, "imei-456");
+
+        // Test lookup, update, and delete by zalo_uid and channel_account provider_account_key
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid) VALUES ('imei-uid-test', 'UA', '[]', 'vi', 'uid-999')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO channel_accounts (channel, provider_account_key, created_at, updated_at) VALUES ('zalo', 'uid-999', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+
+        // Get by zalo_uid / provider_account_key
+        let s_by_uid = db::get_zalo_session(&conn, "uid-999").unwrap().unwrap();
+        assert_eq!(s_by_uid.imei, "imei-uid-test");
+        assert_eq!(s_by_uid.zalo_uid.as_deref(), Some("uid-999"));
+
+        // Update auth status by provider_account_key
+        db::update_zalo_session_auth_status(&conn, "uid-999", "valid", None).unwrap();
+        let s_updated = db::get_zalo_session(&conn, "uid-999").unwrap().unwrap();
+        assert_eq!(s_updated.imei, "imei-uid-test");
+
+        // Delete by provider_account_key / zalo_uid
+        db::delete_zalo_session(&conn, "uid-999").unwrap();
+        assert!(db::get_zalo_session(&conn, "uid-999").unwrap().is_none());
+        assert!(db::get_zalo_session(&conn, "imei-uid-test").unwrap().is_none());
     }
 
     #[test]
