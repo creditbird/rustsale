@@ -52,6 +52,15 @@ function scanResult(overrides: Partial<GroupMemberScanResult> = {}): GroupMember
         member_count: 1,
         warning: null
       },
+      group_link: {
+        attempted: false,
+        pages_attempted: 0,
+        pages_succeeded: 0,
+        items_inspected: 0,
+        committed_uid_count: 0,
+        link_retrieved: false,
+        warning: null
+      },
       board: {
         attempted: true,
         pages_attempted: 2,

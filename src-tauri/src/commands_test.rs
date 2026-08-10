@@ -2328,6 +2328,7 @@ mod tests {
             snapshot: Mutex<Result<Option<NormalizedGroupSnapshot>, String>>,
             board: Mutex<Result<GroupBoardUidReport, String>>,
             profiles: Mutex<Result<Vec<NormalizedProfile>, String>>,
+            link_members: Mutex<Option<Vec<NormalizedProfile>>>,
             direct_history_requests: AtomicUsize,
         }
 
@@ -2343,8 +2344,14 @@ mod tests {
                     snapshot: Mutex::new(snapshot),
                     board: Mutex::new(board),
                     profiles: Mutex::new(profiles),
+                    link_members: Mutex::new(None),
                     direct_history_requests: AtomicUsize::new(0),
                 }
+            }
+
+            fn with_link_members(mut self, link_members: Vec<NormalizedProfile>) -> Self {
+                self.link_members = Mutex::new(Some(link_members));
+                self
             }
         }
 
@@ -2417,6 +2424,27 @@ mod tests {
                     .unwrap()
                     .clone()
                     .map_err(anyhow::Error::msg)
+            }
+
+            async fn fetch_group_link_detail(&self, _group_id: &str) -> anyhow::Result<Option<String>> {
+                if self.link_members.lock().unwrap().is_some() {
+                    Ok(Some("https://zalo.me/g/testlink".to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            async fn fetch_group_link_members(
+                &self,
+                _link: &str,
+                page: u32,
+            ) -> anyhow::Result<Option<(Vec<NormalizedProfile>, bool)>> {
+                if page == 1 {
+                    if let Some(mems) = self.link_members.lock().unwrap().clone() {
+                        return Ok(Some((mems, false)));
+                    }
+                }
+                Ok(None)
             }
 
             fn stop(&self) {}
@@ -2749,6 +2777,45 @@ mod tests {
 
             assert!(result.is_err());
             assert_eq!(harness.identity_count("valid-before-error"), 0);
+        }
+
+        #[tokio::test]
+        async fn group_link_members_are_committed_during_deep_scan() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(105, "group");
+            let link_profile = NormalizedProfile {
+                external_id: "link-member-uid".to_string(),
+                display_name: Some("Link Member".to_string()),
+                avatar_url: None,
+            };
+            let client = Arc::new(
+                FakeGroupScanClient::new(
+                    Ok(None),
+                    Ok(GroupBoardUidReport::default()),
+                    Ok(vec![link_profile.clone()]),
+                )
+                .with_link_members(vec![link_profile]),
+            );
+            let runtime =
+                FakeGroupScanRuntime::new(Some(client), GroupMessageBackfillOutcome::Completed);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                105,
+            )
+            .await
+            .unwrap();
+
+            assert!(result
+                .members
+                .iter()
+                .any(|member| member.external_id.as_deref() == Some("link-member-uid")));
+            assert!(result.diagnostics.group_link.attempted);
+            assert!(result.diagnostics.group_link.link_retrieved);
+            assert_eq!(result.diagnostics.group_link.committed_uid_count, 1);
+            assert_eq!(harness.identity_count("link-member-uid"), 1);
         }
     }
 

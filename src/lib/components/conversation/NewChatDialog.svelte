@@ -20,9 +20,13 @@
 
   let {
     open = $bindable(false),
+    initialPhone = '',
+    initialDisplayName = '',
     onSuccess
   }: {
     open: boolean;
+    initialPhone?: string;
+    initialDisplayName?: string;
     onSuccess?: (message: ConversationMessage) => void;
   } = $props();
 
@@ -37,8 +41,8 @@
 
   $effect(() => {
     if (open) {
-      phoneOrExternalId = '';
-      displayName = '';
+      phoneOrExternalId = initialPhone || '';
+      displayName = initialDisplayName || '';
       initialMessage = '';
       errorMessage = null;
       loadAccounts();

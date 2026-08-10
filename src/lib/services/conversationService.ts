@@ -743,6 +743,16 @@ export interface GroupMemberLocalEvidenceDiagnostics {
   rejected_uid_count: number;
 }
 
+export interface GroupMemberGroupLinkDiagnostics {
+  attempted: boolean;
+  pages_attempted: number;
+  pages_succeeded: number;
+  items_inspected: number;
+  committed_uid_count: number;
+  link_retrieved: boolean;
+  warning?: GroupMemberScanWarning | null;
+}
+
 export interface GroupMemberProfileHydrationDiagnostics {
   attempted: number;
   succeeded: number;
@@ -752,6 +762,7 @@ export interface GroupMemberProfileHydrationDiagnostics {
 
 export interface GroupMemberScanDiagnostics {
   direct_snapshot: GroupMemberDirectSnapshotDiagnostics;
+  group_link: GroupMemberGroupLinkDiagnostics;
   board: GroupMemberBoardDiagnostics;
   history_backfill: GroupMessageBackfillReport;
   local_evidence: GroupMemberLocalEvidenceDiagnostics;

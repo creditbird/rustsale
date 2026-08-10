@@ -7,15 +7,42 @@
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
   import * as Dialog from '$lib/components/ui/dialog';
+  import { invoke } from '@tauri-apps/api/core';
+  import {
+    listManagedZaloAccounts,
+    listManagedSmtpAccounts,
+    type ManagedZaloAccount,
+    type ManagedSmtpAccount
+  } from '$lib/services/accountSettingsService';
   import {
     X, Edit2, Trash2, Save, Phone, Mail, Users, CheckCircle2, XCircle,
     AlertCircle, Calendar, Clock, MapPin, Building, Briefcase, Plus,
-    DollarSign, Layers, Send, MessageCircle
+    DollarSign, Layers, Send, MessageCircle, ExternalLink, RefreshCw, MessageSquare
   } from 'lucide-svelte';
 
-  let { leadId, onClose, onRefresh } = $props<{ leadId: number; onClose: () => void; onRefresh?: () => void }>();
+  interface ZaloTemplate {
+    id: number;
+    name: string;
+    content: string;
+    image_url?: string | null;
+  }
 
-  let lead = $state<Lead | null>(null);
+  interface EmailTemplate {
+    id: number;
+    name: string;
+    subject: string;
+    content: string;
+  }
+
+  let { leadId, initialLead = null, onClose, onRefresh, onOpenConversation } = $props<{
+    leadId: number;
+    initialLead?: Lead | null;
+    onClose: () => void;
+    onRefresh?: () => void;
+    onOpenConversation?: (lead: { id: number; phone?: string; name?: string }) => void;
+  }>();
+
+  let lead = $state<Lead | null>(initialLead);
   let activities = $state<Activity[]>([]);
   let deals = $state<Deal[]>([]);
   let loading = $state(false);
@@ -42,6 +69,24 @@
   let newDealStage = $state('Prospecting');
   let creatingDeal = $state(false);
   let createDealErrorMsg = $state<string | null>(null);
+
+  // Quick Send Zalo Modal State
+  let showSendZaloModal = $state(false);
+  let zaloAccounts = $state<ManagedZaloAccount[]>([]);
+  let selectedZaloAccountKey = $state<string>('');
+  let zaloTemplates = $state<ZaloTemplate[]>([]);
+  let selectedZaloTemplateId = $state<number | null>(null);
+  let sendingZalo = $state(false);
+  let sendZaloErrorMsg = $state<string | null>(null);
+
+  // Quick Send Email Modal State
+  let showSendEmailModal = $state(false);
+  let smtpAccounts = $state<ManagedSmtpAccount[]>([]);
+  let selectedSmtpId = $state<number | null>(null);
+  let emailTemplates = $state<EmailTemplate[]>([]);
+  let selectedEmailTemplateId = $state<number | null>(null);
+  let sendingEmail = $state(false);
+  let sendEmailErrorMsg = $state<string | null>(null);
 
   const presetValues = [5000, 10000, 25000, 50000, 100000];
 
@@ -74,6 +119,156 @@
     newDealValue = 10000;
     newDealStage = 'Prospecting';
     showCreateDealModal = true;
+  }
+
+  async function openSendZaloModal() {
+    sendZaloErrorMsg = null;
+    showSendZaloModal = true;
+    try {
+      const [accs, tpls] = await Promise.all([
+        listManagedZaloAccounts().catch(() => []),
+        invoke<ZaloTemplate[]>('get_outreach_templates').catch(() => [])
+      ]);
+      zaloAccounts = accs || [];
+      zaloTemplates = tpls || [];
+      const validAcc = zaloAccounts.find((a) => a.authStatus === 'valid') || zaloAccounts[0];
+      if (validAcc) {
+        selectedZaloAccountKey = validAcc.accountKey;
+      }
+      if (zaloTemplates.length > 0) {
+        selectedZaloTemplateId = zaloTemplates[0].id;
+      }
+    } catch (err) {
+      sendZaloErrorMsg = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function handleSendZalo(e: Event) {
+    e.preventDefault();
+    if (!selectedZaloAccountKey) {
+      sendZaloErrorMsg = 'Vui lòng chọn tài khoản Zalo gửi.';
+      return;
+    }
+    if (!selectedZaloTemplateId) {
+      sendZaloErrorMsg = 'Vui lòng chọn mẫu tin Zalo / template.';
+      return;
+    }
+    sendingZalo = true;
+    sendZaloErrorMsg = null;
+    try {
+      await invoke('send_zalo_outreach', {
+        imei: selectedZaloAccountKey,
+        leadIds: [leadId],
+        templateId: selectedZaloTemplateId
+      });
+      const tplName = zaloTemplates.find((t) => t.id === selectedZaloTemplateId)?.name || 'Zalo Template';
+      await crmService.addActivity(
+        leadId,
+        'Zalo',
+        `Đã phát lệnh gửi tin Zalo cho ${lead?.name || 'khách hàng'} (Mẫu: ${tplName})`,
+        'Self'
+      );
+      showSendZaloModal = false;
+      toast.success('Đã gửi lệnh Zalo thành công!', {
+        description: `Tin nhắn Zalo đã được xếp lịch gửi cho ${lead?.name || 'khách hàng'}.`
+      });
+      await loadLeadDetails(leadId);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      sendZaloErrorMsg = err instanceof Error ? err.message : String(err);
+      toast.error('Gửi Zalo thất bại', { description: sendZaloErrorMsg });
+    } finally {
+      sendingZalo = false;
+    }
+  }
+
+  async function openSendEmailModal() {
+    if (!lead?.email) {
+      toast.error('Khách hàng chưa có địa chỉ Email', {
+        description: 'Vui lòng cập nhật địa chỉ Email trong thông tin khách hàng trước.'
+      });
+      return;
+    }
+    sendEmailErrorMsg = null;
+    showSendEmailModal = true;
+    try {
+      const [accs, tpls] = await Promise.all([
+        listManagedSmtpAccounts().catch(() => []),
+        invoke<EmailTemplate[]>('get_email_templates').catch(() => [])
+      ]);
+      smtpAccounts = accs || [];
+      emailTemplates = tpls || [];
+      if (smtpAccounts.length > 0) {
+        selectedSmtpId = smtpAccounts[0].id;
+      }
+      if (emailTemplates.length > 0) {
+        selectedEmailTemplateId = emailTemplates[0].id;
+      }
+    } catch (err) {
+      sendEmailErrorMsg = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function handleSendEmail(e: Event) {
+    e.preventDefault();
+    if (!selectedSmtpId) {
+      sendEmailErrorMsg = 'Vui lòng chọn máy chủ Email/SMTP gửi.';
+      return;
+    }
+    if (!selectedEmailTemplateId) {
+      sendEmailErrorMsg = 'Vui lòng chọn mẫu Email / template.';
+      return;
+    }
+    sendingEmail = true;
+    sendEmailErrorMsg = null;
+    try {
+      await invoke('send_email_outreach', {
+        smtpId: selectedSmtpId,
+        templateId: selectedEmailTemplateId,
+        leadIds: [leadId]
+      });
+      const tpl = emailTemplates.find((t) => t.id === selectedEmailTemplateId);
+      await crmService.addActivity(
+        leadId,
+        'Email',
+        `Đã phát lệnh gửi Email tới ${lead?.email} (Tiêu đề: ${tpl?.subject || tpl?.name || 'Email chăm sóc'})`,
+        'Self'
+      );
+      showSendEmailModal = false;
+      toast.success('Đã gửi Email thành công!', {
+        description: `Thư điện tử đã được phát lệnh gửi tới ${lead?.email}.`
+      });
+      await loadLeadDetails(leadId);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      sendEmailErrorMsg = err instanceof Error ? err.message : String(err);
+      toast.error('Gửi Email thất bại', { description: sendEmailErrorMsg });
+    } finally {
+      sendingEmail = false;
+    }
+  }
+
+  function getZaloMeUrl(phone?: string | null): string | null {
+    if (!phone) return null;
+    const clean = phone.replace(/[^0-9]/g, '');
+    if (!clean) return null;
+    const formatted = clean.startsWith('0') ? '84' + clean.slice(1) : clean;
+    return `https://zalo.me/${formatted}`;
+  }
+
+  function openZaloConversation() {
+    showSendZaloModal = false;
+    const payload = {
+      id: leadId,
+      phone: lead?.phone || editPhone || undefined,
+      name: lead?.name || editName || undefined
+    };
+    if (onOpenConversation) {
+      onOpenConversation(payload);
+    }
+    if (onClose) {
+      onClose();
+    }
   }
 
   async function handleCreateDeal(e: Event) {
@@ -351,21 +546,23 @@
               <span>+ Tạo Deal Mới</span>
             </Button>
 
-            <a
-              href="/#zalo-outreach"
-              class="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-sky-500/30 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 text-xs font-semibold transition-colors"
+            <Button
+              size="sm"
+              onclick={openSendZaloModal}
+              class="gap-1.5 font-bold text-xs border border-sky-500/30 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 shadow-2xs h-8 rounded-lg"
             >
               <MessageCircle class="w-3.5 h-3.5" />
               <span>Gửi Zalo</span>
-            </a>
+            </Button>
 
-            <a
-              href="mailto:{lead.email}"
-              class="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-border bg-muted/40 hover:bg-muted text-foreground text-xs font-semibold transition-colors"
+            <Button
+              size="sm"
+              onclick={openSendEmailModal}
+              class="gap-1.5 font-bold text-xs border border-border bg-muted/40 hover:bg-muted text-foreground shadow-2xs h-8 rounded-lg"
             >
               <Mail class="w-3.5 h-3.5" />
               <span>Gửi Email</span>
-            </a>
+            </Button>
           </div>
         {/if}
       </div>
@@ -765,3 +962,219 @@
     </div>
   </div>
 {/if}
+
+<!-- Quick Send Zalo Dialog -->
+<Dialog.Root bind:open={showSendZaloModal}>
+  <Dialog.Content class="sm:max-w-lg">
+    <Dialog.Header>
+      <Dialog.Title class="flex items-center gap-2 text-sky-600">
+        <MessageCircle class="w-5 h-5" />
+        Gửi Tin Nhắn Zalo - {lead?.name}
+      </Dialog.Title>
+    </Dialog.Header>
+
+    <form onsubmit={handleSendZalo} class="space-y-4 py-2">
+      {#if sendZaloErrorMsg}
+        <div class="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2">
+          <AlertCircle class="w-4 h-4 shrink-0" />
+          <span>{sendZaloErrorMsg}</span>
+        </div>
+      {/if}
+
+      <!-- Select Zalo Account -->
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-foreground">Tài khoản Zalo gửi</label>
+        {#if zaloAccounts.length === 0}
+          <p class="text-xs text-amber-600 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
+            Chưa có tài khoản Zalo nào được kết nối. Vui lòng kết nối Zalo trong Cài đặt Channel.
+          </p>
+        {:else}
+          <select
+            bind:value={selectedZaloAccountKey}
+            class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-sky-500"
+          >
+            {#each zaloAccounts as acc}
+              <option value={acc.accountKey}>
+                {acc.displayName || acc.accountKey} ({acc.authStatus === 'valid' ? 'Đang hoạt động' : acc.authStatus})
+              </option>
+            {/each}
+          </select>
+        {/if}
+      </div>
+
+      <!-- Select Zalo Template -->
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-foreground">Mẫu tin Zalo / Template</label>
+        {#if zaloTemplates.length === 0}
+          <p class="text-xs text-muted-foreground bg-muted/40 p-2.5 rounded-lg border border-border">
+            Chưa có kịch bản Zalo nào. Bạn có thể tạo mẫu tin trong mục Zalo Outreach.
+          </p>
+        {:else}
+          <select
+            bind:value={selectedZaloTemplateId}
+            class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-sky-500"
+          >
+            {#each zaloTemplates as tpl}
+              <option value={tpl.id}>{tpl.name}</option>
+            {/each}
+          </select>
+
+          {#if selectedZaloTemplateId}
+            {@const selectedTpl = zaloTemplates.find(t => t.id === selectedZaloTemplateId)}
+            {#if selectedTpl}
+              <div class="p-3 rounded-lg bg-muted/30 border border-border text-xs space-y-1 text-muted-foreground">
+                <span class="font-semibold text-foreground">Xem trước nội dung:</span>
+                <p class="whitespace-pre-wrap">{selectedTpl.content}</p>
+              </div>
+            {/if}
+          {/if}
+        {/if}
+      </div>
+
+      <!-- Direct Conversation Chat Navigation -->
+      <div class="pt-2 border-t border-border flex items-center justify-between">
+        <span class="text-xs text-muted-foreground">Hoặc trò chuyện 1-1 trực tiếp:</span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onclick={openZaloConversation}
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 text-xs font-medium border border-sky-500/30 transition-colors"
+        >
+          <MessageSquare class="w-3.5 h-3.5" />
+          <span>Mở Chat trong Conversation</span>
+        </Button>
+      </div>
+
+      <Dialog.Footer class="gap-2 pt-2">
+        <Button variant="outline" size="sm" type="button" onclick={() => showSendZaloModal = false} disabled={sendingZalo}>
+          Hủy Bỏ
+        </Button>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={sendingZalo || !selectedZaloAccountKey || !selectedZaloTemplateId}
+          class="bg-sky-600 hover:bg-sky-700 text-white font-bold gap-1.5"
+        >
+          {#if sendingZalo}
+            <RefreshCw class="w-3.5 h-3.5 animate-spin" />
+            <span>Đang gửi...</span>
+          {:else}
+            <Send class="w-3.5 h-3.5" />
+            <span>Gửi Zalo Ngay</span>
+          {/if}
+        </Button>
+      </Dialog.Footer>
+    </form>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Quick Send Email Dialog -->
+<Dialog.Root bind:open={showSendEmailModal}>
+  <Dialog.Content class="sm:max-w-lg">
+    <Dialog.Header>
+      <Dialog.Title class="flex items-center gap-2 text-foreground">
+        <Mail class="w-5 h-5 text-emerald-600" />
+        Gửi Email Chăm Sóc - {lead?.name}
+      </Dialog.Title>
+    </Dialog.Header>
+
+    <form onsubmit={handleSendEmail} class="space-y-4 py-2">
+      {#if sendEmailErrorMsg}
+        <div class="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2">
+          <AlertCircle class="w-4 h-4 shrink-0" />
+          <span>{sendEmailErrorMsg}</span>
+        </div>
+      {/if}
+
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-foreground">Email người nhận</label>
+        <Input type="email" value={lead?.email || ''} readonly class="bg-muted/40 text-xs text-muted-foreground" />
+      </div>
+
+      <!-- Select SMTP Account -->
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-foreground">Tài khoản Email/SMTP gửi</label>
+        {#if smtpAccounts.length === 0}
+          <p class="text-xs text-amber-600 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
+            Chưa có tài khoản SMTP nào được cấu hình. Vui lòng thêm SMTP trong Cài đặt Channel.
+          </p>
+        {:else}
+          <select
+            bind:value={selectedSmtpId}
+            class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
+          >
+            {#each smtpAccounts as smtp}
+              <option value={smtp.id}>
+                {smtp.name} ({smtp.fromEmail})
+              </option>
+            {/each}
+          </select>
+        {/if}
+      </div>
+
+      <!-- Select Email Template -->
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-foreground">Mẫu Email / Template</label>
+        {#if emailTemplates.length === 0}
+          <p class="text-xs text-muted-foreground bg-muted/40 p-2.5 rounded-lg border border-border">
+            Chưa có kịch bản Email nào. Bạn có thể tạo mẫu thư trong mục Email Outreach.
+          </p>
+        {:else}
+          <select
+            bind:value={selectedEmailTemplateId}
+            class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
+          >
+            {#each emailTemplates as tpl}
+              <option value={tpl.id}>{tpl.name} - {tpl.subject}</option>
+            {/each}
+          </select>
+
+          {#if selectedEmailTemplateId}
+            {@const selectedTpl = emailTemplates.find(t => t.id === selectedEmailTemplateId)}
+            {#if selectedTpl}
+              <div class="p-3 rounded-lg bg-muted/30 border border-border text-xs space-y-1 text-muted-foreground">
+                <span class="font-semibold text-foreground">Tiêu đề: {selectedTpl.subject}</span>
+                <p class="whitespace-pre-wrap truncate max-h-24 overflow-y-auto">{selectedTpl.content}</p>
+              </div>
+            {/if}
+          {/if}
+        {/if}
+      </div>
+
+      <!-- Native mailto Fallback -->
+      {#if lead?.email}
+        <div class="pt-2 border-t border-border flex items-center justify-between">
+          <span class="text-xs text-muted-foreground">Hoặc mở ứng dụng Mail ngoài:</span>
+          <a
+            href="mailto:{lead.email}"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted/60 text-foreground hover:bg-muted text-xs font-medium border border-border transition-colors"
+          >
+            <span>Mở Mail client</span>
+            <ExternalLink class="w-3 h-3" />
+          </a>
+        </div>
+      {/if}
+
+      <Dialog.Footer class="gap-2 pt-2">
+        <Button variant="outline" size="sm" type="button" onclick={() => showSendEmailModal = false} disabled={sendingEmail}>
+          Hủy Bỏ
+        </Button>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={sendingEmail || !selectedSmtpId || !selectedEmailTemplateId}
+          class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold gap-1.5"
+        >
+          {#if sendingEmail}
+            <RefreshCw class="w-3.5 h-3.5 animate-spin" />
+            <span>Đang gửi...</span>
+          {:else}
+            <Send class="w-3.5 h-3.5" />
+            <span>Gửi Email Ngay</span>
+          {/if}
+        </Button>
+      </Dialog.Footer>
+    </form>
+  </Dialog.Content>
+</Dialog.Root>

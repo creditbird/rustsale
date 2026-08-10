@@ -4448,6 +4448,17 @@ pub struct GroupMemberLocalEvidenceDiagnostics {
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMemberGroupLinkDiagnostics {
+    pub attempted: bool,
+    pub pages_attempted: usize,
+    pub pages_succeeded: usize,
+    pub items_inspected: usize,
+    pub committed_uid_count: usize,
+    pub link_retrieved: bool,
+    pub warning: Option<GroupMemberScanWarning>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct GroupMemberProfileHydrationDiagnostics {
     pub attempted: usize,
     pub succeeded: usize,
@@ -4458,6 +4469,7 @@ pub struct GroupMemberProfileHydrationDiagnostics {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct GroupMemberScanDiagnostics {
     pub direct_snapshot: GroupMemberDirectSnapshotDiagnostics,
+    pub group_link: GroupMemberGroupLinkDiagnostics,
     pub board: GroupMemberBoardDiagnostics,
     pub history_backfill: crate::conversation::zalo::supervisor::GroupMessageBackfillReport,
     pub local_evidence: GroupMemberLocalEvidenceDiagnostics,
@@ -5010,8 +5022,103 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
 
     let mut board = GroupMemberBoardDiagnostics::default();
     let mut board_scan_failed = false;
+    let mut group_link = GroupMemberGroupLinkDiagnostics::default();
+
     if let Some(client) = client.as_ref() {
-        board.attempted = true;
+        group_link.attempted = true;
+        match client.fetch_group_link_detail(&external_thread_id).await {
+            Ok(Some(link)) if !link.trim().is_empty() => {
+                group_link.link_retrieved = true;
+                for page in 1..=10 {
+                    group_link.pages_attempted += 1;
+                    match client.fetch_group_link_members(&link, page).await {
+                        Ok(Some((profiles, has_more))) => {
+                            group_link.pages_succeeded += 1;
+                            group_link.items_inspected += profiles.len();
+                            let candidates = profiles
+                                .into_iter()
+                                .map(|profile| ZaloUidCandidate {
+                                    external_id: profile.external_id,
+                                    display_name: profile.display_name,
+                                    avatar_url: profile.avatar_url,
+                                })
+                                .collect::<Vec<_>>();
+                            if !candidates.is_empty() {
+                                match conversation_service
+                                    .repository
+                                    .attach_zalo_uids_to_conversation(conversation_id, &candidates)
+                                {
+                                    Ok(committed) => {
+                                        group_link.committed_uid_count += committed.len();
+                                    }
+                                    Err(error) => {
+                                        let warning = group_member_scan_warning(
+                                            "group_link",
+                                            "persistence_failed",
+                                            Some(format!("page={page}")),
+                                            format!("Failed to persist Group Link Zalo UIDs: {error}"),
+                                        );
+                                        group_link.warning = Some(warning.clone());
+                                        warnings.push(warning);
+                                        break;
+                                    }
+                                }
+                            }
+                            if !has_more {
+                                break;
+                            }
+                        }
+                        Ok(None) | Err(_) => {
+                            if page == 1 {
+                                let warning = group_member_scan_warning(
+                                    "group_link",
+                                    "link_members_unavailable",
+                                    Some(format!("link={link}")),
+                                    "Zalo group link returned no member preview",
+                                );
+                                group_link.warning = Some(warning.clone());
+                                warnings.push(warning);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let warning = group_member_scan_warning(
+                    "group_link",
+                    "link_detail_failed",
+                    Some(format!("conversation_id={conversation_id}")),
+                    format!("Failed to fetch group link detail: {error}"),
+                );
+                group_link.warning = Some(warning.clone());
+                warnings.push(warning);
+            }
+        }
+
+        if let Ok(Some(invite_profiles)) = client
+            .fetch_group_invite_box_members(&external_thread_id, 1)
+            .await
+        {
+            if !invite_profiles.is_empty() {
+                let candidates = invite_profiles
+                    .into_iter()
+                    .map(|profile| ZaloUidCandidate {
+                        external_id: profile.external_id,
+                        display_name: profile.display_name,
+                        avatar_url: profile.avatar_url,
+                    })
+                    .collect::<Vec<_>>();
+                if let Ok(committed) = conversation_service
+                    .repository
+                    .attach_zalo_uids_to_conversation(conversation_id, &candidates)
+                {
+                    group_link.committed_uid_count += committed.len();
+                }
+            }
+        }
+
         match client
             .fetch_group_board_uid_report(&external_thread_id)
             .await
@@ -5243,6 +5350,7 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
         warning,
         diagnostics: GroupMemberScanDiagnostics {
             direct_snapshot,
+            group_link,
             board,
             history_backfill,
             local_evidence,

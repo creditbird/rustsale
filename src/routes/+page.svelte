@@ -15,8 +15,14 @@
   import { AlertCircle, Search, Bell } from 'lucide-svelte';
 
   let activeTab = $state('dashboard');
+  let targetLeadForConversation = $state<{ leadId?: number; phone?: string; name?: string } | null>(null);
   let leads = $state<Lead[]>([]);
   let errorMsg = $state<string | null>(null);
+
+  function handleOpenConversationForLead(lead: { id: number; phone?: string; name?: string }) {
+    targetLeadForConversation = { leadId: lead.id, phone: lead.phone, name: lead.name };
+    activeTab = 'conversation';
+  }
 
   const tabTitles: Record<string, { title: string; subtitle: string }> = {
     dashboard: { title: 'Dashboard System', subtitle: 'Overview KPI statistics and recent lead activity' },
@@ -155,7 +161,7 @@
       {/if}
 
       <div class={activeTab === 'conversation' ? 'h-full' : 'hidden'}>
-        <ConversationWorkspace {activeTab} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
+        <ConversationWorkspace {activeTab} targetLead={targetLeadForConversation} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
       </div>
       <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
         <Dashboard {activeTab} />
@@ -164,10 +170,10 @@
         <GoogleMapsScraper />
       </div>
       <div class={activeTab === 'leads' ? '' : 'hidden'}>
-        <LeadsList leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} />
+        <LeadsList leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
       </div>
       <div class={activeTab === 'contacts' ? '' : 'hidden'}>
-        <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} />
+        <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
       </div>
       <div class={activeTab === 'categories' ? '' : 'hidden'}>
         <CategoryManager {activeTab} />

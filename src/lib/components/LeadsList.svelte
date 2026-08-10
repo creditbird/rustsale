@@ -10,7 +10,11 @@
   import * as Select from '$lib/components/ui/select';
   import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-svelte';
 
-  let { leads = [], onRefresh } = $props<{ leads: Lead[]; onRefresh?: () => void }>();
+  let { leads = [], onRefresh, onOpenConversation } = $props<{
+    leads: Lead[];
+    onRefresh?: () => void;
+    onOpenConversation?: (lead: { id: number; phone?: string; name?: string }) => void;
+  }>();
   let selectedLeadId = $state<number | null>(null);
 
   // Multiselect state
@@ -460,7 +464,17 @@
 
   <!-- Lead Details Modal/Drawer -->
   {#if selectedLeadId !== null}
-    <LeadDetails leadId={selectedLeadId} onClose={() => selectedLeadId = null} onRefresh={onRefresh} />
+    {@const selectedLead = leads.find(l => l.id === selectedLeadId)}
+    <LeadDetails
+      leadId={selectedLeadId}
+      initialLead={selectedLead}
+      onClose={() => selectedLeadId = null}
+      onRefresh={onRefresh}
+      onOpenConversation={(leadPayload) => {
+        if (onOpenConversation) onOpenConversation(leadPayload);
+        selectedLeadId = null;
+      }}
+    />
   {/if}
 </div>
 

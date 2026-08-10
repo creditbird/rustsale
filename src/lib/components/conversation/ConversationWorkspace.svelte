@@ -54,15 +54,23 @@
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
   import ImageGalleryModal, { type GalleryImage } from './ImageGalleryModal.svelte';
   import GroupMembersModal from './GroupMembersModal.svelte';
+  import NewChatDialog from './NewChatDialog.svelte';
 
+  export interface TargetLeadPayload {
+    leadId?: number;
+    phone?: string;
+    name?: string;
+  }
 
   let {
     activeTab = 'conversation',
+    targetLead = null,
     onOpenSettings = () => {},
     onOpenQrLogin = () => {},
     runtimeRefreshIntervalMs = 5_000
   }: {
     activeTab?: string;
+    targetLead?: TargetLeadPayload | null;
     onOpenSettings?: () => void;
     onOpenQrLogin?: (accountKey?: string) => void;
     runtimeRefreshIntervalMs?: number;
@@ -266,6 +274,78 @@
     return () => clearInterval(interval);
   });
 
+  let newChatOpen = $state(false);
+  let newChatInitialPhone = $state('');
+  let newChatInitialName = $state('');
+  let handledTargetLeadKey = $state<string | null>(null);
+
+  function findMatchingInboxItem(lead: TargetLeadPayload): InboxItem | null {
+    if (!lead || inbox.length === 0) return null;
+
+    // 1. Match by leadId
+    if (lead.leadId) {
+      const match = inbox.find((i) => i.leadId === lead.leadId);
+      if (match) return match;
+    }
+
+    // 2. Match by phone number
+    const cleanPhone = lead.phone ? lead.phone.replace(/[^0-9]/g, '') : '';
+    if (cleanPhone && cleanPhone.length >= 6) {
+      const matchPhone = inbox.find((i) => {
+        const titleClean = i.title ? i.title.replace(/[^0-9]/g, '') : '';
+        const keyClean = i.key ? i.key.replace(/[^0-9]/g, '') : '';
+        const participantPhoneMatch = i.participants?.some((p) => {
+          const pNameClean = p.displayName ? p.displayName.replace(/[^0-9]/g, '') : '';
+          return pNameClean && pNameClean.includes(cleanPhone);
+        });
+        return (titleClean && titleClean.includes(cleanPhone)) || (keyClean && keyClean.includes(cleanPhone)) || participantPhoneMatch;
+      });
+      if (matchPhone) return matchPhone;
+    }
+
+    // 3. Match by Lead Name
+    if (lead.name) {
+      const leadNameLower = lead.name.trim().toLowerCase();
+      const matchName = inbox.find((i) => {
+        if (!i.title) return false;
+        const titleLower = i.title.trim().toLowerCase();
+        return titleLower.includes(leadNameLower) || leadNameLower.includes(titleLower);
+      });
+      if (matchName) return matchName;
+    }
+
+    return null;
+  }
+
+  function applyTargetLead(): boolean {
+    const hasValidLead = Boolean(targetLead && (targetLead.leadId || targetLead.phone || targetLead.name));
+    if (!hasValidLead || !targetLead) return false;
+
+    const found = findMatchingInboxItem(targetLead);
+    if (found) {
+      selectItem(found);
+      return true;
+    } else {
+      newChatInitialPhone = targetLead.phone || '';
+      newChatInitialName = targetLead.name || '';
+      newChatOpen = true;
+      return true;
+    }
+  }
+
+  $effect(() => {
+    const hasValidLead = Boolean(targetLead && (targetLead.leadId || targetLead.phone || targetLead.name));
+    if (activeTab === 'conversation' && hasValidLead && targetLead) {
+      const targetKey = `${targetLead.leadId || ''}_${targetLead.phone || ''}_${targetLead.name || ''}`;
+      if (handledTargetLeadKey !== targetKey) {
+        handledTargetLeadKey = targetKey;
+        if (inbox.length > 0) {
+          applyTargetLead();
+        }
+      }
+    }
+  });
+
   // Event Bridge registration
   onMount(() => {
     const cleanupBridge = initConversationEventBridge();
@@ -293,7 +373,9 @@
       if (inboxRes.status === 'fulfilled') {
         inbox = inboxRes.value;
         inboxStale = false;
-        if (!selectedKey && inbox.length > 0) {
+
+        const handledTarget = applyTargetLead();
+        if (!handledTarget && !selectedKey && inbox.length > 0) {
           selectItem(inbox[0]);
         }
       }
@@ -983,5 +1065,11 @@
     conversationId={selectedItem?.conversationId ?? null}
     groupTitle={selectedItem?.title ?? ''}
     onClose={() => (groupMembersModalOpen = false)}
+  />
+  <NewChatDialog
+    bind:open={newChatOpen}
+    initialPhone={newChatInitialPhone}
+    initialDisplayName={newChatInitialName}
+    onSuccess={handleConversationCreated}
   />
 </div>

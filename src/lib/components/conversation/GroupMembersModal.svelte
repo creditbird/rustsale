@@ -73,6 +73,7 @@
     if (!scanResult) return [];
     const warnings = [
       scanResult.diagnostics.direct_snapshot.warning,
+      scanResult.diagnostics.group_link?.warning,
       ...scanResult.diagnostics.board.warnings.map((warning) => ({
         stage: warning.source,
         code: warning.code,
@@ -101,11 +102,16 @@
     const diagnostics = scanResult.diagnostics;
     return [
       `Snapshot chưa đầy đủ (${diagnostics.direct_snapshot.member_count} UID)`,
+      diagnostics.group_link?.attempted
+        ? `Link/Invite ${diagnostics.group_link.committed_uid_count} UID`
+        : null,
       `Board/Poll ${diagnostics.board.pages_succeeded}/${diagnostics.board.pages_attempted} trang`,
       `Lịch sử WebSocket toàn tài khoản: ${diagnostics.history_backfill.outcome}`,
       `Local ${diagnostics.local_evidence.messages_scanned} tin nhắn`,
       `Hồ sơ ${diagnostics.profile_hydration.succeeded}/${diagnostics.profile_hydration.attempted}`
-    ].join(' · ');
+    ]
+      .filter((item): item is string => Boolean(item))
+      .join(' · ');
   });
 
   function getMemberKey(m: GroupMemberDetail): string {

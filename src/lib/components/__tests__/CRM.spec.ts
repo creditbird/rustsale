@@ -1,5 +1,5 @@
 /// <reference types="bun-types" />
-import { mock } from 'bun:test';
+import { mock, beforeEach, test, expect } from 'bun:test';
 
 // Polyfill Element.prototype.animate for JSDOM / Svelte transitions
 if (typeof Element !== 'undefined' && !Element.prototype.animate) {
@@ -30,10 +30,15 @@ if (typeof Element !== 'undefined' && !Element.prototype.animate) {
 }
 
 // Sample mock data
-const mockLeads = [
+const defaultLeads = [
   { id: 1, name: "Alice Smith", company: "Acme Corp", status: "Qualified", value: 5000, last_activity: "2026-07-17", owner: "Self", email: "alice@acme.com", phone: "123-456", about: "Interested in enterprise plan" },
   { id: 2, name: "Bob Jones", company: "Globex", status: "New", value: 2500, last_activity: "2026-07-16", owner: "Self", email: "bob@globex.com", phone: "789-101", about: "Needs custom integrations" }
 ];
+let mockLeads: typeof defaultLeads = [];
+
+beforeEach(() => {
+  mockLeads.splice(0, mockLeads.length, ...JSON.parse(JSON.stringify(defaultLeads)));
+});
 
 const mockDeals = [
   { id: 10, lead_id: 1, title: "Acme Enterprise deal", value: 12000, stage: "Prospecting", created_at: "2026-07-15" },
@@ -96,6 +101,21 @@ mock.module('@tauri-apps/api/core', () => {
         if (index !== -1) {
           mockLeads.splice(index, 1);
         }
+        return Promise.resolve();
+      }
+      if (cmd === 'get_managed_zalo_accounts') {
+        return Promise.resolve([{ accountKey: 'imei_123', displayName: 'Zalo Sale 1', authStatus: 'valid' }]);
+      }
+      if (cmd === 'get_outreach_templates') {
+        return Promise.resolve([{ id: 1, name: 'Chào hàng Zalo', content: 'Xin chào [name]' }]);
+      }
+      if (cmd === 'get_managed_smtp_accounts') {
+        return Promise.resolve([{ id: 1, name: 'Main Sales SMTP', fromEmail: 'sales@acme.com' }]);
+      }
+      if (cmd === 'get_email_templates') {
+        return Promise.resolve([{ id: 1, name: 'Chào hàng Email', subject: 'Thư chào hàng', content: 'Xin chào {{name}}' }]);
+      }
+      if (cmd === 'send_zalo_outreach' || cmd === 'send_email_outreach') {
         return Promise.resolve();
       }
       return Promise.resolve();
@@ -240,4 +260,40 @@ test('deletes a lead with confirmation', async () => {
 
   // Drawer should be closed
   expect(closed).toBe(true);
+});
+
+test('opens Quick Send Zalo modal and sends Zalo outreach', async () => {
+  render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
+  await screen.findByText('Alice Smith');
+
+  const zaloBtn = screen.getByRole('button', { name: 'Gửi Zalo' });
+  await fireEvent.click(zaloBtn);
+
+  const modalTitle = await screen.findByText(/Gửi Tin Nhắn Zalo - Alice Smith/i);
+  expect(modalTitle).toBeTruthy();
+
+  const sendBtn = screen.getByRole('button', { name: 'Gửi Zalo Ngay' });
+  await fireEvent.click(sendBtn);
+
+  // Check activity log recorded
+  const activityText = await screen.findByText(/Đã phát lệnh gửi tin Zalo cho Alice Smith/i);
+  expect(activityText).toBeTruthy();
+});
+
+test('opens Quick Send Email modal and sends email outreach', async () => {
+  render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
+  await screen.findByText('Alice Smith');
+
+  const emailBtn = screen.getByRole('button', { name: 'Gửi Email' });
+  await fireEvent.click(emailBtn);
+
+  const modalTitle = await screen.findByText(/Gửi Email Chăm Sóc - Alice Smith/i);
+  expect(modalTitle).toBeTruthy();
+
+  const sendBtn = screen.getByRole('button', { name: 'Gửi Email Ngay' });
+  await fireEvent.click(sendBtn);
+
+  // Check activity log recorded
+  const activityText = await screen.findByText(/Đã phát lệnh gửi Email tới alice@acme.com/i);
+  expect(activityText).toBeTruthy();
 });
