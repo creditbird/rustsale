@@ -443,7 +443,9 @@ mod tests {
         // Delete by provider_account_key / zalo_uid
         db::delete_zalo_session(&conn, "uid-999").unwrap();
         assert!(db::get_zalo_session(&conn, "uid-999").unwrap().is_none());
-        assert!(db::get_zalo_session(&conn, "imei-uid-test").unwrap().is_none());
+        assert!(db::get_zalo_session(&conn, "imei-uid-test")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

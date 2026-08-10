@@ -32,6 +32,57 @@ pub struct GetListBoardResponse {
     pub count: i64,
 }
 
+fn decode_group_chat_history_payload(
+    raw: Value,
+    self_uid: &str,
+) -> Result<GetGroupChatHistoryResponse, ZaloError> {
+    let mut data: Value = match raw {
+        Value::String(value) => serde_json::from_str(&value)?,
+        value => value,
+    };
+
+    let raw_messages = match data.get_mut("groupMsgs") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(messages)) => std::mem::take(messages),
+        Some(value) => {
+            return Err(ZaloError::PayloadFormat(format!(
+                "group history groupMsgs must be an array, got {}",
+                value
+            )))
+        }
+    };
+
+    let mut group_msgs = Vec::with_capacity(raw_messages.len());
+    for (index, raw_message) in raw_messages.into_iter().enumerate() {
+        let provider_message_id = raw_message
+            .get("msgId")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let parsed = serde_json::from_value::<TGroupMessage>(raw_message).map_err(|error| {
+            ZaloError::PayloadFormat(format!(
+                "failed to decode groupMsgs[{index}] (msgId={provider_message_id}): {error}"
+            ))
+        })?;
+        group_msgs.push(GroupMessage::new(self_uid, parsed));
+    }
+
+    Ok(GetGroupChatHistoryResponse {
+        last_action_id: data
+            .get("lastActionId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        last_action_id_other: data
+            .get("lastActionIdOther")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        more: data.get("more").and_then(Value::as_i64).unwrap_or(0),
+        group_msgs,
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateGroupOptions {
     pub name: Option<String>,
@@ -210,7 +261,12 @@ pub struct GetGroupInviteBoxListResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetGroupInviteBoxInfoResponse {
-    pub invitations: Option<Value>, // Contains invitation list or similar structure
+    pub group_info: Option<GroupInfoWithVer>,
+    pub inviter_info: Option<GroupLinkCurrentMem>,
+    pub gr_creator_info: Option<GroupLinkCurrentMem>,
+    pub expired_ts: Option<Value>,
+    pub r#type: Option<i32>,
+    pub invitations: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1036,48 +1092,41 @@ impl Zalo {
         group_id: &str,
         count: Option<i64>,
     ) -> Result<GetGroupChatHistoryResponse, ZaloError> {
-        let params = serde_json::json!({
+        self.get_group_chat_history_with_cursor(group_id, count, None)
+            .await
+    }
+
+    pub async fn get_group_chat_history_with_cursor(
+        &self,
+        group_id: &str,
+        count: Option<i64>,
+        last_action_id: Option<&str>,
+    ) -> Result<GetGroupChatHistoryResponse, ZaloError> {
+        let mut params = serde_json::json!({
             "grid": group_id,
             "count": count.unwrap_or(50),
         });
+        if let Some(laid) = last_action_id {
+            if !laid.is_empty() {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert(
+                        "lastActionId".to_string(),
+                        serde_json::Value::String(laid.to_string()),
+                    );
+                }
+            }
+        }
 
         let raw: Value = self
             .request_api(Method::GET, "group", "api/group/history", params, true)
             .await?;
-
-        // Zalo sometimes returns the payload as a JSON-encoded string.
-        let mut data: Value = match raw {
-            Value::String(s) => serde_json::from_str(&s)?,
-            other => other,
-        };
 
         let uid = {
             let uid_guard = self.ctx.uid.lock().unwrap_or_else(|e| e.into_inner());
             uid_guard.clone().unwrap_or_default()
         };
 
-        let mut group_msgs = Vec::new();
-        if let Some(arr) = data.get_mut("groupMsgs").and_then(|v| v.as_array_mut()) {
-            for msg_val in arr.drain(..) {
-                let raw_msg: TGroupMessage = serde_json::from_value(msg_val)?;
-                group_msgs.push(GroupMessage::new(&uid, raw_msg));
-            }
-        }
-
-        Ok(GetGroupChatHistoryResponse {
-            last_action_id: data
-                .get("lastActionId")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            last_action_id_other: data
-                .get("lastActionIdOther")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            more: data.get("more").and_then(|v| v.as_i64()).unwrap_or(0),
-            group_msgs,
-        })
+        decode_group_chat_history_payload(raw, &uid)
     }
 
     /// Get list of board items (notes, pinned messages, polls) in a group.
@@ -1120,5 +1169,34 @@ impl Zalo {
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::decode_group_chat_history_payload;
+
+    #[test]
+    fn malformed_group_history_message_fails_the_batch_with_item_context() {
+        let error = decode_group_chat_history_payload(
+            json!({
+                "lastActionId": "cursor-1",
+                "more": 1,
+                "groupMsgs": [
+                    {
+                        "msgId": "broken-message",
+                        "content": {"unexpected": true}
+                    }
+                ]
+            }),
+            "self-uid",
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("groupMsgs[0]"));
+        assert!(message.contains("broken-message"));
     }
 }

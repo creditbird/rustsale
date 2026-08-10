@@ -1,7 +1,7 @@
 use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use zca_rs::listener::ListenerEvent;
 use zca_rs::models::ThreadType;
@@ -28,6 +28,31 @@ const ACCOUNT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const ACCOUNT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 type ConnectedClients =
     Arc<Mutex<HashMap<String, Arc<dyn crate::conversation::zalo::client::ZaloClient>>>>;
+
+const GROUP_MESSAGE_BACKFILL_SCOPE: &str = "account_group_messages";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupMessageBackfillOutcome {
+    Completed,
+    TimedOut,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMessageBackfillReport {
+    pub provider_account_key: String,
+    pub scope: String,
+    pub outcome: GroupMessageBackfillOutcome,
+    pub joined_existing_run: bool,
+    pub pages_requested: usize,
+    pub pages_received: usize,
+    pub start_cursor: Option<String>,
+    pub durable_cursor: Option<String>,
+    pub stop_reason: Option<String>,
+    pub warning: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum HistoryStream {
@@ -103,9 +128,27 @@ impl HistoryStream {
 #[derive(Debug, Default)]
 struct HistoryStreamState {
     pages_requested: usize,
+    total_pages_requested: usize,
+    pages_received: usize,
     last_requested_cursor: Option<String>,
     paused_cursor: Option<String>,
     completed: bool,
+    stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct HistoryStreamSnapshot {
+    pages_requested: usize,
+    pages_received: usize,
+    start_cursor: Option<String>,
+    stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryAdvance {
+    Requested,
+    Paused,
+    Completed,
 }
 
 #[derive(Debug, Default)]
@@ -131,9 +174,12 @@ impl HistoryPaginationState {
                 stream,
                 HistoryStreamState {
                     pages_requested: 1,
+                    total_pages_requested: 1,
+                    pages_received: 0,
                     last_requested_cursor: cursor,
                     paused_cursor: None,
                     completed: false,
+                    stop_reason: None,
                 },
             );
         }
@@ -145,33 +191,91 @@ impl HistoryPaginationState {
         client: &dyn crate::conversation::zalo::client::ZaloClient,
         stream: HistoryStream,
         cursor: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<HistoryAdvance> {
         let state = self.streams.entry(stream).or_default();
         let cursor = cursor.trim();
         if state.completed {
-            return Ok(());
+            return Ok(HistoryAdvance::Completed);
         }
-        if cursor.is_empty() || state.last_requested_cursor.as_deref() == Some(cursor) {
+        if cursor.is_empty() {
             state.completed = true;
             state.paused_cursor = None;
-            return Ok(());
+            state.stop_reason = Some("empty_cursor".to_string());
+            return Ok(HistoryAdvance::Completed);
+        }
+        if state.last_requested_cursor.as_deref() == Some(cursor) {
+            state.completed = true;
+            state.paused_cursor = None;
+            state.stop_reason = Some("repeated_cursor".to_string());
+            return Ok(HistoryAdvance::Completed);
         }
         if state.pages_requested >= MAX_HISTORY_PAGES {
             state.paused_cursor = Some(cursor.to_string());
-            return Ok(());
+            return Ok(HistoryAdvance::Paused);
         }
 
         stream.request(client, Some(cursor))?;
         state.pages_requested += 1;
+        state.total_pages_requested += 1;
         state.last_requested_cursor = Some(cursor.to_string());
         state.paused_cursor = None;
-        Ok(())
+        Ok(HistoryAdvance::Requested)
     }
 
-    fn complete(&mut self, stream: HistoryStream) {
+    fn complete(&mut self, stream: HistoryStream, reason: &str) {
         let state = self.streams.entry(stream).or_default();
         state.completed = true;
         state.paused_cursor = None;
+        state.stop_reason = Some(reason.to_string());
+    }
+
+    fn note_page_received(&mut self, stream: HistoryStream) {
+        self.streams.entry(stream).or_default().pages_received += 1;
+    }
+
+    fn is_active(&self, stream: HistoryStream) -> bool {
+        self.streams
+            .get(&stream)
+            .is_some_and(|state| !state.completed)
+    }
+
+    fn snapshot(&self, stream: HistoryStream) -> HistoryStreamSnapshot {
+        let state = self.streams.get(&stream);
+        HistoryStreamSnapshot {
+            pages_requested: state.map_or(0, |value| value.total_pages_requested),
+            pages_received: state.map_or(0, |value| value.pages_received),
+            start_cursor: state.and_then(|value| value.last_requested_cursor.clone()),
+            stop_reason: state.and_then(|value| value.stop_reason.clone()),
+        }
+    }
+
+    fn rearm(
+        &mut self,
+        client: &dyn crate::conversation::zalo::client::ZaloClient,
+        service: &ConversationService,
+        account_id: i64,
+        stream: HistoryStream,
+    ) -> anyhow::Result<HistoryStreamSnapshot> {
+        let cursor = stream.initial_cursor(service, account_id)?;
+        stream.request(client, cursor.as_deref())?;
+        self.streams.insert(
+            stream,
+            HistoryStreamState {
+                pages_requested: 1,
+                total_pages_requested: 1,
+                pages_received: 0,
+                last_requested_cursor: cursor.clone(),
+                paused_cursor: None,
+                completed: false,
+                stop_reason: None,
+            },
+        );
+        Ok(HistoryStreamSnapshot {
+            pages_requested: 1,
+            pages_received: 0,
+            start_cursor: cursor,
+            stop_reason: None,
+        })
     }
 
     fn resume_paused(
@@ -192,6 +296,7 @@ impl HistoryPaginationState {
             stream.request(client, Some(&cursor))?;
             let state = self.streams.entry(stream).or_default();
             state.pages_requested = 1;
+            state.total_pages_requested += 1;
             state.last_requested_cursor = Some(cursor);
             state.paused_cursor = None;
             resumed += 1;
@@ -259,6 +364,34 @@ fn mark_account_degraded(
 struct SessionTask {
     cancellation: CancellationToken,
     handle: tokio::task::JoinHandle<()>,
+    control_tx: mpsc::Sender<SupervisorControl>,
+}
+
+struct GroupMessageBackfillCompletion {
+    outcome: GroupMessageBackfillOutcome,
+    pages_requested: usize,
+    pages_received: usize,
+    durable_cursor: Option<String>,
+    stop_reason: Option<String>,
+    warning: Option<String>,
+}
+
+struct GroupMessageBackfillRegistration {
+    joined_existing_run: bool,
+    account_id: i64,
+    initial: HistoryStreamSnapshot,
+    completion_rx: oneshot::Receiver<GroupMessageBackfillCompletion>,
+}
+
+enum SupervisorControl {
+    BackfillGroupMessages {
+        registration_tx: oneshot::Sender<Result<GroupMessageBackfillRegistration, String>>,
+    },
+}
+
+struct ActiveGroupMessageBackfill {
+    account_id: i64,
+    waiters: Vec<oneshot::Sender<GroupMessageBackfillCompletion>>,
 }
 
 pub struct ZaloSessionSupervisor {
@@ -375,9 +508,10 @@ impl ZaloSessionSupervisor {
         let service = self.service.clone();
         let factory = self.factory.clone();
         let clients = self.clients.clone();
+        let (control_tx, control_rx) = mpsc::channel(16);
 
         let handle = tokio::spawn(async move {
-            run_session_loop(service, factory, clients, session, task_cancel).await;
+            run_session_loop(service, factory, clients, session, task_cancel, control_rx).await;
         });
 
         tasks.insert(
@@ -385,6 +519,7 @@ impl ZaloSessionSupervisor {
             SessionTask {
                 cancellation,
                 handle,
+                control_tx,
             },
         );
     }
@@ -439,9 +574,10 @@ impl ZaloSessionSupervisor {
         let service = self.service.clone();
         let factory = self.factory.clone();
         let clients = self.clients.clone();
+        let (control_tx, control_rx) = mpsc::channel(16);
 
         let handle = tokio::spawn(async move {
-            run_session_loop(service, factory, clients, session, task_cancel).await;
+            run_session_loop(service, factory, clients, session, task_cancel, control_rx).await;
         });
 
         self.tasks.lock().await.insert(
@@ -449,6 +585,7 @@ impl ZaloSessionSupervisor {
             SessionTask {
                 cancellation,
                 handle,
+                control_tx,
             },
         );
 
@@ -540,6 +677,143 @@ impl ZaloSessionSupervisor {
     pub async fn runtime_status(&self) -> anyhow::Result<ConversationRuntimeStatus> {
         self.service.runtime_status()
     }
+
+    pub async fn backfill_group_messages(
+        &self,
+        provider_account_key: &str,
+        timeout: std::time::Duration,
+    ) -> GroupMessageBackfillReport {
+        let unavailable = |warning: String| GroupMessageBackfillReport {
+            provider_account_key: provider_account_key.to_string(),
+            scope: GROUP_MESSAGE_BACKFILL_SCOPE.to_string(),
+            outcome: GroupMessageBackfillOutcome::Unavailable,
+            joined_existing_run: false,
+            pages_requested: 0,
+            pages_received: 0,
+            start_cursor: None,
+            durable_cursor: None,
+            stop_reason: Some("session_unavailable".to_string()),
+            warning: Some(warning),
+        };
+
+        if self.connected_client(provider_account_key).await.is_none() {
+            return unavailable(format!(
+                "Zalo account {provider_account_key} is not connected"
+            ));
+        }
+
+        let control_tx = {
+            let tasks = self.tasks.lock().await;
+            tasks
+                .get(provider_account_key)
+                .map(|task| task.control_tx.clone())
+        };
+        let Some(control_tx) = control_tx else {
+            return unavailable(format!(
+                "Zalo account {provider_account_key} has no running supervisor task"
+            ));
+        };
+
+        let started_at = tokio::time::Instant::now();
+        let (registration_tx, registration_rx) = oneshot::channel();
+        if control_tx
+            .send(SupervisorControl::BackfillGroupMessages { registration_tx })
+            .await
+            .is_err()
+        {
+            return unavailable(format!(
+                "Zalo account {provider_account_key} supervisor control channel is closed"
+            ));
+        }
+
+        let registration = match tokio::time::timeout(timeout, registration_rx).await {
+            Ok(Ok(Ok(registration))) => registration,
+            Ok(Ok(Err(error))) => {
+                return GroupMessageBackfillReport {
+                    provider_account_key: provider_account_key.to_string(),
+                    scope: GROUP_MESSAGE_BACKFILL_SCOPE.to_string(),
+                    outcome: GroupMessageBackfillOutcome::Failed,
+                    joined_existing_run: false,
+                    pages_requested: 0,
+                    pages_received: 0,
+                    start_cursor: None,
+                    durable_cursor: None,
+                    stop_reason: Some("start_failed".to_string()),
+                    warning: Some(error),
+                }
+            }
+            Ok(Err(_)) => {
+                return unavailable(format!(
+                    "Zalo account {provider_account_key} supervisor stopped before accepting backfill"
+                ));
+            }
+            Err(_) => {
+                return GroupMessageBackfillReport {
+                    provider_account_key: provider_account_key.to_string(),
+                    scope: GROUP_MESSAGE_BACKFILL_SCOPE.to_string(),
+                    outcome: GroupMessageBackfillOutcome::TimedOut,
+                    joined_existing_run: false,
+                    pages_requested: 0,
+                    pages_received: 0,
+                    start_cursor: None,
+                    durable_cursor: None,
+                    stop_reason: Some("accept_timeout".to_string()),
+                    warning: Some("Timed out waiting for supervisor acceptance".to_string()),
+                }
+            }
+        };
+
+        let elapsed = started_at.elapsed();
+        let remaining = timeout.saturating_sub(elapsed);
+        let durable_cursor = || {
+            self.service
+                .repository
+                .get_checkpoint(registration.account_id, GROUP_MESSAGE_HISTORY_SCOPE)
+                .ok()
+                .flatten()
+        };
+
+        match tokio::time::timeout(remaining, registration.completion_rx).await {
+            Ok(Ok(completion)) => GroupMessageBackfillReport {
+                provider_account_key: provider_account_key.to_string(),
+                scope: GROUP_MESSAGE_BACKFILL_SCOPE.to_string(),
+                outcome: completion.outcome,
+                joined_existing_run: registration.joined_existing_run,
+                pages_requested: completion.pages_requested,
+                pages_received: completion.pages_received,
+                start_cursor: registration.initial.start_cursor,
+                durable_cursor: completion.durable_cursor,
+                stop_reason: completion.stop_reason,
+                warning: completion.warning,
+            },
+            Ok(Err(_)) => GroupMessageBackfillReport {
+                provider_account_key: provider_account_key.to_string(),
+                scope: GROUP_MESSAGE_BACKFILL_SCOPE.to_string(),
+                outcome: GroupMessageBackfillOutcome::Failed,
+                joined_existing_run: registration.joined_existing_run,
+                pages_requested: registration.initial.pages_requested,
+                pages_received: registration.initial.pages_received,
+                start_cursor: registration.initial.start_cursor,
+                durable_cursor: durable_cursor(),
+                stop_reason: Some("session_stopped".to_string()),
+                warning: Some("Supervisor stopped before history backfill completed".to_string()),
+            },
+            Err(_) => GroupMessageBackfillReport {
+                provider_account_key: provider_account_key.to_string(),
+                scope: GROUP_MESSAGE_BACKFILL_SCOPE.to_string(),
+                outcome: GroupMessageBackfillOutcome::TimedOut,
+                joined_existing_run: registration.joined_existing_run,
+                pages_requested: registration.initial.pages_requested,
+                pages_received: registration.initial.pages_received,
+                start_cursor: registration.initial.start_cursor,
+                durable_cursor: durable_cursor(),
+                stop_reason: Some("timeout".to_string()),
+                warning: Some(
+                    "Timed out waiting for account-wide Zalo group history backfill".to_string(),
+                ),
+            },
+        }
+    }
 }
 
 async fn run_session_loop(
@@ -548,6 +822,7 @@ async fn run_session_loop(
     connected_clients: ConnectedClients,
     session: ZaloSession,
     cancellation: CancellationToken,
+    mut control_rx: mpsc::Receiver<SupervisorControl>,
 ) {
     let imei = session.imei.clone();
     let mut provider_account_key = session.provider_account_key().to_string();
@@ -729,6 +1004,7 @@ async fn run_session_loop(
             };
 
         let mut profile_sync_handle: Option<tokio::task::JoinHandle<()>> = None;
+        let mut active_group_backfill: Option<ActiveGroupMessageBackfill> = None;
 
         // 6.5 Run initial profile enrichment sync for unresolved identities
         if let Some(acc_id) = account_id {
@@ -806,6 +1082,14 @@ async fn run_session_loop(
                 }
                 _ = history_ticker.tick() => {
                     if let Err(error) = pagination.resume_paused(client.as_ref()) {
+                        finish_group_message_backfill(
+                            &mut active_group_backfill,
+                            &pagination,
+                            service.as_ref(),
+                            GroupMessageBackfillOutcome::Failed,
+                            Some("request_failed".to_string()),
+                            Some(error.to_string()),
+                        );
                         mark_account_degraded(
                             service.as_ref(),
                             &provider_account_key,
@@ -813,6 +1097,62 @@ async fn run_session_loop(
                         );
                         client.stop();
                         break true;
+                    }
+                }
+                control = control_rx.recv() => {
+                    let Some(control) = control else {
+                        continue;
+                    };
+                    match control {
+                        SupervisorControl::BackfillGroupMessages { registration_tx } => {
+                            let Some(account_id) = account_id else {
+                                let _ = registration_tx.send(Err(
+                                    "Missing channel account ID during history backfill".to_string(),
+                                ));
+                                continue;
+                            };
+
+                            let (completion_tx, completion_rx) = oneshot::channel();
+                            let (joined_existing_run, initial) = if let Some(active) =
+                                active_group_backfill.as_mut()
+                            {
+                                active.waiters.push(completion_tx);
+                                (true, pagination.snapshot(HistoryStream::GroupMessages))
+                            } else if pagination.is_active(HistoryStream::GroupMessages) {
+                                let initial = pagination.snapshot(HistoryStream::GroupMessages);
+                                active_group_backfill = Some(ActiveGroupMessageBackfill {
+                                    account_id,
+                                    waiters: vec![completion_tx],
+                                });
+                                (true, initial)
+                            } else {
+                                match pagination.rearm(
+                                    client.as_ref(),
+                                    service.as_ref(),
+                                    account_id,
+                                    HistoryStream::GroupMessages,
+                                ) {
+                                    Ok(initial) => {
+                                        active_group_backfill = Some(ActiveGroupMessageBackfill {
+                                            account_id,
+                                            waiters: vec![completion_tx],
+                                        });
+                                        (false, initial)
+                                    }
+                                    Err(error) => {
+                                        let _ = registration_tx.send(Err(error.to_string()));
+                                        continue;
+                                    }
+                                }
+                            };
+
+                            let _ = registration_tx.send(Ok(GroupMessageBackfillRegistration {
+                                joined_existing_run,
+                                account_id,
+                                initial,
+                                completion_rx,
+                            }));
+                        }
                     }
                 }
                 res = rx.recv() => {
@@ -842,6 +1182,18 @@ async fn run_session_loop(
                                 display_name,
                                 event,
                             ) {
+                                if history_batch.as_ref().is_some_and(|batch| {
+                                    batch.stream == HistoryStream::GroupMessages
+                                }) {
+                                    finish_group_message_backfill(
+                                        &mut active_group_backfill,
+                                        &pagination,
+                                        service.as_ref(),
+                                        GroupMessageBackfillOutcome::Failed,
+                                        Some("ingest_failed".to_string()),
+                                        Some(error.to_string()),
+                                    );
+                                }
                                 mark_account_degraded(
                                     service.as_ref(),
                                     &provider_account_key,
@@ -853,6 +1205,7 @@ async fn run_session_loop(
 
                             // 11. Trigger next page request if pagination state machine derived next_cursor
                             if let Some(batch) = history_batch {
+                                pagination.note_page_received(batch.stream);
                                 if let Some(cursor) = batch.cursor {
                                     let Some(account_id) = account_id else {
                                         let error = anyhow::anyhow!("Missing channel account ID during history backfill");
@@ -877,30 +1230,81 @@ async fn run_session_loop(
                                         client.stop();
                                         break true;
                                     }
-                                    if let Err(error) = pagination.request_next(
+                                    let advance = match pagination.request_next(
                                         client.as_ref(),
                                         batch.stream,
                                         &cursor,
                                     ) {
-                                        mark_account_degraded(
+                                        Ok(advance) => advance,
+                                        Err(error) => {
+                                            if batch.stream == HistoryStream::GroupMessages {
+                                                finish_group_message_backfill(
+                                                    &mut active_group_backfill,
+                                                    &pagination,
+                                                    service.as_ref(),
+                                                    GroupMessageBackfillOutcome::Failed,
+                                                    Some("request_failed".to_string()),
+                                                    Some(error.to_string()),
+                                                );
+                                            }
+                                            mark_account_degraded(
+                                                service.as_ref(),
+                                                &provider_account_key,
+                                                &error,
+                                            );
+                                            client.stop();
+                                            break true;
+                                        }
+                                    };
+                                    if batch.stream == HistoryStream::GroupMessages
+                                        && advance == HistoryAdvance::Completed
+                                    {
+                                        finish_group_message_backfill(
+                                            &mut active_group_backfill,
+                                            &pagination,
                                             service.as_ref(),
-                                            &provider_account_key,
-                                            &error,
+                                            GroupMessageBackfillOutcome::Completed,
+                                            None,
+                                            None,
                                         );
-                                        client.stop();
-                                        break true;
                                     }
                                 } else {
-                                    pagination.complete(batch.stream);
+                                    pagination.complete(batch.stream, "empty_page");
+                                    if batch.stream == HistoryStream::GroupMessages {
+                                        finish_group_message_backfill(
+                                            &mut active_group_backfill,
+                                            &pagination,
+                                            service.as_ref(),
+                                            GroupMessageBackfillOutcome::Completed,
+                                            None,
+                                            None,
+                                        );
+                                    }
                                 }
                             }
 
                             if is_disconnecting {
+                                finish_group_message_backfill(
+                                    &mut active_group_backfill,
+                                    &pagination,
+                                    service.as_ref(),
+                                    GroupMessageBackfillOutcome::Failed,
+                                    Some("session_disconnected".to_string()),
+                                    Some("Zalo session disconnected during history backfill".to_string()),
+                                );
                                 client.stop();
                                 break true;
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            finish_group_message_backfill(
+                                &mut active_group_backfill,
+                                &pagination,
+                                service.as_ref(),
+                                GroupMessageBackfillOutcome::Failed,
+                                Some("receiver_lagged".to_string()),
+                                Some("Zalo listener receiver lagged during history backfill".to_string()),
+                            );
                             // 12. On Lagged, request direct/group reconciliation and mark account degraded
                             let _ = service.repository.set_account_status(
                                 &provider_account_key,
@@ -926,6 +1330,14 @@ async fn run_session_loop(
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            finish_group_message_backfill(
+                                &mut active_group_backfill,
+                                &pagination,
+                                service.as_ref(),
+                                GroupMessageBackfillOutcome::Failed,
+                                Some("event_stream_closed".to_string()),
+                                Some("Zalo listener event stream closed during history backfill".to_string()),
+                            );
                             client.stop();
                             break true;
                         }
@@ -950,6 +1362,44 @@ async fn run_session_loop(
             }
             backoff_secs = (backoff_secs * 2).min(30);
         }
+    }
+}
+
+fn finish_group_message_backfill(
+    active: &mut Option<ActiveGroupMessageBackfill>,
+    pagination: &HistoryPaginationState,
+    service: &ConversationService,
+    outcome: GroupMessageBackfillOutcome,
+    stop_reason: Option<String>,
+    warning: Option<String>,
+) {
+    let Some(active) = active.take() else {
+        return;
+    };
+    let snapshot = pagination.snapshot(HistoryStream::GroupMessages);
+    let durable_cursor = service
+        .repository
+        .get_checkpoint(active.account_id, GROUP_MESSAGE_HISTORY_SCOPE)
+        .ok()
+        .flatten();
+    let completion = GroupMessageBackfillCompletion {
+        outcome,
+        pages_requested: snapshot.pages_requested,
+        pages_received: snapshot.pages_received,
+        durable_cursor,
+        stop_reason: stop_reason.or(snapshot.stop_reason),
+        warning,
+    };
+
+    for waiter in active.waiters {
+        let _ = waiter.send(GroupMessageBackfillCompletion {
+            outcome: completion.outcome.clone(),
+            pages_requested: completion.pages_requested,
+            pages_received: completion.pages_received,
+            durable_cursor: completion.durable_cursor.clone(),
+            stop_reason: completion.stop_reason.clone(),
+            warning: completion.warning.clone(),
+        });
     }
 }
 

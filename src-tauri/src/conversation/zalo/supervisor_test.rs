@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use zca_rs::listener::ListenerEvent;
 use zca_rs::models::{
-    EventReactions, Message, Reaction, TReaction, TReactionContent, TReactionMsg, ThreadType,
-    UserMessage,
+    EventReactions, GroupMessage, Message, Reaction, TGroupMessage, TReaction, TReactionContent,
+    TReactionMsg, ThreadType, UserMessage,
 };
 
 use crate::conversation::events::{ConversationEventPublisher, ConversationInvalidationReason};
@@ -14,7 +14,7 @@ use crate::conversation::repository::ConversationRepository;
 use crate::conversation::service::ConversationService;
 use crate::conversation::zalo::client::{ZaloClient, ZaloClientFactory};
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
-use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+use crate::conversation::zalo::supervisor::{GroupMessageBackfillOutcome, ZaloSessionSupervisor};
 use crate::models::ZaloSession;
 
 pub fn direct_listener_event(msg_id: &str) -> ListenerEvent {
@@ -63,6 +63,30 @@ fn direct_old_messages_event(message_ids: &[&str]) -> ListenerEvent {
     }
 }
 
+fn group_old_messages_event(message_ids: &[&str]) -> ListenerEvent {
+    let messages = message_ids
+        .iter()
+        .map(|message_id| match direct_listener_event(message_id) {
+            ListenerEvent::Message(message) => match *message {
+                Message::User(message) => Message::Group(GroupMessage::new(
+                    "self-uid",
+                    TGroupMessage {
+                        base: message.data,
+                        mentions: None,
+                    },
+                )),
+                Message::Group(_) => unreachable!(),
+            },
+            _ => unreachable!(),
+        })
+        .collect();
+
+    ListenerEvent::OldMessages {
+        messages,
+        thread_type: ThreadType::Group,
+    }
+}
+
 fn direct_old_reactions_event(page_ids: &[&str]) -> ListenerEvent {
     let reactions = page_ids
         .iter()
@@ -103,7 +127,14 @@ fn direct_old_reactions_event(page_ids: &[&str]) -> ListenerEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapturedHistoryRequestKind {
+    Messages,
+    Reactions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedHistoryRequest {
+    pub kind: CapturedHistoryRequestKind,
     pub thread_type: ThreadType,
     pub cursor: Option<String>,
 }
@@ -151,6 +182,7 @@ impl ZaloClient for HarnessClient {
             .lock()
             .unwrap()
             .push(CapturedHistoryRequest {
+                kind: CapturedHistoryRequestKind::Messages,
                 thread_type,
                 cursor: cursor.map(str::to_string),
             });
@@ -166,6 +198,7 @@ impl ZaloClient for HarnessClient {
             .lock()
             .unwrap()
             .push(CapturedHistoryRequest {
+                kind: CapturedHistoryRequestKind::Reactions,
                 thread_type,
                 cursor: cursor.map(str::to_string),
             });
@@ -920,4 +953,163 @@ async fn stop_account_terminates_session_task_and_removes_from_supervisor() {
     harness.supervisor.restart_account("imei-a").await.unwrap();
     harness.factory.wait_for_connect_count("imei-a", 2).await;
     harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn explicit_group_history_backfill_rearms_completed_stream() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+
+    harness
+        .factory
+        .emit("imei-a", group_old_messages_event(&[]))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    let supervisor = harness.supervisor.clone();
+    let backfill = tokio::spawn(async move {
+        supervisor
+            .backfill_group_messages("imei-a", std::time::Duration::from_secs(1))
+            .await
+    });
+
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 5)
+        .await;
+    harness
+        .factory
+        .emit("imei-a", group_old_messages_event(&[]))
+        .await;
+
+    let report = backfill.await.unwrap();
+    assert_eq!(report.outcome, GroupMessageBackfillOutcome::Completed);
+    assert!(!report.joined_existing_run);
+    assert_eq!(report.pages_requested, 1);
+    assert_eq!(report.pages_received, 1);
+    assert_eq!(report.stop_reason.as_deref(), Some("empty_page"));
+
+    let requests = harness.factory.history_requests("imei-a").await;
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| {
+                request.kind == CapturedHistoryRequestKind::Messages
+                    && request.thread_type == ThreadType::Group
+            })
+            .count(),
+        2
+    );
+
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn concurrent_group_history_backfills_join_one_supervisor_run() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+    harness
+        .factory
+        .emit("imei-a", group_old_messages_event(&[]))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    let first_supervisor = harness.supervisor.clone();
+    let first = tokio::spawn(async move {
+        first_supervisor
+            .backfill_group_messages("imei-a", std::time::Duration::from_secs(1))
+            .await
+    });
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 5)
+        .await;
+
+    let second_supervisor = harness.supervisor.clone();
+    let second = tokio::spawn(async move {
+        second_supervisor
+            .backfill_group_messages("imei-a", std::time::Duration::from_secs(1))
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    assert_eq!(harness.factory.history_requests("imei-a").await.len(), 5);
+
+    harness
+        .factory
+        .emit("imei-a", group_old_messages_event(&[]))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    let first_report = first.await.unwrap();
+    let second_report = second.await.unwrap();
+    assert_eq!(first_report.outcome, GroupMessageBackfillOutcome::Completed);
+    assert_eq!(
+        second_report.outcome,
+        GroupMessageBackfillOutcome::Completed
+    );
+    assert_ne!(
+        first_report.joined_existing_run,
+        second_report.joined_existing_run
+    );
+
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn group_history_backfill_timeout_is_bounded_and_keeps_run_alive() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    harness
+        .factory
+        .wait_for_history_request_count("imei-a", 4)
+        .await;
+    harness
+        .factory
+        .emit("imei-a", group_old_messages_event(&[]))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    let report = harness
+        .supervisor
+        .backfill_group_messages("imei-a", std::time::Duration::from_millis(50))
+        .await;
+    assert_eq!(report.outcome, GroupMessageBackfillOutcome::TimedOut);
+    assert_eq!(report.pages_requested, 1);
+
+    harness
+        .factory
+        .emit("imei-a", group_old_messages_event(&[]))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    assert!(harness
+        .supervisor
+        .connected_client("imei-a")
+        .await
+        .is_some());
+
+    harness.supervisor.stop_account("imei-a").await;
+}
+
+#[tokio::test]
+async fn group_history_backfill_reports_unavailable_without_running_session() {
+    let harness = SupervisorHarness::new().await;
+
+    let report = harness
+        .supervisor
+        .backfill_group_messages("imei-a", std::time::Duration::from_millis(50))
+        .await;
+
+    assert_eq!(report.outcome, GroupMessageBackfillOutcome::Unavailable);
+    assert!(report.warning.is_some());
 }

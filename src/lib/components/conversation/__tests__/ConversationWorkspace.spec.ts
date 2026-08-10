@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 import { afterEach, beforeAll, describe, expect, test, mock } from 'bun:test';
-import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type {
   InboxItem,
@@ -338,6 +338,75 @@ const mockRetryConversationForwardTarget = mock(async (_request: any) => ({
   errorCode: null,
   errorMessage: null
 }));
+const mockGetGroupMembersUnrestricted = mock(async (_conversationId: number) => [
+  {
+    identity_id: 1,
+    external_id: 'uid-a',
+    display_name: 'Member A',
+    avatar_url: null,
+    participant_role: 'member',
+    lead_id: null,
+    lead_name: null,
+    categories: []
+  }
+]);
+const mockSyncAndDeepScanGroupMembers = mock(async (_conversationId: number) => ({
+  members: [],
+  discovered_count: 0,
+  profile_hydrated_count: 0,
+  membership_complete: false,
+  pages_attempted: 0,
+  pages_succeeded: 0,
+  messages_scanned: 0,
+  stop_reason: null,
+  warning: null,
+  diagnostics: {
+    direct_snapshot: { attempted: false, complete: false, member_count: 0, warning: null },
+    board: {
+      attempted: false,
+      pages_attempted: 0,
+      pages_succeeded: 0,
+      items_inspected: 0,
+      polls_attempted: 0,
+      polls_succeeded: 0,
+      committed_uid_count: 0,
+      stop_reason: null,
+      warnings: []
+    },
+    history_backfill: {
+      provider_account_key: 'zalo-1',
+      scope: 'account_group_messages',
+      outcome: 'unavailable',
+      joined_existing_run: false,
+      pages_requested: 0,
+      pages_received: 0,
+      start_cursor: null,
+      durable_cursor: null,
+      stop_reason: null,
+      warning: null
+    },
+    local_evidence: {
+      messages_scanned: 0,
+      participant_uid_count: 0,
+      sender_uid_count: 0,
+      mention_uid_count: 0,
+      reaction_uid_count: 0,
+      quote_owner_uid_count: 0,
+      total_uid_count: 0,
+      committed_uid_count: 0,
+      rejected_uid_count: 0
+    },
+    profile_hydration: { attempted: 0, succeeded: 0, failed: 0, warnings: [] },
+    partial_result: true,
+    warnings: []
+  }
+}));
+const mockBatchImportGroupMembersToLeads = mock(async (_request: unknown) => ({
+  imported_count: 0,
+  updated_count: 0,
+  skipped_count: 0,
+  assigned_category_ids: []
+}));
 
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
@@ -363,7 +432,13 @@ mock.module('$lib/services/conversationService', () => ({
   setConversationReaction: (request: SetConversationReactionRequest) => mockSetConversationReaction(request),
   forwardConversationMessage: (request: any) => mockForwardConversationMessage(request),
   retryConversationForwardTarget: (request: any) => mockRetryConversationForwardTarget(request),
-  linkConversationIdentity: mock(async () => {})
+  linkConversationIdentity: mock(async () => {}),
+  getGroupMembersUnrestricted: (conversationId: number) =>
+    mockGetGroupMembersUnrestricted(conversationId),
+  syncAndDeepScanGroupMembers: (conversationId: number) =>
+    mockSyncAndDeepScanGroupMembers(conversationId),
+  batchImportGroupMembersToLeads: (request: unknown) =>
+    mockBatchImportGroupMembersToLeads(request)
 }));
 
 mock.module('$lib/services/crmService', () => ({
@@ -389,6 +464,9 @@ describe('ConversationWorkspace Component', () => {
     mockSendConversationBatch.mockClear();
     mockRecallConversationMessage.mockClear();
     mockSetConversationReaction.mockClear();
+    mockGetGroupMembersUnrestricted.mockClear();
+    mockSyncAndDeepScanGroupMembers.mockClear();
+    mockBatchImportGroupMembersToLeads.mockClear();
   });
 
   test('1. Mounting while activeTab !== "conversation" does not load inbox/runtime data', async () => {
@@ -464,6 +542,31 @@ describe('ConversationWorkspace Component', () => {
 
     expect(mockGetConversationTimeline).toHaveBeenCalledWith(30, null, 50);
     expect(screen.queryByText('Không có kênh nào đang được hiển thị')).toBeNull();
+  });
+
+  test('4b. Group member dialog traps focus, closes with Escape, and restores the trigger', async () => {
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await fireEvent.click(screen.getByText('Nhóm VIP'));
+    await tick();
+    const trigger = screen.getByRole('button', { name: /3 thành viên/ });
+    trigger.focus();
+    await fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Nhóm VIP' });
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+    const dialogButtons = within(dialog).getAllByRole('button');
+    const lastButton = dialogButtons.at(-1) as HTMLButtonElement;
+    lastButton.focus();
+    await fireEvent.keyDown(lastButton, { key: 'Tab' });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    await fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Nhóm VIP' })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
   });
 
   test('5. Toggling badge filters loaded messages immediately and uses separate cache under channelSetKey', async () => {

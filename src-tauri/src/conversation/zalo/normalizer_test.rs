@@ -118,6 +118,60 @@ fn outbound_group_message_does_not_assign_customer_sender_identity() {
 }
 
 #[test]
+fn numeric_quote_ids_preserve_quote_owner_identity() {
+    let raw: TMessage = serde_json::from_value(json!({
+        "actionId": "action-quote",
+        "msgId": "message-quote",
+        "cliMsgId": "client-message-quote",
+        "msgType": "webchat",
+        "uidFrom": "peer-uid",
+        "idTo": "group-quote",
+        "dName": "Probe Sender",
+        "ts": "1785456000000",
+        "status": 1,
+        "content": "reply",
+        "notify": "",
+        "ttl": 0,
+        "userId": "",
+        "uin": "",
+        "propertyExt": null,
+        "paramsExt": {"countUnread": 1, "containType": 0, "platformType": 1},
+        "cmd": 501,
+        "st": 0,
+        "at": 0,
+        "realMsgId": "real-message-quote",
+        "quote": {
+            "ownerId": "quote-owner-uid",
+            "cliMsgId": 12345,
+            "globalMsgId": 67890,
+            "cliMsgType": 1,
+            "ts": 1785455000000_u64,
+            "msg": "quoted",
+            "attach": "",
+            "fromD": "Quote Owner",
+            "ttl": 0
+        }
+    }))
+    .unwrap();
+    let event = ListenerEvent::Message(Box::new(Message::Group(GroupMessage::new(
+        "self-uid",
+        TGroupMessage {
+            base: raw,
+            mentions: None,
+        },
+    ))));
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+    let reply = message.reply.as_ref().expect("quote must normalize");
+    assert_eq!(reply.provider_message_id, "67890");
+    assert_eq!(reply.provider_client_message_id, "12345");
+    assert_eq!(reply.sender_external_id, "quote-owner-uid");
+}
+
+#[test]
 fn reaction_event_normalizes_correctly() {
     let reaction_data = TReaction {
         action_id: "act-1".to_string(),

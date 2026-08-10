@@ -75,6 +75,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "channel_accounts", "self_external_id", "TEXT")?;
     add_column_if_missing(conn, "messages", "send_batch_id", "TEXT")?;
     add_column_if_missing(conn, "messages", "batch_index", "INTEGER")?;
+    add_column_if_missing(
+        conn,
+        "messages",
+        "reply_sender_identity_id",
+        "INTEGER REFERENCES channel_identities(id) ON DELETE SET NULL",
+    )?;
     ensure_zalo_session_schema(conn)?;
     add_column_if_missing(
         conn,
@@ -104,6 +110,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_provider_client_unique
            ON messages(conversation_id, provider_client_message_id)
            WHERE provider_client_message_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_messages_reply_sender_identity
+           ON messages(reply_sender_identity_id)
+           WHERE reply_sender_identity_id IS NOT NULL;
          CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_accounts_zalo_self_ext_id
            ON channel_accounts(self_external_id)
            WHERE channel = 'zalo' AND self_external_id IS NOT NULL AND self_external_id != '';",

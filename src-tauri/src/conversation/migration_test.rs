@@ -607,6 +607,50 @@ fn phase2a_migration_creates_mentions_table() {
 }
 
 #[test]
+fn migration_adds_reply_sender_identity_reference() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    migrate(&conn).unwrap();
+
+    let cols = column_names(&conn, "messages");
+    assert!(cols.contains(&"reply_sender_identity_id".to_string()));
+}
+
+#[test]
+fn legacy_schema_adds_reply_sender_identity_before_creating_index() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+
+    let legacy_schema = include_str!("schema.sql")
+        .replace("    reply_sender_identity_id INTEGER,\n", "")
+        .replace(
+            ",\n    FOREIGN KEY(reply_sender_identity_id) REFERENCES channel_identities(id) ON DELETE SET NULL",
+            "",
+        )
+        .replace(
+            "\nCREATE INDEX IF NOT EXISTS idx_messages_reply_sender_identity\nON messages(reply_sender_identity_id)\nWHERE reply_sender_identity_id IS NOT NULL;\n",
+            "\n",
+        );
+    conn.execute_batch(&legacy_schema).unwrap();
+
+    migrate(&conn).unwrap();
+
+    let cols = column_names(&conn, "messages");
+    assert!(cols.contains(&"reply_sender_identity_id".to_string()));
+    let index_exists = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index' AND name = 'idx_messages_reply_sender_identity'
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap();
+    assert!(index_exists);
+}
+
+#[test]
 fn phase2a_migration_creates_reaction_mutations() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();

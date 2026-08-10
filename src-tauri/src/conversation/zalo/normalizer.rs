@@ -332,32 +332,30 @@ fn extract_reply(quote_obj: Option<&Value>) -> Option<NormalizedReplyReference> 
     let p_msg_id = quote
         .get("globalMsgId")
         .or_else(|| quote.get("msgId"))
-        .and_then(|v| v.as_str())?
-        .to_string();
+        .and_then(json_scalar_string)
+        .filter(|value| !value.is_empty())?;
     let cli_msg_id = quote
         .get("cliMsgId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .and_then(json_scalar_string)
+        .unwrap_or_default();
     let sender = quote
         .get("ownerId")
         .or_else(|| quote.get("uidFrom"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .and_then(json_scalar_string)
+        .unwrap_or_default();
     let text = quote
         .get("msg")
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let c_type = quote
         .get("msgType")
-        .and_then(|v| v.as_str())
-        .unwrap_or("text")
-        .to_string();
+        .or_else(|| quote.get("cliMsgType"))
+        .and_then(json_scalar_string)
+        .unwrap_or_else(|| "text".to_string());
     let ts = quote
         .get("ts")
-        .and_then(|v| v.as_str())
-        .map(provider_time)
+        .and_then(json_scalar_string)
+        .map(|value| provider_time(&value))
         .unwrap_or_else(crate::conversation::types::utc_now);
 
     Some(NormalizedReplyReference {
@@ -369,6 +367,14 @@ fn extract_reply(quote_obj: Option<&Value>) -> Option<NormalizedReplyReference> 
         content_type: c_type,
         raw_quote: quote.clone(),
     })
+}
+
+fn json_scalar_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.trim().to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn normalize_message(

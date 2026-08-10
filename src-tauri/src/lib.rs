@@ -253,8 +253,12 @@ pub fn run() {
             conversation::commands::list_conversation_mention_candidates,
             conversation::commands::pin_conversation_message,
             conversation::commands::unpin_conversation_message,
-            conversation::commands::list_conversation_pinned_messages
+            conversation::commands::list_conversation_pinned_messages,
+            commands::get_group_members_unrestricted,
+            commands::batch_import_group_members_to_leads,
+            commands::sync_and_deep_scan_group_members
         ])
+
 
 
         .run(tauri::generate_context!())

@@ -2,8 +2,8 @@ use super::migration::migrate;
 use super::repository::{
     ConversationRepository, NormalizedAttachment, NormalizedGroupParticipant,
     NormalizedGroupSnapshot, NormalizedIdentity, NormalizedMention, NormalizedMessage,
-    NormalizedReaction, NormalizedReceipt, NormalizedUndo, ReceiptKind,
-    ResolveDirectPhoneRecipientRequest, StagedAttachmentRecord,
+    NormalizedReaction, NormalizedReceipt, NormalizedReplyReference, NormalizedUndo, ReceiptKind,
+    ResolveDirectPhoneRecipientRequest, StagedAttachmentRecord, ZaloUidCandidate,
 };
 use super::types::{
     Channel, ConversationCapabilities, ConversationKind, InboxItemKind, MessageDirection,
@@ -110,6 +110,597 @@ fn direct_message_for_peer(
     message.conversation_title = Some(peer_id.to_string());
     message.provider_client_message_id = Some(format!("client-{peer_id}"));
     message
+}
+
+fn empty_group_conversation(harness: &Harness, external_thread_id: &str) -> i64 {
+    harness
+        .repository
+        .apply_group_snapshot(&NormalizedGroupSnapshot {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: external_thread_id.to_string(),
+            title: "Hidden Group".to_string(),
+            avatar_url: None,
+            participants: Vec::new(),
+            membership_complete: false,
+            occurred_at: "2026-08-10T00:00:00Z".to_string(),
+        })
+        .unwrap()
+}
+
+#[test]
+fn canonical_zalo_uid_merge_preserves_link_and_migrates_references() {
+    let harness = Harness::new();
+    let conversation_id = empty_group_conversation(&harness, "group-merge");
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO leads (id, name) VALUES (1, 'Canonical Lead'), (2, 'Legacy Lead')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities
+         (id, lead_id, channel, identity_namespace, external_id, display_name, link_source,
+          link_confidence, verified_at, created_at, updated_at)
+         VALUES
+         (100, 1, 'zalo', 'zalo_uid', 'merge-uid', 'Canonical Name', 'manual', 1.0,
+          '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z', '2026-08-09T00:00:00Z'),
+         (101, 2, 'zalo', 'user', 'merge-uid', 'Legacy Name', 'provider_match', 0.8,
+          '2026-08-08T00:00:00Z', '2026-08-08T00:00:00Z', '2026-08-08T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants
+         (conversation_id, identity_id, participant_role, joined_at, left_at)
+         VALUES (?1, 100, 'member', '2026-08-09T00:00:00Z', '2026-08-09T01:00:00Z'),
+                (?1, 101, 'admin', '2026-08-08T00:00:00Z', NULL)",
+        [conversation_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages
+         (id, conversation_id, sender_identity_id, direction, content_type, content_json,
+          ingested_at, status)
+         VALUES (200, ?1, 101, 'inbound', 'text', '{}', '2026-08-10T00:00:00Z', 'received')",
+        [conversation_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_mentions
+         (message_id, identity_id, external_id, display_text, start_utf16, length_utf16, created_at)
+         VALUES (200, 101, 'merge-uid', '@Legacy', 0, 7, '2026-08-10T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let ids = harness
+        .repository
+        .attach_zalo_uids_to_conversation(
+            conversation_id,
+            &[ZaloUidCandidate {
+                external_id: " merge-uid ".to_string(),
+                display_name: Some("Fresh Name".to_string()),
+                avatar_url: Some("https://example.com/fresh.png".to_string()),
+            }],
+        )
+        .unwrap();
+    assert_eq!(ids, vec![100]);
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let canonical: (i64, Option<i64>, Option<String>, Option<String>, String, Option<f64>) = conn
+        .query_row(
+            "SELECT id, lead_id, display_name, avatar_url, link_source, link_confidence
+             FROM channel_identities
+             WHERE channel = 'zalo' AND identity_namespace = 'zalo_uid' AND external_id = 'merge-uid'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        )
+        .unwrap();
+    assert_eq!(canonical.0, 100);
+    assert_eq!(canonical.1, Some(1));
+    assert_eq!(canonical.2.as_deref(), Some("Fresh Name"));
+    assert_eq!(
+        canonical.3.as_deref(),
+        Some("https://example.com/fresh.png")
+    );
+    assert_eq!(canonical.4, "manual");
+    assert_eq!(canonical.5, Some(1.0));
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM channel_identities WHERE channel = 'zalo' AND external_id = 'merge-uid'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    let participant: (i64, String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT identity_id, participant_role, joined_at, left_at
+             FROM conversation_participants WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(participant.0, 100);
+    assert_eq!(participant.1, "admin");
+    assert_eq!(participant.2.as_deref(), Some("2026-08-08T00:00:00Z"));
+    assert_eq!(participant.3, None);
+    assert_eq!(
+        conn.query_row(
+            "SELECT sender_identity_id FROM messages WHERE id = 200",
+            [],
+            |row| { row.get::<_, i64>(0) }
+        )
+        .unwrap(),
+        100
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT identity_id FROM message_mentions WHERE message_id = 200",
+            [],
+            |row| { row.get::<_, i64>(0) }
+        )
+        .unwrap(),
+        100
+    );
+}
+
+#[test]
+fn canonical_zalo_uid_batch_rolls_back_on_invalid_uid() {
+    let harness = Harness::new();
+    let conversation_id = empty_group_conversation(&harness, "group-invalid");
+
+    let result = harness.repository.attach_zalo_uids_to_conversation(
+        conversation_id,
+        &[
+            ZaloUidCandidate {
+                external_id: "valid-before-error".to_string(),
+                display_name: None,
+                avatar_url: None,
+            },
+            ZaloUidCandidate {
+                external_id: "0".to_string(),
+                display_name: None,
+                avatar_url: None,
+            },
+        ],
+    );
+
+    assert!(result.is_err());
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM channel_identities WHERE external_id = 'valid-before-error'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn canonical_zalo_uid_reference_migration_rolls_back_on_delete_failure() {
+    let harness = Harness::new();
+    let conversation_id = empty_group_conversation(&harness, "group-rollback");
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities
+         (id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (301, 'zalo', 'user', 'rollback-uid', 'Legacy', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants
+         (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (?1, 301, 'member', '2026-08-10T00:00:00Z')",
+        [conversation_id],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_identity_delete
+         BEFORE DELETE ON channel_identities
+         WHEN OLD.external_id = 'rollback-uid'
+         BEGIN
+             SELECT RAISE(FAIL, 'blocked identity delete');
+         END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let result = harness.repository.attach_zalo_uids_to_conversation(
+        conversation_id,
+        &[ZaloUidCandidate {
+            external_id: "rollback-uid".to_string(),
+            display_name: Some("Canonical".to_string()),
+            avatar_url: None,
+        }],
+    );
+    assert!(result.is_err());
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT identity_id FROM conversation_participants WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        301
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM channel_identities WHERE external_id = 'rollback-uid'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn quote_owner_is_persisted_and_included_in_group_member_evidence() {
+    let harness = Harness::new();
+    let mut message = direct_message("imei-a", "quoted-message");
+    message.external_thread_id = "group-quote".to_string();
+    message.conversation_kind = ConversationKind::Group;
+    message.conversation_title = Some("Quoted Group".to_string());
+    message.reply = Some(NormalizedReplyReference {
+        provider_message_id: "quoted-provider".to_string(),
+        provider_client_message_id: "quoted-client".to_string(),
+        sender_external_id: "quote-owner".to_string(),
+        occurred_at: "2026-08-10T00:00:00Z".to_string(),
+        text_content: Some("quoted".to_string()),
+        content_type: "text".to_string(),
+        raw_quote: serde_json::json!({"ownerId": "quote-owner"}),
+    });
+
+    let applied = harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let reply_identity: (i64, String, String) = conn
+        .query_row(
+            "SELECT ci.id, ci.identity_namespace, ci.external_id
+             FROM messages m
+             JOIN channel_identities ci ON ci.id = m.reply_sender_identity_id
+             WHERE m.id = ?1",
+            [applied.message_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(reply_identity.1, "zalo_uid");
+    assert_eq!(reply_identity.2, "quote-owner");
+    drop(conn);
+
+    let evidence = harness
+        .repository
+        .list_group_member_external_ids(applied.conversation_id)
+        .unwrap();
+    assert!(evidence.contains(&"quote-owner".to_string()));
+    assert!(evidence.contains(&"peer-1".to_string()));
+}
+
+mod group_member_lead_import {
+    use super::*;
+    use crate::conversation::repository::{
+        GroupMemberLeadImportItem, GroupMemberLeadImportRequest,
+    };
+
+    struct ImportHarness {
+        path: std::path::PathBuf,
+        repository: ConversationRepository,
+    }
+
+    impl ImportHarness {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "rustsale-group-member-import-{}.db",
+                rand::random::<u64>()
+            ));
+            let conn = crate::db::init_db(path.to_str().unwrap()).unwrap();
+            drop(conn);
+            Self {
+                repository: ConversationRepository::new(path.to_string_lossy().to_string()),
+                path,
+            }
+        }
+
+        fn connection(&self) -> rusqlite::Connection {
+            open_db_connection(self.path.to_str().unwrap()).unwrap()
+        }
+
+        fn insert_group(&self, conversation_id: i64, external_thread_id: &str) {
+            let conn = self.connection();
+            let now = "2026-08-10T00:00:00Z";
+            conn.execute(
+                "INSERT OR IGNORE INTO channel_accounts
+                 (id, channel, provider_account_key, display_name, created_at, updated_at)
+                 VALUES (1, 'zalo', 'account-a', 'Account A', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO channel_conversations
+                 (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+                 VALUES (?1, 1, ?2, 'group', 'Group A', ?3, ?3)",
+                rusqlite::params![conversation_id, external_thread_id, now],
+            )
+            .unwrap();
+        }
+
+        fn insert_identity(
+            &self,
+            identity_id: i64,
+            external_id: &str,
+            display_name: &str,
+            lead_id: Option<i64>,
+        ) {
+            let conn = self.connection();
+            let now = "2026-08-10T00:00:00Z";
+            conn.execute(
+                "INSERT INTO channel_identities
+                 (id, lead_id, channel, identity_namespace, external_id, display_name,
+                  created_at, updated_at)
+                 VALUES (?1, ?2, 'zalo', 'zalo_uid', ?3, ?4, ?5, ?5)",
+                rusqlite::params![identity_id, lead_id, external_id, display_name, now],
+            )
+            .unwrap();
+        }
+
+        fn add_active_participant(&self, conversation_id: i64, identity_id: i64) {
+            let conn = self.connection();
+            conn.execute(
+                "INSERT INTO conversation_participants
+                 (conversation_id, identity_id, participant_role, joined_at)
+                 VALUES (?1, ?2, 'member', '2026-08-10T00:00:00Z')",
+                rusqlite::params![conversation_id, identity_id],
+            )
+            .unwrap();
+        }
+
+        fn add_observed_sender(&self, conversation_id: i64, identity_id: i64) {
+            let conn = self.connection();
+            conn.execute(
+                "INSERT INTO messages
+                 (conversation_id, sender_identity_id, direction, content_type, content_json,
+                  ingested_at, status)
+                 VALUES (?1, ?2, 'inbound', 'text', '{}', '2026-08-10T00:00:00Z', 'received')",
+                rusqlite::params![conversation_id, identity_id],
+            )
+            .unwrap();
+        }
+
+        fn insert_lead(
+            &self,
+            lead_id: i64,
+            name: &str,
+            zalo_uid: Option<&str>,
+            about: Option<&str>,
+        ) {
+            let conn = self.connection();
+            conn.execute(
+                "INSERT INTO leads
+                 (id, name, company, status, value, last_activity, owner, email, phone, about,
+                  address, has_zalo, zalo_reached, zalo_uid)
+                 VALUES (?1, ?2, 'Existing', 'New', 0, '2026-08-10T00:00:00Z', 'System', '', '',
+                         ?3, '', 1, 0, ?4)",
+                rusqlite::params![lead_id, name, about, zalo_uid],
+            )
+            .unwrap();
+        }
+
+        fn request(
+            conversation_id: i64,
+            members: Vec<GroupMemberLeadImportItem>,
+        ) -> GroupMemberLeadImportRequest {
+            GroupMemberLeadImportRequest {
+                conversation_id,
+                members,
+                category_ids: Vec::new(),
+                new_category_name: None,
+                skip_existing: false,
+            }
+        }
+
+        fn count(&self, sql: &str) -> i64 {
+            self.connection()
+                .query_row(sql, [], |row| row.get(0))
+                .unwrap()
+        }
+    }
+
+    impl Drop for ImportHarness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            let _ = std::fs::remove_file(self.path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.path.with_extension("db-shm"));
+        }
+    }
+
+    fn item(identity_id: Option<i64>, external_id: Option<&str>) -> GroupMemberLeadImportItem {
+        GroupMemberLeadImportItem {
+            identity_id,
+            external_id: external_id.map(str::to_string),
+            phone: None,
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_or_foreign_identity_before_lead_mutation() {
+        let harness = ImportHarness::new();
+        harness.insert_group(100, "group-a");
+        harness.insert_group(101, "group-b");
+        harness.insert_identity(1001, "uid-a", "Member A", None);
+        harness.insert_identity(1002, "uid-b", "Member B", None);
+        harness.add_active_participant(100, 1001);
+        harness.add_active_participant(101, 1002);
+
+        let conflicting =
+            harness
+                .repository
+                .import_group_members_to_leads(&ImportHarness::request(
+                    100,
+                    vec![item(Some(1001), Some("uid-b"))],
+                ));
+        assert!(conflicting.is_err());
+
+        let foreign = harness
+            .repository
+            .import_group_members_to_leads(&ImportHarness::request(
+                100,
+                vec![item(Some(1002), Some("uid-b"))],
+            ));
+        assert!(foreign.is_err());
+        assert_eq!(harness.count("SELECT COUNT(*) FROM leads"), 0);
+    }
+
+    #[test]
+    fn deduplicates_reuses_exact_uid_ignores_about_and_sets_link_metadata() {
+        let harness = ImportHarness::new();
+        harness.insert_group(100, "group-a");
+        harness.insert_identity(1001, "uid-a", "Member A", None);
+        harness.insert_identity(1002, "uid-b", "Member B", None);
+        harness.add_active_participant(100, 1001);
+        harness.add_observed_sender(100, 1002);
+        harness.insert_lead(10, "Exact UID Lead", Some("uid-a"), None);
+        harness.insert_lead(11, "About Collision", None, Some("contains uid-b text"));
+        let conn = harness.connection();
+        conn.execute(
+            "INSERT INTO categories (id, name) VALUES (5, 'Existing Category')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = harness
+            .repository
+            .import_group_members_to_leads(&GroupMemberLeadImportRequest {
+                conversation_id: 100,
+                members: vec![
+                    item(Some(1001), Some("uid-a")),
+                    item(None, Some("uid-a")),
+                    item(Some(1002), Some("uid-b")),
+                ],
+                category_ids: vec![5, 5],
+                new_category_name: Some("Imported Group".to_string()),
+                skip_existing: false,
+            })
+            .unwrap();
+
+        assert_eq!(result.imported_count, 1);
+        assert_eq!(result.updated_count, 1);
+        assert_eq!(result.skipped_count, 0);
+        assert_eq!(result.assigned_category_ids.len(), 2);
+        let conn = harness.connection();
+        let identity_a: (i64, String, f64, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT lead_id, link_source, link_confidence, verified_at, updated_at
+                 FROM channel_identities WHERE id = 1001",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(identity_a.0, 10);
+        assert_eq!(identity_a.1, "group_import");
+        assert_eq!(identity_a.2, 1.0);
+        assert!(identity_a.3.is_some());
+        assert_eq!(identity_a.3, identity_a.4);
+
+        let identity_b_lead: i64 = conn
+            .query_row(
+                "SELECT lead_id FROM channel_identities WHERE id = 1002",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_ne!(identity_b_lead, 11);
+        let imported_uid: String = conn
+            .query_row(
+                "SELECT zalo_uid FROM leads WHERE id = ?1",
+                [identity_b_lead],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(imported_uid, "uid-b");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM lead_categories WHERE lead_id IN (10, ?1)",
+                [identity_b_lead],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            4
+        );
+        drop(conn);
+
+        let second = harness
+            .repository
+            .import_group_members_to_leads(&GroupMemberLeadImportRequest {
+                conversation_id: 100,
+                members: vec![item(Some(1001), None), item(Some(1002), None)],
+                category_ids: result.assigned_category_ids.clone(),
+                new_category_name: Some("Imported Group".to_string()),
+                skip_existing: true,
+            })
+            .unwrap();
+        assert_eq!(second.imported_count, 0);
+        assert_eq!(second.updated_count, 0);
+        assert_eq!(second.skipped_count, 2);
+        assert_eq!(harness.count("SELECT COUNT(*) FROM lead_categories"), 4);
+    }
+
+    #[test]
+    fn category_assignment_failure_rolls_back_category_lead_and_identity_link() {
+        let harness = ImportHarness::new();
+        harness.insert_group(100, "group-a");
+        harness.insert_identity(1001, "uid-a", "Member A", None);
+        harness.add_active_participant(100, 1001);
+        let conn = harness.connection();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_group_import_category
+             BEFORE INSERT ON lead_categories
+             BEGIN
+                 SELECT RAISE(ABORT, 'blocked category assignment');
+             END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let result =
+            harness
+                .repository
+                .import_group_members_to_leads(&GroupMemberLeadImportRequest {
+                    conversation_id: 100,
+                    members: vec![item(Some(1001), Some("uid-a"))],
+                    category_ids: Vec::new(),
+                    new_category_name: Some("Must Roll Back".to_string()),
+                    skip_existing: false,
+                });
+
+        assert!(result.is_err());
+        assert_eq!(harness.count("SELECT COUNT(*) FROM categories"), 0);
+        assert_eq!(harness.count("SELECT COUNT(*) FROM leads"), 0);
+        assert_eq!(
+            harness.count(
+                "SELECT COUNT(*) FROM channel_identities WHERE id = 1001 AND lead_id IS NOT NULL"
+            ),
+            0
+        );
+    }
 }
 
 #[test]

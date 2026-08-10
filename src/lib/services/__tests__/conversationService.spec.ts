@@ -36,6 +36,12 @@ mock.module('@tauri-apps/api/core', () => ({
     if (command === 'get_conversation_runtime_status') {
       return { accounts: [] };
     }
+    if (command === 'sync_and_deep_scan_group_members') {
+      return deepScanResponse;
+    }
+    if (command === 'batch_import_group_members_to_leads') {
+      return groupImportResponse;
+    }
     if (command === 'send_conversation_message') {
       return {
         id: 100,
@@ -109,10 +115,115 @@ import {
   deleteConversationQuickTemplate,
   markConversationQuickTemplateUsed,
   listConversationMentionCandidates,
+  syncAndDeepScanGroupMembers,
+  batchImportGroupMembersToLeads,
   getBridgeRefCount,
   getBridgePromise,
-  type ConversationInvalidatedEvent
+  type ConversationInvalidatedEvent,
+  type GroupMemberScanResult,
+  type BatchImportGroupMembersRequest,
+  type BatchImportGroupMembersResult
 } from '../conversationService';
+
+const deepScanResponse = {
+  members: [],
+  discovered_count: 0,
+  profile_hydrated_count: 0,
+  membership_complete: false,
+  pages_attempted: 2,
+  pages_succeeded: 1,
+  messages_scanned: 17,
+  stop_reason: 'timeout',
+  warning: 'Timed out waiting for account-wide Zalo group history backfill',
+  diagnostics: {
+    direct_snapshot: {
+      attempted: true,
+      complete: false,
+      member_count: 0,
+      warning: null
+    },
+    board: {
+      attempted: true,
+      pages_attempted: 2,
+      pages_succeeded: 1,
+      items_inspected: 4,
+      polls_attempted: 1,
+      polls_succeeded: 0,
+      committed_uid_count: 2,
+      stop_reason: 'board_page_failed',
+      warnings: [
+        {
+          source: 'poll',
+          code: 'poll_detail_failed',
+          context: 'poll_id=7',
+          message: 'poll unavailable'
+        }
+      ]
+    },
+    history_backfill: {
+      provider_account_key: 'account-a',
+      scope: 'account_group_messages',
+      outcome: 'timed_out',
+      joined_existing_run: false,
+      pages_requested: 2,
+      pages_received: 1,
+      start_cursor: 'cursor-start',
+      durable_cursor: 'cursor-durable',
+      stop_reason: 'timeout',
+      warning: 'Timed out waiting for account-wide Zalo group history backfill'
+    },
+    local_evidence: {
+      messages_scanned: 17,
+      participant_uid_count: 1,
+      sender_uid_count: 2,
+      mention_uid_count: 1,
+      reaction_uid_count: 1,
+      quote_owner_uid_count: 1,
+      total_uid_count: 5,
+      committed_uid_count: 5,
+      rejected_uid_count: 0
+    },
+    profile_hydration: {
+      attempted: 5,
+      succeeded: 4,
+      failed: 1,
+      warnings: []
+    },
+    partial_result: true,
+    warnings: [
+      {
+        stage: 'history_backfill',
+        code: 'timed_out',
+        context: 'timeout',
+        message: 'Timed out waiting for account-wide Zalo group history backfill'
+      }
+    ]
+  }
+} satisfies GroupMemberScanResult;
+
+const groupImportRequest = {
+  conversation_id: 143,
+  members: [
+    {
+      identity_id: 901,
+      external_id: 'uid-901',
+      display_name: 'Caller display is not membership evidence',
+      avatar_url: null,
+      phone: null
+    }
+  ],
+  category_ids: [7],
+  new_category_name: 'Imported Group',
+  group_title: 'Group 143',
+  skip_existing: true
+} satisfies BatchImportGroupMembersRequest;
+
+const groupImportResponse = {
+  imported_count: 0,
+  updated_count: 0,
+  skipped_count: 1,
+  assigned_category_ids: [7]
+} satisfies BatchImportGroupMembersResult;
 
 beforeEach(() => {
   resetConversationEventBridgeState();
@@ -127,6 +238,29 @@ beforeEach(() => {
 });
 
 describe('conversationService IPC command wrappers', () => {
+  test('syncAndDeepScanGroupMembers mirrors structured diagnostics and exact IPC args', async () => {
+    const result = await syncAndDeepScanGroupMembers(143);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'sync_and_deep_scan_group_members',
+      args: { conversationId: 143 }
+    });
+    expect(result.diagnostics.history_backfill.scope).toBe('account_group_messages');
+    expect(result.diagnostics.history_backfill.outcome).toBe('timed_out');
+    expect(result.diagnostics.board.warnings[0]?.code).toBe('poll_detail_failed');
+    expect(result.diagnostics.local_evidence.quote_owner_uid_count).toBe(1);
+  });
+
+  test('batchImportGroupMembersToLeads includes conversation membership scope', async () => {
+    const result = await batchImportGroupMembersToLeads(groupImportRequest);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'batch_import_group_members_to_leads',
+      args: { request: groupImportRequest }
+    });
+    expect(result.skipped_count).toBe(1);
+  });
+
   test('listConversationInbox calls list_conversation_inbox command', async () => {
     const inbox = await listConversationInbox();
     expect(inbox).toEqual([]);

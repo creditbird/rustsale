@@ -1,3 +1,4 @@
+use crate::conversation::commands::ConversationState;
 use crate::models::{
     Activity, Category, Deal, EmailTemplate, Lead, ManagedSmtpAccount, ManagedZaloAccount,
     SmtpServer, ZaloSessionStatus,
@@ -4370,4 +4371,884 @@ pub async fn send_email_outreach_internal(
     }
 
     Ok(())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GroupCategoryInfo {
+    pub id: i32,
+    pub name: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GroupMemberDetail {
+    pub identity_id: Option<i64>,
+    pub external_id: Option<String>,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub participant_role: String,
+    pub lead_id: Option<i32>,
+    pub lead_name: Option<String>,
+    pub categories: Vec<GroupCategoryInfo>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GroupMemberScanResult {
+    pub members: Vec<GroupMemberDetail>,
+    pub discovered_count: usize,
+    pub profile_hydrated_count: usize,
+    pub membership_complete: bool,
+    pub pages_attempted: usize,
+    pub pages_succeeded: usize,
+    pub messages_scanned: usize,
+    pub stop_reason: Option<String>,
+    pub warning: Option<String>,
+    pub diagnostics: GroupMemberScanDiagnostics,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMemberScanWarning {
+    pub stage: String,
+    pub code: String,
+    pub context: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMemberDirectSnapshotDiagnostics {
+    pub attempted: bool,
+    pub complete: bool,
+    pub member_count: usize,
+    pub warning: Option<GroupMemberScanWarning>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMemberBoardDiagnostics {
+    pub attempted: bool,
+    pub pages_attempted: usize,
+    pub pages_succeeded: usize,
+    pub items_inspected: usize,
+    pub polls_attempted: usize,
+    pub polls_succeeded: usize,
+    pub committed_uid_count: usize,
+    pub stop_reason: Option<String>,
+    pub warnings: Vec<crate::conversation::zalo::client::GroupBoardWarning>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMemberLocalEvidenceDiagnostics {
+    pub messages_scanned: usize,
+    pub participant_uid_count: usize,
+    pub sender_uid_count: usize,
+    pub mention_uid_count: usize,
+    pub reaction_uid_count: usize,
+    pub quote_owner_uid_count: usize,
+    pub total_uid_count: usize,
+    pub committed_uid_count: usize,
+    pub rejected_uid_count: usize,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMemberProfileHydrationDiagnostics {
+    pub attempted: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub warnings: Vec<GroupMemberScanWarning>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupMemberScanDiagnostics {
+    pub direct_snapshot: GroupMemberDirectSnapshotDiagnostics,
+    pub board: GroupMemberBoardDiagnostics,
+    pub history_backfill: crate::conversation::zalo::supervisor::GroupMessageBackfillReport,
+    pub local_evidence: GroupMemberLocalEvidenceDiagnostics,
+    pub profile_hydration: GroupMemberProfileHydrationDiagnostics,
+    pub partial_result: bool,
+    pub warnings: Vec<GroupMemberScanWarning>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct ImportMemberItem {
+    pub identity_id: Option<i64>,
+    pub external_id: Option<String>,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub phone: Option<String>,
+}
+
+#[async_trait::async_trait]
+pub(crate) trait GroupMemberScanRuntime: Send + Sync {
+    async fn connected_client(
+        &self,
+        provider_account_key: &str,
+    ) -> Option<std::sync::Arc<dyn crate::conversation::zalo::client::ZaloClient>>;
+
+    async fn backfill_group_messages(
+        &self,
+        provider_account_key: &str,
+        timeout: std::time::Duration,
+    ) -> crate::conversation::zalo::supervisor::GroupMessageBackfillReport;
+}
+
+#[async_trait::async_trait]
+impl GroupMemberScanRuntime for crate::conversation::zalo::supervisor::ZaloSessionSupervisor {
+    async fn connected_client(
+        &self,
+        provider_account_key: &str,
+    ) -> Option<std::sync::Arc<dyn crate::conversation::zalo::client::ZaloClient>> {
+        crate::conversation::zalo::supervisor::ZaloSessionSupervisor::connected_client(
+            self,
+            provider_account_key,
+        )
+        .await
+    }
+
+    async fn backfill_group_messages(
+        &self,
+        provider_account_key: &str,
+        timeout: std::time::Duration,
+    ) -> crate::conversation::zalo::supervisor::GroupMessageBackfillReport {
+        crate::conversation::zalo::supervisor::ZaloSessionSupervisor::backfill_group_messages(
+            self,
+            provider_account_key,
+            timeout,
+        )
+        .await
+    }
+}
+
+struct CollectedGroupMemberEvidence {
+    external_ids: Vec<String>,
+    diagnostics: GroupMemberLocalEvidenceDiagnostics,
+}
+
+fn normalized_group_member_uid(value: &str) -> Option<String> {
+    let normalized = value.trim();
+    let lowercase = normalized.to_ascii_lowercase();
+    (!normalized.is_empty() && !matches!(lowercase.as_str(), "0" | "-1" | "null" | "undefined"))
+        .then(|| normalized.to_string())
+}
+
+fn collect_group_member_local_evidence(
+    conn: &rusqlite::Connection,
+    conversation_id: i64,
+) -> Result<CollectedGroupMemberEvidence, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT source, external_id
+             FROM (
+                 SELECT 'participant' AS source, ci.external_id AS external_id
+                 FROM conversation_participants cp
+                 JOIN channel_identities ci ON ci.id = cp.identity_id
+                 WHERE cp.conversation_id = ?1 AND cp.left_at IS NULL
+
+                 UNION ALL
+
+                 SELECT 'sender', ci.external_id
+                 FROM messages m
+                 JOIN channel_identities ci ON ci.id = m.sender_identity_id
+                 WHERE m.conversation_id = ?1 AND m.sender_identity_id IS NOT NULL
+
+                 UNION ALL
+
+                 SELECT 'mention', COALESCE(ci.external_id, mm.external_id)
+                 FROM message_mentions mm
+                 JOIN messages m ON m.id = mm.message_id
+                 LEFT JOIN channel_identities ci ON ci.id = mm.identity_id
+                 WHERE m.conversation_id = ?1
+
+                 UNION ALL
+
+                 SELECT 'reaction', mr.actor_external_id
+                 FROM message_reactions mr
+                 JOIN messages m ON m.id = mr.message_id
+                 WHERE m.conversation_id = ?1 AND mr.removed_at IS NULL
+
+                 UNION ALL
+
+                 SELECT 'quote_owner', ci.external_id
+                 FROM messages m
+                 JOIN channel_identities ci ON ci.id = m.reply_sender_identity_id
+                 WHERE m.conversation_id = ?1 AND m.reply_sender_identity_id IS NOT NULL
+             )
+             WHERE external_id IS NOT NULL AND TRIM(external_id) <> ''",
+        )
+        .map_err(|error| format!("Database prepare error: {error}"))?;
+    let rows = statement
+        .query_map([conversation_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Database query error: {error}"))?;
+
+    let mut participants = HashSet::new();
+    let mut senders = HashSet::new();
+    let mut mentions = HashSet::new();
+    let mut reactions = HashSet::new();
+    let mut quote_owners = HashSet::new();
+    let mut all = HashSet::new();
+    let mut rejected_uid_count = 0;
+
+    for row in rows {
+        let (source, external_id) = row.map_err(|error| format!("Row parse error: {error}"))?;
+        let Some(external_id) = normalized_group_member_uid(&external_id) else {
+            rejected_uid_count += 1;
+            continue;
+        };
+        match source.as_str() {
+            "participant" => {
+                participants.insert(external_id.clone());
+            }
+            "sender" => {
+                senders.insert(external_id.clone());
+            }
+            "mention" => {
+                mentions.insert(external_id.clone());
+            }
+            "reaction" => {
+                reactions.insert(external_id.clone());
+            }
+            "quote_owner" => {
+                quote_owners.insert(external_id.clone());
+            }
+            _ => {}
+        }
+        all.insert(external_id);
+    }
+
+    let messages_scanned = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Failed to count local group messages: {error}"))?
+        .try_into()
+        .map_err(|_| "Local message count exceeds platform limits".to_string())?;
+    let mut external_ids = all.into_iter().collect::<Vec<_>>();
+    external_ids.sort();
+
+    Ok(CollectedGroupMemberEvidence {
+        diagnostics: GroupMemberLocalEvidenceDiagnostics {
+            messages_scanned,
+            participant_uid_count: participants.len(),
+            sender_uid_count: senders.len(),
+            mention_uid_count: mentions.len(),
+            reaction_uid_count: reactions.len(),
+            quote_owner_uid_count: quote_owners.len(),
+            total_uid_count: external_ids.len(),
+            committed_uid_count: 0,
+            rejected_uid_count,
+        },
+        external_ids,
+    })
+}
+
+fn collect_group_member_external_ids(
+    conn: &rusqlite::Connection,
+    conversation_id: i64,
+) -> Result<Vec<String>, String> {
+    Ok(collect_group_member_local_evidence(conn, conversation_id)?.external_ids)
+}
+
+pub fn fetch_group_members_impl(
+    conn: &rusqlite::Connection,
+    conversation_id: i64,
+) -> Result<Vec<GroupMemberDetail>, String> {
+    let external_ids = collect_group_member_external_ids(conn, conversation_id)?;
+    if external_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = (0..external_ids.len())
+        .map(|index| format!("?{}", index + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        "WITH ranked_identities AS (
+             SELECT
+                 ci.id,
+                 ci.external_id,
+                 ci.display_name,
+                 ci.avatar_url,
+                 ci.lead_id,
+                 ROW_NUMBER() OVER (
+                     PARTITION BY ci.external_id
+                     ORDER BY
+                         CASE ci.identity_namespace WHEN 'zalo_uid' THEN 0 WHEN 'user' THEN 1 ELSE 2 END,
+                         CASE WHEN ci.display_name IS NOT NULL AND TRIM(ci.display_name) <> '' THEN 0 ELSE 1 END,
+                         ci.id
+                 ) AS identity_rank
+             FROM channel_identities ci
+             WHERE ci.channel = 'zalo' AND ci.external_id IN ({placeholders})
+         )
+         SELECT
+             ci.id,
+             ci.external_id,
+             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Thành viên Zalo'),
+             ci.avatar_url,
+             COALESCE((
+                 SELECT cp.participant_role
+                 FROM conversation_participants cp
+                 JOIN channel_identities role_identity ON role_identity.id = cp.identity_id
+                 WHERE cp.conversation_id = ?1 AND role_identity.external_id = ci.external_id
+                 ORDER BY
+                     CASE WHEN cp.left_at IS NULL THEN 0 ELSE 1 END,
+                     CASE cp.participant_role WHEN 'admin' THEN 0 WHEN 'deputy' THEN 1 ELSE 2 END
+                 LIMIT 1
+             ), 'member') AS participant_role,
+             l.id,
+             l.name
+         FROM ranked_identities ci
+         LEFT JOIN leads l ON l.id = ci.lead_id
+         WHERE ci.identity_rank = 1
+         ORDER BY
+             CASE participant_role WHEN 'admin' THEN 1 WHEN 'deputy' THEN 2 ELSE 3 END,
+             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Thành viên Zalo') ASC"
+    );
+
+    let mut values = Vec::<Value>::with_capacity(external_ids.len() + 1);
+    values.push(conversation_id.into());
+    values.extend(external_ids.into_iter().map(Value::Text));
+
+    let mut stmt = conn
+        .prepare(&query)
+        .map_err(|error| format!("Database prepare error: {error}"))?;
+
+    let rows = stmt
+        .query_map(params_from_iter(values.iter()), |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<i32>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })
+        .map_err(|e| format!("Database query error: {}", e))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let (id_id, ext_id, name, avt, role, l_id, l_name) =
+            row.map_err(|e| format!("Row parse error: {}", e))?;
+
+        let mut categories = Vec::new();
+        if let Some(target_lead_id) = l_id {
+            let mut cat_stmt = conn
+                .prepare(
+                    "SELECT c.id, c.name
+                     FROM categories c
+                     JOIN lead_categories lc ON lc.category_id = c.id
+                     WHERE lc.lead_id = ?1",
+                )
+                .map_err(|e| format!("Category prepare error: {}", e))?;
+
+            let cat_rows = cat_stmt
+                .query_map([target_lead_id], |c_row| {
+                    Ok(GroupCategoryInfo {
+                        id: c_row.get(0)?,
+                        name: c_row.get(1)?,
+                    })
+                })
+                .map_err(|e| format!("Category query error: {}", e))?;
+
+            for cat in cat_rows {
+                categories.push(cat.map_err(|error| format!("Category row error: {error}"))?);
+            }
+        }
+
+        result.push(GroupMemberDetail {
+            identity_id: id_id,
+            external_id: ext_id,
+            display_name: name,
+            avatar_url: avt,
+            participant_role: role,
+            lead_id: l_id,
+            lead_name: l_name,
+            categories,
+        });
+    }
+
+    Ok(result)
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct BatchImportGroupMembersRequest {
+    pub conversation_id: i64,
+    pub members: Vec<ImportMemberItem>,
+    pub category_ids: Vec<i32>,
+    pub new_category_name: Option<String>,
+    pub group_title: String,
+    pub skip_existing: Option<bool>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct BatchImportGroupMembersResult {
+    pub imported_count: usize,
+    pub updated_count: usize,
+    pub skipped_count: usize,
+    pub assigned_category_ids: Vec<i32>,
+}
+
+#[tauri::command]
+pub fn get_group_members_unrestricted(
+    state: tauri::State<'_, DbState>,
+    conversation_id: i64,
+) -> Result<Vec<GroupMemberDetail>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+
+    fetch_group_members_impl(&conn, conversation_id)
+}
+
+#[tauri::command]
+pub fn batch_import_group_members_to_leads(
+    conversation_state: tauri::State<'_, ConversationState>,
+    request: BatchImportGroupMembersRequest,
+) -> Result<BatchImportGroupMembersResult, String> {
+    batch_import_group_members_to_leads_impl(conversation_state.service.as_ref(), request)
+}
+
+pub(crate) fn batch_import_group_members_to_leads_impl(
+    conversation_service: &crate::conversation::service::ConversationService,
+    request: BatchImportGroupMembersRequest,
+) -> Result<BatchImportGroupMembersResult, String> {
+    let BatchImportGroupMembersRequest {
+        conversation_id,
+        members,
+        category_ids,
+        new_category_name,
+        group_title: _,
+        skip_existing,
+    } = request;
+    let repository_request = crate::conversation::repository::GroupMemberLeadImportRequest {
+        conversation_id,
+        members: members
+            .into_iter()
+            .map(
+                |member| crate::conversation::repository::GroupMemberLeadImportItem {
+                    identity_id: member.identity_id,
+                    external_id: member.external_id,
+                    phone: member.phone,
+                },
+            )
+            .collect(),
+        category_ids,
+        new_category_name,
+        skip_existing: skip_existing.unwrap_or(false),
+    };
+    let result = conversation_service
+        .import_group_members_to_leads(&repository_request)
+        .map_err(|error| format!("Failed to import Zalo group members: {error}"))?;
+
+    Ok(BatchImportGroupMembersResult {
+        imported_count: result.imported_count,
+        updated_count: result.updated_count,
+        skipped_count: result.skipped_count,
+        assigned_category_ids: result.assigned_category_ids,
+    })
+}
+
+const GROUP_MEMBER_BACKFILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const GROUP_MEMBER_PROFILE_BATCH_SIZE: usize = 50;
+
+fn group_member_scan_warning(
+    stage: &str,
+    code: &str,
+    context: Option<String>,
+    message: impl Into<String>,
+) -> GroupMemberScanWarning {
+    GroupMemberScanWarning {
+        stage: stage.to_string(),
+        code: code.to_string(),
+        context,
+        message: message.into(),
+    }
+}
+
+fn backfill_warning_code(
+    outcome: &crate::conversation::zalo::supervisor::GroupMessageBackfillOutcome,
+) -> &'static str {
+    use crate::conversation::zalo::supervisor::GroupMessageBackfillOutcome;
+
+    match outcome {
+        GroupMessageBackfillOutcome::Completed => "completed",
+        GroupMessageBackfillOutcome::TimedOut => "timed_out",
+        GroupMessageBackfillOutcome::Unavailable => "unavailable",
+        GroupMessageBackfillOutcome::Failed => "failed",
+    }
+}
+
+#[tauri::command]
+pub async fn sync_and_deep_scan_group_members(
+    state: tauri::State<'_, DbState>,
+    conversation_state: tauri::State<'_, ConversationState>,
+    conversation_id: i64,
+) -> Result<GroupMemberScanResult, String> {
+    sync_and_deep_scan_group_members_impl(
+        state.inner(),
+        conversation_state.service.as_ref(),
+        conversation_state.zalo_supervisor.as_ref(),
+        conversation_id,
+    )
+    .await
+}
+
+pub(crate) async fn sync_and_deep_scan_group_members_impl(
+    state: &DbState,
+    conversation_service: &crate::conversation::service::ConversationService,
+    runtime: &dyn GroupMemberScanRuntime,
+    conversation_id: i64,
+) -> Result<GroupMemberScanResult, String> {
+    use crate::conversation::repository::ZaloUidCandidate;
+    use crate::conversation::zalo::supervisor::GroupMessageBackfillOutcome;
+
+    let (external_thread_id, provider_account_key) = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|error| format!("Database lock error: {error}"))?;
+        let row = conn
+            .query_row(
+                "SELECT cc.external_thread_id, ca.provider_account_key, cc.kind, ca.channel
+                 FROM channel_conversations cc
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 WHERE cc.id = ?1",
+                [conversation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("Failed to resolve conversation: {error}"))?
+            .ok_or_else(|| format!("Conversation {conversation_id} was not found"))?;
+        if row.2 != "group" || row.3 != "zalo" {
+            return Err(format!(
+                "Conversation {conversation_id} is not a Zalo group"
+            ));
+        }
+        (row.0, row.1)
+    };
+
+    let client = runtime.connected_client(&provider_account_key).await;
+    let mut warnings = Vec::new();
+    let mut direct_snapshot = GroupMemberDirectSnapshotDiagnostics::default();
+
+    if let Some(client) = client.as_ref() {
+        direct_snapshot.attempted = true;
+        match client.get_group_snapshot(&external_thread_id).await {
+            Ok(Some(snapshot)) => {
+                if snapshot.provider_account_key != provider_account_key
+                    || snapshot.external_thread_id != external_thread_id
+                {
+                    let warning = group_member_scan_warning(
+                        "direct_snapshot",
+                        "snapshot_mismatch",
+                        Some(format!("conversation_id={conversation_id}")),
+                        "Zalo returned a group snapshot for a different account or thread",
+                    );
+                    direct_snapshot.warning = Some(warning.clone());
+                    warnings.push(warning);
+                } else {
+                    direct_snapshot.complete = snapshot.membership_complete;
+                    direct_snapshot.member_count = snapshot.participants.len();
+                    conversation_service
+                        .apply_group_snapshot(&snapshot)
+                        .map_err(|error| {
+                            format!("Failed to persist Zalo group snapshot: {error}")
+                        })?;
+                }
+            }
+            Ok(None) => {
+                let warning = group_member_scan_warning(
+                    "direct_snapshot",
+                    "snapshot_unavailable",
+                    Some(format!("conversation_id={conversation_id}")),
+                    "Zalo returned no direct group membership snapshot",
+                );
+                direct_snapshot.warning = Some(warning.clone());
+                warnings.push(warning);
+            }
+            Err(error) => {
+                let warning = group_member_scan_warning(
+                    "direct_snapshot",
+                    "snapshot_failed",
+                    Some(format!("conversation_id={conversation_id}")),
+                    format!("Failed to refresh direct group snapshot: {error}"),
+                );
+                direct_snapshot.warning = Some(warning.clone());
+                warnings.push(warning);
+            }
+        }
+    }
+
+    let history_backfill = runtime
+        .backfill_group_messages(&provider_account_key, GROUP_MEMBER_BACKFILL_TIMEOUT)
+        .await;
+    if history_backfill.outcome != GroupMessageBackfillOutcome::Completed
+        || history_backfill.warning.is_some()
+    {
+        warnings.push(group_member_scan_warning(
+            "history_backfill",
+            backfill_warning_code(&history_backfill.outcome),
+            history_backfill.stop_reason.clone(),
+            history_backfill.warning.clone().unwrap_or_else(|| {
+                format!(
+                    "Account-wide group-message backfill ended with {:?}",
+                    history_backfill.outcome
+                )
+            }),
+        ));
+    }
+
+    let mut board = GroupMemberBoardDiagnostics::default();
+    let mut board_scan_failed = false;
+    if let Some(client) = client.as_ref() {
+        board.attempted = true;
+        match client
+            .fetch_group_board_uid_report(&external_thread_id)
+            .await
+        {
+            Ok(report) => {
+                board.pages_attempted = report.pages_attempted;
+                board.pages_succeeded = report.pages_succeeded;
+                board.items_inspected = report.items_inspected;
+                board.polls_attempted = report.polls_attempted;
+                board.polls_succeeded = report.polls_succeeded;
+                board.stop_reason = report.stop_reason.clone();
+                board.warnings = report.warnings.clone();
+
+                let candidates = report
+                    .uids
+                    .iter()
+                    .map(|external_id| ZaloUidCandidate {
+                        external_id: external_id.clone(),
+                        display_name: None,
+                        avatar_url: None,
+                    })
+                    .collect::<Vec<_>>();
+                if !candidates.is_empty() {
+                    board.committed_uid_count = conversation_service
+                        .repository
+                        .attach_zalo_uids_to_conversation(conversation_id, &candidates)
+                        .map_err(|error| {
+                            format!("Failed to persist Board/Poll Zalo UIDs: {error}")
+                        })?
+                        .len();
+                }
+
+                for board_warning in &report.warnings {
+                    warnings.push(group_member_scan_warning(
+                        &board_warning.source,
+                        &board_warning.code,
+                        board_warning.context.clone(),
+                        board_warning.message.clone(),
+                    ));
+                }
+            }
+            Err(error) => {
+                board_scan_failed = true;
+                warnings.push(group_member_scan_warning(
+                    "board",
+                    "board_scan_failed",
+                    Some(format!("group_id={external_thread_id}")),
+                    format!("Failed to scan Group Board/Polls: {error}"),
+                ));
+            }
+        }
+    }
+
+    let evidence_before_hydration = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|error| format!("Database lock error: {error}"))?;
+        collect_group_member_local_evidence(&conn, conversation_id)?
+    };
+    if evidence_before_hydration.diagnostics.rejected_uid_count > 0 {
+        warnings.push(group_member_scan_warning(
+            "local_evidence",
+            "invalid_uid_ignored",
+            Some(format!(
+                "count={}",
+                evidence_before_hydration.diagnostics.rejected_uid_count
+            )),
+            "Ignored invalid or sentinel UID values already present in local evidence",
+        ));
+    }
+
+    let local_evidence_candidates = evidence_before_hydration
+        .external_ids
+        .iter()
+        .map(|external_id| ZaloUidCandidate {
+            external_id: external_id.clone(),
+            display_name: None,
+            avatar_url: None,
+        })
+        .collect::<Vec<_>>();
+    let local_committed_uid_count = if local_evidence_candidates.is_empty() {
+        0
+    } else {
+        conversation_service
+            .repository
+            .attach_zalo_uids_to_conversation(conversation_id, &local_evidence_candidates)
+            .map_err(|error| format!("Failed to canonicalize local Zalo UID evidence: {error}"))?
+            .len()
+    };
+
+    let mut profile_hydration = GroupMemberProfileHydrationDiagnostics::default();
+    if let Some(client) = client.as_ref() {
+        profile_hydration.attempted = evidence_before_hydration.external_ids.len();
+        let mut hydrated_external_ids = HashSet::new();
+
+        for chunk in evidence_before_hydration
+            .external_ids
+            .chunks(GROUP_MEMBER_PROFILE_BATCH_SIZE)
+        {
+            let requested_ids = chunk.iter().map(String::as_str).collect::<HashSet<_>>();
+            match client.fetch_group_member_profiles(chunk).await {
+                Ok(profiles) => {
+                    let mut candidates = Vec::new();
+                    for profile in profiles {
+                        let Some(external_id) = normalized_group_member_uid(&profile.external_id)
+                        else {
+                            let warning = group_member_scan_warning(
+                                "profile_hydration",
+                                "invalid_profile_uid",
+                                None,
+                                "Provider returned a profile with an invalid UID",
+                            );
+                            profile_hydration.warnings.push(warning.clone());
+                            warnings.push(warning);
+                            continue;
+                        };
+                        if !requested_ids.contains(external_id.as_str()) {
+                            let warning = group_member_scan_warning(
+                                "profile_hydration",
+                                "unexpected_profile_uid",
+                                Some(format!("uid={external_id}")),
+                                "Provider returned a profile outside the requested UID batch",
+                            );
+                            profile_hydration.warnings.push(warning.clone());
+                            warnings.push(warning);
+                            continue;
+                        }
+                        if hydrated_external_ids.insert(external_id.clone()) {
+                            candidates.push(ZaloUidCandidate {
+                                external_id,
+                                display_name: profile.display_name,
+                                avatar_url: profile.avatar_url,
+                            });
+                        }
+                    }
+
+                    if !candidates.is_empty() {
+                        profile_hydration.succeeded += conversation_service
+                            .repository
+                            .attach_zalo_uids_to_conversation(conversation_id, &candidates)
+                            .map_err(|error| {
+                                format!("Failed to persist hydrated Zalo profiles: {error}")
+                            })?
+                            .len();
+                    }
+                }
+                Err(error) => {
+                    let warning = group_member_scan_warning(
+                        "profile_hydration",
+                        "profile_batch_failed",
+                        Some(format!("batch_size={}", chunk.len())),
+                        format!("Failed to hydrate Zalo member profiles: {error}"),
+                    );
+                    profile_hydration.warnings.push(warning.clone());
+                    warnings.push(warning);
+                }
+            }
+        }
+
+        profile_hydration.failed = profile_hydration
+            .attempted
+            .saturating_sub(profile_hydration.succeeded);
+        if profile_hydration.failed > 0 && profile_hydration.warnings.is_empty() {
+            let warning = group_member_scan_warning(
+                "profile_hydration",
+                "profiles_incomplete",
+                Some(format!("count={}", profile_hydration.failed)),
+                "Zalo did not return a profile for every locally evidenced UID",
+            );
+            profile_hydration.warnings.push(warning.clone());
+            warnings.push(warning);
+        }
+    }
+
+    let (members, local_evidence) = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|error| format!("Database lock error: {error}"))?;
+        let evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
+        let members = fetch_group_members_impl(&conn, conversation_id)?;
+        let mut diagnostics = evidence.diagnostics;
+        diagnostics.committed_uid_count = local_committed_uid_count;
+        (members, diagnostics)
+    };
+
+    if !direct_snapshot.complete && direct_snapshot.warning.is_none() {
+        warnings.push(group_member_scan_warning(
+            "overall",
+            "membership_snapshot_incomplete",
+            Some(format!("conversation_id={conversation_id}")),
+            "Results are UIDs evidenced for this conversation, not a complete provider member list",
+        ));
+    }
+
+    let partial_result = !direct_snapshot.complete
+        || history_backfill.outcome != GroupMessageBackfillOutcome::Completed
+        || board_scan_failed
+        || !board.warnings.is_empty()
+        || profile_hydration.failed > 0
+        || local_evidence.rejected_uid_count > 0;
+    let membership_complete = direct_snapshot.complete;
+    let pages_attempted = board.pages_attempted;
+    let pages_succeeded = board.pages_succeeded;
+    let messages_scanned = local_evidence.messages_scanned;
+    let profile_hydrated_count = profile_hydration.succeeded;
+    let stop_reason = board
+        .stop_reason
+        .clone()
+        .or_else(|| history_backfill.stop_reason.clone());
+    let warning = (!warnings.is_empty()).then(|| {
+        warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
+
+    Ok(GroupMemberScanResult {
+        discovered_count: members.len(),
+        members,
+        profile_hydrated_count,
+        membership_complete,
+        pages_attempted,
+        pages_succeeded,
+        messages_scanned,
+        stop_reason,
+        warning,
+        diagnostics: GroupMemberScanDiagnostics {
+            direct_snapshot,
+            board,
+            history_backfill,
+            local_evidence,
+            profile_hydration,
+            partial_result,
+            warnings,
+        },
+    })
 }

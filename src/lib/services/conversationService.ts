@@ -666,3 +666,142 @@ export function getBridgeRefCount(): number {
 export function getBridgePromise(): Promise<() => void> | null {
   return bridgePromise;
 }
+
+export interface GroupCategoryInfo {
+  id: number;
+  name: string;
+}
+
+export interface GroupMemberDetail {
+  identity_id: number | null;
+  external_id: string | null;
+  display_name: string;
+  avatar_url: string | null;
+  participant_role: string;
+  lead_id: number | null;
+  lead_name: string | null;
+  categories: GroupCategoryInfo[];
+}
+
+export interface GroupMemberScanWarning {
+  stage: string;
+  code: string;
+  context: string | null;
+  message: string;
+}
+
+export interface GroupMemberDirectSnapshotDiagnostics {
+  attempted: boolean;
+  complete: boolean;
+  member_count: number;
+  warning: GroupMemberScanWarning | null;
+}
+
+export interface GroupBoardWarning {
+  source: string;
+  code: string;
+  context: string | null;
+  message: string;
+}
+
+export interface GroupMemberBoardDiagnostics {
+  attempted: boolean;
+  pages_attempted: number;
+  pages_succeeded: number;
+  items_inspected: number;
+  polls_attempted: number;
+  polls_succeeded: number;
+  committed_uid_count: number;
+  stop_reason: string | null;
+  warnings: GroupBoardWarning[];
+}
+
+export type GroupMessageBackfillOutcome = 'completed' | 'timed_out' | 'unavailable' | 'failed';
+
+export interface GroupMessageBackfillReport {
+  provider_account_key: string;
+  scope: 'account_group_messages';
+  outcome: GroupMessageBackfillOutcome;
+  joined_existing_run: boolean;
+  pages_requested: number;
+  pages_received: number;
+  start_cursor: string | null;
+  durable_cursor: string | null;
+  stop_reason: string | null;
+  warning: string | null;
+}
+
+export interface GroupMemberLocalEvidenceDiagnostics {
+  messages_scanned: number;
+  participant_uid_count: number;
+  sender_uid_count: number;
+  mention_uid_count: number;
+  reaction_uid_count: number;
+  quote_owner_uid_count: number;
+  total_uid_count: number;
+  committed_uid_count: number;
+  rejected_uid_count: number;
+}
+
+export interface GroupMemberProfileHydrationDiagnostics {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  warnings: GroupMemberScanWarning[];
+}
+
+export interface GroupMemberScanDiagnostics {
+  direct_snapshot: GroupMemberDirectSnapshotDiagnostics;
+  board: GroupMemberBoardDiagnostics;
+  history_backfill: GroupMessageBackfillReport;
+  local_evidence: GroupMemberLocalEvidenceDiagnostics;
+  profile_hydration: GroupMemberProfileHydrationDiagnostics;
+  partial_result: boolean;
+  warnings: GroupMemberScanWarning[];
+}
+
+export interface GroupMemberScanResult {
+  members: GroupMemberDetail[];
+  discovered_count: number;
+  profile_hydrated_count: number;
+  membership_complete: boolean;
+  pages_attempted: number;
+  pages_succeeded: number;
+  messages_scanned: number;
+  stop_reason: string | null;
+  warning: string | null;
+  diagnostics: GroupMemberScanDiagnostics;
+}
+
+export interface ImportMemberItem {
+  identity_id?: number | null;
+  external_id?: string | null;
+  display_name: string;
+  avatar_url?: string | null;
+  phone?: string | null;
+}
+
+export interface BatchImportGroupMembersRequest {
+  conversation_id: number;
+  members: ImportMemberItem[];
+  category_ids: number[];
+  new_category_name?: string | null;
+  group_title: string;
+  skip_existing?: boolean;
+}
+
+export interface BatchImportGroupMembersResult {
+  imported_count: number;
+  updated_count: number;
+  skipped_count: number;
+  assigned_category_ids: number[];
+}
+
+export const getGroupMembersUnrestricted = (conversationId: number) =>
+  invoke<GroupMemberDetail[]>('get_group_members_unrestricted', { conversationId });
+
+export const syncAndDeepScanGroupMembers = (conversationId: number) =>
+  invoke<GroupMemberScanResult>('sync_and_deep_scan_group_members', { conversationId });
+
+export const batchImportGroupMembersToLeads = (request: BatchImportGroupMembersRequest) =>
+  invoke<BatchImportGroupMembersResult>('batch_import_group_members_to_leads', { request });

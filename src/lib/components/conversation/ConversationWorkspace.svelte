@@ -53,6 +53,7 @@
   import { AlertCircle, RefreshCw, Users, MessageSquare, Trash2, Search } from 'lucide-svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
   import ImageGalleryModal, { type GalleryImage } from './ImageGalleryModal.svelte';
+  import GroupMembersModal from './GroupMembersModal.svelte';
 
 
   let {
@@ -70,6 +71,8 @@
   let galleryOpen = $state(false);
   let galleryImages = $state<GalleryImage[]>([]);
   let galleryIndex = $state(0);
+  let groupMembersModalOpen = $state(false);
+
 
   function handleImageClick(clickedUrl: string, _clickedMessage: ConversationMessage) {
     const items = currentVariant?.items ?? [];
@@ -801,13 +804,18 @@
             <div class="min-w-0">
               <h2 class="font-semibold text-sm truncate">{selectedItem.title}</h2>
               {#if selectedItem.kind === 'group'}
-                <div class="flex items-center gap-1.5 text-xs text-muted-foreground truncate">
-                  <Users class="w-3.5 h-3.5 shrink-0" />
-                  <span>{selectedItem.participantCount} thành viên</span>
+                <button
+                  type="button"
+                  class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary transition-colors cursor-pointer truncate text-left group"
+                  onclick={() => (groupMembersModalOpen = true)}
+                  title="Xem các thành viên đã đồng bộ và thêm Lead/Category"
+                >
+                  <Users class="w-3.5 h-3.5 shrink-0 group-hover:scale-110 transition-transform" />
+                  <span class="font-medium underline decoration-dashed underline-offset-2">{selectedItem.participantCount} thành viên</span>
                   {#if getParticipantsPreview(selectedItem)}
                     <span class="truncate">({getParticipantsPreview(selectedItem)})</span>
                   {/if}
-                </div>
+                </button>
               {/if}
             </div>
           </div>
@@ -969,5 +977,11 @@
     initialIndex={galleryIndex}
     onClose={() => (galleryOpen = false)}
     onIndexChange={(idx) => (galleryIndex = idx)}
+  />
+  <GroupMembersModal
+    open={groupMembersModalOpen}
+    conversationId={selectedItem?.conversationId ?? null}
+    groupTitle={selectedItem?.title ?? ''}
+    onClose={() => (groupMembersModalOpen = false)}
   />
 </div>

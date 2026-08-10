@@ -54,7 +54,7 @@ pub fn normalize_group_info(
         }
     }
 
-    let participants = all_uids
+    let participants: Vec<NormalizedGroupParticipant> = all_uids
         .into_iter()
         .map(|uid| {
             let role = if info.admin_ids.contains(&uid) || info.creator_id == uid {
@@ -96,7 +96,9 @@ pub fn normalize_group_info(
         })
         .collect();
 
-    let membership_complete = info.has_more_member == 0;
+    let reported_member_count = info.total_member as usize;
+    let membership_complete = info.has_more_member == 0
+        && (reported_member_count == 0 || participants.len() >= reported_member_count);
     let occurred_at = crate::conversation::types::utc_now();
 
     NormalizedGroupSnapshot {
@@ -115,6 +117,247 @@ pub struct NormalizedProfile {
     pub external_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+}
+
+const GROUP_BOARD_PAGE_SIZE: i64 = 50;
+const GROUP_BOARD_MAX_PAGES: usize = 100;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupBoardWarning {
+    pub source: String,
+    pub code: String,
+    pub context: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GroupBoardUidReport {
+    pub uids: Vec<String>,
+    pub pages_attempted: usize,
+    pub pages_succeeded: usize,
+    pub items_inspected: usize,
+    pub polls_attempted: usize,
+    pub polls_succeeded: usize,
+    pub stop_reason: Option<String>,
+    pub warnings: Vec<GroupBoardWarning>,
+}
+
+#[async_trait]
+pub(crate) trait GroupBoardSource: Send + Sync {
+    async fn get_list_board_page(
+        &self,
+        group_id: &str,
+        page: i64,
+        count: i64,
+    ) -> anyhow::Result<zca_rs::apis::group::GetListBoardResponse>;
+
+    async fn get_poll_detail(&self, poll_id: u64) -> anyhow::Result<zca_rs::models::PollDetail>;
+}
+
+#[async_trait]
+impl GroupBoardSource for zca_rs::Zalo {
+    async fn get_list_board_page(
+        &self,
+        group_id: &str,
+        page: i64,
+        count: i64,
+    ) -> anyhow::Result<zca_rs::apis::group::GetListBoardResponse> {
+        self.get_list_board(group_id, Some(page), Some(count))
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+
+    async fn get_poll_detail(&self, poll_id: u64) -> anyhow::Result<zca_rs::models::PollDetail> {
+        zca_rs::Zalo::get_poll_detail(self, poll_id)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+}
+
+fn normalized_uid(value: &serde_json::Value) -> Option<String> {
+    let normalized = match value {
+        serde_json::Value::String(value) => value.trim().to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        _ => return None,
+    };
+    let lowercase = normalized.to_ascii_lowercase();
+    (!normalized.is_empty() && !matches!(lowercase.as_str(), "0" | "-1" | "null" | "undefined"))
+        .then_some(normalized)
+}
+
+fn poll_id(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(value) => value.as_u64().filter(|value| *value > 0),
+        serde_json::Value::String(value) => {
+            value.trim().parse::<u64>().ok().filter(|value| *value > 0)
+        }
+        _ => None,
+    }
+}
+
+fn collect_board_payload_candidates(
+    payload: &serde_json::Value,
+    uids: &mut std::collections::HashSet<String>,
+    poll_ids: &mut std::collections::HashSet<u64>,
+) {
+    let Some(object) = payload.as_object() else {
+        return;
+    };
+
+    for key in [
+        "creator",
+        "creator_id",
+        "creatorId",
+        "owner_id",
+        "ownerId",
+        "uid",
+        "user_id",
+        "userId",
+        "editor_id",
+        "editorId",
+    ] {
+        if let Some(uid) = object.get(key).and_then(normalized_uid) {
+            uids.insert(uid);
+        }
+    }
+
+    for key in ["poll_id", "pollId"] {
+        if let Some(id) = object.get(key).and_then(poll_id) {
+            poll_ids.insert(id);
+        }
+    }
+
+    if let Some(options) = object.get("options").and_then(serde_json::Value::as_array) {
+        for option in options {
+            if let Some(voters) = option.get("voters").and_then(serde_json::Value::as_array) {
+                for voter in voters {
+                    if let Some(uid) = normalized_uid(voter) {
+                        uids.insert(uid);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn decoded_board_params(
+    data: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, serde_json::Error> {
+    let Some(params) = data.get("params") else {
+        return Ok(None);
+    };
+    match params {
+        serde_json::Value::String(value) => serde_json::from_str(value).map(Some),
+        serde_json::Value::Object(_) | serde_json::Value::Array(_) => Ok(Some(params.clone())),
+        serde_json::Value::Null => Ok(None),
+        _ => Ok(None),
+    }
+}
+
+pub(crate) async fn fetch_group_board_uid_report_with_limits(
+    source: &dyn GroupBoardSource,
+    group_id: &str,
+    page_size: i64,
+    max_pages: usize,
+) -> GroupBoardUidReport {
+    let mut report = GroupBoardUidReport::default();
+    let mut uids = std::collections::HashSet::new();
+    let mut fetched_poll_ids = std::collections::HashSet::new();
+    let mut seen_page_signatures = std::collections::HashSet::new();
+
+    for page_index in 0..max_pages {
+        let page = page_index as i64 + 1;
+        report.pages_attempted += 1;
+        let response = match source.get_list_board_page(group_id, page, page_size).await {
+            Ok(response) => response,
+            Err(error) => {
+                report.stop_reason = Some("board_page_failed".to_string());
+                report.warnings.push(GroupBoardWarning {
+                    source: "board".to_string(),
+                    code: "board_page_failed".to_string(),
+                    context: Some(format!("page={page}")),
+                    message: error.to_string(),
+                });
+                break;
+            }
+        };
+        report.pages_succeeded += 1;
+
+        if response.items.is_empty() {
+            report.stop_reason = Some("empty_page".to_string());
+            break;
+        }
+
+        let signature = serde_json::to_string(&response.items)
+            .unwrap_or_else(|_| format!("page={page},count={}", response.items.len()));
+        if !seen_page_signatures.insert(signature) {
+            report.stop_reason = Some("repeated_page".to_string());
+            break;
+        }
+
+        let item_count = response.items.len();
+        for (item_index, item) in response.items.into_iter().enumerate() {
+            report.items_inspected += 1;
+            let mut item_poll_ids = std::collections::HashSet::new();
+            collect_board_payload_candidates(&item.data, &mut uids, &mut item_poll_ids);
+
+            match decoded_board_params(&item.data) {
+                Ok(Some(params)) => {
+                    collect_board_payload_candidates(&params, &mut uids, &mut item_poll_ids);
+                }
+                Ok(None) => {}
+                Err(error) => report.warnings.push(GroupBoardWarning {
+                    source: "board".to_string(),
+                    code: "invalid_params_json".to_string(),
+                    context: Some(format!("page={page},item={item_index}")),
+                    message: error.to_string(),
+                }),
+            }
+
+            for poll_id in item_poll_ids {
+                if !fetched_poll_ids.insert(poll_id) {
+                    continue;
+                }
+                report.polls_attempted += 1;
+                match source.get_poll_detail(poll_id).await {
+                    Ok(detail) => {
+                        report.polls_succeeded += 1;
+                        if let Some(uid) =
+                            normalized_uid(&serde_json::Value::String(detail.creator))
+                        {
+                            uids.insert(uid);
+                        }
+                        for option in detail.options {
+                            for voter in option.voters {
+                                if let Some(uid) = normalized_uid(&serde_json::Value::String(voter))
+                                {
+                                    uids.insert(uid);
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => report.warnings.push(GroupBoardWarning {
+                        source: "poll".to_string(),
+                        code: "poll_detail_failed".to_string(),
+                        context: Some(format!("poll_id={poll_id}")),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+        }
+
+        if item_count < page_size.max(1) as usize {
+            report.stop_reason = Some("short_page".to_string());
+            break;
+        }
+    }
+
+    if report.stop_reason.is_none() {
+        report.stop_reason = Some("max_pages_reached".to_string());
+    }
+    report.uids = uids.into_iter().collect();
+    report.uids.sort();
+    report
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -358,6 +601,64 @@ pub trait ZaloClient: Send + Sync {
     ) -> anyhow::Result<Vec<NormalizedProfile>> {
         Ok(Vec::new())
     }
+    async fn fetch_group_member_profiles(
+        &self,
+        user_ids: &[String],
+    ) -> anyhow::Result<Vec<NormalizedProfile>> {
+        self.fetch_user_profiles(user_ids).await
+    }
+
+    async fn fetch_group_link_detail(&self, _group_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+
+    async fn fetch_group_chat_history_with_cursor(
+        &self,
+        _group_id: &str,
+        _count: Option<i64>,
+        _last_action_id: Option<&str>,
+    ) -> anyhow::Result<zca_rs::apis::group::GetGroupChatHistoryResponse> {
+        Err(anyhow::anyhow!("Not implemented"))
+    }
+
+    async fn fetch_group_chat_history(
+        &self,
+        group_id: &str,
+        count: Option<i64>,
+    ) -> anyhow::Result<Vec<zca_rs::models::GroupMessage>> {
+        let resp = self
+            .fetch_group_chat_history_with_cursor(group_id, count, None)
+            .await?;
+        Ok(resp.group_msgs)
+    }
+
+    async fn fetch_group_link_members(
+        &self,
+        _link: &str,
+        _page: u32,
+    ) -> anyhow::Result<Option<(Vec<NormalizedProfile>, bool)>> {
+        Ok(None)
+    }
+
+    async fn fetch_group_invite_box_members(
+        &self,
+        _group_id: &str,
+        _page: u32,
+    ) -> anyhow::Result<Option<Vec<NormalizedProfile>>> {
+        Ok(None)
+    }
+
+    async fn fetch_group_board_uids(&self, _group_id: &str) -> anyhow::Result<Vec<String>> {
+        Ok(self.fetch_group_board_uid_report(_group_id).await?.uids)
+    }
+
+    async fn fetch_group_board_uid_report(
+        &self,
+        _group_id: &str,
+    ) -> anyhow::Result<GroupBoardUidReport> {
+        Ok(GroupBoardUidReport::default())
+    }
+
     fn stop(&self);
 }
 
@@ -601,6 +902,194 @@ impl ZaloClient for RealZaloClient {
         }
 
         Ok(results)
+    }
+
+    async fn fetch_group_chat_history_with_cursor(
+        &self,
+        group_id: &str,
+        count: Option<i64>,
+        last_action_id: Option<&str>,
+    ) -> anyhow::Result<zca_rs::apis::group::GetGroupChatHistoryResponse> {
+        self.inner
+            .get_group_chat_history_with_cursor(group_id, count, last_action_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch group chat history: {e}"))
+    }
+
+    async fn fetch_group_member_profiles(
+        &self,
+        user_ids: &[String],
+    ) -> anyhow::Result<Vec<NormalizedProfile>> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::new();
+        for chunk in user_ids.chunks(50) {
+            let response = self
+                .inner
+                .get_group_members_info(chunk.to_vec())
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to fetch Zalo group member profiles: {error}")
+                })?;
+
+            for (raw_id, profile) in response.profiles {
+                let external_id = if !profile.id.trim().is_empty() {
+                    profile.id.trim().to_string()
+                } else {
+                    raw_id
+                        .rsplit_once('_')
+                        .map(|(uid, _)| uid)
+                        .unwrap_or(&raw_id)
+                        .to_string()
+                };
+                let display_name = if !profile.display_name.trim().is_empty() {
+                    Some(profile.display_name.trim().to_string())
+                } else if !profile.zalo_name.trim().is_empty() {
+                    Some(profile.zalo_name.trim().to_string())
+                } else {
+                    None
+                };
+                let avatar_url =
+                    (!profile.avatar.trim().is_empty()).then(|| profile.avatar.trim().to_string());
+
+                results.push(NormalizedProfile {
+                    external_id,
+                    display_name,
+                    avatar_url,
+                });
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn fetch_group_link_detail(&self, group_id: &str) -> anyhow::Result<Option<String>> {
+        let resp = self
+            .inner
+            .get_group_link_detail(group_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch group link detail: {e}"))?;
+        Ok(resp.link)
+    }
+
+    async fn fetch_group_link_members(
+        &self,
+        link: &str,
+        page: u32,
+    ) -> anyhow::Result<Option<(Vec<NormalizedProfile>, bool)>> {
+        let resp = self
+            .inner
+            .get_group_link_info(link, Some(page))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch group link info: {e}"))?;
+
+        let mut profiles = Vec::new();
+        for mem in resp.current_mems {
+            let clean_id = mem.id.trim().to_string();
+            let display_name = if !mem.d_name.trim().is_empty() {
+                Some(mem.d_name.trim().to_string())
+            } else if !mem.zalo_name.trim().is_empty() {
+                Some(mem.zalo_name.trim().to_string())
+            } else {
+                None
+            };
+            let avatar_url = if !mem.avatar.trim().is_empty() {
+                Some(mem.avatar.trim().to_string())
+            } else {
+                None
+            };
+
+            profiles.push(NormalizedProfile {
+                external_id: clean_id,
+                display_name,
+                avatar_url,
+            });
+        }
+
+        let has_more = resp.has_more_member == 1;
+        Ok(Some((profiles, has_more)))
+    }
+
+    async fn fetch_group_invite_box_members(
+        &self,
+        group_id: &str,
+        page: u32,
+    ) -> anyhow::Result<Option<Vec<NormalizedProfile>>> {
+        let resp = self
+            .inner
+            .get_group_invite_box_info(group_id, Some(50), Some(page))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch group invite box info: {e}"))?;
+
+        let mut profiles = Vec::new();
+
+        if let Some(inviter) = resp.inviter_info {
+            let id = inviter.id.trim().to_string();
+            if !id.is_empty() {
+                let display_name = if !inviter.d_name.trim().is_empty() {
+                    Some(inviter.d_name.trim().to_string())
+                } else if !inviter.zalo_name.trim().is_empty() {
+                    Some(inviter.zalo_name.trim().to_string())
+                } else {
+                    None
+                };
+                let avatar_url =
+                    (!inviter.avatar.trim().is_empty()).then(|| inviter.avatar.trim().to_string());
+                profiles.push(NormalizedProfile {
+                    external_id: id,
+                    display_name,
+                    avatar_url,
+                });
+            }
+        }
+
+        if let Some(creator) = resp.gr_creator_info {
+            let id = creator.id.trim().to_string();
+            if !id.is_empty() {
+                let display_name = if !creator.d_name.trim().is_empty() {
+                    Some(creator.d_name.trim().to_string())
+                } else if !creator.zalo_name.trim().is_empty() {
+                    Some(creator.zalo_name.trim().to_string())
+                } else {
+                    None
+                };
+                let avatar_url =
+                    (!creator.avatar.trim().is_empty()).then(|| creator.avatar.trim().to_string());
+                profiles.push(NormalizedProfile {
+                    external_id: id,
+                    display_name,
+                    avatar_url,
+                });
+            }
+        }
+
+        if let Some(group_info) = resp.group_info {
+            let snapshot = normalize_group_info(&self.provider_account_key, group_info);
+            for p in snapshot.participants {
+                profiles.push(NormalizedProfile {
+                    external_id: p.identity.external_id,
+                    display_name: p.identity.display_name,
+                    avatar_url: p.identity.avatar_url,
+                });
+            }
+        }
+
+        Ok(Some(profiles))
+    }
+
+    async fn fetch_group_board_uid_report(
+        &self,
+        group_id: &str,
+    ) -> anyhow::Result<GroupBoardUidReport> {
+        Ok(fetch_group_board_uid_report_with_limits(
+            self.inner.as_ref(),
+            group_id,
+            GROUP_BOARD_PAGE_SIZE,
+            GROUP_BOARD_MAX_PAGES,
+        )
+        .await)
     }
 
     async fn send_part(

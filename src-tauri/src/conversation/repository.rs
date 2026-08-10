@@ -15,6 +15,7 @@ pub use crate::conversation::zalo::normalizer::{
 use crate::db::open_db_connection;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static LAST_PROVIDER_CLIENT_ID: AtomicU64 = AtomicU64::new(0);
@@ -65,6 +66,37 @@ pub struct NormalizedIdentity {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub lead_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZaloUidCandidate {
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMemberLeadImportItem {
+    pub identity_id: Option<i64>,
+    pub external_id: Option<String>,
+    pub phone: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMemberLeadImportRequest {
+    pub conversation_id: i64,
+    pub members: Vec<GroupMemberLeadImportItem>,
+    pub category_ids: Vec<i32>,
+    pub new_category_name: Option<String>,
+    pub skip_existing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMemberLeadImportResult {
+    pub imported_count: usize,
+    pub updated_count: usize,
+    pub skipped_count: usize,
+    pub assigned_category_ids: Vec<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +182,33 @@ struct PendingMessageReaction {
     reaction: String,
     removed: bool,
     occurred_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct ExistingZaloIdentity {
+    id: i64,
+    identity_namespace: String,
+    lead_id: Option<i64>,
+    normalized_address: Option<String>,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+    profile_synced_at: Option<String>,
+    profile_sync_error: Option<String>,
+    profile_sync_attempts: i64,
+    next_profile_retry_at: Option<String>,
+    link_source: String,
+    link_confidence: Option<f64>,
+    verified_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedGroupMemberImport {
+    identity_id: i64,
+    external_id: String,
+    display_name: String,
+    linked_lead_id: Option<i64>,
+    phone: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,6 +434,322 @@ impl ConversationRepository {
         Ok(bytes as u64)
     }
 
+    pub fn attach_zalo_uids_to_conversation(
+        &self,
+        conversation_id: i64,
+        candidates: &[ZaloUidCandidate],
+    ) -> Result<Vec<i64>> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let (channel, kind): (String, String) = tx.query_row(
+            "SELECT ca.channel, cc.kind
+             FROM channel_conversations cc
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             WHERE cc.id = ?1",
+            [conversation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if channel != "zalo" || kind != "group" {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "conversation {conversation_id} is not a Zalo group"
+            )));
+        }
+
+        let mut deduplicated = BTreeMap::<String, ZaloUidCandidate>::new();
+        for candidate in candidates {
+            let external_id = validated_zalo_uid(&candidate.external_id)?;
+            let entry =
+                deduplicated
+                    .entry(external_id.clone())
+                    .or_insert_with(|| ZaloUidCandidate {
+                        external_id,
+                        display_name: None,
+                        avatar_url: None,
+                    });
+            if non_empty(candidate.display_name.as_deref()).is_some() {
+                entry.display_name = candidate.display_name.clone();
+            }
+            if non_empty(candidate.avatar_url.as_deref()).is_some() {
+                entry.avatar_url = candidate.avatar_url.clone();
+            }
+        }
+
+        let now = utc_now();
+        let mut identity_ids = Vec::with_capacity(deduplicated.len());
+        for candidate in deduplicated.values() {
+            let identity_id = canonicalize_zalo_uid_tx(&tx, candidate, None, &now)?;
+            tx.execute(
+                "INSERT INTO conversation_participants
+                 (conversation_id, identity_id, participant_role, joined_at, left_at)
+                 VALUES (?1, ?2, 'member', ?3, NULL)
+                 ON CONFLICT(conversation_id, identity_id) DO UPDATE SET
+                     joined_at = COALESCE(conversation_participants.joined_at, excluded.joined_at),
+                     left_at = NULL",
+                params![conversation_id, identity_id, now],
+            )?;
+            identity_ids.push(identity_id);
+        }
+
+        tx.commit()?;
+        Ok(identity_ids)
+    }
+
+    pub fn import_group_members_to_leads(
+        &self,
+        request: &GroupMemberLeadImportRequest,
+    ) -> Result<GroupMemberLeadImportResult> {
+        if request.members.is_empty() {
+            return Err(invalid_group_member_import(
+                "At least one group member is required",
+            ));
+        }
+
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let (channel, kind, conversation_title): (String, String, Option<String>) = tx
+            .query_row(
+                "SELECT ca.channel, cc.kind, cc.title
+                 FROM channel_conversations cc
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 WHERE cc.id = ?1",
+                [request.conversation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                invalid_group_member_import(format!(
+                    "Conversation {} was not found",
+                    request.conversation_id
+                ))
+            })?;
+        if channel != "zalo" || kind != "group" {
+            return Err(invalid_group_member_import(format!(
+                "Conversation {} is not a Zalo group",
+                request.conversation_id
+            )));
+        }
+
+        let mut resolved_members = BTreeMap::<i64, ResolvedGroupMemberImport>::new();
+        for member in &request.members {
+            let resolved = resolve_group_member_import_tx(&tx, request.conversation_id, member)?;
+            match resolved_members.entry(resolved.identity_id) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(resolved);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let existing = entry.get_mut();
+                    match (existing.phone.as_deref(), resolved.phone.as_deref()) {
+                        (Some(current), Some(next)) if current != next => {
+                            return Err(invalid_group_member_import(format!(
+                                "Conflicting phone values for identity {}",
+                                existing.identity_id
+                            )));
+                        }
+                        (None, Some(_)) => existing.phone = resolved.phone,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let mut category_ids = request
+            .category_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for category_id in &category_ids {
+            if *category_id <= 0 {
+                return Err(invalid_group_member_import(format!(
+                    "Invalid category ID {category_id}"
+                )));
+            }
+            let exists = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM categories WHERE id = ?1)",
+                [category_id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !exists {
+                return Err(invalid_group_member_import(format!(
+                    "Category {category_id} was not found"
+                )));
+            }
+        }
+        if let Some(category_name) = request
+            .new_category_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            tx.execute(
+                "INSERT INTO categories (name) VALUES (?1)
+                 ON CONFLICT(name) DO NOTHING",
+                [category_name],
+            )?;
+            let category_id = tx.query_row(
+                "SELECT id FROM categories WHERE name = ?1",
+                [category_name],
+                |row| row.get::<_, i32>(0),
+            )?;
+            category_ids.insert(category_id);
+        }
+
+        let now = utc_now();
+        let group_name = conversation_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or("Zalo Group");
+        let mut imported_count = 0;
+        let mut updated_count = 0;
+        let mut skipped_count = 0;
+
+        for member in resolved_members.values() {
+            let exact_uid_lead_id = if member.linked_lead_id.is_none() {
+                exact_lead_id_for_zalo_uid_tx(&tx, &member.external_id)?
+            } else {
+                None
+            };
+            let target_lead_id = match member.linked_lead_id.or(exact_uid_lead_id) {
+                Some(lead_id) => {
+                    let exists = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM leads WHERE id = ?1)",
+                        [lead_id],
+                        |row| row.get::<_, bool>(0),
+                    )?;
+                    if !exists {
+                        return Err(invalid_group_member_import(format!(
+                            "Identity {} links to missing lead {lead_id}",
+                            member.identity_id
+                        )));
+                    }
+                    if request.skip_existing {
+                        skipped_count += 1;
+                    } else {
+                        tx.execute(
+                            "UPDATE leads
+                             SET last_activity = ?1,
+                                 phone = CASE
+                                     WHEN TRIM(COALESCE(phone, '')) = ''
+                                     THEN COALESCE(?2, phone)
+                                     ELSE phone
+                                 END,
+                                 has_zalo = 1,
+                                 zalo_uid = COALESCE(NULLIF(TRIM(zalo_uid), ''), ?3),
+                                 zalo_status = 'VERIFIED_EXIST'
+                             WHERE id = ?4",
+                            params![now, member.phone, member.external_id, lead_id],
+                        )?;
+                        updated_count += 1;
+                    }
+                    lead_id
+                }
+                None => {
+                    let about = format!(
+                        "Imported from Zalo group conversation {}",
+                        request.conversation_id
+                    );
+                    tx.execute(
+                        "INSERT INTO leads
+                         (name, company, status, value, last_activity, owner, email, phone, about,
+                          address, has_zalo, zalo_reached, zalo_uid, zalo_status,
+                          relationship_status)
+                         VALUES (?1, ?2, 'New', 0, ?3, 'System', '', ?4, ?5, '', 1, 0, ?6,
+                                 'VERIFIED_EXIST', 'UNKNOWN')",
+                        params![
+                            member.display_name,
+                            group_name,
+                            now,
+                            member.phone.as_deref().unwrap_or(""),
+                            about,
+                            member.external_id,
+                        ],
+                    )?;
+                    imported_count += 1;
+                    tx.last_insert_rowid()
+                }
+            };
+
+            let linked = tx.execute(
+                "UPDATE channel_identities
+                 SET lead_id = ?1,
+                     link_source = 'group_import',
+                     link_confidence = 1.0,
+                     verified_at = ?2,
+                     updated_at = ?2
+                 WHERE id = ?3 AND channel = 'zalo' AND identity_namespace = 'zalo_uid'",
+                params![target_lead_id, now, member.identity_id],
+            )?;
+            if linked != 1 {
+                return Err(invalid_group_member_import(format!(
+                    "Canonical identity {} changed during import",
+                    member.identity_id
+                )));
+            }
+
+            for category_id in &category_ids {
+                tx.execute(
+                    "INSERT INTO lead_categories (lead_id, category_id) VALUES (?1, ?2)
+                     ON CONFLICT(lead_id, category_id) DO NOTHING",
+                    params![target_lead_id, category_id],
+                )?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(GroupMemberLeadImportResult {
+            imported_count,
+            updated_count,
+            skipped_count,
+            assigned_category_ids: category_ids.into_iter().collect(),
+        })
+    }
+
+    pub fn list_group_member_external_ids(&self, conversation_id: i64) -> Result<Vec<String>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut statement = conn.prepare(
+            "SELECT external_id
+             FROM (
+                 SELECT ci.external_id AS external_id
+                 FROM conversation_participants cp
+                 JOIN channel_identities ci ON ci.id = cp.identity_id
+                 WHERE cp.conversation_id = ?1 AND cp.left_at IS NULL
+
+                 UNION
+
+                 SELECT ci.external_id
+                 FROM messages m
+                 JOIN channel_identities ci ON ci.id = m.sender_identity_id
+                 WHERE m.conversation_id = ?1 AND m.sender_identity_id IS NOT NULL
+
+                 UNION
+
+                 SELECT COALESCE(ci.external_id, mm.external_id)
+                 FROM message_mentions mm
+                 JOIN messages m ON m.id = mm.message_id
+                 LEFT JOIN channel_identities ci ON ci.id = mm.identity_id
+                 WHERE m.conversation_id = ?1
+
+                 UNION
+
+                 SELECT mr.actor_external_id
+                 FROM message_reactions mr
+                 JOIN messages m ON m.id = mr.message_id
+                 WHERE m.conversation_id = ?1 AND mr.removed_at IS NULL
+
+                 UNION
+
+                 SELECT ci.external_id
+                 FROM messages m
+                 JOIN channel_identities ci ON ci.id = m.reply_sender_identity_id
+                 WHERE m.conversation_id = ?1 AND m.reply_sender_identity_id IS NOT NULL
+             )
+             WHERE external_id IS NOT NULL AND TRIM(external_id) <> ''
+             ORDER BY external_id",
+        )?;
+        let rows = statement.query_map([conversation_id], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
     pub fn apply_normalized_message(&self, message: &NormalizedMessage) -> Result<AppliedMessage> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
@@ -390,28 +765,64 @@ impl ConversationRepository {
         )?;
 
         let identity_id = if let Some(identity) = &message.participant {
-            Some(tx.query_row(
-                "INSERT INTO channel_identities
-                 (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-                 ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
-                     lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
-                     display_name = COALESCE(excluded.display_name, channel_identities.display_name),
-                     avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),
-                     updated_at = excluded.updated_at
-                 RETURNING id",
-                params![
+            if message.channel == Channel::Zalo {
+                Some(canonicalize_zalo_uid_tx(
+                    &tx,
+                    &ZaloUidCandidate {
+                        external_id: identity.external_id.clone(),
+                        display_name: identity.display_name.clone(),
+                        avatar_url: identity.avatar_url.clone(),
+                    },
                     identity.lead_id,
-                    message.channel.as_str(),
-                    identity.identity_namespace,
-                    identity.external_id,
-                    identity.display_name,
-                    identity.avatar_url,
-                    if identity.lead_id.is_some() { "provider_match" } else { "unlinked" },
-                    now
-                ],
-                |row| row.get::<_, i64>(0),
-            )?)
+                    now,
+                )?)
+            } else {
+                Some(tx.query_row(
+                    "INSERT INTO channel_identities
+                     (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                     ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
+                         lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
+                         display_name = COALESCE(excluded.display_name, channel_identities.display_name),
+                         avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),
+                         updated_at = excluded.updated_at
+                     RETURNING id",
+                    params![
+                        identity.lead_id,
+                        message.channel.as_str(),
+                        identity.identity_namespace,
+                        identity.external_id,
+                        identity.display_name,
+                        identity.avatar_url,
+                        if identity.lead_id.is_some() { "provider_match" } else { "unlinked" },
+                        now
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            }
+        } else {
+            None
+        };
+
+        let reply_sender_identity_id = if message.channel == Channel::Zalo {
+            match message
+                .reply
+                .as_ref()
+                .map(|reply| reply.sender_external_id.trim())
+                .filter(|external_id| !external_id.is_empty())
+            {
+                Some(external_id) => Some(canonicalize_zalo_uid_tx(
+                    &tx,
+                    &ZaloUidCandidate {
+                        external_id: external_id.to_string(),
+                        display_name: None,
+                        avatar_url: None,
+                    },
+                    None,
+                    now,
+                )?),
+                None => None,
+            }
         } else {
             None
         };
@@ -510,6 +921,7 @@ impl ConversationRepository {
                      provider_client_message_id = COALESCE(provider_client_message_id, ?3),
                      provider_timestamp = COALESCE(provider_timestamp, ?4),
                      raw_payload_json = COALESCE(?5, raw_payload_json),
+                     reply_sender_identity_id = COALESCE(reply_sender_identity_id, ?6),
                      status = CASE WHEN status IN ('sending', 'queued', 'failed') THEN 'sent' ELSE status END
                  WHERE id = ?1",
                 params![
@@ -518,6 +930,7 @@ impl ConversationRepository {
                     message.provider_client_message_id,
                     message.provider_timestamp,
                     message.raw_payload.as_ref().map(serde_json::Value::to_string),
+                    reply_sender_identity_id,
                 ],
             )?;
 
@@ -637,8 +1050,9 @@ impl ConversationRepository {
             "INSERT INTO messages
              (conversation_id, sender_identity_id, direction, provider_message_id,
               provider_client_message_id, local_request_id, content_type, text_content,
-              content_json, raw_payload_json, provider_timestamp, ingested_at, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+              content_json, raw_payload_json, provider_timestamp, ingested_at, status,
+              reply_sender_identity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 conversation_id,
                 sender_identity_id,
@@ -655,7 +1069,8 @@ impl ConversationRepository {
                     .map(serde_json::Value::to_string),
                 message.provider_timestamp,
                 message.ingested_at,
-                message.status.as_str()
+                message.status.as_str(),
+                reply_sender_identity_id,
             ],
         )?;
         let message_id = tx.last_insert_rowid();
@@ -1805,26 +2220,15 @@ impl ConversationRepository {
         let mut active_identity_ids = Vec::new();
 
         for participant in &snapshot.participants {
-            let identity_id: i64 = tx.query_row(
-                "INSERT INTO channel_identities
-                 (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
-                 VALUES (?1, 'zalo', ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-                 ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
-                     lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
-                     display_name = COALESCE(excluded.display_name, channel_identities.display_name),
-                     avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),
-                     updated_at = excluded.updated_at
-                 RETURNING id",
-                params![
-                    participant.identity.lead_id,
-                    participant.identity.identity_namespace,
-                    participant.identity.external_id,
-                    participant.identity.display_name,
-                    participant.identity.avatar_url,
-                    if participant.identity.lead_id.is_some() { "provider_match" } else { "unlinked" },
-                    now
-                ],
-                |row| row.get(0),
+            let identity_id = canonicalize_zalo_uid_tx(
+                &tx,
+                &ZaloUidCandidate {
+                    external_id: participant.identity.external_id.clone(),
+                    display_name: participant.identity.display_name.clone(),
+                    avatar_url: participant.identity.avatar_url.clone(),
+                },
+                participant.identity.lead_id,
+                now,
             )?;
 
             active_identity_ids.push(identity_id);
@@ -4221,6 +4625,425 @@ impl ConversationRepository {
         }
         Ok(pinned)
     }
+}
+
+fn invalid_group_member_import(message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(message.into())
+}
+
+fn resolve_group_member_import_tx(
+    tx: &rusqlite::Transaction<'_>,
+    conversation_id: i64,
+    item: &GroupMemberLeadImportItem,
+) -> Result<ResolvedGroupMemberImport> {
+    type IdentityRow = (i64, String, Option<String>, Option<i64>);
+
+    let requested_external_id = item
+        .external_id
+        .as_deref()
+        .map(validated_zalo_uid)
+        .transpose()?;
+    let identity_by_id = match item.identity_id {
+        Some(identity_id) => Some(
+            tx.query_row(
+                "SELECT id, external_id, display_name, lead_id
+                 FROM channel_identities
+                 WHERE id = ?1 AND channel = 'zalo' AND identity_namespace = 'zalo_uid'",
+                [identity_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                invalid_group_member_import(format!(
+                    "Canonical Zalo identity {identity_id} was not found"
+                ))
+            })?,
+        ),
+        None => None,
+    };
+    let identity_by_external_id = match requested_external_id.as_deref() {
+        Some(external_id) => Some(
+            tx.query_row(
+                "SELECT id, external_id, display_name, lead_id
+                 FROM channel_identities
+                 WHERE channel = 'zalo' AND identity_namespace = 'zalo_uid' AND external_id = ?1",
+                [external_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                invalid_group_member_import(format!(
+                    "Canonical Zalo identity {external_id:?} was not found"
+                ))
+            })?,
+        ),
+        None => None,
+    };
+
+    let identity: IdentityRow = match (identity_by_id, identity_by_external_id) {
+        (Some(by_id), Some(by_external_id)) if by_id.0 != by_external_id.0 => {
+            return Err(invalid_group_member_import(format!(
+                "identity_id {} conflicts with external_id {:?}",
+                by_id.0, by_external_id.1
+            )));
+        }
+        (Some(by_id), Some(_)) | (Some(by_id), None) => by_id,
+        (None, Some(by_external_id)) => by_external_id,
+        (None, None) => {
+            return Err(invalid_group_member_import(
+                "Each import item requires identity_id or external_id",
+            ));
+        }
+    };
+
+    let is_evidenced = tx.query_row(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM conversation_participants cp
+             WHERE cp.conversation_id = ?1 AND cp.identity_id = ?2 AND cp.left_at IS NULL
+
+             UNION ALL
+
+             SELECT 1
+             FROM messages m
+             WHERE m.conversation_id = ?1 AND m.sender_identity_id = ?2
+
+             UNION ALL
+
+             SELECT 1
+             FROM message_mentions mm
+             JOIN messages m ON m.id = mm.message_id
+             WHERE m.conversation_id = ?1
+               AND (mm.identity_id = ?2 OR mm.external_id = ?3)
+
+             UNION ALL
+
+             SELECT 1
+             FROM message_reactions mr
+             JOIN messages m ON m.id = mr.message_id
+             WHERE m.conversation_id = ?1
+               AND mr.actor_external_id = ?3
+               AND mr.removed_at IS NULL
+
+             UNION ALL
+
+             SELECT 1
+             FROM messages m
+             WHERE m.conversation_id = ?1 AND m.reply_sender_identity_id = ?2
+         )",
+        params![conversation_id, identity.0, identity.1],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !is_evidenced {
+        return Err(invalid_group_member_import(format!(
+            "Identity {} is not evidenced by conversation {conversation_id}",
+            identity.0
+        )));
+    }
+
+    let phone = item
+        .phone
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if phone.as_ref().is_some_and(|value| value.len() > 64) {
+        return Err(invalid_group_member_import(format!(
+            "Phone value for identity {} is too long",
+            identity.0
+        )));
+    }
+
+    Ok(ResolvedGroupMemberImport {
+        identity_id: identity.0,
+        external_id: identity.1,
+        display_name: non_empty(identity.2.as_deref())
+            .unwrap_or_else(|| "Thành viên Zalo".to_string()),
+        linked_lead_id: identity.3,
+        phone,
+    })
+}
+
+fn exact_lead_id_for_zalo_uid_tx(
+    tx: &rusqlite::Transaction<'_>,
+    external_id: &str,
+) -> Result<Option<i64>> {
+    let mut statement = tx.prepare(
+        "SELECT id
+         FROM leads
+         WHERE TRIM(COALESCE(zalo_uid, '')) = ?1
+         ORDER BY id
+         LIMIT 2",
+    )?;
+    let ids = statement
+        .query_map([external_id], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>>>()?;
+    if ids.len() > 1 {
+        return Err(invalid_group_member_import(format!(
+            "Multiple leads use exact Zalo UID {external_id:?}"
+        )));
+    }
+    Ok(ids.into_iter().next())
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn validated_zalo_uid(value: &str) -> Result<String> {
+    let normalized = value.trim();
+    let lowercase = normalized.to_ascii_lowercase();
+    if normalized.is_empty() || matches!(lowercase.as_str(), "0" | "-1" | "null" | "undefined") {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "invalid Zalo UID {value:?}"
+        )));
+    }
+    Ok(normalized.to_string())
+}
+
+fn canonicalize_zalo_uid_tx(
+    tx: &rusqlite::Transaction<'_>,
+    candidate: &ZaloUidCandidate,
+    preferred_lead_id: Option<i64>,
+    now: &str,
+) -> Result<i64> {
+    let external_id = validated_zalo_uid(&candidate.external_id)?;
+    let existing = {
+        let mut statement = tx.prepare(
+            "SELECT id, identity_namespace, lead_id, normalized_address, display_name, avatar_url,
+                    profile_synced_at, profile_sync_error, profile_sync_attempts,
+                    next_profile_retry_at, link_source, link_confidence, verified_at, created_at
+             FROM channel_identities
+             WHERE channel = 'zalo' AND external_id = ?1
+             ORDER BY
+                 CASE identity_namespace WHEN 'zalo_uid' THEN 0 ELSE 1 END,
+                 CASE WHEN lead_id IS NOT NULL THEN 0 ELSE 1 END,
+                 COALESCE(link_confidence, 0) DESC,
+                 id",
+        )?;
+        let rows = statement.query_map([&external_id], |row| {
+            Ok(ExistingZaloIdentity {
+                id: row.get(0)?,
+                identity_namespace: row.get(1)?,
+                lead_id: row.get(2)?,
+                normalized_address: row.get(3)?,
+                display_name: row.get(4)?,
+                avatar_url: row.get(5)?,
+                profile_synced_at: row.get(6)?,
+                profile_sync_error: row.get(7)?,
+                profile_sync_attempts: row.get(8)?,
+                next_profile_retry_at: row.get(9)?,
+                link_source: row.get(10)?,
+                link_confidence: row.get(11)?,
+                verified_at: row.get(12)?,
+                created_at: row.get(13)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>>>()?
+    };
+
+    let canonical = existing
+        .iter()
+        .find(|identity| identity.identity_namespace == "zalo_uid");
+    let linked = if canonical.is_some_and(|identity| identity.lead_id.is_some()) {
+        canonical
+    } else {
+        existing.iter().find(|identity| identity.lead_id.is_some())
+    };
+    let lead_id = canonical
+        .and_then(|identity| identity.lead_id)
+        .or_else(|| linked.and_then(|identity| identity.lead_id))
+        .or(preferred_lead_id);
+    let display_name = non_empty(candidate.display_name.as_deref())
+        .or_else(|| canonical.and_then(|identity| non_empty(identity.display_name.as_deref())))
+        .or_else(|| {
+            existing
+                .iter()
+                .find_map(|identity| non_empty(identity.display_name.as_deref()))
+        });
+    let avatar_url = non_empty(candidate.avatar_url.as_deref())
+        .or_else(|| canonical.and_then(|identity| non_empty(identity.avatar_url.as_deref())))
+        .or_else(|| {
+            existing
+                .iter()
+                .find_map(|identity| non_empty(identity.avatar_url.as_deref()))
+        });
+    let normalized_address = canonical
+        .and_then(|identity| identity.normalized_address.clone())
+        .or_else(|| {
+            existing
+                .iter()
+                .find_map(|identity| identity.normalized_address.clone())
+        });
+    let profile_synced_at = existing
+        .iter()
+        .filter_map(|identity| identity.profile_synced_at.clone())
+        .max();
+    let profile_sync_error = canonical
+        .and_then(|identity| identity.profile_sync_error.clone())
+        .or_else(|| {
+            existing
+                .iter()
+                .find_map(|identity| identity.profile_sync_error.clone())
+        });
+    let profile_sync_attempts = existing
+        .iter()
+        .map(|identity| identity.profile_sync_attempts)
+        .max()
+        .unwrap_or(0);
+    let next_profile_retry_at = existing
+        .iter()
+        .filter_map(|identity| identity.next_profile_retry_at.clone())
+        .max();
+    let link_source = if lead_id.is_some() {
+        linked
+            .map(|identity| identity.link_source.clone())
+            .or_else(|| canonical.map(|identity| identity.link_source.clone()))
+            .unwrap_or_else(|| "provider_match".to_string())
+    } else {
+        "unlinked".to_string()
+    };
+    let link_confidence = if lead_id.is_some() {
+        linked
+            .and_then(|identity| identity.link_confidence)
+            .or_else(|| canonical.and_then(|identity| identity.link_confidence))
+            .or(Some(0.8))
+    } else {
+        Some(0.0)
+    };
+    let verified_at = if lead_id.is_some() {
+        linked
+            .and_then(|identity| identity.verified_at.clone())
+            .or_else(|| canonical.and_then(|identity| identity.verified_at.clone()))
+    } else {
+        None
+    };
+    let created_at = existing
+        .iter()
+        .map(|identity| identity.created_at.clone())
+        .min()
+        .unwrap_or_else(|| now.to_string());
+
+    let canonical_id = if let Some(canonical) = canonical {
+        tx.execute(
+            "UPDATE channel_identities
+             SET lead_id = ?2,
+                 normalized_address = COALESCE(?3, normalized_address),
+                 display_name = COALESCE(?4, display_name),
+                 avatar_url = COALESCE(?5, avatar_url),
+                 profile_synced_at = COALESCE(?6, profile_synced_at),
+                 profile_sync_error = ?7,
+                 profile_sync_attempts = MAX(profile_sync_attempts, ?8),
+                 next_profile_retry_at = COALESCE(?9, next_profile_retry_at),
+                 link_source = ?10,
+                 link_confidence = ?11,
+                 verified_at = ?12,
+                 created_at = MIN(created_at, ?13),
+                 updated_at = ?14
+             WHERE id = ?1",
+            params![
+                canonical.id,
+                lead_id,
+                normalized_address,
+                display_name,
+                avatar_url,
+                profile_synced_at,
+                profile_sync_error,
+                profile_sync_attempts,
+                next_profile_retry_at,
+                link_source,
+                link_confidence,
+                verified_at,
+                created_at,
+                now,
+            ],
+        )?;
+        canonical.id
+    } else {
+        tx.query_row(
+            "INSERT INTO channel_identities
+             (lead_id, channel, identity_namespace, external_id, normalized_address,
+              display_name, avatar_url, profile_synced_at, profile_sync_error,
+              profile_sync_attempts, next_profile_retry_at, link_source, link_confidence,
+              verified_at, created_at, updated_at)
+             VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             RETURNING id",
+            params![
+                lead_id,
+                external_id,
+                normalized_address,
+                display_name,
+                avatar_url,
+                profile_synced_at,
+                profile_sync_error,
+                profile_sync_attempts,
+                next_profile_retry_at,
+                link_source,
+                link_confidence,
+                verified_at,
+                created_at,
+                now,
+            ],
+            |row| row.get(0),
+        )?
+    };
+
+    for duplicate in existing
+        .iter()
+        .filter(|identity| identity.id != canonical_id)
+    {
+        tx.execute(
+            "INSERT INTO conversation_participants
+             (conversation_id, identity_id, participant_role, joined_at, left_at)
+             SELECT conversation_id, ?1, participant_role, joined_at, left_at
+             FROM conversation_participants
+             WHERE identity_id = ?2
+             ON CONFLICT(conversation_id, identity_id) DO UPDATE SET
+                 participant_role = CASE
+                     WHEN conversation_participants.participant_role = 'admin'
+                          OR excluded.participant_role = 'admin' THEN 'admin'
+                     WHEN conversation_participants.participant_role = 'deputy'
+                          OR excluded.participant_role = 'deputy' THEN 'deputy'
+                     ELSE 'member'
+                 END,
+                 joined_at = CASE
+                     WHEN conversation_participants.joined_at IS NULL THEN excluded.joined_at
+                     WHEN excluded.joined_at IS NULL THEN conversation_participants.joined_at
+                     ELSE MIN(conversation_participants.joined_at, excluded.joined_at)
+                 END,
+                 left_at = CASE
+                     WHEN conversation_participants.left_at IS NULL OR excluded.left_at IS NULL
+                     THEN NULL
+                     ELSE MAX(conversation_participants.left_at, excluded.left_at)
+                 END",
+            params![canonical_id, duplicate.id],
+        )?;
+        tx.execute(
+            "DELETE FROM conversation_participants WHERE identity_id = ?1",
+            [duplicate.id],
+        )?;
+        tx.execute(
+            "UPDATE messages SET sender_identity_id = ?1 WHERE sender_identity_id = ?2",
+            params![canonical_id, duplicate.id],
+        )?;
+        tx.execute(
+            "UPDATE messages SET reply_sender_identity_id = ?1 WHERE reply_sender_identity_id = ?2",
+            params![canonical_id, duplicate.id],
+        )?;
+        tx.execute(
+            "UPDATE message_mentions SET identity_id = ?1 WHERE identity_id = ?2",
+            params![canonical_id, duplicate.id],
+        )?;
+        tx.execute(
+            "DELETE FROM channel_identities WHERE id = ?1",
+            [duplicate.id],
+        )?;
+    }
+
+    Ok(canonical_id)
 }
 
 fn find_channel_account_id_by_key(

@@ -84,9 +84,11 @@ CREATE TABLE IF NOT EXISTS messages (
     error_code TEXT,
     error_message TEXT,
     reply_to_message_id INTEGER,
+    reply_sender_identity_id INTEGER,
     FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
     FOREIGN KEY(sender_identity_id) REFERENCES channel_identities(id) ON DELETE SET NULL,
-    FOREIGN KEY(reply_to_message_id) REFERENCES messages(id) ON DELETE SET NULL
+    FOREIGN KEY(reply_to_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+    FOREIGN KEY(reply_sender_identity_id) REFERENCES channel_identities(id) ON DELETE SET NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_provider_unique

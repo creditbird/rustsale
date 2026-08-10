@@ -190,15 +190,7 @@ impl Listener {
         thread_type: ThreadType,
         last_msg_id: Option<&str>,
     ) -> Result<(), ZaloError> {
-        let cmd = match thread_type {
-            ThreadType::User => 510,
-            ThreadType::Group => 511,
-        };
-        let data = serde_json::json!({
-            "first": true,
-            "lastId": last_msg_id,
-            "preIds": []
-        });
+        let (cmd, data) = old_messages_request_frame(thread_type, last_msg_id);
         self.send_ws(1, cmd, 1, data, true)
     }
 
@@ -218,6 +210,19 @@ impl Listener {
         });
         self.send_ws(1, cmd, 1, data, true)
     }
+}
+
+fn old_messages_request_frame(thread_type: ThreadType, last_msg_id: Option<&str>) -> (u16, Value) {
+    let command = match thread_type {
+        ThreadType::User => 510,
+        ThreadType::Group => 511,
+    };
+    let payload = serde_json::json!({
+        "first": true,
+        "lastId": last_msg_id,
+        "preIds": []
+    });
+    (command, payload)
 }
 
 async fn connection_loop(
@@ -552,6 +557,25 @@ async fn connection_loop(
             task.abort();
         }
         write_forward_task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::old_messages_request_frame;
+    use crate::models::ThreadType;
+
+    #[test]
+    fn group_history_request_is_account_wide_command_511() {
+        let (command, payload) = old_messages_request_frame(ThreadType::Group, Some("cursor-1"));
+
+        assert_eq!(command, 511);
+        assert_eq!(
+            payload.get("lastId").and_then(serde_json::Value::as_str),
+            Some("cursor-1")
+        );
+        assert!(payload.get("groupId").is_none());
+        assert!(payload.get("grid").is_none());
     }
 }
 

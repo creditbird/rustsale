@@ -1980,4 +1980,813 @@ mod tests {
             .unwrap();
         assert_eq!(conv_count, 0);
     }
+
+    #[test]
+    fn test_group_member_export_and_batch_import() {
+        let root = std::env::temp_dir().join(format!(
+            "rustsale-group-member-command-import-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db_path = root.join("app.db");
+        let conn = db::init_db(db_path.to_str().unwrap()).unwrap();
+        let now = "2026-01-01T00:00:00Z";
+        conn.execute(
+            "INSERT INTO channel_accounts
+             (id, channel, provider_account_key, display_name, created_at, updated_at)
+             VALUES (1, 'zalo', 'key1', 'Zalo Acc 1', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_conversations
+             (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+             VALUES (100, 1, 'g100', 'group', 'Test Group', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        for (identity_id, external_id, display_name, avatar_url, role) in [
+            (
+                1001_i64,
+                "zalo_uid_1",
+                "Member Alpha",
+                "https://img/1.png",
+                "admin",
+            ),
+            (
+                1002_i64,
+                "zalo_uid_2",
+                "Member Beta",
+                "https://img/2.png",
+                "member",
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO channel_identities
+                 (id, channel, identity_namespace, external_id, display_name, avatar_url,
+                  created_at, updated_at)
+                 VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, ?4, ?5, ?5)",
+                rusqlite::params![identity_id, external_id, display_name, avatar_url, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_participants
+                 (conversation_id, identity_id, participant_role, joined_at)
+                 VALUES (100, ?1, ?2, ?3)",
+                rusqlite::params![identity_id, role, now],
+            )
+            .unwrap();
+        }
+
+        let members = commands::fetch_group_members_impl(&conn, 100).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].display_name, "Member Alpha");
+        assert_eq!(members[0].participant_role, "admin");
+        drop(conn);
+
+        let repository = std::sync::Arc::new(
+            crate::conversation::repository::ConversationRepository::new(
+                db_path.to_string_lossy().to_string(),
+            ),
+        );
+        let events =
+            std::sync::Arc::new(crate::conversation::events::ConversationEventPublisher::new(8));
+        let service = crate::conversation::service::ConversationService::new(
+            repository,
+            events.clone(),
+            root.join("spool"),
+        );
+        let mut receiver = events.subscribe();
+        let result = commands::batch_import_group_members_to_leads_impl(
+            &service,
+            commands::BatchImportGroupMembersRequest {
+                conversation_id: 100,
+                members: vec![
+                    commands::ImportMemberItem {
+                        identity_id: Some(1001),
+                        external_id: Some("zalo_uid_1".to_string()),
+                        display_name: "Caller Name Must Not Authorize".to_string(),
+                        avatar_url: Some("https://caller.invalid/1.png".to_string()),
+                        phone: Some("0901111222".to_string()),
+                    },
+                    commands::ImportMemberItem {
+                        identity_id: Some(1002),
+                        external_id: Some("zalo_uid_2".to_string()),
+                        display_name: "Caller Name Must Not Authorize".to_string(),
+                        avatar_url: Some("https://caller.invalid/2.png".to_string()),
+                        phone: None,
+                    },
+                ],
+                category_ids: Vec::new(),
+                new_category_name: Some("Vibe Coding Group Leads".to_string()),
+                group_title: "Caller Group Title".to_string(),
+                skip_existing: Some(true),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.imported_count, 2);
+        assert_eq!(result.updated_count, 0);
+        assert_eq!(result.skipped_count, 0);
+        assert_eq!(result.assigned_category_ids.len(), 1);
+
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.conversation_id, 100);
+        assert_eq!(
+            event.reason,
+            crate::conversation::events::ConversationInvalidationReason::Link
+        );
+        assert!(receiver.try_recv().is_err());
+
+        let conn = crate::db::open_db_connection(db_path.to_str().unwrap()).unwrap();
+        let updated_members = commands::fetch_group_members_impl(&conn, 100).unwrap();
+        assert_eq!(updated_members.len(), 2);
+        assert_eq!(updated_members[0].display_name, "Member Alpha");
+        assert!(updated_members[0].lead_id.is_some());
+        assert_eq!(updated_members[0].categories.len(), 1);
+        assert_eq!(
+            updated_members[0].categories[0].name,
+            "Vibe Coding Group Leads"
+        );
+        drop(conn);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn group_member_export_includes_observed_sender_even_if_snapshot_marked_left() {
+        let conn = db::init_db(":memory:").unwrap();
+        let now = "2026-08-10T00:00:00Z";
+
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+             VALUES (1, 'zalo', 'key1', 'Zalo Acc 1', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+             VALUES (100, 1, 'g100', 'group', 'Test Group', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+
+        for (id, external_id, display_name) in [
+            (1001_i64, "owner_uid", "Owner"),
+            (1002_i64, "self_uid", "Self"),
+            (1003_i64, "observed_uid", "Observed Member"),
+        ] {
+            conn.execute(
+                "INSERT INTO channel_identities
+                 (id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+                 VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, ?4, ?4)",
+                rusqlite::params![id, external_id, display_name, now],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO conversation_participants
+             (conversation_id, identity_id, participant_role, joined_at, left_at)
+             VALUES (100, 1001, 'admin', ?1, NULL),
+                    (100, 1002, 'member', ?1, NULL),
+                    (100, 1003, 'member', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages
+             (conversation_id, sender_identity_id, direction, content_type, content_json, ingested_at, status)
+             VALUES (100, 1003, 'inbound', 'text', '{}', ?1, 'received')",
+            [now],
+        )
+        .unwrap();
+
+        let members = commands::fetch_group_members_impl(&conn, 100).unwrap();
+
+        assert_eq!(members.len(), 3);
+        assert!(members
+            .iter()
+            .any(|member| member.external_id.as_deref() == Some("observed_uid")));
+    }
+
+    mod group_member_deep_scan {
+        use crate::commands;
+        use crate::conversation::events::ConversationEventPublisher;
+        use crate::conversation::repository::{
+            ConversationRepository, NormalizedGroupParticipant, NormalizedGroupSnapshot,
+            NormalizedIdentity,
+        };
+        use crate::conversation::service::ConversationService;
+        use crate::conversation::zalo::client::{
+            GroupBoardUidReport, GroupBoardWarning, NormalizedProfile, ZaloClient,
+        };
+        use crate::conversation::zalo::supervisor::{
+            GroupMessageBackfillOutcome, GroupMessageBackfillReport,
+        };
+        use crate::db;
+        use async_trait::async_trait;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::broadcast;
+        use zca_rs::listener::ListenerEvent;
+        use zca_rs::models::ThreadType;
+
+        struct GroupScanHarness {
+            root: PathBuf,
+            db_path: PathBuf,
+            state: commands::DbState,
+            service: Arc<ConversationService>,
+        }
+
+        impl GroupScanHarness {
+            fn new() -> Self {
+                let root = std::env::temp_dir().join(format!(
+                    "rustsale-group-member-deep-scan-{}",
+                    rand::random::<u64>()
+                ));
+                std::fs::create_dir_all(&root).unwrap();
+                let db_path = root.join("app.db");
+                let conn = db::init_db(db_path.to_str().unwrap()).unwrap();
+                let repository = Arc::new(ConversationRepository::new(
+                    db_path.to_string_lossy().to_string(),
+                ));
+                let events = Arc::new(ConversationEventPublisher::new(16));
+                let service = Arc::new(ConversationService::new(
+                    repository,
+                    events,
+                    root.join("spool"),
+                ));
+                Self {
+                    root,
+                    db_path,
+                    state: commands::DbState {
+                        conn: Mutex::new(conn),
+                    },
+                    service,
+                }
+            }
+
+            fn insert_conversation(&self, conversation_id: i64, kind: &str) {
+                let conn = self.state.conn.lock().unwrap();
+                let now = "2026-08-10T00:00:00Z";
+                conn.execute(
+                    "INSERT INTO channel_accounts
+                     (id, channel, provider_account_key, display_name, created_at, updated_at)
+                     VALUES (1, 'zalo', 'account-a', 'Account A', ?1, ?1)",
+                    [now],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO channel_conversations
+                     (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+                     VALUES (?1, 1, 'group-a', ?2, 'Group A', ?3, ?3)",
+                    rusqlite::params![conversation_id, kind, now],
+                )
+                .unwrap();
+            }
+
+            fn insert_local_participant(&self, conversation_id: i64, external_id: &str) {
+                let conn = self.state.conn.lock().unwrap();
+                let now = "2026-08-10T00:00:00Z";
+                let identity_id = conn
+                    .query_row(
+                        "INSERT INTO channel_identities
+                         (channel, identity_namespace, external_id, display_name, created_at, updated_at)
+                         VALUES ('zalo', 'zalo_uid', ?1, ?2, ?3, ?3)
+                         RETURNING id",
+                        rusqlite::params![external_id, external_id, now],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap();
+                conn.execute(
+                    "INSERT INTO conversation_participants
+                     (conversation_id, identity_id, participant_role, joined_at)
+                     VALUES (?1, ?2, 'member', ?3)",
+                    rusqlite::params![conversation_id, identity_id, now],
+                )
+                .unwrap();
+            }
+
+            fn insert_local_reaction_actor(&self, conversation_id: i64, external_id: &str) {
+                let conn = self.state.conn.lock().unwrap();
+                let message_id = conn
+                    .query_row(
+                        "INSERT INTO messages
+                         (conversation_id, direction, content_type, content_json, ingested_at,
+                          status)
+                         VALUES (?1, 'inbound', 'text', '{}', '2026-08-10T00:00:00Z', 'received')
+                         RETURNING id",
+                        [conversation_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap();
+                conn.execute(
+                    "INSERT INTO message_reactions
+                     (message_id, actor_external_id, reaction, count, reacted_at)
+                     VALUES (?1, ?2, 'heart', 1, '2026-08-10T00:00:00Z')",
+                    rusqlite::params![message_id, external_id],
+                )
+                .unwrap();
+            }
+
+            fn identity_count(&self, external_id: &str) -> i64 {
+                self.state
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT COUNT(*) FROM channel_identities WHERE external_id = ?1",
+                        [external_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+            }
+
+            fn identity_namespace(&self, external_id: &str) -> String {
+                self.state
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT identity_namespace FROM channel_identities WHERE external_id = ?1",
+                        [external_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+            }
+        }
+
+        impl Drop for GroupScanHarness {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.db_path);
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+
+        struct FakeGroupScanClient {
+            event_tx: broadcast::Sender<ListenerEvent>,
+            snapshot: Mutex<Result<Option<NormalizedGroupSnapshot>, String>>,
+            board: Mutex<Result<GroupBoardUidReport, String>>,
+            profiles: Mutex<Result<Vec<NormalizedProfile>, String>>,
+            direct_history_requests: AtomicUsize,
+        }
+
+        impl FakeGroupScanClient {
+            fn new(
+                snapshot: Result<Option<NormalizedGroupSnapshot>, String>,
+                board: Result<GroupBoardUidReport, String>,
+                profiles: Result<Vec<NormalizedProfile>, String>,
+            ) -> Self {
+                let (event_tx, _) = broadcast::channel(4);
+                Self {
+                    event_tx,
+                    snapshot: Mutex::new(snapshot),
+                    board: Mutex::new(board),
+                    profiles: Mutex::new(profiles),
+                    direct_history_requests: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl ZaloClient for FakeGroupScanClient {
+            fn subscribe(&self) -> broadcast::Receiver<ListenerEvent> {
+                self.event_tx.subscribe()
+            }
+
+            fn request_old_messages(
+                &self,
+                _thread_type: ThreadType,
+                _cursor: Option<&str>,
+            ) -> anyhow::Result<()> {
+                self.direct_history_requests.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn request_old_reactions(
+                &self,
+                _thread_type: ThreadType,
+                _cursor: Option<&str>,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn get_all_group_snapshots(
+                &self,
+            ) -> anyhow::Result<Vec<NormalizedGroupSnapshot>> {
+                Ok(Vec::new())
+            }
+
+            async fn get_group_snapshot(
+                &self,
+                _group_id: &str,
+            ) -> anyhow::Result<Option<NormalizedGroupSnapshot>> {
+                self.snapshot
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .map_err(anyhow::Error::msg)
+            }
+
+            async fn send_text(
+                &self,
+                _thread_id: &str,
+                _thread_type: ThreadType,
+                _text: &str,
+            ) -> anyhow::Result<String> {
+                Err(anyhow::anyhow!("send_text must not run in Deep Scan tests"))
+            }
+
+            async fn fetch_group_member_profiles(
+                &self,
+                _user_ids: &[String],
+            ) -> anyhow::Result<Vec<NormalizedProfile>> {
+                self.profiles
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .map_err(anyhow::Error::msg)
+            }
+
+            async fn fetch_group_board_uid_report(
+                &self,
+                _group_id: &str,
+            ) -> anyhow::Result<GroupBoardUidReport> {
+                self.board
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .map_err(anyhow::Error::msg)
+            }
+
+            fn stop(&self) {}
+        }
+
+        struct FakeGroupScanRuntime {
+            client: Option<Arc<FakeGroupScanClient>>,
+            backfill: GroupMessageBackfillReport,
+            connected_calls: AtomicUsize,
+            backfill_calls: AtomicUsize,
+        }
+
+        impl FakeGroupScanRuntime {
+            fn new(
+                client: Option<Arc<FakeGroupScanClient>>,
+                outcome: GroupMessageBackfillOutcome,
+            ) -> Self {
+                let warning = (outcome != GroupMessageBackfillOutcome::Completed)
+                    .then(|| format!("backfill outcome: {outcome:?}"));
+                Self {
+                    client,
+                    backfill: GroupMessageBackfillReport {
+                        provider_account_key: "account-a".to_string(),
+                        scope: "account_group_messages".to_string(),
+                        outcome,
+                        joined_existing_run: false,
+                        pages_requested: 2,
+                        pages_received: 1,
+                        start_cursor: Some("cursor-start".to_string()),
+                        durable_cursor: Some("cursor-durable".to_string()),
+                        stop_reason: Some("test_stop".to_string()),
+                        warning,
+                    },
+                    connected_calls: AtomicUsize::new(0),
+                    backfill_calls: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl commands::GroupMemberScanRuntime for FakeGroupScanRuntime {
+            async fn connected_client(
+                &self,
+                _provider_account_key: &str,
+            ) -> Option<Arc<dyn ZaloClient>> {
+                self.connected_calls.fetch_add(1, Ordering::SeqCst);
+                self.client
+                    .as_ref()
+                    .map(|client| client.clone() as Arc<dyn ZaloClient>)
+            }
+
+            async fn backfill_group_messages(
+                &self,
+                _provider_account_key: &str,
+                _timeout: std::time::Duration,
+            ) -> GroupMessageBackfillReport {
+                self.backfill_calls.fetch_add(1, Ordering::SeqCst);
+                self.backfill.clone()
+            }
+        }
+
+        fn snapshot(membership_complete: bool) -> NormalizedGroupSnapshot {
+            NormalizedGroupSnapshot {
+                provider_account_key: "account-a".to_string(),
+                external_thread_id: "group-a".to_string(),
+                title: "Group A".to_string(),
+                avatar_url: None,
+                participants: vec![NormalizedGroupParticipant {
+                    identity: NormalizedIdentity {
+                        identity_namespace: "zalo_uid".to_string(),
+                        external_id: "snapshot-uid".to_string(),
+                        display_name: Some("Snapshot Member".to_string()),
+                        avatar_url: None,
+                        lead_id: None,
+                    },
+                    participant_role: "member".to_string(),
+                }],
+                membership_complete,
+                occurred_at: "2026-08-10T00:00:00Z".to_string(),
+            }
+        }
+
+        #[tokio::test]
+        async fn non_group_is_rejected_before_provider_work() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(100, "direct");
+            let runtime = FakeGroupScanRuntime::new(None, GroupMessageBackfillOutcome::Unavailable);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                100,
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert_eq!(runtime.connected_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(runtime.backfill_calls.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn disconnected_scan_returns_local_evidence_with_unavailable_diagnostics() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(101, "group");
+            harness.insert_local_participant(101, "local-uid");
+            let runtime = FakeGroupScanRuntime::new(None, GroupMessageBackfillOutcome::Unavailable);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                101,
+            )
+            .await
+            .unwrap();
+
+            assert!(result
+                .members
+                .iter()
+                .any(|member| member.external_id.as_deref() == Some("local-uid")));
+            assert!(!result.diagnostics.direct_snapshot.attempted);
+            assert_eq!(
+                result.diagnostics.history_backfill.outcome,
+                GroupMessageBackfillOutcome::Unavailable
+            );
+            assert!(result.diagnostics.partial_result);
+            assert_eq!(runtime.backfill_calls.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn disconnected_scan_canonicalizes_raw_reaction_actor_evidence() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(104, "group");
+            harness.insert_local_reaction_actor(104, "reaction-only-uid");
+            let runtime = FakeGroupScanRuntime::new(None, GroupMessageBackfillOutcome::Unavailable);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                104,
+            )
+            .await
+            .unwrap();
+
+            assert!(result
+                .members
+                .iter()
+                .any(|member| member.external_id.as_deref() == Some("reaction-only-uid")));
+            assert_eq!(result.diagnostics.local_evidence.reaction_uid_count, 1);
+            assert_eq!(result.diagnostics.local_evidence.committed_uid_count, 1);
+            assert_eq!(harness.identity_namespace("reaction-only-uid"), "zalo_uid");
+        }
+
+        #[tokio::test]
+        async fn timeout_and_board_partial_failure_are_structured_without_direct_command_511() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(102, "group");
+            let client = Arc::new(FakeGroupScanClient::new(
+                Ok(Some(snapshot(false))),
+                Ok(GroupBoardUidReport {
+                    uids: vec![
+                        "board-uid-a".to_string(),
+                        "board-uid-a".to_string(),
+                        "board-uid-b".to_string(),
+                    ],
+                    pages_attempted: 3,
+                    pages_succeeded: 2,
+                    items_inspected: 7,
+                    polls_attempted: 2,
+                    polls_succeeded: 1,
+                    stop_reason: Some("board_page_failed".to_string()),
+                    warnings: vec![GroupBoardWarning {
+                        source: "poll".to_string(),
+                        code: "poll_detail_failed".to_string(),
+                        context: Some("poll_id=9".to_string()),
+                        message: "poll unavailable".to_string(),
+                    }],
+                }),
+                Ok(vec![NormalizedProfile {
+                    external_id: "board-uid-a".to_string(),
+                    display_name: Some("Board A".to_string()),
+                    avatar_url: Some("https://img/a.png".to_string()),
+                }]),
+            ));
+            let runtime = FakeGroupScanRuntime::new(
+                Some(client.clone()),
+                GroupMessageBackfillOutcome::TimedOut,
+            );
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                102,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(runtime.backfill_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(client.direct_history_requests.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                result.diagnostics.history_backfill.outcome,
+                GroupMessageBackfillOutcome::TimedOut
+            );
+            assert_eq!(result.diagnostics.board.pages_attempted, 3);
+            assert_eq!(result.diagnostics.board.pages_succeeded, 2);
+            assert_eq!(result.diagnostics.board.committed_uid_count, 2);
+            assert_eq!(result.diagnostics.board.warnings.len(), 1);
+            assert!(result
+                .diagnostics
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "poll_detail_failed"));
+            assert!(result
+                .members
+                .iter()
+                .any(|member| member.external_id.as_deref() == Some("board-uid-b")));
+            assert_eq!(harness.identity_namespace("board-uid-a"), "zalo_uid");
+        }
+
+        #[tokio::test]
+        async fn board_top_level_failure_marks_scan_as_partial() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(105, "group");
+            let client = Arc::new(FakeGroupScanClient::new(
+                Ok(Some(snapshot(true))),
+                Err("board unavailable".to_string()),
+                Ok(vec![NormalizedProfile {
+                    external_id: "snapshot-uid".to_string(),
+                    display_name: Some("Snapshot Member".to_string()),
+                    avatar_url: None,
+                }]),
+            ));
+            let runtime =
+                FakeGroupScanRuntime::new(Some(client), GroupMessageBackfillOutcome::Completed);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                105,
+            )
+            .await
+            .unwrap();
+
+            assert!(result.diagnostics.direct_snapshot.complete);
+            assert_eq!(result.diagnostics.profile_hydration.failed, 0);
+            assert!(result.diagnostics.partial_result);
+            assert!(result
+                .diagnostics
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "board_scan_failed"));
+        }
+
+        #[tokio::test]
+        async fn mismatched_direct_snapshot_is_rejected_without_persistence() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(106, "group");
+            let mut mismatched_snapshot = snapshot(true);
+            mismatched_snapshot.provider_account_key = "account-b".to_string();
+            mismatched_snapshot.external_thread_id = "group-b".to_string();
+            let client = Arc::new(FakeGroupScanClient::new(
+                Ok(Some(mismatched_snapshot)),
+                Ok(GroupBoardUidReport {
+                    uids: Vec::new(),
+                    pages_attempted: 1,
+                    pages_succeeded: 1,
+                    items_inspected: 0,
+                    polls_attempted: 0,
+                    polls_succeeded: 0,
+                    stop_reason: Some("short_page".to_string()),
+                    warnings: Vec::new(),
+                }),
+                Ok(Vec::new()),
+            ));
+            let runtime =
+                FakeGroupScanRuntime::new(Some(client), GroupMessageBackfillOutcome::Completed);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                106,
+            )
+            .await
+            .unwrap();
+
+            assert!(!result.diagnostics.direct_snapshot.complete);
+            assert_eq!(result.diagnostics.direct_snapshot.member_count, 0);
+            assert!(result.diagnostics.partial_result);
+            assert!(result
+                .diagnostics
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "snapshot_mismatch"));
+            assert_eq!(harness.identity_count("snapshot-uid"), 0);
+        }
+
+        #[tokio::test]
+        async fn board_persistence_failure_is_fatal_and_rolls_back_full_batch() {
+            let harness = GroupScanHarness::new();
+            harness.insert_conversation(103, "group");
+            let client = Arc::new(FakeGroupScanClient::new(
+                Ok(None),
+                Ok(GroupBoardUidReport {
+                    uids: vec!["valid-before-error".to_string(), "0".to_string()],
+                    pages_attempted: 1,
+                    pages_succeeded: 1,
+                    items_inspected: 1,
+                    polls_attempted: 0,
+                    polls_succeeded: 0,
+                    stop_reason: Some("short_page".to_string()),
+                    warnings: Vec::new(),
+                }),
+                Ok(Vec::new()),
+            ));
+            let runtime =
+                FakeGroupScanRuntime::new(Some(client), GroupMessageBackfillOutcome::Completed);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                103,
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert_eq!(harness.identity_count("valid-before-error"), 0);
+        }
+    }
+
+    #[test]
+    fn group_member_export_includes_quote_owner_evidence() {
+        let conn = db::init_db(":memory:").unwrap();
+        let now = "2026-08-10T00:00:00Z";
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+             VALUES (1, 'zalo', 'key1', 'Zalo Acc 1', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+             VALUES (200, 1, 'g200', 'group', 'Test Group 2', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_identities
+             (id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES (101, 'zalo', 'zalo_uid', 'quote-owner-uid', 'Quote Owner', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages
+             (conversation_id, direction, content_type, content_json, ingested_at, status,
+              reply_sender_identity_id)
+             VALUES (200, 'inbound', 'text', '{}', ?1, 'received', 101)",
+            [now],
+        )
+        .unwrap();
+
+        let members = commands::fetch_group_members_impl(&conn, 200).unwrap();
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].external_id.as_deref(), Some("quote-owner-uid"));
+    }
 }

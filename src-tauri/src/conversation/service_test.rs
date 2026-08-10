@@ -2708,3 +2708,140 @@ async fn manual_retry_requeues_only_failed_target() {
     assert_eq!(s2, "queued");
     assert_eq!(s3, "delivery_unknown");
 }
+
+mod group_member_import_events {
+    use super::*;
+    use crate::conversation::repository::{
+        GroupMemberLeadImportItem, GroupMemberLeadImportRequest,
+    };
+
+    struct ImportServiceHarness {
+        path: std::path::PathBuf,
+        service: ConversationService,
+        events: Arc<ConversationEventPublisher>,
+    }
+
+    impl ImportServiceHarness {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "rustsale-group-import-service-{}",
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let path = root.join("app.db");
+            let conn = crate::db::init_db(path.to_str().unwrap()).unwrap();
+            let now = "2026-08-10T00:00:00Z";
+            conn.execute(
+                "INSERT INTO channel_accounts
+                 (id, channel, provider_account_key, display_name, created_at, updated_at)
+                 VALUES (1, 'zalo', 'account-a', 'Account A', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO channel_conversations
+                 (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+                 VALUES (100, 1, 'group-a', 'group', 'Group A', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO channel_identities
+                 (id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+                 VALUES (1001, 'zalo', 'zalo_uid', 'uid-a', 'Member A', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_participants
+                 (conversation_id, identity_id, participant_role, joined_at)
+                 VALUES (100, 1001, 'member', ?1)",
+                [now],
+            )
+            .unwrap();
+            drop(conn);
+
+            let repository = Arc::new(ConversationRepository::new(
+                path.to_string_lossy().to_string(),
+            ));
+            let events = Arc::new(ConversationEventPublisher::new(8));
+            let service = ConversationService::new(repository, events.clone(), root.join("spool"));
+            Self {
+                path,
+                service,
+                events,
+            }
+        }
+
+        fn request() -> GroupMemberLeadImportRequest {
+            GroupMemberLeadImportRequest {
+                conversation_id: 100,
+                members: vec![GroupMemberLeadImportItem {
+                    identity_id: Some(1001),
+                    external_id: Some("uid-a".to_string()),
+                    phone: None,
+                }],
+                category_ids: Vec::new(),
+                new_category_name: None,
+                skip_existing: false,
+            }
+        }
+    }
+
+    impl Drop for ImportServiceHarness {
+        fn drop(&mut self) {
+            if let Some(root) = self.path.parent() {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+    }
+
+    #[test]
+    fn publishes_one_link_invalidation_after_successful_commit() {
+        let harness = ImportServiceHarness::new();
+        let mut receiver = harness.events.subscribe();
+
+        harness
+            .service
+            .import_group_members_to_leads(&ImportServiceHarness::request())
+            .unwrap();
+
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.conversation_id, 100);
+        assert_eq!(event.lead_id, None);
+        assert_eq!(
+            event.reason,
+            crate::conversation::events::ConversationInvalidationReason::Link
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn rollback_emits_no_invalidation() {
+        let harness = ImportServiceHarness::new();
+        let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_group_import_lead
+             BEFORE INSERT ON leads
+             BEGIN
+                 SELECT RAISE(ABORT, 'blocked lead insert');
+             END;",
+        )
+        .unwrap();
+        drop(conn);
+        let mut receiver = harness.events.subscribe();
+
+        let result = harness
+            .service
+            .import_group_members_to_leads(&ImportServiceHarness::request());
+
+        assert!(result.is_err());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+}

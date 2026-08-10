@@ -1,7 +1,10 @@
 use super::events::{
     ConversationEventPublisher, ConversationInvalidatedEvent, ConversationInvalidationReason,
 };
-use super::repository::{ConversationRepository, ResolveDirectPhoneRecipientRequest};
+use super::repository::{
+    ConversationRepository, GroupMemberLeadImportRequest, GroupMemberLeadImportResult,
+    ResolveDirectPhoneRecipientRequest,
+};
 use super::types::{Channel, ConversationRuntimeStatus, InboxItem, TimelineCursor, TimelinePage};
 use crate::conversation::outreach::AppliedOutreachMessage;
 use crate::conversation::zalo::normalizer::{NormalizedGroupSnapshot, ZaloMutation};
@@ -277,6 +280,21 @@ impl ConversationService {
             message_id: None,
         });
         Ok(())
+    }
+
+    pub fn import_group_members_to_leads(
+        &self,
+        request: &GroupMemberLeadImportRequest,
+    ) -> Result<GroupMemberLeadImportResult> {
+        let result = self.repository.import_group_members_to_leads(request)?;
+        self.events.publish(ConversationInvalidatedEvent {
+            conversation_id: request.conversation_id,
+            lead_id: None,
+            channel: Channel::Zalo,
+            reason: ConversationInvalidationReason::Link,
+            message_id: None,
+        });
+        Ok(result)
     }
 
     pub fn unlink_identity(&self, identity_id: i64) -> Result<()> {

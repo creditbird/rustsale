@@ -1,14 +1,15 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use tokio::sync::broadcast;
+use zca_rs::apis::group::{BoardItem, GetListBoardResponse};
 use zca_rs::listener::ListenerEvent;
-use zca_rs::models::ThreadType;
+use zca_rs::models::{BoardType, PollDetail, PollOptions, ThreadType};
 
 use crate::conversation::zalo::client::{
-    build_forward_message_request, normalize_group_info, ProviderForwardRequest,
-    ProviderRecallRequest, ProviderSendError, ProviderSendRequest, ProviderSendResult, ZaloClient,
-    ZaloStickerReference,
+    build_forward_message_request, fetch_group_board_uid_report_with_limits, normalize_group_info,
+    GroupBoardSource, ProviderForwardRequest, ProviderRecallRequest, ProviderSendError,
+    ProviderSendRequest, ProviderSendResult, ZaloClient, ZaloStickerReference,
 };
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
 
@@ -69,6 +70,91 @@ impl FakeZaloClient {
 
     pub fn is_stopped(&self) -> bool {
         *self.stopped.lock().unwrap()
+    }
+}
+
+struct FakeGroupBoardSource {
+    pages: Mutex<VecDeque<anyhow::Result<GetListBoardResponse>>>,
+    polls: Mutex<HashMap<u64, anyhow::Result<PollDetail>>>,
+    requested_pages: Mutex<Vec<(i64, i64)>>,
+    requested_polls: Mutex<Vec<u64>>,
+}
+
+impl FakeGroupBoardSource {
+    fn new(
+        pages: Vec<anyhow::Result<GetListBoardResponse>>,
+        polls: HashMap<u64, anyhow::Result<PollDetail>>,
+    ) -> Self {
+        Self {
+            pages: Mutex::new(pages.into()),
+            polls: Mutex::new(polls),
+            requested_pages: Mutex::new(Vec::new()),
+            requested_polls: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl GroupBoardSource for FakeGroupBoardSource {
+    async fn get_list_board_page(
+        &self,
+        _group_id: &str,
+        page: i64,
+        count: i64,
+    ) -> anyhow::Result<GetListBoardResponse> {
+        self.requested_pages.lock().unwrap().push((page, count));
+        self.pages.lock().unwrap().pop_front().unwrap_or_else(|| {
+            Ok(GetListBoardResponse {
+                items: vec![],
+                count: 0,
+            })
+        })
+    }
+
+    async fn get_poll_detail(&self, poll_id: u64) -> anyhow::Result<PollDetail> {
+        self.requested_polls.lock().unwrap().push(poll_id);
+        self.polls
+            .lock()
+            .unwrap()
+            .remove(&poll_id)
+            .unwrap_or_else(|| Err(anyhow::anyhow!("missing poll fixture {poll_id}")))
+    }
+}
+
+fn board_page(items: Vec<BoardItem>) -> GetListBoardResponse {
+    GetListBoardResponse {
+        count: items.len() as i64,
+        items,
+    }
+}
+
+fn board_item(board_type: BoardType, data: serde_json::Value) -> BoardItem {
+    BoardItem { board_type, data }
+}
+
+fn poll_detail(creator: &str, poll_id: u64, voters: &[&str]) -> PollDetail {
+    PollDetail {
+        creator: creator.to_string(),
+        question: String::new(),
+        options: vec![PollOptions {
+            content: String::new(),
+            votes: voters.len() as u32,
+            voted: false,
+            voters: voters.iter().map(|value| (*value).to_string()).collect(),
+            option_id: 1,
+        }],
+        joined: false,
+        closed: false,
+        poll_id,
+        allow_multi_choices: false,
+        allow_add_new_option: false,
+        is_anonymous: false,
+        poll_type: 0,
+        created_time: 0,
+        updated_time: 0,
+        expired_time: 0,
+        is_hide_vote_preview: false,
+        num_vote: voters.len() as u32,
     }
 }
 
@@ -399,6 +485,162 @@ async fn test_fake_client_group_snapshots_complete_and_partial() {
     );
 }
 
+#[tokio::test]
+async fn group_board_uid_report_extracts_top_level_params_and_poll_details() {
+    let source = FakeGroupBoardSource::new(
+        vec![Ok(board_page(vec![
+            board_item(
+                BoardType::Note,
+                serde_json::json!({
+                    "creator_id": "101",
+                    "params": "{\"owner_id\":\"102\",\"options\":[{\"voters\":[\"103\",\"0\"]}]}"
+                }),
+            ),
+            board_item(
+                BoardType::Poll,
+                serde_json::json!({
+                    "creator": "104",
+                    "poll_id": "77",
+                    "options": [{"voters": ["105"]}],
+                    "params": {"pollId": 77, "ownerId": "106"}
+                }),
+            ),
+        ]))],
+        HashMap::from([(77, Ok(poll_detail("107", 77, &["108", "109"])))]),
+    );
+
+    let report = fetch_group_board_uid_report_with_limits(&source, "group-1", 50, 10).await;
+
+    assert_eq!(
+        report.uids,
+        vec!["101", "102", "103", "104", "105", "106", "107", "108", "109"]
+    );
+    assert_eq!(report.pages_attempted, 1);
+    assert_eq!(report.pages_succeeded, 1);
+    assert_eq!(report.items_inspected, 2);
+    assert_eq!(report.polls_attempted, 1);
+    assert_eq!(report.polls_succeeded, 1);
+    assert_eq!(report.stop_reason.as_deref(), Some("short_page"));
+    assert!(report.warnings.is_empty());
+    assert_eq!(source.requested_polls.lock().unwrap().as_slice(), &[77]);
+}
+
+#[tokio::test]
+async fn group_board_uid_report_paginates_until_empty_page() {
+    let source = FakeGroupBoardSource::new(
+        vec![
+            Ok(board_page(vec![board_item(
+                BoardType::Note,
+                serde_json::json!({"creator_id": "201"}),
+            )])),
+            Ok(board_page(vec![board_item(
+                BoardType::PinnedMessage,
+                serde_json::json!({"owner_id": "202"}),
+            )])),
+            Ok(board_page(vec![])),
+        ],
+        HashMap::new(),
+    );
+
+    let report = fetch_group_board_uid_report_with_limits(&source, "group-1", 1, 10).await;
+
+    assert_eq!(report.uids, vec!["201", "202"]);
+    assert_eq!(report.pages_attempted, 3);
+    assert_eq!(report.pages_succeeded, 3);
+    assert_eq!(report.stop_reason.as_deref(), Some("empty_page"));
+    assert_eq!(
+        source.requested_pages.lock().unwrap().as_slice(),
+        &[(1, 1), (2, 1), (3, 1)]
+    );
+}
+
+#[tokio::test]
+async fn group_board_uid_report_stops_on_repeated_page_signature() {
+    let repeated = board_item(BoardType::Note, serde_json::json!({"creator_id": "301"}));
+    let source = FakeGroupBoardSource::new(
+        vec![
+            Ok(board_page(vec![repeated.clone()])),
+            Ok(board_page(vec![repeated])),
+        ],
+        HashMap::new(),
+    );
+
+    let report = fetch_group_board_uid_report_with_limits(&source, "group-1", 1, 10).await;
+
+    assert_eq!(report.uids, vec!["301"]);
+    assert_eq!(report.pages_attempted, 2);
+    assert_eq!(report.pages_succeeded, 2);
+    assert_eq!(report.stop_reason.as_deref(), Some("repeated_page"));
+}
+
+#[tokio::test]
+async fn group_board_uid_report_keeps_partial_results_and_structured_warnings() {
+    let source = FakeGroupBoardSource::new(
+        vec![Ok(board_page(vec![
+            board_item(
+                BoardType::Poll,
+                serde_json::json!({"creator": "401", "poll_id": 11}),
+            ),
+            board_item(
+                BoardType::Poll,
+                serde_json::json!({"owner_id": "402", "pollId": "12"}),
+            ),
+            board_item(BoardType::Note, serde_json::json!({"params": "{not-json"})),
+        ]))],
+        HashMap::from([
+            (11, Err(anyhow::anyhow!("poll 11 unavailable"))),
+            (12, Ok(poll_detail("403", 12, &["404"]))),
+        ]),
+    );
+
+    let report = fetch_group_board_uid_report_with_limits(&source, "group-1", 50, 10).await;
+
+    assert_eq!(report.uids, vec!["401", "402", "403", "404"]);
+    assert_eq!(report.polls_attempted, 2);
+    assert_eq!(report.polls_succeeded, 1);
+    assert_eq!(report.warnings.len(), 2);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "poll_detail_failed"
+            && warning.context.as_deref() == Some("poll_id=11")));
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "invalid_params_json"
+            && warning.context.as_deref() == Some("page=1,item=2")));
+}
+
+#[tokio::test]
+async fn group_board_uid_report_surfaces_page_failure_and_max_page_bound() {
+    let failed_source = FakeGroupBoardSource::new(
+        vec![Err(anyhow::anyhow!("board unavailable"))],
+        HashMap::new(),
+    );
+    let failed = fetch_group_board_uid_report_with_limits(&failed_source, "group-1", 50, 10).await;
+    assert_eq!(failed.pages_attempted, 1);
+    assert_eq!(failed.pages_succeeded, 0);
+    assert_eq!(failed.stop_reason.as_deref(), Some("board_page_failed"));
+    assert_eq!(failed.warnings[0].code, "board_page_failed");
+
+    let bounded_source = FakeGroupBoardSource::new(
+        vec![
+            Ok(board_page(vec![board_item(
+                BoardType::Note,
+                serde_json::json!({"creator_id": "501"}),
+            )])),
+            Ok(board_page(vec![board_item(
+                BoardType::Note,
+                serde_json::json!({"creator_id": "502"}),
+            )])),
+        ],
+        HashMap::new(),
+    );
+    let bounded = fetch_group_board_uid_report_with_limits(&bounded_source, "group-1", 1, 2).await;
+    assert_eq!(bounded.uids, vec!["501", "502"]);
+    assert_eq!(bounded.stop_reason.as_deref(), Some("max_pages_reached"));
+}
+
 #[test]
 fn test_normalize_group_info_mapping() {
     let setting = zca_rs::models::GroupSetting {
@@ -504,6 +746,62 @@ fn test_normalize_group_info_mapping() {
     );
     assert_eq!(p1.identity.lead_id, None);
     assert_eq!(p1.participant_role, "member");
+}
+
+#[test]
+fn restricted_group_snapshot_is_not_authoritative_when_reported_total_exceeds_visible_uids() {
+    let group_info = zca_rs::models::GroupInfo {
+        group_id: "g_hidden".to_string(),
+        name: "Hidden Members".to_string(),
+        desc: String::new(),
+        r#type: zca_rs::models::GroupType::Group,
+        creator_id: "user_owner".to_string(),
+        version: "1.0".to_string(),
+        avt: String::new(),
+        full_avt: String::new(),
+        member_ids: vec![],
+        admin_ids: vec!["user_owner".to_string()],
+        current_mems: vec![],
+        update_mems: vec![],
+        admins: vec![],
+        has_more_member: 0,
+        sub_type: 0,
+        total_member: 405,
+        max_member: 1000,
+        setting: zca_rs::models::GroupSetting {
+            block_name: 0,
+            sign_admin_msg: 0,
+            add_member_only: 0,
+            set_topic_only: 0,
+            enable_msg_history: 0,
+            join_appr: 0,
+            lock_create_post: 0,
+            lock_create_poll: 0,
+            lock_send_msg: 0,
+            lock_view_member: 1,
+            bann_feature: 0,
+            dirty_media: 0,
+            ban_duration: 0,
+        },
+        created_time: 1700000000000,
+        visibility: 0,
+        global_id: "gid_hidden".to_string(),
+        e2ee: 0,
+        extra_info: zca_rs::models::GroupExtraInfo {
+            enable_media_store: 0,
+        },
+    };
+    let snapshot = normalize_group_info(
+        "imei_test",
+        zca_rs::apis::group::GroupInfoWithVer {
+            info: group_info,
+            mem_ver_list: Some(vec!["user_owner_0".to_string(), "self_user_0".to_string()]),
+            pending_approve: None,
+        },
+    );
+
+    assert_eq!(snapshot.participants.len(), 2);
+    assert!(!snapshot.membership_complete);
 }
 
 #[tokio::test]
