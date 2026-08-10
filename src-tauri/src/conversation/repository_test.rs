@@ -832,6 +832,42 @@ fn hydrated_reactions_mark_current_account_and_keep_external_id_fallback() {
 }
 
 #[test]
+fn hydrated_reactions_sum_persisted_actor_counts() {
+    let harness = Harness::new();
+    harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "message-reaction-counts"))
+        .unwrap();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let message_id: i64 = conn
+        .query_row(
+            "SELECT id FROM messages WHERE provider_message_id = 'message-reaction-counts'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for (actor_external_id, count) in [("actor-1", 4), ("actor-2", 3)] {
+        conn.execute(
+            "INSERT INTO message_reactions
+                (message_id, actor_external_id, reaction, count, reacted_at, removed_at)
+             VALUES (?1, ?2, 'heart', ?3, '2026-08-02T10:01:00.000Z', NULL)",
+            params![message_id, actor_external_id, count],
+        )
+        .unwrap();
+    }
+
+    let conversation_id = harness.scalar("SELECT id FROM channel_conversations LIMIT 1");
+    let page = harness
+        .repository
+        .get_conversation_timeline(conversation_id, None, 50)
+        .unwrap();
+
+    assert_eq!(page.items[0].reactions[0].count, 7);
+    assert_eq!(page.items[0].reactions[0].actors.len(), 2);
+}
+
+#[test]
 fn hydrated_reactions_normalize_provider_aliases_to_canonical_emoji() {
     let harness = Harness::new();
     harness
@@ -3108,4 +3144,75 @@ fn test_reconcile_duplicate_accounts_preserves_messages_participants_attachments
         )
         .unwrap();
     assert_eq!(att_conv_id, canonical_conv_id);
+}
+
+#[test]
+fn list_inbox_unlinked_title_ignores_other_senders_in_shared_group() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    // 1. Setup channel account & identities
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at) VALUES (1, 'zalo', 'acc_1', 'My Account', 'connected', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // Identity A: User A (dName = Nguyễn Mạnh Toàn)
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, created_at, updated_at) VALUES (10, 'zalo', 'user', 'user_a', 'Nguyễn Mạnh Toàn', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // Identity B: User B (dName = Hoàng Tuấn)
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, created_at, updated_at) VALUES (20, 'zalo', 'user', 'user_b', 'Hoàng Tuấn', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // Direct conversation for Identity A
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, last_message_at, created_at, updated_at) VALUES (100, 1, 'direct', 'direct_a', '2026-08-09T10:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (100, 10)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, provider_message_id, content_type, raw_payload_json, provider_timestamp, ingested_at, status)
+         VALUES (1001, 100, 10, 'inbound', 'msg1', 'text', '{\"dName\": \"Nguyễn Mạnh Toàn\"}', '2026-08-09T10:00:00Z', '2026-08-09T10:00:00Z', 'received')",
+        [],
+    ).unwrap();
+
+    // Group conversation where both Identity A and Identity B are participants
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, last_message_at, created_at, updated_at) VALUES (200, 1, 'group', 'group_1', '2026-08-09T11:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (200, 10)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id) VALUES (200, 20)",
+        [],
+    )
+    .unwrap();
+
+    // Newer message in group sent by Identity B (Hoàng Tuấn)
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, provider_message_id, content_type, raw_payload_json, provider_timestamp, ingested_at, status)
+         VALUES (2001, 200, 20, 'inbound', 'msg2', 'text', '{\"dName\": \"Hoàng Tuấn\"}', '2026-08-09T11:00:00Z', '2026-08-09T11:00:00Z', 'received')",
+        [],
+    ).unwrap();
+
+    let items = harness.repository.list_inbox().unwrap();
+    let user_a_item = items
+        .iter()
+        .find(|i| i.key == "identity:10")
+        .expect("Should find item for identity:10");
+
+    assert_eq!(user_a_item.title, "Nguyễn Mạnh Toàn");
 }

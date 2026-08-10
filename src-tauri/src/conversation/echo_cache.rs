@@ -10,8 +10,14 @@ struct EchoKey {
     actor_id: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EchoExpectation {
+    expires_at: Instant,
+    remaining: u32,
+}
+
 pub struct ReactionEchoCache {
-    entries: Mutex<HashMap<EchoKey, Instant>>,
+    entries: Mutex<HashMap<EchoKey, EchoExpectation>>,
 }
 
 impl Default for ReactionEchoCache {
@@ -43,11 +49,23 @@ impl ReactionEchoCache {
             return;
         };
         if let Ok(mut map) = self.entries.lock() {
-            let expires_at = Instant::now() + Duration::from_secs(5);
-            map.insert(key, expires_at);
+            let now = Instant::now();
+            let expires_at = now + Duration::from_secs(5);
+            map.entry(key)
+                .and_modify(|expectation| {
+                    expectation.remaining = if expectation.expires_at > now {
+                        expectation.remaining.saturating_add(1)
+                    } else {
+                        1
+                    };
+                    expectation.expires_at = expires_at;
+                })
+                .or_insert(EchoExpectation {
+                    expires_at,
+                    remaining: 1,
+                });
             if map.len() > 200 {
-                let now = Instant::now();
-                map.retain(|_, exp| *exp > now);
+                map.retain(|_, expectation| expectation.expires_at > now);
             }
         }
     }
@@ -63,11 +81,54 @@ impl ReactionEchoCache {
             return false;
         };
         if let Ok(mut map) = self.entries.lock() {
-            if let Some(exp) = map.remove(&key) {
-                return exp > Instant::now();
+            let now = Instant::now();
+            let mut remove = false;
+            let matched = if let Some(expectation) = map.get_mut(&key) {
+                if expectation.expires_at <= now {
+                    remove = true;
+                    false
+                } else {
+                    if expectation.remaining > 1 {
+                        expectation.remaining -= 1;
+                    } else {
+                        remove = true;
+                    }
+                    true
+                }
+            } else {
+                false
+            };
+            if remove {
+                map.remove(&key);
             }
+            return matched;
         }
         false
+    }
+
+    pub fn cancel_one_expected(
+        &self,
+        channel_account_id: i64,
+        msg_id: &str,
+        reaction_code: &str,
+        actor_id: &str,
+    ) {
+        let Some(key) = Self::key(channel_account_id, msg_id, reaction_code, actor_id) else {
+            return;
+        };
+        if let Ok(mut map) = self.entries.lock() {
+            let remove = map.get_mut(&key).is_some_and(|expectation| {
+                if expectation.expires_at <= Instant::now() || expectation.remaining <= 1 {
+                    true
+                } else {
+                    expectation.remaining -= 1;
+                    false
+                }
+            });
+            if remove {
+                map.remove(&key);
+            }
+        }
     }
 
     pub fn clear_expected(

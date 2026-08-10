@@ -1182,7 +1182,7 @@ impl ConversationService {
     ) -> ConversationResult<super::types::ConversationReactionMutationResult> {
         use super::error::{ConversationError, ConversationErrorCode};
         use super::projection::load_message_reaction_groups;
-        use super::reactions::ReactionMutationRepository;
+        use super::reactions::{PartialReactionFailure, ReactionMutationRepository};
         use super::types::{
             ConversationCapabilities, ConversationReactionMutationResult, ReactionMutationStatus,
         };
@@ -1285,28 +1285,6 @@ impl ConversationService {
         }
 
         let now = crate::conversation::types::utc_now();
-        if !request.active {
-            let groups = reaction_mutations.succeed(
-                &mutation.client_mutation_id,
-                &self_external_id,
-                &now,
-            )?;
-            self.publish_message_invalidation(
-                request.message_id,
-                super::events::ConversationInvalidationReason::Reaction,
-            )?;
-            return Ok(ConversationReactionMutationResult {
-                client_mutation_id: mutation.client_mutation_id,
-                message_id: request.message_id,
-                reaction: request.reaction,
-                requested_active: request.active,
-                status: ReactionMutationStatus::Succeeded,
-                reactions: groups,
-                error_code: None,
-                error_message: None,
-            });
-        }
-
         let provider_message_id = match msg
             .provider_message_id
             .clone()
@@ -1358,108 +1336,141 @@ impl ConversationService {
         let reaction_code_str =
             canonical_reaction_code(req_reaction_str).unwrap_or(req_reaction_str);
         let echo_cache = crate::conversation::echo_cache::ReactionEchoCache::global();
-        echo_cache.mark_expected(
-            msg.channel_account_id,
-            &provider_message_id,
-            reaction_code_str,
-            &self_external_id,
-        );
-        if !provider_client_message_id.is_empty()
-            && provider_client_message_id != provider_message_id
-        {
+        let requested_count = request.count.unwrap_or(1).max(1);
+        let provider_client_id_base =
+            (chrono::Utc::now().timestamp_millis().max(0) as u64).saturating_mul(1_000);
+        let mut successful_count = 0;
+
+        for attempt in 0..requested_count {
             echo_cache.mark_expected(
                 msg.channel_account_id,
-                &provider_client_message_id,
+                &provider_message_id,
                 reaction_code_str,
                 &self_external_id,
             );
-        }
-
-        let provider_req = crate::conversation::zalo::client::ProviderReactionRequest {
-            provider_message_id: provider_message_id.clone(),
-            provider_client_message_id: provider_client_message_id.clone(),
-            external_thread_id,
-            thread_type,
-            reaction_code: Some(request.reaction),
-            client_mutation_id: Some(mutation.client_mutation_id.clone()),
-        };
-
-        match client.set_reaction(provider_req).await {
-            Ok(()) => {
-                let groups = reaction_mutations.succeed(
-                    &mutation.client_mutation_id,
-                    &self_external_id,
-                    &now,
-                )?;
-                self.publish_message_invalidation(
-                    request.message_id,
-                    super::events::ConversationInvalidationReason::Reaction,
-                )?;
-                Ok(ConversationReactionMutationResult {
-                    client_mutation_id: mutation.client_mutation_id,
-                    message_id: request.message_id,
-                    reaction: request.reaction,
-                    requested_active: request.active,
-                    status: ReactionMutationStatus::Succeeded,
-                    reactions: groups,
-                    error_code: None,
-                    error_message: None,
-                })
-            }
-            Err(err) => {
-                echo_cache.clear_expected(
+            if !provider_client_message_id.is_empty()
+                && provider_client_message_id != provider_message_id
+            {
+                echo_cache.mark_expected(
                     msg.channel_account_id,
-                    &provider_message_id,
+                    &provider_client_message_id,
                     reaction_code_str,
                     &self_external_id,
                 );
-                if !provider_client_message_id.is_empty()
-                    && provider_client_message_id != provider_message_id
-                {
-                    echo_cache.clear_expected(
+            }
+
+            let provider_req = crate::conversation::zalo::client::ProviderReactionRequest {
+                provider_message_id: provider_message_id.clone(),
+                provider_client_message_id: provider_client_message_id.clone(),
+                external_thread_id: external_thread_id.clone(),
+                thread_type,
+                reaction_code: if request.active {
+                    Some(request.reaction)
+                } else {
+                    None
+                },
+                client_mutation_id: Some(format!(
+                    "mut-{}-{}",
+                    provider_client_id_base.saturating_add(u64::from(attempt)),
+                    mutation.client_mutation_id
+                )),
+            };
+
+            match client.set_reaction(provider_req).await {
+                Ok(()) => successful_count += 1,
+                Err(err) => {
+                    echo_cache.cancel_one_expected(
                         msg.channel_account_id,
-                        &provider_client_message_id,
+                        &provider_message_id,
                         reaction_code_str,
                         &self_external_id,
                     );
-                }
-                use crate::conversation::zalo::client::ProviderSendErrorKind;
-                let (is_unknown, mutation_status) = match err.kind {
-                    ProviderSendErrorKind::Retryable | ProviderSendErrorKind::RateLimited => {
-                        (true, ReactionMutationStatus::DeliveryUnknown)
+                    if !provider_client_message_id.is_empty()
+                        && provider_client_message_id != provider_message_id
+                    {
+                        echo_cache.cancel_one_expected(
+                            msg.channel_account_id,
+                            &provider_client_message_id,
+                            reaction_code_str,
+                            &self_external_id,
+                        );
                     }
-                    ProviderSendErrorKind::Authentication | ProviderSendErrorKind::Permanent => {
-                        (false, ReactionMutationStatus::Failed)
+
+                    use crate::conversation::zalo::client::ProviderSendErrorKind;
+                    let (is_unknown, mutation_status) = match err.kind {
+                        ProviderSendErrorKind::Retryable | ProviderSendErrorKind::RateLimited => {
+                            (true, ReactionMutationStatus::DeliveryUnknown)
+                        }
+                        ProviderSendErrorKind::Authentication
+                        | ProviderSendErrorKind::Permanent => {
+                            (false, ReactionMutationStatus::Failed)
+                        }
+                    };
+                    let error_code = format!("{:?}", err.kind);
+                    let current_groups = if successful_count > 0 {
+                        reaction_mutations.fail_after_partial_success(
+                            &mutation.client_mutation_id,
+                            &self_external_id,
+                            PartialReactionFailure {
+                                occurred_at: &now,
+                                successful_count,
+                                code: &error_code,
+                                message: &err.message,
+                                unknown: is_unknown,
+                            },
+                        )?
+                    } else {
+                        reaction_mutations.fail(
+                            &mutation.client_mutation_id,
+                            &error_code,
+                            &err.message,
+                            is_unknown,
+                        )?;
+                        let read_conn = open_db_connection(self.repository.db_path())?;
+                        load_message_reaction_groups(&read_conn, request.message_id)?
+                    };
+
+                    if successful_count > 0 {
+                        self.publish_message_invalidation(
+                            request.message_id,
+                            super::events::ConversationInvalidationReason::Reaction,
+                        )?;
                     }
-                };
 
-                let error_code = format!("{:?}", err.kind);
-                reaction_mutations.fail(
-                    &mutation.client_mutation_id,
-                    &error_code,
-                    &err.message,
-                    is_unknown,
-                )?;
+                    if is_unknown {
+                        let _ = client.request_old_reactions(thread_type, None);
+                    }
 
-                if is_unknown {
-                    let _ = client.request_old_reactions(thread_type, None);
+                    return Ok(ConversationReactionMutationResult {
+                        client_mutation_id: mutation.client_mutation_id,
+                        message_id: request.message_id,
+                        reaction: request.reaction,
+                        requested_active: request.active,
+                        status: mutation_status,
+                        reactions: current_groups,
+                        error_code: Some(error_code),
+                        error_message: Some(err.message),
+                    });
                 }
-
-                let read_conn = open_db_connection(self.repository.db_path())?;
-                let current_groups = load_message_reaction_groups(&read_conn, request.message_id)?;
-
-                Ok(ConversationReactionMutationResult {
-                    client_mutation_id: mutation.client_mutation_id,
-                    message_id: request.message_id,
-                    reaction: request.reaction,
-                    requested_active: request.active,
-                    status: mutation_status,
-                    reactions: current_groups,
-                    error_code: Some(error_code),
-                    error_message: Some(err.message),
-                })
             }
         }
+
+        let groups =
+            reaction_mutations.succeed(&mutation.client_mutation_id, &self_external_id, &now)?;
+        self.publish_message_invalidation(
+            request.message_id,
+            super::events::ConversationInvalidationReason::Reaction,
+        )?;
+        Ok(ConversationReactionMutationResult {
+            client_mutation_id: mutation.client_mutation_id,
+            message_id: request.message_id,
+            reaction: request.reaction,
+            requested_active: request.active,
+            status: ReactionMutationStatus::Succeeded,
+            reactions: groups,
+            error_code: None,
+            error_message: None,
+        })
     }
 
     pub fn pin_message(

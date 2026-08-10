@@ -929,6 +929,7 @@ impl ConversationRepository {
                             FROM conversation_participants cp2
                             JOIN messages m ON m.conversation_id = cp2.conversation_id
                             WHERE cp2.identity_id = ci.id
+                              AND m.sender_identity_id = ci.id
                               AND m.direction = 'inbound'
                               AND NULLIF(TRIM(CASE
                                   WHEN json_valid(m.raw_payload_json)
@@ -4537,9 +4538,10 @@ fn apply_reaction_to_message_tx(
         )?;
     } else {
         tx.execute(
-            "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
-             VALUES (?1, ?2, ?3, ?4, NULL)
+            "INSERT INTO message_reactions (message_id, actor_external_id, reaction, count, reacted_at, removed_at)
+             VALUES (?1, ?2, ?3, 1, ?4, NULL)
              ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
+                 count = MAX(message_reactions.count, 1),
                  reacted_at = COALESCE(message_reactions.reacted_at, excluded.reacted_at),
                  removed_at = NULL",
             params![message_id, actor_external_id, stored_reaction, occurred_at],

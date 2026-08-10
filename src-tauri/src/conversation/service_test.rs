@@ -133,6 +133,7 @@ pub struct FakeZaloClient {
         std::sync::Mutex<Vec<crate::conversation::zalo::client::ProviderReactionRequest>>,
     pub captured_old_reaction_polls: std::sync::Mutex<Vec<(ThreadType, Option<String>)>>,
     pub own_external_id: Option<String>,
+    pub reaction_fail_on_call: Option<usize>,
 }
 
 impl FakeZaloClient {
@@ -147,6 +148,7 @@ impl FakeZaloClient {
             captured_reaction_requests: std::sync::Mutex::new(Vec::new()),
             captured_old_reaction_polls: std::sync::Mutex::new(Vec::new()),
             own_external_id: Some("self-uid".to_string()),
+            reaction_fail_on_call: None,
         }
     }
 
@@ -161,6 +163,7 @@ impl FakeZaloClient {
             captured_reaction_requests: std::sync::Mutex::new(Vec::new()),
             captured_old_reaction_polls: std::sync::Mutex::new(Vec::new()),
             own_external_id: Some("self-uid".to_string()),
+            reaction_fail_on_call: None,
         }
     }
 
@@ -178,7 +181,20 @@ impl FakeZaloClient {
             captured_reaction_requests: std::sync::Mutex::new(Vec::new()),
             captured_old_reaction_polls: std::sync::Mutex::new(Vec::new()),
             own_external_id: Some("self-uid".to_string()),
+            reaction_fail_on_call: None,
         }
+    }
+
+    pub fn failing_reaction_on_call(
+        call_number: usize,
+        kind: crate::conversation::zalo::client::ProviderSendErrorKind,
+        err: &str,
+    ) -> Self {
+        let mut client = Self::with_provider_message_id("provider-default");
+        client.reaction_fail_on_call = Some(call_number);
+        client.fail_error_kind = Some(kind);
+        client.fail_error = Some(err.to_string());
+        client
     }
 }
 
@@ -297,11 +313,12 @@ impl ZaloClient for FakeZaloClient {
         &self,
         request: crate::conversation::zalo::client::ProviderReactionRequest,
     ) -> Result<(), crate::conversation::zalo::client::ProviderSendError> {
-        self.captured_reaction_requests
-            .lock()
-            .unwrap()
-            .push(request);
-        if self.should_fail {
+        let call_number = {
+            let mut requests = self.captured_reaction_requests.lock().unwrap();
+            requests.push(request);
+            requests.len()
+        };
+        if self.should_fail || self.reaction_fail_on_call == Some(call_number) {
             let kind = self
                 .fail_error_kind
                 .unwrap_or(crate::conversation::zalo::client::ProviderSendErrorKind::Retryable);
@@ -1369,6 +1386,7 @@ async fn set_reaction_success_local_apply() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-101-1".to_string(),
     };
 
@@ -1398,7 +1416,160 @@ async fn set_reaction_success_local_apply() {
 }
 
 #[tokio::test]
-async fn remove_one_local_reaction_preserves_other_emoji_without_provider_remove() {
+async fn set_reaction_batches_provider_adds_and_accumulates_locally() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::types::{
+        ConversationReactionCode, ReactionMutationStatus, SetConversationReactionRequest,
+    };
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-react-batch"))
+        .unwrap();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET self_external_id = 'self' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+
+    let client = FakeZaloClient::with_provider_message_id("msg-react-batch");
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        count: Some(3),
+        client_mutation_id: "mut-react-batch".to_string(),
+    };
+
+    let result = harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, ReactionMutationStatus::Succeeded);
+    assert_eq!(result.reactions[0].count, 3);
+    let requests = client.captured_reaction_requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .windows(2)
+        .all(|window| window[0].client_mutation_id != window[1].client_mutation_id));
+}
+
+#[tokio::test]
+async fn set_reaction_partial_failure_preserves_successful_increments() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::types::{
+        ConversationReactionCode, ReactionMutationStatus, SetConversationReactionRequest,
+    };
+    use crate::conversation::zalo::client::ProviderSendErrorKind;
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-react-partial"))
+        .unwrap();
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET self_external_id = 'self' WHERE id = ?1",
+        [applied.channel_account_id],
+    )
+    .unwrap();
+
+    let client = FakeZaloClient::failing_reaction_on_call(
+        3,
+        ProviderSendErrorKind::Permanent,
+        "third reaction rejected",
+    );
+    let request = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        count: Some(3),
+        client_mutation_id: "mut-react-partial".to_string(),
+    };
+
+    let result = harness
+        .service
+        .set_conversation_reaction(&request, &client)
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, ReactionMutationStatus::Failed);
+    assert_eq!(result.reactions[0].count, 2);
+    assert_eq!(client.captured_reaction_requests.lock().unwrap().len(), 3);
+    let mutation_status: String = conn
+        .query_row(
+            "SELECT status FROM reaction_mutations WHERE client_mutation_id = 'mut-react-partial'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mutation_status, "failed");
+}
+
+#[tokio::test]
+async fn set_reaction_active_false_removes_locally_without_provider_call() {
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::types::{
+        ConversationReactionCode, ReactionMutationStatus, SetConversationReactionRequest,
+    };
+
+    let harness = ServiceHarness::new();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&direct_message("imei-a", "msg-react-remove"))
+        .unwrap();
+
+    let conn = open_db_connection(&harness.db_path).unwrap();
+    conn.execute(
+        "UPDATE channel_accounts SET self_external_id = 'self' WHERE id = ?1",
+        rusqlite::params![applied.channel_account_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_reactions (message_id, actor_external_id, reaction, reacted_at, removed_at)
+         VALUES (?1, 'self', 'heart', '2026-08-02T12:00:00Z', NULL)",
+        [applied.message_id],
+    )
+    .unwrap();
+
+    let client = FakeZaloClient::with_provider_message_id("msg-react-remove");
+    let req = SetConversationReactionRequest {
+        message_id: applied.message_id,
+        reaction: ConversationReactionCode::Heart,
+        active: false,
+        count: None,
+        client_mutation_id: "mut-remove-1".to_string(),
+    };
+
+    let res = harness
+        .service
+        .set_conversation_reaction(&req, &client)
+        .await
+        .unwrap();
+
+    assert_eq!(res.status, ReactionMutationStatus::Succeeded);
+    assert!(!res.requested_active);
+
+    let captured_set = client.captured_reaction_requests.lock().unwrap();
+    assert_eq!(captured_set.len(), 1);
+    assert!(captured_set[0].reaction_code.is_none());
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_reactions
+             WHERE message_id = ?1 AND actor_external_id = 'self' AND reaction = 'heart'",
+            [applied.message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
+async fn remove_one_local_reaction_preserves_other_emoji() {
     use crate::conversation::commands_test::direct_message;
     use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
 
@@ -1426,6 +1597,7 @@ async fn remove_one_local_reaction_preserves_other_emoji_without_provider_remove
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Heart,
         active: false,
+        count: None,
         client_mutation_id: "mut-selective-remove".to_string(),
     };
 
@@ -1435,7 +1607,9 @@ async fn remove_one_local_reaction_preserves_other_emoji_without_provider_remove
         .await
         .unwrap();
 
-    assert_eq!(client.captured_reaction_requests.lock().unwrap().len(), 0);
+    let captured_set = client.captured_reaction_requests.lock().unwrap();
+    assert_eq!(captured_set.len(), 1);
+    assert!(captured_set[0].reaction_code.is_none());
     assert_eq!(result.reactions.len(), 1);
     assert_eq!(result.reactions[0].reaction_icon, "😆");
     assert!(result.reactions[0].includes_me);
@@ -1454,9 +1628,8 @@ async fn remove_one_local_reaction_preserves_other_emoji_without_provider_remove
 }
 
 #[tokio::test]
-async fn local_remove_does_not_require_provider_message_ids() {
+async fn remove_reaction_requires_provider_message_ids() {
     use crate::conversation::commands_test::direct_message;
-    use crate::conversation::events::ConversationInvalidationReason;
     use crate::conversation::types::{ConversationReactionCode, SetConversationReactionRequest};
 
     let harness = ServiceHarness::new();
@@ -1494,33 +1667,20 @@ async fn local_remove_does_not_require_provider_message_ids() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Heart,
         active: false,
+        count: None,
         client_mutation_id: "mut-local-remove-no-provider-ids".to_string(),
     };
-    let mut receiver = harness.events.subscribe();
 
-    let result = harness
+    let err = harness
         .service
         .set_conversation_reaction(&request, &client)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert!(client.captured_reaction_requests.lock().unwrap().is_empty());
-    assert!(result.reactions.is_empty());
-    let remaining: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM message_reactions WHERE message_id = ?1",
-            [applied.message_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(remaining, 0);
-    let invalidation = receiver.try_recv().unwrap();
-    assert_eq!(invalidation.message_id, Some(applied.message_id));
     assert_eq!(
-        invalidation.reason,
-        ConversationInvalidationReason::Reaction
+        err.code,
+        crate::conversation::error::ConversationErrorCode::ReactionNotSupported
     );
-    assert!(receiver.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -1544,6 +1704,7 @@ async fn successful_add_self_echo_is_suppressed_without_second_invalidation() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-self-echo".to_string(),
     };
     let mut receiver = harness.events.subscribe();
@@ -1603,6 +1764,7 @@ async fn provider_failure_clears_expected_echo_so_later_event_is_applied() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-failed-echo".to_string(),
     };
     let mut receiver = harness.events.subscribe();
@@ -1652,6 +1814,7 @@ async fn client_self_identity_is_persisted_for_includes_me_projection() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Like,
         active: true,
+        count: None,
         client_mutation_id: "mut-client-self-id".to_string(),
     };
 
@@ -1691,6 +1854,7 @@ async fn missing_self_identity_rejects_reaction_before_provider_call() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Like,
         active: true,
+        count: None,
         client_mutation_id: "mut-missing-self-id".to_string(),
     };
 
@@ -1715,6 +1879,7 @@ async fn set_reaction_missing_ids_fails() {
         message_id: 999999,
         reaction: ConversationReactionCode::Like,
         active: true,
+        count: None,
         client_mutation_id: "mut-missing-ids".to_string(),
     };
 
@@ -1756,6 +1921,7 @@ async fn set_reaction_write_disabled_fails() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Haha,
         active: true,
+        count: None,
         client_mutation_id: "mut-no-react".to_string(),
     };
 
@@ -1798,6 +1964,7 @@ async fn set_reaction_outside_capability_allowlist_fails() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Angry,
         active: true,
+        count: None,
         client_mutation_id: "mut-reaction-allowlist".to_string(),
     };
 
@@ -1829,6 +1996,7 @@ async fn set_reaction_duplicate_client_id_idempotent() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Wow,
         active: true,
+        count: None,
         client_mutation_id: "mut-dup-100".to_string(),
     };
 
@@ -1870,6 +2038,7 @@ async fn set_reaction_permanent_failure_recorded() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Angry,
         active: true,
+        count: None,
         client_mutation_id: "mut-perm-fail-1".to_string(),
     };
 
@@ -1912,6 +2081,7 @@ async fn set_reaction_timeout_delivery_unknown_triggers_poll_no_auto_resend() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Cry,
         active: true,
+        count: None,
         client_mutation_id: "mut-timeout-1".to_string(),
     };
 
@@ -1966,6 +2136,7 @@ async fn set_reaction_running_status_duplicate_call_does_not_resend() {
         message_id: applied.message_id,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-running-1".to_string(),
     };
 

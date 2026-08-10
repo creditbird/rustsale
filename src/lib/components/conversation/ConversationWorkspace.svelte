@@ -726,15 +726,9 @@
   function handleToggleReaction(
     message: ConversationMessage,
     code: ConversationReactionCode,
-    currentActive?: boolean
+    action: 'increment' | 'remove' = 'increment'
   ) {
-    const isActive =
-      typeof currentActive === 'boolean'
-        ? currentActive
-        : message.reactions.some(
-            (g) => g.includesMe && reactionIconToCode(g.reactionIcon) === code
-          );
-    void mutationStateRef?.executeMutation(message.id, code, isActive);
+    return mutationStateRef?.executeMutation(message.id, code, action) ?? Promise.resolve(null);
   }
 
   function handleLinked(leadId: number) {

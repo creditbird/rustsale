@@ -76,6 +76,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "messages", "send_batch_id", "TEXT")?;
     add_column_if_missing(conn, "messages", "batch_index", "INTEGER")?;
     ensure_zalo_session_schema(conn)?;
+    add_column_if_missing(
+        conn,
+        "message_reactions",
+        "count",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    add_column_if_missing(
+        conn,
+        "reaction_mutations",
+        "count",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
 
     reconcile_duplicate_zalo_channel_accounts(conn)?;
 
@@ -542,10 +554,11 @@ fn merge_message_children(
     )?;
     conn.execute(
         "INSERT INTO message_reactions
-            (message_id, actor_external_id, reaction, reacted_at, removed_at)
-         SELECT ?1, actor_external_id, reaction, reacted_at, removed_at
+            (message_id, actor_external_id, reaction, count, reacted_at, removed_at)
+         SELECT ?1, actor_external_id, reaction, count, reacted_at, removed_at
          FROM message_reactions WHERE message_id = ?2 AND true
          ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
+            count = MAX(message_reactions.count, excluded.count),
             reacted_at = CASE
                 WHEN excluded.reacted_at IS NULL THEN message_reactions.reacted_at
                 WHEN message_reactions.reacted_at IS NULL OR excluded.reacted_at > message_reactions.reacted_at

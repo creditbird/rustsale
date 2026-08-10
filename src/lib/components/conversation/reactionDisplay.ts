@@ -18,6 +18,10 @@ const REACTION_EMOJI: Record<ConversationReactionCode, string> = {
   angry: '😡'
 };
 
+export function reactionCodeToIcon(code: ConversationReactionCode): string {
+  return REACTION_EMOJI[code];
+}
+
 export function reactionIconToCode(icon: string): ConversationReactionCode | null {
   const normalized = icon.trim().toLowerCase();
   for (const [code, aliases] of Object.entries(REACTION_ALIASES)) {

@@ -28,7 +28,7 @@
     activeReactions?: ConversationReactionCode[];
     disabledReactions?: ConversationReactionCode[];
     supportedReactions?: ConversationReactionCode[];
-    onSelect?: (code: ConversationReactionCode, active: boolean) => void;
+    onSelect?: (code: ConversationReactionCode, action: 'increment') => void;
     onClose?: () => void;
   } = $props();
 
@@ -48,8 +48,7 @@
 
   function handleClick(code: ConversationReactionCode) {
     if (isCodeDisabled(code)) return;
-    const activeState = isCodeActive(code);
-    onSelect(code, activeState);
+    onSelect(code, 'increment');
   }
 
   function focusIndex(index: number) {

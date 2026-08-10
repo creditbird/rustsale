@@ -160,7 +160,7 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
 
     let mut reactions_map: HashMap<i64, Vec<ConversationReactionGroup>> = HashMap::new();
     let react_query = format!(
-        "SELECT mr.message_id, mr.reaction, mr.actor_external_id,
+        "SELECT mr.message_id, mr.reaction, mr.actor_external_id, COALESCE(mr.count, 1),
                 ci.id, ci.display_name, ci.avatar_url, ca.self_external_id
          FROM message_reactions mr
          JOIN messages m ON m.id = mr.message_id
@@ -183,17 +183,18 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         let icon: String = row.get(1)?;
         let icon = canonical_reaction_icon(&icon);
         let actor_external_id: String = row.get(2)?;
-        let identity_id: Option<i64> = row.get(3)?;
-        let display_name: Option<String> = row.get(4)?;
-        let avatar_url: Option<String> = row.get(5)?;
-        let self_external_id: Option<String> = row.get(6)?;
+        let count_val: u32 = row.get::<_, Option<u32>>(3)?.unwrap_or(1).max(1);
+        let identity_id: Option<i64> = row.get(4)?;
+        let display_name: Option<String> = row.get(5)?;
+        let avatar_url: Option<String> = row.get(6)?;
+        let self_external_id: Option<String> = row.get(7)?;
 
         let entry = raw_reactions
             .entry(msg_id)
             .or_default()
             .entry(icon)
             .or_insert_with(|| (0, false, Vec::new()));
-        entry.0 += 1;
+        entry.0 += count_val;
         entry.1 |= self_external_id.as_deref() == Some(actor_external_id.as_str());
         entry.2.push(ConversationReactionActor {
             identity_id,
@@ -433,7 +434,7 @@ pub fn load_message_reaction_groups(
     message_id: i64,
 ) -> rusqlite::Result<Vec<ConversationReactionGroup>> {
     let react_query = "SELECT mr.reaction, mr.actor_external_id,
-                ci.id, ci.display_name, ci.avatar_url, ca.self_external_id
+                COALESCE(mr.count, 1), ci.id, ci.display_name, ci.avatar_url, ca.self_external_id
          FROM message_reactions mr
          JOIN messages m ON m.id = mr.message_id
          JOIN channel_conversations cc ON cc.id = m.conversation_id
@@ -459,22 +460,25 @@ pub fn load_message_reaction_groups(
         let icon: String = row.get(0)?;
         let icon = canonical_reaction_icon(&icon);
         let actor_external_id: String = row.get(1)?;
-        let identity_id: Option<i64> = row.get(2)?;
-        let display_name: Option<String> = row.get(3)?;
-        let avatar_url: Option<String> = row.get(4)?;
-        let self_external_id: Option<String> = row.get(5)?;
+        let count_val: u32 = row.get::<_, Option<u32>>(2)?.unwrap_or(1).max(1);
+        let identity_id: Option<i64> = row.get(3)?;
+        let display_name: Option<String> = row.get(4)?;
+        let avatar_url: Option<String> = row.get(5)?;
+        let self_external_id: Option<String> = row.get(6)?;
 
         let entry = raw_reactions
             .entry(icon)
             .or_insert_with(|| (0, false, Vec::new()));
-        entry.0 += 1;
+        entry.0 += count_val;
         entry.1 |= self_external_id.as_deref() == Some(actor_external_id.as_str());
-        entry.2.push(ConversationReactionActor {
-            identity_id,
-            external_id: actor_external_id,
-            display_name,
-            avatar_url,
-        });
+        if !entry.2.iter().any(|a| a.external_id == actor_external_id) {
+            entry.2.push(ConversationReactionActor {
+                identity_id,
+                external_id: actor_external_id,
+                display_name,
+                avatar_url,
+            });
+        }
     }
 
     let groups = raw_reactions

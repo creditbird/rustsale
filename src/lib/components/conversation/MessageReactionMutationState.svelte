@@ -32,6 +32,15 @@
     }>
   >([]);
 
+  type QueuedReactionBatch = {
+    incrementBy: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    promise: Promise<ConversationReactionMutationResult | null>;
+    resolve: (result: ConversationReactionMutationResult | null) => void;
+  };
+
+  const queuedIncrements = new Map<ReactionMutationKey, QueuedReactionBatch>();
+
   function mutationErrorMessage(error: unknown): string {
     if (error instanceof Error && error.message.trim()) return error.message;
     if (typeof error === 'object' && error !== null && 'message' in error) {
@@ -57,23 +66,19 @@
     return codes;
   }
 
-  export async function executeMutation(
+  async function sendReactionRequest(
     messageId: number,
     reactionCode: ConversationReactionCode,
-    currentActive: boolean
+    active: boolean,
+    count?: number
   ): Promise<ConversationReactionMutationResult | null> {
     const key: ReactionMutationKey = `${messageId}:${reactionCode}`;
-    if (pendingReactions.has(key)) {
-      // Disable duplicate mutation while pending
-      return null;
-    }
-
     const clientMutationId = `${messageId}-${reactionCode}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const pendingResult: ConversationReactionMutationResult = {
       clientMutationId,
       messageId,
       reaction: reactionCode,
-      requestedActive: !currentActive,
+      requestedActive: active,
       status: 'running',
       reactions: [],
       errorCode: null,
@@ -88,7 +93,8 @@
       const request: SetConversationReactionRequest = {
         messageId,
         reaction: reactionCode,
-        active: !currentActive,
+        active,
+        count,
         clientMutationId
       };
 
@@ -102,6 +108,7 @@
         onReactionsUpdated(messageId, result.reactions);
         return result;
       } else {
+        onReactionsUpdated(messageId, result.reactions);
         const errorItem = {
           id: clientMutationId,
           messageId,
@@ -128,6 +135,83 @@
       mutationErrors = [...mutationErrors, errorItem];
       return null;
     }
+  }
+
+  function cancelQueuedIncrement(key: ReactionMutationKey) {
+    const batch = queuedIncrements.get(key);
+    if (!batch) return;
+    if (batch.timer !== null) clearTimeout(batch.timer);
+    queuedIncrements.delete(key);
+    batch.resolve(null);
+  }
+
+  function scheduleIncrementBatch(
+    key: ReactionMutationKey,
+    messageId: number,
+    reactionCode: ConversationReactionCode,
+    batch: QueuedReactionBatch,
+    debounceMs: number
+  ) {
+    if (batch.timer !== null) clearTimeout(batch.timer);
+
+    const flush = async () => {
+      if (queuedIncrements.get(key) !== batch) return;
+      queuedIncrements.delete(key);
+      batch.timer = null;
+      const result = await sendReactionRequest(
+        messageId,
+        reactionCode,
+        true,
+        batch.incrementBy
+      );
+      batch.resolve(result);
+    };
+
+    if (debounceMs <= 0) {
+      void flush();
+    } else {
+      batch.timer = setTimeout(() => void flush(), debounceMs);
+    }
+  }
+
+  export function executeMutation(
+    messageId: number,
+    reactionCode: ConversationReactionCode,
+    action: 'increment' | 'remove' = 'increment',
+    _currentCount: number = 0,
+    debounceMs: number = typeof process !== 'undefined' && process.env?.NODE_ENV === 'test' ? 0 : 400
+  ): Promise<ConversationReactionMutationResult | null> {
+    const key: ReactionMutationKey = `${messageId}:${reactionCode}`;
+
+    if (pendingReactions.has(key)) {
+      return Promise.resolve(null);
+    }
+
+    if (action === 'remove') {
+      cancelQueuedIncrement(key);
+      return sendReactionRequest(messageId, reactionCode, false);
+    }
+
+    const existingBatch = queuedIncrements.get(key);
+    if (existingBatch) {
+      existingBatch.incrementBy += 1;
+      scheduleIncrementBatch(key, messageId, reactionCode, existingBatch, debounceMs);
+      return existingBatch.promise;
+    }
+
+    let resolveBatch: (result: ConversationReactionMutationResult | null) => void = () => {};
+    const promise = new Promise<ConversationReactionMutationResult | null>((resolve) => {
+      resolveBatch = resolve;
+    });
+    const batch: QueuedReactionBatch = {
+      incrementBy: 1,
+      timer: null,
+      promise,
+      resolve: resolveBatch
+    };
+    queuedIncrements.set(key, batch);
+    scheduleIncrementBatch(key, messageId, reactionCode, batch, debounceMs);
+    return promise;
   }
 
   function dismissError(id: string) {

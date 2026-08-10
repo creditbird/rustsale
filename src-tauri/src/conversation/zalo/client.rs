@@ -862,7 +862,7 @@ impl ZaloClient for RealZaloClient {
         let client_id = request
             .client_mutation_id
             .as_deref()
-            .and_then(|id| id.strip_prefix("mut-"))
+            .map(|id| id.strip_prefix("mut-").unwrap_or(id))
             .and_then(|s| s.split('-').next())
             .and_then(|s| s.parse::<u64>().ok());
 

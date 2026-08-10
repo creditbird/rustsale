@@ -984,6 +984,7 @@ async fn phase2a_command_registration() {
             message_id: 9999,
             reaction: ConversationReactionCode::Like,
             active: true,
+            count: None,
             client_mutation_id: "mut-command-missing".to_string(),
         },
     )

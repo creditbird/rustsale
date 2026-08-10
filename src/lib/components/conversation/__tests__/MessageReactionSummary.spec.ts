@@ -57,11 +57,11 @@ describe('MessageReactionSummary', () => {
 
     const heartChip = screen.getByRole('button', { name: /❤️ 1/ });
     await fireEvent.click(heartChip);
-    expect(onToggleReaction).toHaveBeenCalledWith('heart', true);
+    expect(onToggleReaction).toHaveBeenCalledWith('heart', 'increment');
 
     const likeChip = screen.getByRole('button', { name: /👍 3/ });
     await fireEvent.click(likeChip);
-    expect(onToggleReaction).toHaveBeenCalledWith('like', false);
+    expect(onToggleReaction).toHaveBeenCalledWith('like', 'increment');
   });
 
   it('renders provider aliases as emoji and toggles the canonical reaction', async () => {
@@ -82,7 +82,7 @@ describe('MessageReactionSummary', () => {
 
     const chip = screen.getByRole('button', { name: /❤️ 1/ });
     await fireEvent.click(chip);
-    expect(onToggleReaction).toHaveBeenCalledWith('heart', true);
+    expect(onToggleReaction).toHaveBeenCalledWith('heart', 'increment');
     expect(screen.queryByText(/\/-heart/)).toBeNull();
   });
 
@@ -111,10 +111,72 @@ describe('MessageReactionSummary', () => {
     const chip = screen.getByRole('button', { name: /😆 5/ });
     await fireEvent.click(chip);
 
-    expect(onToggleReaction).toHaveBeenCalledWith('haha', false);
+    expect(onToggleReaction).toHaveBeenCalledWith('haha', 'increment');
     const sadChip = screen.getByRole('button', { name: /😭 2/ });
     await fireEvent.click(sadChip);
-    expect(onToggleReaction).toHaveBeenCalledWith('cry', false);
+    expect(onToggleReaction).toHaveBeenCalledWith('cry', 'increment');
+  });
+
+  it('updates the displayed count optimistically until the mutation settles', async () => {
+    let resolveMutation: (() => void) | undefined;
+    const mutation = new Promise<void>((resolve) => {
+      resolveMutation = resolve;
+    });
+    const onToggleReaction = mock(() => mutation);
+
+    render(MessageReactionSummary, {
+      groups: [
+        {
+          reactionIcon: '❤️',
+          count: 2,
+          includesMe: false,
+          actors: []
+        }
+      ],
+      canReact: true,
+      onToggleReaction
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /❤️ 2/ }));
+    await fireEvent.click(screen.getByRole('button', { name: /❤️ 3/ }));
+
+    expect(screen.getByRole('button', { name: /❤️ 4/ })).toBeTruthy();
+
+    resolveMutation?.();
+    await mutation;
+    await Promise.resolve();
+
+    expect(screen.getByRole('button', { name: /❤️ 2/ })).toBeTruthy();
+  });
+
+  it('removes only the current account reaction on context menu', async () => {
+    const onToggleReaction = mock(() => {});
+
+    render(MessageReactionSummary, {
+      groups: [
+        {
+          reactionIcon: '❤️',
+          count: 4,
+          includesMe: true,
+          actors: []
+        },
+        {
+          reactionIcon: '👍',
+          count: 3,
+          includesMe: false,
+          actors: []
+        }
+      ],
+      canReact: true,
+      onToggleReaction
+    });
+
+    await fireEvent.contextMenu(screen.getByRole('button', { name: /❤️ 4/ }));
+    expect(onToggleReaction).toHaveBeenCalledWith('heart', 'remove');
+
+    onToggleReaction.mockClear();
+    await fireEvent.contextMenu(screen.getByRole('button', { name: /👍 3/ }));
+    expect(onToggleReaction).not.toHaveBeenCalled();
   });
 
   it('renders unsupported provider icons read-only without defaulting to Like', async () => {

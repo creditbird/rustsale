@@ -34,7 +34,7 @@ describe('MessageReactionPicker Component', () => {
     expect(screen.getByRole('button', { name: /Tức giận/i })).toBeTruthy();
   });
 
-  it('handles clicking reaction icons and passes toggled state', async () => {
+  it('handles clicking reaction icons as explicit increments', async () => {
     const onSelect = mock(() => {});
 
     render(MessageReactionPicker, {
@@ -45,11 +45,11 @@ describe('MessageReactionPicker Component', () => {
 
     const heartBtn = screen.getByRole('button', { name: /Yêu thích/i });
     await fireEvent.click(heartBtn);
-    expect(onSelect).toHaveBeenCalledWith('heart', true);
+    expect(onSelect).toHaveBeenCalledWith('heart', 'increment');
 
     const likeBtn = screen.getByRole('button', { name: /^Thích$/i });
     await fireEvent.click(likeBtn);
-    expect(onSelect).toHaveBeenCalledWith('like', false);
+    expect(onSelect).toHaveBeenCalledWith('like', 'increment');
   });
 
   it('supports keyboard navigation (ArrowLeft, ArrowRight, Enter, Space, Escape)', async () => {
@@ -76,7 +76,7 @@ describe('MessageReactionPicker Component', () => {
     expect(document.activeElement).toBe(buttons[0]);
 
     await fireEvent.keyDown(buttons[0], { key: 'Enter' });
-    expect(onSelect).toHaveBeenCalledWith('heart', false);
+    expect(onSelect).toHaveBeenCalledWith('heart', 'increment');
 
     await fireEvent.keyDown(picker, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);

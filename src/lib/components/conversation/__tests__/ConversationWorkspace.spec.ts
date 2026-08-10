@@ -869,6 +869,38 @@ describe('ConversationWorkspace Component', () => {
     expect(mockSetConversationReaction.mock.calls[0][0].active).toBe(true);
   });
 
+  test('15b. Clicking an existing self reaction sends another provider add', async () => {
+    mockGetContactTimeline.mockImplementationOnce(async () => ({
+      items: [
+        {
+          ...mockMsg1,
+          reactions: [
+            {
+              reactionIcon: '❤️',
+              count: 1,
+              includesMe: true,
+              actors: [
+                { identityId: 1, externalId: 'self', displayName: 'Self', avatarUrl: null }
+              ]
+            }
+          ]
+        }
+      ],
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getByRole('button', { name: /❤️ 1/ }));
+    await tick();
+
+    expect(mockSetConversationReaction).toHaveBeenCalledTimes(1);
+    expect(mockSetConversationReaction.mock.calls[0][0].reaction).toBe('heart');
+    expect(mockSetConversationReaction.mock.calls[0][0].active).toBe(true);
+  });
+
   test('16. Clicking "Chuyển tiếp" opens the ForwardConversationDialog with message preview', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();

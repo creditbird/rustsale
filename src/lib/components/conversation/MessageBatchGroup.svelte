@@ -3,6 +3,7 @@
     ConversationCapabilities,
     ConversationMessage,
     ConversationReactionCode,
+    ConversationReactionMutationResult,
     MessageSendBatchStatus
   } from '$lib/services/conversationService';
   import MessageBubble from './MessageBubble.svelte';
@@ -16,7 +17,7 @@
     onRecall = () => {},
     onForward = () => {},
     onPin = () => {},
-    onToggleReaction = () => {},
+    onToggleReaction = () => Promise.resolve(null),
     onImageClick = () => {}
   }: {
     messages: ConversationMessage[];
@@ -31,8 +32,8 @@
 
       message: ConversationMessage,
       code: ConversationReactionCode,
-      currentActive?: boolean
-    ) => void;
+      action?: 'increment' | 'remove'
+    ) => Promise<ConversationReactionMutationResult | null>;
     onImageClick?: (url: string, message: ConversationMessage) => void;
   } = $props();
 

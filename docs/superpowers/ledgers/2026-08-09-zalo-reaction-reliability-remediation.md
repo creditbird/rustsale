@@ -22,6 +22,10 @@
 | REQ-009 | Task 5 | normalizer | `haha_reaction_type_zero_is_addition`; `empty_reaction_icon_marks_removal_even_with_non_negative_type` |
 | REQ-010 | Task 5 | service, reactions | `remove_one_local_reaction_preserves_other_emoji_without_provider_remove`; `local_remove_does_not_require_provider_message_ids`; `multi_emoji_remove_hard_deletes_only_selected_reaction` |
 | REQ-011 | Task 5 | service, echo cache | `successful_add_self_echo_is_suppressed_without_second_invalidation`; `provider_failure_clears_expected_echo_so_later_event_is_applied`; `client_self_identity_is_persisted_for_includes_me_projection`; `missing_self_identity_rejects_reaction_before_provider_call`; echo-cache account and alias tests |
+| REQ-012 — Multi-reaction | Follow-up | schema, reactions, picker | `message_reactions` keeps `PRIMARY KEY(message_id, actor_external_id, reaction)`; `reaction_mutations` intentionally remains idempotent by `client_mutation_id`; `multi_emoji_remove_hard_deletes_only_selected_reaction`; picker actions are explicit increments |
+| REQ-013 — Accumulated counts | Follow-up | migration, projection, reactions, service | `successful_local_apply_accumulates_increment_count`; `set_reaction_batches_provider_adds_and_accumulates_locally`; `set_reaction_partial_failure_preserves_successful_increments`; `hydrated_reactions_sum_persisted_actor_counts`; `reaction_count_columns_are_added_before_duplicate_account_merge`; duplicate-message merge preserves the highest stored actor count |
+| REQ-014 — Debounced optimistic UI | Follow-up | mutation state, bubble, summary | `debounces increments into one delta request and resolves every caller`; `updates the displayed count optimistically until the mutation settles`; `first reaction renders an optimistic chip before the mutation settles` |
+| REQ-015 — Explicit removal | Follow-up | summary, service | Left click always increments; context menu removes only when `includesMe`; removal stays local-only and never invokes provider-wide remove; `removes only the current account reaction on context menu` |
 
 ## Execution Log
 
@@ -47,6 +51,17 @@
 | 2026-08-09 | `cargo check --manifest-path src-tauri/Cargo.toml` | Exit 0 | Final Rust compilation |
 | 2026-08-09 | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | Exit 0 | Final Rust lint |
 | 2026-08-09 | `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` and `git diff --check` | Exit 0 | Final formatting and whitespace gates |
+| 2026-08-09 | Focused Rust reaction, service, repository, and migration suites | Exit 0 | Batch count, partial failure, echo suppression, projection count, migration ordering, selective remove |
+| 2026-08-09 | Focused frontend reaction suites | 32 passed, 0 failed | Mutation batching, picker, summary, bubble optimistic UI |
+| 2026-08-09 | `cargo check --manifest-path src-tauri/Cargo.toml` | Exit 0 | Follow-up Rust compilation |
+| 2026-08-09 | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | Exit 0 | Follow-up Rust lint |
+| 2026-08-09 | `cargo test --manifest-path src-tauri/Cargo.toml` | Exit 0 | Follow-up full Rust suite |
+| 2026-08-09 | `cargo test --manifest-path src-tauri/vendor/zca-rs/Cargo.toml` | Exit 0 | Follow-up vendored provider suite |
+| 2026-08-09 | `bun run check` | 0 errors, 0 warnings | Follow-up Svelte/TypeScript check |
+| 2026-08-09 | `bun test --conditions=browser --conditions=svelte` | Exit 0 | Follow-up full frontend suite; runtime emits pre-existing `derived_inert` diagnostics |
+| 2026-08-09 | `bun run build` | Exit 0; chunk-size advisory only | Follow-up production frontend build |
+| 2026-08-09 | `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` and `git diff --check` | Exit 0 | Follow-up formatting and whitespace gates |
+| 2026-08-09 | `gitnexus_detect_changes({scope: "all"})` | 32 dirty files, 288 changed symbols, 55 affected, `CRITICAL` | Combined pre-existing dirty tree plus reaction follow-up; reviewed high-risk `migrate`, `merge_message_children`, and `hydrate_messages`, then ran full gates |
 
 ## Task State
 
@@ -56,3 +71,6 @@
 - Task 4: complete
 - Task 5: complete
 - Task 6: complete
+- Follow-up multi-reaction/counting: complete
+- Follow-up debounce/optimistic UI: complete
+- Follow-up context-menu removal: complete

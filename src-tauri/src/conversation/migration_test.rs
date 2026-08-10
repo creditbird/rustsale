@@ -62,6 +62,8 @@ fn rich_chat_migration_adds_expected_columns() {
     assert!(column_names(&conn, "channel_accounts").contains(&"self_external_id".into()));
     assert!(column_names(&conn, "messages").contains(&"send_batch_id".into()));
     assert!(column_names(&conn, "messages").contains(&"batch_index".into()));
+    assert!(column_names(&conn, "message_reactions").contains(&"count".into()));
+    assert!(column_names(&conn, "reaction_mutations").contains(&"count".into()));
 }
 
 #[test]
@@ -109,6 +111,76 @@ fn rich_chat_migration_preserves_existing_messages() {
 }
 
 #[test]
+fn reaction_count_columns_are_added_before_duplicate_account_merge() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+    migrate(&conn).unwrap();
+
+    conn.execute_batch(
+        "DROP TABLE reaction_mutations;
+         DROP TABLE message_reactions;
+         CREATE TABLE message_reactions (
+             message_id INTEGER NOT NULL,
+             actor_external_id TEXT NOT NULL,
+             reaction TEXT NOT NULL,
+             reacted_at TEXT,
+             removed_at TEXT,
+             PRIMARY KEY(message_id, actor_external_id, reaction),
+             FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+         );
+         CREATE TABLE reaction_mutations (
+             client_mutation_id TEXT PRIMARY KEY,
+             message_id INTEGER NOT NULL,
+             reaction_code TEXT NOT NULL,
+             active INTEGER NOT NULL CHECK (active IN (0, 1)),
+             status TEXT NOT NULL DEFAULT 'running',
+             error_code TEXT,
+             error_message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+         );
+         DROP INDEX IF EXISTS idx_channel_accounts_zalo_self_ext_id;
+         INSERT INTO channel_accounts
+             (id, channel, provider_account_key, self_external_id, display_name, created_at, updated_at)
+         VALUES
+             (1, 'zalo', 'old-account', 'same-self', 'Old', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
+             (2, 'zalo', 'new-account', 'same-self', 'New', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z');
+         INSERT INTO channel_conversations
+             (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES
+             (10, 1, 'shared-thread', 'direct', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
+             (20, 2, 'shared-thread', 'direct', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z');
+         INSERT INTO messages
+             (id, conversation_id, direction, provider_message_id, provider_client_message_id,
+              content_type, content_json, ingested_at, status)
+         VALUES
+             (100, 10, 'outbound', 'provider-1', 'client-1', 'text', '{}', '2026-08-01T00:00:00Z', 'sent'),
+             (200, 20, 'outbound', 'provider-1', 'client-1', 'text', '{}', '2026-08-02T00:00:00Z', 'sent');
+         INSERT INTO message_reactions
+             (message_id, actor_external_id, reaction, reacted_at, removed_at)
+         VALUES (200, 'peer-1', 'heart', '2026-08-02T00:01:00Z', NULL);",
+    )
+    .unwrap();
+
+    migrate(&conn).unwrap();
+
+    assert!(column_names(&conn, "message_reactions").contains(&"count".into()));
+    assert!(column_names(&conn, "reaction_mutations").contains(&"count".into()));
+    assert_eq!(
+        conn.query_row(
+            "SELECT count FROM message_reactions WHERE actor_external_id = 'peer-1' AND reaction = 'heart'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn duplicate_zalo_merge_preserves_conflicting_state_and_all_dependents() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -153,9 +225,9 @@ fn duplicate_zalo_merge_preserves_conflicting_state_and_all_dependents() {
          INSERT INTO message_attachments
             (id, message_id, attachment_type, file_name, created_at)
          VALUES (300, 200, 'image', 'proof.png', '2026-08-02T10:00:00Z');
-         INSERT INTO message_reactions
-            (message_id, actor_external_id, reaction, reacted_at)
-         VALUES (200, 'peer-1', 'heart', '2026-08-02T10:01:00Z');
+          INSERT INTO message_reactions
+             (message_id, actor_external_id, reaction, count, reacted_at)
+          VALUES (200, 'peer-1', 'heart', 5, '2026-08-02T10:01:00Z');
          INSERT INTO message_receipts
             (message_id, recipient_external_id, receipt_type, occurred_at)
          VALUES (200, 'peer-1', 'read', '2026-08-02T10:02:00Z');
@@ -293,6 +365,16 @@ fn duplicate_zalo_merge_preserves_conflicting_state_and_all_dependents() {
             "{table} was not preserved"
         );
     }
+
+    assert_eq!(
+        conn.query_row(
+            "SELECT count FROM message_reactions WHERE message_id = 100 AND actor_external_id = 'peer-1' AND reaction = 'heart'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        5
+    );
 
     assert_eq!(
         conn.query_row(

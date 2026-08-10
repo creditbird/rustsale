@@ -3,7 +3,8 @@
   import type {
     ConversationCapabilities,
     ConversationMessage,
-    ConversationReactionCode
+    ConversationReactionCode,
+    ConversationReactionMutationResult
   } from '$lib/services/conversationService';
   import MessageBubble from './MessageBubble.svelte';
   import MessageBatchGroup from './MessageBatchGroup.svelte';
@@ -26,7 +27,7 @@
     onRecall = () => {},
     onForward = () => {},
     onPin = () => {},
-    onToggleReaction = () => {},
+    onToggleReaction = () => Promise.resolve(null),
     onImageClick = () => {}
   }: {
     items: ConversationMessage[];
@@ -48,8 +49,8 @@
 
       message: ConversationMessage,
       code: ConversationReactionCode,
-      currentActive?: boolean
-    ) => void;
+      action?: 'increment' | 'remove'
+    ) => Promise<ConversationReactionMutationResult | null>;
     onImageClick?: (url: string, message: ConversationMessage) => void;
   } = $props();
 

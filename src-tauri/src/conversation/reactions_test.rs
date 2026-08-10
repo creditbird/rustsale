@@ -42,6 +42,7 @@ fn begin_mutation_is_idempotent_by_client_id() {
         message_id: 10,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-1".to_string(),
     };
 
@@ -67,6 +68,7 @@ fn same_client_id_with_different_payload_is_rejected() {
         message_id: 10,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-1".to_string(),
     };
 
@@ -76,11 +78,30 @@ fn same_client_id_with_different_payload_is_rejected() {
         message_id: 10,
         reaction: ConversationReactionCode::Like,
         active: true,
+        count: None,
         client_mutation_id: "mut-1".to_string(),
     };
 
     let err = repo.begin(&req2, 1).unwrap_err();
     assert_eq!(err.code, ConversationErrorCode::InvalidRequest);
+}
+
+#[test]
+fn same_client_id_with_different_count_is_rejected() {
+    let (_path, repo) = setup_test_repo();
+    let mut request = SetConversationReactionRequest {
+        message_id: 10,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        count: Some(2),
+        client_mutation_id: "mut-count-conflict".to_string(),
+    };
+
+    repo.begin(&request, 1).unwrap();
+    request.count = Some(3);
+
+    let error = repo.begin(&request, 1).unwrap_err();
+    assert_eq!(error.code, ConversationErrorCode::InvalidRequest);
 }
 
 #[test]
@@ -90,6 +111,7 @@ fn successful_local_apply_upserts_self_actor_once() {
         message_id: 10,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-1".to_string(),
     };
 
@@ -121,6 +143,44 @@ fn successful_local_apply_upserts_self_actor_once() {
 }
 
 #[test]
+fn successful_local_apply_accumulates_increment_count() {
+    let (path, repo) = setup_test_repo();
+    let conn = open_db_connection(path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO message_reactions
+            (message_id, actor_external_id, reaction, count, reacted_at, removed_at)
+         VALUES (10, 'self-uid', 'heart', 4, '2026-08-02T11:00:00Z', NULL)",
+        [],
+    )
+    .unwrap();
+
+    let request = SetConversationReactionRequest {
+        message_id: 10,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        count: Some(3),
+        client_mutation_id: "mut-accumulate-heart".to_string(),
+    };
+
+    repo.begin(&request, 1).unwrap();
+    let groups = repo
+        .succeed("mut-accumulate-heart", "self-uid", "2026-08-02T12:00:00Z")
+        .unwrap();
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].count, 7);
+    let stored_count: u32 = conn
+        .query_row(
+            "SELECT count FROM message_reactions
+             WHERE message_id = 10 AND actor_external_id = 'self-uid' AND reaction = 'heart'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_count, 7);
+}
+
+#[test]
 fn successful_local_remove_matches_provider_reaction_alias() {
     let (path, repo) = setup_test_repo();
     let conn = open_db_connection(path.to_str().unwrap()).unwrap();
@@ -141,6 +201,7 @@ fn successful_local_remove_matches_provider_reaction_alias() {
         message_id: 10,
         reaction: ConversationReactionCode::Heart,
         active: false,
+        count: None,
         client_mutation_id: "mut-remove-heart".to_string(),
     };
 
@@ -170,6 +231,7 @@ fn multi_emoji_remove_hard_deletes_only_selected_reaction() {
         message_id: 10,
         reaction: ConversationReactionCode::Heart,
         active: true,
+        count: None,
         client_mutation_id: "mut-heart".to_string(),
     };
     repo.begin(&req_heart, 1).unwrap();
@@ -180,6 +242,7 @@ fn multi_emoji_remove_hard_deletes_only_selected_reaction() {
         message_id: 10,
         reaction: ConversationReactionCode::Haha,
         active: true,
+        count: None,
         client_mutation_id: "mut-haha".to_string(),
     };
     repo.begin(&req_haha, 1).unwrap();
@@ -190,6 +253,7 @@ fn multi_emoji_remove_hard_deletes_only_selected_reaction() {
         message_id: 10,
         reaction: ConversationReactionCode::Heart,
         active: false,
+        count: None,
         client_mutation_id: "mut-remove-heart-2".to_string(),
     };
     repo.begin(&req_remove_heart, 1).unwrap();
@@ -220,6 +284,37 @@ fn echo_cache_is_scoped_by_account_and_consumes_once() {
     assert!(!cache.consume_if_expected(2, "zalo-msg-123", "heart", "self-uid"));
     assert!(cache.consume_if_expected(1, "zalo-msg-123", "heart", "self-uid"));
     assert!(!cache.consume_if_expected(1, "zalo-msg-123", "heart", "self-uid"));
+}
+
+#[test]
+fn echo_cache_tracks_each_expected_batch_echo() {
+    use crate::conversation::echo_cache::ReactionEchoCache;
+
+    let cache = ReactionEchoCache::new();
+    for _ in 0..3 {
+        cache.mark_expected(1, "zalo-msg-batch", "heart", "self-uid");
+    }
+
+    assert!(cache.consume_if_expected(1, "zalo-msg-batch", "heart", "self-uid"));
+    assert!(cache.consume_if_expected(1, "zalo-msg-batch", "heart", "self-uid"));
+    assert!(cache.consume_if_expected(1, "zalo-msg-batch", "heart", "self-uid"));
+    assert!(!cache.consume_if_expected(1, "zalo-msg-batch", "heart", "self-uid"));
+}
+
+#[test]
+fn echo_cache_cancel_removes_only_one_expected_batch_echo() {
+    use crate::conversation::echo_cache::ReactionEchoCache;
+
+    let cache = ReactionEchoCache::new();
+    for _ in 0..3 {
+        cache.mark_expected(1, "zalo-msg-partial", "heart", "self-uid");
+    }
+
+    cache.cancel_one_expected(1, "zalo-msg-partial", "heart", "self-uid");
+
+    assert!(cache.consume_if_expected(1, "zalo-msg-partial", "heart", "self-uid"));
+    assert!(cache.consume_if_expected(1, "zalo-msg-partial", "heart", "self-uid"));
+    assert!(!cache.consume_if_expected(1, "zalo-msg-partial", "heart", "self-uid"));
 }
 
 #[test]

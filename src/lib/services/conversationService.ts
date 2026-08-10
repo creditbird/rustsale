@@ -128,6 +128,7 @@ export interface SetConversationReactionRequest {
   messageId: number;
   reaction: ConversationReactionCode;
   active: boolean;
+  count?: number;
   clientMutationId: string;
 }
 

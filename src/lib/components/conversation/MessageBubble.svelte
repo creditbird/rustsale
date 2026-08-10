@@ -3,6 +3,8 @@
     ConversationCapabilities,
     ConversationMessage,
     ConversationReactionCode,
+    ConversationReactionGroup,
+    ConversationReactionMutationResult,
     MessageStatus
   } from '$lib/services/conversationService';
   import MessageReplyPreview from './MessageReplyPreview.svelte';
@@ -11,7 +13,7 @@
   import MessageReactionSummary from './MessageReactionSummary.svelte';
   import MessageReactionPicker from './MessageReactionPicker.svelte';
   import { safeConversationUrl } from './messageMedia';
-  import { reactionIconToCode } from './reactionDisplay';
+  import { reactionCodeToIcon, reactionIconToCode } from './reactionDisplay';
   import * as Popover from '$lib/components/ui/popover';
   import { Smile, Check, CheckCheck, Clock, AlertCircle, Pin } from 'lucide-svelte';
 
@@ -26,7 +28,7 @@
     onRecall = () => {},
     onForward = () => {},
     onPin = () => {},
-    onToggleReaction = () => {},
+    onToggleReaction = () => Promise.resolve(null),
     onImageClick = () => {}
   }: {
     message: ConversationMessage;
@@ -40,18 +42,17 @@
     onForward?: (message: ConversationMessage) => void;
     onPin?: (message: ConversationMessage) => void;
     onToggleReaction?: (
-
-
       message: ConversationMessage,
       code: ConversationReactionCode,
-      currentActive?: boolean
-    ) => void;
+      action?: 'increment' | 'remove'
+    ) => Promise<ConversationReactionMutationResult | null>;
     onImageClick?: (url: string, message: ConversationMessage) => void;
   } = $props();
 
   let actionsOpen = $state(false);
   let showPicker = $state(false);
   let isHovered = $state(false);
+  let optimisticPickerIncrements = $state(new Map<ConversationReactionCode, number>());
 
   function formatTimestamp(isoString: string): string {
     try {
@@ -169,9 +170,37 @@
     !isRemoved && (message.actions?.forward ?? capabilities?.forward.enabled ?? true)
   );
 
+  let displayReactions = $derived.by(() => {
+    if (optimisticPickerIncrements.size === 0) return message.reactions;
+
+    const mergedGroups: ConversationReactionGroup[] = [];
+    const mergedCodes = new Set<ConversationReactionCode>();
+
+    for (const group of message.reactions) {
+      const code = reactionIconToCode(group.reactionIcon);
+      const optimisticCount = code === null ? 0 : (optimisticPickerIncrements.get(code) ?? 0);
+      if (code !== null) mergedCodes.add(code);
+      mergedGroups.push(
+        optimisticCount > 0 ? { ...group, count: group.count + optimisticCount } : group
+      );
+    }
+
+    for (const [code, count] of optimisticPickerIncrements) {
+      if (count <= 0 || mergedCodes.has(code)) continue;
+      mergedGroups.push({
+        reactionIcon: reactionCodeToIcon(code),
+        count,
+        includesMe: true,
+        actors: []
+      });
+    }
+
+    return mergedGroups;
+  });
+
   let activeReactionCodes = $derived.by(() => {
     const codes: ConversationReactionCode[] = [];
-    for (const group of message.reactions) {
+    for (const group of displayReactions) {
       if (group.includesMe) {
         const code = reactionIconToCode(group.reactionIcon);
         if (code !== null && !codes.includes(code)) codes.push(code);
@@ -198,9 +227,28 @@
     };
   }
 
-  function handleSelectReaction(code: ConversationReactionCode, activeState: boolean) {
+  function handleSelectReaction(code: ConversationReactionCode, action: 'increment' | 'remove') {
     showPicker = false;
-    onToggleReaction(message, code, activeState);
+    if (action === 'remove') {
+      void onToggleReaction(message, code, action);
+      return;
+    }
+
+    const next = new Map(optimisticPickerIncrements);
+    next.set(code, (next.get(code) ?? 0) + 1);
+    optimisticPickerIncrements = next;
+
+    const mutation = onToggleReaction(message, code, action);
+    void mutation
+      .finally(() => {
+        const currentCount = optimisticPickerIncrements.get(code) ?? 0;
+        if (currentCount <= 0) return;
+        const remaining = new Map(optimisticPickerIncrements);
+        if (currentCount === 1) remaining.delete(code);
+        else remaining.set(code, currentCount - 1);
+        optimisticPickerIncrements = remaining;
+      })
+      .catch(() => {});
   }
 </script>
 
@@ -301,7 +349,7 @@
           onRecall={() => onRecall(message)}
           onForward={() => onForward(message)}
           onPin={() => onPin(message)}
-          onToggleReaction={(code) => onToggleReaction(message, code)}
+          onToggleReaction={(code) => handleSelectReaction(code, 'increment')}
         />
 
 
@@ -361,12 +409,12 @@
       <MessageContentRenderer {message} onImageClick={(url) => onImageClick(url, message)} />
     {/if}
 
-    {#if !isRemoved && message.reactions.length > 0}
+    {#if !isRemoved && displayReactions.length > 0}
       <MessageReactionSummary
-        groups={message.reactions}
+        groups={displayReactions}
         {canReact}
         {pendingReactions}
-        onToggleReaction={(code, currentActive) => onToggleReaction(message, code, currentActive)}
+        onToggleReaction={(code, action) => onToggleReaction(message, code, action)}
       />
     {/if}
 

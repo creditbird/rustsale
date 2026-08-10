@@ -1,7 +1,11 @@
 /// <reference types="bun-types" />
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
-import type { ConversationCapabilities, ConversationMessage } from '$lib/services/conversationService';
+import type {
+  ConversationCapabilities,
+  ConversationMessage,
+  ConversationReactionMutationResult
+} from '$lib/services/conversationService';
 import MessageBubble from '../MessageBubble.svelte';
 
 describe('MessageBubble Component', () => {
@@ -232,6 +236,32 @@ describe('MessageBubble Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(screen.queryByRole('toolbar', { name: /Chọn cảm xúc/i })).toBeNull();
+  });
+
+  test('first reaction renders an optimistic chip before the mutation settles', async () => {
+    let resolveMutation: ((result: ConversationReactionMutationResult | null) => void) | undefined;
+    const mutation = new Promise<ConversationReactionMutationResult | null>((resolve) => {
+      resolveMutation = resolve;
+    });
+    const onToggleReaction = mock(() => mutation);
+
+    render(MessageBubble, {
+      message: baseMessage,
+      capabilities: richCapabilities,
+      onToggleReaction
+    });
+
+    await fireEvent.click(screen.getByTestId('message-actions-trigger'));
+    await fireEvent.click(screen.getByRole('button', { name: /Thả cảm xúc ❤️/i }));
+
+    expect(screen.getByRole('button', { name: /❤️ 1/ })).toBeTruthy();
+    expect(onToggleReaction).toHaveBeenCalledWith(baseMessage, 'heart', 'increment');
+
+    resolveMutation?.(null);
+    await mutation;
+    await Promise.resolve();
+
+    expect(screen.queryByRole('button', { name: /❤️ 1/ })).toBeNull();
   });
 
   test('contentType = email renders a card using content.subject, content.from, content.to without {@html}', () => {

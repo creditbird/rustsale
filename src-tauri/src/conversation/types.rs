@@ -343,6 +343,8 @@ pub struct SetConversationReactionRequest {
     pub message_id: i64,
     pub reaction: ConversationReactionCode,
     pub active: bool,
+    #[serde(default)]
+    pub count: Option<u32>,
     pub client_mutation_id: String,
 }
 
@@ -1144,6 +1146,7 @@ mod tests {
             message_id: 101,
             reaction: ConversationReactionCode::Heart,
             active: true,
+            count: None,
             client_mutation_id: "mut-101".into(),
         };
         let val = serde_json::to_value(&req).unwrap();
