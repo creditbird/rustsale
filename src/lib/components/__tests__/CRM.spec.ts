@@ -124,7 +124,7 @@ mock.module('@tauri-apps/api/core', () => {
 });
 
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
-import { expect, test, afterEach } from 'bun:test';
+import { afterEach } from 'bun:test';
 import LeadsList from '../LeadsList.svelte';
 import KanbanBoard from '../KanbanBoard.svelte';
 import LeadDetails from '../LeadDetails.svelte';

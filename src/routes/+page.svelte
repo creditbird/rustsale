@@ -15,12 +15,12 @@
   import { AlertCircle, Search, Bell } from 'lucide-svelte';
 
   let activeTab = $state('dashboard');
-  let targetLeadForConversation = $state<{ leadId?: number; phone?: string; name?: string } | null>(null);
+  let targetLeadForConversation = $state<{ leadId?: number; phone?: string; name?: string; zalo_uid?: string } | null>(null);
   let leads = $state<Lead[]>([]);
   let errorMsg = $state<string | null>(null);
 
-  function handleOpenConversationForLead(lead: { id: number; phone?: string; name?: string }) {
-    targetLeadForConversation = { leadId: lead.id, phone: lead.phone, name: lead.name };
+  function handleOpenConversationForLead(lead: { id: number; phone?: string; name?: string; zalo_uid?: string }) {
+    targetLeadForConversation = { leadId: lead.id, phone: lead.phone, name: lead.name, zalo_uid: lead.zalo_uid };
     activeTab = 'conversation';
   }
 

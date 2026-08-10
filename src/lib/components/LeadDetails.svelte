@@ -39,7 +39,7 @@
     initialLead?: Lead | null;
     onClose: () => void;
     onRefresh?: () => void;
-    onOpenConversation?: (lead: { id: number; phone?: string; name?: string }) => void;
+    onOpenConversation?: (lead: { id: number; phone?: string; name?: string; zalo_uid?: string }) => void;
   }>();
 
   let lead = $state<Lead | null>(initialLead);
@@ -258,10 +258,12 @@
 
   function openZaloConversation() {
     showSendZaloModal = false;
+    const zaloUid = lead?.zalo_uid || lead?.about?.match(/Zalo UID:\s*(\d+)/i)?.[1] || undefined;
     const payload = {
       id: leadId,
       phone: lead?.phone || editPhone || undefined,
-      name: lead?.name || editName || undefined
+      name: lead?.name || editName || undefined,
+      zalo_uid: zaloUid
     };
     if (onOpenConversation) {
       onOpenConversation(payload);

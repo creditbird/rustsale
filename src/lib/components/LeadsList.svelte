@@ -13,7 +13,7 @@
   let { leads = [], onRefresh, onOpenConversation } = $props<{
     leads: Lead[];
     onRefresh?: () => void;
-    onOpenConversation?: (lead: { id: number; phone?: string; name?: string }) => void;
+    onOpenConversation?: (lead: { id: number; phone?: string; name?: string; zalo_uid?: string }) => void;
   }>();
   let selectedLeadId = $state<number | null>(null);
 
@@ -464,7 +464,7 @@
 
   <!-- Lead Details Modal/Drawer -->
   {#if selectedLeadId !== null}
-    {@const selectedLead = leads.find(l => l.id === selectedLeadId)}
+    {@const selectedLead = leads.find((l: Lead) => l.id === selectedLeadId)}
     <LeadDetails
       leadId={selectedLeadId}
       initialLead={selectedLead}

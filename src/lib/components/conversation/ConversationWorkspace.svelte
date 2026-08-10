@@ -60,6 +60,7 @@
     leadId?: number;
     phone?: string;
     name?: string;
+    zalo_uid?: string;
   }
 
   let {
@@ -288,7 +289,21 @@
       if (match) return match;
     }
 
-    // 2. Match by phone number
+    // 2. Match by zalo_uid
+    if (lead.zalo_uid) {
+      const cleanUid = lead.zalo_uid.trim();
+      if (cleanUid) {
+        const matchUid = inbox.find((i) => {
+          const keyMatch = i.key ? i.key.includes(cleanUid) : false;
+          const titleMatch = i.title ? i.title.includes(cleanUid) : false;
+          const participantMatch = i.participants?.some((p) => String(p.identityId) === cleanUid);
+          return keyMatch || titleMatch || participantMatch;
+        });
+        if (matchUid) return matchUid;
+      }
+    }
+
+    // 3. Match by phone number
     const cleanPhone = lead.phone ? lead.phone.replace(/[^0-9]/g, '') : '';
     if (cleanPhone && cleanPhone.length >= 6) {
       const matchPhone = inbox.find((i) => {
@@ -303,11 +318,11 @@
       if (matchPhone) return matchPhone;
     }
 
-    // 3. Match by Lead Name
+    // 4. Match by Lead Name (excluding group chats)
     if (lead.name) {
       const leadNameLower = lead.name.trim().toLowerCase();
       const matchName = inbox.find((i) => {
-        if (!i.title) return false;
+        if (!i.title || i.kind === 'group') return false;
         const titleLower = i.title.trim().toLowerCase();
         return titleLower.includes(leadNameLower) || leadNameLower.includes(titleLower);
       });
@@ -318,7 +333,7 @@
   }
 
   function applyTargetLead(): boolean {
-    const hasValidLead = Boolean(targetLead && (targetLead.leadId || targetLead.phone || targetLead.name));
+    const hasValidLead = Boolean(targetLead && (targetLead.leadId || targetLead.phone || targetLead.name || targetLead.zalo_uid));
     if (!hasValidLead || !targetLead) return false;
 
     const found = findMatchingInboxItem(targetLead);
@@ -326,7 +341,7 @@
       selectItem(found);
       return true;
     } else {
-      newChatInitialPhone = targetLead.phone || '';
+      newChatInitialPhone = targetLead.phone || targetLead.zalo_uid || '';
       newChatInitialName = targetLead.name || '';
       newChatOpen = true;
       return true;
@@ -334,9 +349,9 @@
   }
 
   $effect(() => {
-    const hasValidLead = Boolean(targetLead && (targetLead.leadId || targetLead.phone || targetLead.name));
+    const hasValidLead = Boolean(targetLead && (targetLead.leadId || targetLead.phone || targetLead.name || targetLead.zalo_uid));
     if (activeTab === 'conversation' && hasValidLead && targetLead) {
-      const targetKey = `${targetLead.leadId || ''}_${targetLead.phone || ''}_${targetLead.name || ''}`;
+      const targetKey = `${targetLead.leadId || ''}_${targetLead.phone || ''}_${targetLead.name || ''}_${targetLead.zalo_uid || ''}`;
       if (handledTargetLeadKey !== targetKey) {
         handledTargetLeadKey = targetKey;
         if (inbox.length > 0) {
