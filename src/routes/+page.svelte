@@ -10,12 +10,18 @@
   import CategoryManager from '$lib/components/CategoryManager.svelte';
   import ConversationWorkspace from '$lib/components/conversation/ConversationWorkspace.svelte';
   import Settings from '$lib/components/Settings.svelte';
+  import LicenseModal from '$lib/components/LicenseModal.svelte';
+  import { verifyDeviceAndSubscription } from '$lib/services/licenseService';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
-  import { AlertCircle, Search, Bell } from 'lucide-svelte';
+  import { AlertCircle, Search, Bell, ShieldCheck } from 'lucide-svelte';
 
   let activeTab = $state('dashboard');
+  let showLicenseModal = $state(false);
+  let preventLicenseClose = $state(false);
+  let isLicenseVerified = $state(false);
   let targetLeadForConversation = $state<{ leadId?: number; phone?: string; name?: string; zalo_uid?: string } | null>(null);
+
   let leads = $state<Lead[]>([]);
   let errorMsg = $state<string | null>(null);
 
@@ -83,6 +89,11 @@
     }
   });
 
+  function handleOpenLicenseModal() {
+    preventLicenseClose = !isLicenseVerified;
+    showLicenseModal = true;
+  }
+
   onMount(() => {
     const unsubBridge = crmService.initScraperEventBridge();
     const unsub = crmService.onLeadsChanged(() => {
@@ -92,6 +103,26 @@
         isStale = true;
       }
     });
+
+    // Option 1: Gate check on app startup
+    verifyDeviceAndSubscription()
+      .then((res) => {
+        if (!res.allowed) {
+          preventLicenseClose = true;
+          showLicenseModal = true;
+          isLicenseVerified = false;
+        } else {
+          isLicenseVerified = true;
+          preventLicenseClose = false;
+        }
+      })
+      .catch((err) => {
+        console.error('License check on startup failed:', err);
+        preventLicenseClose = true;
+        showLicenseModal = true;
+        isLicenseVerified = false;
+      });
+
     return () => {
       unsub();
       unsubBridge();
@@ -111,7 +142,7 @@
 
 <div class="flex w-screen h-screen overflow-hidden bg-background text-foreground antialiased font-sans">
   <!-- Left Sidebar Navigation -->
-  <Sidebar bind:activeTab />
+  <Sidebar bind:activeTab onOpenLicense={handleOpenLicenseModal} />
 
   <!-- Main View Container -->
   <main class="flex-1 flex flex-col h-full overflow-hidden bg-muted/20">
@@ -136,6 +167,17 @@
             class="w-full h-9 pl-9 pr-4 rounded-md border border-input bg-background text-xs text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring transition-all"
           />
         </div>
+
+        <!-- License & HWID Quick Status Button -->
+        <button
+          type="button"
+          onclick={handleOpenLicenseModal}
+          class="h-9 px-3 rounded-md border border-emerald-500/20 bg-emerald-500/10 hover:bg-emerald-500/20 flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-xs font-semibold transition-colors"
+          title="Quản lý Bản quyền & HWID"
+        >
+          <ShieldCheck class="w-4 h-4" />
+          <span class="hidden sm:inline">Bản quyền & HWID</span>
+        </button>
 
         <!-- Notifications -->
         <button
@@ -192,4 +234,16 @@
       </div>
     </div>
   </main>
+
+  <!-- License & HWID Management Modal -->
+  <LicenseModal
+    bind:open={showLicenseModal}
+    preventClose={preventLicenseClose}
+    onVerified={() => {
+      isLicenseVerified = true;
+      preventLicenseClose = false;
+      showLicenseModal = false;
+    }}
+  />
 </div>
+

@@ -5360,3 +5360,46 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
         },
     })
 }
+
+#[derive(Debug, serde::Serialize)]
+pub struct HardwareInfo {
+    pub hardware_id: String,
+    pub hostname: String,
+    pub os_info: String,
+}
+
+#[tauri::command]
+pub fn get_hardware_id() -> Result<HardwareInfo, String> {
+    use sha2::{Digest, Sha256};
+
+    let hostname = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown_host".to_string());
+
+    let os_name = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown_user".to_string());
+
+    let raw_id = format!("{}:{}:{}:{}", os_name, arch, hostname, user);
+
+    let mut hasher = Sha256::new();
+    hasher.update(raw_id.as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+
+    let formatted_hwid = format!(
+        "HWID-{}-{}-{}-{}",
+        &hash[0..4].to_uppercase(),
+        &hash[4..8].to_uppercase(),
+        &hash[8..12].to_uppercase(),
+        &hash[12..16].to_uppercase()
+    );
+
+    Ok(HardwareInfo {
+        hardware_id: formatted_hwid,
+        hostname,
+        os_info: format!("{} ({})", os_name, arch),
+    })
+}
+

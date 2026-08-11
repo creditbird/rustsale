@@ -256,8 +256,10 @@ pub fn run() {
             conversation::commands::list_conversation_pinned_messages,
             commands::get_group_members_unrestricted,
             commands::batch_import_group_members_to_leads,
-            commands::sync_and_deep_scan_group_members
+            commands::sync_and_deep_scan_group_members,
+            commands::get_hardware_id
         ])
+
 
 
 

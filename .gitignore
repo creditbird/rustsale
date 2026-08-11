@@ -14,3 +14,5 @@ vite.config.ts.timestamp-*
 target/
 src-tauri/target/
 src-tauri/vendor/zca-rs/target/
+.gstack/
+scratch/

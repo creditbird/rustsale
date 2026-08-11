@@ -2856,4 +2856,14 @@ mod tests {
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].external_id.as_deref(), Some("quote-owner-uid"));
     }
+
+    #[test]
+    fn test_get_hardware_id_returns_formatted_hwid() {
+        let hw_info = commands::get_hardware_id().unwrap();
+        assert!(hw_info.hardware_id.starts_with("HWID-"));
+        assert_eq!(hw_info.hardware_id.len(), 24); // HWID-XXXX-XXXX-XXXX-XXXX = 24 chars
+        assert!(!hw_info.hostname.is_empty());
+        assert!(!hw_info.os_info.is_empty());
+    }
 }
+

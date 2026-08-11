@@ -9,10 +9,11 @@
     Mail,
     Kanban,
     UserCheck,
-    Settings2
+    Settings2,
+    ShieldCheck
   } from 'lucide-svelte';
 
-  let { activeTab = $bindable() } = $props();
+  let { activeTab = $bindable(), onOpenLicense }: { activeTab: string; onOpenLicense?: () => void } = $props();
 
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -58,15 +59,29 @@
   </nav>
 
   <!-- User / Status Footer -->
-  <div class="p-4 border-t border-sidebar-border flex items-center gap-3 bg-sidebar-accent/20">
-    <div class="size-8 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center justify-center text-xs font-bold">
-      RS
+  <div class="p-3 border-t border-sidebar-border flex items-center justify-between bg-sidebar-accent/20">
+    <div class="flex items-center gap-3 overflow-hidden">
+      <div class="size-8 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center justify-center text-xs font-bold shrink-0">
+        RS
+      </div>
+      <div class="flex flex-col overflow-hidden">
+        <span class="text-xs font-semibold truncate text-foreground">Admin Workspace</span>
+        <span class="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
+          <span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span> HWID Active
+        </span>
+      </div>
     </div>
-    <div class="flex flex-col overflow-hidden">
-      <span class="text-xs font-semibold truncate text-foreground">Admin Workspace</span>
-      <span class="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
-        <span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span> System Active
-      </span>
-    </div>
+
+    {#if onOpenLicense}
+      <button
+        type="button"
+        onclick={onOpenLicense}
+        title="Quản lý Bản quyền & HWID"
+        class="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-500/10 border border-emerald-500/20 transition-colors shrink-0"
+      >
+        <ShieldCheck class="size-4" />
+      </button>
+    {/if}
   </div>
 </aside>
+
