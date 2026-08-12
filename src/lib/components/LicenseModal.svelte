@@ -247,6 +247,25 @@
     }, 3000);
   }
 
+  function stopPaymentPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function resetPaymentState() {
+    stopPaymentPolling();
+    currentTransaction = null;
+  }
+
+  function handleSelectPlan(planId: string) {
+    selectedPlan = planId;
+    if (currentTransaction && currentTransaction.plan_id !== planId) {
+      resetPaymentState();
+    }
+  }
+
   function copyHwid() {
     if (hwInfo?.hardware_id) {
       navigator.clipboard.writeText(hwInfo.hardware_id);
@@ -257,10 +276,7 @@
 
   function handleClose() {
     if (preventClose) return;
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
+    stopPaymentPolling();
     open = false;
     if (onClose) onClose();
   }
@@ -466,7 +482,7 @@
             <div class="grid grid-cols-2 gap-3">
               {#each availablePlans as plan}
                 <button
-                  onclick={() => (selectedPlan = plan.id)}
+                  onclick={() => handleSelectPlan(plan.id)}
                   class="p-4 rounded-xl border text-left transition-all relative overflow-hidden {selectedPlan === plan.id ? 'border-emerald-500 bg-emerald-500/5 text-foreground ring-1 ring-emerald-500' : 'border-border bg-card text-muted-foreground hover:border-border/80'}"
                 >
                   <div class="text-sm font-bold text-emerald-600 dark:text-emerald-400">{plan.name}</div>
@@ -477,17 +493,21 @@
             </div>
 
             {#if !currentTransaction}
+              {@const targetPlan = availablePlans.find(p => p.id === selectedPlan)}
               <button
                 onclick={handleCreatePayment}
                 disabled={isLoading}
                 class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md flex items-center justify-center gap-2 transition-all"
               >
-                <QrCode class="w-4 h-4" /> Tạo mã chuyển khoản VietQR / PayOS
+                <QrCode class="w-4 h-4" /> Tạo mã chuyển khoản VietQR ({targetPlan?.name || 'Gói đã chọn'} - {targetPlan?.price.toLocaleString('vi-VN')}đ)
               </button>
             {:else}
+              {@const currentPlanObj = availablePlans.find(p => p.id === currentTransaction?.plan_id)}
               <!-- QR Payment Display Modal -->
               <div class="p-4 bg-muted/30 border border-border rounded-xl space-y-3 text-center">
-                <div class="text-xs font-semibold text-foreground">Quét mã QR bằng ứng dụng Ngân hàng để thanh toán:</div>
+                <div class="text-xs font-semibold text-foreground">
+                  Quét mã QR để thanh toán <span class="text-emerald-600 dark:text-emerald-400 font-bold">({currentPlanObj?.name || currentTransaction.plan_id.toUpperCase()})</span>:
+                </div>
                 <div class="flex justify-center p-2 bg-white rounded-xl inline-block border border-border shadow-2xs">
                   <img src={currentTransaction.qr_code_url} alt="VietQR" class="w-56 h-56 object-contain" />
                 </div>
@@ -519,6 +539,16 @@
                 </div>
                 <div class="flex items-center justify-center gap-2 text-xs text-emerald-600 animate-pulse pt-2 font-medium">
                   <RefreshCw class="w-3.5 h-3.5 animate-spin" /> Đang chờ hệ thống tự động xác nhận chuyển khoản...
+                </div>
+
+                <div class="pt-2 border-t border-border/50 flex justify-center">
+                  <button
+                    type="button"
+                    onclick={resetPaymentState}
+                    class="text-xs text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-lg border border-destructive/20 transition-colors font-medium flex items-center gap-1"
+                  >
+                    ✕ Hủy mã QR này để chọn gói khác
+                  </button>
                 </div>
               </div>
             {/if}
