@@ -17,7 +17,7 @@ The replacement must expose every country and territory in the GeoNames country 
 - Download `https://download.geonames.org/export/dump/{ISO2}.zip` only when a country is first used or explicitly refreshed.
 - Cache parsed country data in an application-data SQLite database separate from CRM data.
 - Import current `ADM1` through `ADM5` records and current populated-place records whose feature codes begin with `PPL`.
-- Exclude historical, abandoned, destroyed, and section-only records (`*H`, `PPLQ`, `PPLW`, `PPLCH`).
+- Exclude historical, abandoned, destroyed, and section-only records (`*H`, `PPLQ`, `PPLW`, `PPLCH`, `PPLX`).
 - Construct parent relationships from GeoNames administrative codes and expose a full canonical path for Google Maps text queries.
 - Keep free-form location entry available if a catalog download fails.
 - Keep the backend 500-location safety limit. The UI prevents selecting more than 500 administrative targets for one campaign.
@@ -33,7 +33,6 @@ Each bundled country contains:
 - English display name;
 - continent code;
 - capital;
-- bounding box;
 - GeoNames country ID;
 - supported language codes.
 
@@ -66,6 +65,9 @@ Each country cache records:
 - imported record count;
 - source URL;
 - last error, when applicable.
+
+The country bounding box is computed from loaded current records and is not
+claimed before a country dump has been loaded.
 
 ## 4. Backend Architecture
 

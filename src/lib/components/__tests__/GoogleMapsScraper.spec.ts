@@ -8,6 +8,11 @@ import type {
   GoogleMapsRuntimeStatus,
   GoogleMapsScrapeJob
 } from '$lib/services/googleMapsScraperService';
+import type {
+  AdministrativeAreaSummary,
+  AdministrativeCountry,
+  AdministrativeCountryStatus
+} from '$lib/services/administrativeCatalogService';
 
 type TauriEventListener = (event: { payload: unknown }) => void;
 
@@ -16,6 +21,75 @@ const eventListeners = new Map<string, TauriEventListener>();
 let jobs: GoogleMapsScrapeJob[] = [];
 let runtimeStatus: GoogleMapsRuntimeStatus;
 let runtimePromise: Promise<GoogleMapsRuntimeStatus>;
+
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+globalThis.ResizeObserver = TestResizeObserver as typeof ResizeObserver;
+
+const administrativeCountries: AdministrativeCountry[] = [
+  {
+    code: 'VN',
+    iso3: 'VNM',
+    name: 'Vietnam',
+    capital: 'Hanoi',
+    continent_code: 'AS',
+    languages: ['vi'],
+    geoname_id: 1_562_822
+  }
+];
+
+const administrativeRoots: AdministrativeAreaSummary[] = [
+  {
+    geoname_id: 100,
+    country_code: 'VN',
+    parent_id: null,
+    name: 'Alpha Province',
+    ascii_name: 'Alpha Province',
+    feature_code: 'ADM1',
+    administrative_level: 1,
+    kind: 'administrative',
+    latitude: 10,
+    longitude: 20,
+    population: 0,
+    canonical_path: 'Alpha Province, Vietnam',
+    has_children: true
+  }
+];
+
+const administrativeChildren: AdministrativeAreaSummary[] = [
+  {
+    geoname_id: 200,
+    country_code: 'VN',
+    parent_id: 100,
+    name: 'Alpha District',
+    ascii_name: 'Alpha District',
+    feature_code: 'ADM2',
+    administrative_level: 2,
+    kind: 'administrative',
+    latitude: 10.5,
+    longitude: 20.5,
+    population: 0,
+    canonical_path: 'Alpha District, Alpha Province, Vietnam',
+    has_children: false
+  }
+];
+
+function administrativeStatus(): AdministrativeCountryStatus {
+  return {
+    country_code: 'VN',
+    state: 'ready',
+    fetched_at: '2026-08-12T06:00:00Z',
+    source_updated_at: '2026-08-11',
+    record_count: 2,
+    source_url: 'https://download.geonames.org/export/dump/VN.zip',
+    last_error: null,
+    bbox: [10, 12, 20, 22]
+  };
+}
 
 function job(
   status: GoogleMapsJobStatus,
@@ -78,6 +152,15 @@ mock.module('@tauri-apps/api/core', () => ({
             maxLng: 107.0
           }
         };
+      case 'list_administrative_countries':
+        return administrativeCountries;
+      case 'get_administrative_country_status':
+      case 'load_administrative_country':
+        return administrativeStatus();
+      case 'list_administrative_areas':
+        return args?.parentId === 100 ? administrativeChildren : administrativeRoots;
+      case 'search_administrative_areas':
+        return [];
       case 'prepare_google_maps_runtime':
         return runtimePromise;
       case 'get_google_maps_runtime_status':
@@ -173,7 +256,7 @@ test('preserves preset, geocode, and custom bounding-box controls', async () => 
   await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
 
   expect(screen.getByText('Quick Select Province / City')).toBeTruthy();
-  expect(screen.getByLabelText('Search Administrative Area')).toBeTruthy();
+  expect(screen.getByLabelText(/Search Administrative Area/i)).toBeTruthy();
   expect(screen.getByLabelText('Min Lat')).toBeTruthy();
   expect(screen.getByLabelText('Max Lat')).toBeTruthy();
   expect(screen.getByLabelText('Min Lng')).toBeTruthy();
@@ -428,5 +511,41 @@ test('updates live scraper counters from the accepted job event', async () => {
     expect(screen.getByText('Discovered').previousElementSibling?.textContent).toBe('12');
     expect(screen.getByText('Qualified').previousElementSibling?.textContent).toBe('5');
     expect(screen.getByText('Leads').previousElementSibling?.textContent).toBe('4');
+  });
+});
+
+test('maps selected canonical paths into the unchanged districts request field', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), {
+    target: { value: 'cafe' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  await waitFor(() => {
+    const creation = invocations.find(({ command }) => command === 'create_google_maps_scrape_job');
+    expect(creation?.args?.request).toMatchObject({
+      location: 'Vietnam',
+      districts: ['Alpha District, Alpha Province, Vietnam']
+    });
+  });
+});
+
+test('keeps the selected country as the deep-scan location when no area is selected', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.input(await screen.findByLabelText('Search Keyword *'), {
+    target: { value: 'cafe' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  await waitFor(() => {
+    const creation = invocations.find(({ command }) => command === 'create_google_maps_scrape_job');
+    expect(creation?.args?.request).toMatchObject({
+      location: 'Vietnam',
+      districts: []
+    });
   });
 });

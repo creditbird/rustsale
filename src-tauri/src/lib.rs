@@ -3,6 +3,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use tauri::Manager;
 
+pub mod administrative_catalog;
 mod commands;
 #[cfg(test)]
 mod commands_test;
@@ -51,6 +52,25 @@ pub fn run() {
             app.manage(commands::DbState {
                 conn: std::sync::Mutex::new(conn),
             });
+
+            let administrative_catalog_repository =
+                administrative_catalog::repository::AdministrativeCatalogRepository::new(
+                    app_data_dir
+                        .join("administrative-catalog")
+                        .join("catalog.db"),
+                )
+                .expect("Failed to initialize administrative catalog repository");
+            let administrative_catalog_service = std::sync::Arc::new(
+                administrative_catalog::service::AdministrativeCatalogService::new(
+                    administrative_catalog_repository,
+                )
+                .expect("Failed to initialize administrative catalog service"),
+            );
+            app.manage(
+                administrative_catalog::commands::AdministrativeCatalogState {
+                    service: administrative_catalog_service,
+                },
+            );
 
             let repository = std::sync::Arc::new(
                 google_maps_jobs::repository::ScrapeJobRepository::new(db_path_str.to_string())
@@ -178,6 +198,11 @@ pub fn run() {
             commands::start_google_maps_scrape,
             commands::stop_google_maps_scrape,
             commands::get_preset_provinces,
+            administrative_catalog::commands::list_administrative_countries,
+            administrative_catalog::commands::get_administrative_country_status,
+            administrative_catalog::commands::load_administrative_country,
+            administrative_catalog::commands::list_administrative_areas,
+            administrative_catalog::commands::search_administrative_areas,
             google_maps_jobs::commands::get_google_maps_runtime_status,
             google_maps_jobs::commands::prepare_google_maps_runtime,
             google_maps_jobs::commands::create_google_maps_scrape_job,

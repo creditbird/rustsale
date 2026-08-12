@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import divisions from '$lib/constants/vietnam-divisions.json';
+  import AdministrativeAreaSelector from '$lib/components/AdministrativeAreaSelector.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
@@ -11,6 +11,10 @@
   import GoogleMapsJobHistory from '$lib/components/GoogleMapsJobHistory.svelte';
   import GoogleMapsJobPanel from '$lib/components/GoogleMapsJobPanel.svelte';
   import GoogleMapsRuntimePanel from '$lib/components/GoogleMapsRuntimePanel.svelte';
+  import type {
+    AdministrativeAreaSummary,
+    AdministrativeCountry
+  } from '$lib/services/administrativeCatalogService';
   import {
     cancelGoogleMapsScrapeJob,
     createGoogleMapsScrapeJob,
@@ -31,7 +35,7 @@
     type GoogleMapsRuntimeStatus,
     type GoogleMapsScrapeJob
   } from '$lib/services/googleMapsScraperService';
-  import { Search, MapPin, Play, Check, X, Building, Grid, Locate } from 'lucide-svelte';
+  import { Search, MapPin, Play, Building, Grid, Locate } from 'lucide-svelte';
 
   let mode = $state<'keyword' | 'grid'>('keyword');
   let keyword = $state('');
@@ -47,133 +51,12 @@
   let isGeocoding = $state(false);
 
   let deepScan = $state(true);
-  let selectedCities = $state<string[]>(['thanh_pho_ho_chi_minh']);
-  let selectedDistricts = $state<number[]>([]);
-  let selectedWards = $state<number[]>([]);
-  let citySearchQuery = $state('');
-  let showCityDropdown = $state(false);
-  let districtFilter = $state('');
-  let wardFilter = $state('');
+  let selectedCountryCode = $state('VN');
+  let selectedCountryName = $state('Vietnam');
+  let selectedAreas = $state<AdministrativeAreaSummary[]>([]);
 
-  let filteredCities = $derived.by(() => {
-    const q = citySearchQuery.trim().toLowerCase();
-    if (!q) return divisions;
-    return divisions.filter(p => p.name.toLowerCase().includes(q));
-  });
-
-  let availableDistricts = $derived.by(() => {
-    let list: { name: string; code: number; provinceName: string; provinceCodename: string; wards: any[] }[] = [];
-    for (const cityCodename of selectedCities) {
-      const province = divisions.find(p => p.codename === cityCodename);
-      if (province) {
-        const districts = province.districts || [];
-        for (const d of districts) {
-          list.push({
-            name: d.name,
-            code: d.code,
-            provinceName: province.name,
-            provinceCodename: province.codename,
-            wards: d.wards || []
-          });
-        }
-      }
-    }
-    return list.sort((a, b) => a.provinceName.localeCompare(b.provinceName) || a.name.localeCompare(b.name));
-  });
-
-  let filteredDistricts = $derived.by(() => {
-    const q = districtFilter.trim().toLowerCase();
-    if (!q) return availableDistricts;
-    return availableDistricts.filter(d => d.name.toLowerCase().includes(q) || d.provinceName.toLowerCase().includes(q));
-  });
-
-  let availableWards = $derived.by(() => {
-    let list: { name: string; code: number; districtName: string; districtCode: number; provinceName: string }[] = [];
-    for (const districtCode of selectedDistricts) {
-      const dist = availableDistricts.find(d => d.code === districtCode);
-      if (dist) {
-        const wards = dist.wards || [];
-        for (const ward of wards) {
-          list.push({ 
-            name: ward.name, 
-            code: ward.code, 
-            districtName: dist.name,
-            districtCode: dist.code,
-            provinceName: dist.provinceName
-          });
-        }
-      }
-    }
-    return list;
-  });
-
-  let filteredWards = $derived.by(() => {
-    const q = wardFilter.trim().toLowerCase();
-    if (!q) return availableWards;
-    return availableWards.filter(w => w.name.toLowerCase().includes(q) || w.districtName.toLowerCase().includes(q));
-  });
-
-  function toggleCity(cityCodename: string) {
-    if (selectedCities.includes(cityCodename)) {
-      selectedCities = selectedCities.filter(c => c !== cityCodename);
-      const province = divisions.find(p => p.codename === cityCodename);
-      if (province) {
-        const districtCodes = (province.districts || []).map(d => d.code);
-        selectedDistricts = selectedDistricts.filter(code => !districtCodes.includes(code));
-        let wardCodes: number[] = [];
-        for (const d of province.districts || []) {
-          const wards = d.wards || [];
-          wardCodes.push(...wards.map(w => w.code));
-        }
-        selectedWards = selectedWards.filter(code => !wardCodes.includes(code));
-      }
-    } else {
-      selectedCities = [...selectedCities, cityCodename];
-    }
-    districtFilter = '';
-    wardFilter = '';
-  }
-
-  function clearAllCities() {
-    selectedCities = [];
-    selectedDistricts = [];
-    selectedWards = [];
-    citySearchQuery = '';
-    districtFilter = '';
-    wardFilter = '';
-  }
-
-  function selectAllDistricts() {
-    selectedDistricts = availableDistricts.map(d => d.code);
-    selectedWards = [];
-    wardFilter = '';
-  }
-
-  function deselectAllDistricts() {
-    selectedDistricts = [];
-    selectedWards = [];
-    wardFilter = '';
-  }
-
-  function selectAllWards() {
-    selectedWards = availableWards.map(w => w.code);
-  }
-
-  function deselectAllWards() {
-    selectedWards = [];
-  }
-
-  function toggleDistrict(districtCode: number, checked: boolean) {
-    if (checked) {
-      if (!selectedDistricts.includes(districtCode)) {
-        selectedDistricts = [...selectedDistricts, districtCode];
-      }
-    } else {
-      const dist = availableDistricts.find(d => d.code === districtCode);
-      const wardCodesToRemove = dist ? (dist.wards || []).map(w => w.code) : [];
-      selectedDistricts = selectedDistricts.filter(c => c !== districtCode);
-      selectedWards = selectedWards.filter(code => !wardCodesToRemove.includes(code));
-    }
+  function handleCountryChange(country: AdministrativeCountry) {
+    selectedCountryName = country.name;
   }
 
   async function detectCoordinates() {
@@ -329,24 +212,8 @@
     let districtsVal: string[] = [];
     let locationVal = mode === 'keyword' ? location : null;
     if (mode === 'keyword' && deepScan) {
-      if (selectedDistricts.length === 0) {
-        appendLog("Error: Please select at least one district for Deep Scan.");
-        return;
-      }
-      locationVal = "Việt Nam";
-      if (selectedWards.length > 0) {
-        const wardMap = new Map(availableWards.map(w => [w.code, w]));
-        districtsVal = selectedWards.map(code => {
-          const ward = wardMap.get(code);
-          return ward ? `${ward.name}, ${ward.districtName}, ${ward.provinceName}` : '';
-        }).filter(Boolean);
-      } else {
-        const distMap = new Map(availableDistricts.map(d => [d.code, d]));
-        districtsVal = selectedDistricts.map(code => {
-          const dist = distMap.get(code);
-          return dist ? `${dist.name}, ${dist.provinceName}` : '';
-        }).filter(Boolean);
-      }
+      locationVal = selectedCountryName;
+      districtsVal = selectedAreas.map((area) => area.canonical_path);
     }
 
     logs = [];
@@ -445,8 +312,6 @@
     }
   }
 
-  let docClickHandler: (e: MouseEvent) => void;
-
   onMount(async () => {
     try {
       runtime = await getGoogleMapsRuntimeStatus();
@@ -476,18 +341,10 @@
       appendLog(`Error restoring Google Maps jobs: ${err}`);
     }
 
-    docClickHandler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest('.city-multiselect-container')) {
-        showCityDropdown = false;
-      }
-    };
-    document.addEventListener('click', docClickHandler);
   });
 
   onDestroy(() => {
     eventCleanup?.();
-    if (docClickHandler) document.removeEventListener('click', docClickHandler);
   });
 </script>
 
@@ -567,7 +424,7 @@
                 onclick={() => deepScan = true}
                 disabled={isScraping}
               >
-                Select by District/Ward (Deep Scan)
+                Select Administrative Areas (Deep Scan)
               </button>
             </div>
           </div>
@@ -584,126 +441,12 @@
             </div>
           {:else}
             <!-- Deep Scan Configurations -->
-            <div class="flex flex-col gap-3 border-t border-border pt-3">
-              <!-- Target Cities / Provinces -->
-              <div class="flex flex-col gap-2 relative city-multiselect-container">
-                <label for="city-search" class="font-semibold text-foreground">Target Cities / Provinces</label>
-                <div class="relative">
-                  <Search class="size-3.5 absolute left-3 top-2.5 text-muted-foreground" />
-                  <Input
-                    id="city-search"
-                    type="text"
-                    placeholder="Search & add cities..."
-                    bind:value={citySearchQuery}
-                    onfocus={() => showCityDropdown = true}
-                    disabled={isScraping}
-                    class="pl-8 text-xs h-9"
-                  />
-                </div>
-
-                {#if selectedCities.length > 0}
-                  <div class="flex flex-wrap gap-1.5 pt-1">
-                    {#each selectedCities as cityCodename (cityCodename)}
-                      {@const cityName = divisions.find(p => p.codename === cityCodename)?.name}
-                      <Badge variant="secondary" class="gap-1 text-[11px]">
-                        {cityName}
-                        <button type="button" onclick={() => toggleCity(cityCodename)} class="hover:text-destructive cursor-pointer">
-                          <X class="size-3" />
-                        </button>
-                      </Badge>
-                    {/each}
-                    <Button variant="ghost" size="sm" onclick={clearAllCities} class="h-6 text-[10px] px-2 text-muted-foreground">Clear All</Button>
-                  </div>
-                {/if}
-
-                {#if showCityDropdown}
-                  <div class="absolute left-0 right-0 top-full mt-1 z-30 max-h-48 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md text-xs flex flex-col gap-0.5">
-                    {#each filteredCities as city (city.codename)}
-                      {@const isSelected = selectedCities.includes(city.codename)}
-                      <button
-                        type="button"
-                        class="w-full px-3 py-1.5 rounded flex items-center justify-between text-left hover:bg-accent transition-colors cursor-pointer {isSelected ? 'bg-primary/10 text-primary font-semibold' : ''}"
-                        onclick={() => toggleCity(city.codename)}
-                      >
-                        <span>{city.name}</span>
-                        {#if isSelected}<Check class="size-3.5 text-primary" />{/if}
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-              </div>
-
-              <!-- Districts Selection Grid -->
-              <div class="flex flex-col gap-2">
-                <div class="flex items-center justify-between text-xs">
-                  <span class="font-semibold text-foreground">Select Districts ({selectedDistricts.length} selected)</span>
-                  <div class="flex items-center gap-2">
-                    <Input type="text" placeholder="Filter districts..." bind:value={districtFilter} class="h-7 w-32 text-[11px]" disabled={isScraping} />
-                    <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={selectAllDistricts} disabled={isScraping}>Select All</Button>
-                    <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2 text-muted-foreground" onclick={deselectAllDistricts} disabled={isScraping}>Clear</Button>
-                  </div>
-                </div>
-                <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
-                  {#each filteredDistricts as district (district.code)}
-                    {@const isChecked = selectedDistricts.includes(district.code)}
-                    <div 
-                      class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5 font-semibold' : ''}"
-                      onclick={() => !isScraping && toggleDistrict(district.code, !isChecked)}
-                      role="button"
-                      tabindex="0"
-                      onkeydown={(e) => e.key === 'Enter' && !isScraping && toggleDistrict(district.code, !isChecked)}
-                    >
-                      <Checkbox
-                        checked={isChecked}
-                        disabled={isScraping}
-                      />
-                      <span class="truncate">{district.name} <small class="text-muted-foreground">({district.provinceName.replace('Thành phố ', 'TP. ').replace('Tỉnh ', 'T.')})</small></span>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-
-              <!-- Wards Selection Grid -->
-              {#if selectedDistricts.length > 0}
-                <div class="flex flex-col gap-2 border-t border-border/50 pt-2">
-                  <div class="flex items-center justify-between text-xs">
-                    <span class="font-semibold text-foreground">Select Wards ({selectedWards.length} selected)</span>
-                    <div class="flex items-center gap-2">
-                      <Input type="text" placeholder="Filter wards..." bind:value={wardFilter} class="h-7 w-32 text-[11px]" disabled={isScraping} />
-                      <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2" onclick={selectAllWards} disabled={isScraping}>Select All</Button>
-                      <Button variant="ghost" size="sm" class="h-7 text-[10px] px-2 text-muted-foreground" onclick={deselectAllWards} disabled={isScraping}>Clear</Button>
-                    </div>
-                  </div>
-                  <div class="max-h-36 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
-                    {#each filteredWards as ward (ward.code)}
-                      {@const isChecked = selectedWards.includes(ward.code)}
-                      <div 
-                        class="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-[11px] truncate transition-colors {isChecked ? 'bg-primary/5 font-semibold' : ''}"
-                        onclick={() => {
-                          if (isScraping) return;
-                          if (isChecked) selectedWards = selectedWards.filter(w => w !== ward.code);
-                          else selectedWards = [...selectedWards, ward.code];
-                        }}
-                        role="button"
-                        tabindex="0"
-                        onkeydown={(e) => {
-                          if (e.key === 'Enter' && !isScraping) {
-                            if (isChecked) selectedWards = selectedWards.filter(w => w !== ward.code);
-                            else selectedWards = [...selectedWards, ward.code];
-                          }
-                        }}
-                      >
-                        <Checkbox
-                          checked={isChecked}
-                          disabled={isScraping}
-                        />
-                        <span class="truncate">{ward.name} <small class="text-muted-foreground">({ward.districtName.replace('Quận ', 'Q.').replace('Huyện ', 'H.')})</small></span>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-            </div>
+            <AdministrativeAreaSelector
+              bind:selectedCountryCode
+              bind:selectedAreas
+              disabled={isScraping}
+              onCountryChange={handleCountryChange}
+            />
           {/if}
 
         {:else}
