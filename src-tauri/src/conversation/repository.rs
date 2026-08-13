@@ -3871,6 +3871,16 @@ impl ConversationRepository {
                     phone_clean_buf = ext_id.trim().to_string();
                 }
             }
+        } else if !phone_clean_buf.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(ext_id) = tx.query_row(
+                "SELECT external_id FROM channel_identities WHERE lower(trim(display_name)) = lower(trim(?1)) AND external_id IS NOT NULL AND trim(external_id) <> '' LIMIT 1",
+                [&phone_clean_buf],
+                |row| row.get::<_, String>(0),
+            ) {
+                if !ext_id.trim().is_empty() {
+                    phone_clean_buf = ext_id.trim().to_string();
+                }
+            }
         }
         let phone_clean = phone_clean_buf.as_str();
         if phone_clean.is_empty() {

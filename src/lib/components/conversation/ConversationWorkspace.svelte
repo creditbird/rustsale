@@ -92,7 +92,7 @@
   let createLeadPhoneOrUid = $state('');
   let createLeadIdentityId = $state<number | null>(null);
 
-  function handleUserClick(payload: UserClickPayload) {
+  async function resolveParticipantDetails(payload: UserClickPayload): Promise<{ externalId?: string; identityId?: number }> {
     let resolvedExtId = payload.externalId;
     let resolvedIdentityId = payload.identityId;
 
@@ -115,29 +115,66 @@
       }
     }
 
-    userPopoverPayload = {
-      ...payload,
-      identityId: resolvedIdentityId ?? null,
-      externalId: resolvedExtId || undefined
-    };
-    userPopoverOpen = true;
-  }
+    if (!resolvedExtId && selectedItem?.conversationId) {
+      try {
+        const candidates = await listConversationMentionCandidates({
+          conversationId: selectedItem.conversationId,
+          query: payload.displayName || undefined
+        });
 
-  function handleOpenDirectChatFromPopover(payload: UserClickPayload) {
-    let targetPhoneOrUid = payload.externalId;
-    if (!targetPhoneOrUid && selectedItem?.participants) {
-      const match = selectedItem.participants.find((p) => {
-        if (payload.identityId && p.identityId === payload.identityId) return true;
-        if (payload.displayName && p.displayName && p.displayName.trim().toLowerCase() === payload.displayName.trim().toLowerCase()) return true;
-        return false;
-      });
-      if (match?.externalId) {
-        targetPhoneOrUid = match.externalId;
+        const cleanName = payload.displayName?.trim().toLowerCase();
+        const candidate = candidates.find((c) => {
+          if (resolvedIdentityId && c.identityId === resolvedIdentityId) return true;
+          if (cleanName && c.displayName && c.displayName.trim().toLowerCase() === cleanName) return true;
+          return false;
+        });
+
+        if (candidate) {
+          if (candidate.externalId) {
+            resolvedExtId = candidate.externalId;
+          }
+          if (candidate.identityId) {
+            resolvedIdentityId = candidate.identityId;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to resolve mention candidate for popover user click:', err);
       }
     }
 
+    return {
+      externalId: resolvedExtId || undefined,
+      identityId: resolvedIdentityId || undefined
+    };
+  }
+
+  async function handleUserClick(payload: UserClickPayload) {
+    userPopoverPayload = payload;
+    userPopoverOpen = true;
+
+    if (!payload.externalId) {
+      const resolved = await resolveParticipantDetails(payload);
+      if (resolved.externalId || resolved.identityId) {
+        userPopoverPayload = {
+          ...payload,
+          identityId: resolved.identityId ?? payload.identityId ?? null,
+          externalId: resolved.externalId || payload.externalId
+        };
+      }
+    }
+  }
+
+  async function handleOpenDirectChatFromPopover(payload: UserClickPayload) {
+    let resolved = { externalId: payload.externalId, identityId: payload.identityId ?? undefined };
+    if (!resolved.externalId) {
+      resolved = await resolveParticipantDetails(payload);
+    }
+
+    const targetPhoneOrUid = resolved.externalId;
+    const targetIdentityId = resolved.identityId ?? payload.identityId;
+
     const matching = findMatchingInboxItem({
-      identityId: payload.identityId ?? undefined,
+      identityId: targetIdentityId ?? undefined,
       zalo_uid: targetPhoneOrUid,
       name: payload.displayName ?? undefined
     });
@@ -145,27 +182,23 @@
     if (matching) {
       selectItem(matching);
     } else {
-      newChatInitialPhone = targetPhoneOrUid || (payload.identityId ? String(payload.identityId) : '');
+      newChatInitialPhone = targetPhoneOrUid || (targetIdentityId ? String(targetIdentityId) : '');
       newChatInitialName = payload.displayName || '';
       newChatOpen = true;
     }
   }
 
-  function handleOpenLeadFromPopover(payload: UserClickPayload) {
-    let targetPhoneOrUid = payload.externalId;
-    if (!targetPhoneOrUid && selectedItem?.participants) {
-      const match = selectedItem.participants.find((p) => {
-        if (payload.identityId && p.identityId === payload.identityId) return true;
-        if (payload.displayName && p.displayName && p.displayName.trim().toLowerCase() === payload.displayName.trim().toLowerCase()) return true;
-        return false;
-      });
-      if (match?.externalId) {
-        targetPhoneOrUid = match.externalId;
-      }
+  async function handleOpenLeadFromPopover(payload: UserClickPayload) {
+    let resolved = { externalId: payload.externalId, identityId: payload.identityId ?? undefined };
+    if (!resolved.externalId) {
+      resolved = await resolveParticipantDetails(payload);
     }
 
+    const targetPhoneOrUid = resolved.externalId;
+    const targetIdentityId = resolved.identityId ?? payload.identityId;
+
     const matching = findMatchingInboxItem({
-      identityId: payload.identityId ?? undefined,
+      identityId: targetIdentityId ?? undefined,
       zalo_uid: targetPhoneOrUid,
       name: payload.displayName ?? undefined
     });
@@ -174,8 +207,8 @@
       selectItem(matching);
     } else {
       createLeadName = payload.displayName || '';
-      createLeadPhoneOrUid = targetPhoneOrUid || (payload.identityId ? String(payload.identityId) : '');
-      createLeadIdentityId = payload.identityId ?? null;
+      createLeadPhoneOrUid = targetPhoneOrUid || (targetIdentityId ? String(targetIdentityId) : '');
+      createLeadIdentityId = targetIdentityId ?? null;
       createLeadOpen = true;
     }
   }
