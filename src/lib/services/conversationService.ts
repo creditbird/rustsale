@@ -222,6 +222,7 @@ export interface ConversationCapabilities {
 
 export interface ConversationParticipantSummary {
   identityId: number;
+  externalId: string | null;
   displayName: string | null;
   avatarUrl: string | null;
   participantRole: string;
@@ -298,6 +299,7 @@ export interface ConversationMessage {
   channel: Channel;
   accountDisplayName: string | null;
   senderIdentityId: number | null;
+  senderExternalId?: string | null;
   senderDisplayName: string | null;
   direction: MessageDirection;
   contentType: string;

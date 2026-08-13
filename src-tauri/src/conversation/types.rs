@@ -228,6 +228,7 @@ pub struct ConversationSendBatchSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationParticipantSummary {
     pub identity_id: i64,
+    pub external_id: Option<String>,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub participant_role: String,
@@ -641,6 +642,7 @@ pub struct ConversationMessage {
     pub channel: Channel,
     pub account_display_name: Option<String>,
     pub sender_identity_id: Option<i64>,
+    pub sender_external_id: Option<String>,
     pub sender_display_name: Option<String>,
     pub direction: MessageDirection,
     #[serde(skip_serializing)]

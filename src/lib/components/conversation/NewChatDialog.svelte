@@ -41,13 +41,7 @@
 
   $effect(() => {
     if (open) {
-      const rawPhone = (initialPhone || '').trim();
-      // Valid phone number (10 digits starting with 0) or Zalo UID (15+ digits)
-      if (/^0\d{9}$/.test(rawPhone) || /^\d{15,20}$/.test(rawPhone)) {
-        phoneOrExternalId = rawPhone;
-      } else {
-        phoneOrExternalId = '';
-      }
+      phoneOrExternalId = (initialPhone || '').trim();
       displayName = initialDisplayName || '';
       initialMessage = '';
       errorMessage = null;

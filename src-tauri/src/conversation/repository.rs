@@ -1692,7 +1692,7 @@ impl ConversationRepository {
             )?;
 
             let mut part_stmt = conn.prepare(
-                "SELECT cp.identity_id, ci.display_name, ci.avatar_url, cp.participant_role
+                "SELECT cp.identity_id, ci.external_id, ci.display_name, ci.avatar_url, cp.participant_role
                  FROM conversation_participants cp
                  JOIN channel_identities ci ON ci.id = cp.identity_id
                  WHERE cp.conversation_id = ?1 AND cp.left_at IS NULL
@@ -1704,9 +1704,10 @@ impl ConversationRepository {
                 .query_map([conv_id], |row| {
                     Ok(ConversationParticipantSummary {
                         identity_id: row.get(0)?,
-                        display_name: row.get(1)?,
-                        avatar_url: row.get(2)?,
-                        participant_role: row.get(3)?,
+                        external_id: row.get(1)?,
+                        display_name: row.get(2)?,
+                        avatar_url: row.get(3)?,
+                        participant_role: row.get(4)?,
                     })
                 })?
                 .collect::<Result<Vec<_>>>()?;
@@ -3859,7 +3860,19 @@ impl ConversationRepository {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
-        let phone_clean = request.phone_or_external_id.trim();
+        let mut phone_clean_buf = request.phone_or_external_id.trim().to_string();
+        if let Ok(identity_id) = phone_clean_buf.parse::<i64>() {
+            if let Ok(ext_id) = tx.query_row(
+                "SELECT external_id FROM channel_identities WHERE id = ?1",
+                [identity_id],
+                |row| row.get::<_, String>(0),
+            ) {
+                if !ext_id.trim().is_empty() {
+                    phone_clean_buf = ext_id.trim().to_string();
+                }
+            }
+        }
+        let phone_clean = phone_clean_buf.as_str();
         if phone_clean.is_empty() {
             return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
                 std::io::Error::new(
@@ -5857,6 +5870,8 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         (_, s, _) => s.map(str::to_string),
     };
 
+    let sender_external_id: Option<String> = row.get(19).ok();
+
     Ok(ConversationMessage {
         id: row.get(0)?,
         conversation_id: row.get(1)?,
@@ -5864,6 +5879,7 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         channel,
         account_display_name,
         sender_identity_id: row.get(5)?,
+        sender_external_id,
         sender_display_name,
         direction,
         provider_message_id: row.get(8)?,

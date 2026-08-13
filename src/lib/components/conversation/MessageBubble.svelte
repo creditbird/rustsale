@@ -290,6 +290,7 @@
               onUserClick({
                 identityId: message.senderIdentityId,
                 displayName: message.senderDisplayName,
+                externalId: message.senderExternalId || undefined,
                 targetEl: e.currentTarget as HTMLElement
               });
             }}
