@@ -98,25 +98,49 @@
   }
 
   function handleOpenDirectChatFromPopover(payload: UserClickPayload) {
+    let targetPhoneOrUid = payload.externalId;
+    if (!targetPhoneOrUid && selectedItem?.participants) {
+      const match = selectedItem.participants.find((p) => {
+        if (payload.identityId && p.identityId === payload.identityId) return true;
+        if (payload.displayName && p.displayName && p.displayName.trim().toLowerCase() === payload.displayName.trim().toLowerCase()) return true;
+        return false;
+      });
+      if (match?.externalId) {
+        targetPhoneOrUid = match.externalId;
+      }
+    }
+
     const matching = findMatchingInboxItem({
       identityId: payload.identityId ?? undefined,
-      zalo_uid: payload.externalId,
+      zalo_uid: targetPhoneOrUid,
       name: payload.displayName ?? undefined
     });
 
     if (matching) {
       selectItem(matching);
     } else {
-      newChatInitialPhone = payload.externalId || (payload.identityId ? String(payload.identityId) : '');
+      newChatInitialPhone = targetPhoneOrUid || (payload.identityId ? String(payload.identityId) : '');
       newChatInitialName = payload.displayName || '';
       newChatOpen = true;
     }
   }
 
   function handleOpenLeadFromPopover(payload: UserClickPayload) {
+    let targetPhoneOrUid = payload.externalId;
+    if (!targetPhoneOrUid && selectedItem?.participants) {
+      const match = selectedItem.participants.find((p) => {
+        if (payload.identityId && p.identityId === payload.identityId) return true;
+        if (payload.displayName && p.displayName && p.displayName.trim().toLowerCase() === payload.displayName.trim().toLowerCase()) return true;
+        return false;
+      });
+      if (match?.externalId) {
+        targetPhoneOrUid = match.externalId;
+      }
+    }
+
     const matching = findMatchingInboxItem({
       identityId: payload.identityId ?? undefined,
-      zalo_uid: payload.externalId,
+      zalo_uid: targetPhoneOrUid,
       name: payload.displayName ?? undefined
     });
 
@@ -124,7 +148,7 @@
       selectItem(matching);
     } else {
       createLeadName = payload.displayName || '';
-      createLeadPhoneOrUid = payload.externalId || (payload.identityId ? String(payload.identityId) : '');
+      createLeadPhoneOrUid = targetPhoneOrUid || (payload.identityId ? String(payload.identityId) : '');
       createLeadIdentityId = payload.identityId ?? null;
       createLeadOpen = true;
     }

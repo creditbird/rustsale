@@ -431,13 +431,28 @@
         {message}
         onImageClick={(url) => onImageClick(url, message)}
         onMentionClick={(identityId, mentionText, externalId) => {
-          const cleanName = mentionText.startsWith('@') ? mentionText.slice(1) : mentionText;
+          const cleanName = mentionText.startsWith('@') ? mentionText.slice(1).trim() : mentionText.trim();
           let resolvedExtId = externalId;
-          if (!resolvedExtId && identityId) {
-            resolvedExtId = selectedItem?.participants?.find((p) => p.identityId === identityId)?.externalId ?? undefined;
+          let resolvedIdentityId = identityId;
+
+          const participant = selectedItem?.participants?.find((p) => {
+            if (resolvedIdentityId && p.identityId === resolvedIdentityId) return true;
+            if (resolvedExtId && p.externalId === resolvedExtId) return true;
+            if (cleanName && p.displayName && p.displayName.trim().toLowerCase() === cleanName.toLowerCase()) return true;
+            return false;
+          });
+
+          if (participant) {
+            if (!resolvedExtId && participant.externalId) {
+              resolvedExtId = participant.externalId;
+            }
+            if (!resolvedIdentityId && participant.identityId) {
+              resolvedIdentityId = participant.identityId;
+            }
           }
+
           onUserClick({
-            identityId,
+            identityId: resolvedIdentityId || undefined,
             displayName: cleanName,
             externalId: resolvedExtId || undefined
           });

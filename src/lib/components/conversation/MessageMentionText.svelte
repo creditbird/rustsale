@@ -27,7 +27,14 @@
   let chunks = $derived.by<MentionChunk[]>(() => {
     if (!text) return [];
 
-    let mentionItems = [...mentions];
+    let mentionItems = (mentions || []).map((m: any) => {
+      const start = typeof m.startUtf16 === 'number' ? m.startUtf16 : (typeof m.pos === 'number' ? m.pos : 0);
+      const len = typeof m.lengthUtf16 === 'number' ? m.lengthUtf16 : (typeof m.len === 'number' ? m.len : 0);
+      const identityId = m.targetIdentityId ?? m.identityId ?? null;
+      const externalId = (m.targetExternalId ?? m.externalId ?? '') || undefined;
+      const textVal = m.displayText || m.displayName || '';
+      return { startUtf16: start, lengthUtf16: len, identityId, externalId, displayText: textVal };
+    });
 
     // Fallback regex if structured mentions array is empty
     if (mentionItems.length === 0) {
@@ -36,7 +43,7 @@
       while ((match = MENTION_REGEX.exec(text)) !== null) {
         mentionItems.push({
           identityId: null,
-          externalId: '',
+          externalId: undefined,
           displayText: match[0],
           startUtf16: match.index,
           lengthUtf16: match[0].length
@@ -68,8 +75,8 @@
         result.push({
           type: 'mention',
           text: sliceUtf16(text, start, len),
-          identityId: 'identityId' in m ? m.identityId : null,
-          externalId: 'externalId' in m ? m.externalId : undefined
+          identityId: m.identityId,
+          externalId: m.externalId
         });
       }
 
