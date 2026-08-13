@@ -56,6 +56,7 @@
   import GroupMembersModal from './GroupMembersModal.svelte';
   import NewChatDialog from './NewChatDialog.svelte';
   import UserProfilePopover, { type UserClickPayload } from './UserProfilePopover.svelte';
+  import CreateLeadDialog from './CreateLeadDialog.svelte';
 
   export interface TargetLeadPayload {
     leadId?: number;
@@ -84,6 +85,11 @@
   let groupMembersModalOpen = $state(false);
   let userPopoverOpen = $state(false);
   let userPopoverPayload = $state<UserClickPayload | null>(null);
+
+  let createLeadOpen = $state(false);
+  let createLeadName = $state('');
+  let createLeadPhoneOrUid = $state('');
+  let createLeadIdentityId = $state<number | null>(null);
 
   function handleUserClick(payload: UserClickPayload) {
     userPopoverPayload = payload;
@@ -114,9 +120,22 @@
     if (matching) {
       selectItem(matching);
     } else {
-      newChatInitialPhone = payload.externalId || (payload.identityId ? String(payload.identityId) : '');
-      newChatInitialName = payload.displayName || '';
-      newChatOpen = true;
+      createLeadName = payload.displayName || '';
+      createLeadPhoneOrUid = payload.externalId || (payload.identityId ? String(payload.identityId) : '');
+      createLeadIdentityId = payload.identityId ?? null;
+      createLeadOpen = true;
+    }
+  }
+
+  function handleLeadCreatedFromDialog(leadId: number) {
+    void refreshInbox();
+    const matching = findMatchingInboxItem({
+      leadId,
+      zalo_uid: createLeadPhoneOrUid,
+      name: createLeadName
+    });
+    if (matching) {
+      selectItem(matching);
     }
   }
 
@@ -1131,5 +1150,13 @@
     onClose={() => (userPopoverOpen = false)}
     onOpenDirectChat={handleOpenDirectChatFromPopover}
     onOpenLead={handleOpenLeadFromPopover}
+  />
+  <CreateLeadDialog
+    open={createLeadOpen}
+    initialName={createLeadName}
+    initialPhoneOrUid={createLeadPhoneOrUid}
+    identityId={createLeadIdentityId}
+    onClose={() => (createLeadOpen = false)}
+    onSuccess={handleLeadCreatedFromDialog}
   />
 </div>
