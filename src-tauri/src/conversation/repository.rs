@@ -20,6 +20,29 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static LAST_PROVIDER_CLIENT_ID: AtomicU64 = AtomicU64::new(0);
 
+fn message_occurred_after_tombstone(message: &NormalizedMessage, deleted_at: &str) -> bool {
+    let occurred_at = message
+        .provider_timestamp
+        .as_deref()
+        .unwrap_or(&message.ingested_at);
+    let Ok(occurred_at) = chrono::DateTime::parse_from_rfc3339(occurred_at) else {
+        tracing::warn!(
+            provider_timestamp = ?message.provider_timestamp,
+            ingested_at = %message.ingested_at,
+            "Suppressing tombstoned conversation message with invalid timestamp"
+        );
+        return false;
+    };
+    let Ok(deleted_at) = chrono::DateTime::parse_from_rfc3339(deleted_at) else {
+        tracing::warn!(
+            deleted_at,
+            "Suppressing tombstoned conversation message with invalid deletion timestamp"
+        );
+        return false;
+    };
+    occurred_at > deleted_at
+}
+
 type UnlinkedIdentityRow = (
     i64,
     Option<String>,
@@ -826,6 +849,42 @@ impl ConversationRepository {
         } else {
             None
         };
+
+        let tombstone_deleted_at: Option<String> = tx
+            .query_row(
+                "SELECT deleted_at FROM deleted_conversations
+                 WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = ?3",
+                params![
+                    channel_account_id,
+                    message.external_thread_id,
+                    message.conversation_kind.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(tombstone_at) = tombstone_deleted_at {
+            if !message_occurred_after_tombstone(message, &tombstone_at) {
+                return Ok(AppliedMessage {
+                    channel_account_id,
+                    identity_id,
+                    conversation_id: 0,
+                    message_id: 0,
+                    duplicate: true,
+                    replayed_reaction_count: 0,
+                });
+            } else {
+                tx.execute(
+                    "DELETE FROM deleted_conversations
+                     WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = ?3",
+                    params![
+                        channel_account_id,
+                        message.external_thread_id,
+                        message.conversation_kind.as_str()
+                    ],
+                )?;
+            }
+        }
 
         let conversation_id: i64 = tx.query_row(
             "INSERT INTO channel_conversations
@@ -2197,6 +2256,19 @@ impl ConversationRepository {
             now,
         )?;
 
+        let tombstone_deleted_at: Option<String> = tx
+            .query_row(
+                "SELECT deleted_at FROM deleted_conversations
+                 WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'group'",
+                params![channel_account_id, snapshot.external_thread_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if tombstone_deleted_at.is_some() {
+            return Ok(0);
+        }
+
         let conversation_id: i64 = tx.query_row(
             "INSERT INTO channel_conversations
              (channel_account_id, external_thread_id, kind, title, avatar_url, status, last_synced_at, created_at, updated_at)
@@ -3393,77 +3465,389 @@ impl ConversationRepository {
         Ok(p_id)
     }
 
-    pub fn delete_conversation(
-        &self,
-        request: &crate::conversation::types::DeleteConversationRequest,
+    fn collect_conversation_files(
+        tx: &rusqlite::Transaction,
+        conv_ids: &[i64],
+        pending_files: &mut Vec<String>,
+        now: &str,
     ) -> Result<()> {
-        let mut conn = open_db_connection(&self.db_path)?;
-        let tx = conn.transaction()?;
+        if conv_ids.is_empty() {
+            return Ok(());
+        }
+        for &cid in conv_ids {
+            if cid <= 0 {
+                continue;
+            }
+            let mut stmt = tx.prepare(
+                "SELECT ma.local_path FROM message_attachments ma
+                 JOIN messages m ON m.id = ma.message_id
+                 WHERE m.conversation_id = ?1 AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''",
+            )?;
+            let paths = stmt.query_map(params![cid], |row| row.get::<_, String>(0))?;
+            for path_result in paths {
+                let path = path_result?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_spool_cleanups (local_path, created_at) VALUES (?1, ?2)",
+                    params![&path, now],
+                )?;
+                pending_files.push(path);
+            }
 
+            let mut stmt = tx.prepare(
+                "SELECT local_path, thumbnail_path FROM conversation_staged_attachments
+                 WHERE conversation_id = ?1",
+            )?;
+            let rows = stmt.query_map(params![cid], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            })?;
+            for row_result in rows {
+                let (local_path, thumbnail_path) = row_result?;
+                for path in [local_path, thumbnail_path].into_iter().flatten() {
+                    if path.trim().is_empty() {
+                        continue;
+                    }
+                    tx.execute(
+                        "INSERT OR IGNORE INTO pending_spool_cleanups (local_path, created_at) VALUES (?1, ?2)",
+                        params![&path, now],
+                    )?;
+                    pending_files.push(path);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_single_conv_tx(
+        tx: &rusqlite::Transaction,
+        cid: i64,
+        pending_files: &mut Vec<String>,
+        now: &str,
+    ) -> Result<()> {
+        if cid <= 0 {
+            return Ok(());
+        }
+
+        Self::collect_conversation_files(tx, &[cid], pending_files, now)?;
+
+        tx.execute(
+            "INSERT INTO deleted_conversations (channel_account_id, external_thread_id, kind, deleted_at)
+             SELECT channel_account_id, external_thread_id, kind, ?2
+             FROM channel_conversations WHERE id = ?1
+             ON CONFLICT(channel_account_id, external_thread_id, kind) DO UPDATE SET deleted_at = excluded.deleted_at",
+            params![cid, now],
+        )?;
+
+        tx.execute(
+            "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?1)",
+            params![cid],
+        )?;
+        tx.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            params![cid],
+        )?;
+        tx.execute(
+            "DELETE FROM conversation_participants WHERE conversation_id = ?1",
+            params![cid],
+        )?;
+        tx.execute(
+            "DELETE FROM conversation_staged_attachments WHERE conversation_id = ?1",
+            params![cid],
+        )?;
+        tx.execute(
+            "DELETE FROM channel_conversations WHERE id = ?1",
+            params![cid],
+        )?;
+
+        Ok(())
+    }
+
+    fn delete_conversation_tx(
+        tx: &rusqlite::Transaction,
+        request: &crate::conversation::types::DeleteConversationRequest,
+        pending_files: &mut Vec<String>,
+    ) -> Result<()> {
+        request.validate()?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Priority 1: Specific conversation_id provided
         if let Some(conv_id) = request.conversation_id {
             if conv_id > 0 {
-                tx.execute(
-                    "DELETE FROM messages WHERE conversation_id = ?1",
-                    params![conv_id],
-                )?;
-                tx.execute(
-                    "DELETE FROM conversation_participants WHERE conversation_id = ?1",
-                    params![conv_id],
-                )?;
-                tx.execute(
-                    "DELETE FROM channel_conversations WHERE id = ?1",
-                    params![conv_id],
-                )?;
+                Self::delete_single_conv_tx(tx, conv_id, pending_files, &now)?;
+                return Ok(());
             }
         }
 
+        // Priority 2: Unlinked contact identity_id provided (without specific conversation_id)
         if let Some(identity_id) = request.identity_id {
             if identity_id > 0 {
-                tx.execute(
-                    "DELETE FROM messages WHERE sender_identity_id = ?1",
+                let conv_ids: Vec<i64> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT DISTINCT cc.id FROM channel_conversations cc
+                         JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                         WHERE cp.identity_id = ?1 AND cc.kind IN ('direct', 'email_thread')",
+                    )?;
+                    let rows = stmt.query_map(params![identity_id], |row| row.get(0))?;
+                    rows.filter_map(Result::ok).collect()
+                };
+
+                for cid in conv_ids {
+                    Self::delete_single_conv_tx(tx, cid, pending_files, &now)?;
+                }
+
+                let remaining_memberships: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM conversation_participants WHERE identity_id = ?1",
                     params![identity_id],
+                    |row| row.get(0),
                 )?;
-                tx.execute(
-                    "DELETE FROM conversation_participants WHERE identity_id = ?1",
-                    params![identity_id],
-                )?;
-                tx.execute(
-                    "DELETE FROM channel_identities WHERE id = ?1 AND lead_id IS NULL",
-                    params![identity_id],
-                )?;
+                if remaining_memberships == 0 {
+                    tx.execute(
+                        "DELETE FROM channel_identities WHERE id = ?1 AND lead_id IS NULL",
+                        params![identity_id],
+                    )?;
+                }
+
+                return Ok(());
             }
         }
 
+        // Priority 3: Lead lead_id provided (without specific conversation_id)
         if let Some(lead_id) = request.lead_id {
             if lead_id > 0 {
                 let conv_ids: Vec<i64> = {
                     let mut stmt = tx.prepare(
-                        "SELECT DISTINCT cp.conversation_id FROM conversation_participants cp
+                        "SELECT DISTINCT cc.id FROM channel_conversations cc
+                         JOIN conversation_participants cp ON cp.conversation_id = cc.id
                          JOIN channel_identities ci ON ci.id = cp.identity_id
-                         WHERE ci.lead_id = ?1",
+                         WHERE ci.lead_id = ?1 AND cc.kind IN ('direct', 'email_thread')",
                     )?;
                     let rows = stmt.query_map(params![lead_id], |row| row.get(0))?;
                     rows.filter_map(Result::ok).collect()
                 };
 
                 for cid in conv_ids {
-                    tx.execute(
-                        "DELETE FROM messages WHERE conversation_id = ?1",
-                        params![cid],
-                    )?;
-                    tx.execute(
-                        "DELETE FROM conversation_participants WHERE conversation_id = ?1",
-                        params![cid],
-                    )?;
-                    tx.execute(
-                        "DELETE FROM channel_conversations WHERE id = ?1",
-                        params![cid],
-                    )?;
+                    Self::delete_single_conv_tx(tx, cid, pending_files, &now)?;
                 }
+
+                return Ok(());
             }
         }
 
+        Ok(())
+    }
+
+    pub fn cleanup_spool_files(&self, file_paths: &[String], spool_root: Option<&std::path::Path>) {
+        let conn = match open_db_connection(&self.db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to open DB connection for spool cleanup check: {e}");
+                return;
+            }
+        };
+
+        let canonical_spool = match spool_root {
+            Some(root) => match root.canonicalize() {
+                Ok(root) => root,
+                Err(error) => {
+                    tracing::warn!(
+                        spool_root = %root.display(),
+                        %error,
+                        "Skipping spool cleanup because the spool root cannot be canonicalized"
+                    );
+                    return;
+                }
+            },
+            None => {
+                tracing::warn!("Skipping spool cleanup because no spool root was provided");
+                return;
+            }
+        };
+
+        let active_canonical_set: std::collections::HashSet<std::path::PathBuf> = {
+            let mut set = std::collections::HashSet::new();
+            let mut stmt = match conn.prepare(
+                "SELECT local_path FROM message_attachments WHERE local_path IS NOT NULL AND TRIM(local_path) != ''
+                 UNION
+                 SELECT local_path FROM conversation_staged_attachments WHERE local_path IS NOT NULL AND TRIM(local_path) != ''
+                 UNION
+                 SELECT thumbnail_path FROM conversation_staged_attachments WHERE thumbnail_path IS NOT NULL AND TRIM(thumbnail_path) != ''",
+            ) {
+                Ok(stmt) => stmt,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Skipping spool cleanup because active attachment references could not be queried"
+                    );
+                    return;
+                }
+            };
+            let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Skipping spool cleanup because active attachment references could not be read"
+                    );
+                    return;
+                }
+            };
+            for path_result in rows {
+                let path = match path_result {
+                    Ok(path) => path,
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "Skipping spool cleanup because an active attachment path was invalid"
+                        );
+                        return;
+                    }
+                };
+                let path = std::path::Path::new(&path);
+                let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                set.insert(canonical_path);
+            }
+            set
+        };
+
+        let mut targets: Vec<String> = file_paths.to_vec();
+
+        let mut stmt = match conn.prepare("SELECT local_path FROM pending_spool_cleanups") {
+            Ok(stmt) => stmt,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Skipping spool cleanup because the durable cleanup queue could not be queried"
+                );
+                return;
+            }
+        };
+        let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Skipping spool cleanup because the durable cleanup queue could not be read"
+                );
+                return;
+            }
+        };
+        for path_result in rows {
+            let path = match path_result {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Skipping spool cleanup because a queued cleanup path was invalid"
+                    );
+                    return;
+                }
+            };
+            if !targets.contains(&path) {
+                targets.push(path);
+            }
+        }
+
+        for raw_path in &targets {
+            let path_str = raw_path.trim();
+            if path_str.is_empty() {
+                continue;
+            }
+
+            let path = std::path::Path::new(path_str);
+            let canonical_file = match path.canonicalize() {
+                Ok(path) => path,
+                Err(error) => match std::fs::metadata(path) {
+                    Err(metadata_error)
+                        if metadata_error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        let _ = conn.execute(
+                            "DELETE FROM pending_spool_cleanups WHERE local_path = ?1",
+                            params![path_str],
+                        );
+                        continue;
+                    }
+                    _ => {
+                        tracing::warn!(
+                            path = path_str,
+                            %error,
+                            "Keeping queued spool cleanup because the target cannot be canonicalized"
+                        );
+                        continue;
+                    }
+                },
+            };
+
+            if !canonical_file.starts_with(&canonical_spool) {
+                tracing::warn!(
+                    "Skipping file cleanup outside spool root: {path_str} (canonical: {}, spool_root: {})",
+                    canonical_file.display(),
+                    canonical_spool.display()
+                );
+                let _ = conn.execute(
+                    "DELETE FROM pending_spool_cleanups WHERE local_path = ?1",
+                    params![path_str],
+                );
+                continue;
+            }
+
+            if active_canonical_set.contains(&canonical_file) {
+                tracing::info!(
+                    "Skipping file cleanup for shared file still referenced in DB: {path_str}"
+                );
+                let _ = conn.execute(
+                    "DELETE FROM pending_spool_cleanups WHERE local_path = ?1",
+                    params![path_str],
+                );
+                continue;
+            }
+
+            match std::fs::remove_file(&canonical_file) {
+                Ok(_) => {
+                    let _ = conn.execute(
+                        "DELETE FROM pending_spool_cleanups WHERE local_path = ?1",
+                        params![path_str],
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to remove spool file {path_str}: {e}");
+                }
+            }
+        }
+    }
+
+    pub fn delete_conversation(
+        &self,
+        request: &crate::conversation::types::DeleteConversationRequest,
+        spool_root: Option<&std::path::Path>,
+    ) -> Result<()> {
+        request.validate()?;
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let mut pending_files = Vec::new();
+        Self::delete_conversation_tx(&tx, request, &mut pending_files)?;
         tx.commit()?;
+        self.cleanup_spool_files(&pending_files, spool_root);
+        Ok(())
+    }
+
+    pub fn delete_conversations_batch(
+        &self,
+        requests: &[crate::conversation::types::DeleteConversationRequest],
+        spool_root: Option<&std::path::Path>,
+    ) -> Result<()> {
+        for req in requests {
+            req.validate()?;
+        }
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let mut pending_files = Vec::new();
+        for request in requests {
+            Self::delete_conversation_tx(&tx, request, &mut pending_files)?;
+        }
+        tx.commit()?;
+        self.cleanup_spool_files(&pending_files, spool_root);
         Ok(())
     }
 
@@ -3630,6 +4014,11 @@ impl ConversationRepository {
                 cid
             }
         };
+
+        tx.execute(
+            "DELETE FROM deleted_conversations WHERE channel_account_id = ?1 AND (external_thread_id = ?2 OR external_thread_id = ?3 OR external_thread_id IN (SELECT external_thread_id FROM channel_conversations WHERE id = ?4))",
+            params![request.channel_account_id, phone_clean, normalized_phone, conversation_id],
+        )?;
 
         tx.commit()?;
 
@@ -3874,6 +4263,14 @@ impl ConversationRepository {
                 [source_identity_id],
             )?;
         }
+
+        tx.execute(
+            "DELETE FROM deleted_conversations
+             WHERE channel_account_id = ?1
+               AND external_thread_id = ?2
+               AND kind = 'direct'",
+            params![channel_account_id, resolved_uid],
+        )?;
 
         tx.commit()?;
         Ok(ResolvedDirectRecipient {

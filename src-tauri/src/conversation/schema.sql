@@ -372,3 +372,17 @@ CREATE TABLE IF NOT EXISTS conversation_pinned_messages (
 
 CREATE INDEX IF NOT EXISTS idx_pinned_messages_conversation
 ON conversation_pinned_messages(conversation_id, pinned_at DESC);
+
+CREATE TABLE IF NOT EXISTS deleted_conversations (
+    channel_account_id INTEGER NOT NULL,
+    external_thread_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    deleted_at TEXT NOT NULL,
+    PRIMARY KEY(channel_account_id, external_thread_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS pending_spool_cleanups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_path TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);

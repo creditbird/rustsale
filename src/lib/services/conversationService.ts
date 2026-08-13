@@ -462,6 +462,9 @@ export const restartConversationAccount = (providerAccountKey: string) =>
 export const deleteConversation = (request: DeleteConversationRequest) =>
   invoke<void>('delete_conversation', { request });
 
+export const deleteConversationsBatch = (requests: DeleteConversationRequest[]) =>
+  invoke<void>('delete_conversations_batch', { requests });
+
 export const startDirectConversation = (request: StartDirectConversationRequest) =>
   invoke<ConversationMessage>('start_direct_conversation', { request });
 

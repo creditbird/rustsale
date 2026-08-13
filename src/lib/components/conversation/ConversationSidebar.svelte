@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Channel, ConversationMessage, InboxItem } from '$lib/services/conversationService';
   import { Button } from '$lib/components/ui/button';
+  import { Checkbox } from '$lib/components/ui/checkbox';
   import { Input } from '$lib/components/ui/input';
   import { ScrollArea } from '$lib/components/ui/scroll-area';
   import { Skeleton } from '$lib/components/ui/skeleton';
@@ -15,6 +16,8 @@
   import Plus from 'lucide-svelte/icons/plus';
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import Pin from 'lucide-svelte/icons/pin';
+  import CheckSquare from 'lucide-svelte/icons/check-square';
+  import X from 'lucide-svelte/icons/x';
   import { onMount } from 'svelte';
 
   import NewChatDialog from './NewChatDialog.svelte';
@@ -43,7 +46,12 @@
   let newChatOpen = $state(false);
   let deleteDialogOpen = $state(false);
   let itemToDelete = $state<InboxItem | null>(null);
+  let itemsToDelete = $state<InboxItem[]>([]);
   let pinnedKeys = $state<Set<string>>(new Set());
+
+  // Multi-selection mode states
+  let isSelectionMode = $state(false);
+  let selectedKeys = $state<Set<string>>(new Set());
 
   onMount(() => {
     try {
@@ -147,8 +155,6 @@
     return bAt.localeCompare(aAt);
   }
 
-
-
   let pinnedItems = $derived(
     filteredByKindItems.filter((i) => pinnedKeys.has(i.key)).slice().sort(sortByLatest)
   );
@@ -165,8 +171,56 @@
     filteredByKindItems.filter((i) => !pinnedKeys.has(i.key) && i.kind === 'group').slice().sort(sortByLatest)
   );
 
+  // Multi-selection derived helpers
+  let visibleItems = $derived(filteredByKindItems);
+  let visibleSelectedItems = $derived(
+    visibleItems.filter((item) => selectedKeys.has(item.key))
+  );
+  let selectedCount = $derived(visibleSelectedItems.length);
+  let isAllSelected = $derived(
+    visibleItems.length > 0 && visibleSelectedItems.length === visibleItems.length
+  );
 
+  function toggleSelectionMode() {
+    isSelectionMode = !isSelectionMode;
+    if (!isSelectionMode) {
+      selectedKeys = new Set();
+    }
+  }
 
+  function toggleItemSelection(key: string, e?: Event) {
+    if (e) e.stopPropagation();
+    const next = new Set(selectedKeys);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    selectedKeys = next;
+  }
+
+  function toggleSelectAll() {
+    if (isAllSelected) {
+      selectedKeys = new Set();
+    } else {
+      selectedKeys = new Set(visibleItems.map((item) => item.key));
+    }
+  }
+
+  function promptBatchDelete() {
+    if (visibleSelectedItems.length === 0) return;
+    itemToDelete = null;
+    itemsToDelete = visibleSelectedItems;
+    deleteDialogOpen = true;
+  }
+
+  function handleDeleted() {
+    selectedKeys = new Set();
+    isSelectionMode = false;
+    itemToDelete = null;
+    itemsToDelete = [];
+    onDeleted?.();
+  }
 
   function getInitials(title: string): string {
     if (!title) return '?';
@@ -190,24 +244,85 @@
   function promptDelete(e: MouseEvent, item: InboxItem) {
     e.stopPropagation();
     itemToDelete = item;
+    itemsToDelete = [];
     deleteDialogOpen = true;
   }
 </script>
 
 <div class="flex flex-col h-full w-full bg-background border-r border-border min-h-0">
   <div class="p-3 border-b border-border space-y-2 shrink-0">
-    <div class="flex items-center justify-between gap-2">
-      <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Hội thoại</span>
-      <Button
-        variant="default"
-        size="sm"
-        class="h-7 text-xs gap-1 px-2.5 font-medium"
-        onclick={() => (newChatOpen = true)}
-      >
-        <Plus class="w-3.5 h-3.5" />
-        <span>Chat mới</span>
-      </Button>
-    </div>
+    {#if isSelectionMode}
+      <div class="flex items-center justify-between gap-2 py-0.5">
+        <div class="flex items-center gap-2">
+          <div
+            role="button"
+            tabindex="0"
+            data-select-all
+            class="h-7 px-2 text-xs font-medium gap-1.5 inline-flex items-center rounded-md hover:bg-muted cursor-pointer select-none"
+            onclick={toggleSelectAll}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleSelectAll();
+              }
+            }}
+          >
+            <Checkbox checked={isAllSelected} tabindex={-1} class="pointer-events-none" />
+            <span>Tất cả ({visibleItems.length})</span>
+          </div>
+          <span class="text-xs font-semibold text-muted-foreground">
+            Đã chọn {selectedCount}
+          </span>
+        </div>
+        <div class="flex items-center gap-1">
+          <Button
+            variant="destructive"
+            size="sm"
+            class="h-7 text-xs px-2.5 font-medium gap-1"
+            disabled={selectedCount === 0}
+            onclick={promptBatchDelete}
+          >
+            <Trash2 class="w-3.5 h-3.5" />
+            <span>Xóa ({selectedCount})</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+            title="Thoát chế độ chọn"
+            onclick={toggleSelectionMode}
+          >
+            <X class="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+    {:else}
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Hội thoại</span>
+        <div class="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            class="h-7 text-xs gap-1 px-2 font-medium"
+            title="Chọn nhiều cuộc trò chuyện"
+            onclick={toggleSelectionMode}
+          >
+            <CheckSquare class="w-3.5 h-3.5" />
+            <span>Chọn nhiều</span>
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            class="h-7 text-xs gap-1 px-2.5 font-medium"
+            onclick={() => (newChatOpen = true)}
+          >
+            <Plus class="w-3.5 h-3.5" />
+            <span>Chat mới</span>
+          </Button>
+        </div>
+      </div>
+    {/if}
+
     <div class="relative">
       <Search class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
       <Input
@@ -260,8 +375,6 @@
         Nhóm ({groupCount})
       </button>
     </div>
-
-
 
     <!-- Triage Filter Bar -->
     <div class="flex items-center gap-1 overflow-x-auto no-scrollbar pt-1 select-none">
@@ -316,7 +429,6 @@
     </div>
   </div>
 
-
   <ScrollArea class="flex-1 min-h-0 w-full h-full">
     {#if loading}
       <div class="space-y-3 p-3">
@@ -341,26 +453,41 @@
             <div class="space-y-1">
               {#each pinnedItems as item (item.key)}
                 {@const isSelected = selectedKey === item.key}
+                {@const isChecked = selectedKeys.has(item.key)}
                 <div
                   role="button"
                   tabindex="0"
                   data-inbox-item
                   data-key={item.key}
                   aria-current={isSelected ? 'true' : 'false'}
-                  onclick={() => onSelect(item)}
+                  onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
                   onkeydown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      onSelect(item);
+                      if (isSelectionMode) {
+                        toggleItemSelection(item.key);
+                      } else {
+                        onSelect(item);
+                      }
                     }
                   }}
                   class={cn(
                     'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none border-l-2 border-amber-500/80',
-                    isSelected
-                      ? 'bg-accent text-accent-foreground font-medium'
-                      : 'hover:bg-muted/60 text-foreground bg-amber-500/5'
+                    isSelectionMode && isChecked
+                      ? 'bg-primary/10 text-foreground font-medium'
+                      : isSelected
+                        ? 'bg-accent text-accent-foreground font-medium'
+                        : 'hover:bg-muted/60 text-foreground bg-amber-500/5'
                   )}
                 >
+                  {#if isSelectionMode}
+                    <Checkbox
+                      checked={isChecked}
+                      tabindex={-1}
+                      class="mt-3 shrink-0 pointer-events-none"
+                    />
+                  {/if}
+
                   {#if item.avatarUrl}
                     <img
                       src={item.avatarUrl}
@@ -387,14 +514,16 @@
                         >
                           <Pin class="w-3.5 h-3.5 fill-amber-500" />
                         </button>
-                        <button
-                          type="button"
-                          title="Xóa cuộc trò chuyện"
-                          onclick={(e) => promptDelete(e, item)}
-                          class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                        >
-                          <Trash2 class="w-3.5 h-3.5" />
-                        </button>
+                        {#if !isSelectionMode}
+                          <button
+                            type="button"
+                            title="Xóa cuộc trò chuyện"
+                            onclick={(e) => promptDelete(e, item)}
+                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                          >
+                            <Trash2 class="w-3.5 h-3.5" />
+                          </button>
+                        {/if}
                       </div>
                     </div>
 
@@ -438,26 +567,41 @@
               <div class="space-y-1">
                 {#each unpinnedItems as item (item.key)}
                   {@const isSelected = selectedKey === item.key}
+                  {@const isChecked = selectedKeys.has(item.key)}
                   <div
                     role="button"
                     tabindex="0"
                     data-inbox-item
                     data-key={item.key}
                     aria-current={isSelected ? 'true' : 'false'}
-                    onclick={() => onSelect(item)}
+                    onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
                     onkeydown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        onSelect(item);
+                        if (isSelectionMode) {
+                          toggleItemSelection(item.key);
+                        } else {
+                          onSelect(item);
+                        }
                       }
                     }}
                     class={cn(
                       'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                      isSelected
-                        ? 'bg-accent text-accent-foreground font-medium'
-                        : 'hover:bg-muted/60 text-foreground'
+                      isSelectionMode && isChecked
+                        ? 'bg-primary/10 text-foreground font-medium'
+                        : isSelected
+                          ? 'bg-accent text-accent-foreground font-medium'
+                          : 'hover:bg-muted/60 text-foreground'
                     )}
                   >
+                    {#if isSelectionMode}
+                      <Checkbox
+                        checked={isChecked}
+                        tabindex={-1}
+                        class="mt-3 shrink-0 pointer-events-none"
+                      />
+                    {/if}
+
                     {#if item.avatarUrl}
                       <img
                         src={item.avatarUrl}
@@ -484,14 +628,16 @@
                           >
                             <Pin class="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            title="Xóa cuộc trò chuyện"
-                            onclick={(e) => promptDelete(e, item)}
-                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                          >
-                            <Trash2 class="w-3.5 h-3.5" />
-                          </button>
+                          {#if !isSelectionMode}
+                            <button
+                              type="button"
+                              title="Xóa cuộc trò chuyện"
+                              onclick={(e) => promptDelete(e, item)}
+                              class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                            >
+                              <Trash2 class="w-3.5 h-3.5" />
+                            </button>
+                          {/if}
                         </div>
                       </div>
 
@@ -554,26 +700,41 @@
               <div class="space-y-1">
                 {#each customerItems as item (item.key)}
                   {@const isSelected = selectedKey === item.key}
+                  {@const isChecked = selectedKeys.has(item.key)}
                   <div
                     role="button"
                     tabindex="0"
                     data-inbox-item
                     data-key={item.key}
                     aria-current={isSelected ? 'true' : 'false'}
-                    onclick={() => onSelect(item)}
+                    onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
                     onkeydown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        onSelect(item);
+                        if (isSelectionMode) {
+                          toggleItemSelection(item.key);
+                        } else {
+                          onSelect(item);
+                        }
                       }
                     }}
                     class={cn(
                       'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                      isSelected
-                        ? 'bg-accent text-accent-foreground font-medium'
-                        : 'hover:bg-muted/60 text-foreground'
+                      isSelectionMode && isChecked
+                        ? 'bg-primary/10 text-foreground font-medium'
+                        : isSelected
+                          ? 'bg-accent text-accent-foreground font-medium'
+                          : 'hover:bg-muted/60 text-foreground'
                     )}
                   >
+                    {#if isSelectionMode}
+                      <Checkbox
+                        checked={isChecked}
+                        tabindex={-1}
+                        class="mt-3 shrink-0 pointer-events-none"
+                      />
+                    {/if}
+
                     {#if item.avatarUrl}
                       <img
                         src={item.avatarUrl}
@@ -600,14 +761,16 @@
                           >
                             <Pin class="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            title="Xóa cuộc trò chuyện"
-                            onclick={(e) => promptDelete(e, item)}
-                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                          >
-                            <Trash2 class="w-3.5 h-3.5" />
-                          </button>
+                          {#if !isSelectionMode}
+                            <button
+                              type="button"
+                              title="Xóa cuộc trò chuyện"
+                              onclick={(e) => promptDelete(e, item)}
+                              class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                            >
+                              <Trash2 class="w-3.5 h-3.5" />
+                            </button>
+                          {/if}
                         </div>
                       </div>
 
@@ -660,26 +823,41 @@
               <div class="space-y-1">
                 {#each groupItems as item (item.key)}
                   {@const isSelected = selectedKey === item.key}
+                  {@const isChecked = selectedKeys.has(item.key)}
                   <div
                     role="button"
                     tabindex="0"
                     data-inbox-item
                     data-key={item.key}
                     aria-current={isSelected ? 'true' : 'false'}
-                    onclick={() => onSelect(item)}
+                    onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
                     onkeydown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        onSelect(item);
+                        if (isSelectionMode) {
+                          toggleItemSelection(item.key);
+                        } else {
+                          onSelect(item);
+                        }
                       }
                     }}
                     class={cn(
                       'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                      isSelected
-                        ? 'bg-accent text-accent-foreground font-medium'
-                        : 'hover:bg-muted/60 text-foreground'
+                      isSelectionMode && isChecked
+                        ? 'bg-primary/10 text-foreground font-medium'
+                        : isSelected
+                          ? 'bg-accent text-accent-foreground font-medium'
+                          : 'hover:bg-muted/60 text-foreground'
                     )}
                   >
+                    {#if isSelectionMode}
+                      <Checkbox
+                        checked={isChecked}
+                        tabindex={-1}
+                        class="mt-3 shrink-0 pointer-events-none"
+                      />
+                    {/if}
+
                     {#if item.avatarUrl}
                       <img
                         src={item.avatarUrl}
@@ -706,14 +884,16 @@
                           >
                             <Pin class="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            title="Xóa cuộc trò chuyện"
-                            onclick={(e) => promptDelete(e, item)}
-                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                          >
-                            <Trash2 class="w-3.5 h-3.5" />
-                          </button>
+                          {#if !isSelectionMode}
+                            <button
+                              type="button"
+                              title="Xóa cuộc trò chuyện"
+                              onclick={(e) => promptDelete(e, item)}
+                              class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
+                            >
+                              <Trash2 class="w-3.5 h-3.5" />
+                            </button>
+                          {/if}
                         </div>
                       </div>
 
@@ -771,5 +951,10 @@
   </ScrollArea>
 
   <NewChatDialog bind:open={newChatOpen} onSuccess={onCreated} />
-  <DeleteConversationDialog bind:open={deleteDialogOpen} item={itemToDelete} onDeleted={onDeleted} />
+  <DeleteConversationDialog
+    bind:open={deleteDialogOpen}
+    item={itemToDelete}
+    items={itemsToDelete}
+    onDeleted={handleDeleted}
+  />
 </div>

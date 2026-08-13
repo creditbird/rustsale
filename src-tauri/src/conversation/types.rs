@@ -775,6 +775,30 @@ pub struct DeleteConversationRequest {
     pub lead_id: Option<i64>,
 }
 
+impl DeleteConversationRequest {
+    pub fn validate(&self) -> Result<(), rusqlite::Error> {
+        let provided_count = self.conversation_id.is_some() as usize
+            + self.identity_id.is_some() as usize
+            + self.lead_id.is_some() as usize;
+
+        if provided_count != 1 {
+            return Err(rusqlite::Error::InvalidParameterCount(provided_count, 1));
+        }
+
+        let target_val = self
+            .conversation_id
+            .or(self.identity_id)
+            .or(self.lead_id)
+            .unwrap_or(0);
+
+        if target_val <= 0 {
+            return Err(rusqlite::Error::InvalidParameterCount(0, 1));
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartDirectConversationRequest {

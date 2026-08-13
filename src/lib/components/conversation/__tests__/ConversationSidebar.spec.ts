@@ -291,5 +291,85 @@ describe('ConversationSidebar Component', () => {
     expect(rowElements[1].textContent).toContain('0901234567');
     expect(rowElements[2].textContent).toContain('Nguyễn Văn A');
   });
+
+  test('toggles multi-selection mode when Chọn nhiều is clicked and supports select all', async () => {
+    const { container } = render(ConversationSidebar, {
+      props: {
+        items,
+        selectedKey: null,
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    const selectModeButton = screen.getByText('Chọn nhiều');
+    expect(selectModeButton).toBeTruthy();
+
+    await fireEvent.click(selectModeButton);
+
+    // Verify selection mode toolbar appears
+    expect(screen.getByText(/Đã chọn 0/)).toBeTruthy();
+    const selectAllButton = container.querySelector('[data-select-all]');
+    expect(selectAllButton).toBeTruthy();
+
+    // Click select all
+    await fireEvent.click(selectAllButton!);
+    expect(screen.getByText(/Đã chọn 3/)).toBeTruthy();
+
+    // Exit selection mode
+    const exitButton = screen.getByTitle('Thoát chế độ chọn');
+    await fireEvent.click(exitButton);
+    expect(screen.getByText('Chọn nhiều')).toBeTruthy();
+  });
+
+  test('only counts and deletes visible items when search query hides selected items', async () => {
+    const { container } = render(ConversationSidebar, {
+      props: {
+        items,
+        selectedKey: null,
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    // Enter selection mode and select all (3 items)
+    await fireEvent.click(screen.getByText('Chọn nhiều'));
+    const selectAllButton = container.querySelector('[data-select-all]');
+    await fireEvent.click(selectAllButton!);
+    expect(screen.getByText(/Đã chọn 3/)).toBeTruthy();
+
+    // Type search query matching only 1 item ("VIP")
+    const searchInput = screen.getByPlaceholderText(/Tìm kiếm/i);
+    await fireEvent.input(searchInput, { target: { value: 'VIP' } });
+
+    // Counter must update to only count visible selected items (1)
+    expect(screen.getByText(/Đã chọn 1/)).toBeTruthy();
+    expect(screen.getByText(/Xóa \(1\)/)).toBeTruthy();
+  });
+
+  test('toggles item selection exactly once on Spacebar press in selection mode', async () => {
+    const { container } = render(ConversationSidebar, {
+      props: {
+        items,
+        selectedKey: null,
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    // Enter selection mode
+    await fireEvent.click(screen.getByText('Chọn nhiều'));
+    expect(screen.getByText(/Đã chọn 0/)).toBeTruthy();
+
+    // Target first item row element
+    const firstRow = container.querySelector('[data-inbox-item]');
+    expect(firstRow).toBeTruthy();
+
+    // Fire Space keydown on the row
+    await fireEvent.keyDown(firstRow!, { key: ' ', code: 'Space' });
+
+    // Counter must update to exactly 1 (not 0 caused by double-toggle)
+    expect(screen.getByText(/Đã chọn 1/)).toBeTruthy();
+  });
 });
 

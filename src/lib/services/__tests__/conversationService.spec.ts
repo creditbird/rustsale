@@ -97,6 +97,8 @@ import {
   listConversationInbox,
   onConversationInvalidated,
   resetConversationEventBridgeState,
+  deleteConversation,
+  deleteConversationsBatch,
   restartConversationAccount,
   sendConversationMessage,
   sendConversationBatch,
@@ -488,6 +490,19 @@ describe('conversationService IPC command wrappers', () => {
     expect(invokedCommands).toContainEqual({
       command: 'recall_conversation_message',
       args: { request: { messageId: 105 } }
+    });
+  });
+
+  test('deleteConversationsBatch calls delete_conversations_batch with requests array', async () => {
+    const requests = [
+      { conversationId: 10, identityId: null, leadId: null },
+      { conversationId: 20, identityId: null, leadId: null }
+    ];
+    await deleteConversationsBatch(requests);
+
+    expect(invokedCommands).toContainEqual({
+      command: 'delete_conversations_batch',
+      args: { requests }
     });
   });
 

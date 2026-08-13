@@ -2426,7 +2426,10 @@ mod tests {
                     .map_err(anyhow::Error::msg)
             }
 
-            async fn fetch_group_link_detail(&self, _group_id: &str) -> anyhow::Result<Option<String>> {
+            async fn fetch_group_link_detail(
+                &self,
+                _group_id: &str,
+            ) -> anyhow::Result<Option<String>> {
                 if self.link_members.lock().unwrap().is_some() {
                     Ok(Some("https://zalo.me/g/testlink".to_string()))
                 } else {
@@ -2866,4 +2869,3 @@ mod tests {
         assert!(!hw_info.os_info.is_empty());
     }
 }
-

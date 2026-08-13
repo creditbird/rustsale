@@ -5056,7 +5056,9 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
                                             "group_link",
                                             "persistence_failed",
                                             Some(format!("page={page}")),
-                                            format!("Failed to persist Group Link Zalo UIDs: {error}"),
+                                            format!(
+                                                "Failed to persist Group Link Zalo UIDs: {error}"
+                                            ),
                                         );
                                         group_link.warning = Some(warning.clone());
                                         warnings.push(warning);
@@ -5402,4 +5404,3 @@ pub fn get_hardware_id() -> Result<HardwareInfo, String> {
         os_info: format!("{} ({})", os_name, arch),
     })
 }
-

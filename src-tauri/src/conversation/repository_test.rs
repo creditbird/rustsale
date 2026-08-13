@@ -2323,7 +2323,10 @@ fn delete_conversation_and_start_direct_conversation_execute_without_sql_errors(
         lead_id: None,
     };
 
-    harness.repository.delete_conversation(&del_req).unwrap();
+    harness
+        .repository
+        .delete_conversation(&del_req, None)
+        .unwrap();
 }
 
 #[test]
@@ -2773,6 +2776,99 @@ fn resolve_direct_phone_recipient_merges_provisional_thread_into_zalo_uid_thread
         )
         .unwrap();
     assert_eq!(provisional_conversation_count, 0);
+}
+
+#[test]
+fn resolve_direct_phone_recipient_clears_uid_tombstone_for_explicit_reopen() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO leads (id, name, phone, zalo_uid)
+         VALUES (702, 'Reopened Lead', '0901234567', NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts
+         (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (999, 'zalo', 'imei-phone-reopen', 'Phone Reopen', 'connected',
+                 '2026-08-13T00:00:00Z', '2026-08-13T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO deleted_conversations
+         (channel_account_id, external_thread_id, kind, deleted_at)
+         VALUES (999, 'resolved-phone-uid', 'direct', '2099-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let outbound = harness
+        .repository
+        .start_direct_conversation(
+            &crate::conversation::types::StartDirectConversationRequest {
+                channel_account_id: 999,
+                phone_or_external_id: "0901234567".to_string(),
+                display_name: Some("Reopened Lead".to_string()),
+                initial_message: "Mở lại hội thoại".to_string(),
+            },
+            "2026-08-13T01:00:00Z",
+        )
+        .unwrap();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let tombstone_before_resolve: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deleted_conversations
+             WHERE channel_account_id = 999
+               AND external_thread_id = 'resolved-phone-uid'
+               AND kind = 'direct'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tombstone_before_resolve, 1);
+    drop(conn);
+
+    let resolved = harness
+        .repository
+        .resolve_direct_phone_recipient(ResolveDirectPhoneRecipientRequest {
+            message_id: outbound.id,
+            channel_account_id: 999,
+            phone: "0901234567",
+            resolved_uid: "resolved-phone-uid",
+            display_name: Some("Reopened Lead"),
+            avatar_url: None,
+            now: "2026-08-13T01:00:01Z",
+        })
+        .unwrap();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let tombstone_after_resolve: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deleted_conversations
+             WHERE channel_account_id = 999
+               AND external_thread_id = 'resolved-phone-uid'
+               AND kind = 'direct'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tombstone_after_resolve, 0);
+    drop(conn);
+
+    let mut reply = direct_message_for_peer(
+        "imei-phone-reopen",
+        "reply-after-explicit-reopen",
+        "resolved-phone-uid",
+    );
+    reply.provider_timestamp = Some("2026-08-13T00:59:59Z".to_string());
+    reply.ingested_at = "2026-08-13T01:00:02Z".to_string();
+    let applied = harness.repository.apply_normalized_message(&reply).unwrap();
+    assert_eq!(applied.conversation_id, resolved.conversation_id);
+    assert!(applied.message_id > 0);
 }
 
 #[test]

@@ -354,7 +354,8 @@ impl ConversationService {
         &self,
         request: &super::types::DeleteConversationRequest,
     ) -> Result<()> {
-        self.repository.delete_conversation(request)?;
+        self.repository
+            .delete_conversation(request, Some(self.stager.root()))?;
         self.events.publish(ConversationInvalidatedEvent {
             conversation_id: request.conversation_id.unwrap_or(0),
             lead_id: request.lead_id,
@@ -362,6 +363,24 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Link,
             message_id: None,
         });
+        Ok(())
+    }
+
+    pub fn delete_conversations_batch(
+        &self,
+        requests: &[super::types::DeleteConversationRequest],
+    ) -> Result<()> {
+        self.repository
+            .delete_conversations_batch(requests, Some(self.stager.root()))?;
+        for request in requests {
+            self.events.publish(ConversationInvalidatedEvent {
+                conversation_id: request.conversation_id.unwrap_or(0),
+                lead_id: request.lead_id,
+                channel: Channel::Zalo,
+                reason: ConversationInvalidationReason::Link,
+                message_id: None,
+            });
+        }
         Ok(())
     }
 
@@ -662,6 +681,8 @@ impl ConversationService {
         );
         let _ = reaction_repo.mark_running_delivery_unknown(&now);
         let count = self.repository.mark_running_jobs_delivery_unknown(&now)?;
+        self.repository
+            .cleanup_spool_files(&[], Some(self.stager.root()));
         Ok(count)
     }
 

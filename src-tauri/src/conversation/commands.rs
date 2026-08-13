@@ -174,6 +174,17 @@ pub fn delete_conversation(
 }
 
 #[tauri::command]
+pub fn delete_conversations_batch(
+    state: tauri::State<'_, ConversationState>,
+    requests: Vec<DeleteConversationRequest>,
+) -> Result<(), String> {
+    state
+        .service
+        .delete_conversations_batch(&requests)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn start_direct_conversation(
     state: tauri::State<'_, ConversationState>,
     request: StartDirectConversationRequest,

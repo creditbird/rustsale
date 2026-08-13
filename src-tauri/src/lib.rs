@@ -258,6 +258,7 @@ pub fn run() {
             conversation::commands::get_conversation_runtime_status,
             conversation::commands::restart_conversation_account,
             conversation::commands::delete_conversation,
+            conversation::commands::delete_conversations_batch,
             conversation::commands::start_direct_conversation,
             conversation::commands::send_conversation_batch,
             conversation::commands::stage_conversation_attachment_paths,

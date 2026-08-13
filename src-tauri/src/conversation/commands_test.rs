@@ -1170,3 +1170,834 @@ async fn startup_recovery_sequence() {
         .unwrap();
     assert_eq!(msg_status, "failed");
 }
+
+#[tokio::test]
+async fn test_delete_lead_conversation_does_not_delete_group_chats() {
+    let harness = ServiceHarness::new();
+    harness.insert_lead(10, "Lead Customer");
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, lead_id, created_at, updated_at) VALUES (100, 'zalo', 'zalo_uid', 'user-100', 'Lead User', 10, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // Direct conversation (kind = 'direct')
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (1, 1, 'direct-1', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (1, 100, 'member')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (10, 1, 'inbound', 'text', 'Direct msg', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // Group conversation (kind = 'group')
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (2, 1, 'group-2', 'group', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (2, 100, 'member')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (20, 2, 'inbound', 'text', 'Group msg', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    drop(conn);
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: None,
+        identity_id: None,
+        lead_id: Some(10),
+    };
+    harness.service.delete_conversation(&del_req).unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    let direct_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(direct_count, 0);
+
+    let group_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE id = 2",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(group_count, 1);
+
+    let group_msg_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = 2",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(group_msg_count, 1);
+
+    let group_part_count: i64 = conn.query_row("SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = 2 AND identity_id = 100", [], |r| r.get(0)).unwrap();
+    assert_eq!(group_part_count, 1);
+}
+
+#[tokio::test]
+async fn test_delete_identity_conversation_does_not_corrupt_group() {
+    let harness = ServiceHarness::new();
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, lead_id, created_at, updated_at) VALUES (200, 'zalo', 'zalo_uid', 'user-200', 'Unknown User', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // Direct conversation
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (10, 1, 'direct-10', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (10, 200, 'member')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (100, 10, 'inbound', 'text', 'Inbound direct', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (101, 10, 'outbound', 'text', 'Outbound direct', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // Group conversation
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (20, 1, 'group-20', 'group', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (20, 200, 'member')",
+        [],
+    ).unwrap();
+
+    drop(conn);
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: None,
+        identity_id: Some(200),
+        lead_id: None,
+    };
+    harness.service.delete_conversation(&del_req).unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    let direct_msg_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = 10",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(direct_msg_count, 0);
+
+    let group_part: i64 = conn.query_row("SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = 20 AND identity_id = 200", [], |r| r.get(0)).unwrap();
+    assert_eq!(group_part, 1);
+}
+
+#[tokio::test]
+async fn test_delete_conversation_cleans_up_attachment_files() {
+    let harness = ServiceHarness::new();
+    std::fs::create_dir_all(harness.service.stager.root()).unwrap();
+    let tmp_file = harness
+        .service
+        .stager
+        .root()
+        .join(format!("rustsale-test-att-{}.tmp", rand::random::<u64>()));
+    std::fs::write(&tmp_file, b"test file content").unwrap();
+    assert!(tmp_file.exists());
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (30, 1, 'conv-30', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (300, 30, 'inbound', 'image', 'photo', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, local_path, created_at) VALUES (300, 'image', ?1, '2026-01-01T00:00:00Z')",
+        [tmp_file.to_str().unwrap()],
+    ).unwrap();
+    drop(conn);
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(30),
+        identity_id: None,
+        lead_id: None,
+    };
+    harness.service.delete_conversation(&del_req).unwrap();
+
+    assert!(!tmp_file.exists());
+}
+
+#[tokio::test]
+async fn test_delete_conversation_tombstone_prevents_replay_and_allows_future_message() {
+    let harness = ServiceHarness::new();
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (40, 1, 'peer-40', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (400, 40, 'inbound', 'text', 'Hello', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(40),
+        identity_id: None,
+        lead_id: None,
+    };
+    harness.service.delete_conversation(&del_req).unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "UPDATE deleted_conversations
+         SET deleted_at = '2026-08-12T10:00:00.500123+00:00'
+         WHERE channel_account_id = 1 AND external_thread_id = 'peer-40' AND kind = 'direct'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Provider time is authoritative for history sync, even when ingestion happens much later.
+    let mut msg_old = direct_message_for("acc1", "peer-40", "msg-replay-1");
+    msg_old.provider_timestamp = Some("2026-01-02T00:00:00Z".to_string());
+    msg_old.ingested_at = "2099-01-01T00:00:00Z".to_string();
+    let result_old = harness
+        .repository
+        .apply_normalized_message(&msg_old)
+        .unwrap();
+    assert_eq!(result_old.conversation_id, 0);
+
+    // Equivalent RFC3339 offsets and fractional precision must be compared chronologically.
+    let mut msg_fractional = direct_message_for("acc1", "peer-40", "msg-replay-fractional");
+    msg_fractional.provider_timestamp = Some("2026-08-12T10:00:00.500Z".to_string());
+    msg_fractional.ingested_at = "2099-01-01T00:00:00Z".to_string();
+    let result_fractional = harness
+        .repository
+        .apply_normalized_message(&msg_fractional)
+        .unwrap();
+    assert_eq!(result_fractional.conversation_id, 0);
+
+    // An invalid provider timestamp must fail closed instead of clearing the tombstone.
+    let mut msg_invalid = direct_message_for("acc1", "peer-40", "msg-replay-invalid");
+    msg_invalid.provider_timestamp = Some("not-a-timestamp".to_string());
+    msg_invalid.ingested_at = "2099-01-01T00:00:00Z".to_string();
+    let result_invalid = harness
+        .repository
+        .apply_normalized_message(&msg_invalid)
+        .unwrap();
+    assert_eq!(result_invalid.conversation_id, 0);
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let conv_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE external_thread_id = 'peer-40'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(conv_count, 0);
+    drop(conn);
+
+    // A genuinely newer provider event clears the tombstone even if ingested_at is older.
+    let mut msg_new = direct_message_for("acc1", "peer-40", "msg-new-future-1");
+    msg_new.provider_timestamp = Some("2026-08-12T10:00:00.500124Z".to_string());
+    msg_new.ingested_at = "2020-01-01T00:00:00Z".to_string();
+    let result_new = harness
+        .repository
+        .apply_normalized_message(&msg_new)
+        .unwrap();
+    assert!(result_new.conversation_id > 0);
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let new_conv_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE external_thread_id = 'peer-40'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_conv_count, 1);
+    let tombstone_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deleted_conversations
+             WHERE channel_account_id = 1 AND external_thread_id = 'peer-40' AND kind = 'direct'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tombstone_count, 0);
+}
+
+#[tokio::test]
+async fn test_delete_conversation_batch_rollback_preserves_files() {
+    let harness = ServiceHarness::new();
+    std::fs::create_dir_all(harness.service.stager.root()).unwrap();
+
+    let file1 = harness.service.stager.root().join("att-1.tmp");
+    std::fs::write(&file1, b"file 1").unwrap();
+    assert!(file1.exists());
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (50, 1, 'conv-50', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (999999, 1, 'conv-999999', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (500, 50, 'inbound', 'image', 'photo', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, local_path, created_at) VALUES (500, 'image', ?1, '2026-01-01T00:00:00Z')",
+        [file1.to_str().unwrap()],
+    ).unwrap();
+
+    // Attach trigger to force failure during transaction execution on conversation 999999
+    conn.execute(
+        "CREATE TRIGGER force_fail_on_999999 BEFORE DELETE ON channel_conversations
+         BEGIN
+             SELECT CASE WHEN OLD.id = 999999 THEN RAISE(FAIL, 'forced trigger failure mid-transaction') END;
+         END;",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    let reqs = vec![
+        crate::conversation::types::DeleteConversationRequest {
+            conversation_id: Some(50),
+            identity_id: None,
+            lead_id: None,
+        },
+        crate::conversation::types::DeleteConversationRequest {
+            conversation_id: Some(999999),
+            identity_id: None,
+            lead_id: None,
+        },
+    ];
+
+    let err = harness.service.delete_conversations_batch(&reqs);
+    assert!(err.is_err());
+
+    // File must be preserved because mid-transaction DB failure rolled back the transaction
+    assert!(file1.exists());
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE id = 50",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn test_delete_conversation_queue_insert_failure_rolls_back_database_and_file() {
+    let harness = ServiceHarness::new();
+    std::fs::create_dir_all(harness.service.stager.root()).unwrap();
+    let attachment_file = harness.service.stager.root().join(format!(
+        "queue-insert-rollback-{}.tmp",
+        rand::random::<u64>()
+    ));
+    std::fs::write(&attachment_file, b"keep on rollback").unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at)
+         VALUES (1, 'zalo', 'queue-rollback-account', '2026-08-13T00:00:00Z', '2026-08-13T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (55, 1, 'queue-rollback-thread', 'direct', '2026-08-13T00:00:00Z', '2026-08-13T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at)
+         VALUES (550, 55, 'inbound', 'image', 'attachment', '2026-08-13T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, local_path, created_at)
+         VALUES (550, 'image', ?1, '2026-08-13T00:00:00Z')",
+        [attachment_file.to_str().unwrap()],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_pending_cleanup_insert
+         BEFORE INSERT ON pending_spool_cleanups
+         BEGIN
+             SELECT RAISE(FAIL, 'forced pending cleanup insert failure');
+         END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let result = harness.service.delete_conversation(
+        &crate::conversation::types::DeleteConversationRequest {
+            conversation_id: Some(55),
+            identity_id: None,
+            lead_id: None,
+        },
+    );
+    assert!(result.is_err());
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let conversation_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations WHERE id = 55",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let message_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM messages WHERE id = 550", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let attachment_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_attachments WHERE message_id = 550",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let cleanup_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pending_spool_cleanups", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(conversation_count, 1);
+    assert_eq!(message_count, 1);
+    assert_eq!(attachment_count, 1);
+    assert_eq!(cleanup_count, 0);
+    assert!(attachment_file.exists());
+    let _ = std::fs::remove_file(attachment_file);
+}
+
+#[tokio::test]
+async fn test_recover_startup_replays_pending_spool_cleanup_queue() {
+    let harness = ServiceHarness::new();
+    std::fs::create_dir_all(harness.service.stager.root()).unwrap();
+    let queued_file = harness
+        .service
+        .stager
+        .root()
+        .join(format!("startup-cleanup-{}.tmp", rand::random::<u64>()));
+    std::fs::write(&queued_file, b"delete on startup").unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO pending_spool_cleanups (local_path, created_at)
+         VALUES (?1, '2026-08-13T00:00:00Z')",
+        [queued_file.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+
+    harness.service.recover_startup().unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let cleanup_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pending_spool_cleanups", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(!queued_file.exists());
+    assert_eq!(cleanup_count, 0);
+}
+
+#[tokio::test]
+async fn test_spool_cleanup_missing_root_fails_closed_and_keeps_queue() {
+    let harness = ServiceHarness::new();
+    let outside_file = std::env::temp_dir().join(format!(
+        "rustsale-missing-spool-outside-{}.tmp",
+        rand::random::<u64>()
+    ));
+    let missing_root = std::env::temp_dir().join(format!(
+        "rustsale-missing-spool-root-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::write(&outside_file, b"must remain").unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO pending_spool_cleanups (local_path, created_at)
+         VALUES (?1, '2026-08-13T00:00:00Z')",
+        [outside_file.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+
+    harness
+        .repository
+        .cleanup_spool_files(&[], Some(&missing_root));
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let cleanup_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pending_spool_cleanups", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(outside_file.exists());
+    assert_eq!(cleanup_count, 1);
+    let _ = std::fs::remove_file(outside_file);
+}
+
+#[tokio::test]
+async fn test_spool_cleanup_reference_query_failure_fails_closed() {
+    let harness = ServiceHarness::new();
+    std::fs::create_dir_all(harness.service.stager.root()).unwrap();
+    let queued_file = harness.service.stager.root().join(format!(
+        "reference-query-failure-{}.tmp",
+        rand::random::<u64>()
+    ));
+    std::fs::write(&queued_file, b"must remain").unwrap();
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO pending_spool_cleanups (local_path, created_at)
+         VALUES (?1, '2026-08-13T00:00:00Z')",
+        [queued_file.to_str().unwrap()],
+    )
+    .unwrap();
+    conn.execute("DROP TABLE message_attachments", []).unwrap();
+    drop(conn);
+
+    harness
+        .repository
+        .cleanup_spool_files(&[], Some(harness.service.stager.root()));
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let cleanup_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pending_spool_cleanups", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(queued_file.exists());
+    assert_eq!(cleanup_count, 1);
+    let _ = std::fs::remove_file(queued_file);
+}
+
+#[tokio::test]
+async fn test_delete_conversation_file_outside_spool_not_deleted() {
+    let harness = ServiceHarness::new();
+    let outside_file =
+        std::env::temp_dir().join(format!("rustsale-outside-{}.tmp", rand::random::<u64>()));
+    std::fs::write(&outside_file, b"outside spool").unwrap();
+    assert!(outside_file.exists());
+
+    // Path traversal string targeting outside_file via relative segment
+    let traversal_path = format!(
+        "{}/../{}",
+        harness.service.stager.root().display(),
+        outside_file.file_name().unwrap().to_str().unwrap()
+    );
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (60, 1, 'conv-60', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (600, 60, 'inbound', 'image', 'photo', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, local_path, created_at) VALUES (600, 'image', ?1, '2026-01-01T00:00:00Z')",
+        [&traversal_path],
+    ).unwrap();
+    drop(conn);
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(60),
+        identity_id: None,
+        lead_id: None,
+    };
+    harness.service.delete_conversation(&del_req).unwrap();
+
+    // Traversal file outside spool root must NOT be deleted
+    assert!(outside_file.exists());
+    let _ = std::fs::remove_file(outside_file);
+}
+
+#[tokio::test]
+async fn test_delete_conversation_shared_attachment_not_deleted() {
+    let harness = ServiceHarness::new();
+    std::fs::create_dir_all(harness.service.stager.root()).unwrap();
+    let shared_file = harness.service.stager.root().join("shared.tmp");
+    std::fs::write(&shared_file, b"shared attachment").unwrap();
+    assert!(shared_file.exists());
+
+    // Construct non-canonical path alias for conv 71 (e.g. /spool/./shared.tmp)
+    let alias_path = format!("{}/./shared.tmp", harness.service.stager.root().display());
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (71, 1, 'conv-71', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (72, 1, 'conv-72', 'direct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (701, 71, 'inbound', 'image', 'p1', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, local_path, created_at) VALUES (701, 'image', ?1, '2026-01-01T00:00:00Z')",
+        [&alias_path],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at) VALUES (702, 72, 'inbound', 'image', 'p2', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, local_path, created_at) VALUES (702, 'image', ?1, '2026-01-01T00:00:00Z')",
+        [shared_file.to_str().unwrap()],
+    ).unwrap();
+    drop(conn);
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(71),
+        identity_id: None,
+        lead_id: None,
+    };
+    harness.service.delete_conversation(&del_req).unwrap();
+
+    // Canonical comparison matches /spool/./shared.tmp with /spool/shared.tmp, so file is kept
+    assert!(shared_file.exists());
+    let _ = std::fs::remove_file(shared_file);
+}
+
+#[tokio::test]
+async fn test_delete_group_conversation_tombstone_covers_group_snapshot() {
+    let harness = ServiceHarness::new();
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'acc1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at) VALUES (80, 1, 'group-80', 'group', 'Test Group', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    let del_req = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(80),
+        identity_id: None,
+        lead_id: None,
+    };
+    harness.service.delete_conversation(&del_req).unwrap();
+
+    // Historical group snapshot (occurred_at <= deletion_time) is suppressed
+    let old_snapshot = crate::conversation::zalo::normalizer::NormalizedGroupSnapshot {
+        provider_account_key: "acc1".to_string(),
+        external_thread_id: "group-80".to_string(),
+        title: "Stale Group".to_string(),
+        avatar_url: None,
+        occurred_at: "2026-01-01T00:00:00Z".to_string(),
+        participants: vec![],
+        membership_complete: true,
+    };
+    let res_old = harness
+        .repository
+        .apply_group_snapshot(&old_snapshot)
+        .unwrap();
+    assert_eq!(res_old, 0);
+
+    // Background snapshots never prove new activity and must not reopen a deleted group.
+    let new_snapshot = crate::conversation::zalo::normalizer::NormalizedGroupSnapshot {
+        provider_account_key: "acc1".to_string(),
+        external_thread_id: "group-80".to_string(),
+        title: "Reopened Group".to_string(),
+        avatar_url: None,
+        occurred_at: "2099-01-01T00:00:00Z".to_string(),
+        participants: vec![],
+        membership_complete: true,
+    };
+    let res_new = harness
+        .repository
+        .apply_group_snapshot(&new_snapshot)
+        .unwrap();
+    assert_eq!(res_new, 0);
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let snapshot_conversation_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_conversations
+             WHERE channel_account_id = 1 AND external_thread_id = 'group-80' AND kind = 'group'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let snapshot_tombstone_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deleted_conversations
+             WHERE channel_account_id = 1 AND external_thread_id = 'group-80' AND kind = 'group'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(snapshot_conversation_count, 0);
+    assert_eq!(snapshot_tombstone_count, 1);
+    drop(conn);
+
+    // A real provider message newer than the tombstone may reopen the group.
+    let mut new_group_message = group_message("acc1", "group-80", "group-new-message");
+    new_group_message.provider_timestamp = Some("2099-01-01T00:00:01Z".to_string());
+    new_group_message.ingested_at = "2099-01-01T00:00:02Z".to_string();
+    let applied = harness
+        .repository
+        .apply_normalized_message(&new_group_message)
+        .unwrap();
+    assert!(applied.conversation_id > 0);
+
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let tombstone_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deleted_conversations
+             WHERE channel_account_id = 1 AND external_thread_id = 'group-80' AND kind = 'group'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tombstone_count, 0);
+}
+
+#[tokio::test]
+async fn test_merge_account_into_migrates_tombstones() {
+    let harness = ServiceHarness::new();
+    let conn = crate::db::open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_channel_accounts_zalo_self_ext_id",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, self_external_id, created_at, updated_at) VALUES (1, 'zalo', 'acc1', 'user-canonical', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, self_external_id, created_at, updated_at) VALUES (2, 'zalo', 'acc2', 'user-canonical', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO deleted_conversations (channel_account_id, external_thread_id, kind, deleted_at) VALUES (2, 'thread-del', 'direct', '2026-01-01T12:00:00Z')",
+        [],
+    ).unwrap();
+
+    crate::conversation::migration::reconcile_duplicate_zalo_channel_accounts(&conn).unwrap();
+
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deleted_conversations WHERE channel_account_id = 1 AND external_thread_id = 'thread-del'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn test_delete_conversation_request_validation() {
+    let harness = ServiceHarness::new();
+
+    // 1. ID <= 0
+    let req1 = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: None,
+        identity_id: Some(0),
+        lead_id: None,
+    };
+    assert!(harness.service.delete_conversation(&req1).is_err());
+
+    // 2. Malformed multi-target payload { conversationId: Some(0), identityId: Some(200) }
+    let req_malformed = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(0),
+        identity_id: Some(200),
+        lead_id: None,
+    };
+    assert!(harness.service.delete_conversation(&req_malformed).is_err());
+
+    // 3. Multiple valid targets
+    let req2 = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(10),
+        identity_id: Some(20),
+        lead_id: None,
+    };
+    assert!(harness.service.delete_conversation(&req2).is_err());
+
+    // 4. Valid single target
+    let req3 = crate::conversation::types::DeleteConversationRequest {
+        conversation_id: Some(10),
+        identity_id: None,
+        lead_id: None,
+    };
+    assert!(req3.validate().is_ok());
+}

@@ -1223,6 +1223,28 @@ fn merge_channel_account_migration_markers(
     Ok(())
 }
 
+fn merge_deleted_conversations(
+    conn: &Connection,
+    canonical_account_id: i64,
+    duplicate_account_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO deleted_conversations
+            (channel_account_id, external_thread_id, kind, deleted_at)
+         SELECT ?1, external_thread_id, kind, deleted_at
+         FROM deleted_conversations
+         WHERE channel_account_id = ?2
+         ON CONFLICT(channel_account_id, external_thread_id, kind) DO UPDATE SET
+             deleted_at = MAX(deleted_conversations.deleted_at, excluded.deleted_at)",
+        params![canonical_account_id, duplicate_account_id],
+    )?;
+    conn.execute(
+        "DELETE FROM deleted_conversations WHERE channel_account_id = ?1",
+        [duplicate_account_id],
+    )?;
+    Ok(())
+}
+
 fn merge_account_into(
     conn: &Connection,
     canonical_id: i64,
@@ -1288,6 +1310,7 @@ fn merge_account_into(
     merge_checkpoints(conn, canonical_id, duplicate.id)?;
     merge_pending_message_reactions(conn, canonical_id, duplicate.id)?;
     merge_channel_account_migration_markers(conn, canonical_id, duplicate.id)?;
+    merge_deleted_conversations(conn, canonical_id, duplicate.id)?;
 
     let remaining_children: i64 = conn.query_row(
         "SELECT
@@ -1297,6 +1320,7 @@ fn merge_account_into(
             (SELECT COUNT(*) FROM channel_account_migration_markers WHERE channel_account_id = ?1) +
             (SELECT COUNT(*) FROM message_outbox_jobs WHERE channel_account_id = ?1) +
             (SELECT COUNT(*) FROM message_send_batches WHERE channel_account_id = ?1) +
+            (SELECT COUNT(*) FROM deleted_conversations WHERE channel_account_id = ?1) +
             (SELECT COUNT(*) FROM zalo_sessions WHERE channel_account_id = ?1)",
         [duplicate.id],
         |row| row.get(0),
