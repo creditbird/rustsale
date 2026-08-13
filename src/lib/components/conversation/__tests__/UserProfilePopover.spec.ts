@@ -47,4 +47,28 @@ describe('UserProfilePopover.svelte', () => {
     expect(onClose).toHaveBeenCalled();
     expect(onOpenDirectChat).toHaveBeenCalledTimes(1);
   });
+
+  it('invokes onOpenLead callback when clicking Xem / Tạo Lead button', async () => {
+    const onOpenLead = mock(() => {});
+    const onClose = mock(() => {});
+
+    const { getByTestId } = render(UserProfilePopover, {
+      props: {
+        open: true,
+        payload: {
+          identityId: 42,
+          displayName: 'Nguyen Thai Duy',
+          externalId: '123456789'
+        },
+        onClose,
+        onOpenLead
+      }
+    });
+
+    const leadBtn = getByTestId('btn-lead-crm');
+    await fireEvent.click(leadBtn);
+
+    expect(onClose).toHaveBeenCalled();
+    expect(onOpenLead).toHaveBeenCalledTimes(1);
+  });
 });

@@ -105,6 +105,21 @@
     }
   }
 
+  function handleOpenLeadFromPopover(payload: UserClickPayload) {
+    const matching = findMatchingInboxItem({
+      zalo_uid: payload.externalId,
+      name: payload.displayName ?? undefined
+    });
+
+    if (matching) {
+      selectItem(matching);
+    } else {
+      newChatInitialPhone = payload.externalId || (payload.identityId ? String(payload.identityId) : '');
+      newChatInitialName = payload.displayName || '';
+      newChatOpen = true;
+    }
+  }
+
   function handleImageClick(clickedUrl: string, _clickedMessage: ConversationMessage) {
     const items = currentVariant?.items ?? [];
     const images = extractGalleryImages(items);
@@ -1115,5 +1130,6 @@
     payload={userPopoverPayload}
     onClose={() => (userPopoverOpen = false)}
     onOpenDirectChat={handleOpenDirectChatFromPopover}
+    onOpenLead={handleOpenLeadFromPopover}
   />
 </div>
