@@ -93,7 +93,33 @@
   let createLeadIdentityId = $state<number | null>(null);
 
   function handleUserClick(payload: UserClickPayload) {
-    userPopoverPayload = payload;
+    let resolvedExtId = payload.externalId;
+    let resolvedIdentityId = payload.identityId;
+
+    if (selectedItem?.participants && selectedItem.participants.length > 0) {
+      const cleanName = payload.displayName?.trim().toLowerCase();
+      const participant = selectedItem.participants.find((p) => {
+        if (resolvedIdentityId && p.identityId === resolvedIdentityId) return true;
+        if (resolvedExtId && p.externalId === resolvedExtId) return true;
+        if (cleanName && p.displayName && p.displayName.trim().toLowerCase() === cleanName) return true;
+        return false;
+      });
+
+      if (participant) {
+        if (!resolvedExtId && participant.externalId) {
+          resolvedExtId = participant.externalId;
+        }
+        if (!resolvedIdentityId && participant.identityId) {
+          resolvedIdentityId = participant.identityId;
+        }
+      }
+    }
+
+    userPopoverPayload = {
+      ...payload,
+      identityId: resolvedIdentityId ?? null,
+      externalId: resolvedExtId || undefined
+    };
     userPopoverOpen = true;
   }
 

@@ -14,7 +14,7 @@
   }: {
     text: string;
     mentions?: (ConversationMention | ConversationMentionInput)[];
-    onMentionClick?: (identityId: number | null, mentionText: string, externalId?: string) => void;
+    onMentionClick?: (identityId: number | null, mentionText: string, externalId?: string, targetEl?: HTMLElement) => void;
   } = $props();
 
   type MentionChunk =
@@ -124,12 +124,12 @@
         data-mention-id={chunk.identityId ?? ''}
         onclick={(e) => {
           e.stopPropagation();
-          onMentionClick(chunk.identityId, chunk.text, chunk.externalId);
+          onMentionClick(chunk.identityId, chunk.text, chunk.externalId, e.currentTarget as HTMLElement);
         }}
         onkeydown={(e) => {
           if (e.key === 'Enter') {
             e.stopPropagation();
-            onMentionClick(chunk.identityId, chunk.text, chunk.externalId);
+            onMentionClick(chunk.identityId, chunk.text, chunk.externalId, e.currentTarget as HTMLElement);
           }
         }}
         title={`Tag ${chunk.text}`}
