@@ -1936,7 +1936,7 @@ impl ConversationRepository {
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                     m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index
+                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2007,7 +2007,7 @@ impl ConversationRepository {
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                     m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index
+                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2070,7 +2070,7 @@ impl ConversationRepository {
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                     m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index
+                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2659,7 +2659,7 @@ impl ConversationRepository {
                     m.direction, m.provider_message_id, m.content_type, m.text_content,
                     m.content_json, COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                     m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index
+                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2826,7 +2826,7 @@ impl ConversationRepository {
                     m.provider_message_id, m.content_type, m.text_content, m.content_json,
                     COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                     m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index
+                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -3031,7 +3031,7 @@ impl ConversationRepository {
                         m.provider_message_id, m.content_type, m.text_content, m.content_json,
                         COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                         m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                        m.provider_client_message_id, m.batch_index
+                        m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
                  FROM messages m
                  JOIN channel_conversations cc ON cc.id = m.conversation_id
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -3356,7 +3356,7 @@ impl ConversationRepository {
                         m.provider_message_id, m.content_type, m.text_content, m.content_json,
                         COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
                         m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                        m.provider_client_message_id, m.batch_index
+                        m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
                  FROM messages m
                  JOIN channel_conversations cc ON cc.id = m.conversation_id
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
