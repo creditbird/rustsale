@@ -430,11 +430,16 @@
       <MessageContentRenderer
         {message}
         onImageClick={(url) => onImageClick(url, message)}
-        onMentionClick={(identityId, mentionText) => {
+        onMentionClick={(identityId, mentionText, externalId) => {
           const cleanName = mentionText.startsWith('@') ? mentionText.slice(1) : mentionText;
+          let resolvedExtId = externalId;
+          if (!resolvedExtId && identityId) {
+            resolvedExtId = selectedItem?.participants?.find((p) => p.identityId === identityId)?.externalId ?? undefined;
+          }
           onUserClick({
             identityId,
-            displayName: cleanName
+            displayName: cleanName,
+            externalId: resolvedExtId || undefined
           });
         }}
       />

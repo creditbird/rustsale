@@ -94,4 +94,32 @@ describe('MessageMentionText.svelte', () => {
     expect(links[0].getAttribute('href')).toBe('https://zalo.me/g/vibe-coding');
     expect(links[1].getAttribute('href')).toBe('https://google.com');
   });
+
+  it('calls onMentionClick with externalId when present', async () => {
+    let clickedIdentityId: number | null = null;
+    let clickedText = '';
+    let clickedExternalId: string | undefined = undefined;
+
+    const { getAllByTestId } = render(MessageMentionText, {
+      props: {
+        text: 'Chào @Nct nhé',
+        mentions: [
+          { identityId: 6045, externalId: '0987654321', displayText: '@Nct', startUtf16: 5, lengthUtf16: 4 }
+        ],
+        onMentionClick: (identityId, mentionText, externalId) => {
+          clickedIdentityId = identityId;
+          clickedText = mentionText;
+          clickedExternalId = externalId;
+        }
+      }
+    });
+
+    const mentionSpans = getAllByTestId('mention-span');
+    expect(mentionSpans).toHaveLength(1);
+    await mentionSpans[0].click();
+
+    expect(clickedIdentityId).toBe(6045);
+    expect(clickedText).toBe('@Nct');
+    expect(clickedExternalId).toBe('0987654321');
+  });
 });

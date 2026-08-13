@@ -14,12 +14,12 @@
   }: {
     text: string;
     mentions?: (ConversationMention | ConversationMentionInput)[];
-    onMentionClick?: (identityId: number | null, mentionText: string) => void;
+    onMentionClick?: (identityId: number | null, mentionText: string, externalId?: string) => void;
   } = $props();
 
   type MentionChunk =
     | { type: 'text'; text: string }
-    | { type: 'mention'; text: string; identityId: number | null };
+    | { type: 'mention'; text: string; identityId: number | null; externalId?: string };
 
   const MENTION_REGEX = /@(\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2}(?:\s[-–—]\s\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2})?)/gu;
   const URL_REGEX = /(https?:\/\/[^\s<]+)/g;
@@ -68,7 +68,8 @@
         result.push({
           type: 'mention',
           text: sliceUtf16(text, start, len),
-          identityId: 'identityId' in m ? m.identityId : null
+          identityId: 'identityId' in m ? m.identityId : null,
+          externalId: 'externalId' in m ? m.externalId : undefined
         });
       }
 
@@ -116,12 +117,12 @@
         data-mention-id={chunk.identityId ?? ''}
         onclick={(e) => {
           e.stopPropagation();
-          onMentionClick(chunk.identityId, chunk.text);
+          onMentionClick(chunk.identityId, chunk.text, chunk.externalId);
         }}
         onkeydown={(e) => {
           if (e.key === 'Enter') {
             e.stopPropagation();
-            onMentionClick(chunk.identityId, chunk.text);
+            onMentionClick(chunk.identityId, chunk.text, chunk.externalId);
           }
         }}
         title={`Tag ${chunk.text}`}

@@ -16,7 +16,7 @@
   }: {
     message: ConversationMessage;
     onImageClick?: (url: string) => void;
-    onMentionClick?: (identityId: number | null, mentionText: string) => void;
+    onMentionClick?: (identityId: number | null, mentionText: string, externalId?: string) => void;
   } = $props();
 
   let stickerAttachment = $derived(
