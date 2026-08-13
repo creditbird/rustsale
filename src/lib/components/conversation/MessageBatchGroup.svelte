@@ -18,7 +18,8 @@
     onForward = () => {},
     onPin = () => {},
     onToggleReaction = () => Promise.resolve(null),
-    onImageClick = () => {}
+    onImageClick = () => {},
+    onUserClick = () => {}
   }: {
     messages: ConversationMessage[];
     isGroup?: boolean;
@@ -35,6 +36,12 @@
       action?: 'increment' | 'remove'
     ) => Promise<ConversationReactionMutationResult | null>;
     onImageClick?: (url: string, message: ConversationMessage) => void;
+    onUserClick?: (payload: {
+      identityId: number | null;
+      displayName: string | null;
+      externalId?: string;
+      targetEl?: HTMLElement;
+    }) => void;
   } = $props();
 
   function getBatchStatus(batchMessages: ConversationMessage[]): MessageSendBatchStatus {
@@ -78,8 +85,8 @@
       {onForward}
       {onPin}
       {onToggleReaction}
-
       {onImageClick}
+      {onUserClick}
     />
     {#if message.status === 'failed' && message.errorMessage}
       <p class="ml-auto max-w-[70%] px-3 text-xs text-destructive">{message.errorMessage}</p>

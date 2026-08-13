@@ -29,7 +29,8 @@
     onForward = () => {},
     onPin = () => {},
     onToggleReaction = () => Promise.resolve(null),
-    onImageClick = () => {}
+    onImageClick = () => {},
+    onUserClick = () => {}
   }: {
     message: ConversationMessage;
     isGroup?: boolean;
@@ -47,6 +48,12 @@
       action?: 'increment' | 'remove'
     ) => Promise<ConversationReactionMutationResult | null>;
     onImageClick?: (url: string, message: ConversationMessage) => void;
+    onUserClick?: (payload: {
+      identityId: number | null;
+      displayName: string | null;
+      externalId?: string;
+      targetEl?: HTMLElement;
+    }) => void;
   } = $props();
 
   let actionsOpen = $state(false);
@@ -273,7 +280,20 @@
     <div class="flex items-start justify-between gap-2">
       <div class="flex items-center gap-2 text-xs opacity-90 font-medium flex-wrap">
         {#if !isOutbound && (isGroup || message.senderDisplayName) && message.senderDisplayName !== message.accountDisplayName}
-          <span class="font-bold text-[#075e54] dark:text-[#25d366]" data-slot="sender-name">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            class="font-bold text-[#075e54] dark:text-[#25d366] cursor-pointer hover:underline hover:opacity-80 transition-all select-none"
+            data-slot="sender-name"
+            onclick={(e) => {
+              e.stopPropagation();
+              onUserClick({
+                identityId: message.senderIdentityId,
+                displayName: message.senderDisplayName,
+                targetEl: e.currentTarget as HTMLElement
+              });
+            }}
+          >
             {message.senderDisplayName}
           </span>
         {/if}
@@ -406,7 +426,17 @@
       {#if message.replyTarget}
         <MessageReplyPreview replyTarget={message.replyTarget} />
       {/if}
-      <MessageContentRenderer {message} onImageClick={(url) => onImageClick(url, message)} />
+      <MessageContentRenderer
+        {message}
+        onImageClick={(url) => onImageClick(url, message)}
+        onMentionClick={(identityId, mentionText) => {
+          const cleanName = mentionText.startsWith('@') ? mentionText.slice(1) : mentionText;
+          onUserClick({
+            identityId,
+            displayName: cleanName
+          });
+        }}
+      />
     {/if}
 
     {#if !isRemoved && displayReactions.length > 0}

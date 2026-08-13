@@ -55,6 +55,7 @@
   import ImageGalleryModal, { type GalleryImage } from './ImageGalleryModal.svelte';
   import GroupMembersModal from './GroupMembersModal.svelte';
   import NewChatDialog from './NewChatDialog.svelte';
+  import UserProfilePopover, { type UserClickPayload } from './UserProfilePopover.svelte';
 
   export interface TargetLeadPayload {
     leadId?: number;
@@ -81,7 +82,28 @@
   let galleryImages = $state<GalleryImage[]>([]);
   let galleryIndex = $state(0);
   let groupMembersModalOpen = $state(false);
+  let userPopoverOpen = $state(false);
+  let userPopoverPayload = $state<UserClickPayload | null>(null);
 
+  function handleUserClick(payload: UserClickPayload) {
+    userPopoverPayload = payload;
+    userPopoverOpen = true;
+  }
+
+  function handleOpenDirectChatFromPopover(payload: UserClickPayload) {
+    const matching = findMatchingInboxItem({
+      zalo_uid: payload.externalId,
+      name: payload.displayName ?? undefined
+    });
+
+    if (matching) {
+      selectItem(matching);
+    } else {
+      newChatInitialPhone = payload.externalId || (payload.identityId ? String(payload.identityId) : '');
+      newChatInitialName = payload.displayName || '';
+      newChatOpen = true;
+    }
+  }
 
   function handleImageClick(clickedUrl: string, _clickedMessage: ConversationMessage) {
     const items = currentVariant?.items ?? [];
@@ -1017,6 +1039,7 @@
         onPin={handlePinMessage}
         onToggleReaction={handleToggleReaction}
         onImageClick={handleImageClick}
+        onUserClick={handleUserClick}
       />
 
 
@@ -1086,5 +1109,11 @@
     initialPhone={newChatInitialPhone}
     initialDisplayName={newChatInitialName}
     onSuccess={handleConversationCreated}
+  />
+  <UserProfilePopover
+    open={userPopoverOpen}
+    payload={userPopoverPayload}
+    onClose={() => (userPopoverOpen = false)}
+    onOpenDirectChat={handleOpenDirectChatFromPopover}
   />
 </div>

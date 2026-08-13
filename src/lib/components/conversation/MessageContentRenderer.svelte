@@ -11,10 +11,12 @@
 
   let {
     message,
-    onImageClick = () => {}
+    onImageClick = () => {},
+    onMentionClick = () => {}
   }: {
     message: ConversationMessage;
     onImageClick?: (url: string) => void;
+    onMentionClick?: (identityId: number | null, mentionText: string) => void;
   } = $props();
 
   let stickerAttachment = $derived(
@@ -215,7 +217,7 @@
 
     {#if displayText}
       <div class="message-text-content whitespace-pre-wrap [word-break:break-word]" data-testid="message-text-content">
-        <MessageMentionText text={displayText} mentions={message.mentions ?? []} />
+        <MessageMentionText text={displayText} mentions={message.mentions ?? []} {onMentionClick} />
       </div>
     {:else if !message.attachments?.length && !syntheticVideoAttachment && !legacyMediaUrl && message.contentType !== 'text' && !isLinkContentType}
       <div class="flex items-center gap-2 p-2 rounded-md bg-muted/40 text-muted-foreground text-xs italic">

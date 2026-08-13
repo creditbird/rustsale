@@ -28,7 +28,8 @@
     onForward = () => {},
     onPin = () => {},
     onToggleReaction = () => Promise.resolve(null),
-    onImageClick = () => {}
+    onImageClick = () => {},
+    onUserClick = () => {}
   }: {
     items: ConversationMessage[];
     loading?: boolean;
@@ -46,12 +47,17 @@
     onForward?: (message: ConversationMessage) => void;
     onPin?: (message: ConversationMessage) => void;
     onToggleReaction?: (
-
       message: ConversationMessage,
       code: ConversationReactionCode,
       action?: 'increment' | 'remove'
     ) => Promise<ConversationReactionMutationResult | null>;
     onImageClick?: (url: string, message: ConversationMessage) => void;
+    onUserClick?: (payload: {
+      identityId: number | null;
+      displayName: string | null;
+      externalId?: string;
+      targetEl?: HTMLElement;
+    }) => void;
   } = $props();
 
   let containerEl: HTMLElement | null = $state(null);
@@ -264,6 +270,7 @@
           {onPin}
           {onToggleReaction}
           {onImageClick}
+          {onUserClick}
         />
       {:else}
         <MessageBubble
@@ -278,6 +285,7 @@
           {onPin}
           {onToggleReaction}
           {onImageClick}
+          {onUserClick}
         />
       {/if}
     {/each}
