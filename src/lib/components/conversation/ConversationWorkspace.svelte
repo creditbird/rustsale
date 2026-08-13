@@ -7,6 +7,7 @@
     getConversationTimeline,
     getIdentityTimeline,
     getConversationRuntimeStatus,
+    listConversationMentionCandidates,
     initConversationEventBridge,
     onConversationInvalidated,
     recallConversationMessage,
@@ -55,7 +56,7 @@
   import ImageGalleryModal, { type GalleryImage } from './ImageGalleryModal.svelte';
   import GroupMembersModal from './GroupMembersModal.svelte';
   import NewChatDialog from './NewChatDialog.svelte';
-  import UserProfilePopover, { type UserClickPayload } from './UserProfilePopover.svelte';
+  import UserProfilePopover, { type UserClickPayload, isValidExternalZaloId } from './UserProfilePopover.svelte';
   import CreateLeadDialog from './CreateLeadDialog.svelte';
 
   export interface TargetLeadPayload {
@@ -92,22 +93,41 @@
   let createLeadPhoneOrUid = $state('');
   let createLeadIdentityId = $state<number | null>(null);
 
-  async function resolveParticipantDetails(payload: UserClickPayload): Promise<{ externalId?: string; identityId?: number }> {
-    let resolvedExtId = payload.externalId;
+  function normalizedDisplayName(value?: string | null): string {
+    return value?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
+  }
+
+  function hasUsableExternalZaloId(
+    externalId?: string | null,
+    identityId?: number | null
+  ): boolean {
+    if (!isValidExternalZaloId(externalId)) return false;
+    return identityId == null || externalId?.trim() !== String(identityId);
+  }
+
+  async function resolveParticipantDetails(payload: UserClickPayload): Promise<{
+    externalId: string | undefined;
+    identityId: number | undefined;
+  }> {
+    let resolvedExtId = hasUsableExternalZaloId(payload.externalId, payload.identityId)
+      ? payload.externalId?.trim()
+      : undefined;
     let resolvedIdentityId = payload.identityId;
+    const cleanName = normalizedDisplayName(payload.displayName);
 
     if (selectedItem?.participants && selectedItem.participants.length > 0) {
-      const cleanName = payload.displayName?.trim().toLowerCase();
       const participant = selectedItem.participants.find((p) => {
         if (resolvedIdentityId && p.identityId === resolvedIdentityId) return true;
         if (resolvedExtId && p.externalId === resolvedExtId) return true;
-        if (cleanName && p.displayName && p.displayName.trim().toLowerCase() === cleanName) return true;
-        return false;
+        return cleanName !== '' && normalizedDisplayName(p.displayName) === cleanName;
       });
 
       if (participant) {
-        if (!resolvedExtId && participant.externalId) {
-          resolvedExtId = participant.externalId;
+        if (
+          !resolvedExtId &&
+          hasUsableExternalZaloId(participant.externalId, participant.identityId)
+        ) {
+          resolvedExtId = participant.externalId ?? undefined;
         }
         if (!resolvedIdentityId && participant.identityId) {
           resolvedIdentityId = participant.identityId;
@@ -119,18 +139,25 @@
       try {
         const candidates = await listConversationMentionCandidates({
           conversationId: selectedItem.conversationId,
+          sourceMessageId: payload.sourceMessageId,
           query: payload.displayName || undefined
         });
 
-        const cleanName = payload.displayName?.trim().toLowerCase();
-        const candidate = candidates.find((c) => {
+        const exactCandidate = candidates.find((c) => {
           if (resolvedIdentityId && c.identityId === resolvedIdentityId) return true;
-          if (cleanName && c.displayName && c.displayName.trim().toLowerCase() === cleanName) return true;
-          return false;
+          if (resolvedExtId && c.externalId === resolvedExtId) return true;
+          return cleanName !== '' && normalizedDisplayName(c.displayName) === cleanName;
         });
+        const fuzzyMatches = exactCandidate || cleanName === ''
+          ? []
+          : candidates.filter((candidate) => {
+              const candidateName = normalizedDisplayName(candidate.displayName);
+              return candidateName.startsWith(`${cleanName} `) || cleanName.startsWith(`${candidateName} `);
+            });
+        const candidate = exactCandidate ?? (fuzzyMatches.length === 1 ? fuzzyMatches[0] : undefined);
 
         if (candidate) {
-          if (candidate.externalId) {
+          if (hasUsableExternalZaloId(candidate.externalId, candidate.identityId)) {
             resolvedExtId = candidate.externalId;
           }
           if (candidate.identityId) {
@@ -149,16 +176,17 @@
   }
 
   async function handleUserClick(payload: UserClickPayload) {
-    userPopoverPayload = payload;
+    const hasExternalId = hasUsableExternalZaloId(payload.externalId, payload.identityId);
+    userPopoverPayload = hasExternalId ? payload : { ...payload, externalId: undefined };
     userPopoverOpen = true;
 
-    if (!payload.externalId) {
+    if (!hasExternalId) {
       const resolved = await resolveParticipantDetails(payload);
       if (resolved.externalId || resolved.identityId) {
         userPopoverPayload = {
           ...payload,
           identityId: resolved.identityId ?? payload.identityId ?? null,
-          externalId: resolved.externalId || payload.externalId
+          externalId: resolved.externalId
         };
       }
     }
@@ -166,7 +194,7 @@
 
   async function handleOpenDirectChatFromPopover(payload: UserClickPayload) {
     let resolved = { externalId: payload.externalId, identityId: payload.identityId ?? undefined };
-    if (!resolved.externalId) {
+    if (!hasUsableExternalZaloId(resolved.externalId, resolved.identityId)) {
       resolved = await resolveParticipantDetails(payload);
     }
 
@@ -182,7 +210,9 @@
     if (matching) {
       selectItem(matching);
     } else {
-      newChatInitialPhone = targetPhoneOrUid || (targetIdentityId ? String(targetIdentityId) : '');
+      newChatInitialPhone = hasUsableExternalZaloId(targetPhoneOrUid, targetIdentityId)
+        ? targetPhoneOrUid || ''
+        : '';
       newChatInitialName = payload.displayName || '';
       newChatOpen = true;
     }
@@ -190,7 +220,7 @@
 
   async function handleOpenLeadFromPopover(payload: UserClickPayload) {
     let resolved = { externalId: payload.externalId, identityId: payload.identityId ?? undefined };
-    if (!resolved.externalId) {
+    if (!hasUsableExternalZaloId(resolved.externalId, resolved.identityId)) {
       resolved = await resolveParticipantDetails(payload);
     }
 
@@ -207,7 +237,9 @@
       selectItem(matching);
     } else {
       createLeadName = payload.displayName || '';
-      createLeadPhoneOrUid = targetPhoneOrUid || (targetIdentityId ? String(targetIdentityId) : '');
+      createLeadPhoneOrUid = hasUsableExternalZaloId(targetPhoneOrUid, targetIdentityId)
+        ? targetPhoneOrUid || ''
+        : '';
       createLeadIdentityId = targetIdentityId ?? null;
       createLeadOpen = true;
     }
@@ -446,7 +478,9 @@
         const matchUid = inbox.find((i) => {
           const keyMatch = i.key ? i.key.includes(cleanUid) : false;
           const titleMatch = i.title ? i.title.includes(cleanUid) : false;
-          const participantMatch = i.participants?.some((p) => String(p.identityId) === cleanUid);
+          const participantMatch = i.participants?.some(
+            (p) => String(p.identityId) === cleanUid || (p.externalId && p.externalId.trim() === cleanUid)
+          );
           return keyMatch || titleMatch || participantMatch;
         });
         if (matchUid) return matchUid;

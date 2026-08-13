@@ -108,7 +108,7 @@ const mockGroupItem: InboxItem = {
   ],
   participantCount: 3,
   participants: [
-    { identityId: 1, displayName: 'Minh', avatarUrl: null, participantRole: 'member' }
+    { identityId: 1, externalId: 'member-1', displayName: 'Minh', avatarUrl: null, participantRole: 'member' }
   ]
 };
 
@@ -407,6 +407,9 @@ const mockBatchImportGroupMembersToLeads = mock(async (_request: unknown) => ({
   skipped_count: 0,
   assigned_category_ids: []
 }));
+const mockListConversationMentionCandidates = mock(
+  async (_request: unknown): Promise<import('$lib/services/conversationService').ConversationMentionCandidate[]> => []
+);
 
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
@@ -433,6 +436,8 @@ mock.module('$lib/services/conversationService', () => ({
   forwardConversationMessage: (request: any) => mockForwardConversationMessage(request),
   retryConversationForwardTarget: (request: any) => mockRetryConversationForwardTarget(request),
   linkConversationIdentity: mock(async () => {}),
+  listConversationMentionCandidates: (request: unknown) =>
+    mockListConversationMentionCandidates(request),
   getGroupMembersUnrestricted: (conversationId: number) =>
     mockGetGroupMembersUnrestricted(conversationId),
   syncAndDeepScanGroupMembers: (conversationId: number) =>
@@ -467,6 +472,7 @@ describe('ConversationWorkspace Component', () => {
     mockGetGroupMembersUnrestricted.mockClear();
     mockSyncAndDeepScanGroupMembers.mockClear();
     mockBatchImportGroupMembersToLeads.mockClear();
+    mockListConversationMentionCandidates.mockClear();
   });
 
   test('1. Mounting while activeTab !== "conversation" does not load inbox/runtime data', async () => {
@@ -1078,5 +1084,259 @@ describe('ConversationWorkspace Component', () => {
 
     expect(screen.getByTestId('image-gallery-modal')).toBeTruthy();
     expect(screen.getByTestId('gallery-main-image').getAttribute('src')).toBe('https://cdn.example.com/photo1.png');
+  });
+
+  test('18. Clicking a tagged user mention in a group message resolves candidate details and opens UserProfilePopover', async () => {
+    mockListConversationMentionCandidates.mockImplementationOnce(async () => [
+      {
+        identityId: 3230066,
+        externalId: '5054685013624794058',
+        displayName: 'Nga Nguyễn B B Tourist',
+        avatarUrl: null,
+        participantRole: 'member'
+      }
+    ]);
+    mockGetConversationTimeline.mockImplementationOnce(async () => ({
+      items: [
+        {
+          id: 99,
+          conversationId: 30,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          senderIdentityId: 100,
+          senderDisplayName: 'Nguyễn Văn A',
+          direction: 'inbound',
+          contentType: 'text',
+          textContent: '@Nga Nguyễn B B Tourist',
+          content: { text: '@Nga Nguyễn B B Tourist' },
+          occurredAt: '2026-07-31T10:00:00Z',
+          status: 'received',
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: null,
+          sendBatch: null,
+          mentions: [],
+          actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+        }
+      ],
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // Select group conversation 30 ('Nhóm VIP')
+    const groupItem = screen.getByText('Nhóm VIP');
+    await fireEvent.click(groupItem);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const mentionEl = screen.getByText('@Nga Nguyễn B');
+    expect(mentionEl).toBeTruthy();
+
+    await fireEvent.click(mentionEl);
+    await tick();
+
+    expect(mockListConversationMentionCandidates).toHaveBeenCalledWith({
+      conversationId: 30,
+      sourceMessageId: 99,
+      query: 'Nga Nguyễn B'
+    });
+    expect(screen.getByText('UID: 5054685013624794058')).toBeTruthy();
+    await fireEvent.click(screen.getByTestId('btn-chat-1on1'));
+
+    const directRecipientInput = await screen.findByPlaceholderText('Ví dụ: 0987654321 hoặc Zalo UID');
+    expect((directRecipientInput as HTMLInputElement).value).toBe('5054685013624794058');
+  });
+
+  test('18b. Internal identity IDs stored as mention external IDs are replaced by the group candidate Zalo UID', async () => {
+    mockListConversationMentionCandidates.mockImplementationOnce(async () => [
+      {
+        identityId: 3230066,
+        externalId: '5054685013624794058',
+        displayName: 'Nga Nguyễn B B Tourist',
+        avatarUrl: null,
+        participantRole: 'member'
+      }
+    ]);
+    mockGetConversationTimeline.mockImplementationOnce(async () => ({
+      items: [
+        {
+          id: 100,
+          conversationId: 30,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          senderIdentityId: 100,
+          senderDisplayName: 'Nguyễn Văn A',
+          direction: 'inbound',
+          contentType: 'text',
+          textContent: '@Nga Nguyễn B B Tourist',
+          content: { text: '@Nga Nguyễn B B Tourist' },
+          occurredAt: '2026-08-13T08:57:01Z',
+          status: 'received',
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: null,
+          sendBatch: null,
+          mentions: [
+            {
+              identityId: 3230066,
+              externalId: '3230066',
+              displayText: '@Nga Nguyễn B',
+              startUtf16: 0,
+              lengthUtf16: 13
+            }
+          ],
+          actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+        }
+      ],
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getByText('Nhóm VIP'));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await fireEvent.click(screen.getByText('@Nga Nguyễn B'));
+    await tick();
+
+    expect(mockListConversationMentionCandidates).toHaveBeenCalled();
+    expect(screen.getByText('UID: 5054685013624794058')).toBeTruthy();
+  });
+
+  test('18c. Internal identity IDs are not shown as Zalo UIDs when no mention candidate is found', async () => {
+    mockListConversationMentionCandidates.mockImplementationOnce(async () => []);
+    mockGetConversationTimeline.mockImplementationOnce(async () => ({
+      items: [
+        {
+          id: 101,
+          conversationId: 30,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          senderIdentityId: 100,
+          senderDisplayName: 'Nguyễn Văn A',
+          direction: 'inbound',
+          contentType: 'text',
+          textContent: '@Nga Nguyễn B',
+          content: { text: '@Nga Nguyễn B' },
+          occurredAt: '2026-08-13T09:15:00Z',
+          status: 'received',
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: null,
+          sendBatch: null,
+          mentions: [
+            {
+              identityId: 3230066,
+              externalId: '3230066',
+              displayText: '@Nga Nguyễn B',
+              startUtf16: 0,
+              lengthUtf16: 13
+            }
+          ],
+          actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+        }
+      ],
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getByText('Nhóm VIP'));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await fireEvent.click(screen.getByText('@Nga Nguyễn B'));
+    await tick();
+
+    expect(mockListConversationMentionCandidates).toHaveBeenCalled();
+    expect(screen.queryByText('UID: 3230066')).toBeNull();
+  });
+
+  test('18d. Historical reply aliases resolve the quoted user by source message ID', async () => {
+    mockListConversationMentionCandidates.mockImplementationOnce(async (request: any) =>
+      request.sourceMessageId === 4006
+        ? [
+            {
+              identityId: 142,
+              externalId: '5025114793295720787',
+              displayName: 'Nct',
+              avatarUrl: null,
+              participantRole: 'reply_sender'
+            }
+          ]
+        : []
+    );
+    mockGetConversationTimeline.mockImplementationOnce(async () => ({
+      items: [
+        {
+          id: 4006,
+          conversationId: 30,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Hello World',
+          senderIdentityId: 49,
+          senderDisplayName: 'Din',
+          direction: 'inbound',
+          contentType: 'text',
+          textContent: '@Nct còn không bác rep em với hic',
+          content: { text: '@Nct còn không bác rep em với hic' },
+          occurredAt: '2026-08-13T02:04:27.537Z',
+          status: 'received',
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: null,
+          sendBatch: null,
+          mentions: [],
+          actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+        }
+      ],
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getByText('Nhóm VIP'));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await fireEvent.click(screen.getByText('@Nct'));
+    await tick();
+
+    expect(mockListConversationMentionCandidates).toHaveBeenCalledWith({
+      conversationId: 30,
+      query: 'Nct',
+      sourceMessageId: 4006
+    });
+    expect(screen.getByText('UID: 5025114793295720787')).toBeTruthy();
+    await fireEvent.click(screen.getByTestId('btn-chat-1on1'));
+
+    const directRecipientInput = await screen.findByPlaceholderText('Ví dụ: 0987654321 hoặc Zalo UID');
+    expect((directRecipientInput as HTMLInputElement).value).toBe('5025114793295720787');
   });
 });

@@ -40,6 +40,7 @@
       identityId: number | null;
       displayName: string | null;
       externalId?: string;
+      sourceMessageId?: number;
       targetEl?: HTMLElement;
     }) => void;
   } = $props();

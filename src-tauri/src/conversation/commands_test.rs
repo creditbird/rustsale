@@ -941,6 +941,7 @@ async fn phase2a_command_registration() {
         state.clone(),
         ListConversationMentionCandidatesRequest {
             conversation_id: 1,
+            source_message_id: None,
             query: None,
             limit: None,
         },
@@ -1034,6 +1035,10 @@ async fn mention_candidates_query_matching_and_all() {
         "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, created_at, updated_at) VALUES (101, 'zalo', 'zalo_uid', 'user-b', 'Tran Thi B', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
         [],
     ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, created_at, updated_at) VALUES (142, 'zalo', 'zalo_uid', '5025114793295720787', 'Nct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
 
     // Add active participants
     conn.execute(
@@ -1042,6 +1047,10 @@ async fn mention_candidates_query_matching_and_all() {
     ).unwrap();
     conn.execute(
         "INSERT INTO conversation_participants (conversation_id, identity_id, joined_at) VALUES (1, 101, '2026-01-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, ingested_at, reply_sender_identity_id) VALUES (4006, 1, 100, 'inbound', 'text', '@Nct còn không bác rep em với hic', '2026-08-13T02:04:27.762Z', 142)",
         [],
     ).unwrap();
     drop(conn);
@@ -1070,6 +1079,7 @@ async fn mention_candidates_query_matching_and_all() {
         state.clone(),
         ListConversationMentionCandidatesRequest {
             conversation_id: 1,
+            source_message_id: None,
             query: None,
             limit: None,
         },
@@ -1085,6 +1095,7 @@ async fn mention_candidates_query_matching_and_all() {
         state.clone(),
         ListConversationMentionCandidatesRequest {
             conversation_id: 1,
+            source_message_id: None,
             query: Some("0901".into()),
             limit: None,
         },
@@ -1098,12 +1109,30 @@ async fn mention_candidates_query_matching_and_all() {
         state.clone(),
         ListConversationMentionCandidatesRequest {
             conversation_id: 1,
+            source_message_id: None,
             query: None,
             limit: Some(2),
         },
     )
     .unwrap();
     assert_eq!(limited.len(), 2);
+
+    let reply_alias_match = list_conversation_mention_candidates(
+        state.clone(),
+        ListConversationMentionCandidatesRequest {
+            conversation_id: 1,
+            source_message_id: Some(4006),
+            query: Some("Nct".into()),
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(reply_alias_match.len(), 1);
+    assert_eq!(reply_alias_match[0].identity_id, Some(142));
+    assert_eq!(
+        reply_alias_match[0].external_id.as_deref(),
+        Some("5025114793295720787")
+    );
 }
 
 #[tokio::test]

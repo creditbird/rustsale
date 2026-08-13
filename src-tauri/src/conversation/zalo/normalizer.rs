@@ -383,8 +383,9 @@ fn normalize_message(
     message: Message,
 ) -> Result<NormalizedMessage> {
     let now = crate::conversation::types::utc_now();
-    let (base, external_thread_id, is_self, kind, participant) = match message {
+    let (base, external_thread_id, is_self, kind, participant, raw_payload) = match message {
         Message::User(message) => {
+            let raw_payload = serde_json::to_value(&message.data)?;
             let display_name = if !message.is_self && !message.data.d_name.trim().is_empty() {
                 let d_name = message.data.d_name.trim();
                 let matches_account = account_display_name
@@ -411,9 +412,11 @@ fn normalize_message(
                 message.is_self,
                 ConversationKind::Direct,
                 participant,
+                raw_payload,
             )
         }
         Message::Group(message) => {
+            let raw_payload = serde_json::to_value(&message.data)?;
             let participant = (!message.is_self).then(|| NormalizedIdentity {
                 identity_namespace: "zalo_uid".to_string(),
                 external_id: message.data.base.uid_from.clone(),
@@ -428,6 +431,7 @@ fn normalize_message(
                 message.is_self,
                 ConversationKind::Group,
                 participant,
+                raw_payload,
             )
         }
     };
@@ -436,7 +440,8 @@ fn normalize_message(
         .as_ref()
         .and_then(|q| serde_json::to_value(q).ok());
     let parts = content_parts(&base.msg_type, &base.content, quote_val.as_ref());
-    let mentions = extract_zalo_mentions(parts.text_content.as_deref(), &parts.content);
+    let mentions =
+        extract_zalo_mentions(parts.text_content.as_deref(), &parts.content, &raw_payload);
 
     Ok(NormalizedMessage {
         channel: Channel::Zalo,
@@ -462,7 +467,7 @@ fn normalize_message(
         attachments: parts.attachments,
         reply: parts.reply,
         mentions,
-        raw_payload: Some(serde_json::to_value(&base)?),
+        raw_payload: Some(raw_payload),
         provider_timestamp: Some(provider_time(&base.ts)),
         ingested_at: now,
         status: if is_self {
@@ -473,15 +478,52 @@ fn normalize_message(
     })
 }
 
-fn extract_zalo_mentions(text: Option<&str>, content: &Value) -> Vec<NormalizedMention> {
+fn json_val_as_string(val: &Value) -> Option<String> {
+    match val {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn json_val_as_u64(val: &Value) -> Option<u64> {
+    match val {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn extract_zalo_mentions(
+    text: Option<&str>,
+    content: &Value,
+    raw_payload: &Value,
+) -> Vec<NormalizedMention> {
     let mut mentions = Vec::new();
-    let mut mentions_arr = content.get("mentions").and_then(Value::as_array).cloned();
+    let mut mentions_arr = raw_payload
+        .get("mentions")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .cloned()
+        .or_else(|| {
+            content
+                .get("mentions")
+                .and_then(Value::as_array)
+                .filter(|items| !items.is_empty())
+                .cloned()
+        });
 
     if mentions_arr.as_ref().is_none_or(|items| items.is_empty()) {
-        let ext_val = content
+        let ext_val = raw_payload
             .get("propertyExt")
-            .or_else(|| content.get("property_ext"))
-            .and_then(|p| p.get("ext"));
+            .or_else(|| raw_payload.get("property_ext"))
+            .and_then(|property| property.get("ext"))
+            .or_else(|| {
+                content
+                    .get("propertyExt")
+                    .or_else(|| content.get("property_ext"))
+                    .and_then(|property| property.get("ext"))
+            });
         if let Some(ext) = ext_val {
             let parsed_ext = if let Some(s) = ext.as_str() {
                 serde_json::from_str::<Value>(s).ok()
@@ -507,27 +549,28 @@ fn extract_zalo_mentions(text: Option<&str>, content: &Value) -> Vec<NormalizedM
             None => continue,
         };
 
-        let target_uid = obj
+        let target_uid_val = obj
             .get("target_uid")
             .or_else(|| obj.get("uid"))
             .or_else(|| obj.get("targetUid"))
             .or_else(|| obj.get("userId"))
-            .or_else(|| obj.get("target_external_id"))
-            .and_then(Value::as_str);
+            .or_else(|| obj.get("target_external_id"));
+
+        let target_uid = target_uid_val.and_then(json_val_as_string);
 
         let pos = obj
             .get("utf16_offset")
             .or_else(|| obj.get("offset"))
             .or_else(|| obj.get("pos"))
             .or_else(|| obj.get("start_utf16"))
-            .and_then(Value::as_u64)
+            .and_then(json_val_as_u64)
             .unwrap_or(0) as usize;
 
         let len = obj
             .get("utf16_len")
             .or_else(|| obj.get("len"))
             .or_else(|| obj.get("length_utf16"))
-            .and_then(Value::as_u64)
+            .and_then(json_val_as_u64)
             .unwrap_or(0) as usize;
 
         let display_text = obj
@@ -541,14 +584,15 @@ fn extract_zalo_mentions(text: Option<&str>, content: &Value) -> Vec<NormalizedM
             })
             .unwrap_or_default();
 
-        let is_all = target_uid == Some("-1")
-            || target_uid == Some("all")
+        let is_all = target_uid.as_deref() == Some("-1")
+            || target_uid.as_deref() == Some("all")
+            || obj.get("type").and_then(json_val_as_u64) == Some(1)
             || obj.get("is_all").and_then(Value::as_bool).unwrap_or(false);
 
         let external_id = if is_all {
             Some("all".to_string())
         } else {
-            target_uid.map(String::from)
+            target_uid
         };
 
         mentions.push(NormalizedMention {

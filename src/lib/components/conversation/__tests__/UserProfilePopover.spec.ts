@@ -1,9 +1,19 @@
 import { describe, it, expect, afterEach, mock } from 'bun:test';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
-import UserProfilePopover from '../UserProfilePopover.svelte';
+import UserProfilePopover, { isValidExternalZaloId } from '../UserProfilePopover.svelte';
 
 describe('UserProfilePopover.svelte', () => {
   afterEach(cleanup);
+
+  it('validates Zalo UIDs and phone numbers correctly', () => {
+    expect(isValidExternalZaloId('0987654321')).toBe(true);
+    expect(isValidExternalZaloId('84987654321')).toBe(true);
+    expect(isValidExternalZaloId('481940120149')).toBe(true);
+    expect(isValidExternalZaloId('123456789')).toBe(true);
+    expect(isValidExternalZaloId('105')).toBe(false);
+    expect(isValidExternalZaloId('')).toBe(false);
+    expect(isValidExternalZaloId(null)).toBe(false);
+  });
 
   it('renders user details when open is true and payload is provided', () => {
     const { getByText } = render(UserProfilePopover, {
@@ -12,7 +22,7 @@ describe('UserProfilePopover.svelte', () => {
         payload: {
           identityId: 42,
           displayName: 'Nguyen Thai Duy',
-          externalId: '0987654321',
+          externalId: '481940120149',
           role: 'Chủ nhóm'
         }
       }
@@ -20,7 +30,7 @@ describe('UserProfilePopover.svelte', () => {
 
     expect(getByText('Nguyen Thai Duy')).toBeTruthy();
     expect(getByText('Chủ nhóm')).toBeTruthy();
-    expect(getByText('UID: 0987654321')).toBeTruthy();
+    expect(getByText('UID: 481940120149')).toBeTruthy();
     expect(getByText('Nhắn tin 1-1 (Trò chuyện riêng)')).toBeTruthy();
   });
 

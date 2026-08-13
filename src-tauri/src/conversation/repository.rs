@@ -4871,6 +4871,7 @@ impl ConversationRepository {
     pub fn list_mention_candidates(
         &self,
         conversation_id: i64,
+        source_message_id: Option<i64>,
         query: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<crate::conversation::types::ConversationMentionCandidate>> {
@@ -4949,6 +4950,56 @@ impl ConversationRepository {
                     avatar_url: avatar,
                     is_all: false,
                 });
+            }
+        }
+
+        if is_group {
+            if let Some(source_message_id) = source_message_id {
+                let reply_sender = conn
+                    .query_row(
+                        "SELECT ci.id, ci.external_id, ci.display_name, ci.avatar_url,
+                                ci.normalized_address, l.phone
+                         FROM messages m
+                         JOIN channel_identities ci ON ci.id = m.reply_sender_identity_id
+                         LEFT JOIN leads l ON l.id = ci.lead_id
+                         WHERE m.id = ?1 AND m.conversation_id = ?2",
+                        rusqlite::params![source_message_id, conversation_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, Option<String>>(5)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+
+                if let Some((id, ext_id, name, avatar, norm_addr, phone)) = reply_sender {
+                    let name_str = name.unwrap_or_else(|| format!("User {}", id));
+                    let name_lower = name_str.to_lowercase();
+                    let phone_lower = phone.as_deref().unwrap_or("").to_lowercase();
+                    let addr_lower = norm_addr.as_deref().unwrap_or("").to_lowercase();
+                    let matches = query_clean.is_empty()
+                        || name_lower.contains(&query_clean)
+                        || (!phone_lower.is_empty() && phone_lower.contains(&query_clean))
+                        || (!addr_lower.is_empty() && addr_lower.contains(&query_clean));
+                    let already_present = candidates
+                        .iter()
+                        .any(|candidate| candidate.identity_id == Some(id));
+
+                    if matches && !already_present {
+                        candidates.push(crate::conversation::types::ConversationMentionCandidate {
+                            identity_id: Some(id),
+                            external_id: ext_id,
+                            display_name: name_str,
+                            avatar_url: avatar,
+                            is_all: false,
+                        });
+                    }
+                }
             }
         }
 

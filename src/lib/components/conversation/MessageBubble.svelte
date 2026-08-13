@@ -52,6 +52,7 @@
       identityId: number | null;
       displayName: string | null;
       externalId?: string;
+      sourceMessageId?: number;
       targetEl?: HTMLElement;
     }) => void;
   } = $props();
@@ -436,6 +437,7 @@
             identityId: identityId ?? null,
             displayName: cleanName,
             externalId: externalId || undefined,
+            sourceMessageId: message.id,
             targetEl
           });
         }}

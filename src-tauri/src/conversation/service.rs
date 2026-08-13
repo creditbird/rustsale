@@ -168,11 +168,12 @@ impl ConversationService {
     pub fn list_mention_candidates(
         &self,
         conversation_id: i64,
+        source_message_id: Option<i64>,
         query: Option<&str>,
         limit: Option<usize>,
     ) -> ConversationResult<Vec<super::types::ConversationMentionCandidate>> {
         self.repository
-            .list_mention_candidates(conversation_id, query, limit)
+            .list_mention_candidates(conversation_id, source_message_id, query, limit)
             .map_err(|e| e.into())
     }
 

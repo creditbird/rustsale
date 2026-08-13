@@ -491,6 +491,7 @@ pub fn list_conversation_mention_candidates(
         .service
         .list_mention_candidates(
             request.conversation_id,
+            request.source_message_id,
             request.query.as_deref(),
             request.limit,
         )

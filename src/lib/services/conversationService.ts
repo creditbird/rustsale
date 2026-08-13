@@ -70,6 +70,7 @@ export interface ConversationMentionCandidate {
 
 export interface ListConversationMentionCandidatesRequest {
   conversationId: number;
+  sourceMessageId?: number;
   query?: string;
   limit?: number;
 }

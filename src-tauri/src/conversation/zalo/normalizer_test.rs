@@ -4,8 +4,9 @@ use zca_rs::listener::ListenerEvent;
 use zca_rs::models::{
     DeliveredMessage, EventReactions, GroupDeliveredMessage, GroupMessage, GroupSeenMessage,
     Message, Reaction, SeenMessage, TDeliveredMessage, TGroupDeliveredMessage, TGroupMessage,
-    TGroupSeenMessage, TMessage, TReaction, TReactionContent, TReactionMsg, TUndo, TUndoContent,
-    TUserSeenMessage, Undo, UserDeliveredMessage, UserMessage, UserSeenMessage,
+    TGroupSeenMessage, TMention, TMessage, TPropertyExt, TReaction, TReactionContent, TReactionMsg,
+    TUndo, TUndoContent, TUserSeenMessage, Undo, UserDeliveredMessage, UserMessage,
+    UserSeenMessage,
 };
 
 fn base_message(uid_from: &str, id_to: &str, msg_id: &str, content: serde_json::Value) -> TMessage {
@@ -546,6 +547,92 @@ fn mention_inbound_group_message_normalizes_mentions() {
     assert_eq!(message.mentions[0].display_text, "@Nguyễn Văn A");
     assert_eq!(message.mentions[0].start_utf16, 9);
     assert_eq!(message.mentions[0].length_utf16, 13);
+}
+
+#[test]
+fn mention_inbound_group_message_uses_top_level_sdk_mentions() {
+    let mut base = base_message(
+        "sender-uid",
+        "0",
+        "group-msg-sdk-mentions",
+        json!("@Nga Nguyễn B B Tourist"),
+    );
+    base.msg_type = "chat.text".to_string();
+
+    let raw = TGroupMessage {
+        base,
+        mentions: Some(vec![TMention {
+            uid: "5054685013624794058".to_string(),
+            pos: 0,
+            len: 13,
+            r#type: 0,
+        }]),
+    };
+    let group_msg = GroupMessage::new("group-thread-100", raw);
+
+    let event = ListenerEvent::Message(Box::new(Message::Group(group_msg)));
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+
+    assert_eq!(message.mentions.len(), 1);
+    assert_eq!(
+        message.mentions[0].external_id.as_deref(),
+        Some("5054685013624794058")
+    );
+    assert_eq!(message.mentions[0].display_text, "@Nga Nguyễn B");
+    assert_eq!(message.mentions[0].start_utf16, 0);
+    assert_eq!(message.mentions[0].length_utf16, 13);
+    assert_eq!(
+        message
+            .raw_payload
+            .as_ref()
+            .and_then(|payload| payload.get("mentions"))
+            .and_then(|mentions| mentions.get(0))
+            .and_then(|mention| mention.get("uid"))
+            .and_then(serde_json::Value::as_str),
+        Some("5054685013624794058")
+    );
+}
+
+#[test]
+fn mention_inbound_group_message_normalizes_numeric_uid_and_property_ext() {
+    let mut base = base_message(
+        "sender-uid",
+        "0",
+        "group-msg-mentions-numeric",
+        json!("@Quang Thái bác check lại coi"),
+    );
+    base.msg_type = "chat.text".to_string();
+    base.property_ext = Some(TPropertyExt {
+        color: -1,
+        size: -1,
+        r#type: 1,
+        sub_type: 0,
+        ext: "{\"mentions\":[{\"uid\":481940120149,\"pos\":0,\"len\":11,\"display_text\":\"@Quang Thái\"}]}".to_string(),
+    });
+
+    let raw = TGroupMessage {
+        base,
+        mentions: None,
+    };
+    let group_msg = GroupMessage::new("group-thread-100", raw);
+
+    let event = ListenerEvent::Message(Box::new(Message::Group(group_msg)));
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = &mutations[0] else {
+        panic!("expected message mutation");
+    };
+
+    assert_eq!(message.mentions.len(), 1);
+    assert_eq!(
+        message.mentions[0].external_id.as_deref(),
+        Some("481940120149")
+    );
+    assert_eq!(message.mentions[0].display_text, "@Quang Thái");
+    assert_eq!(message.mentions[0].start_utf16, 0);
+    assert_eq!(message.mentions[0].length_utf16, 11);
 }
 
 #[test]

@@ -604,6 +604,8 @@ pub struct MarkConversationQuickTemplateUsedRequest {
 pub struct ListConversationMentionCandidatesRequest {
     pub conversation_id: i64,
     #[serde(default)]
+    pub source_message_id: Option<i64>,
+    #[serde(default)]
     pub query: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
@@ -1352,6 +1354,7 @@ mod tests {
             channel: Channel::Zalo,
             account_display_name: Some("Sales".into()),
             sender_identity_id: None,
+            sender_external_id: None,
             sender_display_name: Some("Peer".into()),
             direction: MessageDirection::Inbound,
             provider_message_id: Some("provider-message".into()),

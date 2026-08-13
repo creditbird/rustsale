@@ -1,16 +1,26 @@
-<script lang="ts">
-  import { Button } from '$lib/components/ui/button';
-  import { Badge } from '$lib/components/ui/badge';
-  import { MessageSquare, UserCheck, Copy, X, ExternalLink, ShieldCheck } from 'lucide-svelte';
-
+<script module lang="ts">
   export interface UserClickPayload {
     identityId: number | null;
     displayName: string | null;
     externalId?: string;
+    sourceMessageId?: number;
     avatarUrl?: string | null;
     role?: string | null;
     targetEl?: HTMLElement | null;
   }
+
+  export function isValidExternalZaloId(id?: string | null): boolean {
+    if (!id) return false;
+    const clean = id.trim();
+    // Valid phone number (09... or 849...) or Zalo UID (6-30 digits)
+    return /^(0\d{9}|84\d{9,10}|\d{6,30})$/.test(clean);
+  }
+</script>
+
+<script lang="ts">
+  import { Button } from '$lib/components/ui/button';
+  import { Badge } from '$lib/components/ui/badge';
+  import { MessageSquare, UserCheck, Copy, X, ExternalLink, ShieldCheck } from 'lucide-svelte';
 
   let {
     open = false,
@@ -27,13 +37,6 @@
   } = $props();
 
   let copied = $state(false);
-
-  function isValidExternalZaloId(id?: string | null): boolean {
-    if (!id) return false;
-    const clean = id.trim();
-    // Valid phone number (10 digits starting with 0) or Zalo UID (15+ digits)
-    return /^0\d{9}$/.test(clean) || /^\d{15,20}$/.test(clean);
-  }
 
   let displayName = $derived(payload?.displayName || 'Thành viên Zalo');
   let avatarUrl = $derived(payload?.avatarUrl || null);
