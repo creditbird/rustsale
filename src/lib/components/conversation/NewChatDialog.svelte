@@ -95,7 +95,12 @@
       open = false;
       onSuccess?.(msg);
     } catch (err: unknown) {
-      errorMessage = err instanceof Error ? err.message : String(err);
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      if (rawMsg.includes('114') || rawMsg.includes('Tham số không hợp lệ')) {
+        errorMessage = 'Không tìm thấy tài khoản Zalo với Số điện thoại / Zalo ID này. Vui lòng nhập đúng Số điện thoại (dạng 09x...) hoặc Zalo UID hợp lệ.';
+      } else {
+        errorMessage = rawMsg;
+      }
     } finally {
       submitting = false;
     }
@@ -113,7 +118,7 @@
 
     <form onsubmit={handleSubmit} class="space-y-4 py-2">
       {#if errorMessage}
-        <div class="p-2.5 rounded bg-destructive/10 text-destructive text-xs font-medium">
+        <div class="p-2.5 rounded-lg bg-destructive/10 text-destructive text-xs font-medium border border-destructive/20">
           {errorMessage}
         </div>
       {/if}
@@ -123,11 +128,14 @@
         <Input
           id="phone"
           type="text"
-          placeholder="Ví dụ: 0987654321"
+          placeholder="Ví dụ: 0987654321 hoặc Zalo UID"
           bind:value={phoneOrExternalId}
           disabled={submitting}
           required
         />
+        <p class="text-[11px] text-muted-foreground">
+          💡 Nhập Số điện thoại Zalo (09x/08x/03x...) hoặc Zalo UID của khách hàng.
+        </p>
       </div>
 
       <div class="space-y-1.5">

@@ -63,6 +63,7 @@
     phone?: string;
     name?: string;
     zalo_uid?: string;
+    identityId?: number;
   }
 
   let {
@@ -98,6 +99,7 @@
 
   function handleOpenDirectChatFromPopover(payload: UserClickPayload) {
     const matching = findMatchingInboxItem({
+      identityId: payload.identityId ?? undefined,
       zalo_uid: payload.externalId,
       name: payload.displayName ?? undefined
     });
@@ -113,6 +115,7 @@
 
   function handleOpenLeadFromPopover(payload: UserClickPayload) {
     const matching = findMatchingInboxItem({
+      identityId: payload.identityId ?? undefined,
       zalo_uid: payload.externalId,
       name: payload.displayName ?? undefined
     });
@@ -338,6 +341,14 @@
 
   function findMatchingInboxItem(lead: TargetLeadPayload): InboxItem | null {
     if (!lead || inbox.length === 0) return null;
+
+    // 0. Match by identityId
+    if (lead.identityId) {
+      const matchIdentity = inbox.find(
+        (i) => i.identityId === lead.identityId || i.key === `identity:${lead.identityId}`
+      );
+      if (matchIdentity) return matchIdentity;
+    }
 
     // 1. Match by leadId
     if (lead.leadId) {
@@ -899,9 +910,19 @@
 
   let deleteHeaderDialogOpen = $state(false);
 
-  function handleConversationCreated(msg: ConversationMessage) {
-    refreshInbox();
-    refreshOpenTimeline();
+  async function handleConversationCreated(msg: ConversationMessage) {
+    await refreshInbox();
+    const createdItem = inbox.find(
+      (i) =>
+        i.conversationId === msg.conversationId ||
+        (msg.senderIdentityId && i.identityId === msg.senderIdentityId) ||
+        (msg.senderIdentityId && i.key === `identity:${msg.senderIdentityId}`)
+    );
+    if (createdItem) {
+      selectItem(createdItem);
+    } else if (inbox.length > 0) {
+      selectItem(inbox[0]);
+    }
   }
 
   function handleConversationDeleted() {
