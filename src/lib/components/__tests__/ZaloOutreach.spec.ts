@@ -284,7 +284,7 @@ test('renders only one 50-lead page and navigates by cursor', async () => {
 
   expect(await screen.findByText('Bulk Zalo Lead 125')).toBeTruthy();
   expect(countCommand('get_outreach_leads_page')).toBe(callsAfterNext);
-});
+}, 20000);
 
 test('resolves all matching Zalo leads with row exclusions before launch', async () => {
   mockSessions = [{

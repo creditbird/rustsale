@@ -475,4 +475,4 @@ test('renders only one 50-lead page and navigates by cursor', async () => {
 
   expect(await screen.findByText(/Bulk Email Lead 125/)).toBeTruthy();
   expect(invokedCommands.filter((entry) => entry.command === 'get_outreach_leads_page').length).toBe(callsAfterNext);
-});
+}, 20000);

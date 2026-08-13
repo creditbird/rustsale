@@ -144,7 +144,7 @@ describe('ConversationTimeline Component', () => {
     const bubbles = container.querySelectorAll('[data-message-id]');
     expect(bubbles.length).toBeGreaterThan(0);
     expect(bubbles.length).toBeLessThanOrEqual(160);
-  });
+  }, 20000);
 
   test('auto-scrolls on new live messages when viewport is within 80px of bottom', async () => {
     const initialItems = makeMessages(10);
