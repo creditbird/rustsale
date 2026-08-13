@@ -12,7 +12,7 @@ describe('UserProfilePopover.svelte', () => {
         payload: {
           identityId: 42,
           displayName: 'Nguyen Thai Duy',
-          externalId: '123456789',
+          externalId: '0987654321',
           role: 'Chủ nhóm'
         }
       }
@@ -20,7 +20,7 @@ describe('UserProfilePopover.svelte', () => {
 
     expect(getByText('Nguyen Thai Duy')).toBeTruthy();
     expect(getByText('Chủ nhóm')).toBeTruthy();
-    expect(getByText('UID: 123456789')).toBeTruthy();
+    expect(getByText('UID: 0987654321')).toBeTruthy();
     expect(getByText('Nhắn tin 1-1 (Trò chuyện riêng)')).toBeTruthy();
   });
 

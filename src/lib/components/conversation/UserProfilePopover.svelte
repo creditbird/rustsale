@@ -28,10 +28,21 @@
 
   let copied = $state(false);
 
+  function isValidExternalZaloId(id?: string | null): boolean {
+    if (!id) return false;
+    const clean = id.trim();
+    // Valid phone number (10 digits starting with 0) or Zalo UID (15+ digits)
+    return /^0\d{9}$/.test(clean) || /^\d{15,20}$/.test(clean);
+  }
+
   let displayName = $derived(payload?.displayName || 'Thành viên Zalo');
   let avatarUrl = $derived(payload?.avatarUrl || null);
   let identityId = $derived(payload?.identityId ?? null);
-  let externalId = $derived(payload?.externalId || (identityId ? String(identityId) : ''));
+  let realExternalId = $derived(
+    payload?.externalId && isValidExternalZaloId(payload.externalId)
+      ? payload.externalId.trim()
+      : null
+  );
   let role = $derived(payload?.role || null);
 
   let initialLetters = $derived.by(() => {
@@ -134,9 +145,9 @@
             <span class="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold uppercase text-[10px]">
               Zalo Contact
             </span>
-            {#if externalId}
-              <span class="truncate max-w-[140px] font-mono text-[11px] opacity-80" title={`UID: ${externalId}`}>
-                UID: {externalId}
+            {#if realExternalId}
+              <span class="truncate max-w-[140px] font-mono text-[11px] opacity-80" title={`UID: ${realExternalId}`}>
+                UID: {realExternalId}
               </span>
             {/if}
           </div>

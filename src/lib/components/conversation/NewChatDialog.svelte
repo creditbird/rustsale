@@ -41,7 +41,13 @@
 
   $effect(() => {
     if (open) {
-      phoneOrExternalId = initialPhone || '';
+      const rawPhone = (initialPhone || '').trim();
+      // Valid phone number (10 digits starting with 0) or Zalo UID (15+ digits)
+      if (/^0\d{9}$/.test(rawPhone) || /^\d{15,20}$/.test(rawPhone)) {
+        phoneOrExternalId = rawPhone;
+      } else {
+        phoneOrExternalId = '';
+      }
       displayName = initialDisplayName || '';
       initialMessage = '';
       errorMessage = null;
@@ -134,7 +140,11 @@
           required
         />
         <p class="text-[11px] text-muted-foreground">
-          💡 Nhập Số điện thoại Zalo (09x/08x/03x...) hoặc Zalo UID của khách hàng.
+          {#if displayName}
+            💡 Vui lòng nhập Số điện thoại (09x/08x...) hoặc Zalo UID của <strong>{displayName}</strong>.
+          {:else}
+            💡 Nhập Số điện thoại Zalo (09x/08x/03x...) hoặc Zalo UID của khách hàng.
+          {/if}
         </p>
       </div>
 
