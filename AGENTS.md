@@ -1,9 +1,11 @@
 # Project Rules & Tooling
 
 > [!IMPORTANT]
-> **ALWAYS use `bun` and `bunx` instead of `npm` and `npx`** for all commands in this repository.
-> When updating or running GitNexus commands, you **MUST** run `bunx gitnexus analyze` instead of `npx gitnexus analyze`.
-> Do not use `npm` or `npx` under any circumstances.
+> **ALWAYS use `bun` and `bunx` instead of `node`, `npm`, and `npx`** for all commands and scripts in this repository.
+> • Use `bun <script/file>` instead of `node <script/file>`.
+> • Use `bun install`, `bun add`, `bun run` instead of `npm`.
+> • Use `bunx <tool>` instead of `npx <tool>` (e.g. `bunx gitnexus analyze`, `bunx --bun shadcn-svelte@latest`).
+> • **Do NOT use `node`, `npm`, or `npx` under any circumstances.**
 
 > [!IMPORTANT]
 > **ALWAYS read Agent Memory at the start of planning or implementation** (using the `memory_recall` or `memory_smart_search` tools) to retrieve session context, past lessons, and design decisions to avoid context loss. Utilize **GitNexus** tools for codebase exploration and impact analysis as required.
@@ -13,7 +15,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **RustSale_v2** (5538 symbols, 14289 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **RustSale_v2** (5539 symbols, 14259 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
