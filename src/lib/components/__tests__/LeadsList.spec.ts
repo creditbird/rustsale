@@ -33,6 +33,8 @@ describe('LeadsList Component & Selection Banner', () => {
     const checkboxes = screen.getAllByRole('checkbox');
     expect(checkboxes.length).toBeGreaterThan(0);
     const headerCheckbox = checkboxes[0];
+    // When no rows selected, Export button should not exist
+    expect(screen.queryByRole('button', { name: /Export/i })).toBeNull();
 
     await fireEvent.click(headerCheckbox);
 
@@ -41,15 +43,20 @@ describe('LeadsList Component & Selection Banner', () => {
     const selectAllBtn = screen.getByText('Select all 25 leads matching search');
     expect(selectAllBtn).toBeTruthy();
 
+    // Export button should appear for 10 items
+    expect(screen.getByRole('button', { name: /Export \(10\)/i })).toBeTruthy();
+
     // Clicking 'Select all 25 leads' selects all 25 leads across pages
     await fireEvent.click(selectAllBtn);
     expect(screen.getByText((_, el) => el?.tagName === 'SPAN' && el?.textContent?.includes('All 25 leads matching') === true)).toBeTruthy();
     expect(screen.getByText(/Assign to Category \(25\)/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Export \(25\)/i })).toBeTruthy();
 
-    // Clicking 'Clear selection' resets selection
+    // Clicking 'Clear selection' resets selection and hides Export button
     const clearBtn = screen.getByText('Clear selection');
     await fireEvent.click(clearBtn);
     expect(screen.queryByText('Select all 25 leads matching search')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Export/i })).toBeNull();
   });
 
   test('correctly calculates pagination and page-level selection logic', () => {
@@ -71,4 +78,50 @@ describe('LeadsList Component & Selection Banner', () => {
     expect(isAllFilteredSelected).toBe(false);
     expect(selectedRows.size).toBe(10);
   });
+
+  test('supports select all and export in contacts mode even when items are fewer than page size', async () => {
+    const mockContacts: Lead[] = [
+      { id: 101, name: 'TRUNK 正能量整復所', company: 'TRUNK 正能量整復所', status: 'Converted', value: 0, last_activity: '2026-08-14', owner: 'System', email: 'no@gmail.com', phone: '0933001673' },
+      { id: 102, name: 'Phòng Khám Vật Lý Trị Liệu Tân Phú Therapy', company: 'Phòng Khám Vật Lý Trị Liệu Tân Phú Therapy', status: 'Converted', value: 0, last_activity: '2026-08-14', owner: 'System', email: 'tan@gmail.com', phone: '0986864947' },
+      { id: 103, name: 'PK Y học cổ truyền Tâm Khang An', company: 'PK Y học cổ truyền Tâm Khang An', status: 'Converted', value: 0, last_activity: '2026-08-14', owner: 'Google Maps', email: 'no@gmail.com', phone: '0981353968' }
+    ];
+
+    render(LeadsList, { props: { leads: mockContacts, entityType: 'contacts' } });
+
+    // Verify Contacts headers and Add Contact button
+    expect(screen.getByText('Converted Contacts')).toBeTruthy();
+    expect(screen.getByText('Add Contact')).toBeTruthy();
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    expect(checkboxes.length).toBe(4); // 1 header + 3 rows
+
+    // Select row 2 (index 2 in checkboxes array)
+    const row2Checkbox = checkboxes[2];
+    await fireEvent.click(row2Checkbox);
+
+    // Banner should show "Selected 1 contact(s)." and "Select all 3 contacts matching search"
+    expect(screen.getByText(/Selected/i)).toBeTruthy();
+    const selectAllBtn = screen.getByText('Select all 3 contacts matching search');
+    expect(selectAllBtn).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Export \(1\)/i })).toBeTruthy();
+
+    // Clicking "Select all 3 contacts matching search" selects all 3 contacts
+    await fireEvent.click(selectAllBtn);
+    expect(screen.getByText((_, el) => el?.tagName === 'SPAN' && el?.textContent?.includes('All 3 contacts matching') === true)).toBeTruthy();
+    expect(screen.getByText(/Assign to Category \(3\)/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Export \(3\)/i })).toBeTruthy();
+
+    // Clicking 'Clear selection' resets selection
+    const clearBtn = screen.getByText('Clear selection');
+    await fireEvent.click(clearBtn);
+    expect(screen.queryByText('Select all 3 contacts matching search')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Export/i })).toBeNull();
+
+    // Clicking header checkbox directly selects all 3 contacts
+    const headerCheckbox = checkboxes[0];
+    await fireEvent.click(headerCheckbox);
+    expect(screen.getByText((_, el) => el?.tagName === 'SPAN' && el?.textContent?.includes('All 3 contacts matching') === true)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Export \(3\)/i })).toBeTruthy();
+  });
 });
+

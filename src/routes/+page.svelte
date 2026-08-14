@@ -212,10 +212,10 @@
         <GoogleMapsScraper />
       </div>
       <div class={activeTab === 'leads' ? '' : 'hidden'}>
-        <LeadsList leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
+        <LeadsList entityType="leads" leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
       </div>
       <div class={activeTab === 'contacts' ? '' : 'hidden'}>
-        <LeadsList leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
+        <LeadsList entityType="contacts" leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
       </div>
       <div class={activeTab === 'categories' ? '' : 'hidden'}>
         <CategoryManager {activeTab} />

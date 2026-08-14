@@ -8,10 +8,13 @@
   import { Badge } from '$lib/components/ui/badge';
   import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Select from '$lib/components/ui/select';
-  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-svelte';
+  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink, Download } from 'lucide-svelte';
+  import { toast } from 'svelte-sonner';
+  import { exportLeadsToCsv } from '$lib/utils/leadsExportCsv';
 
-  let { leads = [], onRefresh, onOpenConversation } = $props<{
+  let { leads = [], entityType = 'leads', onRefresh, onOpenConversation } = $props<{
     leads: Lead[];
+    entityType?: 'leads' | 'contacts';
     onRefresh?: () => void;
     onOpenConversation?: (lead: { id: number; phone?: string; name?: string; zalo_uid?: string }) => void;
   }>();
@@ -19,6 +22,12 @@
 
   // Multiselect state
   let selectedRows = $state<Set<number>>(new Set());
+
+  // Entity label derivations
+  let entityLabel = $derived(entityType === 'contacts' ? 'contact' : 'lead');
+  let entityLabelPlural = $derived(entityType === 'contacts' ? 'contacts' : 'leads');
+  let entityLabelCap = $derived(entityType === 'contacts' ? 'Contact' : 'Lead');
+  let entityLabelPluralCap = $derived(entityType === 'contacts' ? 'Contacts' : 'Leads');
   
   // Category assign modal states
   let showCategoryModal = $state(false);
@@ -116,6 +125,10 @@
     paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id !== undefined && selectedRows.has(l.id))
   );
 
+  let isCurrentPagePartiallySelected = $derived(
+    !isCurrentPageAllSelected && paginatedLeads.some((l: Lead) => l.id !== undefined && selectedRows.has(l.id))
+  );
+
   function selectAllFiltered() {
     filteredLeads.forEach((l: Lead) => {
       if (l.id !== undefined) selectedRows.add(l.id);
@@ -143,7 +156,7 @@
       await crmService.addLead(
         name.trim(),
         company.trim(),
-        'New',
+        entityType === 'contacts' ? 'Converted' : 'New',
         value,
         owner.trim(),
         email.trim(),
@@ -213,17 +226,39 @@
     }
     selectedRows = new Set(selectedRows);
   }
+
+  function handleExportSelected() {
+    if (selectedRows.size === 0) return;
+    const leadsToExport = leads.filter((l: Lead) => l.id !== undefined && selectedRows.has(l.id));
+    if (leadsToExport.length === 0) return;
+
+    try {
+      const filename = exportLeadsToCsv(leadsToExport, entityType);
+      toast.success(`Exported ${leadsToExport.length} ${entityLabelPlural} to ${filename}`);
+    } catch (err) {
+      console.error('Failed to export leads', err);
+      toast.error('Failed to export data');
+    }
+  }
 </script>
 
 <div class="flex flex-col gap-4">
   <!-- Top Action Header -->
   <div class="flex items-center justify-between">
     <div>
-      <h2 class="text-xl font-bold text-foreground tracking-tight">Leads & Contacts</h2>
-      <p class="text-xs text-muted-foreground mt-0.5">Click any row to view lead profile & timeline, or click checkbox to select</p>
+      <h2 class="text-xl font-bold text-foreground tracking-tight">
+        {entityType === 'contacts' ? 'Converted Contacts' : 'Leads & Contacts'}
+      </h2>
+      <p class="text-xs text-muted-foreground mt-0.5">
+        Click any row to view {entityLabel} profile & timeline, or click checkbox to select
+      </p>
     </div>
     <div class="flex items-center gap-2">
       {#if selectedRows.size > 0}
+        <Button variant="outline" size="sm" onclick={handleExportSelected} class="gap-2 border-blue-500/40 text-blue-600 hover:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30">
+          <Download class="size-4" />
+          Export ({selectedRows.size})
+        </Button>
         <Button variant="outline" size="sm" onclick={openCategoryModal} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10">
           <FolderPlus class="size-4" />
           Assign to Category ({selectedRows.size})
@@ -231,7 +266,7 @@
       {/if}
       <Button size="sm" onclick={() => { showAddModal = true; modalErrorMsg = null; }} class="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
         <Plus class="size-4" />
-        Add Lead
+        Add {entityLabelCap}
       </Button>
     </div>
   </div>
@@ -320,18 +355,18 @@
       <div class="flex items-center gap-2">
         <span>
           {#if isAllFilteredSelected}
-            All <strong>{filteredLeads.length}</strong> leads matching this search/filter are selected.
+            All <strong>{filteredLeads.length}</strong> {entityLabelPlural} matching this search/filter are selected.
           {:else}
-            Selected <strong>{selectedRows.size}</strong> lead(s).
+            Selected <strong>{selectedRows.size}</strong> {entityLabel}(s).
           {/if}
         </span>
-        {#if !isAllFilteredSelected && filteredLeads.length > paginatedLeads.length}
+        {#if !isAllFilteredSelected}
           <button
             type="button"
             onclick={selectAllFiltered}
             class="underline font-bold hover:text-emerald-800 dark:hover:text-emerald-100 transition-colors ml-1 cursor-pointer"
           >
-            Select all {filteredLeads.length} leads matching search
+            Select all {filteredLeads.length} {entityLabelPlural} matching search
           </button>
         {/if}
       </div>
@@ -354,7 +389,9 @@
             <div class="flex items-center justify-center">
               <Checkbox 
                 checked={isCurrentPageAllSelected}
+                indeterminate={isCurrentPagePartiallySelected}
                 onCheckedChange={(checked) => toggleAllRows(Boolean(checked))}
+                aria-label={`Select all ${entityLabelPlural} on current page`}
               />
             </div>
           </Table.Head>
@@ -372,7 +409,7 @@
         {#if paginatedLeads.length === 0}
           <Table.Row>
             <Table.Cell colspan={9} class="text-center py-8 text-xs text-muted-foreground">
-              No matching lead records found.
+              No matching {entityLabel} records found.
             </Table.Cell>
           </Table.Row>
         {:else}
@@ -478,12 +515,12 @@
   {/if}
 </div>
 
-<!-- Add Lead Modal -->
+<!-- Add Lead / Contact Modal -->
 {#if showAddModal}
   <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg flex flex-col gap-4">
       <div class="flex items-center justify-between border-b border-border pb-3">
-        <h3 class="text-base font-bold text-foreground">Create New Lead</h3>
+        <h3 class="text-base font-bold text-foreground">Create New {entityLabelCap}</h3>
         <Button variant="ghost" size="sm" onclick={() => showAddModal = false} class="size-8 p-0">
           <X class="size-4" />
         </Button>
@@ -529,7 +566,7 @@
             id="lead-about" 
             bind:value={about} 
             rows="3" 
-            placeholder="Lead background & details..." 
+            placeholder="{entityLabelCap} background & details..." 
             class="w-full p-2.5 rounded-md border border-input bg-background text-xs text-foreground focus:outline-hidden"
           ></textarea>
         </div>
@@ -537,7 +574,7 @@
         <div class="flex items-center justify-end gap-2 pt-2 border-t border-border">
           <Button type="button" variant="outline" size="sm" onclick={() => showAddModal = false}>Cancel</Button>
           <Button type="submit" size="sm" disabled={saving}>
-            {saving ? 'Saving...' : 'Save Lead'}
+            {saving ? 'Saving...' : `Save ${entityLabelCap}`}
           </Button>
         </div>
       </form>
@@ -563,7 +600,7 @@
       {/if}
 
       <div class="flex flex-col gap-3 text-xs">
-        <p class="text-muted-foreground">Assign {selectedRows.size} selected lead(s) to:</p>
+        <p class="text-muted-foreground">Assign {selectedRows.size} selected {entityLabel}(s) to:</p>
         <Select.Root
           type="single"
           value={selectedCategoryId != null ? String(selectedCategoryId) : ""}
@@ -583,7 +620,7 @@
       <div class="flex items-center justify-end gap-2 pt-2">
         <Button variant="outline" size="sm" onclick={() => showCategoryModal = false} disabled={assigningCategory}>Cancel</Button>
         <Button size="sm" onclick={handleAssignCategory} disabled={assigningCategory || categories.length === 0}>
-          {assigningCategory ? 'Assigning...' : 'Assign Leads'}
+          {assigningCategory ? 'Assigning...' : `Assign ${entityLabelPluralCap}`}
         </Button>
       </div>
     </div>
