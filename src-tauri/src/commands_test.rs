@@ -393,9 +393,25 @@ mod tests {
         let blank_error = commands::require_zalo_uid(Some("   ".to_string())).unwrap_err();
         assert_eq!(blank_error, missing_error);
 
+        assert!(commands::require_zalo_uid(Some("0".to_string())).is_err());
+        assert!(commands::require_zalo_uid(Some("-1".to_string())).is_err());
+        assert!(commands::require_zalo_uid(Some("null".to_string())).is_err());
+        assert!(commands::require_zalo_uid(Some("undefined".to_string())).is_err());
+
         assert_eq!(
             commands::require_zalo_uid(Some(" 1503088233761505331 ".to_string())).unwrap(),
             "1503088233761505331"
+        );
+
+        assert_eq!(commands::sanitize_valid_zalo_uid(None), None);
+        assert_eq!(commands::sanitize_valid_zalo_uid(Some("   ")), None);
+        assert_eq!(commands::sanitize_valid_zalo_uid(Some("0")), None);
+        assert_eq!(commands::sanitize_valid_zalo_uid(Some("-1")), None);
+        assert_eq!(commands::sanitize_valid_zalo_uid(Some("NULL")), None);
+        assert_eq!(commands::sanitize_valid_zalo_uid(Some("undefined")), None);
+        assert_eq!(
+            commands::sanitize_valid_zalo_uid(Some(" 9876543210 ")),
+            Some("9876543210".to_string())
         );
     }
 
@@ -695,9 +711,11 @@ mod tests {
         db::seed_data(&mut conn).unwrap();
 
         let template_id =
-            db::create_outreach_template(&conn, "Cached UID Template", "Hello [name]!", None).unwrap();
+            db::create_outreach_template(&conn, "Cached UID Template", "Hello [name]!", None)
+                .unwrap();
 
-        // Lead 1: has pre-cached zalo_uid, but phone is "not-found" (simulating phone search would fail or non-mobile)
+        // Lead 1: has pre-cached zalo_uid, phone is "not-found" AND zalo_status was previously 'VERIFIED_NOT_EXIST'.
+        // Valid UID MUST be prioritized and override the old lookup failure!
         let lead_id_1 = commands::add_lead_internal(
             &mut conn,
             "Cached User".to_string(),
@@ -712,12 +730,13 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "UPDATE leads SET zalo_uid = 'cached-uid-99999' WHERE id = ?1",
+            "UPDATE leads SET zalo_uid = 'cached-uid-99999', zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
             rusqlite::params![lead_id_1],
         )
         .unwrap();
 
-        // Lead 2: has no zalo_uid, valid phone
+        // Lead 2: has invalid zalo_uid ('0'), valid phone.
+        // Invalid UID MUST be rejected by sanitize_valid_zalo_uid, falling back to phone lookup and persisting the new UID.
         let lead_id_2 = commands::add_lead_internal(
             &mut conn,
             "Uncached User".to_string(),
@@ -731,6 +750,32 @@ mod tests {
             None,
         )
         .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '0' WHERE id = ?1",
+            rusqlite::params![lead_id_2],
+        )
+        .unwrap();
+
+        // Lead 3: has pre-cached zalo_uid, but zalo_status is 'BLOCKED_STRANGER'.
+        // Privacy block MUST be respected and this lead skipped.
+        let lead_id_3 = commands::add_lead_internal(
+            &mut conn,
+            "Blocked Stranger User".to_string(),
+            "Blocked Corp".to_string(),
+            "New".to_string(),
+            3000.0,
+            "Alex".to_string(),
+            "blocked@example.com".to_string(),
+            "0912345678".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = 'blocked-uid-11111', zalo_status = 'BLOCKED_STRANGER' WHERE id = ?1",
+            rusqlite::params![lead_id_3],
+        )
+        .unwrap();
 
         let db_mutex = Mutex::new(conn);
 
@@ -738,28 +783,33 @@ mod tests {
             None,
             &db_mutex,
             "mock-imei".to_string(),
-            vec![lead_id_1, lead_id_2],
+            vec![lead_id_1, lead_id_2, lead_id_3],
             template_id,
             commands::ZaloOutreachRunOptions::default(),
             commands::OutreachProgressScope::default(),
         )
         .await;
 
+        // Total sent is 2 (lead 1 sent via cached UID overriding VERIFIED_NOT_EXIST, lead 2 sent via phone fallback, lead 3 skipped due to BLOCKED_STRANGER)
         assert_eq!(res.unwrap().total_sent, 2);
 
         let conn_locked = db_mutex.lock().unwrap();
 
-        // Check Lead 1: Sent using cached UID
+        // Check Lead 1: Sent using cached UID despite old VERIFIED_NOT_EXIST status
         let lead_1 = commands::get_lead_details_internal(&conn_locked, lead_id_1).unwrap();
         assert_eq!(lead_1.zalo_reached, 1);
         assert_eq!(lead_1.has_zalo, Some(1));
         assert_eq!(lead_1.zalo_uid, Some("cached-uid-99999".to_string()));
 
-        // Check Lead 2: Sent and UID was persisted
+        // Check Lead 2: Invalid '0' UID was rejected, sent via phone lookup, and valid UID was persisted
         let lead_2 = commands::get_lead_details_internal(&conn_locked, lead_id_2).unwrap();
         assert_eq!(lead_2.zalo_reached, 1);
         assert_eq!(lead_2.has_zalo, Some(1));
         assert_eq!(lead_2.zalo_uid, Some("mock-uid-0987654321".to_string()));
+
+        // Check Lead 3: Skipped due to BLOCKED_STRANGER
+        let lead_3 = commands::get_lead_details_internal(&conn_locked, lead_id_3).unwrap();
+        assert_eq!(lead_3.zalo_reached, 0);
 
         // Check channel_conversations table has both external_thread_ids recorded
         let mut stmt = conn_locked

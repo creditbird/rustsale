@@ -959,14 +959,20 @@ pub fn persist_authenticated_zalo_session(
     })
 }
 
-pub(crate) fn require_zalo_uid(zalo_uid: Option<String>) -> Result<String, String> {
-    zalo_uid
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "Zalo login succeeded, but the account UID could not be determined. No session was saved. Please try again."
-                .to_string()
+pub(crate) fn sanitize_valid_zalo_uid(uid: Option<&str>) -> Option<String> {
+    uid.map(str::trim)
+        .filter(|value| {
+            let lowercase = value.to_ascii_lowercase();
+            !value.is_empty() && !matches!(lowercase.as_str(), "0" | "-1" | "null" | "undefined")
         })
+        .map(str::to_string)
+}
+
+pub(crate) fn require_zalo_uid(zalo_uid: Option<String>) -> Result<String, String> {
+    sanitize_valid_zalo_uid(zalo_uid.as_deref()).ok_or_else(|| {
+        "Zalo login succeeded, but the account UID could not be determined. No session was saved. Please try again."
+            .to_string()
+    })
 }
 
 #[derive(Clone)]
@@ -2093,12 +2099,19 @@ pub async fn send_zalo_outreach_internal(
         let mut total_sent = 0;
         let mut burst_counter: u32 = 0;
         for (idx, lead_id) in lead_ids.iter().enumerate() {
-            let (lead_name, phone, existing_zalo_uid) = {
+            let (lead_name, phone, lead_zalo_status, existing_zalo_uid) = {
                 let conn_guard = conn_mutex.lock().unwrap();
                 let res = conn_guard.query_row(
-                    "SELECT name, phone, zalo_uid FROM leads WHERE id = ?1",
+                    "SELECT name, phone, zalo_status, zalo_uid FROM leads WHERE id = ?1",
                     [lead_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
                 );
                 match res {
                     Ok(val) => val,
@@ -2113,10 +2126,71 @@ pub async fn send_zalo_outreach_internal(
             };
 
             let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+            let cached_uid = sanitize_valid_zalo_uid(existing_zalo_uid.as_deref());
 
-            let target_uid = if let Some(uid) = existing_zalo_uid.filter(|u| !u.trim().is_empty()) {
+            let target_uid = if let Some(uid) = cached_uid {
+                if let Some(ref zs) = lead_zalo_status {
+                    if zs == "BLOCKED_STRANGER" {
+                        let msg = format!(
+                            "Skipped Zalo outreach for {} (UID: {}): Previously marked as BLOCKED_STRANGER",
+                            lead_name, uid
+                        );
+                        if let Some(app) = app_handle {
+                            let _ = app.emit(
+                                "outreach-log",
+                                OutreachLogPayload {
+                                    message: msg.clone(),
+                                },
+                            );
+                            let current_num = processed_offset + idx + 1;
+                            let progress_val =
+                                (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                            let _ = app.emit(
+                                "outreach-progress",
+                                OutreachProgressPayload {
+                                    progress: progress_val,
+                                    status: "running".to_string(),
+                                    message: msg,
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                }
                 uid
             } else {
+                if let Some(ref zs) = lead_zalo_status {
+                    if matches!(
+                        zs.as_str(),
+                        "BLOCKED_STRANGER" | "VERIFIED_NOT_EXIST" | "NOT_FOUND" | "INVALID_PHONE"
+                    ) {
+                        let msg = format!(
+                            "Skipped Zalo lookup for {} ({}): Previously marked as {}",
+                            lead_name, sanitized_phone, zs
+                        );
+                        if let Some(app) = app_handle {
+                            let _ = app.emit(
+                                "outreach-log",
+                                OutreachLogPayload {
+                                    message: msg.clone(),
+                                },
+                            );
+                            let current_num = processed_offset + idx + 1;
+                            let progress_val =
+                                (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                            let _ = app.emit(
+                                "outreach-progress",
+                                OutreachProgressPayload {
+                                    progress: progress_val,
+                                    status: "running".to_string(),
+                                    message: msg,
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                }
+
                 if phone.trim().is_empty() {
                     let msg = format!("Lead {} is missing phone number", lead_id);
                     if let Some(app) = app_handle {
@@ -2127,7 +2201,8 @@ pub async fn send_zalo_outreach_internal(
                             },
                         );
                         let current_num = processed_offset + idx + 1;
-                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
                         let _ = app.emit(
                             "outreach-progress",
                             OutreachProgressPayload {
@@ -2158,7 +2233,8 @@ pub async fn send_zalo_outreach_internal(
                             },
                         );
                         let current_num = processed_offset + idx + 1;
-                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
                         let _ = app.emit(
                             "outreach-progress",
                             OutreachProgressPayload {
@@ -2176,7 +2252,7 @@ pub async fn send_zalo_outreach_internal(
                     let _ = {
                         let conn_guard = conn_mutex.lock().unwrap();
                         conn_guard.execute(
-                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                            "UPDATE leads SET has_zalo = 0, zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
                             rusqlite::params![lead_id],
                         )
                     };
@@ -2188,7 +2264,8 @@ pub async fn send_zalo_outreach_internal(
                             },
                         );
                         let current_num = processed_offset + idx + 1;
-                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
                         let _ = app.emit(
                             "outreach-progress",
                             OutreachProgressPayload {
@@ -2539,52 +2616,80 @@ pub async fn send_zalo_outreach_internal(
         };
 
         let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        let cached_uid = sanitize_valid_zalo_uid(existing_zalo_uid.as_deref());
 
-        if let Some(ref zs) = lead_zalo_status {
-            if matches!(
-                zs.as_str(),
-                "BLOCKED_STRANGER" | "VERIFIED_NOT_EXIST" | "NOT_FOUND" | "INVALID_PHONE"
-            ) {
-                let msg = format!(
-                    "Skipped Zalo lookup for {} ({}): Previously marked as {}",
-                    lead_name, sanitized_phone, zs
-                );
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "outreach-log",
-                        OutreachLogPayload {
-                            message: msg.clone(),
-                        },
+        let target_uid = if let Some(uid) = cached_uid {
+            if let Some(ref zs) = lead_zalo_status {
+                if zs == "BLOCKED_STRANGER" {
+                    let msg = format!(
+                        "Skipped Zalo outreach for {} (UID: {}): Previously marked as BLOCKED_STRANGER",
+                        lead_name, uid
                     );
-                    let current_num = processed_offset + idx + 1;
-                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
-                    let _ = app.emit(
-                        "outreach-progress",
-                        OutreachProgressPayload {
-                            progress: progress_val,
-                            status: "running".to_string(),
-                            message: msg,
-                        },
-                    );
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: msg.clone(),
+                            },
+                        );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "running".to_string(),
+                                message: msg,
+                            },
+                        );
+                    }
+                    continue;
                 }
-                continue;
             }
-        }
 
-        let target_uid = if let Some(uid) = existing_zalo_uid.filter(|u| !u.trim().is_empty()) {
             if let Some(app) = app_handle {
                 let _ = app.emit(
                     "outreach-log",
                     OutreachLogPayload {
-                        message: format!(
-                            "Using cached Zalo UID for {} (UID: {})",
-                            lead_name, uid
-                        ),
+                        message: format!("Using cached Zalo UID for {} (UID: {})", lead_name, uid),
                     },
                 );
             }
             uid
         } else {
+            if let Some(ref zs) = lead_zalo_status {
+                if matches!(
+                    zs.as_str(),
+                    "BLOCKED_STRANGER" | "VERIFIED_NOT_EXIST" | "NOT_FOUND" | "INVALID_PHONE"
+                ) {
+                    let msg = format!(
+                        "Skipped Zalo lookup for {} ({}): Previously marked as {}",
+                        lead_name, sanitized_phone, zs
+                    );
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: msg.clone(),
+                            },
+                        );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "running".to_string(),
+                                message: msg,
+                            },
+                        );
+                    }
+                    continue;
+                }
+            }
+
             if phone.trim().is_empty() {
                 let msg = format!("Lead {} ({}) is missing phone number", lead_name, lead_id);
                 if let Some(app) = app_handle {
@@ -2706,7 +2811,8 @@ pub async fn send_zalo_outreach_internal(
                             },
                         );
                         let current_num = processed_offset + idx + 1;
-                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
                         let _ = app.emit(
                             "outreach-progress",
                             OutreachProgressPayload {
@@ -2747,7 +2853,37 @@ pub async fn send_zalo_outreach_internal(
             };
 
             match user_opt {
-                Some(user) => user.uid,
+                Some(user) => {
+                    if let Some(valid_uid) = sanitize_valid_zalo_uid(Some(&user.uid)) {
+                        valid_uid
+                    } else {
+                        let msg = format!(
+                            "Invalid Zalo UID returned for {} (phone: {}): {:?}",
+                            lead_name, sanitized_phone, user.uid
+                        );
+                        let now: String = chrono::Utc::now().to_rfc3339();
+                        let conn_guard = conn_mutex.lock();
+                        if let Ok(conn) = conn_guard {
+                            let _ = conn.execute(
+                                "UPDATE leads SET zalo_status = 'LOOKUP_FAILED' WHERE id = ?1",
+                                rusqlite::params![lead_id],
+                            );
+                            let _ = conn.execute(
+                                "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                                rusqlite::params![lead_id, template_id, "Invalid Zalo UID from provider", &now, &imei],
+                            );
+                        }
+                        if let Some(app) = app_handle {
+                            let _ = app.emit(
+                                "outreach-log",
+                                OutreachLogPayload {
+                                    message: msg.clone(),
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                }
                 None => {
                     let msg = format!(
                         "Phone number {} for {} not found on Zalo",
@@ -2773,7 +2909,8 @@ pub async fn send_zalo_outreach_internal(
                             },
                         );
                         let current_num = processed_offset + idx + 1;
-                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
                         let _ = app.emit(
                             "outreach-progress",
                             OutreachProgressPayload {
@@ -2865,10 +3002,7 @@ pub async fn send_zalo_outreach_internal(
                     let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
                 }
 
-                let act_res: Result<
-                    crate::conversation::outreach::AppliedOutreachMessage,
-                    String,
-                > = {
+                let act_res: Result<crate::conversation::outreach::AppliedOutreachMessage, String> = {
                     let mut conn_guard = conn_mutex
                         .lock()
                         .map_err(|e| format!("Database lock error: {}", e))?;
