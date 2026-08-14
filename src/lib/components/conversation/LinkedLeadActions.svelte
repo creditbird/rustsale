@@ -229,7 +229,7 @@
       class="flex items-center gap-1.5 text-xs"
     >
       <Tag class="size-3.5" data-icon="inline-start" />
-      <span>{assignedCategories.length > 0 ? 'Phân loại' : '+ Category'}</span>
+      <span>{assignedCategories.length > 0 ? 'Category' : '+ Category'}</span>
     </Button>
   {/if}
 
@@ -242,7 +242,7 @@
     class="flex items-center gap-1.5 text-xs"
   >
     <RefreshCw class="size-3.5" data-icon="inline-start" />
-    <span>Đổi lead</span>
+    <span>Change Lead</span>
   </Button>
 
   <Button
@@ -254,17 +254,17 @@
     class="flex items-center gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
   >
     <Unlink class="size-3.5 text-destructive" data-icon="inline-start" />
-    <span>Hủy liên kết</span>
+    <span>Unlink</span>
   </Button>
 </div>
 
-<!-- Modal 1: Đổi lead -->
+<!-- Modal 1: Change Linked Lead -->
 <Dialog.Root bind:open={isRelinkModalOpen}>
   <Dialog.Content class="sm:max-w-[480px]">
     <Dialog.Header>
-      <Dialog.Title>Đổi liên kết lead</Dialog.Title>
+      <Dialog.Title>Change Linked Lead</Dialog.Title>
       <Dialog.Description>
-        Chọn lead mới trong CRM để thay thế cho cuộc trò chuyện này.
+        Select a new lead in CRM to replace for this conversation.
       </Dialog.Description>
     </Dialog.Header>
 
@@ -280,16 +280,16 @@
         <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
         <Input
           bind:value={leadSearchText}
-          placeholder="Tìm theo tên, email, sđt..."
+          placeholder="Search by name, email, phone..."
           class="pl-8 text-sm"
         />
       </div>
 
       <div class="max-h-[220px] overflow-y-auto border rounded-md p-1 flex flex-col gap-1">
         {#if isLoadingLeads}
-          <div class="text-xs text-center text-muted-foreground py-4">Đang tải danh sách lead...</div>
+          <div class="text-xs text-center text-muted-foreground py-4">Loading leads list...</div>
         {:else if filteredLeads.length === 0}
-          <div class="text-xs text-center text-muted-foreground py-4">Không tìm thấy lead phù hợp.</div>
+          <div class="text-xs text-center text-muted-foreground py-4">No matching leads found.</div>
         {:else}
           {#each filteredLeads as lead (lead.id)}
             <button
@@ -299,10 +299,10 @@
             >
               <div>
                 <div class="font-medium">{lead.name}</div>
-                <div class="text-xs text-muted-foreground">{lead.company || 'Cá nhân'} {lead.phone ? `• ${lead.phone}` : ''}</div>
+                <div class="text-xs text-muted-foreground">{lead.company || 'Individual'} {lead.phone ? `• ${lead.phone}` : ''}</div>
               </div>
               {#if selectedLeadId === lead.id}
-                <span class="text-xs font-semibold text-primary">Đã chọn</span>
+                <span class="text-xs font-semibold text-primary">Selected</span>
               {/if}
             </button>
           {/each}
@@ -311,24 +311,24 @@
     </div>
 
     <Dialog.Footer>
-      <Button variant="outline" onclick={() => (isRelinkModalOpen = false)}>Hủy</Button>
+      <Button variant="outline" onclick={() => (isRelinkModalOpen = false)}>Cancel</Button>
       <Button
         disabled={!selectedLeadId || isRelinking}
         onclick={handleConfirmRelink}
       >
-        {isRelinking ? 'Đang cập nhật...' : 'Xác nhận đổi'}
+        {isRelinking ? 'Updating...' : 'Confirm Change'}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
 
-<!-- Modal 2: Xác nhận Hủy liên kết -->
+<!-- Modal 2: Confirm Unlink -->
 <Dialog.Root bind:open={isUnlinkModalOpen}>
   <Dialog.Content class="sm:max-w-[420px]">
     <Dialog.Header>
-      <Dialog.Title>Xác nhận hủy liên kết</Dialog.Title>
+      <Dialog.Title>Confirm Unlink</Dialog.Title>
       <Dialog.Description>
-        Bạn có chắc chắn muốn hủy liên kết giữa cuộc trò chuyện này và lead <strong>{item.title}</strong>? Cuộc trò chuyện sẽ quay về danh mục Chưa liên kết (Unknown).
+        Are you sure you want to unlink this conversation from lead <strong>{item.title}</strong>? The conversation will return to the Unlinked (Unknown) category.
       </Dialog.Description>
     </Dialog.Header>
 
@@ -340,25 +340,25 @@
     {/if}
 
     <Dialog.Footer class="mt-4">
-      <Button variant="outline" onclick={() => (isUnlinkModalOpen = false)}>Bỏ qua</Button>
+      <Button variant="outline" onclick={() => (isUnlinkModalOpen = false)}>Cancel</Button>
       <Button
         variant="destructive"
         disabled={isUnlinking}
         onclick={handleConfirmUnlink}
       >
-        {isUnlinking ? 'Đang hủy...' : 'Xác nhận hủy'}
+        {isUnlinking ? 'Unlinking...' : 'Confirm Unlink'}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
 
-<!-- Modal 3: Quản lý Category -->
+<!-- Modal 3: Manage Category -->
 <Dialog.Root bind:open={isCategoryModalOpen}>
   <Dialog.Content class="sm:max-w-[440px]">
     <Dialog.Header>
-      <Dialog.Title>Quản lý Category cho Lead</Dialog.Title>
+      <Dialog.Title>Manage Lead Categories</Dialog.Title>
       <Dialog.Description>
-        Chọn hoặc thêm danh mục cho lead <strong>{item.title}</strong> để dễ dàng lên chiến dịch Outreach.
+        Select or add categories for lead <strong>{item.title}</strong> for outreach campaigns.
       </Dialog.Description>
     </Dialog.Header>
 
@@ -374,16 +374,16 @@
         <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
         <Input
           bind:value={categorySearchText}
-          placeholder="Tìm kiếm danh mục..."
+          placeholder="Search categories..."
           class="pl-8 text-sm"
         />
       </div>
 
       <div class="max-h-[200px] overflow-y-auto border rounded-md p-1 flex flex-col gap-1">
         {#if isLoadingCategories}
-          <div class="text-xs text-center text-muted-foreground py-4">Đang tải danh mục...</div>
+          <div class="text-xs text-center text-muted-foreground py-4">Loading categories...</div>
         {:else if filteredCategories.length === 0}
-          <div class="text-xs text-center text-muted-foreground py-4">Chưa có danh mục nào phù hợp.</div>
+          <div class="text-xs text-center text-muted-foreground py-4">No matching categories.</div>
         {:else}
           {#each filteredCategories as category (category.id)}
             {@const isAssigned = category.id !== undefined && assignedCategoryIds.has(category.id)}
@@ -399,7 +399,7 @@
               {#if isAssigned}
                 <div class="flex items-center gap-1 text-xs text-primary font-semibold">
                   <Check class="size-4" />
-                  <span>Đã chọn</span>
+                  <span>Selected</span>
                 </div>
               {/if}
             </button>
@@ -411,7 +411,7 @@
       <div class="flex items-center gap-2 pt-2 border-t border-border">
         <Input
           bind:value={newCategoryName}
-          placeholder="Tên danh mục mới..."
+          placeholder="New category name..."
           class="text-sm flex-1"
           onkeydown={(e) => {
             if (e.key === 'Enter') {
@@ -428,13 +428,13 @@
           class="flex items-center gap-1 shrink-0"
         >
           <Plus class="size-4" />
-          <span>Tạo mới</span>
+          <span>Create</span>
         </Button>
       </div>
     </div>
 
     <Dialog.Footer>
-      <Button variant="outline" onclick={() => (isCategoryModalOpen = false)}>Đóng</Button>
+      <Button variant="outline" onclick={() => (isCategoryModalOpen = false)}>Close</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

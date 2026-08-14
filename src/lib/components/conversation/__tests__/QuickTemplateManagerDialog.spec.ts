@@ -39,8 +39,8 @@ describe('QuickTemplateManagerDialog', () => {
       templates: sampleTemplates
     });
 
-    expect(screen.getByText('Quản lý mẫu tin nhắn nhanh')).toBeTruthy();
-    expect(screen.getByText('2 / 500 mẫu')).toBeTruthy();
+    expect(screen.getByText('Manage Quick Templates')).toBeTruthy();
+    expect(screen.getByText('2 / 500 templates')).toBeTruthy();
     expect(screen.getByText('Bảng giá')).toBeTruthy();
     expect(screen.getByText('Lời chào')).toBeTruthy();
   });

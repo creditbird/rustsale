@@ -139,7 +139,7 @@ describe('MessageBubble Component', () => {
       }
     });
 
-    expect(screen.getByText('Tin nhắn đã bị xóa')).toBeTruthy();
+    expect(screen.getByText('Message deleted')).toBeTruthy();
     expect(screen.queryByText('Nội dung bí mật đã bị xóa')).toBeNull();
     expect(screen.queryByTestId('message-reaction-summary')).toBeNull();
   });
@@ -161,9 +161,9 @@ describe('MessageBubble Component', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    expect(screen.getByText('Trả lời')).toBeTruthy();
-    expect(screen.getByText('Thu hồi')).toBeTruthy();
-    await fireEvent.click(screen.getByText('Thu hồi'));
+    expect(screen.getByText('Reply')).toBeTruthy();
+    expect(screen.getByText('Recall')).toBeTruthy();
+    await fireEvent.click(screen.getByText('Recall'));
     expect(onRecall).toHaveBeenCalledWith(outbound);
   });
 
@@ -192,9 +192,9 @@ describe('MessageBubble Component', () => {
     render(MessageBubble, { message, capabilities });
 
     expect(screen.getByRole('button', { name: /❤️ 1/ })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Thả cảm xúc' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add reaction' })).toBeNull();
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    expect(screen.queryByText(/Thả cảm xúc ❤️/)).toBeNull();
+    expect(screen.queryByText(/React with ❤️/)).toBeNull();
   });
 
   test('right-click and Shift+F10 open the same explicit actions', async () => {
@@ -207,14 +207,14 @@ describe('MessageBubble Component', () => {
     const bubble = container.querySelector('[data-message-id="101"]') as HTMLElement;
 
     await fireEvent.contextMenu(bubble);
-    await fireEvent.click(screen.getByText('Trả lời'));
+    await fireEvent.click(screen.getByText('Reply'));
     expect(onReply).toHaveBeenCalledTimes(1);
 
     await fireEvent.keyDown(screen.getByTestId('message-actions-trigger'), {
       key: 'F10',
       shiftKey: true
     });
-    await fireEvent.click(screen.getByText('Trả lời'));
+    await fireEvent.click(screen.getByText('Reply'));
     expect(onReply).toHaveBeenCalledTimes(2);
   });
 
@@ -224,8 +224,8 @@ describe('MessageBubble Component', () => {
       capabilities: richCapabilities
     });
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Thả cảm xúc' }));
-    expect(screen.getByRole('toolbar', { name: /Chọn cảm xúc/i })).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Add reaction' }));
+    expect(screen.getByRole('toolbar', { name: /Choose reaction/i })).toBeTruthy();
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     await fireEvent.pointerDown(document.body, {
@@ -235,7 +235,7 @@ describe('MessageBubble Component', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(screen.queryByRole('toolbar', { name: /Chọn cảm xúc/i })).toBeNull();
+    expect(screen.queryByRole('toolbar', { name: /Choose reaction/i })).toBeNull();
   });
 
   test('first reaction renders an optimistic chip before the mutation settles', async () => {
@@ -252,7 +252,7 @@ describe('MessageBubble Component', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    await fireEvent.click(screen.getByRole('button', { name: /Thả cảm xúc ❤️/i }));
+    await fireEvent.click(screen.getByRole('button', { name: /React ❤️/i }));
 
     expect(screen.getByRole('button', { name: /❤️ 1/ })).toBeTruthy();
     expect(onToggleReaction).toHaveBeenCalledWith(baseMessage, 'heart', 'increment');
@@ -310,7 +310,7 @@ describe('MessageBubble Component', () => {
       }
     });
 
-    expect(screen.getByText('Nội dung chưa được hỗ trợ')).toBeTruthy();
+    expect(screen.getByText('Unsupported content')).toBeTruthy();
     expect(container.querySelector('img[onerror]')).toBeNull();
   });
 
@@ -406,7 +406,7 @@ describe('MessageBubble Component', () => {
     });
 
     expect(screen.queryByRole('img')).toBeNull();
-    expect(screen.getByText('File đính kèm không hợp lệ')).toBeTruthy();
+    expect(screen.getByText('Invalid attachment file')).toBeTruthy();
   });
 
   test('renders image caption or description from content object when textContent is null', () => {

@@ -25,7 +25,7 @@
 >
   <div class="flex items-center justify-between px-3 py-2 border-b border-border bg-muted/40">
     <span class="font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-      Mẫu tin nhắn nhanh
+      Quick Message Templates
     </span>
     <button
       type="button"
@@ -33,14 +33,14 @@
       onclick={onOpenManager}
       data-testid="manage-quick-templates-btn"
     >
-      Quản lý mẫu
+      Manage Templates
     </button>
   </div>
 
   <div class="max-h-60 overflow-y-auto p-1 divide-y divide-border/30" role="listbox">
     {#if rankedTemplates.length === 0}
       <div class="p-4 text-center text-muted-foreground text-xs">
-        Không tìm thấy mẫu tin nhắn
+        No message templates found
       </div>
     {:else}
       {#each rankedTemplates as item, i (item.id)}

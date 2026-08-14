@@ -70,15 +70,15 @@
     const text = initialMessage.trim();
 
     if (!phone) {
-      errorMessage = 'Vui lòng nhập Số điện thoại hoặc Zalo ID';
+      errorMessage = 'Please enter Phone Number or Zalo ID';
       return;
     }
     if (!text) {
-      errorMessage = 'Vui lòng nhập tin nhắn ban đầu';
+      errorMessage = 'Please enter initial message';
       return;
     }
     if (!selectedAccountId) {
-      errorMessage = 'Vui lòng chọn tài khoản Zalo gửi';
+      errorMessage = 'Please select a sender Zalo account';
       return;
     }
 
@@ -96,8 +96,8 @@
       onSuccess?.(msg);
     } catch (err: unknown) {
       const rawMsg = err instanceof Error ? err.message : String(err);
-      if (rawMsg.includes('114') || rawMsg.includes('Tham số không hợp lệ')) {
-        errorMessage = 'Không tìm thấy tài khoản Zalo với Số điện thoại / Zalo ID này. Vui lòng nhập đúng Số điện thoại (dạng 09x...) hoặc Zalo UID hợp lệ.';
+      if (rawMsg.includes('114') || rawMsg.includes('Tham số không hợp lệ') || rawMsg.includes('invalid parameter')) {
+        errorMessage = 'Zalo account not found for this Phone Number / Zalo ID. Please enter a valid phone number or Zalo UID.';
       } else {
         errorMessage = rawMsg;
       }
@@ -110,9 +110,9 @@
 <Dialog bind:open>
   <DialogContent class="sm:max-w-[425px]">
     <DialogHeader>
-      <DialogTitle>Chat với Số điện thoại / Zalo ID mới</DialogTitle>
+      <DialogTitle>New Chat via Phone / Zalo ID</DialogTitle>
       <DialogDescription>
-        Khởi tạo cuộc trò chuyện trực tiếp và gửi tin nhắn đầu tiên cho khách hàng.
+        Start a direct conversation and send the first message to customer.
       </DialogDescription>
     </DialogHeader>
 
@@ -124,41 +124,41 @@
       {/if}
 
       <div class="space-y-1.5">
-        <Label for="phone">Số điện thoại / Zalo ID <span class="text-destructive">*</span></Label>
+        <Label for="phone">Phone Number / Zalo ID <span class="text-destructive">*</span></Label>
         <Input
           id="phone"
           type="text"
-          placeholder="Ví dụ: 0987654321 hoặc Zalo UID"
+          placeholder="e.g. 0987654321 or Zalo UID"
           bind:value={phoneOrExternalId}
           disabled={submitting}
           required
         />
         <p class="text-[11px] text-muted-foreground">
           {#if displayName}
-            💡 Vui lòng nhập Số điện thoại (09x/08x...) hoặc Zalo UID của <strong>{displayName}</strong>.
+            💡 Please enter Phone Number (09x/08x...) or Zalo UID for <strong>{displayName}</strong>.
           {:else}
-            💡 Nhập Số điện thoại Zalo (09x/08x/03x...) hoặc Zalo UID của khách hàng.
+            💡 Enter customer's Zalo Phone Number (09x/08x/03x...) or Zalo UID.
           {/if}
         </p>
       </div>
 
       <div class="space-y-1.5">
-        <Label for="display-name">Tên hiển thị / Tên khách (Tùy chọn)</Label>
+        <Label for="display-name">Display Name / Contact Name (Optional)</Label>
         <Input
           id="display-name"
           type="text"
-          placeholder="Ví dụ: Anh Nam"
+          placeholder="e.g. John Doe"
           bind:value={displayName}
           disabled={submitting}
         />
       </div>
 
       <div class="space-y-1.5">
-        <Label for="account-select">Tài khoản Zalo gửi <span class="text-destructive">*</span></Label>
+        <Label for="account-select">Sender Zalo Account <span class="text-destructive">*</span></Label>
         {#if loadingAccounts}
-          <div class="text-xs text-muted-foreground italic">Đang tải danh sách tài khoản...</div>
+          <div class="text-xs text-muted-foreground italic">Loading account list...</div>
         {:else if accounts.length === 0}
-          <div class="text-xs text-destructive">Chưa có tài khoản Zalo nào được kết nối. Vui lòng vào Cài đặt để thêm tài khoản.</div>
+          <div class="text-xs text-destructive">No Zalo account connected. Please go to Settings to add an account.</div>
         {:else}
           <select
             id="account-select"
@@ -176,10 +176,10 @@
       </div>
 
       <div class="space-y-1.5">
-        <Label for="initial-msg">Tin nhắn khởi tạo <span class="text-destructive">*</span></Label>
+        <Label for="initial-msg">Initial Message <span class="text-destructive">*</span></Label>
         <Textarea
           id="initial-msg"
-          placeholder="Nhập nội dung tin nhắn gửi cho khách hàng..."
+          placeholder="Enter initial message to send to customer..."
           bind:value={initialMessage}
           rows={3}
           disabled={submitting}
@@ -189,10 +189,10 @@
 
       <DialogFooter class="pt-2">
         <Button type="button" variant="outline" onclick={() => (open = false)} disabled={submitting}>
-          Hủy
+          Cancel
         </Button>
         <Button type="submit" disabled={submitting || accounts.length === 0}>
-          {submitting ? 'Đang gửi...' : 'Bắt đầu chat'}
+          {submitting ? 'Sending...' : 'Start Chat'}
         </Button>
       </DialogFooter>
     </form>

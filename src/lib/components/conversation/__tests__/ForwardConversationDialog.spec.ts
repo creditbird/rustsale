@@ -137,7 +137,7 @@ describe('ForwardConversationDialog', () => {
     });
 
     expect(screen.getByTestId('forward-conversation-dialog')).toBeTruthy();
-    expect(screen.getByText('Chuyển tiếp tin nhắn')).toBeTruthy();
+    expect(screen.getByText('Forward Message')).toBeTruthy();
     expect(screen.getByText('Hello, this is a test message to forward')).toBeTruthy();
 
     // Source conversation #10 should be excluded, target #20 and #30 should be visible
@@ -264,7 +264,7 @@ describe('ForwardConversationDialog', () => {
     await fireEvent.click(checkbox20);
     await fireEvent.click(screen.getByTestId('submit-forward-button'));
 
-    expect(await screen.findByText('Đã gửi', {}, { timeout: 2000 })).toBeTruthy();
+    expect(await screen.findByText('Sent', {}, { timeout: 2000 })).toBeTruthy();
     expect(mockGetConversationForwardOperation).toHaveBeenCalledWith('op-test-poll');
   });
 

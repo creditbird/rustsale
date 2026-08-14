@@ -38,7 +38,7 @@
 
   let copied = $state(false);
 
-  let displayName = $derived(payload?.displayName || 'Thành viên Zalo');
+  let displayName = $derived(payload?.displayName || 'Zalo Member');
   let avatarUrl = $derived(payload?.avatarUrl || null);
   let identityId = $derived(payload?.identityId ?? null);
   let realExternalId = $derived(
@@ -103,7 +103,7 @@
     class="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 p-4 sm:p-0"
     role="dialog"
     aria-modal="true"
-    aria-label={`Hồ sơ thành viên ${displayName}`}
+    aria-label={`Member profile ${displayName}`}
   >
     <div
       class="relative overflow-hidden rounded-2xl border border-border/80 bg-background p-5 shadow-2xl transition-all dark:bg-[#1f2c34] dark:border-slate-700/80"
@@ -113,7 +113,7 @@
         type="button"
         class="absolute right-3 top-3 rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
         onclick={onClose}
-        aria-label="Đóng"
+        aria-label="Close"
       >
         <X class="h-4 w-4" />
       </button>
@@ -168,7 +168,7 @@
           data-testid="btn-chat-1on1"
         >
           <MessageSquare class="h-4 w-4" />
-          <span>Nhắn tin 1-1 (Trò chuyện riêng)</span>
+          <span>Direct Message (1-on-1 Chat)</span>
         </Button>
 
         <div class="grid grid-cols-2 gap-2">
@@ -179,7 +179,7 @@
             data-testid="btn-lead-crm"
           >
             <UserCheck class="h-3.5 w-3.5 text-blue-500" />
-            <span>Xem / Tạo Lead</span>
+            <span>View / Create Lead</span>
           </Button>
 
           <Button
@@ -189,7 +189,7 @@
             data-testid="btn-copy-tag"
           >
             <Copy class="h-3.5 w-3.5 text-muted-foreground" />
-            <span>{copied ? 'Đã sao chép!' : 'Sao chép @Tag'}</span>
+            <span>{copied ? 'Copied!' : 'Copy @Tag'}</span>
           </Button>
         </div>
       </div>

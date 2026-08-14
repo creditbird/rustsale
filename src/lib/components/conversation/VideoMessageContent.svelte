@@ -23,5 +23,5 @@
     {/if}
   </div>
 {:else}
-  <div class="text-xs italic text-muted-foreground">[Video không khả dụng]</div>
+  <div class="text-xs italic text-muted-foreground">[Video unavailable]</div>
 {/if}

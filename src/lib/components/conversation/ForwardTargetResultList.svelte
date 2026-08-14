@@ -19,15 +19,15 @@
   function getStatusLabel(status: ConversationForwardTargetResult['status']): string {
     switch (status) {
       case 'queued':
-        return 'Đang chờ';
+        return 'Queued';
       case 'sending':
-        return 'Đang gửi';
+        return 'Sending';
       case 'sent':
-        return 'Đã gửi';
+        return 'Sent';
       case 'failed':
-        return 'Thất bại';
+        return 'Failed';
       case 'delivery_unknown':
-        return 'Không rõ trạng thái';
+        return 'Status Unknown';
       default:
         return status;
     }
@@ -51,7 +51,7 @@
 
 <div class="space-y-2 text-sm" data-testid="forward-target-result-list">
   <h4 class="font-medium text-xs uppercase tracking-wider text-muted-foreground">
-    Kết quả chuyển tiếp ({targets.length})
+    Forwarding results ({targets.length})
   </h4>
 
   <div class="divide-y divide-border/60 rounded-md border border-border bg-card">
@@ -63,7 +63,7 @@
         <div class="min-w-0 flex-1 space-y-0.5">
           <div class="flex items-center gap-2">
             <span class="font-medium text-foreground truncate">
-              {targetTitles[target.targetConversationId] || `Hội thoại #${target.targetConversationId}`}
+              {targetTitles[target.targetConversationId] || `Conversation #${target.targetConversationId}`}
             </span>
             <span
               class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold {getBadgeClass(
@@ -102,7 +102,7 @@
             <RefreshCw
               class="size-3 {retryingTargetId === target.targetConversationId ? 'animate-spin' : ''}"
             />
-            <span>Thử lại</span>
+            <span>Retry</span>
           </Button>
         {/if}
       </div>

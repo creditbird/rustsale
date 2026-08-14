@@ -94,7 +94,7 @@
     createError = null;
     const trimmedName = newLeadName.trim();
     if (!trimmedName) {
-      createValidationError = 'Tên lead không được để trống';
+      createValidationError = 'Lead name cannot be empty';
       return;
     }
     if (!item.identityId) return;
@@ -104,13 +104,13 @@
       const channelName = item.channels?.[0]?.channel ?? 'conversation';
       const leadId = await crmService.addLead(
         trimmedName,
-        newLeadCompany.trim() || 'Cá nhân',
+        newLeadCompany.trim() || 'Individual',
         'New',
         0,
         'Self',
         newLeadEmail.trim(),
         newLeadPhone.trim(),
-        `Tạo từ ${channelName}`
+        `Created from ${channelName}`
       );
       await linkConversationIdentity(item.identityId, leadId);
       isCreateModalOpen = false;
@@ -133,7 +133,7 @@
     class="flex items-center gap-1.5 text-xs"
   >
     <Link class="size-3.5" />
-    <span>Liên kết lead</span>
+    <span>Link Lead</span>
   </Button>
 
   <Button
@@ -145,17 +145,17 @@
     class="flex items-center gap-1.5 text-xs"
   >
     <UserPlus class="size-3.5" />
-    <span>Tạo lead</span>
+    <span>Create Lead</span>
   </Button>
 </div>
 
-<!-- Modal 1: Liên kết lead có sẵn -->
+<!-- Modal 1: Link Existing Lead -->
 <Dialog.Root bind:open={isLinkModalOpen}>
   <Dialog.Content class="sm:max-w-[480px]">
     <Dialog.Header>
-      <Dialog.Title>Liên kết lead có sẵn</Dialog.Title>
+      <Dialog.Title>Link Existing Lead</Dialog.Title>
       <Dialog.Description>
-        Tìm và chọn lead trong hệ thống CRM để gán cuộc trò chuyện này.
+        Search and select a lead in CRM to assign to this conversation.
       </Dialog.Description>
     </Dialog.Header>
 
@@ -171,16 +171,16 @@
         <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
         <Input
           bind:value={leadSearchText}
-          placeholder="Tìm theo tên, email, sđt..."
+          placeholder="Search by name, email, phone..."
           class="pl-8 text-sm"
         />
       </div>
 
       <div class="max-h-[220px] overflow-y-auto border rounded-md p-1 space-y-1">
         {#if isLoadingLeads}
-          <div class="text-xs text-center text-muted-foreground py-4">Đang tải danh sách lead...</div>
+          <div class="text-xs text-center text-muted-foreground py-4">Loading leads list...</div>
         {:else if filteredLeads.length === 0}
-          <div class="text-xs text-center text-muted-foreground py-4">Không tìm thấy lead phù hợp.</div>
+          <div class="text-xs text-center text-muted-foreground py-4">No matching leads found.</div>
         {:else}
           {#each filteredLeads as lead (lead.id)}
             <button
@@ -190,10 +190,10 @@
             >
               <div>
                 <div class="font-medium">{lead.name}</div>
-                <div class="text-xs text-muted-foreground">{lead.company || 'Cá nhân'} {lead.phone ? `• ${lead.phone}` : ''}</div>
+                <div class="text-xs text-muted-foreground">{lead.company || 'Individual'} {lead.phone ? `• ${lead.phone}` : ''}</div>
               </div>
               {#if selectedLeadId === lead.id}
-                <span class="text-xs font-semibold text-primary">Đã chọn</span>
+                <span class="text-xs font-semibold text-primary">Selected</span>
               {/if}
             </button>
           {/each}
@@ -202,24 +202,24 @@
     </div>
 
     <Dialog.Footer>
-      <Button variant="outline" onclick={() => (isLinkModalOpen = false)}>Hủy</Button>
+      <Button variant="outline" onclick={() => (isLinkModalOpen = false)}>Cancel</Button>
       <Button
         disabled={!selectedLeadId || isLinking}
         onclick={handleConfirmLink}
       >
-        {isLinking ? 'Đang liên kết...' : 'Xác nhận liên kết'}
+        {isLinking ? 'Linking...' : 'Confirm Link'}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
 
-<!-- Modal 2: Tạo lead mới -->
+<!-- Modal 2: Create New Lead -->
 <Dialog.Root bind:open={isCreateModalOpen}>
   <Dialog.Content class="sm:max-w-[440px]">
     <Dialog.Header>
-      <Dialog.Title>Tạo lead mới</Dialog.Title>
+      <Dialog.Title>Create New Lead</Dialog.Title>
       <Dialog.Description>
-        Tạo thông tin lead mới trong CRM và liên kết với cuộc trò chuyện này.
+        Create new lead info in CRM and link with this conversation.
       </Dialog.Description>
     </Dialog.Header>
 
@@ -234,16 +234,16 @@
       <div class="space-y-3">
         <div>
           <label for="lead-name-input" class="text-sm font-medium text-foreground block mb-1">
-            Họ và tên *
+            Full Name *
           </label>
-          <Input id="lead-name-input" aria-label="Họ và tên" bind:value={newLeadName} placeholder="Nhập họ tên lead..." />
+          <Input id="lead-name-input" aria-label="Full Name" bind:value={newLeadName} placeholder="Enter lead name..." />
         </div>
 
         <div>
           <label for="lead-company-input" class="text-sm font-medium text-foreground block mb-1">
-            Công ty
+            Company
           </label>
-          <Input id="lead-company-input" aria-label="Công ty" bind:value={newLeadCompany} placeholder="Cá nhân" />
+          <Input id="lead-company-input" aria-label="Company" bind:value={newLeadCompany} placeholder="Individual" />
         </div>
 
         <div>
@@ -255,17 +255,17 @@
 
         <div>
           <label for="lead-phone-input" class="text-sm font-medium text-foreground block mb-1">
-            Số điện thoại
+            Phone Number
           </label>
-          <Input id="lead-phone-input" aria-label="Số điện thoại" type="tel" bind:value={newLeadPhone} placeholder="0901234567" />
+          <Input id="lead-phone-input" aria-label="Phone Number" type="tel" bind:value={newLeadPhone} placeholder="0901234567" />
         </div>
       </div>
     </div>
 
     <Dialog.Footer>
-      <Button variant="outline" onclick={() => (isCreateModalOpen = false)}>Hủy</Button>
+      <Button variant="outline" onclick={() => (isCreateModalOpen = false)}>Cancel</Button>
       <Button disabled={isCreating} onclick={handleConfirmCreate}>
-        {isCreating ? 'Đang tạo...' : 'Tạo & Liên kết'}
+        {isCreating ? 'Creating...' : 'Create & Link'}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>

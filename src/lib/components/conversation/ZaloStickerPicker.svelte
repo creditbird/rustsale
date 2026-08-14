@@ -74,7 +74,7 @@
     <Search class="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
     <Input
       type="text"
-      placeholder="Tìm nhãn dán..."
+      placeholder="Search stickers..."
       value={query}
       oninput={handleInput}
       {disabled}
@@ -86,7 +86,7 @@
   {#if isLoading}
     <div class="flex flex-1 items-center justify-center gap-2 p-4 text-xs text-muted-foreground" data-testid="sticker-loading">
       <Loader2 class="size-4 animate-spin" />
-      <span>Đang tải...</span>
+      <span>Loading...</span>
     </div>
   {:else if error}
     <div class="flex flex-1 items-center justify-center p-4 text-xs text-destructive" data-testid="sticker-error">
@@ -94,7 +94,7 @@
     </div>
   {:else if stickers.length === 0}
     <div class="flex flex-1 items-center justify-center p-4 text-xs text-muted-foreground" data-testid="sticker-empty">
-      Không tìm thấy sticker nào
+      No stickers found
     </div>
   {:else}
     <div class="grid flex-1 grid-cols-4 gap-2 overflow-y-auto p-2" data-testid="sticker-grid">

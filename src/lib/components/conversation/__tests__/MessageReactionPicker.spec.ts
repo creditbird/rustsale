@@ -16,22 +16,22 @@ describe('MessageReactionPicker Component', () => {
       onClose
     });
 
-    const picker = screen.getByRole('toolbar', { name: /Chọn cảm xúc/i });
+    const picker = screen.getByRole('toolbar', { name: /Choose reaction/i });
     expect(picker).toBeTruthy();
 
     const buttons = screen.getAllByRole('button');
     expect(buttons.length).toBe(6);
 
-    const heartBtn = screen.getByRole('button', { name: /Yêu thích/i });
+    const heartBtn = screen.getByRole('button', { name: /Love/i });
     expect(heartBtn.getAttribute('aria-pressed')).toBe('true');
 
-    const likeBtn = screen.getByRole('button', { name: /^Thích$/i });
+    const likeBtn = screen.getByRole('button', { name: /^Like$/i });
     expect(likeBtn.getAttribute('aria-pressed')).toBe('false');
 
-    expect(screen.getByRole('button', { name: /Cười/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Bất ngờ/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Buồn/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Tức giận/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Haha/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Wow/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Sad/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Angry/i })).toBeTruthy();
   });
 
   it('handles clicking reaction icons as explicit increments', async () => {
@@ -43,11 +43,11 @@ describe('MessageReactionPicker Component', () => {
       onSelect
     });
 
-    const heartBtn = screen.getByRole('button', { name: /Yêu thích/i });
+    const heartBtn = screen.getByRole('button', { name: /Love/i });
     await fireEvent.click(heartBtn);
     expect(onSelect).toHaveBeenCalledWith('heart', 'increment');
 
-    const likeBtn = screen.getByRole('button', { name: /^Thích$/i });
+    const likeBtn = screen.getByRole('button', { name: /^Like$/i });
     await fireEvent.click(likeBtn);
     expect(onSelect).toHaveBeenCalledWith('like', 'increment');
   });
@@ -63,7 +63,7 @@ describe('MessageReactionPicker Component', () => {
       onClose
     });
 
-    const picker = screen.getByRole('toolbar', { name: /Chọn cảm xúc/i });
+    const picker = screen.getByRole('toolbar', { name: /Choose reaction/i });
     const buttons = screen.getAllByRole('button');
 
     buttons[0].focus();
@@ -88,7 +88,7 @@ describe('MessageReactionPicker Component', () => {
       disabledReactions: ['like']
     });
 
-    const likeBtn = screen.getByRole('button', { name: /^Thích$/i });
+    const likeBtn = screen.getByRole('button', { name: /^Like$/i });
     expect(likeBtn.hasAttribute('disabled')).toBe(true);
   });
 
@@ -99,8 +99,8 @@ describe('MessageReactionPicker Component', () => {
     });
 
     expect(screen.getAllByRole('button')).toHaveLength(2);
-    expect(screen.getByRole('button', { name: /Yêu thích/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Thích$/i })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Cười/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /Love/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Like$/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Haha/i })).toBeNull();
   });
 });

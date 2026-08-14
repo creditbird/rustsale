@@ -78,7 +78,7 @@ describe('MentionCandidatePopover.svelte', () => {
     });
 
     expect(getByTestId('mention-limit-warning')).toBeTruthy();
-    expect(getByText(/Đã đạt giới hạn tối đa 20 nhắc tên/i)).toBeTruthy();
+    expect(getByText(/Maximum limit of 20 mentions per message reached/i)).toBeTruthy();
     expect(mockList).not.toHaveBeenCalled();
   });
 

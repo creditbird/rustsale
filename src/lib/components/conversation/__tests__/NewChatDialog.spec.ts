@@ -56,6 +56,6 @@ describe('NewChatDialog Component', () => {
       props: { open: true }
     });
 
-    expect(screen.getByText('Chat với Số điện thoại / Zalo ID mới')).toBeTruthy();
+    expect(screen.getByText('New Chat via Phone / Zalo ID')).toBeTruthy();
   });
 });

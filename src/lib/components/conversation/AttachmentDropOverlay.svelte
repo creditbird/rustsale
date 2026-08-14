@@ -11,7 +11,7 @@
       class="drop-message flex flex-col items-center gap-2 rounded-xl bg-background p-4 px-6 font-semibold text-blue-600 shadow-lg border border-border/40 dark:text-blue-400"
     >
       <span class="drop-icon text-3xl">📁</span>
-      <span>Thả file vào đây để gửi</span>
+      <span>Drop files here to send</span>
     </div>
   </div>
 {/if}

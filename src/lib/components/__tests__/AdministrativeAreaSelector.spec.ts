@@ -196,8 +196,8 @@ test('lists the complete country catalog and lazily downloads the selected count
 test('restores region-first country selection and exposes the full administrative cascade', async () => {
   render(AdministrativeAreaSelector);
 
-  expect(await screen.findByLabelText('Region / Khu vực')).toBeTruthy();
-  expect(screen.getByLabelText('Country / Quốc gia')).toBeTruthy();
+  expect(await screen.findByLabelText('Region')).toBeTruthy();
+  expect(screen.getByLabelText('Country')).toBeTruthy();
   expect(screen.getByTestId('administrative-level-1')).toBeTruthy();
   expect(screen.getByText('Provinces / States / Cities')).toBeTruthy();
 
@@ -219,7 +219,7 @@ test('restores region-first country selection and exposes the full administrativ
 test('filters countries by region and preserves select-all/clear controls per level', async () => {
   render(AdministrativeAreaSelector);
 
-  const regionTrigger = await screen.findByLabelText('Region / Khu vực');
+  const regionTrigger = await screen.findByLabelText('Region');
   await fireEvent.keyDown(regionTrigger!, { key: 'Enter', code: 'Enter' });
   await fireEvent.pointerUp(await screen.findByRole('option', { name: /Europe/ }), {
     pointerType: 'mouse'
@@ -233,7 +233,7 @@ test('filters countries by region and preserves select-all/clear controls per le
   });
   expect(screen.getByText('Germany')).toBeTruthy();
 
-  const regionReset = screen.getByLabelText('Region / Khu vực');
+  const regionReset = screen.getByLabelText('Region');
   await fireEvent.keyDown(regionReset!, { key: 'Home' });
   await fireEvent.keyDown(regionReset!, { key: 'Enter', code: 'Enter' });
   await fireEvent.pointerUp(await screen.findByRole('option', { name: /Asia/ }), {

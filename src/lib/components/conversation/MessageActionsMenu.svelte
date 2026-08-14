@@ -4,12 +4,12 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 
   const QUICK_REACTIONS: Array<{ code: ConversationReactionCode; icon: string; label: string }> = [
-    { code: 'heart', icon: '❤️', label: 'Thả cảm xúc ❤️' },
-    { code: 'like', icon: '👍', label: 'Thả cảm xúc 👍' },
-    { code: 'haha', icon: '😆', label: 'Thả cảm xúc 😆' },
-    { code: 'wow', icon: '😮', label: 'Thả cảm xúc 😮' },
-    { code: 'cry', icon: '😭', label: 'Thả cảm xúc 😭' },
-    { code: 'angry', icon: '😡', label: 'Thả cảm xúc 😡' }
+    { code: 'heart', icon: '❤️', label: 'React ❤️' },
+    { code: 'like', icon: '👍', label: 'React 👍' },
+    { code: 'haha', icon: '😆', label: 'React 😆' },
+    { code: 'wow', icon: '😮', label: 'React 😮' },
+    { code: 'cry', icon: '😭', label: 'React 😭' },
+    { code: 'angry', icon: '😡', label: 'React 😡' }
   ];
 
   let {
@@ -78,11 +78,11 @@
   }
 
   let actions = $derived([
-    ...(canReply ? [{ label: 'Trả lời', action: onReply, destructive: false }] : []),
-    ...(canCopy ? [{ label: 'Sao chép', action: onCopy, destructive: false }] : []),
-    { label: isPinned ? 'Bỏ ghim' : 'Ghim tin nhắn', action: onPin, destructive: false },
-    ...(canForward ? [{ label: 'Chuyển tiếp', action: onForward, destructive: false }] : []),
-    ...(canRecall ? [{ label: 'Thu hồi', action: onRecall, destructive: true }] : [])
+    ...(canReply ? [{ label: 'Reply', action: onReply, destructive: false }] : []),
+    ...(canCopy ? [{ label: 'Copy', action: onCopy, destructive: false }] : []),
+    { label: isPinned ? 'Unpin' : 'Pin message', action: onPin, destructive: false },
+    ...(canForward ? [{ label: 'Forward', action: onForward, destructive: false }] : []),
+    ...(canRecall ? [{ label: 'Recall', action: onRecall, destructive: true }] : [])
   ]);
 
 </script>
@@ -94,7 +94,7 @@
       <DropdownMenu.Trigger
         type="button"
         data-testid="message-actions-trigger"
-        aria-label="Thao tác tin nhắn"
+        aria-label="Message actions"
         aria-expanded={open}
         class="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
         onkeydown={handleTriggerKeydown}

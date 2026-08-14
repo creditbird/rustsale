@@ -22,9 +22,9 @@
   <Dialog.Root open={true} onOpenChange={(open) => !open && !busy && onCancel()}>
     <Dialog.Content class="sm:max-w-[420px]">
       <Dialog.Header>
-        <Dialog.Title>Thu hồi tin nhắn</Dialog.Title>
+        <Dialog.Title>Recall Message</Dialog.Title>
         <Dialog.Description>
-          Tin nhắn sẽ được thu hồi trên Zalo sau khi nhà cung cấp xác nhận thành công.
+          The message will be recalled on Zalo once confirmed by the provider.
         </Dialog.Description>
       </Dialog.Header>
 
@@ -35,9 +35,9 @@
       {/if}
 
       <Dialog.Footer>
-        <Button type="button" variant="outline" onclick={onCancel} disabled={busy}>Hủy</Button>
+        <Button type="button" variant="outline" onclick={onCancel} disabled={busy}>Cancel</Button>
         <Button type="button" variant="destructive" onclick={onConfirm} disabled={busy}>
-          {busy ? 'Đang thu hồi...' : 'Xác nhận thu hồi'}
+          {busy ? 'Recalling...' : 'Confirm Recall'}
         </Button>
       </Dialog.Footer>
     </Dialog.Content>

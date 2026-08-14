@@ -96,6 +96,6 @@ describe('QuickTemplatePopover', () => {
       query: 'nonexistentquery123'
     });
 
-    expect(screen.getByText('Không tìm thấy mẫu tin nhắn')).toBeTruthy();
+    expect(screen.getByText('No message templates found')).toBeTruthy();
   });
 });

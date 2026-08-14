@@ -12,12 +12,12 @@
       <track kind="captions" />
     </audio>
     <div class="flex items-center justify-between gap-3 text-[11px] opacity-70">
-      <span class="truncate">{attachment.fileName || 'Âm thanh'}</span>
+      <span class="truncate">{attachment.fileName || 'Audio'}</span>
       {#if attachment.durationSeconds}
         <span>{formatMediaDuration(attachment.durationSeconds)}</span>
       {/if}
     </div>
   </div>
 {:else}
-  <div class="text-xs italic text-muted-foreground">[Âm thanh không khả dụng]</div>
+  <div class="text-xs italic text-muted-foreground">[Audio unavailable]</div>
 {/if}

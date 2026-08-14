@@ -100,27 +100,27 @@ describe('LinkedLeadActions Component', () => {
     participants: []
   };
 
-  test('renders Category badge, Phân loại, Đổi lead, and Hủy liên kết buttons', async () => {
+  test('renders Category badge, Category, Change Lead, and Unlink buttons', async () => {
     render(LinkedLeadActions, { props: { item: leadItem } });
     await tick();
     await tick();
 
     expect(screen.getByText('Spa & Beauty')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Phân loại/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Đổi lead/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Hủy liên kết/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Category/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Change Lead/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Unlink/i })).toBeTruthy();
   });
 
   test('opens Category modal and displays categories', async () => {
     render(LinkedLeadActions, { props: { item: leadItem } });
     await tick();
 
-    const categoryBtn = screen.getByRole('button', { name: /Phân loại/i });
+    const categoryBtn = screen.getByRole('button', { name: /Category/i });
     await fireEvent.click(categoryBtn);
     await tick();
     await tick();
 
-    expect(screen.getByRole('heading', { name: /Quản lý Category cho Lead/i })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Manage Lead Categories/i })).toBeTruthy();
     expect(mockGetCategories).toHaveBeenCalled();
     expect(screen.getByText('Khách HCM')).toBeTruthy();
   });
@@ -129,7 +129,7 @@ describe('LinkedLeadActions Component', () => {
     render(LinkedLeadActions, { props: { item: leadItem } });
     await tick();
 
-    const categoryBtn = screen.getByRole('button', { name: /Phân loại/i });
+    const categoryBtn = screen.getByRole('button', { name: /Category/i });
     await fireEvent.click(categoryBtn);
     await tick();
     await tick();
@@ -145,16 +145,16 @@ describe('LinkedLeadActions Component', () => {
     render(LinkedLeadActions, { props: { item: leadItem } });
     await tick();
 
-    const categoryBtn = screen.getByRole('button', { name: /Phân loại/i });
+    const categoryBtn = screen.getByRole('button', { name: /Category/i });
     await fireEvent.click(categoryBtn);
     await tick();
     await tick();
 
-    const input = screen.getByPlaceholderText(/Tên danh mục mới/i);
+    const input = screen.getByPlaceholderText(/New category name/i);
     await fireEvent.input(input, { target: { value: 'Chiến dịch Mùa Hè' } });
     await tick();
 
-    const createBtn = screen.getByRole('button', { name: /Tạo mới/i });
+    const createBtn = screen.getByRole('button', { name: /Create/i });
     await fireEvent.click(createBtn);
     await tick();
     await tick();
@@ -166,11 +166,11 @@ describe('LinkedLeadActions Component', () => {
   test('opens relink dialog and displays CRM leads', async () => {
     render(LinkedLeadActions, { props: { item: leadItem } });
 
-    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i });
+    const relinkBtn = screen.getByRole('button', { name: /Change Lead/i });
     await fireEvent.click(relinkBtn);
     await tick();
 
-    const heading = screen.getByRole('heading', { name: /Đổi liên kết lead/i });
+    const heading = screen.getByRole('heading', { name: /Change Linked Lead/i });
     expect(heading).toBeTruthy();
     expect(mockGetLeads).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Nguyễn Văn Lead')).toBeTruthy();
@@ -180,11 +180,11 @@ describe('LinkedLeadActions Component', () => {
   test('filters leads by search input in relink dialog', async () => {
     render(LinkedLeadActions, { props: { item: leadItem } });
 
-    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i });
+    const relinkBtn = screen.getByRole('button', { name: /Change Lead/i });
     await fireEvent.click(relinkBtn);
     await tick();
 
-    const searchInput = screen.getByPlaceholderText(/Tìm theo tên, email, sđt/i);
+    const searchInput = screen.getByPlaceholderText(/Search by name, email, phone/i);
     await fireEvent.input(searchInput, { target: { value: 'Trần Thị' } });
     await tick();
 
@@ -201,7 +201,7 @@ describe('LinkedLeadActions Component', () => {
       }
     });
 
-    const relinkBtn = screen.getByRole('button', { name: /Đổi lead/i });
+    const relinkBtn = screen.getByRole('button', { name: /Change Lead/i });
     await fireEvent.click(relinkBtn);
     await tick();
 
@@ -209,7 +209,7 @@ describe('LinkedLeadActions Component', () => {
     await fireEvent.click(leadOption);
     await tick();
 
-    const confirmBtn = screen.getByRole('button', { name: /Xác nhận đổi/i });
+    const confirmBtn = screen.getByRole('button', { name: /Confirm Change/i });
     await fireEvent.click(confirmBtn);
     await tick();
 
@@ -227,14 +227,14 @@ describe('LinkedLeadActions Component', () => {
       }
     });
 
-    const unlinkBtn = screen.getByRole('button', { name: /Hủy liên kết/i });
+    const unlinkBtn = screen.getByRole('button', { name: /Unlink/i });
     await fireEvent.click(unlinkBtn);
     await tick();
 
-    const heading = screen.getByRole('heading', { name: /Xác nhận hủy liên kết/i });
+    const heading = screen.getByRole('heading', { name: /Confirm Unlink/i });
     expect(heading).toBeTruthy();
 
-    const confirmUnlinkBtn = screen.getByRole('button', { name: /Xác nhận hủy/i });
+    const confirmUnlinkBtn = screen.getByRole('button', { name: /Confirm Unlink/i });
     await fireEvent.click(confirmUnlinkBtn);
     await tick();
 
@@ -256,11 +256,11 @@ describe('LinkedLeadActions Component', () => {
       }
     });
 
-    const unlinkBtn = screen.getByRole('button', { name: /Hủy liên kết/i });
+    const unlinkBtn = screen.getByRole('button', { name: /Unlink/i });
     await fireEvent.click(unlinkBtn);
     await tick();
 
-    const confirmUnlinkBtn = screen.getByRole('button', { name: /Xác nhận hủy/i });
+    const confirmUnlinkBtn = screen.getByRole('button', { name: /Confirm Unlink/i });
     await fireEvent.click(confirmUnlinkBtn);
     await tick();
 

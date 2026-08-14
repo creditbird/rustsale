@@ -52,7 +52,7 @@
       <input
         bind:this={inputElement}
         type="text"
-        placeholder="Tìm trong cuộc trò chuyện (Ctrl+F)..."
+        placeholder="Search in conversation (Ctrl+F)..."
         bind:value={searchQuery}
         onkeydown={handleKeydown}
         class="flex h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-16 text-xs shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
@@ -60,7 +60,7 @@
 
       {#if searchQuery.trim()}
         <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground font-medium select-none">
-          {matchCount > 0 ? `${currentIndex + 1}/${matchCount}` : '0 kết quả'}
+          {matchCount > 0 ? `${currentIndex + 1}/${matchCount}` : '0 results'}
         </span>
       {/if}
     </div>
@@ -73,7 +73,7 @@
         class="size-7 text-muted-foreground hover:text-foreground"
         disabled={matchCount === 0}
         onclick={onPrev}
-        title="Kết quả trước (Shift+Enter)"
+        title="Previous match (Shift+Enter)"
       >
         <ChevronUp class="size-4" />
       </Button>
@@ -85,7 +85,7 @@
         class="size-7 text-muted-foreground hover:text-foreground"
         disabled={matchCount === 0}
         onclick={onNext}
-        title="Kết quả tiếp (Enter)"
+        title="Next match (Enter)"
       >
         <ChevronDown class="size-4" />
       </Button>
@@ -96,7 +96,7 @@
         size="icon"
         class="size-7 text-muted-foreground hover:text-foreground"
         onclick={onClose}
-        title="Đóng (Esc)"
+        title="Close (Esc)"
       >
         <X class="size-4" />
       </Button>

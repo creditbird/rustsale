@@ -23,18 +23,18 @@ describe('UserProfilePopover.svelte', () => {
           identityId: 42,
           displayName: 'Nguyen Thai Duy',
           externalId: '481940120149',
-          role: 'Chủ nhóm'
+          role: 'Group Owner'
         }
       }
     });
 
     expect(getByText('Nguyen Thai Duy')).toBeTruthy();
-    expect(getByText('Chủ nhóm')).toBeTruthy();
+    expect(getByText('Group Owner')).toBeTruthy();
     expect(getByText('UID: 481940120149')).toBeTruthy();
-    expect(getByText('Nhắn tin 1-1 (Trò chuyện riêng)')).toBeTruthy();
+    expect(getByText('Direct Message (1-on-1 Chat)')).toBeTruthy();
   });
 
-  it('invokes onOpenDirectChat callback when clicking Nhắn tin 1-1 button', async () => {
+  it('invokes onOpenDirectChat callback when clicking Direct Message button', async () => {
     const onOpenDirectChat = mock(() => {});
     const onClose = mock(() => {});
 

@@ -72,24 +72,24 @@
     }
 
     if (!cleanShortcut) {
-      errorMessage = 'Vui lòng nhập phím tắt (shortcut)';
+      errorMessage = 'Please enter a shortcut';
       return;
     }
 
     if (/\s/.test(cleanShortcut)) {
-      errorMessage = 'Phím tắt không được chứa khoảng trắng';
+      errorMessage = 'Shortcut cannot contain whitespace';
       return;
     }
 
     const cleanTitle = title.trim();
     if (!cleanTitle) {
-      errorMessage = 'Vui lòng nhập tiêu đề mẫu';
+      errorMessage = 'Please enter a template title';
       return;
     }
 
     const cleanBody = bodyText.trim();
     if (!cleanBody) {
-      errorMessage = 'Vui lòng nhập nội dung tin nhắn';
+      errorMessage = 'Please enter message content';
       return;
     }
 
@@ -101,7 +101,7 @@
     );
 
     if (isDuplicate) {
-      errorMessage = `Phím tắt "/${cleanShortcut}" đã tồn tại`;
+      errorMessage = `Shortcut "/${cleanShortcut}" already exists`;
       return;
     }
 
@@ -140,7 +140,7 @@
   <DialogContent class="sm:max-w-[480px]">
     <DialogHeader>
       <DialogTitle>
-        {template ? 'Chỉnh sửa mẫu tin nhắn' : 'Thêm mẫu tin nhắn mới'}
+        {template ? 'Edit Quick Template' : 'Add New Quick Template'}
       </DialogTitle>
     </DialogHeader>
 
@@ -153,13 +153,13 @@
 
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
-          <Label for="shortcut" class="text-xs">Phím tắt (Shortcut)</Label>
+          <Label for="shortcut" class="text-xs">Shortcut</Label>
           <div class="relative flex items-center">
             <span class="absolute left-2.5 text-xs text-muted-foreground font-mono">/</span>
             <Input
               id="shortcut"
               bind:value={shortcut}
-              placeholder="gia"
+              placeholder="price"
               class="pl-6 font-mono text-xs"
               data-testid="template-shortcut-input"
             />
@@ -167,11 +167,11 @@
         </div>
 
         <div class="space-y-1">
-          <Label for="category" class="text-xs">Danh mục (tùy chọn)</Label>
+          <Label for="category" class="text-xs">Category (Optional)</Label>
           <Input
             id="category"
             bind:value={category}
-            placeholder="Bán hàng"
+            placeholder="Sales"
             class="text-xs"
             data-testid="template-category-input"
           />
@@ -179,22 +179,22 @@
       </div>
 
       <div class="space-y-1">
-        <Label for="title" class="text-xs">Tiêu đề mẫu</Label>
+        <Label for="title" class="text-xs">Template Title</Label>
         <Input
           id="title"
           bind:value={title}
-          placeholder="Bảng giá sản phẩm 2026"
+          placeholder="Product Pricing 2026"
           class="text-xs"
           data-testid="template-title-input"
         />
       </div>
 
       <div class="space-y-1">
-        <Label for="bodyText" class="text-xs">Nội dung tin nhắn</Label>
+        <Label for="bodyText" class="text-xs">Message Content</Label>
         <Textarea
           id="bodyText"
           bind:value={bodyText}
-          placeholder="Nhập nội dung tin nhắn sẽ được chèn khi nhập phím tắt..."
+          placeholder="Enter message content to be inserted with the shortcut..."
           rows={4}
           class="text-xs resize-none"
           data-testid="template-body-input"
@@ -208,10 +208,10 @@
           onclick={handleClose}
           disabled={submitting}
         >
-          Hủy
+          Cancel
         </Button>
         <Button type="submit" disabled={submitting} data-testid="save-template-btn">
-          {submitting ? 'Đang lưu...' : 'Lưu mẫu'}
+          {submitting ? 'Saving...' : 'Save Template'}
         </Button>
       </DialogFooter>
     </form>

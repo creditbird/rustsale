@@ -14,7 +14,7 @@
   <div class="composer-reply-bar flex items-center gap-2 border-t border-border/40 bg-muted/30 p-2 text-xs" data-testid="composer-reply-bar">
     <div class="reply-indicator h-6 w-[3px] rounded-sm bg-blue-500"></div>
     <div class="reply-content flex flex-1 flex-col overflow-hidden">
-      <span class="reply-sender font-semibold text-blue-500">{reply.preview.senderDisplayName ?? 'Tin nhắn'}</span>
+      <span class="reply-sender font-semibold text-blue-500">{reply.preview.senderDisplayName ?? 'Message'}</span>
       <span class="reply-text truncate text-muted-foreground">{reply.preview.textContent ?? reply.preview.contentType}</span>
     </div>
     <button

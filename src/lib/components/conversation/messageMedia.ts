@@ -162,18 +162,18 @@ export function formatBytes(bytes: number | null | undefined): string {
 export function attachmentLabel(mediaType: string | null | undefined): string {
   switch (mediaType) {
     case 'image':
-      return 'Hình ảnh';
+      return 'Image';
     case 'video':
       return 'Video';
     case 'audio':
     case 'voice':
-      return 'Âm thanh';
+      return 'Audio';
     case 'sticker':
       return 'Sticker';
     case 'file':
-      return 'Tệp';
+      return 'File';
     default:
-      return 'Tệp đính kèm';
+      return 'Attachment';
   }
 }
 
@@ -225,8 +225,8 @@ export function extractGalleryImages(messages: Array<{
           if (safeUrl) {
             images.push({
               url: safeUrl,
-              alt: att.fileName ?? 'Hình ảnh',
-              caption: msg.textContent || att.fileName || 'Hình ảnh',
+              alt: att.fileName ?? 'Image',
+              caption: msg.textContent || att.fileName || 'Image',
               timestamp: msg.occurredAt
             });
           }
@@ -239,8 +239,8 @@ export function extractGalleryImages(messages: Array<{
       if (legacyUrl && !images.some((img) => img.url === legacyUrl)) {
         images.push({
           url: legacyUrl,
-          alt: msg.textContent || 'Hình ảnh',
-          caption: msg.textContent || 'Hình ảnh',
+          alt: msg.textContent || 'Image',
+          caption: msg.textContent || 'Image',
           timestamp: msg.occurredAt
         });
       }

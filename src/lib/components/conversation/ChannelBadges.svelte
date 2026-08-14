@@ -110,7 +110,7 @@
 
   {#if activeChannels.length === 0}
     <p class="text-xs text-muted-foreground italic px-1">
-      Không có kênh nào đang được hiển thị
+      No channels currently visible
     </p>
   {/if}
 </div>

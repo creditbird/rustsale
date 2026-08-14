@@ -113,7 +113,7 @@ describe('MessageContentRenderer', () => {
 
     const { queryByRole, getByText } = render(MessageContentRenderer, { message: unsafeLink });
     expect(queryByRole('link')).toBeNull();
-    expect(getByText('Liên kết không hợp lệ')).toBeTruthy();
+    expect(getByText('Invalid link')).toBeTruthy();
   });
 
   it('renders sticker message with image when URL is present in content object or attachments', () => {

@@ -123,10 +123,10 @@
     <DialogHeader>
       <div class="flex items-center justify-between pr-6">
         <DialogTitle class="text-base font-semibold">
-          Quản lý mẫu tin nhắn nhanh
+          Manage Quick Templates
         </DialogTitle>
         <span class="text-xs text-muted-foreground font-medium" data-testid="template-count-badge">
-          {activeTemplates.length} / 500 mẫu
+          {activeTemplates.length} / 500 templates
         </span>
       </div>
     </DialogHeader>
@@ -136,7 +136,7 @@
         class="p-3 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 text-xs font-medium border border-amber-500/20"
         data-testid="limit-warning-banner"
       >
-        Đã đạt giới hạn 500 mẫu tin nhắn nhanh. Vui lòng xóa bớt mẫu trước khi tạo mới.
+        Reached maximum limit of 500 quick templates. Please delete some before adding new ones.
       </div>
     {/if}
 
@@ -149,7 +149,7 @@
     <div class="flex items-center justify-between gap-3 py-2">
       <Input
         bind:value={searchQuery}
-        placeholder="Tìm kiếm mẫu theo phím tắt, tiêu đề, nội dung..."
+        placeholder="Search templates by shortcut, title, content..."
         class="text-xs h-9"
         data-testid="template-search-input"
       />
@@ -160,14 +160,14 @@
         onclick={handleOpenCreate}
         data-testid="add-template-btn"
       >
-        + Thêm mẫu mới
+        + Add New Template
       </Button>
     </div>
 
     <div class="flex-1 overflow-y-auto min-h-[250px] max-h-[400px] border border-border rounded-md divide-y divide-border">
       {#if filteredTemplates.length === 0}
         <div class="p-8 text-center text-muted-foreground text-xs">
-          {searchQuery ? 'Không tìm thấy mẫu nào phù hợp' : 'Chưa có mẫu tin nhắn nhanh nào'}
+          {searchQuery ? 'No matching templates found' : 'No quick templates yet'}
         </div>
       {:else}
         {#each filteredTemplates as item (item.id)}
@@ -190,7 +190,7 @@
                 {item.bodyText}
               </p>
               <div class="text-[10px] text-muted-foreground/70">
-                Đã dùng {item.usageCount} lần
+                Used {item.usageCount} times
               </div>
             </div>
 
@@ -203,7 +203,7 @@
                 onclick={() => handleToggleActive(item)}
                 data-testid="toggle-active-btn-{item.id}"
               >
-                {item.isActive ? 'Đang dùng' : 'Tắt'}
+                {item.isActive ? 'Active' : 'Inactive'}
               </Button>
               <Button
                 type="button"
@@ -213,7 +213,7 @@
                 onclick={() => handleOpenEdit(item)}
                 data-testid="edit-template-btn-{item.id}"
               >
-                Sửa
+                Edit
               </Button>
               <Button
                 type="button"
@@ -223,7 +223,7 @@
                 onclick={() => handleDelete(item.id)}
                 data-testid="delete-template-btn-{item.id}"
               >
-                Xóa
+                Delete
               </Button>
             </div>
           </div>

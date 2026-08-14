@@ -8,12 +8,12 @@
   }
 
   export const REACTION_OPTIONS: ReactionOption[] = [
-    { code: 'heart', icon: '❤️', label: 'Yêu thích' },
-    { code: 'like', icon: '👍', label: 'Thích' },
-    { code: 'haha', icon: '😆', label: 'Cười' },
-    { code: 'wow', icon: '😮', label: 'Bất ngờ' },
-    { code: 'cry', icon: '😭', label: 'Buồn' },
-    { code: 'angry', icon: '😡', label: 'Tức giận' }
+    { code: 'heart', icon: '❤️', label: 'Love' },
+    { code: 'like', icon: '👍', label: 'Like' },
+    { code: 'haha', icon: '😆', label: 'Haha' },
+    { code: 'wow', icon: '😮', label: 'Wow' },
+    { code: 'cry', icon: '😭', label: 'Sad' },
+    { code: 'angry', icon: '😡', label: 'Angry' }
   ];
 
   let {
@@ -83,7 +83,7 @@
 <div
   role="toolbar"
   tabindex="-1"
-  aria-label="Chọn cảm xúc"
+  aria-label="Choose reaction"
   class="flex items-center gap-1 rounded-full border bg-popover/95 p-1 text-popover-foreground shadow-lg backdrop-blur-xs select-none"
   onkeydown={handleKeydown}
   data-testid="message-reaction-picker"

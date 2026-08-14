@@ -94,7 +94,7 @@
     leadSearchQuery = `${lead.name} (${lead.company})`;
     isLeadDropdownOpen = false;
     // Auto-generate title if empty or default
-    if (!newTitle || newTitle.startsWith('Hợp đồng -') || newTitle.startsWith('Deal -')) {
+    if (!newTitle || newTitle.startsWith('Deal -') || newTitle.startsWith('Contract -')) {
       newTitle = `Deal - ${lead.company || lead.name}`;
     }
   }
@@ -133,11 +133,11 @@
   async function handleCreateDeal(e: Event) {
     e.preventDefault();
     if (!selectedLead || !selectedLead.id) {
-      createErrorMsg = 'Vui lòng chọn khách hàng liên quan (Lead).';
+      createErrorMsg = 'Please select an associated lead.';
       return;
     }
     if (!newTitle.trim()) {
-      createErrorMsg = 'Vui lòng nhập tên Deal.';
+      createErrorMsg = 'Please enter a deal title.';
       return;
     }
 
@@ -147,13 +147,13 @@
       const createdTitle = newTitle.trim();
       await crmService.createDeal(selectedLead.id, createdTitle, Number(newValue) || 0, newStage);
       showCreateModal = false;
-      toast.success('Tạo Deal mới thành công!', {
-        description: `Đã tạo cơ hội kinh doanh "${createdTitle}" cho ${selectedLead.name}.`
+      toast.success('Deal created successfully!', {
+        description: `Created opportunity "${createdTitle}" for ${selectedLead.name}.`
       });
       await loadDeals();
     } catch (err) {
       createErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Tạo Deal thất bại', {
+      toast.error('Failed to create deal', {
         description: createErrorMsg
       });
     } finally {
@@ -179,13 +179,13 @@
       await crmService.deleteDeal(dealToDelete.id);
       showDeleteModal = false;
       dealToDelete = null;
-      toast.success('Xóa Deal thành công!', {
-        description: `Đã xóa cơ hội kinh doanh "${deletedTitle}".`
+      toast.success('Deal deleted successfully!', {
+        description: `Deleted opportunity "${deletedTitle}".`
       });
       await loadDeals();
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Xóa Deal thất bại', {
+      toast.error('Failed to delete deal', {
         description: errorMsg
       });
     } finally {
@@ -252,7 +252,7 @@
         <DollarSign class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Tổng Giá Trị Pipeline</p>
+        <p class="text-[11px] text-muted-foreground font-medium">Total Pipeline Value</p>
         <p class="text-base font-extrabold text-foreground tracking-tight">${totalPipelineValue.toLocaleString()}</p>
       </div>
     </div>
@@ -262,8 +262,8 @@
         <Layers class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Tổng Số Deals</p>
-        <p class="text-base font-extrabold text-foreground tracking-tight">{deals.length} <span class="text-xs font-normal text-muted-foreground">cơ hội</span></p>
+        <p class="text-[11px] text-muted-foreground font-medium">Total Deals</p>
+        <p class="text-base font-extrabold text-foreground tracking-tight">{deals.length} <span class="text-xs font-normal text-muted-foreground">deals</span></p>
       </div>
     </div>
 
@@ -272,7 +272,7 @@
         <TrendingUp class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Doanh Số Thành Công (Won)</p>
+        <p class="text-[11px] text-muted-foreground font-medium">Won Deals Revenue</p>
         <p class="text-base font-extrabold text-emerald-600 tracking-tight">${wonDealsValue.toLocaleString()}</p>
       </div>
     </div>
@@ -282,7 +282,7 @@
         <UserCheck class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Giá Trị Trung Bình/Deal</p>
+        <p class="text-[11px] text-muted-foreground font-medium">Average Deal Value</p>
         <p class="text-base font-extrabold text-foreground tracking-tight">${Math.round(avgDealSize).toLocaleString()}</p>
       </div>
     </div>
@@ -294,7 +294,7 @@
       <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
       <Input
         bind:value={searchQuery}
-        placeholder="Tìm kiếm Deal theo tên, khách hàng, công ty..."
+        placeholder="Search deals by name, contact, company..."
         class="pl-9 h-9 text-xs bg-background"
       />
     </div>
@@ -302,7 +302,7 @@
     <div class="flex items-center gap-2 self-end sm:self-auto">
       <Button onclick={() => openCreateModal('Prospecting')} size="sm" class="gap-1.5 font-semibold shadow-xs bg-primary hover:bg-primary/90 text-primary-foreground">
         <Plus class="w-4 h-4" />
-        <span>Thêm Deal Mới</span>
+        <span>Add New Deal</span>
       </Button>
     </div>
   </div>
@@ -346,7 +346,7 @@
                 type="button"
                 onclick={() => openCreateModal(stage)}
                 class="p-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                title="Tạo Deal mới ở giai đoạn {stage}"
+                title="Create new deal in {stage}"
               >
                 <Plus class="w-3.5 h-3.5" />
               </button>
@@ -362,7 +362,7 @@
           {#if stageDeals.length === 0}
             <div class="h-32 border border-dashed border-border/70 rounded-xl flex flex-col items-center justify-center text-muted-foreground/60 p-4 text-center bg-muted/20">
               <Inbox class="w-6 h-6 stroke-1 mb-1 text-muted-foreground/40" />
-              <span class="text-[11px] italic font-medium">Kéo thả Deal vào đây</span>
+              <span class="text-[11px] italic font-medium">Drag and drop deals here</span>
             </div>
           {:else}
             {#each stageDeals as deal}
@@ -396,7 +396,7 @@
                         type="button"
                         onclick={() => promptDeleteDeal(deal.id!, deal.title)}
                         class="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all rounded-md"
-                        title="Xóa deal này"
+                        title="Delete this deal"
                       >
                         <Trash2 class="w-3.5 h-3.5" />
                       </button>
@@ -411,7 +411,7 @@
                     {#if deal.created_at}
                       <span class="text-muted-foreground text-[10px] flex items-center gap-1 font-medium">
                         <Calendar class="w-3 h-3 text-muted-foreground/60" />
-                        {new Date(deal.created_at).toLocaleDateString('vi-VN', { month: 'numeric', day: 'numeric' })}
+                        {new Date(deal.created_at).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
                       </span>
                     {/if}
                   </div>
@@ -437,8 +437,8 @@
             <Plus class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-base text-foreground">Tạo Cơ Hội Bán Hàng Mới</h3>
-            <p class="text-xs text-muted-foreground">Thêm Deal mới vào quy trình bán hàng CRM</p>
+            <h3 class="font-bold text-base text-foreground">Create New Sales Opportunity</h3>
+            <p class="text-xs text-muted-foreground">Add a new deal to the CRM pipeline</p>
           </div>
         </div>
         <button
@@ -462,7 +462,7 @@
         <div class="space-y-1.5 relative">
           <label for="lead-search-input" class="text-xs font-bold text-foreground flex items-center gap-1.5">
             <User class="w-3.5 h-3.5 text-primary" />
-            1. Chọn Khách Hàng (Lead) Liên Quan <span class="text-destructive">*</span>
+            1. Select Associated Lead <span class="text-destructive">*</span>
           </label>
 
           <div class="relative">
@@ -473,7 +473,7 @@
               bind:value={leadSearchQuery}
               onfocus={() => isLeadDropdownOpen = true}
               oninput={() => isLeadDropdownOpen = true}
-              placeholder="Tìm theo tên khách hàng, công ty, SĐT..."
+              placeholder="Search by contact name, company, phone..."
               class="w-full h-10 pl-9 pr-8 rounded-xl border border-input bg-background text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 font-medium"
             />
             <button
@@ -490,7 +490,7 @@
             <div class="absolute left-0 right-0 top-full mt-1 z-20 max-h-48 overflow-y-auto bg-popover border border-border rounded-xl shadow-xl py-1 divide-y divide-border/40">
               {#if filteredModalLeads.length === 0}
                 <div class="px-4 py-3 text-xs text-muted-foreground text-center">
-                  Không tìm thấy khách hàng nào khớp với từ khóa
+                  No leads found matching query
                 </div>
               {:else}
                 {#each filteredModalLeads as lead}
@@ -526,15 +526,15 @@
               </div>
             </div>
             <div class="flex items-center gap-2">
-              <Badge variant="outline" class="text-[10px] bg-background">Đã chọn</Badge>
+              <Badge variant="outline" class="text-[10px] bg-background">Selected</Badge>
               <button
                 type="button"
                 onclick={clearSelectedLead}
                 class="px-2 py-1 rounded-lg bg-destructive/10 hover:bg-destructive/20 text-destructive transition-colors text-[11px] font-semibold flex items-center gap-1 border border-destructive/20"
-                title="Bỏ chọn khách hàng này"
+                title="Deselect this lead"
               >
                 <X class="w-3.5 h-3.5" />
-                <span>Bỏ chọn</span>
+                <span>Deselect</span>
               </button>
             </div>
           </div>
@@ -544,12 +544,12 @@
         <div class="space-y-1.5">
           <label for="deal-title-input" class="text-xs font-bold text-foreground flex items-center gap-1.5">
             <Building class="w-3.5 h-3.5 text-primary" />
-            2. Tên Deal / Hợp Đồng <span class="text-destructive">*</span>
+            2. Deal Title <span class="text-destructive">*</span>
           </label>
           <Input
             id="deal-title-input"
             bind:value={newTitle}
-            placeholder="Ví dụ: Hợp đồng triển khai phần mềm CRM"
+            placeholder="e.g. CRM Software Implementation Contract"
             class="h-10 text-xs rounded-xl"
             required
           />
@@ -560,7 +560,7 @@
           <div class="space-y-1.5">
             <label for="deal-value-input" class="text-xs font-bold text-foreground flex items-center gap-1.5">
               <DollarSign class="w-3.5 h-3.5 text-emerald-600" />
-              3. Giá Trị Hợp Đồng ($) <span class="text-destructive">*</span>
+              3. Deal Value ($) <span class="text-destructive">*</span>
             </label>
             <Input
               id="deal-value-input"
@@ -590,7 +590,7 @@
           <div class="space-y-1.5">
             <label for="deal-stage-select" class="text-xs font-bold text-foreground flex items-center gap-1.5">
               <Layers class="w-3.5 h-3.5 text-primary" />
-              4. Giai Đoạn Ban Đầu
+              4. Initial Stage
             </label>
             <select
               id="deal-stage-select"
@@ -614,7 +614,7 @@
             disabled={creatingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Hủy Bỏ
+            Cancel
           </Button>
           <Button
             type="submit"
@@ -622,7 +622,7 @@
             disabled={creatingDeal || !selectedLead}
             class="rounded-xl h-10 px-6 text-xs font-bold bg-primary text-primary-foreground hover:bg-primary/90 shadow-md"
           >
-            {creatingDeal ? 'Đang Tạo...' : 'Tạo Deal Mới'}
+            {creatingDeal ? 'Creating...' : 'Create Deal'}
           </Button>
         </div>
       </form>
@@ -640,9 +640,9 @@
         </div>
 
         <div class="space-y-1.5">
-          <h3 class="font-bold text-base text-foreground">Xác Nhận Xóa Deal</h3>
+          <h3 class="font-bold text-base text-foreground">Confirm Delete Deal</h3>
           <p class="text-xs text-muted-foreground leading-relaxed">
-            Bạn có chắc chắn muốn xóa cơ hội kinh doanh <span class="font-bold text-foreground">"{dealToDelete.title}"</span>? Hành động này không thể hoàn tác.
+            Are you sure you want to delete the opportunity <span class="font-bold text-foreground">"{dealToDelete.title}"</span>? This action cannot be undone.
           </p>
         </div>
 
@@ -655,7 +655,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Hủy Bỏ
+            Cancel
           </Button>
           <Button
             type="button"
@@ -665,7 +665,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-6 text-xs font-bold shadow-md bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {deletingDeal ? 'Đang Xóa...' : 'Xóa Deal'}
+            {deletingDeal ? 'Deleting...' : 'Delete Deal'}
           </Button>
         </div>
       </div>

@@ -68,7 +68,7 @@ describe('UnknownContactActions Component', () => {
     participants: []
   };
 
-  test('Liên kết lead loads CRM leads, filters locally, calls linkConversationIdentity, and emits onLinked(leadId)', async () => {
+  test('Link Lead loads CRM leads, filters locally, calls linkConversationIdentity, and emits onLinked(leadId)', async () => {
     const onLinked = mock(() => {});
     render(UnknownContactActions, {
       props: {
@@ -77,15 +77,15 @@ describe('UnknownContactActions Component', () => {
       }
     });
 
-    const linkBtn = screen.getByRole('button', { name: /Liên kết lead/i });
+    const linkBtn = screen.getByRole('button', { name: /Link Lead/i });
     await fireEvent.click(linkBtn);
     await tick();
 
-    const heading = screen.getByRole('heading', { name: /Liên kết lead có sẵn/i });
+    const heading = screen.getByRole('heading', { name: /Link Existing Lead/i });
     expect(heading).toBeTruthy();
     expect(mockGetLeads).toHaveBeenCalledTimes(1);
 
-    const searchInput = screen.getByPlaceholderText(/Tìm theo tên, email, sđt/i);
+    const searchInput = screen.getByPlaceholderText(/Search by name, email, phone/i);
     await fireEvent.input(searchInput, { target: { value: 'Trần Thị' } });
     await tick();
 
@@ -93,7 +93,7 @@ describe('UnknownContactActions Component', () => {
     await fireEvent.click(leadOption);
     await tick();
 
-    const confirmBtn = screen.getByRole('button', { name: /Xác nhận liên kết/i });
+    const confirmBtn = screen.getByRole('button', { name: /Confirm Link/i });
     await fireEvent.click(confirmBtn);
     await tick();
 
@@ -101,7 +101,7 @@ describe('UnknownContactActions Component', () => {
     expect(onLinked).toHaveBeenCalledWith(51);
   });
 
-  test('Tạo lead pre-fills provider display name, calls crmService.addLead, links returned ID, and emits onLinked', async () => {
+  test('Create Lead pre-fills provider display name, calls crmService.addLead, links returned ID, and emits onLinked', async () => {
     const onLinked = mock(() => {});
     render(UnknownContactActions, {
       props: {
@@ -110,29 +110,29 @@ describe('UnknownContactActions Component', () => {
       }
     });
 
-    const createBtn = screen.getByRole('button', { name: /Tạo lead/i });
+    const createBtn = screen.getByRole('button', { name: /Create Lead/i });
     await fireEvent.click(createBtn);
     await tick();
 
-    const heading = screen.getByRole('heading', { name: /Tạo lead mới/i });
+    const heading = screen.getByRole('heading', { name: /Create New Lead/i });
     expect(heading).toBeTruthy();
 
-    const nameInput = screen.getByPlaceholderText('Nhập họ tên lead...') as HTMLInputElement;
+    const nameInput = screen.getByPlaceholderText('Enter lead name...') as HTMLInputElement;
     expect(nameInput.value).toBe('Khách chưa biết');
 
-    const submitBtn = screen.getByRole('button', { name: /Tạo & Liên kết/i });
+    const submitBtn = screen.getByRole('button', { name: /Create & Link/i });
     await fireEvent.click(submitBtn);
     await tick();
 
     expect(mockAddLead).toHaveBeenCalledWith(
       'Khách chưa biết',
-      'Cá nhân',
+      'Individual',
       'New',
       0,
       'Self',
       '',
       '',
-      'Tạo từ zalo'
+      'Created from zalo'
     );
     expect(mockLinkConversationIdentity).toHaveBeenCalledWith(500, 100);
     expect(onLinked).toHaveBeenCalledWith(100);
@@ -150,8 +150,8 @@ describe('UnknownContactActions Component', () => {
       }
     });
 
-    const linkBtn = screen.getByRole('button', { name: /Liên kết lead/i }) as HTMLButtonElement;
-    const createBtn = screen.getByRole('button', { name: /Tạo lead/i }) as HTMLButtonElement;
+    const linkBtn = screen.getByRole('button', { name: /Link Lead/i }) as HTMLButtonElement;
+    const createBtn = screen.getByRole('button', { name: /Create Lead/i }) as HTMLButtonElement;
 
     expect(linkBtn.disabled).toBe(true);
     expect(createBtn.disabled).toBe(true);
@@ -164,21 +164,21 @@ describe('UnknownContactActions Component', () => {
       }
     });
 
-    const createBtn = screen.getByRole('button', { name: /Tạo lead/i });
+    const createBtn = screen.getByRole('button', { name: /Create Lead/i });
     await fireEvent.click(createBtn);
     await tick();
 
-    const nameInput = screen.getByPlaceholderText('Nhập họ tên lead...');
+    const nameInput = screen.getByPlaceholderText('Enter lead name...');
     await fireEvent.input(nameInput, { target: { value: '   ' } });
     await tick();
 
-    const submitBtn = screen.getByRole('button', { name: /Tạo & Liên kết/i });
+    const submitBtn = screen.getByRole('button', { name: /Create & Link/i });
     await fireEvent.click(submitBtn);
     await tick();
 
     const alertEl = screen.getByRole('alert');
     expect(alertEl).toBeTruthy();
-    expect(alertEl.textContent).toContain('Tên lead không được để trống');
+    expect(alertEl.textContent).toContain('Lead name cannot be empty');
     expect(mockAddLead).not.toHaveBeenCalled();
   });
 });

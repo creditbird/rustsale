@@ -371,7 +371,7 @@
   }
 
   function fileNameFromPath(path: string): string {
-    return path.split(/[\\/]/).pop() || 'Tệp đính kèm';
+    return path.split(/[\\/]/).pop() || 'Attachment';
   }
 
   function supportsAttachment(staged: StagedConversationAttachment): boolean {
@@ -388,10 +388,10 @@
 
   function validateStagedAttachment(staged: StagedConversationAttachment): string | null {
     if (staged.fileSizeBytes > selectedCapabilities.maxFileSizeBytes) {
-      return `Tệp vượt quá giới hạn ${selectedCapabilities.maxFileSizeBytes} byte`;
+      return `File exceeds limit of ${selectedCapabilities.maxFileSizeBytes} bytes`;
     }
     if (!supportsAttachment(staged)) {
-      return `Định dạng ${staged.mimeType} không được hỗ trợ`;
+      return `MIME type ${staged.mimeType} is not supported`;
     }
     return null;
   }
@@ -411,7 +411,7 @@
         replacements.set(placeholder.localId, {
           ...placeholder,
           status: 'error',
-          errorMessage: 'Không nhận được metadata staging'
+          errorMessage: 'Failed to receive staging metadata'
         });
         continue;
       }
@@ -460,7 +460,7 @@
     sendError = null;
     const remaining = selectedCapabilities.maxAttachmentsPerBatch - attachments.length;
     if (remaining <= 0 || paths.length > remaining) {
-      sendError = `Chỉ được đính kèm tối đa ${selectedCapabilities.maxAttachmentsPerBatch} tệp`;
+      sendError = `Maximum of ${selectedCapabilities.maxAttachmentsPerBatch} attachments allowed`;
       return;
     }
 
@@ -512,7 +512,6 @@
   }
 
   async function handlePickAttachment(): Promise<void> {
-
     try {
       const paths = await openFilePicker({ multiple: true });
       await stagePaths(paths);
@@ -527,11 +526,11 @@
       const clipboardImage = await readClipboardImage();
       if (!clipboardImage) return;
       if (attachments.length >= selectedCapabilities.maxAttachmentsPerBatch) {
-        sendError = `Chỉ được đính kèm tối đa ${selectedCapabilities.maxAttachmentsPerBatch} tệp`;
+        sendError = `Maximum of ${selectedCapabilities.maxAttachmentsPerBatch} attachments allowed`;
         return;
       }
       if (!selectedCapabilities.supportedImageTypes.includes(clipboardImage.mimeType)) {
-        sendError = `Định dạng ${clipboardImage.mimeType} không được hỗ trợ`;
+        sendError = `MIME type ${clipboardImage.mimeType} is not supported`;
         return;
       }
 
@@ -711,15 +710,15 @@
   }
 
   let statusReason = $derived.by(() => {
-    if (!selectedOption) return 'Chưa chọn tài khoản gửi';
+    if (!selectedOption) return 'No sending account selected';
     if (selectedOption.status === 'connected') return null;
     const reasons: Record<string, string> = {
-      disconnected: 'Tài khoản chưa kết nối',
-      connecting: 'Tài khoản đang kết nối...',
-      degraded: 'Tài khoản bị gián đoạn/suy giảm kết nối',
-      invalid: 'Tài khoản không hợp lệ hoặc hết hạn xác thực'
+      disconnected: 'Account not connected',
+      connecting: 'Account connecting...',
+      degraded: 'Account degraded connection',
+      invalid: 'Account invalid or auth expired'
     };
-    const baseReason = reasons[selectedOption.status] ?? `Trạng thái tài khoản: ${selectedOption.status}`;
+    const baseReason = reasons[selectedOption.status] ?? `Account status: ${selectedOption.status}`;
     return selectedOption.lastError ? `${baseReason} (${selectedOption.lastError})` : baseReason;
   });
 
@@ -738,19 +737,19 @@
   let partCount = $derived(readyAttachments.length + (text.trim() ? 1 : 0));
   let validationReason = $derived.by(() => {
     if (replyTarget && !selectedCapabilities.supportsQuoteReply) {
-      return 'Tài khoản này không hỗ trợ trả lời trích dẫn';
+      return 'This account does not support quoted replies';
     }
     if (text.length > selectedCapabilities.maxTextLength) {
-      return `Tin nhắn vượt quá ${selectedCapabilities.maxTextLength} ký tự`;
+      return `Message exceeds ${selectedCapabilities.maxTextLength} characters`;
     }
     if (readyAttachments.length > selectedCapabilities.maxAttachmentsPerBatch) {
-      return `Chỉ được đính kèm tối đa ${selectedCapabilities.maxAttachmentsPerBatch} tệp`;
+      return `Maximum of ${selectedCapabilities.maxAttachmentsPerBatch} attachments allowed`;
     }
     if (partCount > MAX_BATCH_PARTS) {
-      return `Một lần gửi chỉ hỗ trợ tối đa ${MAX_BATCH_PARTS} phần`;
+      return `A single send supports up to ${MAX_BATCH_PARTS} parts`;
     }
     if (totalBatchBytes > MAX_BATCH_BYTES) {
-      return 'Tổng dung lượng đính kèm vượt quá 100 MiB';
+      return 'Total attachment size exceeds 100 MiB';
     }
     return null;
   });
@@ -966,13 +965,13 @@
   <div class="flex items-center justify-between gap-2">
     {#if isTargetLocked && selectedOption}
       <div class="flex min-w-0 items-center gap-2 text-sm font-medium text-muted-foreground" data-testid="locked-target">
-        <Badge variant="outline">Đã khóa kênh gửi</Badge>
+        <Badge variant="outline">Sending channel locked</Badge>
         <span class="truncate">{selectedOption.label}</span>
       </div>
     {:else if options.length > 0}
       <Select.Root type="single" bind:value={selectedAccountIdString} disabled={disabled || isSending}>
         <Select.Trigger class="w-[260px]" data-testid="channel-account-select">
-          <span>{selectedOption?.label ?? 'Chọn tài khoản gửi...'}</span>
+          <span>{selectedOption?.label ?? 'Select sending account...'}</span>
         </Select.Trigger>
         <Select.Content>
           <Select.Group>
@@ -1037,7 +1036,7 @@
             updateAttachments(
               attachments.map((item) =>
                 item.localId === localId
-                  ? { ...item, status: 'error', errorMessage: 'Chưa chọn cuộc hội thoại' }
+                  ? { ...item, status: 'error', errorMessage: 'No conversation selected' }
                   : item
               )
             );
@@ -1079,7 +1078,7 @@
             aria-label="Re-authenticate Zalo QR"
             onclick={() => onOpenQrLogin(selectedOption?.account?.providerAccountKey)}
           >
-            <QrCode class="size-3" /> Đăng nhập lại QR
+            <QrCode class="size-3" /> Re-login via QR
           </Button>
         {:else if selectedOption?.account?.providerAccountKey}
           <Button
@@ -1165,7 +1164,7 @@
       onkeydown={handleKeydown}
       onpaste={() => void handlePaste()}
       maxlength={selectedCapabilities.maxTextLength > 0 ? selectedCapabilities.maxTextLength + 1 : undefined}
-      placeholder="Nhập tin nhắn..."
+      placeholder="Type a message..."
       disabled={disabled || (selectedOption !== null && !selectedOption.isEligible)}
       class="min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-full border border-input/80 bg-background text-sm text-foreground focus-visible:ring-1 focus-visible:ring-primary shadow-2xs resize-none"
     />
@@ -1173,14 +1172,14 @@
       type="button"
       onclick={handleSend}
       disabled={!canSend}
-      aria-label="Gửi"
-      title="Gửi tin nhắn (Enter)"
+      aria-label="Send"
+      title="Send message (Enter)"
       class="size-10 rounded-full shrink-0 bg-[#00a884] hover:bg-[#008f70] dark:bg-[#00a884] dark:hover:bg-[#008f70] text-white shadow-xs flex items-center justify-center transition-all duration-150 active:scale-95 disabled:opacity-40 disabled:active:scale-100 cursor-pointer p-0"
     >
       <svg viewBox="0 0 24 24" class="size-5 fill-current text-white translate-x-[1.5px]" aria-hidden="true">
         <path d="M1.101 21.757L23.8 12.028 1.101 2.3v7.572l12.769 2.156-12.769 2.157v7.572z"></path>
       </svg>
-      <span class="sr-only">Gửi</span>
+      <span class="sr-only">Send</span>
     </Button>
   </div>
 </div>

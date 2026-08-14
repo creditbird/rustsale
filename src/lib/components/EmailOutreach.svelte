@@ -886,7 +886,7 @@
       <!-- Variable Insertion Toolbar -->
       <div class="p-3 rounded-xl bg-muted/40 border border-border/70 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-[11px] font-bold text-muted-foreground">Chèn biến tự động:</span>
+          <span class="text-[11px] font-bold text-muted-foreground">Insert dynamic variable:</span>
           <div class="flex flex-wrap gap-1.5">
             <Badge role="button" variant="outline" class="cursor-pointer hover:bg-accent text-[11px] font-mono px-2.5 py-1" onclick={() => insertVariableBadge('{{name}}')}>+ {'{{name}}'}</Badge>
             <Badge role="button" variant="outline" class="cursor-pointer hover:bg-accent text-[11px] font-mono px-2.5 py-1" onclick={() => insertVariableBadge('{{company}}')}>+ {'{{company}}'}</Badge>
@@ -895,7 +895,7 @@
           </div>
         </div>
         <Badge variant="secondary" class="text-[10px] font-mono">
-          Trạng thái: <span class="capitalize font-bold ml-1 text-emerald-600">{activeInputField === 'subject' ? 'Subject' : 'Body'}</span>
+          Target field: <span class="capitalize font-bold ml-1 text-emerald-600">{activeInputField === 'subject' ? 'Subject' : 'Body'}</span>
         </Badge>
       </div>
 
@@ -903,7 +903,7 @@
       <div class="flex flex-col gap-2 flex-1">
         <div class="flex items-center justify-between">
           <label for="tpl-content-email" class="font-bold text-foreground">Content</label>
-          <span class="text-[11px] text-muted-foreground">Hỗ trợ plain text & HTML format</span>
+          <span class="text-[11px] text-muted-foreground">Supports plain text & HTML format</span>
         </div>
 
         <textarea

@@ -78,17 +78,17 @@
   function getStatusLabel(status: MessageStatus): string {
     switch (status) {
       case 'queued':
-        return 'Đang chờ';
+        return 'Queued';
       case 'sending':
-        return 'Đang gửi';
+        return 'Sending';
       case 'sent':
-        return 'Đã gửi';
+        return 'Sent';
       case 'delivered':
-        return 'Đã phát';
+        return 'Delivered';
       case 'read':
-        return 'Đã xem';
+        return 'Read';
       case 'failed':
-        return message.errorMessage ? `Thất bại: ${message.errorMessage}` : 'Thất bại';
+        return message.errorMessage ? `Failed: ${message.errorMessage}` : 'Failed';
       default:
         return status;
     }
@@ -265,7 +265,7 @@
   class="group/bubble flex w-full my-1.5 {isOutbound ? 'justify-end' : 'justify-start'}"
   data-message-id={message.id}
   role="group"
-  aria-label={`Tin nhắn ${message.id}`}
+  aria-label={`Message ${message.id}`}
   use:registerContextMenu
   onmouseenter={() => (isHovered = true)}
   onmouseleave={() => {
@@ -324,8 +324,8 @@
         {#if canReact}
           <Popover.Root bind:open={showPicker}>
             <Popover.Trigger
-              aria-label="Thả cảm xúc"
-              title="Thả cảm xúc"
+              aria-label="Add reaction"
+              title="Add reaction"
               class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted/50 hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {showPicker ? 'opacity-100 bg-muted/50 text-foreground' : 'opacity-0'}"
             >
               <Smile class="size-4" />
@@ -350,8 +350,8 @@
 
         <button
           type="button"
-          aria-label={isPinned ? 'Bỏ ghim tin nhắn' : 'Ghim tin nhắn'}
-          title={isPinned ? 'Bỏ ghim tin nhắn' : 'Ghim tin nhắn'}
+          aria-label={isPinned ? 'Unpin message' : 'Pin message'}
+          title={isPinned ? 'Unpin message' : 'Pin message'}
           class="grid size-7 place-items-center rounded-full text-muted-foreground transition-opacity hover:bg-muted/50 hover:text-foreground focus:opacity-100 group-hover/bubble:opacity-100 {isPinned ? 'opacity-100 text-amber-500 bg-amber-500/10' : 'opacity-0'}"
           onclick={() => onPin(message)}
         >
@@ -398,7 +398,7 @@
           <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
           <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
         </svg>
-        <span>Tin nhắn đã bị xóa</span>
+        <span>Message deleted</span>
       </div>
     {:else if isEmail}
       <!-- Email Card -->
@@ -410,12 +410,12 @@
         {/if}
         {#if emailFrom}
           <div>
-            <span class="font-semibold text-muted-foreground">Từ:</span> {emailFrom}
+            <span class="font-semibold text-muted-foreground">From:</span> {emailFrom}
           </div>
         {/if}
         {#if emailTo}
           <div>
-            <span class="font-semibold text-muted-foreground">Đến:</span> {emailTo}
+            <span class="font-semibold text-muted-foreground">To:</span> {emailTo}
           </div>
         {/if}
         {#if displayText}

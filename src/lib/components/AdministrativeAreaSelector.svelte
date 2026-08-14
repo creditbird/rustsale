@@ -40,14 +40,14 @@
   }
 
   const REGION_OPTIONS: RegionOption[] = [
-    { code: 'AF', label: 'Africa / Châu Phi' },
-    { code: 'AN', label: 'Antarctica / Nam Cực' },
-    { code: 'AS', label: 'Asia / Châu Á' },
-    { code: 'EU', label: 'Europe / Châu Âu' },
-    { code: 'NA', label: 'North America / Bắc Mỹ' },
-    { code: 'OC', label: 'Oceania / Châu Đại Dương' },
-    { code: 'SA', label: 'South America / Nam Mỹ' },
-    { code: 'OTHER', label: 'Other / Khác' }
+    { code: 'AF', label: 'Africa' },
+    { code: 'AN', label: 'Antarctica' },
+    { code: 'AS', label: 'Asia' },
+    { code: 'EU', label: 'Europe' },
+    { code: 'NA', label: 'North America' },
+    { code: 'OC', label: 'Oceania' },
+    { code: 'SA', label: 'South America' },
+    { code: 'OTHER', label: 'Other' }
   ];
 
   const LEVEL_DEFINITIONS: LevelDefinition[] = [
@@ -534,7 +534,7 @@
   <div class="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]">
     <div class="flex min-w-0 flex-col gap-1">
       <label for="administrative-region" class="text-[11px] font-medium text-muted-foreground">
-        Region / Khu vực
+        Region
       </label>
       {#if loadingCountries}
         <Skeleton class="h-8 w-full" />
@@ -547,7 +547,7 @@
         >
           <Select.Trigger
             id="administrative-region"
-            aria-label="Region / Khu vực"
+            aria-label="Region"
             class="h-8 w-full bg-background text-xs"
           >
             {REGION_OPTIONS.find((region) => region.code === selectedRegionCode)?.label ?? 'Select region'}
@@ -565,7 +565,7 @@
 
     <div class="flex min-w-0 flex-col gap-1">
       <label for="administrative-country" class="text-[11px] font-medium text-muted-foreground">
-        Country / Quốc gia
+        Country
       </label>
       {#if loadingCountries}
         <Skeleton class="h-8 w-full" />
@@ -578,7 +578,7 @@
         >
           <Select.Trigger
             id="administrative-country"
-            aria-label="Country / Quốc gia"
+            aria-label="Country"
             class="h-8 w-full bg-background text-xs"
           >
             {currentCountry?.name ?? 'Select country'}

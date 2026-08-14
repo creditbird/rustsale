@@ -122,7 +122,7 @@
       size="icon"
       class="size-8 text-muted-foreground hover:text-foreground"
       {disabled}
-      aria-label="Ghi âm tin nhắn"
+      aria-label="Record voice message"
       onclick={onToggleVoiceRecord}
       data-testid="voice-record-btn"
     >

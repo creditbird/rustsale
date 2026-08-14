@@ -274,23 +274,23 @@ export async function getSubscriptionPlans(): Promise<SubscriptionPlan[]> {
   return [
     {
       id: 'pro',
-      name: 'Gói PRO',
+      name: 'PRO Plan',
       price: 199000,
       duration_days: 30,
       max_devices: 3,
-      description: 'Gồm: 3 Máy + Toàn bộ tính năng Scraper & Outreach Zalo/Email.',
-      badge_text: 'Gói PRO',
+      description: 'Includes: 3 Devices + Full Scraper & Zalo/Email Outreach features.',
+      badge_text: 'PRO Plan',
       is_active: true,
       sort_order: 1
     },
     {
       id: 'enterprise',
-      name: 'Gói ENTERPRISE',
+      name: 'ENTERPRISE Plan',
       price: 499000,
       duration_days: 30,
       max_devices: 10,
-      description: 'Gồm: 10 Máy + Ưu tiên tốc độ Scraper & Hỗ trợ 24/7.',
-      badge_text: 'Gói ENTERPRISE',
+      description: 'Includes: 10 Devices + Priority Scraper speed & 24/7 Support.',
+      badge_text: 'ENTERPRISE Plan',
       is_active: true,
       sort_order: 2
     }
@@ -338,7 +338,7 @@ export async function createPaymentOrder(planId: string, customAmount?: number, 
 
   if (error) {
     console.error('Create payment transaction error:', error);
-    throw new Error(error.message || 'Không thể tạo giao dịch thanh toán.');
+    throw new Error(error.message || 'Unable to create payment transaction.');
   }
   return data as PaymentTransaction;
 }

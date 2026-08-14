@@ -25,7 +25,7 @@
   } = $props();
 
   let name = $state('');
-  let company = $state('Cá nhân');
+  let company = $state('Individual');
   let phone = $state('');
   let email = $state('');
   let status = $state('New');
@@ -38,7 +38,7 @@
     if (open) {
       name = initialName || '';
       phone = initialPhoneOrUid || '';
-      company = 'Cá nhân';
+      company = 'Individual';
       email = '';
       status = 'New';
       error = null;
@@ -52,7 +52,7 @@
 
     const trimmedName = name.trim();
     if (!trimmedName) {
-      validationError = 'Vui lòng nhập tên khách hàng / Lead';
+      validationError = 'Please enter customer / lead name';
       return;
     }
 
@@ -60,13 +60,13 @@
     try {
       const leadId = await crmService.addLead(
         trimmedName,
-        company.trim() || 'Cá nhân',
+        company.trim() || 'Individual',
         status,
         0,
         'Self',
         email.trim(),
         phone.trim(),
-        `Tạo từ Zalo Contact (${phone.trim() || 'No UID'})`
+        `Created from Zalo Contact (${phone.trim() || 'No UID'})`
       );
 
       if (identityId) {
@@ -88,10 +88,10 @@
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2 text-lg font-bold text-foreground">
         <UserPlus class="h-5 w-5 text-primary" />
-        <span>Tạo Khách Hàng CRM Mới</span>
+        <span>Create New CRM Lead</span>
       </Dialog.Title>
       <Dialog.Description class="text-xs text-muted-foreground">
-        Lưu thông tin khách hàng từ Zalo vào hệ thống quản lý CRM.
+        Save customer info from Zalo into CRM system.
       </Dialog.Description>
     </Dialog.Header>
 
@@ -112,24 +112,24 @@
     <form onsubmit={(e) => { e.preventDefault(); void handleCreateLead(); }} class="space-y-4 py-2">
       <div class="space-y-1.5">
         <label for="create-lead-name" class="text-xs font-semibold text-foreground">
-          Tên Khách hàng / Lead <span class="text-destructive">*</span>
+          Customer / Lead Name <span class="text-destructive">*</span>
         </label>
         <Input
           id="create-lead-name"
           bind:value={name}
-          placeholder="Nhập tên khách hàng..."
+          placeholder="Enter customer name..."
           class="h-9 text-xs"
         />
       </div>
 
       <div class="space-y-1.5">
         <label for="create-lead-phone" class="text-xs font-semibold text-foreground">
-          Số điện thoại / Zalo ID
+          Phone Number / Zalo ID
         </label>
         <Input
           id="create-lead-phone"
           bind:value={phone}
-          placeholder="Nhập SĐT hoặc Zalo ID..."
+          placeholder="Enter phone or Zalo ID..."
           class="h-9 text-xs font-mono"
         />
       </div>
@@ -137,12 +137,12 @@
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1.5">
           <label for="create-lead-company" class="text-xs font-semibold text-foreground">
-            Công ty / Doanh nghiệp
+            Company / Business
           </label>
           <Input
             id="create-lead-company"
             bind:value={company}
-            placeholder="Cá nhân / Acme Corp"
+            placeholder="Individual / Acme Corp"
             class="h-9 text-xs"
           />
         </div>
@@ -163,7 +163,7 @@
 
       <Dialog.Footer class="pt-2 flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onclick={onClose} disabled={isSubmitting}>
-          Hủy
+          Cancel
         </Button>
         <Button
           type="submit"
@@ -173,10 +173,10 @@
         >
           {#if isSubmitting}
             <Loader2 class="h-3.5 w-3.5 animate-spin" />
-            <span>Đang lưu...</span>
+            <span>Saving...</span>
           {:else}
             <UserPlus class="h-3.5 w-3.5" />
-            <span>Lưu Khách Hàng CRM</span>
+            <span>Save CRM Lead</span>
           {/if}
         </Button>
       </Dialog.Footer>

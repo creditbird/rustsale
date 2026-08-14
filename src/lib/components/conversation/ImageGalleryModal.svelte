@@ -140,7 +140,7 @@
         <button
           type="button"
           class="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
-          title="Thu nhỏ (-)"
+          title="Zoom out (-)"
           data-testid="gallery-zoom-out-btn"
           onclick={zoomOut}
         >
@@ -150,7 +150,7 @@
         <button
           type="button"
           class="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors text-xs font-mono"
-          title="Đặt lại kích thước"
+          title="Reset zoom"
           data-testid="gallery-zoom-reset-btn"
           onclick={resetZoom}
         >
@@ -160,7 +160,7 @@
         <button
           type="button"
           class="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
-          title="Phóng to (+)"
+          title="Zoom in (+)"
           data-testid="gallery-zoom-in-btn"
           onclick={zoomIn}
         >
@@ -172,7 +172,7 @@
         <button
           type="button"
           class="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
-          title="Tải ảnh về"
+          title="Download image"
           data-testid="gallery-download-btn"
           onclick={downloadImage}
         >
@@ -182,7 +182,7 @@
         <button
           type="button"
           class="p-2 rounded-lg bg-white/15 hover:bg-white/30 text-white transition-colors ml-2"
-          title="Đóng (Esc)"
+          title="Close (Esc)"
           data-testid="gallery-close-btn"
           onclick={onClose}
         >
@@ -198,7 +198,7 @@
         <button
           type="button"
           class="absolute left-6 z-10 p-3 rounded-full bg-black/50 hover:bg-black/80 border border-white/20 text-white transition-all hover:scale-105"
-          title="Ảnh trước (Mũi tên Trái)"
+          title="Previous image (Left arrow)"
           data-testid="gallery-prev-btn"
           onclick={(e) => { e.stopPropagation(); prevImage(); }}
         >
@@ -209,7 +209,7 @@
       <!-- Main Image -->
       <img
         src={currentImage.url}
-        alt={currentImage.alt || 'Hình ảnh preview'}
+        alt={currentImage.alt || 'Image preview'}
         class="max-h-[82vh] max-w-[90vw] object-contain transition-transform duration-150 rounded-lg shadow-2xl"
         style="transform: scale({zoomScale});"
         data-testid="gallery-main-image"
@@ -220,7 +220,7 @@
         <button
           type="button"
           class="absolute right-6 z-10 p-3 rounded-full bg-black/50 hover:bg-black/80 border border-white/20 text-white transition-all hover:scale-105"
-          title="Ảnh tiếp theo (Mũi tên Phải)"
+          title="Next image (Right arrow)"
           data-testid="gallery-next-btn"
           onclick={(e) => { e.stopPropagation(); nextImage(); }}
         >

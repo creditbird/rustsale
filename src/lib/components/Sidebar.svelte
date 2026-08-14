@@ -76,7 +76,7 @@
       <button
         type="button"
         onclick={onOpenLicense}
-        title="Quản lý Bản quyền & HWID"
+        title="License & HWID Management"
         class="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-500/10 border border-emerald-500/20 transition-colors shrink-0"
       >
         <ShieldCheck class="size-4" />

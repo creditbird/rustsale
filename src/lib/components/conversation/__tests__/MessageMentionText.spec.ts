@@ -96,9 +96,9 @@ describe('MessageMentionText.svelte', () => {
   });
 
   it('calls onMentionClick with externalId when present', async () => {
-    let clickedIdentityId: number | null = null;
-    let clickedText = '';
-    let clickedExternalId: string | undefined = undefined;
+    let clickedIdentityId: unknown = undefined;
+    let clickedText: unknown = '';
+    let clickedExternalId: unknown = undefined;
 
     const { getAllByTestId } = render(MessageMentionText, {
       props: {

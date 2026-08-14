@@ -22,12 +22,12 @@
   >
     <img
       src={safeUrl}
-      alt={attachment.fileName ?? 'Hình ảnh'}
+      alt={attachment.fileName ?? 'Image'}
       loading="lazy"
       class="message-image max-h-[260px] max-w-[260px] rounded-lg object-cover"
     />
   </div>
 {:else}
-  <div class="image-fallback text-xs italic text-muted-foreground">[Hình ảnh không khả dụng]</div>
+  <div class="image-fallback text-xs italic text-muted-foreground">[Image unavailable]</div>
 {/if}
 

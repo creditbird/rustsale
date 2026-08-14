@@ -238,7 +238,7 @@
 
   function getParticipantsPreview(item: InboxItem): string {
     if (!item.participants || item.participants.length === 0) return '';
-    return item.participants.map((p) => p.displayName || 'Thành viên').join(', ');
+    return item.participants.map((p) => p.displayName || 'Member').join(', ');
   }
 
   function promptDelete(e: MouseEvent, item: InboxItem) {
@@ -268,10 +268,10 @@
             }}
           >
             <Checkbox checked={isAllSelected} tabindex={-1} class="pointer-events-none" />
-            <span>Tất cả ({visibleItems.length})</span>
+            <span>All ({visibleItems.length})</span>
           </div>
           <span class="text-xs font-semibold text-muted-foreground">
-            Đã chọn {selectedCount}
+            Selected {selectedCount}
           </span>
         </div>
         <div class="flex items-center gap-1">
@@ -283,13 +283,13 @@
             onclick={promptBatchDelete}
           >
             <Trash2 class="w-3.5 h-3.5" />
-            <span>Xóa ({selectedCount})</span>
+            <span>Delete ({selectedCount})</span>
           </Button>
           <Button
             variant="ghost"
             size="sm"
             class="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-            title="Thoát chế độ chọn"
+            title="Exit selection mode"
             onclick={toggleSelectionMode}
           >
             <X class="w-4 h-4" />
@@ -298,17 +298,17 @@
       </div>
     {:else}
       <div class="flex items-center justify-between gap-2">
-        <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Hội thoại</span>
+        <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Conversations</span>
         <div class="flex items-center gap-1">
           <Button
             variant="outline"
             size="sm"
             class="h-7 text-xs gap-1 px-2 font-medium"
-            title="Chọn nhiều cuộc trò chuyện"
+            title="Select multiple conversations"
             onclick={toggleSelectionMode}
           >
             <CheckSquare class="w-3.5 h-3.5" />
-            <span>Chọn nhiều</span>
+            <span>Select</span>
           </Button>
           <Button
             variant="default"
@@ -317,7 +317,7 @@
             onclick={() => (newChatOpen = true)}
           >
             <Plus class="w-3.5 h-3.5" />
-            <span>Chat mới</span>
+            <span>New Chat</span>
           </Button>
         </div>
       </div>
@@ -327,13 +327,13 @@
       <Search class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
       <Input
         type="text"
-        placeholder="Tìm kiếm cuộc trò chuyện..."
+        placeholder="Search conversations..."
         bind:value={searchQuery}
         class="pl-9 text-sm h-8"
       />
     </div>
 
-    <!-- Kind Filter Tabs (Option A: Tất cả / Khách hàng / Nhóm) -->
+    <!-- Kind Filter Tabs -->
     <div class="flex items-center gap-1 bg-muted/60 p-1 rounded-lg border border-border/40 select-none text-xs font-medium">
       <button
         type="button"
@@ -346,7 +346,7 @@
         )}
         onclick={() => (activeKindTab = 'all')}
       >
-        Tất cả ({allCount})
+        All ({allCount})
       </button>
       <button
         type="button"
@@ -359,7 +359,7 @@
         )}
         onclick={() => (activeKindTab = 'customer')}
       >
-        Khách hàng ({customerCount})
+        Customers ({customerCount})
       </button>
       <button
         type="button"
@@ -372,7 +372,7 @@
         )}
         onclick={() => (activeKindTab = 'group')}
       >
-        Nhóm ({groupCount})
+        Groups ({groupCount})
       </button>
     </div>
 
@@ -388,7 +388,7 @@
         )}
         onclick={() => (activeFilterTab = 'all')}
       >
-        Tất cả ({items.length})
+        All ({items.length})
       </button>
       <button
         type="button"
@@ -400,7 +400,7 @@
         )}
         onclick={() => (activeFilterTab = 'unread')}
       >
-        Chưa đọc ({unreadCount})
+        Unread ({unreadCount})
       </button>
       <button
         type="button"
@@ -412,7 +412,7 @@
         )}
         onclick={() => (activeFilterTab = 'priority')}
       >
-        Ưu tiên ({priorityCount})
+        Priority ({priorityCount})
       </button>
       <button
         type="button"
@@ -424,7 +424,7 @@
         )}
         onclick={() => (activeFilterTab = 'stuck')}
       >
-        Kẹt ({stuckCount})
+        Stuck ({stuckCount})
       </button>
     </div>
   </div>
@@ -448,7 +448,7 @@
           <div>
             <h3 class="text-xs font-semibold text-amber-500 uppercase tracking-wider px-3 py-1.5 flex items-center gap-1.5">
               <Pin class="w-3.5 h-3.5 fill-amber-500" />
-              <span>Đã ghim ({pinnedItems.length})</span>
+              <span>Pinned ({pinnedItems.length})</span>
             </h3>
             <div class="space-y-1">
               {#each pinnedItems as item (item.key)}
@@ -508,7 +508,7 @@
                       <div class="flex items-center gap-0.5 shrink-0">
                         <button
                           type="button"
-                          title="Bỏ ghim cuộc trò chuyện"
+                          title="Unpin conversation"
                           onclick={(e) => togglePinConversation(e, item)}
                           class="p-1 rounded text-amber-500 hover:bg-amber-500/10 shrink-0"
                         >
@@ -517,7 +517,7 @@
                         {#if !isSelectionMode}
                           <button
                             type="button"
-                            title="Xóa cuộc trò chuyện"
+                            title="Delete conversation"
                             onclick={(e) => promptDelete(e, item)}
                             class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
                           >
@@ -622,7 +622,7 @@
                         <div class="flex items-center gap-0.5 shrink-0">
                           <button
                             type="button"
-                            title="Ghim cuộc trò chuyện lên đầu"
+                            title="Pin conversation"
                             onclick={(e) => togglePinConversation(e, item)}
                             class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
                           >
@@ -631,7 +631,7 @@
                           {#if !isSelectionMode}
                             <button
                               type="button"
-                              title="Xóa cuộc trò chuyện"
+                              title="Delete conversation"
                               onclick={(e) => promptDelete(e, item)}
                               class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
                             >
@@ -667,14 +667,14 @@
                               class={cn(
                                 "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
                                 count > 0
-                                  ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
-                                  : chName === 'zalo'
-                                    ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
-                                    : chName === 'whatsapp'
-                                      ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
-                                      : chName === 'messenger'
-                                        ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
-                                        : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
+                                    ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
+                                    : chName === 'zalo'
+                                      ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
+                                      : chName === 'whatsapp'
+                                        ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
+                                        : chName === 'messenger'
+                                          ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
+                                          : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
                               )}
                             >
                               <Icon class="w-3 h-3" />
@@ -695,7 +695,7 @@
           {#if customerItems.length > 0}
             <div>
               <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
-                Khách hàng ({customerItems.length})
+                Customers ({customerItems.length})
               </h3>
               <div class="space-y-1">
                 {#each customerItems as item (item.key)}
@@ -755,7 +755,7 @@
                         <div class="flex items-center gap-0.5 shrink-0">
                           <button
                             type="button"
-                            title="Ghim cuộc trò chuyện lên đầu"
+                            title="Pin conversation"
                             onclick={(e) => togglePinConversation(e, item)}
                             class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
                           >
@@ -764,7 +764,7 @@
                           {#if !isSelectionMode}
                             <button
                               type="button"
-                              title="Xóa cuộc trò chuyện"
+                              title="Delete conversation"
                               onclick={(e) => promptDelete(e, item)}
                               class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
                             >
@@ -818,7 +818,7 @@
           {#if groupItems.length > 0}
             <div>
               <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
-                Nhóm ({groupItems.length})
+                Groups ({groupItems.length})
               </h3>
               <div class="space-y-1">
                 {#each groupItems as item (item.key)}
@@ -878,7 +878,7 @@
                         <div class="flex items-center gap-0.5 shrink-0">
                           <button
                             type="button"
-                            title="Ghim cuộc trò chuyện lên đầu"
+                            title="Pin conversation"
                             onclick={(e) => togglePinConversation(e, item)}
                             class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
                           >
@@ -887,7 +887,7 @@
                           {#if !isSelectionMode}
                             <button
                               type="button"
-                              title="Xóa cuộc trò chuyện"
+                              title="Delete conversation"
                               onclick={(e) => promptDelete(e, item)}
                               class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
                             >
@@ -942,7 +942,7 @@
 
         {#if unpinnedItems.length === 0 && pinnedItems.length === 0}
           <div class="p-4 text-center text-sm text-muted-foreground">
-            Không tìm thấy cuộc trò chuyện nào
+            No conversations found
           </div>
         {/if}
 

@@ -48,7 +48,7 @@
       if (typeof message === 'string' && message.trim()) return message;
     }
     if (typeof error === 'string' && error.trim()) return error;
-    return 'Không thể thả cảm xúc';
+    return 'Unable to update reaction';
   }
 
   export function isPending(messageId: number, reactionCode: ConversationReactionCode): boolean {
@@ -114,7 +114,7 @@
           messageId,
           reaction: reactionCode,
           status: result.status === 'delivery_unknown' ? ('delivery_unknown' as const) : ('failed' as const),
-          errorMessage: result.errorMessage || `Lỗi thả cảm xúc (${result.status})`
+          errorMessage: result.errorMessage || `Reaction error (${result.status})`
         };
         mutationErrors = [...mutationErrors, errorItem];
         return result;
@@ -232,7 +232,7 @@
         </div>
         <button
           type="button"
-          aria-label="Đóng thông báo"
+          aria-label="Dismiss notification"
           class="rounded-sm p-0.5 hover:bg-destructive/20"
           onclick={() => dismissError(err.id)}
         >

@@ -80,15 +80,15 @@
   <DialogContent class="sm:max-w-[400px]">
     <DialogHeader>
       <DialogTitle class="text-destructive">
-        {count > 1 ? `Xóa ${count} cuộc trò chuyện` : 'Xóa cuộc trò chuyện'}
+        {count > 1 ? `Delete ${count} conversations` : 'Delete Conversation'}
       </DialogTitle>
       <DialogDescription class="pt-1 text-sm">
         {#if count > 1}
-          Bạn có chắc chắn muốn xóa <strong>{count}</strong> cuộc trò chuyện đã chọn? Lịch sử tin nhắn của các cuộc trò chuyện này sẽ bị xóa khỏi ứng dụng.
+          Are you sure you want to delete <strong>{count}</strong> selected conversations? Message history for these conversations will be removed from the application.
         {:else if singleItem}
-          Bạn có chắc chắn muốn xóa cuộc trò chuyện với <strong>{singleItem.title}</strong>? Lịch sử tin nhắn của cuộc trò chuyện này sẽ bị xóa khỏi ứng dụng.
+          Are you sure you want to delete the conversation with <strong>{singleItem.title}</strong>? Message history for this conversation will be removed from the application.
         {:else}
-          Bạn có chắc chắn muốn xóa cuộc trò chuyện này?
+          Are you sure you want to delete this conversation?
         {/if}
       </DialogDescription>
     </DialogHeader>
@@ -101,10 +101,10 @@
 
     <DialogFooter class="pt-3">
       <Button variant="outline" onclick={() => (open = false)} disabled={submitting}>
-        Hủy
+        Cancel
       </Button>
       <Button variant="destructive" onclick={handleConfirm} disabled={submitting}>
-        {submitting ? 'Đang xóa...' : count > 1 ? `Xóa (${count})` : 'Xóa trò chuyện'}
+        {submitting ? 'Deleting...' : count > 1 ? `Delete (${count})` : 'Delete Conversation'}
       </Button>
     </DialogFooter>
   </DialogContent>

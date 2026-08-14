@@ -163,7 +163,7 @@ describe('forwardState', () => {
         ],
         participantCount: 1,
         participants: [
-          { identityId: 100, displayName: 'Nguyen Van A', avatarUrl: null, participantRole: 'customer' }
+          { identityId: 100, externalId: 'uid-100', displayName: 'Nguyen Van A', avatarUrl: null, participantRole: 'customer' }
         ]
       },
       {
@@ -190,7 +190,7 @@ describe('forwardState', () => {
         ],
         participantCount: 1,
         participants: [
-          { identityId: 200, displayName: 'Tran Thi B', avatarUrl: null, participantRole: 'customer' }
+          { identityId: 200, externalId: 'uid-200', displayName: 'Tran Thi B', avatarUrl: null, participantRole: 'customer' }
         ]
       },
       {

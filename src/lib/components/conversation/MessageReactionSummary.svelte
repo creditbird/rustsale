@@ -74,7 +74,7 @@
         <button
           type="button"
           disabled={pending}
-          title={canReact ? 'Click chuột trái để thả thêm (+1). Chuột phải để xóa cảm xúc.' : ''}
+          title={canReact ? 'Left click to add reaction (+1). Right click to remove reaction.' : ''}
           class="rounded-full border border-border/60 bg-background/90 px-2 py-0.5 text-xs shadow-xs hover:bg-muted transition-colors disabled:opacity-50 {group.includesMe
             ? 'border-primary/50 bg-primary/10 text-primary font-medium'
             : ''}"

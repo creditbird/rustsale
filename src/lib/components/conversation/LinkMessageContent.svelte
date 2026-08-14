@@ -22,7 +22,7 @@
   let title = $derived(
     typeof content.title === 'string' && content.title.trim()
       ? content.title
-      : textContent || safeUrl || 'Liên kết'
+      : textContent || safeUrl || 'Link'
   );
   let description = $derived(
     typeof content.description === 'string' && content.description.trim()
@@ -68,6 +68,6 @@
   </a>
 {:else}
   <div class="rounded-md border border-destructive/20 bg-destructive/10 p-2 text-xs font-medium text-destructive" data-testid="link-message-content">
-    Liên kết không hợp lệ
+    Invalid link
   </div>
 {/if}

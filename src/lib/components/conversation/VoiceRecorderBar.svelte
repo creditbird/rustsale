@@ -73,7 +73,7 @@
       isRecording = true;
       startTimer();
     } catch (err) {
-      errorMessage = err instanceof Error ? err.message : 'Không thể truy cập microphone';
+      errorMessage = err instanceof Error ? err.message : 'Unable to access microphone';
     }
   }
 
@@ -109,7 +109,7 @@
       <span class="relative inline-flex size-3 rounded-full bg-destructive"></span>
     </span>
     <Mic class="size-4 animate-pulse" />
-    <span>Đang ghi âm ({formatDuration(recordingSeconds)})</span>
+    <span>Recording ({formatDuration(recordingSeconds)})</span>
   </div>
 
   {#if errorMessage}
@@ -122,7 +122,7 @@
       variant="ghost"
       size="icon"
       class="size-7 text-destructive hover:bg-destructive/20"
-      title="Hủy ghi âm"
+      title="Cancel recording"
       onclick={handleCancel}
     >
       <Trash2 class="size-4" />
@@ -135,7 +135,7 @@
       onclick={handleSend}
     >
       <Send class="size-3.5" />
-      <span>Gửi voice</span>
+      <span>Send voice</span>
     </Button>
   </div>
 </div>

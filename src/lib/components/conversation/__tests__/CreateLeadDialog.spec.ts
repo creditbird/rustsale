@@ -14,7 +14,7 @@ describe('CreateLeadDialog.svelte', () => {
       }
     });
 
-    expect(getByText('Tạo Khách Hàng CRM Mới')).toBeTruthy();
+    expect(getByText('Create New CRM Lead')).toBeTruthy();
     expect(getByDisplayValue('Luan Nguyen Thanh')).toBeTruthy();
     expect(getByDisplayValue('6045')).toBeTruthy();
   });
@@ -28,9 +28,9 @@ describe('CreateLeadDialog.svelte', () => {
       }
     });
 
-    const submitBtn = getByText('Lưu Khách Hàng CRM');
+    const submitBtn = getByText('Save CRM Lead');
     await fireEvent.click(submitBtn);
 
-    expect(getByText('Vui lòng nhập tên khách hàng / Lead')).toBeTruthy();
+    expect(getByText('Please enter customer / lead name')).toBeTruthy();
   });
 });

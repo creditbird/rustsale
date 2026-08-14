@@ -125,7 +125,7 @@
 
   // Active period target scaling
   const periodMultiplier = $derived(
-    selectedPeriod === 'Tháng này' ? 0.333 : selectedPeriod === 'YTD 2026' ? 4 : 1
+    selectedPeriod === 'This Month' ? 0.333 : selectedPeriod === 'YTD 2026' ? 4 : 1
   );
 
   const activePeriodTarget = $derived(Math.round(targetRevenue * periodMultiplier));
@@ -140,7 +140,7 @@
       const year = dDate.getFullYear();
       const month = dDate.getMonth();
 
-      if (selectedPeriod === 'Tháng này') {
+      if (selectedPeriod === 'This Month') {
         const now = new Date();
         return year === now.getFullYear() && month === now.getMonth();
       } else if (selectedPeriod === 'Q3 2026') {
@@ -207,7 +207,7 @@
       const year = dDate.getFullYear();
       const month = dDate.getMonth();
 
-      if (selectedPeriod === 'Tháng này') {
+      if (selectedPeriod === 'This Month') {
         const now = new Date();
         const prevMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
         const prevYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
@@ -250,7 +250,7 @@
       const year = lDate.getFullYear();
       const month = lDate.getMonth();
 
-      if (selectedPeriod === 'Tháng này') {
+      if (selectedPeriod === 'This Month') {
         const now = new Date();
         const prevMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
         const prevYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
@@ -272,7 +272,7 @@
       const year = lDate.getFullYear();
       const month = lDate.getMonth();
 
-      if (selectedPeriod === 'Tháng này') {
+      if (selectedPeriod === 'This Month') {
         const now = new Date();
         return year === now.getFullYear() && month === now.getMonth();
       } else if (selectedPeriod === 'Q3 2026') {
@@ -346,7 +346,7 @@
 
   const schedule = $derived.by(() => {
     return recentActivities.map(act => {
-      const timeStr = act.created_at ? new Date(act.created_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : 'Vừa xong';
+      const timeStr = act.created_at ? new Date(act.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : 'Just now';
       return {
         time: timeStr,
         title: `[${act.activity_type}] ${act.content}`
@@ -358,7 +358,7 @@
   const monthlyTrendData = $derived.by(() => {
     const wonDeals = activeDeals.filter(d => d.stage === 'Won');
 
-    if (selectedPeriod === 'Tháng này') {
+    if (selectedPeriod === 'This Month') {
       const weekBuckets = [0, 0, 0, 0];
       wonDeals.forEach(d => {
         if (!d.created_at) return;
@@ -370,10 +370,10 @@
       });
       const targetPerWeek = Math.round(activePeriodTarget / 4);
       return [
-        { month: 'Tuần 1', value: weekBuckets[0], target: targetPerWeek },
-        { month: 'Tuần 2', value: weekBuckets[1], target: targetPerWeek },
-        { month: 'Tuần 3', value: weekBuckets[2], target: targetPerWeek },
-        { month: 'Tuần 4', value: weekBuckets[3], target: targetPerWeek }
+        { month: 'Week 1', value: weekBuckets[0], target: targetPerWeek },
+        { month: 'Week 2', value: weekBuckets[1], target: targetPerWeek },
+        { month: 'Week 3', value: weekBuckets[2], target: targetPerWeek },
+        { month: 'Week 4', value: weekBuckets[3], target: targetPerWeek }
       ];
     } else if (selectedPeriod === 'YTD 2026') {
       const qBuckets = [0, 0, 0, 0];
@@ -407,9 +407,9 @@
     });
     const targetPerMonth = Math.round(activePeriodTarget / 3);
     return [
-      { month: 'Tháng 7', value: monthBuckets[6], target: targetPerMonth },
-      { month: 'Tháng 8', value: monthBuckets[7], target: targetPerMonth },
-      { month: 'Tháng 9', value: monthBuckets[8], target: targetPerMonth }
+      { month: 'Jul 2026', value: monthBuckets[6], target: targetPerMonth },
+      { month: 'Aug 2026', value: monthBuckets[7], target: targetPerMonth },
+      { month: 'Sep 2026', value: monthBuckets[8], target: targetPerMonth }
     ];
   });
 </script>
@@ -437,7 +437,7 @@
     <!-- Controls & Period Filter -->
     <div class="flex items-center gap-2 self-start sm:self-auto flex-wrap">
       <div class="flex items-center gap-1 bg-muted/50 p-1 rounded-xl border border-border text-xs">
-        {#each ['Tháng này', 'Q3 2026', 'YTD 2026'] as period}
+        {#each ['This Month', 'Q3 2026', 'YTD 2026'] as period}
           <button
             type="button"
             onclick={() => selectedPeriod = period}
@@ -450,7 +450,7 @@
 
       <Button variant="outline" size="sm" onclick={reloadData} class="h-8 gap-1.5 text-xs font-semibold rounded-xl" disabled={loading}>
         <RefreshCw class="w-3.5 h-3.5 {loading ? 'animate-spin' : ''}" />
-        <span>Làm mới</span>
+        <span>Refresh</span>
       </Button>
     </div>
   </div>
@@ -493,8 +493,7 @@
       <Card.Header class="flex flex-row items-center justify-between pb-4 border-b border-border/60">
         <div>
           <Card.Title class="text-base font-semibold">Revenue Target vs. Actual</Card.Title>
-
-          <p class="text-xs text-muted-foreground font-medium">Kỳ theo dõi: <span class="font-bold text-foreground">{selectedPeriod}</span></p>
+          <p class="text-xs text-muted-foreground font-medium">Tracking Period: <span class="font-bold text-foreground">{selectedPeriod}</span></p>
         </div>
         <div class="flex items-center gap-2">
           <Button 
@@ -504,7 +503,7 @@
             class="h-7 text-xs gap-1.5 font-semibold text-primary border-primary/30 hover:bg-primary/10 rounded-lg"
           >
             <Settings class="w-3.5 h-3.5" />
-            <span>Sửa Target</span>
+            <span>Edit Target</span>
           </Button>
           <Badge variant="outline" class="border-emerald-500/30 text-emerald-600 bg-emerald-500/10 uppercase text-[10px] tracking-wider font-bold">
             {selectedPeriod}
@@ -516,15 +515,15 @@
         <!-- Target Progress Summary Banner -->
         <div class="p-4 rounded-xl bg-muted/40 border border-border/70 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div class="space-y-1">
-            <span class="text-xs text-muted-foreground font-medium">Tiến độ thực tế ({selectedPeriod})</span>
+            <span class="text-xs text-muted-foreground font-medium">Actual Progress ({selectedPeriod})</span>
             <div class="flex items-baseline gap-2">
-              <span class="text-2xl font-extrabold text-emerald-600 tracking-tight">Doanh số: {formatCompactCurrency(totalRevenue)}</span>
+              <span class="text-2xl font-extrabold text-emerald-600 tracking-tight">Revenue: {formatCompactCurrency(totalRevenue)}</span>
               <span class="text-xs font-bold text-muted-foreground">/ {formatCompactCurrency(activePeriodTarget)} Target</span>
             </div>
           </div>
           <div class="flex items-center gap-4">
             <div class="text-right">
-              <span class="text-[11px] text-muted-foreground block font-medium">Tỷ lệ hoàn thành</span>
+              <span class="text-[11px] text-muted-foreground block font-medium">Completion Rate</span>
               <span class="text-lg font-black text-foreground">{targetProgressPct}%</span>
             </div>
             <div class="w-12 h-12 rounded-full border-4 border-emerald-500/20 border-t-emerald-500 flex items-center justify-center font-bold text-xs text-emerald-600 bg-emerald-500/5">
@@ -562,7 +561,7 @@
 
         <!-- Monthly Forecast Sparkline / Trend -->
         <div class="pt-2">
-          <span class="text-xs font-bold text-foreground block mb-3">Xu Hướng Doanh Số & Dự Báo ({selectedPeriod})</span>
+          <span class="text-xs font-bold text-foreground block mb-3">Revenue Trends & Forecast ({selectedPeriod})</span>
           <div class="grid grid-cols-3 sm:grid-cols-6 gap-2">
             {#each monthlyTrendData as item}
               <div class="p-2.5 rounded-xl border border-border/70 bg-muted/20 text-center space-y-1">
@@ -583,7 +582,7 @@
           <Card.Title class="text-base font-bold text-foreground">Pipeline Stages</Card.Title>
           <Badge variant="outline" class="text-[10px]">{activeDeals.length} deals</Badge>
         </div>
-        <p class="text-xs text-muted-foreground">Phân bổ cơ hội ({selectedPeriod})</p>
+        <p class="text-xs text-muted-foreground">Opportunity Distribution ({selectedPeriod})</p>
       </Card.Header>
 
       <Card.Content class="pt-4 flex-1 flex flex-col justify-between space-y-4">
@@ -614,7 +613,7 @@
         </div>
 
         <div class="pt-3 border-t border-border/60 bg-muted/20 p-3 rounded-xl flex items-center justify-between text-xs">
-          <span class="text-muted-foreground font-medium">Tổng giá trị pipeline:</span>
+          <span class="text-muted-foreground font-medium">Total pipeline value:</span>
           <span class="font-black text-emerald-600 text-sm">{formatCompactCurrency(totalPipelineValue + totalRevenue)}</span>
         </div>
       </Card.Content>
@@ -628,10 +627,10 @@
     <Card.Root class="shadow-2xs border-border/80">
       <Card.Header class="pb-3 border-b border-border/60">
         <div class="flex items-center justify-between">
-          <Card.Title class="text-sm font-bold text-foreground">Phân Loại Leads</Card.Title>
+          <Card.Title class="text-sm font-bold text-foreground">Lead Breakdown</Card.Title>
           <Badge variant="outline" class="text-[10px] font-mono">{leads.length} Leads</Badge>
         </div>
-        <p class="text-xs text-muted-foreground">Trạng thái & Xác thực Zalo</p>
+        <p class="text-xs text-muted-foreground">Status & Zalo Verification</p>
       </Card.Header>
       <Card.Content class="pt-4 space-y-4">
         <div class="space-y-2.5">
@@ -654,7 +653,7 @@
             <MessageCircle class="w-4 h-4 text-sky-500" />
             <div>
               <p class="text-xs font-bold text-foreground">Zalo Reachability</p>
-              <p class="text-[10px] text-muted-foreground">{zaloVerifiedCount} leads thực tế</p>
+              <p class="text-[10px] text-muted-foreground">{zaloVerifiedCount} actual leads</p>
             </div>
           </div>
           <Badge variant="outline" class="border-sky-500/30 text-sky-600 bg-sky-500/10 font-bold">
@@ -668,15 +667,15 @@
     <Card.Root class="shadow-2xs border-border/80">
       <Card.Header class="pb-3 border-b border-border/60">
         <div class="flex items-center justify-between">
-          <Card.Title class="text-sm font-bold text-foreground">Top Deals Thương Lượng</Card.Title>
+          <Card.Title class="text-sm font-bold text-foreground">Top Negotiating Deals</Card.Title>
           <Badge variant="secondary" class="text-[10px]">{topActiveDeals.length} active</Badge>
         </div>
-        <p class="text-xs text-muted-foreground">Cơ hội giá trị cao nhất</p>
+        <p class="text-xs text-muted-foreground">Highest value opportunities</p>
       </Card.Header>
       <Card.Content class="pt-4 space-y-3">
         {#if topActiveDeals.length === 0}
           <div class="p-4 rounded-xl border border-dashed border-border text-center text-xs text-muted-foreground py-8">
-            Chưa có deal active nào trong hệ thống.
+            No active deals found in the system.
           </div>
         {:else}
           {#each topActiveDeals as deal}
@@ -688,7 +687,7 @@
                 <span class="text-xs font-black text-emerald-600 shrink-0">${deal.value.toLocaleString()}</span>
               </div>
               <div class="flex items-center justify-between text-[11px]">
-                <span class="text-muted-foreground truncate">{lead ? lead.name : 'Chưa gán'}</span>
+                <span class="text-muted-foreground truncate">{lead ? lead.name : 'Unassigned'}</span>
                 <Badge variant="outline" class="text-[9px] py-0 px-1.5 font-semibold border-border">
                   {cfg.label}
                 </Badge>
@@ -703,15 +702,15 @@
     <Card.Root class="shadow-2xs border-border/80">
       <Card.Header class="pb-3 border-b border-border/60">
         <div class="flex items-center justify-between">
-          <Card.Title class="text-sm font-bold text-foreground">Hoạt Động Gần Đây</Card.Title>
+          <Card.Title class="text-sm font-bold text-foreground">Recent Activities</Card.Title>
           <Badge variant="outline" class="text-[10px] font-mono">{schedule.length} logs</Badge>
         </div>
-        <p class="text-xs text-muted-foreground">Nhật ký tác vụ & tương tác mới nhất</p>
+        <p class="text-xs text-muted-foreground">Latest tasks & interactions log</p>
       </Card.Header>
       <Card.Content class="pt-4 space-y-3">
         {#if schedule.length === 0}
           <div class="p-4 rounded-xl border border-dashed border-border text-center text-xs text-muted-foreground py-8">
-            Chưa có hoạt động hay nhật ký nào được ghi nhận.
+            No activities or logs recorded yet.
           </div>
         {:else}
           {#each schedule as item}
@@ -740,8 +739,8 @@
             <Target class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-base text-foreground">Cấu Hình Mục Tiêu Doanh Số</h3>
-            <p class="text-xs text-muted-foreground">Điều chỉnh chỉ số Target & Stretch Goal</p>
+            <h3 class="font-bold text-base text-foreground">Sales Target Configuration</h3>
+            <p class="text-xs text-muted-foreground">Adjust Target & Stretch Goal metrics</p>
           </div>
         </div>
         <button 
@@ -757,7 +756,7 @@
         <div class="space-y-1.5">
           <label for="target-revenue-input" class="font-bold text-foreground flex items-center gap-1.5">
             <DollarSign class="w-3.5 h-3.5 text-rose-500" />
-            Mục tiêu Doanh Số Kỳ Vọng (Target $)
+            Target Revenue ($)
           </label>
           <Input 
             id="target-revenue-input"
@@ -768,13 +767,13 @@
             class="h-10 text-xs rounded-xl font-bold text-foreground"
             required
           />
-          <p class="text-[11px] text-muted-foreground">Ví dụ: 120000 cho $120k</p>
+          <p class="text-[11px] text-muted-foreground">e.g. 120000 for $120k</p>
         </div>
 
         <div class="space-y-1.5">
           <label for="stretch-revenue-input" class="font-bold text-foreground flex items-center gap-1.5">
             <TrendingUp class="w-3.5 h-3.5 text-indigo-500" />
-            Mục tiêu Vượt Mức (Stretch Goal $)
+            Stretch Goal ($)
           </label>
           <Input 
             id="stretch-revenue-input"
@@ -785,7 +784,7 @@
             class="h-10 text-xs rounded-xl font-bold text-indigo-600"
             required
           />
-          <p class="text-[11px] text-muted-foreground">Ví dụ: 150000 cho $150k</p>
+          <p class="text-[11px] text-muted-foreground">e.g. 150000 for $150k</p>
         </div>
 
         <div class="pt-4 border-t border-border flex items-center justify-end gap-3">
@@ -795,14 +794,14 @@
             onclick={() => showTargetModal = false}
             class="h-9 px-4 text-xs rounded-xl font-semibold"
           >
-            Hủy Bỏ
+            Cancel
           </Button>
           <Button 
             type="submit" 
             class="h-9 px-5 text-xs rounded-xl font-bold bg-primary text-primary-foreground hover:bg-primary/90 shadow-md gap-1.5"
           >
             <Save class="w-3.5 h-3.5" />
-            <span>Lưu Mục Tiêu</span>
+            <span>Save Target</span>
           </Button>
         </div>
       </form>

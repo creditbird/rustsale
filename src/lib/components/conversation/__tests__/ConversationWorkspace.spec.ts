@@ -531,7 +531,7 @@ describe('ConversationWorkspace Component', () => {
 
     const zaloBadge = screen.getByRole('button', { name: 'zalo' });
     expect(zaloBadge.getAttribute('aria-pressed')).toBe('true');
-    expect(screen.queryByText('Không có kênh nào đang được hiển thị')).toBeNull();
+    expect(screen.queryByText('No channels currently visible')).toBeNull();
     expect(mockGetIdentityTimeline).toHaveBeenCalledWith(28, null, 50);
     expect(screen.queryByText('Chào shop')).not.toBeNull();
   });
@@ -547,7 +547,7 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(mockGetConversationTimeline).toHaveBeenCalledWith(30, null, 50);
-    expect(screen.queryByText('Không có kênh nào đang được hiển thị')).toBeNull();
+    expect(screen.queryByText('No channels currently visible')).toBeNull();
   });
 
   test('4b. Group member dialog traps focus, closes with Escape, and restores the trigger', async () => {
@@ -557,7 +557,7 @@ describe('ConversationWorkspace Component', () => {
 
     await fireEvent.click(screen.getByText('Nhóm VIP'));
     await tick();
-    const trigger = screen.getByRole('button', { name: /3 thành viên/ });
+    const trigger = screen.getByRole('button', { name: /3 members/ });
     trigger.focus();
     await fireEvent.click(trigger);
 
@@ -602,7 +602,7 @@ describe('ConversationWorkspace Component', () => {
 
     await new Promise((r) => setTimeout(r, 20));
 
-    expect(screen.queryByText('Không có kênh nào đang được hiển thị')).toBeNull();
+    expect(screen.queryByText('No channels currently visible')).toBeNull();
     expect(messengerBadge.getAttribute('aria-pressed')).toBe('true');
     expect(mockGetContactTimeline).toHaveBeenLastCalledWith(1, ['messenger'], null, 50);
   });
@@ -885,10 +885,10 @@ describe('ConversationWorkspace Component', () => {
     await tick();
     await new Promise((r) => setTimeout(r, 20));
 
-    const textarea = screen.getByPlaceholderText(/Nhập tin nhắn|Send message/i);
+    const textarea = screen.getByPlaceholderText(/Type a message|Send message/i);
     await fireEvent.input(textarea, { target: { value: 'Tin nhắn gửi trực tiếp' } });
 
-    const sendBtn = screen.getByRole('button', { name: /Gửi|Send/i });
+    const sendBtn = screen.getByRole('button', { name: /Send/i });
     await fireEvent.click(sendBtn);
     await tick();
 
@@ -921,8 +921,8 @@ describe('ConversationWorkspace Component', () => {
     await tick();
     await new Promise((r) => setTimeout(r, 20));
 
-    expect(screen.getByRole('button', { name: /Đổi lead/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Hủy liên kết/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Change Lead/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Unlink/i })).toBeTruthy();
   });
 
   test('13. Reply action pins the composer to the source conversation/account', async () => {
@@ -931,7 +931,7 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     await fireEvent.click(screen.getAllByTestId('message-actions-trigger')[0]);
-    await fireEvent.click(screen.getByText('Trả lời'));
+    await fireEvent.click(screen.getByText('Reply'));
 
     expect(screen.getByTestId('composer-reply-bar')).toBeTruthy();
     expect(screen.getByTestId('locked-target')).toBeTruthy();
@@ -956,12 +956,12 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    await fireEvent.click(screen.getByText('Thu hồi'));
-    await fireEvent.click(screen.getByRole('button', { name: 'Xác nhận thu hồi' }));
+    await fireEvent.click(screen.getByText('Recall'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm Recall' }));
     await tick();
 
     expect(mockRecallConversationMessage).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Tin nhắn đã bị xóa')).toBeTruthy();
+    expect(screen.getByText('Message deleted')).toBeTruthy();
   });
 
   test('15. Toggling reaction calls setConversationReaction and updates reactions on success', async () => {
@@ -970,7 +970,7 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     await fireEvent.click(screen.getAllByTestId('message-actions-trigger')[0]);
-    await fireEvent.click(screen.getByRole('button', { name: /Thả cảm xúc ❤️/i }));
+    await fireEvent.click(screen.getByRole('button', { name: /React ❤️/i }));
     await tick();
 
     expect(mockSetConversationReaction).toHaveBeenCalledTimes(1);
@@ -1016,14 +1016,14 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     await fireEvent.click(screen.getAllByTestId('message-actions-trigger')[0]);
-    const forwardOption = screen.getByText('Chuyển tiếp');
+    const forwardOption = screen.getByText('Forward');
     expect(forwardOption).toBeTruthy();
 
     await fireEvent.click(forwardOption);
     await tick();
 
     expect(await screen.findByTestId('forward-conversation-dialog')).toBeTruthy();
-    expect(screen.getByText('Chuyển tiếp tin nhắn')).toBeTruthy();
+    expect(screen.getByText('Forward Message')).toBeTruthy();
     expect(screen.getAllByText('Chào shop').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -1151,7 +1151,7 @@ describe('ConversationWorkspace Component', () => {
     expect(screen.getByText('UID: 5054685013624794058')).toBeTruthy();
     await fireEvent.click(screen.getByTestId('btn-chat-1on1'));
 
-    const directRecipientInput = await screen.findByPlaceholderText('Ví dụ: 0987654321 hoặc Zalo UID');
+    const directRecipientInput = await screen.findByPlaceholderText('e.g. 0987654321 or Zalo UID');
     expect((directRecipientInput as HTMLInputElement).value).toBe('5054685013624794058');
   });
 
@@ -1336,7 +1336,7 @@ describe('ConversationWorkspace Component', () => {
     expect(screen.getByText('UID: 5025114793295720787')).toBeTruthy();
     await fireEvent.click(screen.getByTestId('btn-chat-1on1'));
 
-    const directRecipientInput = await screen.findByPlaceholderText('Ví dụ: 0987654321 hoặc Zalo UID');
+    const directRecipientInput = await screen.findByPlaceholderText('e.g. 0987654321 or Zalo UID');
     expect((directRecipientInput as HTMLInputElement).value).toBe('5025114793295720787');
   });
 });

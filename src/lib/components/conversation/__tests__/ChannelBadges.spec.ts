@@ -90,6 +90,6 @@ describe('ChannelBadges Component', () => {
       }
     });
 
-    expect(screen.getByText('Không có kênh nào đang được hiển thị')).toBeTruthy();
+    expect(screen.getByText('No channels currently visible')).toBeTruthy();
   });
 });

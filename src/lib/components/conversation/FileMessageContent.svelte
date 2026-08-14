@@ -21,10 +21,10 @@
           void openExternalUrl(safeUrl);
         }}
       >
-        {attachment.fileName ?? 'Tập tin'}
+        {attachment.fileName ?? 'File'}
       </a>
     {:else}
-      <span class="file-name text-[13px] font-medium text-foreground">{attachment.fileName ?? 'Tập tin'}</span>
+      <span class="file-name text-[13px] font-medium text-foreground">{attachment.fileName ?? 'File'}</span>
     {/if}
     <span class="file-size text-[11px] text-muted-foreground">{formatBytes(attachment.sizeBytes)}</span>
   </div>

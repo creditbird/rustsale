@@ -7,32 +7,32 @@ export type EmojiCategory = {
 export const EMOJI_CATEGORIES: EmojiCategory[] = [
   {
     id: 'smileys',
-    label: 'Cảm xúc',
+    label: 'Smileys & Emotion',
     emojis: ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😍', '🥰', '😘', '😎', '🤔', '😭', '😡'],
   },
   {
     id: 'gestures',
-    label: 'Cử chỉ',
+    label: 'Gestures',
     emojis: ['👍', '👎', '👌', '✌️', '🤞', '👏', '🙏', '💪', '👋', '🤝', '🫶', '🤟'],
   },
   {
     id: 'hearts',
-    label: 'Trái tim',
+    label: 'Hearts',
     emojis: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '💕', '💖'],
   },
   {
     id: 'people',
-    label: 'Con người',
+    label: 'People',
     emojis: ['👨', '👩', '👦', '👧', '👶', '👴', '👵', '👮', '👷', '💁', '🙋', '🙆'],
   },
   {
     id: 'objects',
-    label: 'Đồ vật',
+    label: 'Objects',
     emojis: ['🎉', '🎁', '🔥', '⭐', '✨', '💡', '📌', '📞', '📅', '✅', '❌', '⚠️'],
   },
   {
     id: 'symbols',
-    label: 'Ký hiệu',
+    label: 'Symbols',
     emojis: ['✔️', '☑️', '➡️', '⬅️', '⬆️', '⬇️', '➕', '➖', '❓', '❗', '💯', '♻️'],
   },
 ];

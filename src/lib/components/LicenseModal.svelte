@@ -66,23 +66,23 @@
   let availablePlans = $state<SubscriptionPlan[]>([
     {
       id: 'pro',
-      name: 'Gói PRO',
+      name: 'PRO Plan',
       price: 199000,
       duration_days: 30,
       max_devices: 3,
-      description: 'Gồm: 3 Máy + Toàn bộ tính năng Scraper & Outreach Zalo/Email.',
-      badge_text: 'Gói PRO',
+      description: 'Includes: 3 Devices + Full Scraper & Zalo/Email Outreach features.',
+      badge_text: 'PRO Plan',
       is_active: true,
       sort_order: 1
     },
     {
       id: 'enterprise',
-      name: 'Gói ENTERPRISE',
+      name: 'ENTERPRISE Plan',
       price: 499000,
       duration_days: 30,
       max_devices: 10,
-      description: 'Gồm: 10 Máy + Ưu tiên tốc độ Scraper & Hỗ trợ 24/7.',
-      badge_text: 'Gói ENTERPRISE',
+      description: 'Includes: 10 Devices + Priority Scraper speed & 24/7 Support.',
+      badge_text: 'ENTERPRISE Plan',
       is_active: true,
       sort_order: 2
     }
@@ -122,7 +122,7 @@
       }
     }
     if (typeof err === 'string') return err;
-    return 'Đã xảy ra lỗi không xác định.';
+    return 'An unknown error occurred.';
   }
 
   async function initLicenseState() {
@@ -169,7 +169,7 @@
 
   async function handleAuth() {
     if (!authEmail || !authPassword) {
-      errorMsg = 'Vui lòng nhập Email và Mật khẩu';
+      errorMsg = 'Please enter both Email and Password.';
       return;
     }
     isLoading = true;
@@ -177,11 +177,11 @@
     try {
       if (isRegisterMode) {
         user = await registerWithEmail(authEmail, authPassword);
-        successMsg = 'Đăng ký thành công! Vui lòng đăng nhập.';
+        successMsg = 'Registration successful! Please sign in.';
         isRegisterMode = false;
       } else {
         user = await loginWithEmail(authEmail, authPassword);
-        successMsg = 'Đăng nhập thành công!';
+        successMsg = 'Signed in successfully!';
         await refreshVerification();
         activeTab = 'status';
       }
@@ -201,15 +201,15 @@
   }
 
   async function handleRevokeDevice(deviceId: string) {
-    if (!confirm('Bạn có chắc chắn muốn huỷ kích hoạt thiết bị này không?')) return;
+    if (!confirm('Are you sure you want to revoke and deactivate this device?')) return;
     isLoading = true;
     try {
       const ok = await revokeDevice(deviceId);
       if (ok) {
-        successMsg = 'Đã huỷ kích hoạt thiết bị.';
+        successMsg = 'Device revoked successfully.';
         await refreshVerification();
       } else {
-        errorMsg = 'Không thể huỷ kích hoạt thiết bị.';
+        errorMsg = 'Failed to revoke device.';
       }
     } finally {
       isLoading = false;
@@ -239,7 +239,7 @@
       if (tx && tx.status === 'completed') {
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = null;
-        successMsg = 'Thanh toán thành công! Gói cước và thời hạn của bạn đã được gia hạn.';
+        successMsg = 'Payment successful! Your subscription and license validity have been renewed.';
         currentTransaction = null;
         await refreshVerification();
         activeTab = 'status';
@@ -293,7 +293,7 @@
             <ShieldCheck class="w-6 h-6" />
           </div>
           <div>
-            <h2 class="text-lg font-bold text-foreground tracking-tight">Quản lý Bản quyền & Thiết bị</h2>
+            <h2 class="text-lg font-bold text-foreground tracking-tight">License & HWID Management</h2>
             <p class="text-xs text-muted-foreground">RustSale V2 Hardware ID & License Manager</p>
           </div>
         </div>
@@ -307,7 +307,7 @@
           </button>
         {:else}
           <div class="px-2.5 py-1 rounded-md bg-amber-500/10 text-amber-600 border border-amber-500/20 text-xs font-semibold">
-            Bắt buộc Kích hoạt
+            Activation Required
           </div>
         {/if}
       </div>
@@ -318,25 +318,25 @@
           onclick={() => (activeTab = 'status')}
           class="px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors flex items-center gap-2 border-b-2 {activeTab === 'status' ? 'border-emerald-600 text-emerald-600 bg-card shadow-2xs font-bold' : 'border-transparent text-muted-foreground hover:text-foreground'}"
         >
-          <ShieldCheck class="w-4 h-4" /> Trạng thái
+          <ShieldCheck class="w-4 h-4" /> Status
         </button>
         <button
           onclick={() => (activeTab = 'devices')}
           class="px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors flex items-center gap-2 border-b-2 {activeTab === 'devices' ? 'border-emerald-600 text-emerald-600 bg-card shadow-2xs font-bold' : 'border-transparent text-muted-foreground hover:text-foreground'}"
         >
-          <Laptop class="w-4 h-4" /> Thiết bị ({devices.length})
+          <Laptop class="w-4 h-4" /> Devices ({devices.length})
         </button>
         <button
           onclick={() => (activeTab = 'upgrade')}
           class="px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors flex items-center gap-2 border-b-2 {activeTab === 'upgrade' ? 'border-emerald-600 text-emerald-600 bg-card shadow-2xs font-bold' : 'border-transparent text-muted-foreground hover:text-foreground'}"
         >
-          <Sparkles class="w-4 h-4 text-amber-500" /> Nâng gói / VietQR
+          <Sparkles class="w-4 h-4 text-amber-500" /> Upgrade / Payment
         </button>
         <button
           onclick={() => (activeTab = 'auth')}
           class="px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors flex items-center gap-2 border-b-2 {activeTab === 'auth' ? 'border-emerald-600 text-emerald-600 bg-card shadow-2xs font-bold' : 'border-transparent text-muted-foreground hover:text-foreground'}"
         >
-          <User class="w-4 h-4" /> Tài khoản
+          <User class="w-4 h-4" /> Account
         </button>
 
       </div>
@@ -348,8 +348,8 @@
           <div class="p-3.5 bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs rounded-xl flex items-center gap-3 shadow-2xs">
             <ShieldAlert class="w-5 h-5 shrink-0 text-amber-500" />
             <div>
-              <div class="font-bold text-amber-800 dark:text-amber-200 text-xs">Yêu cầu Đăng nhập & Kích hoạt Bản quyền</div>
-              <div class="text-[11px] text-amber-700/80 dark:text-amber-300/80">Vui lòng đăng nhập hoặc gia hạn gói cước thiết bị để tiếp tục truy cập phần mềm RustSale.</div>
+              <div class="font-bold text-amber-800 dark:text-amber-200 text-xs">Login & License Activation Required</div>
+              <div class="text-[11px] text-amber-700/80 dark:text-amber-300/80">Please sign in or renew your device subscription to continue accessing RustSale.</div>
             </div>
           </div>
         {/if}
@@ -374,24 +374,24 @@
             <!-- Hardware Card -->
             <div class="p-4 rounded-xl bg-muted/40 border border-border space-y-3">
               <div class="flex items-center justify-between">
-                <span class="text-xs font-medium text-muted-foreground">Mã phần cứng (HWID):</span>
+                <span class="text-xs font-medium text-muted-foreground">Hardware ID (HWID):</span>
                 <button
                   onclick={copyHwid}
                   class="text-xs text-emerald-600 hover:text-emerald-700 flex items-center gap-1 bg-emerald-500/10 px-2 py-1 rounded-md border border-emerald-500/20 transition-colors"
                 >
                   {#if copiedHwid}
-                    <Check class="w-3 h-3 text-emerald-600" /> Đã sao chép
+                    <Check class="w-3 h-3 text-emerald-600" /> Copied
                   {:else}
-                    <Copy class="w-3 h-3" /> Sao chép HWID
+                    <Copy class="w-3 h-3" /> Copy HWID
                   {/if}
                 </button>
               </div>
               <div class="font-mono text-sm font-bold text-emerald-700 dark:text-emerald-400 bg-background px-3 py-2 rounded-lg border border-border shadow-2xs">
-                {hwInfo?.hardware_id || 'Đang tải HWID...'}
+                {hwInfo?.hardware_id || 'Loading HWID...'}
               </div>
               <div class="flex text-xs text-muted-foreground gap-4">
-                <span>Tên máy: <strong class="text-foreground font-semibold">{hwInfo?.hostname}</strong></span>
-                <span>HĐH: <strong class="text-foreground font-semibold">{hwInfo?.os_info}</strong></span>
+                <span>Hostname: <strong class="text-foreground font-semibold">{hwInfo?.hostname}</strong></span>
+                <span>OS: <strong class="text-foreground font-semibold">{hwInfo?.os_info}</strong></span>
               </div>
             </div>
 
@@ -401,12 +401,12 @@
                 <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 space-y-2 text-emerald-900 dark:text-emerald-100">
                   <div class="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-bold text-sm">
                     <CheckCircle2 class="w-5 h-5" />
-                    <span>Bản quyền Hợp lệ - Được phép truy cập</span>
+                    <span>Valid License - Access Granted</span>
                   </div>
                   <div class="grid grid-cols-2 gap-2 text-xs text-muted-foreground pt-2 border-t border-emerald-500/10">
-                    <div>Gói cước: <span class="font-bold text-foreground uppercase">{verification.plan_id}</span></div>
-                    <div>Thời hạn đến: <span class="font-bold text-amber-600 dark:text-amber-400">{new Date(verification.expires_at || '').toLocaleDateString('vi-VN')}</span></div>
-                    <div>Số thiết bị cho phép: <span class="font-bold text-foreground">{verification.max_devices} máy</span></div>
+                    <div>Subscription Plan: <span class="font-bold text-foreground uppercase">{verification.plan_id}</span></div>
+                    <div>Valid Until: <span class="font-bold text-amber-600 dark:text-amber-400">{new Date(verification.expires_at || '').toLocaleDateString('en-US')}</span></div>
+                    <div>Allowed Devices: <span class="font-bold text-foreground">{verification.max_devices} devices</span></div>
                   </div>
                 </div>
               {:else}
@@ -415,16 +415,16 @@
                     <ShieldAlert class="w-5 h-5" />
                     <span>
                       {#if verification.reason === 'subscription_expired'}
-                        Gói cước đã hết hạn
+                        Subscription plan has expired
                       {:else if verification.reason === 'device_limit_exceeded'}
-                        Vượt quá số lượng thiết bị cho phép ({verification.current_devices}/{verification.max_devices} máy)
+                        Device limit exceeded ({verification.current_devices}/{verification.max_devices} devices)
                       {:else}
-                        Chưa xác thực bản quyền
+                        Unverified license
                       {/if}
                     </span>
                   </div>
                   <p class="text-xs text-muted-foreground">
-                    Vui lòng gia hạn gói cước hoặc hủy kích hoạt thiết bị cũ trong mục "Thiết bị".
+                    Please renew your subscription or revoke old devices in the "Devices" tab.
                   </p>
                 </div>
               {/if}
@@ -436,7 +436,7 @@
                 disabled={isLoading}
                 class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-xl flex items-center gap-2 transition-all disabled:opacity-50 shadow-2xs"
               >
-                <RefreshCw class="w-3.5 h-3.5 {isLoading ? 'animate-spin' : ''}" /> Kiểm tra lại
+                <RefreshCw class="w-3.5 h-3.5 {isLoading ? 'animate-spin' : ''}" /> Re-check
               </button>
             </div>
           </div>
@@ -445,7 +445,7 @@
         <!-- TAB: DEVICES -->
         {#if activeTab === 'devices'}
           <div class="space-y-3">
-            <p class="text-xs text-muted-foreground">Danh sách các thiết bị đang liên kết với tài khoản này:</p>
+            <p class="text-xs text-muted-foreground">List of devices currently linked to this account:</p>
             {#each devices as dev (dev.id)}
               <div class="p-3 bg-muted/30 border border-border rounded-xl flex items-center justify-between">
                 <div class="flex items-center gap-3">
@@ -454,11 +454,11 @@
                     <div class="text-xs font-bold text-foreground flex items-center gap-2">
                       {dev.device_name}
                       {#if hwInfo && dev.hardware_id === hwInfo.hardware_id}
-                        <span class="text-[10px] bg-emerald-500/10 text-emerald-600 px-2 py-0.5 rounded-md border border-emerald-500/20 font-semibold">Máy hiện tại</span>
+                        <span class="text-[10px] bg-emerald-500/10 text-emerald-600 px-2 py-0.5 rounded-md border border-emerald-500/20 font-semibold">Current Device</span>
                       {/if}
                     </div>
                     <div class="font-mono text-[11px] text-muted-foreground">{dev.hardware_id}</div>
-                    <div class="text-[10px] text-muted-foreground/80">Hoạt động lần cuối: {new Date(dev.last_active).toLocaleString('vi-VN')}</div>
+                    <div class="text-[10px] text-muted-foreground/80">Last Active: {new Date(dev.last_active).toLocaleString('en-US')}</div>
                   </div>
                 </div>
 
@@ -467,11 +467,11 @@
                   disabled={isLoading}
                   class="px-3 py-1.5 text-xs text-destructive bg-destructive/10 hover:bg-destructive/20 border border-destructive/20 rounded-lg transition-colors font-medium"
                 >
-                  Huỷ kích hoạt
+                  Revoke Device
                 </button>
               </div>
             {:else}
-              <div class="text-center py-6 text-muted-foreground text-xs">Chưa có thiết bị nào được đăng ký.</div>
+              <div class="text-center py-6 text-muted-foreground text-xs">No devices registered yet.</div>
             {/each}
           </div>
         {/if}
@@ -486,7 +486,7 @@
                   class="p-4 rounded-xl border text-left transition-all relative overflow-hidden {selectedPlan === plan.id ? 'border-emerald-500 bg-emerald-500/5 text-foreground ring-1 ring-emerald-500' : 'border-border bg-card text-muted-foreground hover:border-border/80'}"
                 >
                   <div class="text-sm font-bold text-emerald-600 dark:text-emerald-400">{plan.name}</div>
-                  <div class="text-lg font-black text-foreground py-1">{plan.price.toLocaleString('vi-VN')}đ <span class="text-xs text-muted-foreground font-normal">/ {plan.duration_days} ngày</span></div>
+                  <div class="text-lg font-black text-foreground py-1">{plan.price.toLocaleString('en-US')} VND <span class="text-xs text-muted-foreground font-normal">/ {plan.duration_days} days</span></div>
                   <div class="text-xs text-muted-foreground">{plan.description}</div>
                 </button>
               {/each}
@@ -499,23 +499,23 @@
                 disabled={isLoading}
                 class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md flex items-center justify-center gap-2 transition-all"
               >
-                <QrCode class="w-4 h-4" /> Tạo mã chuyển khoản VietQR ({targetPlan?.name || 'Gói đã chọn'} - {targetPlan?.price.toLocaleString('vi-VN')}đ)
+                <QrCode class="w-4 h-4" /> Generate Payment Order ({targetPlan?.name || 'Selected Plan'} - {targetPlan?.price.toLocaleString('en-US')} VND)
               </button>
             {:else}
               {@const currentPlanObj = availablePlans.find(p => p.id === currentTransaction?.plan_id)}
               <!-- QR Payment Display Modal -->
               <div class="p-4 bg-muted/30 border border-border rounded-xl space-y-3 text-center">
                 <div class="text-xs font-semibold text-foreground">
-                  Quét mã QR để thanh toán <span class="text-emerald-600 dark:text-emerald-400 font-bold">({currentPlanObj?.name || currentTransaction.plan_id.toUpperCase()})</span>:
+                  Scan QR code to pay <span class="text-emerald-600 dark:text-emerald-400 font-bold">({currentPlanObj?.name || currentTransaction.plan_id.toUpperCase()})</span>:
                 </div>
                 <div class="flex justify-center p-2 bg-white rounded-xl inline-block border border-border shadow-2xs">
-                  <img src={currentTransaction.qr_code_url} alt="VietQR" class="w-56 h-56 object-contain" />
+                  <img src={currentTransaction.qr_code_url} alt="Payment QR" class="w-56 h-56 object-contain" />
                 </div>
                 <div class="text-xs text-muted-foreground space-y-1">
-                  <div>Mã đơn hàng: <strong class="text-amber-600 dark:text-amber-400 font-mono">{currentTransaction.order_code}</strong></div>
-                  <div>Số tiền: <strong class="text-emerald-600 dark:text-emerald-400 font-bold">{currentTransaction.amount.toLocaleString()}đ</strong></div>
+                  <div>Order Code: <strong class="text-amber-600 dark:text-amber-400 font-mono">{currentTransaction.order_code}</strong></div>
+                  <div>Amount: <strong class="text-emerald-600 dark:text-emerald-400 font-bold">{currentTransaction.amount.toLocaleString()} VND</strong></div>
                   <div class="flex items-center justify-center gap-1 pt-1">
-                    <span>Nội dung CK:</span>
+                    <span>Transfer Memo:</span>
                     <strong class="text-blue-600 dark:text-blue-400 font-mono font-bold">RS SEVQR TKPRS {currentTransaction.order_code}</strong>
                     <button
                       type="button"
@@ -527,7 +527,7 @@
                         }
                       }}
                       class="p-1 hover:bg-muted rounded text-xs transition-colors"
-                      title="Sao chép nội dung chuyển khoản"
+                      title="Copy transfer memo"
                     >
                       {#if copiedDes}
                         <Check class="w-3.5 h-3.5 text-emerald-500" />
@@ -538,7 +538,7 @@
                   </div>
                 </div>
                 <div class="flex items-center justify-center gap-2 text-xs text-emerald-600 animate-pulse pt-2 font-medium">
-                  <RefreshCw class="w-3.5 h-3.5 animate-spin" /> Đang chờ hệ thống tự động xác nhận chuyển khoản...
+                  <RefreshCw class="w-3.5 h-3.5 animate-spin" /> Waiting for automatic payment confirmation...
                 </div>
 
                 <div class="pt-2 border-t border-border/50 flex justify-center">
@@ -547,7 +547,7 @@
                     onclick={resetPaymentState}
                     class="text-xs text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-lg border border-destructive/20 transition-colors font-medium flex items-center gap-1"
                   >
-                    ✕ Hủy mã QR này để chọn gói khác
+                    ✕ Cancel this order & choose another plan
                   </button>
                 </div>
               </div>
@@ -561,19 +561,19 @@
             {#if user}
               <div class="p-4 bg-muted/30 border border-border rounded-xl flex items-center justify-between">
                 <div>
-                  <div class="text-xs text-muted-foreground">Đã đăng nhập tài khoản:</div>
+                  <div class="text-xs text-muted-foreground">Signed in as:</div>
                   <div class="text-sm font-bold text-foreground">{user.email}</div>
                 </div>
                 <button
                   onclick={handleLogout}
                   class="px-3 py-1.5 bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/20 rounded-lg text-xs flex items-center gap-1 font-medium"
                 >
-                  <LogOut class="w-3.5 h-3.5" /> Đăng xuất
+                  <LogOut class="w-3.5 h-3.5" /> Sign out
                 </button>
               </div>
             {:else}
               <form onsubmit={(e) => { e.preventDefault(); handleAuth(); }} class="space-y-3">
-                <h3 class="text-sm font-bold text-foreground">{isRegisterMode ? 'Đăng ký tài khoản mới' : 'Đăng nhập tài khoản'}</h3>
+                <h3 class="text-sm font-bold text-foreground">{isRegisterMode ? 'Register New Account' : 'Account Sign In'}</h3>
                 <div>
                   <label class="text-xs text-muted-foreground block mb-1">Email</label>
                   <input
@@ -584,7 +584,7 @@
                   />
                 </div>
                 <div>
-                  <label class="text-xs text-muted-foreground block mb-1">Mật khẩu</label>
+                  <label class="text-xs text-muted-foreground block mb-1">Password</label>
                   <input
                     type="password"
                     bind:value={authPassword}
@@ -597,7 +597,7 @@
                   disabled={isLoading}
                   class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition-all shadow-2xs"
                 >
-                  {isRegisterMode ? 'Đăng ký' : 'Đăng nhập'}
+                  {isRegisterMode ? 'Register' : 'Sign In'}
                 </button>
 
                 <div class="text-center pt-2">
@@ -606,15 +606,13 @@
                     onclick={() => (isRegisterMode = !isRegisterMode)}
                     class="text-xs text-emerald-600 hover:underline font-medium"
                   >
-                    {isRegisterMode ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký ngay'}
+                    {isRegisterMode ? 'Already have an account? Sign in' : "Don't have an account? Register now"}
                   </button>
                 </div>
               </form>
             {/if}
           </div>
         {/if}
-
-
 
       </div>
     </div>

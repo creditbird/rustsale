@@ -191,11 +191,11 @@
       <div class="flex items-center justify-between border-b pb-3">
         <div class="flex items-center gap-2">
           <Forward class="size-5 text-primary" />
-          <h3 class="font-semibold text-base">Chuyển tiếp tin nhắn</h3>
+          <h3 class="font-semibold text-base">Forward Message</h3>
         </div>
         <button
           type="button"
-          aria-label="Đóng"
+          aria-label="Close"
           class="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           onclick={handleClose}
         >
@@ -205,7 +205,7 @@
 
       <!-- Source Message Preview -->
       <div class="rounded-md border bg-muted/40 p-2.5 text-xs text-muted-foreground space-y-1">
-        <span class="font-medium text-foreground">Nội dung tin nhắn:</span>
+        <span class="font-medium text-foreground">Message content:</span>
         <p class="line-clamp-2 italic text-foreground/90">{getMessagePreviewText(sourceMessage)}</p>
       </div>
 
@@ -235,7 +235,7 @@
             <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
             <input
               type="text"
-              placeholder="Tìm kiếm cuộc trò chuyện..."
+              placeholder="Search conversations..."
               bind:value={searchQuery}
               class="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="forward-dialog-search-input"
@@ -244,9 +244,9 @@
 
           <!-- Target Selection Count -->
           <div class="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Chọn người nhận (tối đa {maxTargets}):</span>
+            <span>Select recipients (maximum {maxTargets}):</span>
             <span class="font-medium text-foreground" data-slot="selected-count">
-              Đã chọn {snapshot.selectedTargetIds.length}/{maxTargets}
+              Selected {snapshot.selectedTargetIds.length}/{maxTargets}
             </span>
           </div>
 
@@ -257,7 +257,7 @@
           >
             {#if filteredTargets.length === 0}
               <div class="p-4 text-center text-xs text-muted-foreground">
-                Không tìm thấy cuộc trò chuyện phù hợp cùng tài khoản.
+                No matching conversations found on this account.
               </div>
             {:else}
               {#each filteredTargets as item (item.key)}
@@ -304,7 +304,7 @@
       <!-- Footer Buttons -->
       <div class="flex items-center justify-end gap-2 border-t pt-3">
         <Button type="button" variant="outline" size="sm" onclick={handleClose}>
-          {snapshot.status === 'submitted' ? 'Đóng' : 'Hủy'}
+          {snapshot.status === 'submitted' ? 'Close' : 'Cancel'}
         </Button>
         {#if snapshot.status !== 'submitted'}
           <Button
@@ -315,7 +315,7 @@
             onclick={handleSubmit}
             data-testid="submit-forward-button"
           >
-            {submitting ? 'Đang chuyển...' : 'Chuyển tiếp'}
+            {submitting ? 'Forwarding...' : 'Forward'}
           </Button>
         {/if}
       </div>

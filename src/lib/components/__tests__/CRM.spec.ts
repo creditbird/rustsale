@@ -157,11 +157,11 @@ test('opens LeadDetails drawer when clicking a lead row in LeadsList', async () 
   await fireEvent.click(aliceRow);
 
   // LeadDetails is rendered
-  const drawerTitle = await screen.findByText('Chi Tiết Hồ Sơ Khách Hàng');
+  const drawerTitle = await screen.findByText('Lead Profile Details');
   expect(drawerTitle).toBeTruthy();
 
   // Verify lead properties render in drawer
-  expect(screen.getByText('Tổng Quan Liên Hệ')).toBeTruthy();
+  expect(screen.getByText('Contact Overview')).toBeTruthy();
   expect(screen.getAllByText('alice@acme.com').length).toBeGreaterThan(0);
   expect(screen.getByText('Interested in enterprise plan')).toBeTruthy();
 });
@@ -170,7 +170,7 @@ test('renders KanbanBoard with all pipeline stages and deals', async () => {
   render(KanbanBoard);
 
   // Verify pipeline header
-  expect(screen.getByText('Tổng Giá Trị Pipeline')).toBeTruthy();
+  expect(screen.getByText('Total Pipeline Value')).toBeTruthy();
 
   // Verify columns render
   expect(screen.getByText('Prospecting')).toBeTruthy();
@@ -194,7 +194,7 @@ test('logs a new activity via LeadDetails', async () => {
 
   // Find form elements
   const select = screen.getByRole('combobox') as HTMLSelectElement;
-  const textarea = screen.getByPlaceholderText('Nhập nội dung trao đổi, ghi chú cuộc gọi/cuộc họp...') as HTMLTextAreaElement;
+  const textarea = screen.getByPlaceholderText('Enter activity details, call notes, meeting minutes...') as HTMLTextAreaElement;
 
   // Fill in form
   await fireEvent.change(select, { target: { value: 'Email' } });
@@ -219,19 +219,19 @@ test('edits a lead and saves changes', async () => {
   await screen.findByText('Alice Smith');
 
   // Trigger edit mode
-  const editBtn = screen.getByRole('button', { name: 'Sửa' });
+  const editBtn = screen.getByRole('button', { name: 'Edit' });
   await fireEvent.click(editBtn);
 
   // Find inputs
-  const nameInput = screen.getByLabelText('Họ và Tên *') as HTMLInputElement;
-  const statusSelect = screen.getByLabelText('Trạng Thái') as HTMLSelectElement;
+  const nameInput = screen.getByLabelText('Full Name *') as HTMLInputElement;
+  const statusSelect = screen.getByLabelText('Status') as HTMLSelectElement;
 
   // Change values
   await fireEvent.input(nameInput, { target: { value: 'Alice Johnson' } });
   await fireEvent.change(statusSelect, { target: { value: 'Converted' } });
 
   // Save changes
-  const saveBtn = screen.getByRole('button', { name: 'Lưu Thay Đổi' });
+  const saveBtn = screen.getByRole('button', { name: 'Save Changes' });
   await fireEvent.click(saveBtn);
 
   // Check that new values are rendered in view mode
@@ -249,13 +249,13 @@ test('deletes a lead with confirmation', async () => {
   await screen.findByText('Bob Jones');
 
   // Trigger edit mode
-  const editBtn = screen.getByRole('button', { name: 'Sửa' });
+  const editBtn = screen.getByRole('button', { name: 'Edit' });
   await fireEvent.click(editBtn);
 
   // Click Delete
-  const deleteBtn = screen.getByRole('button', { name: 'Xóa Lead' });
+  const deleteBtn = screen.getByRole('button', { name: 'Delete Lead' });
   await fireEvent.click(deleteBtn);
-  const confirmDeleteBtn = await screen.findByRole('button', { name: 'Xóa Khách Hàng' });
+  const confirmDeleteBtn = await screen.findByRole('button', { name: 'Delete Customer' });
   await fireEvent.click(confirmDeleteBtn);
 
   // Drawer should be closed
@@ -266,17 +266,17 @@ test('opens Quick Send Zalo modal and sends Zalo outreach', async () => {
   render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
   await screen.findByText('Alice Smith');
 
-  const zaloBtn = screen.getByRole('button', { name: 'Gửi Zalo' });
+  const zaloBtn = screen.getByRole('button', { name: 'Send Zalo' });
   await fireEvent.click(zaloBtn);
 
-  const modalTitle = await screen.findByText(/Gửi Tin Nhắn Zalo - Alice Smith/i);
+  const modalTitle = await screen.findByText(/Send Zalo Message - Alice Smith/i);
   expect(modalTitle).toBeTruthy();
 
-  const sendBtn = screen.getByRole('button', { name: 'Gửi Zalo Ngay' });
+  const sendBtn = screen.getByRole('button', { name: 'Send Zalo Now' });
   await fireEvent.click(sendBtn);
 
   // Check activity log recorded
-  const activityText = await screen.findByText(/Đã phát lệnh gửi tin Zalo cho Alice Smith/i);
+  const activityText = await screen.findByText(/Sent Zalo message to Alice Smith/i);
   expect(activityText).toBeTruthy();
 });
 
@@ -284,16 +284,16 @@ test('opens Quick Send Email modal and sends email outreach', async () => {
   render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
   await screen.findByText('Alice Smith');
 
-  const emailBtn = screen.getByRole('button', { name: 'Gửi Email' });
+  const emailBtn = screen.getByRole('button', { name: 'Send Email' });
   await fireEvent.click(emailBtn);
 
-  const modalTitle = await screen.findByText(/Gửi Email Chăm Sóc - Alice Smith/i);
+  const modalTitle = await screen.findByText(/Send Outreach Email - Alice Smith/i);
   expect(modalTitle).toBeTruthy();
 
-  const sendBtn = screen.getByRole('button', { name: 'Gửi Email Ngay' });
+  const sendBtn = screen.getByRole('button', { name: 'Send Email Now' });
   await fireEvent.click(sendBtn);
 
   // Check activity log recorded
-  const activityText = await screen.findByText(/Đã phát lệnh gửi Email tới alice@acme.com/i);
+  const activityText = await screen.findByText(/Sent Email to alice@acme.com/i);
   expect(activityText).toBeTruthy();
 });

@@ -146,11 +146,11 @@
   async function handleSendZalo(e: Event) {
     e.preventDefault();
     if (!selectedZaloAccountKey) {
-      sendZaloErrorMsg = 'Vui lòng chọn tài khoản Zalo gửi.';
+      sendZaloErrorMsg = 'Please select a sender Zalo account.';
       return;
     }
     if (!selectedZaloTemplateId) {
-      sendZaloErrorMsg = 'Vui lòng chọn mẫu tin Zalo / template.';
+      sendZaloErrorMsg = 'Please select a Zalo template.';
       return;
     }
     sendingZalo = true;
@@ -165,18 +165,18 @@
       await crmService.addActivity(
         leadId,
         'Zalo',
-        `Đã phát lệnh gửi tin Zalo cho ${lead?.name || 'khách hàng'} (Mẫu: ${tplName})`,
+        `Sent Zalo message to ${lead?.name || 'customer'} (Template: ${tplName})`,
         'Self'
       );
       showSendZaloModal = false;
-      toast.success('Đã gửi lệnh Zalo thành công!', {
-        description: `Tin nhắn Zalo đã được xếp lịch gửi cho ${lead?.name || 'khách hàng'}.`
+      toast.success('Zalo message scheduled successfully!', {
+        description: `Zalo message has been queued for ${lead?.name || 'customer'}.`
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       sendZaloErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Gửi Zalo thất bại', { description: sendZaloErrorMsg });
+      toast.error('Failed to send Zalo outreach', { description: sendZaloErrorMsg });
     } finally {
       sendingZalo = false;
     }
@@ -184,8 +184,8 @@
 
   async function openSendEmailModal() {
     if (!lead?.email) {
-      toast.error('Khách hàng chưa có địa chỉ Email', {
-        description: 'Vui lòng cập nhật địa chỉ Email trong thông tin khách hàng trước.'
+      toast.error('Lead has no email address', {
+        description: 'Please update the email address in lead information first.'
       });
       return;
     }
@@ -212,11 +212,11 @@
   async function handleSendEmail(e: Event) {
     e.preventDefault();
     if (!selectedSmtpId) {
-      sendEmailErrorMsg = 'Vui lòng chọn máy chủ Email/SMTP gửi.';
+      sendEmailErrorMsg = 'Please select a sender Email/SMTP account.';
       return;
     }
     if (!selectedEmailTemplateId) {
-      sendEmailErrorMsg = 'Vui lòng chọn mẫu Email / template.';
+      sendEmailErrorMsg = 'Please select an email template.';
       return;
     }
     sendingEmail = true;
@@ -231,18 +231,18 @@
       await crmService.addActivity(
         leadId,
         'Email',
-        `Đã phát lệnh gửi Email tới ${lead?.email} (Tiêu đề: ${tpl?.subject || tpl?.name || 'Email chăm sóc'})`,
+        `Sent Email to ${lead?.email} (Subject: ${tpl?.subject || tpl?.name || 'Outreach email'})`,
         'Self'
       );
       showSendEmailModal = false;
-      toast.success('Đã gửi Email thành công!', {
-        description: `Thư điện tử đã được phát lệnh gửi tới ${lead?.email}.`
+      toast.success('Email sent successfully!', {
+        description: `Email message has been dispatched to ${lead?.email}.`
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       sendEmailErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Gửi Email thất bại', { description: sendEmailErrorMsg });
+      toast.error('Failed to send Email', { description: sendEmailErrorMsg });
     } finally {
       sendingEmail = false;
     }
@@ -276,7 +276,7 @@
   async function handleCreateDeal(e: Event) {
     e.preventDefault();
     if (!newDealTitle.trim()) {
-      createDealErrorMsg = 'Vui lòng nhập tên Deal.';
+      createDealErrorMsg = 'Please enter a deal title.';
       return;
     }
 
@@ -286,14 +286,14 @@
       const createdTitle = newDealTitle.trim();
       await crmService.createDeal(leadId, createdTitle, Number(newDealValue) || 0, newDealStage);
       showCreateDealModal = false;
-      toast.success('Tạo Deal mới thành công!', {
-        description: `Đã tạo cơ hội kinh doanh "${createdTitle}" cho ${lead?.name || 'khách hàng'}.`
+      toast.success('Deal created successfully!', {
+        description: `Created opportunity "${createdTitle}" for ${lead?.name || 'customer'}.`
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       createDealErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Tạo Deal thất bại', {
+      toast.error('Failed to create deal', {
         description: createDealErrorMsg
       });
     } finally {
@@ -319,14 +319,14 @@
       await crmService.deleteDeal(dealToDelete.id);
       showDeleteDealModal = false;
       dealToDelete = null;
-      toast.success('Xóa Deal thành công!', {
-        description: `Đã xóa cơ hội kinh doanh "${deletedTitle}".`
+      toast.success('Deal deleted successfully!', {
+        description: `Deleted opportunity "${deletedTitle}".`
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Xóa Deal thất bại', {
+      toast.error('Failed to delete deal', {
         description: errorMsg
       });
     } finally {
@@ -477,7 +477,7 @@
   <!-- Drawer Header -->
   <header class="h-14 px-6 border-b border-border flex items-center justify-between shrink-0 bg-muted/20">
     <div class="flex items-center gap-2">
-      <h3 class="text-sm font-bold text-foreground tracking-wide">Chi Tiết Hồ Sơ Khách Hàng</h3>
+      <h3 class="text-sm font-bold text-foreground tracking-wide">Lead Profile Details</h3>
       {#if lead}
         <Badge variant="outline" class="text-[10px] uppercase font-mono">{lead.status}</Badge>
       {/if}
@@ -490,7 +490,7 @@
   {#if loading && !lead}
     <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-xs gap-2">
       <div class="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
-      <p>Đang tải chi tiết khách hàng...</p>
+      <p>Loading lead details...</p>
     </div>
   {:else if errorMsg && !lead}
     <div class="flex-1 flex flex-col items-center justify-center p-6 text-destructive text-xs gap-2">
@@ -531,7 +531,7 @@
           {#if !isEditing}
             <Button variant="outline" size="sm" onclick={startEditing} class="h-8 gap-1.5 absolute top-4 right-4 text-xs shadow-2xs">
               <Edit2 class="w-3.5 h-3.5" />
-              Sửa
+              Edit
             </Button>
           {/if}
         </div>
@@ -545,7 +545,7 @@
               class="gap-1.5 font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm h-8 rounded-lg"
             >
               <Briefcase class="w-3.5 h-3.5" />
-              <span>+ Tạo Deal Mới</span>
+              <span>+ Create Deal</span>
             </Button>
 
             <Button
@@ -554,7 +554,7 @@
               class="gap-1.5 font-bold text-xs border border-sky-500/30 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 shadow-2xs h-8 rounded-lg"
             >
               <MessageCircle class="w-3.5 h-3.5" />
-              <span>Gửi Zalo</span>
+              <span>Send Zalo</span>
             </Button>
 
             <Button
@@ -563,24 +563,24 @@
               class="gap-1.5 font-bold text-xs border border-border bg-muted/40 hover:bg-muted text-foreground shadow-2xs h-8 rounded-lg"
             >
               <Mail class="w-3.5 h-3.5" />
-              <span>Gửi Email</span>
+              <span>Send Email</span>
             </Button>
           </div>
         {/if}
       </div>
 
-      <!-- Deals List Section (Cơ Hội Bán Hàng) -->
+      <!-- Deals List Section -->
       <div class="space-y-3">
         <div class="flex items-center justify-between">
           <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
             <Briefcase class="w-3.5 h-3.5 text-emerald-600" />
-            Cơ Hội Kinh Doanh (Deals) ({deals.length})
+            Deals & Opportunities ({deals.length})
           </h5>
         </div>
 
         {#if deals.length === 0}
           <div class="p-4 rounded-xl border border-dashed border-border bg-card/50 text-center py-5">
-            <p class="text-xs text-muted-foreground">Chưa có Deal / Hợp đồng nào cho khách hàng này.</p>
+            <p class="text-xs text-muted-foreground">No deals or contracts associated with this lead yet.</p>
           </div>
         {:else}
           <div class="space-y-2.5">
@@ -599,7 +599,7 @@
                     {#if deal.created_at}
                       <span class="text-muted-foreground text-[10px] flex items-center gap-1 font-medium">
                         <Calendar class="w-3 h-3 text-muted-foreground/60" />
-                        {new Date(deal.created_at).toLocaleDateString('vi-VN', { month: 'numeric', day: 'numeric' })}
+                        {new Date(deal.created_at).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
                       </span>
                     {/if}
                   </div>
@@ -610,7 +610,7 @@
                   size="sm"
                   onclick={() => promptDeleteDeal(deal.id!, deal.title)}
                   class="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg shrink-0"
-                  title="Xóa deal này"
+                  title="Delete this deal"
                 >
                   <Trash2 class="w-3.5 h-3.5" />
                 </Button>
@@ -624,17 +624,17 @@
         <!-- Edit Lead Form (2-column responsive layout) -->
         <form onsubmit={handleSaveLead} class="space-y-4 text-xs border border-border bg-card p-5 rounded-xl shadow-xs">
           <div class="flex items-center justify-between border-b border-border pb-3">
-            <h5 class="text-xs font-bold text-foreground uppercase tracking-wider">Chỉnh Sửa Thông Tin Khách Hàng</h5>
-            <span class="text-[10px] text-muted-foreground">* Trường bắt buộc</span>
+            <h5 class="text-xs font-bold text-foreground uppercase tracking-wider">Edit Lead Profile</h5>
+            <span class="text-[10px] text-muted-foreground">* Required fields</span>
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div class="space-y-1">
-              <label for="edit-name" class="font-medium text-foreground">Họ và Tên *</label>
+              <label for="edit-name" class="font-medium text-foreground">Full Name *</label>
               <Input id="edit-name" bind:value={editName} required class="h-9 text-xs" />
             </div>
             <div class="space-y-1">
-              <label for="edit-company" class="font-medium text-foreground">Tên Công Ty / Đơn Vị *</label>
+              <label for="edit-company" class="font-medium text-foreground">Company Name *</label>
               <Input id="edit-company" bind:value={editCompany} required class="h-9 text-xs" />
             </div>
 
@@ -643,12 +643,12 @@
               <Input id="edit-email" type="email" bind:value={editEmail} required class="h-9 text-xs" />
             </div>
             <div class="space-y-1">
-              <label for="edit-phone" class="font-medium text-foreground">Số Điện Thoại</label>
+              <label for="edit-phone" class="font-medium text-foreground">Phone Number</label>
               <Input id="edit-phone" bind:value={editPhone} class="h-9 text-xs" />
             </div>
 
             <div class="space-y-1">
-              <label for="edit-status" class="font-medium text-foreground">Trạng Thái</label>
+              <label for="edit-status" class="font-medium text-foreground">Status</label>
               <select
                 id="edit-status"
                 bind:value={editStatus}
@@ -662,22 +662,22 @@
               </select>
             </div>
             <div class="space-y-1">
-              <label for="edit-value" class="font-medium text-foreground">Giá Trị Dự Kiến ($)</label>
+              <label for="edit-value" class="font-medium text-foreground">Estimated Value ($)</label>
               <Input id="edit-value" type="number" bind:value={editValue} min="0" class="h-9 text-xs" />
             </div>
 
             <div class="space-y-1 sm:col-span-2">
-              <label for="edit-owner" class="font-medium text-foreground">Người Phụ Trách</label>
+              <label for="edit-owner" class="font-medium text-foreground">Assigned Owner</label>
               <Input id="edit-owner" bind:value={editOwner} class="h-9 text-xs" />
             </div>
 
             <div class="space-y-1 sm:col-span-2">
-              <label for="edit-address" class="font-medium text-foreground">Địa Chỉ</label>
-              <Input id="edit-address" bind:value={editAddress} class="h-9 text-xs" placeholder="Địa chỉ chi tiết..." />
+              <label for="edit-address" class="font-medium text-foreground">Address</label>
+              <Input id="edit-address" bind:value={editAddress} class="h-9 text-xs" placeholder="Street address, city..." />
             </div>
 
             <div class="space-y-1 sm:col-span-2">
-              <label for="edit-about" class="font-medium text-foreground">Mô Tả / Ghi Chú</label>
+              <label for="edit-about" class="font-medium text-foreground">Description / Notes</label>
               <textarea id="edit-about" bind:value={editAbout} rows="3" class="w-full p-3 rounded-md border border-input bg-background text-xs leading-relaxed focus:outline-hidden focus:ring-1 focus:ring-ring resize-y"></textarea>
             </div>
           </div>
@@ -685,13 +685,13 @@
           <div class="flex items-center justify-between pt-4 border-t border-border">
             <Button type="button" variant="destructive" size="sm" onclick={promptDeleteLead} disabled={deletingLead} class="gap-1.5 h-9 px-4">
               <Trash2 class="w-3.5 h-3.5" />
-              {deletingLead ? 'Đang Xóa...' : 'Xóa Lead'}
+              {deletingLead ? 'Deleting...' : 'Delete Lead'}
             </Button>
             <div class="flex items-center gap-2">
-              <Button type="button" variant="outline" size="sm" onclick={() => isEditing = false} class="h-9 px-4">Hủy Bỏ</Button>
+              <Button type="button" variant="outline" size="sm" onclick={() => isEditing = false} class="h-9 px-4">Cancel</Button>
               <Button type="submit" size="sm" disabled={savingLead} class="gap-1.5 h-9 px-5">
                 <Save class="w-3.5 h-3.5" />
-                {savingLead ? 'Đang Lưu...' : 'Lưu Thay Đổi'}
+                {savingLead ? 'Saving...' : 'Save Changes'}
               </Button>
             </div>
           </div>
@@ -699,7 +699,7 @@
       {:else}
         <!-- Contact Details Overview -->
         <div class="space-y-3">
-          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Tổng Quan Liên Hệ</h5>
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Contact Overview</h5>
           <div class="rounded-xl border border-border bg-card p-4 space-y-3 text-xs shadow-xs">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-3 border-b border-border/60">
               <div>
@@ -707,30 +707,30 @@
                 <a href="mailto:{lead.email}" class="text-primary font-semibold hover:underline break-all">{lead.email}</a>
               </div>
               <div>
-                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Phone class="w-3.5 h-3.5 text-primary" /> Số Điện Thoại</span>
+                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Phone class="w-3.5 h-3.5 text-primary" /> Phone Number</span>
                 <span class="text-foreground font-semibold">{lead.phone || '—'}</span>
               </div>
             </div>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-3 border-b border-border/60">
               <div>
-                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Users class="w-3.5 h-3.5 text-primary" /> Phụ Trách</span>
+                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Users class="w-3.5 h-3.5 text-primary" /> Assigned Owner</span>
                 <span class="text-foreground font-semibold">{lead.owner || '—'}</span>
               </div>
               <div>
-                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Building class="w-3.5 h-3.5 text-primary" /> Giá Trị Dự Kiến</span>
+                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Building class="w-3.5 h-3.5 text-primary" /> Estimated Value</span>
                 <span class="text-emerald-600 font-bold text-sm">${(lead.value || 0).toLocaleString()}</span>
               </div>
             </div>
 
             <div class="pb-1">
-              <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><MapPin class="w-3.5 h-3.5 text-primary" /> Địa Chỉ</span>
+              <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><MapPin class="w-3.5 h-3.5 text-primary" /> Address</span>
               <span class="text-foreground font-medium leading-relaxed break-words block bg-muted/30 p-2.5 rounded-lg border border-border/50">{lead.address || '—'}</span>
             </div>
 
             {#if lead.about}
               <div class="pt-2">
-                <span class="text-muted-foreground block mb-1 font-medium">Giới Thiệu / Ghi Chú</span>
+                <span class="text-muted-foreground block mb-1 font-medium">Description / Notes</span>
                 <p class="p-3 rounded-lg bg-muted/30 border border-border/60 text-foreground leading-relaxed break-words">{lead.about}</p>
               </div>
             {/if}
@@ -739,34 +739,34 @@
 
         <!-- Log Activity Form -->
         <div class="space-y-3 pt-2">
-          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Ghi Nhận Hoạt Động (Log Activity)</h5>
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Log Activity</h5>
           <form onsubmit={handleLogActivity} class="space-y-3 text-xs rounded-xl border border-border bg-card p-4 shadow-xs">
             <select
               bind:value={activityType}
               class="w-full h-9 text-xs border border-input bg-background rounded-md px-3 py-1 text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
             >
-              <option value="Call">Call (Cuộc gọi)</option>
+              <option value="Call">Call</option>
               <option value="Email">Email</option>
-              <option value="Meeting">Meeting (Cuộc họp)</option>
+              <option value="Meeting">Meeting</option>
             </select>
             <textarea
               bind:value={activityContent}
-              placeholder="Nhập nội dung trao đổi, ghi chú cuộc gọi/cuộc họp..."
+              placeholder="Enter activity details, call notes, meeting minutes..."
               rows="3"
               required
               class="w-full p-3 rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground text-xs leading-relaxed focus:outline-hidden focus:ring-1 focus:ring-ring resize-y"
             ></textarea>
             <Button type="submit" size="sm" class="w-full h-9 text-xs font-medium" disabled={logging || !activityContent.trim()}>
-              {logging ? 'Đang Ghi Nhận...' : 'Ghi Nhận Hoạt Động'}
+              {logging ? 'Logging...' : 'Log Activity'}
             </Button>
           </form>
         </div>
 
         <!-- Activity Timeline -->
         <div class="space-y-3 pt-2">
-          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Lịch Sử Hoạt Động</h5>
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Activity History</h5>
           {#if activities.length === 0}
-            <p class="text-xs text-muted-foreground italic p-4 rounded-xl border border-border bg-card text-center">Chưa có hoạt động nào được ghi nhận.</p>
+            <p class="text-xs text-muted-foreground italic p-4 rounded-xl border border-border bg-card text-center">No activities recorded yet.</p>
           {:else}
             <div class="space-y-3 relative before:absolute before:left-3 before:top-2 before:bottom-2 before:w-0.5 before:bg-border">
               {#each activities as activity}
@@ -780,7 +780,7 @@
                       <span class="text-[10px] text-muted-foreground font-normal">{formatDateTime(activity.created_at)}</span>
                     </div>
                     <p class="text-muted-foreground leading-relaxed break-words">{activity.content}</p>
-                    <span class="text-[10px] text-muted-foreground/70 block">Ghi bởi {activity.performed_by}</span>
+                    <span class="text-[10px] text-muted-foreground/70 block">Logged by {activity.performed_by}</span>
                   </div>
                 </div>
               {/each}
@@ -804,7 +804,7 @@
             <Briefcase class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-base text-foreground">Tạo Deal Mới Cho Khách Hàng</h3>
+            <h3 class="font-bold text-base text-foreground">Create Deal for Lead</h3>
             <p class="text-xs text-muted-foreground">{lead.name} — {lead.company}</p>
           </div>
         </div>
@@ -826,11 +826,11 @@
         {/if}
 
         <div class="space-y-1.5">
-          <label for="lead-deal-title" class="text-xs font-bold text-foreground">Tên Deal / Hợp Đồng *</label>
+          <label for="lead-deal-title" class="text-xs font-bold text-foreground">Deal Title *</label>
           <Input
             id="lead-deal-title"
             bind:value={newDealTitle}
-            placeholder="Ví dụ: Deal - {lead.company}"
+            placeholder="e.g. Deal - {lead.company}"
             class="h-10 text-xs rounded-xl"
             required
           />
@@ -838,7 +838,7 @@
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div class="space-y-1.5">
-            <label for="lead-deal-value" class="text-xs font-bold text-foreground">Giá Trị Hợp Đồng ($) *</label>
+            <label for="lead-deal-value" class="text-xs font-bold text-foreground">Deal Value ($) *</label>
             <Input
               id="lead-deal-value"
               type="number"
@@ -865,7 +865,7 @@
           </div>
 
           <div class="space-y-1.5">
-            <label for="lead-deal-stage" class="text-xs font-bold text-foreground">Giai Đoạn Ban Đầu</label>
+            <label for="lead-deal-stage" class="text-xs font-bold text-foreground">Initial Stage</label>
             <select
               id="lead-deal-stage"
               bind:value={newDealStage}
@@ -887,7 +887,7 @@
             disabled={creatingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Hủy Bỏ
+            Cancel
           </Button>
           <Button
             type="submit"
@@ -895,7 +895,7 @@
             disabled={creatingDeal}
             class="rounded-xl h-10 px-6 text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-md"
           >
-            {creatingDeal ? 'Đang Tạo...' : 'Tạo Deal Mới'}
+            {creatingDeal ? 'Creating...' : 'Create Deal'}
           </Button>
         </div>
       </form>
@@ -907,16 +907,16 @@
 <Dialog.Root bind:open={isDeleteLeadModalOpen}>
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
-      <Dialog.Title>Xóa Hồ Sơ Khách Hàng</Dialog.Title>
+      <Dialog.Title>Delete Lead Profile</Dialog.Title>
     </Dialog.Header>
     <div class="py-2 text-xs text-muted-foreground leading-relaxed">
-      Bạn có chắc chắn muốn xóa khách hàng <strong class="text-foreground">{lead?.name}</strong>?
-      Hành động này sẽ xóa khách hàng và toàn bộ lịch sử hoạt động liên quan vĩnh viễn.
+      Are you sure you want to delete lead <strong class="text-foreground">{lead?.name}</strong>?
+      This action will permanently delete the lead and all associated activity history.
     </div>
     <Dialog.Footer class="gap-2">
-      <Button variant="outline" size="sm" onclick={() => isDeleteLeadModalOpen = false} disabled={deletingLead}>Hủy Bỏ</Button>
+      <Button variant="outline" size="sm" onclick={() => isDeleteLeadModalOpen = false} disabled={deletingLead}>Cancel</Button>
       <Button variant="destructive" size="sm" onclick={confirmDeleteLead} disabled={deletingLead}>
-        {deletingLead ? 'Đang Xóa...' : 'Xóa Khách Hàng'}
+        {deletingLead ? 'Deleting...' : 'Delete Customer'}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>
@@ -932,9 +932,9 @@
         </div>
 
         <div class="space-y-1.5">
-          <h3 class="font-bold text-base text-foreground">Xác Nhận Xóa Deal</h3>
+          <h3 class="font-bold text-base text-foreground">Confirm Delete Deal</h3>
           <p class="text-xs text-muted-foreground leading-relaxed">
-            Bạn có chắc chắn muốn xóa cơ hội kinh doanh <span class="font-bold text-foreground">"{dealToDelete.title}"</span>? Hành động này không thể hoàn tác.
+            Are you sure you want to delete the opportunity <span class="font-bold text-foreground">"{dealToDelete.title}"</span>? This action cannot be undone.
           </p>
         </div>
 
@@ -947,7 +947,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Hủy Bỏ
+            Cancel
           </Button>
           <Button
             type="button"
@@ -957,7 +957,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-6 text-xs font-bold shadow-md bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {deletingDeal ? 'Đang Xóa...' : 'Xóa Deal'}
+            {deletingDeal ? 'Deleting...' : 'Delete Deal'}
           </Button>
         </div>
       </div>
@@ -971,7 +971,7 @@
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2 text-sky-600">
         <MessageCircle class="w-5 h-5" />
-        Gửi Tin Nhắn Zalo - {lead?.name}
+        Send Zalo Message - {lead?.name}
       </Dialog.Title>
     </Dialog.Header>
 
@@ -985,10 +985,10 @@
 
       <!-- Select Zalo Account -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Tài khoản Zalo gửi</label>
+        <label class="text-xs font-semibold text-foreground">Sender Zalo Account</label>
         {#if zaloAccounts.length === 0}
           <p class="text-xs text-amber-600 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
-            Chưa có tài khoản Zalo nào được kết nối. Vui lòng kết nối Zalo trong Cài đặt Channel.
+            No Zalo accounts connected. Please connect a Zalo account in Channel Settings.
           </p>
         {:else}
           <select
@@ -997,7 +997,7 @@
           >
             {#each zaloAccounts as acc}
               <option value={acc.accountKey}>
-                {acc.displayName || acc.accountKey} ({acc.authStatus === 'valid' ? 'Đang hoạt động' : acc.authStatus})
+                {acc.displayName || acc.accountKey} ({acc.authStatus === 'valid' ? 'Active' : acc.authStatus})
               </option>
             {/each}
           </select>
@@ -1006,10 +1006,10 @@
 
       <!-- Select Zalo Template -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Mẫu tin Zalo / Template</label>
+        <label class="text-xs font-semibold text-foreground">Zalo Template</label>
         {#if zaloTemplates.length === 0}
           <p class="text-xs text-muted-foreground bg-muted/40 p-2.5 rounded-lg border border-border">
-            Chưa có kịch bản Zalo nào. Bạn có thể tạo mẫu tin trong mục Zalo Outreach.
+            No Zalo templates found. You can create outreach templates under Zalo Outreach.
           </p>
         {:else}
           <select
@@ -1025,7 +1025,7 @@
             {@const selectedTpl = zaloTemplates.find(t => t.id === selectedZaloTemplateId)}
             {#if selectedTpl}
               <div class="p-3 rounded-lg bg-muted/30 border border-border text-xs space-y-1 text-muted-foreground">
-                <span class="font-semibold text-foreground">Xem trước nội dung:</span>
+                <span class="font-semibold text-foreground">Preview message:</span>
                 <p class="whitespace-pre-wrap">{selectedTpl.content}</p>
               </div>
             {/if}
@@ -1035,7 +1035,7 @@
 
       <!-- Direct Conversation Chat Navigation -->
       <div class="pt-2 border-t border-border flex items-center justify-between">
-        <span class="text-xs text-muted-foreground">Hoặc trò chuyện 1-1 trực tiếp:</span>
+        <span class="text-xs text-muted-foreground">Or start a 1-on-1 direct chat:</span>
         <Button
           type="button"
           variant="outline"
@@ -1044,13 +1044,13 @@
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 text-xs font-medium border border-sky-500/30 transition-colors"
         >
           <MessageSquare class="w-3.5 h-3.5" />
-          <span>Mở Chat trong Conversation</span>
+          <span>Open Chat in Conversation</span>
         </Button>
       </div>
 
       <Dialog.Footer class="gap-2 pt-2">
         <Button variant="outline" size="sm" type="button" onclick={() => showSendZaloModal = false} disabled={sendingZalo}>
-          Hủy Bỏ
+          Cancel
         </Button>
         <Button
           type="submit"
@@ -1060,10 +1060,10 @@
         >
           {#if sendingZalo}
             <RefreshCw class="w-3.5 h-3.5 animate-spin" />
-            <span>Đang gửi...</span>
+            <span>Sending...</span>
           {:else}
             <Send class="w-3.5 h-3.5" />
-            <span>Gửi Zalo Ngay</span>
+            <span>Send Zalo Now</span>
           {/if}
         </Button>
       </Dialog.Footer>
@@ -1077,7 +1077,7 @@
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2 text-foreground">
         <Mail class="w-5 h-5 text-emerald-600" />
-        Gửi Email Chăm Sóc - {lead?.name}
+        Send Outreach Email - {lead?.name}
       </Dialog.Title>
     </Dialog.Header>
 
@@ -1090,16 +1090,16 @@
       {/if}
 
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Email người nhận</label>
+        <label class="text-xs font-semibold text-foreground">Recipient Email</label>
         <Input type="email" value={lead?.email || ''} readonly class="bg-muted/40 text-xs text-muted-foreground" />
       </div>
 
       <!-- Select SMTP Account -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Tài khoản Email/SMTP gửi</label>
+        <label class="text-xs font-semibold text-foreground">Sender Email / SMTP Account</label>
         {#if smtpAccounts.length === 0}
           <p class="text-xs text-amber-600 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
-            Chưa có tài khoản SMTP nào được cấu hình. Vui lòng thêm SMTP trong Cài đặt Channel.
+            No SMTP accounts configured. Please add an SMTP account in Channel Settings.
           </p>
         {:else}
           <select
@@ -1117,10 +1117,10 @@
 
       <!-- Select Email Template -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Mẫu Email / Template</label>
+        <label class="text-xs font-semibold text-foreground">Email Template</label>
         {#if emailTemplates.length === 0}
           <p class="text-xs text-muted-foreground bg-muted/40 p-2.5 rounded-lg border border-border">
-            Chưa có kịch bản Email nào. Bạn có thể tạo mẫu thư trong mục Email Outreach.
+            No email templates found. You can create templates under Email Outreach.
           </p>
         {:else}
           <select
@@ -1136,7 +1136,7 @@
             {@const selectedTpl = emailTemplates.find(t => t.id === selectedEmailTemplateId)}
             {#if selectedTpl}
               <div class="p-3 rounded-lg bg-muted/30 border border-border text-xs space-y-1 text-muted-foreground">
-                <span class="font-semibold text-foreground">Tiêu đề: {selectedTpl.subject}</span>
+                <span class="font-semibold text-foreground">Subject: {selectedTpl.subject}</span>
                 <p class="whitespace-pre-wrap truncate max-h-24 overflow-y-auto">{selectedTpl.content}</p>
               </div>
             {/if}
@@ -1147,12 +1147,12 @@
       <!-- Native mailto Fallback -->
       {#if lead?.email}
         <div class="pt-2 border-t border-border flex items-center justify-between">
-          <span class="text-xs text-muted-foreground">Hoặc mở ứng dụng Mail ngoài:</span>
+          <span class="text-xs text-muted-foreground">Or open default external mail app:</span>
           <a
             href="mailto:{lead.email}"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted/60 text-foreground hover:bg-muted text-xs font-medium border border-border transition-colors"
           >
-            <span>Mở Mail client</span>
+            <span>Open Mail client</span>
             <ExternalLink class="w-3 h-3" />
           </a>
         </div>
@@ -1160,7 +1160,7 @@
 
       <Dialog.Footer class="gap-2 pt-2">
         <Button variant="outline" size="sm" type="button" onclick={() => showSendEmailModal = false} disabled={sendingEmail}>
-          Hủy Bỏ
+          Cancel
         </Button>
         <Button
           type="submit"
@@ -1170,10 +1170,10 @@
         >
           {#if sendingEmail}
             <RefreshCw class="w-3.5 h-3.5 animate-spin" />
-            <span>Đang gửi...</span>
+            <span>Sending...</span>
           {:else}
             <Send class="w-3.5 h-3.5" />
-            <span>Gửi Email Ngay</span>
+            <span>Send Email Now</span>
           {/if}
         </Button>
       </Dialog.Footer>

@@ -91,15 +91,15 @@
       data-testid="mention-limit-warning"
     >
       <AlertTriangle class="h-4 w-4 shrink-0" />
-      <span>Đã đạt giới hạn tối đa {maxMentions} nhắc tên trên một tin nhắn</span>
+      <span>Maximum limit of {maxMentions} mentions per message reached</span>
     </div>
   {:else if isLoading && candidates.length === 0}
     <div class="p-3 text-center text-xs text-muted-foreground" data-testid="mention-loading">
-      Đang tải danh sách thành viên...
+      Loading members list...
     </div>
   {:else if candidates.length === 0}
     <div class="p-3 text-center text-xs text-muted-foreground" data-testid="mention-empty-notice">
-      Không tìm thấy thành viên
+      No members found
     </div>
   {:else}
     <div class="py-1">

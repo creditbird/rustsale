@@ -260,7 +260,7 @@ describe('MessageComposer', () => {
     const onBatchQueued = mock(() => {});
     render(MessageComposer, { item: baseItem, runtime: baseRuntime, onBatchQueued });
 
-    const textarea = screen.getByPlaceholderText('Nhập tin nhắn...');
+    const textarea = screen.getByPlaceholderText('Type a message...');
     await fireEvent.input(textarea, { target: { value: '  Xin chào  ' } });
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
 
@@ -280,10 +280,10 @@ describe('MessageComposer', () => {
 
     await fireEvent.click(screen.getByTestId('attach-file-btn'));
     await waitFor(() => expect(screen.getAllByTestId('attachment-item')).toHaveLength(2));
-    await fireEvent.input(screen.getByPlaceholderText('Nhập tin nhắn...'), {
+    await fireEvent.input(screen.getByPlaceholderText('Type a message...'), {
       target: { value: 'Có file' }
     });
-    await fireEvent.click(screen.getByRole('button', { name: 'Gửi' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     expect(mockStagePaths).toHaveBeenCalledWith(102, ['/tmp/a.png', '/tmp/b.pdf']);
     expect(mockSendConversationBatch.mock.calls[0][0].parts).toEqual([
@@ -311,10 +311,10 @@ describe('MessageComposer', () => {
 
     expect(screen.getByTestId('composer-reply-bar')).toBeTruthy();
     expect(screen.queryByTestId('channel-account-select')).toBeNull();
-    await fireEvent.input(screen.getByPlaceholderText('Nhập tin nhắn...'), {
+    await fireEvent.input(screen.getByPlaceholderText('Type a message...'), {
       target: { value: 'Trả lời' }
     });
-    await fireEvent.click(screen.getByRole('button', { name: 'Gửi' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     expect(mockSendConversationBatch.mock.calls[0][0]).toEqual({
       conversationId: 101,
@@ -326,7 +326,7 @@ describe('MessageComposer', () => {
 
   test('inserts emoji at the textarea selection and restores focus', async () => {
     render(MessageComposer, { item: baseItem, runtime: baseRuntime });
-    const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: 'hello' } });
     textarea.focus();
     textarea.setSelectionRange(2, 4);
@@ -383,9 +383,9 @@ describe('MessageComposer', () => {
     });
     render(MessageComposer, { item: baseItem, runtime: baseRuntime });
 
-    const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: 'Draft content' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Gửi' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await tick();
 
     expect(textarea.value).toBe('Draft content');
@@ -422,7 +422,7 @@ describe('MessageComposer', () => {
 
     expect(screen.queryByTestId('attach-file-btn')).toBeNull();
     expect(screen.queryByTestId('toggle-sticker-btn')).toBeNull();
-    expect(screen.getByPlaceholderText('Nhập tin nhắn...')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Type a message...')).toBeTruthy();
   });
 
   test('Zalo code 102 opens direct QR re-authentication for the selected account', async () => {
@@ -456,7 +456,7 @@ describe('MessageComposer', () => {
       base64Data: 'aGVsbG8='
     }));
     render(MessageComposer, { item: baseItem, runtime: baseRuntime });
-    const textarea = screen.getByPlaceholderText('Nhập tin nhắn...');
+    const textarea = screen.getByPlaceholderText('Type a message...');
 
     await fireEvent.paste(textarea);
     await waitFor(() => expect(mockStageClipboard).toHaveBeenCalledTimes(1));
@@ -500,7 +500,7 @@ describe('MessageComposer', () => {
       await waitFor(() => expect(mockListQuickTemplates).toHaveBeenCalled());
       await tick();
 
-      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
       await fireEvent.input(textarea, { target: { value: '/gia', selectionStart: 4, selectionEnd: 4 } });
       await tick();
 
@@ -515,7 +515,7 @@ describe('MessageComposer', () => {
       await waitFor(() => expect(mockListQuickTemplates).toHaveBeenCalled());
       await tick();
 
-      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
       await fireEvent.input(textarea, { target: { value: 'Xin /gia nhé', selectionStart: 8, selectionEnd: 8 } });
       await tick();
 
@@ -552,7 +552,7 @@ describe('MessageComposer', () => {
       await waitFor(() => expect(mockListQuickTemplates).toHaveBeenCalled());
       await tick();
 
-      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
       await fireEvent.input(textarea, { target: { value: '/gia', selectionStart: 4, selectionEnd: 4 } });
       await tick();
 
@@ -568,7 +568,7 @@ describe('MessageComposer', () => {
     test('does not show quick template popover if quickTemplates capability is disabled', async () => {
       render(MessageComposer, { item: baseItem, runtime: baseRuntime });
 
-      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
       await fireEvent.input(textarea, { target: { value: '/gia', selectionStart: 4, selectionEnd: 4 } });
       await tick();
 
@@ -614,7 +614,7 @@ describe('MessageComposer', () => {
     test('renders mention popover when typing @ in group chat with mentions enabled', async () => {
       render(MessageComposer, { item: groupItem, runtime: runtimeWithMentions });
 
-      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
       await fireEvent.input(textarea, { target: { value: '@Nguyễn', selectionStart: 7, selectionEnd: 7 } });
       await tick();
 
@@ -624,7 +624,7 @@ describe('MessageComposer', () => {
     test('selecting candidate inserts mention text and sends mention inputs batch request', async () => {
       render(MessageComposer, { item: groupItem, runtime: runtimeWithMentions });
 
-      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
       await fireEvent.input(textarea, { target: { value: '@Nguyễn', selectionStart: 7, selectionEnd: 7 } });
       await tick();
 
@@ -637,7 +637,7 @@ describe('MessageComposer', () => {
 
       expect(textarea.value).toBe('@Nguyễn Văn A ');
 
-      await fireEvent.click(screen.getByRole('button', { name: /Gửi/i }));
+      await fireEvent.click(screen.getByRole('button', { name: /Send/i }));
       await tick();
 
       expect(mockSendConversationBatch).toHaveBeenCalled();
@@ -672,7 +672,7 @@ describe('MessageComposer', () => {
 
       render(MessageComposer, { item: groupItem, runtime });
 
-      const textarea = screen.getByPlaceholderText('Nhập tin nhắn...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
       await fireEvent.input(textarea, {
         target: { value: '/gia @Nguyễn', selectionStart: 13, selectionEnd: 13 }
       });
@@ -681,7 +681,7 @@ describe('MessageComposer', () => {
       expect(screen.queryByTestId('quick-template-popover')).toBeNull();
       expect(screen.queryByTestId('mention-candidate-popover-wrapper')).toBeNull();
 
-      await fireEvent.click(screen.getByRole('button', { name: /Gửi/i }));
+      await fireEvent.click(screen.getByRole('button', { name: /Send/i }));
       await tick();
 
       expect(mockSendConversationBatch).toHaveBeenCalledTimes(1);

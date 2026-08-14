@@ -45,7 +45,7 @@ describe('messageMedia', () => {
     expect(formatBytes(1024)).toBe('1.0 KB');
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB');
     expect(attachmentLabel('video')).toBe('Video');
-    expect(attachmentLabel('unknown')).toBe('Tệp đính kèm');
+    expect(attachmentLabel('unknown')).toBe('Attachment');
   });
 
   describe('extractStickerUrl', () => {

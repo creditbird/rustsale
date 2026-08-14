@@ -199,14 +199,14 @@
         >
           <img
             src={imageUrl}
-            alt={displayText || 'Hình ảnh'}
+            alt={displayText || 'Image'}
             class="max-h-64 max-w-full object-cover rounded-lg"
             loading="lazy"
           />
         </div>
       {:else if isUnsafeLegacyImage}
         <div class="flex items-center gap-2 p-2 rounded-md bg-destructive/10 text-destructive text-xs font-medium border border-destructive/20">
-          <span>File đính kèm không hợp lệ</span>
+          <span>Invalid attachment file</span>
         </div>
       {/if}
     {/if}
@@ -221,7 +221,7 @@
       </div>
     {:else if !message.attachments?.length && !syntheticVideoAttachment && !legacyMediaUrl && message.contentType !== 'text' && !isLinkContentType}
       <div class="flex items-center gap-2 p-2 rounded-md bg-muted/40 text-muted-foreground text-xs italic">
-        <span>Nội dung chưa được hỗ trợ</span>
+        <span>Unsupported content</span>
       </div>
     {/if}
   {/if}

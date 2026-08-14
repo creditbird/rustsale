@@ -229,7 +229,7 @@ describe('GroupMembersModal', () => {
     expect((scanButton as HTMLButtonElement).disabled).toBe(true);
 
     pendingScan.resolve(scanResult());
-    await waitFor(() => expect(screen.getByText(/Lịch sử WebSocket toàn tài khoản/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Account-wide WebSocket history/)).toBeTruthy());
     expect(screen.getByText('Không thể đọc chi tiết bình chọn')).toBeTruthy();
     expect(screen.getByText('Backfill đạt giới hạn thời gian')).toBeTruthy();
   });
@@ -251,7 +251,7 @@ describe('GroupMembersModal', () => {
     await fireEvent.click(screen.getByRole('button', { name: /Deep Scan/ }));
 
     await waitFor(() =>
-      expect(screen.getByText(/Danh sách thành viên đầy đủ từ snapshot nhà cung cấp/)).toBeTruthy()
+      expect(screen.getByText(/Full member list from provider snapshot/)).toBeTruthy()
     );
   });
 
@@ -319,8 +319,8 @@ describe('GroupMembersModal', () => {
     await screen.findByText('Member A');
     mockDeepScan.mockClear();
 
-    await fireEvent.click(screen.getByRole('button', { name: /Thêm vào Leads & Categories/ }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Xác Nhận Import' }));
+    await fireEvent.click(screen.getByRole('button', { name: /Add to Leads & Categories/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm Import' }));
 
     await waitFor(() => expect(mockBatchImport).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(mockGetLocalMembers).toHaveBeenCalledTimes(2));
@@ -336,7 +336,7 @@ describe('GroupMembersModal', () => {
       groupTitle: 'Nhóm VIP'
     });
 
-    expect(screen.getByRole('status').textContent).toContain('Đang tải');
+    expect(screen.getByRole('status').textContent).toContain('Loading');
     pending.reject(new Error('local read failed'));
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('local read failed'));
@@ -380,8 +380,8 @@ describe('GroupMembersModal', () => {
       onLeadsImported
     });
     await screen.findByText('Member A');
-    await fireEvent.click(screen.getByRole('button', { name: /Thêm vào Leads & Categories/ }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Xác Nhận Import' }));
+    await fireEvent.click(screen.getByRole('button', { name: /Add to Leads & Categories/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm Import' }));
     await waitFor(() => expect(mockBatchImport).toHaveBeenCalledTimes(1));
 
     await view.rerender({

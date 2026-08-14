@@ -435,7 +435,7 @@
               <label for="location-input" class="font-semibold text-foreground">Location / Area</label>
               <div class="relative">
                 <MapPin class="size-4 absolute left-3 top-2.5 text-muted-foreground" />
-                <Input id="location-input" bind:value={location} placeholder="e.g. Quận 1, Ho Chi Minh City" class="pl-9 text-xs" disabled={isScraping} />
+                <Input id="location-input" bind:value={location} placeholder="e.g. District 1, Ho Chi Minh City" class="pl-9 text-xs" disabled={isScraping} />
               </div>
               <p class="text-[11px] text-muted-foreground">Focuses search on a specific neighborhood or town name.</p>
             </div>
@@ -484,7 +484,7 @@
               <div class="flex flex-col gap-1">
                 <label for="geocode-query" class="font-semibold text-foreground">Search Administrative Area</label>
                 <div class="flex gap-2">
-                  <Input id="geocode-query" bind:value={geocodeQuery} placeholder="e.g. Quận 1, TP. HCM" class="text-xs h-9" disabled={isScraping || isGeocoding} />
+                  <Input id="geocode-query" bind:value={geocodeQuery} placeholder="e.g. District 1, Ho Chi Minh City" class="text-xs h-9" disabled={isScraping || isGeocoding} />
                   <Button variant="outline" size="sm" onclick={detectCoordinates} disabled={isScraping || isGeocoding} class="h-9 px-3 gap-1 shrink-0">
                     <Locate class="size-3.5" /> {isGeocoding ? 'Detecting...' : 'Detect'}
                   </Button>

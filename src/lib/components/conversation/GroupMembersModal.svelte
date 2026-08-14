@@ -94,21 +94,21 @@
 
   const diagnosticSummary = $derived.by(() => {
     if (!scanResult) {
-      return 'Đang hiển thị UID đã lưu cục bộ. Nhấn Deep Scan để bổ sung dữ liệu từ Zalo.';
+      return 'Showing locally saved UIDs. Click Deep Scan to supplement data from Zalo.';
     }
     if (scanResult.diagnostics.direct_snapshot.complete) {
-      return `Danh sách thành viên đầy đủ từ snapshot nhà cung cấp: ${scanResult.discovered_count} thành viên.`;
+      return `Full member list from provider snapshot: ${scanResult.discovered_count} members.`;
     }
     const diagnostics = scanResult.diagnostics;
     return [
-      `Snapshot chưa đầy đủ (${diagnostics.direct_snapshot.member_count} UID)`,
+      `Incomplete snapshot (${diagnostics.direct_snapshot.member_count} UIDs)`,
       diagnostics.group_link?.attempted
-        ? `Link/Invite ${diagnostics.group_link.committed_uid_count} UID`
+        ? `Link/Invite ${diagnostics.group_link.committed_uid_count} UIDs`
         : null,
-      `Board/Poll ${diagnostics.board.pages_succeeded}/${diagnostics.board.pages_attempted} trang`,
-      `Lịch sử WebSocket toàn tài khoản: ${diagnostics.history_backfill.outcome}`,
-      `Local ${diagnostics.local_evidence.messages_scanned} tin nhắn`,
-      `Hồ sơ ${diagnostics.profile_hydration.succeeded}/${diagnostics.profile_hydration.attempted}`
+      `Board/Poll ${diagnostics.board.pages_succeeded}/${diagnostics.board.pages_attempted} pages`,
+      `Account-wide WebSocket history: ${diagnostics.history_backfill.outcome}`,
+      `Local ${diagnostics.local_evidence.messages_scanned} messages`,
+      `Profiles ${diagnostics.profile_hydration.succeeded}/${diagnostics.profile_hydration.attempted}`
     ]
       .filter((item): item is string => Boolean(item))
       .join(' · ');
@@ -203,15 +203,15 @@
     if (!isCurrentRequest(generation, id)) return;
     loading = true;
     error = null;
-    announcement = 'Đang tải thành viên đã lưu cục bộ.';
+    announcement = 'Loading locally saved members.';
     try {
       const nextMembers = await getGroupMembersUnrestricted(id);
       if (!isCurrentRequest(generation, id)) return;
       replaceMembers(nextMembers);
-      announcement = `Đã tải ${nextMembers.length} thành viên đã lưu cục bộ.`;
+      announcement = `Loaded ${nextMembers.length} locally saved members.`;
     } catch (err: unknown) {
       if (!isCurrentRequest(generation, id)) return;
-      error = errorMessage(err, 'Không thể tải danh sách thành viên');
+      error = errorMessage(err, 'Failed to load member list');
       announcement = error;
     } finally {
       if (isCurrentRequest(generation, id)) {
@@ -226,17 +226,17 @@
     const generation = beginRequest(targetConversationId);
     isScanning = true;
     error = null;
-    announcement = 'Đang Deep Scan UID và chờ lịch sử WebSocket toàn tài khoản.';
+    announcement = 'Deep scanning UIDs and awaiting account-wide WebSocket history.';
     try {
       const result = await syncAndDeepScanGroupMembers(targetConversationId);
       if (!isCurrentRequest(generation, targetConversationId)) return;
       applyScanResult(result);
       announcement = result.diagnostics.partial_result
-        ? `Deep Scan hoàn tất một phần với ${result.discovered_count} UID.`
-        : `Deep Scan hoàn tất với ${result.discovered_count} thành viên.`;
+        ? `Deep Scan partially completed with ${result.discovered_count} UIDs.`
+        : `Deep Scan completed with ${result.discovered_count} members.`;
     } catch (err: unknown) {
       if (!isCurrentRequest(generation, targetConversationId)) return;
-      error = errorMessage(err, 'Không thể đồng bộ thành viên nhóm');
+      error = errorMessage(err, 'Failed to sync group members');
       announcement = error;
     } finally {
       if (isCurrentRequest(generation, targetConversationId)) {
@@ -251,7 +251,7 @@
       if (!isCurrentRequest(generation, id)) return;
       existingCategories = cats || [];
     } catch (err) {
-      console.error('Failed to load categories:', err);
+      console.error('Failed to load categories', err);
     }
   }
 
@@ -339,7 +339,7 @@
   function openImportWizard() {
     if (selectedKeys.size === 0) return;
     if (!newCategoryName) {
-      newCategoryName = `Lead Nhóm: ${groupTitle}`;
+      newCategoryName = `Group Leads: ${groupTitle}`;
     }
     wizardOpen = true;
   }
@@ -353,7 +353,7 @@
     const generation = beginRequest(targetConversationId);
     isImporting = true;
     error = null;
-    announcement = 'Đang import thành viên đã chọn vào CRM.';
+    announcement = 'Importing selected members into CRM.';
     try {
       const items: ImportMemberItem[] = selectedMembers.map((m) => ({
         identity_id: m.identity_id ?? undefined,
@@ -372,7 +372,7 @@
       });
       if (!isCurrentRequest(generation, targetConversationId)) return;
 
-      importSuccessMessage = `Đã thêm ${res.imported_count} lead mới và cập nhật ${res.updated_count} lead sẵn có vào Categories!`;
+      importSuccessMessage = `Added ${res.imported_count} new leads and updated ${res.updated_count} existing leads into Categories!`;
       onLeadsImported(res.imported_count);
       announcement = importSuccessMessage;
 
@@ -386,7 +386,7 @@
       }, 1800);
     } catch (err: unknown) {
       if (!isCurrentRequest(generation, targetConversationId)) return;
-      error = errorMessage(err, 'Không thể import thành viên vào CRM');
+      error = errorMessage(err, 'Failed to import members into CRM');
       announcement = error;
     } finally {
       if (isCurrentRequest(generation, targetConversationId)) {
@@ -429,12 +429,12 @@
               {#if membershipComplete}
                 <Badge variant="outline" class="bg-emerald-500/10 text-emerald-600 border-emerald-500/30 text-xs py-0.5 px-2 flex items-center gap-1">
                   <ShieldCheck class="w-3 h-3 text-emerald-500" />
-                  <span>Danh sách đầy đủ</span>
+                  <span>Complete list</span>
                 </Badge>
               {:else}
                 <Badge variant="outline" class="bg-amber-500/10 text-amber-700 border-amber-500/30 text-xs py-0.5 px-2 flex items-center gap-1">
                   <ShieldAlert class="w-3 h-3 text-amber-600" />
-                  <span>{totalCount} UID đã quan sát</span>
+                  <span>{totalCount} observed UIDs</span>
                 </Badge>
               {/if}
               {#if diagnosticWarnings.length > 0}
@@ -443,7 +443,7 @@
                   class="text-[10px] py-0 px-1.5"
                   title={diagnosticWarnings.map((warning) => warning.message).join('\n')}
                 >
-                  {diagnosticWarnings.length} cảnh báo
+                  {diagnosticWarnings.length} warnings
                 </Badge>
               {/if}
             </div>
@@ -469,7 +469,7 @@
           >
             {#if isScanning}
               <Loader2 class="w-3.5 h-3.5 animate-spin text-emerald-500" />
-              <span>Đang Deep Scan...</span>
+              <span>Deep Scanning...</span>
             {:else}
               <Scan class="w-3.5 h-3.5 text-emerald-500" />
               <span>Deep Scan UID</span>
@@ -480,7 +480,7 @@
             variant="ghost"
             size="icon"
             class="h-8 w-8 rounded-full"
-            aria-label="Đóng danh sách thành viên"
+            aria-label="Close member list"
             onclick={onClose}
           >
             <X class="w-4 h-4" />
@@ -498,28 +498,28 @@
             class="px-2.5 py-1 rounded-md transition-all font-medium {activeFilter === 'all' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => (activeFilter = 'all')}
           >
-            Tất cả ({totalCount})
+            All ({totalCount})
           </button>
           <button
             type="button"
             class="px-2.5 py-1 rounded-md transition-all font-medium {activeFilter === 'no_lead' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => (activeFilter = 'no_lead')}
           >
-            Chưa có trong CRM ({nonLeadCount})
+            Not in CRM ({nonLeadCount})
           </button>
           <button
             type="button"
             class="px-2.5 py-1 rounded-md transition-all font-medium {activeFilter === 'has_lead' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => (activeFilter = 'has_lead')}
           >
-            Đã là Lead ({leadCount})
+            Already Lead ({leadCount})
           </button>
           <button
             type="button"
             class="px-2.5 py-1 rounded-md transition-all font-medium {activeFilter === 'admin' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => (activeFilter = 'admin')}
           >
-            Ban Quản Trị ({adminCount})
+            Admins ({adminCount})
           </button>
         </div>
 
@@ -529,7 +529,7 @@
           <Input
             type="text"
             bind:value={searchQuery}
-            placeholder="Tìm tên, Zalo ID..."
+            placeholder="Search name, Zalo ID..."
             class="h-8 pl-8 text-xs w-full"
           />
         </div>
@@ -540,7 +540,7 @@
         {#if loading}
           <div class="flex flex-col items-center justify-center p-12 text-muted-foreground gap-2">
             <Loader2 class="w-6 h-6 animate-spin text-primary" />
-            <span class="text-xs">Đang tải các thành viên đã nhận diện...</span>
+            <span class="text-xs">Loading identified members...</span>
           </div>
         {:else if error}
           <div class="flex flex-col items-center justify-center p-12 text-destructive gap-2" role="alert" aria-live="assertive">
@@ -550,7 +550,7 @@
         {:else if filteredMembers.length === 0}
           <div class="flex flex-col items-center justify-center p-12 text-muted-foreground gap-2">
             <Users class="w-8 h-8 opacity-40" />
-            <span class="text-xs">Không tìm thấy thành viên phù hợp với bộ lọc.</span>
+            <span class="text-xs">No members matching the filter.</span>
           </div>
         {:else}
           <table class="w-full text-left text-xs border-collapse">
@@ -559,9 +559,9 @@
                 <th class="p-3 w-10 text-center">
                   <Checkbox checked={isAllFilteredSelected} onCheckedChange={toggleSelectAllFiltered} />
                 </th>
-                <th class="p-3">Thành viên</th>
-                <th class="p-3 w-28">Vai trò</th>
-                <th class="p-3 w-56">Trạng thái CRM & Category</th>
+                <th class="p-3">Member</th>
+                <th class="p-3 w-28">Role</th>
+                <th class="p-3 w-56">CRM Status & Category</th>
                 <th class="p-3 w-28 text-right">Zalo ID</th>
               </tr>
             </thead>
@@ -595,14 +595,14 @@
                     {#if member.participant_role === 'admin'}
                       <Badge variant="secondary" class="bg-amber-500/10 text-amber-600 border-amber-500/30 text-[10px] py-0 px-1.5 flex items-center gap-1 w-fit">
                         <Crown class="w-3 h-3 text-amber-500" />
-                        <span>Trưởng nhóm</span>
+                        <span>Leader</span>
                       </Badge>
                     {:else if member.participant_role === 'deputy'}
                       <Badge variant="secondary" class="bg-blue-500/10 text-blue-600 border-blue-500/30 text-[10px] py-0 px-1.5 w-fit">
-                        Phó nhóm
+                        Deputy
                       </Badge>
                     {:else}
-                      <span class="text-muted-foreground text-[11px]">Thành viên</span>
+                      <span class="text-muted-foreground text-[11px]">Member</span>
                     {/if}
                   </td>
                   <td class="p-3">
@@ -610,7 +610,7 @@
                       <div class="flex items-center gap-1.5 flex-wrap">
                         <Badge variant="outline" class="bg-emerald-500/10 text-emerald-600 border-emerald-500/30 text-[10px] py-0 px-1.5 flex items-center gap-1">
                           <ShieldCheck class="w-3 h-3 text-emerald-500" />
-                          <span>Đã là Lead</span>
+                          <span>Lead</span>
                         </Badge>
                         {#each member.categories as cat}
                           <Badge variant="secondary" class="text-[10px] py-0 px-1.5">
@@ -619,7 +619,7 @@
                         {/each}
                       </div>
                     {:else}
-                      <span class="text-muted-foreground/70 text-[11px] italic">Chưa thêm vào CRM</span>
+                      <span class="text-muted-foreground/70 text-[11px] italic">Not added to CRM</span>
                     {/if}
                   </td>
                   <td class="p-3 text-right font-mono text-[11px] text-muted-foreground">
@@ -635,7 +635,7 @@
       <!-- Footer Action Bar -->
       <div class="p-3 border-t border-border bg-muted/30 flex items-center justify-between" data-testid="group-members-footer">
         <div class="text-xs text-muted-foreground flex items-center gap-2">
-          <span>Đã chọn <strong class="text-foreground">{selectedKeys.size}</strong> / {totalCount} thành viên</span>
+          <span>Selected <strong class="text-foreground">{selectedKeys.size}</strong> / {totalCount} members</span>
           {#if selectedKeys.size > 0}
             <Button
               variant="ghost"
@@ -643,7 +643,7 @@
               class="h-6 text-[11px] text-muted-foreground hover:text-foreground px-1.5"
               onclick={() => (selectedKeys = new Set())}
             >
-              Bỏ chọn tất cả
+              Deselect all
             </Button>
           {/if}
         </div>
@@ -651,12 +651,12 @@
         <div class="flex items-center gap-2">
           <Button variant="outline" size="sm" onclick={exportCSV} disabled={selectedKeys.size === 0} class="h-8 text-xs gap-1.5">
             <Download class="w-3.5 h-3.5" />
-            <span>Xuất CSV</span>
+            <span>Export CSV</span>
           </Button>
 
           <Button size="sm" onclick={openImportWizard} disabled={selectedKeys.size === 0} class="h-8 text-xs gap-1.5 bg-primary text-primary-foreground">
             <UserPlus class="w-3.5 h-3.5" />
-            <span>Thêm vào Leads & Categories ({selectedKeys.size})</span>
+            <span>Add to Leads & Categories ({selectedKeys.size})</span>
           </Button>
         </div>
       </div>
@@ -682,15 +682,15 @@
             <Tag class="w-4 h-4" />
           </div>
           <div>
-            <Dialog.Title level={3} class="font-semibold text-sm leading-5">Cấu Hình Import Lead & Category</Dialog.Title>
-            <Dialog.Description class="text-xs leading-4 text-muted-foreground">Thêm {selectedKeys.size} thành viên nhóm vào CRM</Dialog.Description>
+            <Dialog.Title level={3} class="font-semibold text-sm leading-5">Configure Lead & Category Import</Dialog.Title>
+            <Dialog.Description class="text-xs leading-4 text-muted-foreground">Add {selectedKeys.size} group members into CRM</Dialog.Description>
           </div>
         </div>
         <Button
           variant="ghost"
           size="icon"
           class="h-7 w-7"
-          aria-label="Đóng cấu hình import"
+          aria-label="Close import configuration"
           onclick={() => (wizardOpen = false)}
         >
           <X class="w-3.5 h-3.5" />
@@ -706,13 +706,13 @@
         <!-- New Category Input -->
         <div class="space-y-1.5">
           <label for="new-group-category" class="text-xs font-medium text-foreground flex items-center gap-1.5 font-sans">
-            Tạo Category mới cho nhóm này:
+            Create a new Category for this group:
           </label>
           <Input
             id="new-group-category"
             type="text"
             bind:value={newCategoryName}
-            placeholder="VD: Lead Nhóm - Vibe Coding"
+            placeholder="e.g. Group Leads - Vibe Coding"
             class="h-8 text-xs"
           />
         </div>
@@ -721,7 +721,7 @@
         {#if existingCategories.length > 0}
           <div class="space-y-1.5">
             <p class="text-xs font-medium text-foreground">
-              Hoặc chọn Categories sẵn có trong CRM:
+              Or select existing CRM Categories:
             </p>
             <div class="max-h-36 overflow-y-auto border border-border rounded-md p-2 space-y-1.5 bg-muted/20">
               {#each existingCategories as cat (cat.id)}
@@ -738,17 +738,17 @@
         {/if}
 
         <div class="p-2.5 bg-muted/40 rounded-lg text-[11px] text-muted-foreground space-y-1">
-          <p class="font-medium text-foreground">ℹ️ Quy tắc tự động:</p>
+          <p class="font-medium text-foreground">ℹ️ Automatic rules:</p>
           <ul class="list-disc pl-4 space-y-0.5">
-            <li>Những ai <strong>chưa là Lead</strong> sẽ được tự động chèn mới vào CRM.</li>
-            <li>Những ai <strong>đã là Lead</strong> sẽ tự động được gán thêm vào các Category vừa chọn.</li>
-            <li>Ghi chú Lead tự động lưu vết nguồn: <code>Zalo Group Lead: {groupTitle}</code>.</li>
+            <li>Non-lead members will be automatically created in CRM.</li>
+            <li>Existing leads will be automatically assigned to selected categories.</li>
+            <li>Lead notes will automatically track origin: <code>Zalo Group Lead: {groupTitle}</code>.</li>
           </ul>
         </div>
 
         <div class="flex items-center justify-end gap-2 pt-2 border-t border-border">
           <Button variant="outline" size="sm" onclick={() => (wizardOpen = false)} class="h-8 text-xs">
-            Hủy
+            Cancel
           </Button>
           <Button
             size="sm"
@@ -758,10 +758,10 @@
           >
             {#if isImporting}
               <Loader2 class="w-3.5 h-3.5 animate-spin" />
-              <span>Đang xử lý...</span>
+              <span>Processing...</span>
             {:else}
               <Check class="w-3.5 h-3.5" />
-              <span>Xác Nhận Import</span>
+              <span>Confirm Import</span>
             {/if}
           </Button>
         </div>

@@ -25,10 +25,10 @@
       <Pin class="size-3.5 text-primary shrink-0 rotate-45" />
       <div class="flex flex-col min-w-0">
         <span class="font-semibold text-primary text-[11px]">
-          Tin nhắn đã ghim {pinnedMessages.length > 1 ? `(${pinnedMessages.length})` : ''}
+          Pinned message {pinnedMessages.length > 1 ? `(${pinnedMessages.length})` : ''}
         </span>
         <p class="truncate text-foreground/90 font-normal">
-          {latestPinned.senderName ? `${latestPinned.senderName}: ` : ''}{latestPinned.messageText || 'Tin nhắn đính kèm/media'}
+          {latestPinned.senderName ? `${latestPinned.senderName}: ` : ''}{latestPinned.messageText || 'Attachment / Media message'}
         </p>
       </div>
     </div>
@@ -39,7 +39,7 @@
         variant="ghost"
         size="icon"
         class="size-6 text-muted-foreground hover:text-foreground"
-        title="Xem tin nhắn gốc"
+        title="View original message"
         onclick={() => onJumpToMessage(latestPinned.messageId)}
       >
         <ArrowDown class="size-3.5" />
@@ -50,7 +50,7 @@
         variant="ghost"
         size="icon"
         class="size-6 text-muted-foreground hover:text-destructive"
-        title="Bỏ ghim"
+        title="Unpin"
         onclick={() => onUnpin(latestPinned.messageId)}
       >
         <X class="size-3.5" />

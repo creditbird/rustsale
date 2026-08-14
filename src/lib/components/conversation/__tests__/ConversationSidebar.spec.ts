@@ -32,7 +32,7 @@ describe('ConversationSidebar Component', () => {
     replyTargets: [],
     participantCount: 1,
     participants: [
-      { identityId: 100, displayName: 'Nguyễn Văn A', avatarUrl: null, participantRole: 'member' }
+      { identityId: 100, externalId: 'ext-100', displayName: 'Nguyễn Văn A', avatarUrl: null, participantRole: 'member' }
     ]
   };
 
@@ -70,9 +70,9 @@ describe('ConversationSidebar Component', () => {
     replyTargets: [],
     participantCount: 3,
     participants: [
-      { identityId: 1, displayName: 'Minh', avatarUrl: null, participantRole: 'member' },
-      { identityId: 2, displayName: 'Thanh', avatarUrl: null, participantRole: 'member' },
-      { identityId: 3, displayName: 'Hoàng', avatarUrl: null, participantRole: 'member' }
+      { identityId: 1, externalId: 'ext-1', displayName: 'Minh', avatarUrl: null, participantRole: 'member' },
+      { identityId: 2, externalId: 'ext-2', displayName: 'Thanh', avatarUrl: null, participantRole: 'member' },
+      { identityId: 3, externalId: 'ext-3', displayName: 'Hoàng', avatarUrl: null, participantRole: 'member' }
     ]
   };
 
@@ -92,8 +92,8 @@ describe('ConversationSidebar Component', () => {
       }
     });
 
-    expect(screen.getByText('Khách hàng (2)')).toBeTruthy();
-    expect(screen.getByText('Nhóm (1)')).toBeTruthy();
+    expect(screen.getByText('Customers (2)')).toBeTruthy();
+    expect(screen.getByText('Groups (1)')).toBeTruthy();
 
     expect(screen.getByText('Nguyễn Văn A')).toBeTruthy();
     expect(screen.getByText('0901234567')).toBeTruthy();
@@ -110,7 +110,7 @@ describe('ConversationSidebar Component', () => {
       }
     });
 
-    const searchInput = screen.getByPlaceholderText(/Tìm kiếm/i);
+    const searchInput = screen.getByPlaceholderText(/Search/i);
     await fireEvent.input(searchInput, { target: { value: 'Nguyễn' } });
 
     expect(screen.getByText('Nguyễn Văn A')).toBeTruthy();
@@ -233,7 +233,7 @@ describe('ConversationSidebar Component', () => {
     expect(container.querySelectorAll('.animate-pulse, [data-slot="skeleton"]').length).toBeGreaterThan(0);
   });
 
-  test('renders conversation kind tabs (Tất cả, Khách hàng, Nhóm) and filters accordingly', async () => {
+  test('renders conversation kind tabs (All, Customers, Groups) and filters accordingly', async () => {
     const { container } = render(ConversationSidebar, {
       props: {
         items,
@@ -256,13 +256,13 @@ describe('ConversationSidebar Component', () => {
     expect(screen.getByText('0901234567')).toBeTruthy();
     expect(screen.getByText('Nhóm Khách Hàng VIP')).toBeTruthy();
 
-    // Click 'Khách hàng' tab -> shows only customer and unknown items
+    // Click 'Customers' tab -> shows only customer and unknown items
     await fireEvent.click(tabCustomer!);
     expect(screen.getByText('Nguyễn Văn A')).toBeTruthy();
     expect(screen.getByText('0901234567')).toBeTruthy();
     expect(screen.queryByText('Nhóm Khách Hàng VIP')).toBeNull();
 
-    // Click 'Nhóm' tab -> shows only group items
+    // Click 'Groups' tab -> shows only group items
     await fireEvent.click(tabGroup!);
     expect(screen.queryByText('Nguyễn Văn A')).toBeNull();
     expect(screen.queryByText('0901234567')).toBeNull();
@@ -292,7 +292,7 @@ describe('ConversationSidebar Component', () => {
     expect(rowElements[2].textContent).toContain('Nguyễn Văn A');
   });
 
-  test('toggles multi-selection mode when Chọn nhiều is clicked and supports select all', async () => {
+  test('toggles multi-selection mode when Select is clicked and supports select all', async () => {
     const { container } = render(ConversationSidebar, {
       props: {
         items,
@@ -302,24 +302,24 @@ describe('ConversationSidebar Component', () => {
       }
     });
 
-    const selectModeButton = screen.getByText('Chọn nhiều');
+    const selectModeButton = screen.getByText('Select');
     expect(selectModeButton).toBeTruthy();
 
     await fireEvent.click(selectModeButton);
 
     // Verify selection mode toolbar appears
-    expect(screen.getByText(/Đã chọn 0/)).toBeTruthy();
+    expect(screen.getByText(/Selected 0/)).toBeTruthy();
     const selectAllButton = container.querySelector('[data-select-all]');
     expect(selectAllButton).toBeTruthy();
 
     // Click select all
     await fireEvent.click(selectAllButton!);
-    expect(screen.getByText(/Đã chọn 3/)).toBeTruthy();
+    expect(screen.getByText(/Selected 3/)).toBeTruthy();
 
     // Exit selection mode
-    const exitButton = screen.getByTitle('Thoát chế độ chọn');
+    const exitButton = screen.getByTitle('Exit selection mode');
     await fireEvent.click(exitButton);
-    expect(screen.getByText('Chọn nhiều')).toBeTruthy();
+    expect(screen.getByText('Select')).toBeTruthy();
   });
 
   test('only counts and deletes visible items when search query hides selected items', async () => {
@@ -333,18 +333,18 @@ describe('ConversationSidebar Component', () => {
     });
 
     // Enter selection mode and select all (3 items)
-    await fireEvent.click(screen.getByText('Chọn nhiều'));
+    await fireEvent.click(screen.getByText('Select'));
     const selectAllButton = container.querySelector('[data-select-all]');
     await fireEvent.click(selectAllButton!);
-    expect(screen.getByText(/Đã chọn 3/)).toBeTruthy();
+    expect(screen.getByText(/Selected 3/)).toBeTruthy();
 
     // Type search query matching only 1 item ("VIP")
-    const searchInput = screen.getByPlaceholderText(/Tìm kiếm/i);
+    const searchInput = screen.getByPlaceholderText(/Search/i);
     await fireEvent.input(searchInput, { target: { value: 'VIP' } });
 
     // Counter must update to only count visible selected items (1)
-    expect(screen.getByText(/Đã chọn 1/)).toBeTruthy();
-    expect(screen.getByText(/Xóa \(1\)/)).toBeTruthy();
+    expect(screen.getByText(/Selected 1/)).toBeTruthy();
+    expect(screen.getByText(/Delete \(1\)/)).toBeTruthy();
   });
 
   test('toggles item selection exactly once on Spacebar press in selection mode', async () => {
@@ -358,8 +358,8 @@ describe('ConversationSidebar Component', () => {
     });
 
     // Enter selection mode
-    await fireEvent.click(screen.getByText('Chọn nhiều'));
-    expect(screen.getByText(/Đã chọn 0/)).toBeTruthy();
+    await fireEvent.click(screen.getByText('Select'));
+    expect(screen.getByText(/Selected 0/)).toBeTruthy();
 
     // Target first item row element
     const firstRow = container.querySelector('[data-inbox-item]');
@@ -369,7 +369,7 @@ describe('ConversationSidebar Component', () => {
     await fireEvent.keyDown(firstRow!, { key: ' ', code: 'Space' });
 
     // Counter must update to exactly 1 (not 0 caused by double-toggle)
-    expect(screen.getByText(/Đã chọn 1/)).toBeTruthy();
+    expect(screen.getByText(/Selected 1/)).toBeTruthy();
   });
 });
 

@@ -60,15 +60,15 @@
   function statusLabel(status: MessageSendBatchStatus): string {
     switch (status) {
       case 'sending':
-        return 'Đang gửi';
+        return 'Sending';
       case 'sent':
-        return 'Đã gửi';
+        return 'Sent';
       case 'partial':
-        return 'Đã gửi một phần';
+        return 'Partially sent';
       case 'failed':
-        return 'Gửi thất bại';
+        return 'Failed to send';
       default:
-        return 'Đang chờ gửi';
+        return 'Queued';
     }
   }
 </script>

@@ -19,9 +19,9 @@ describe('MessageActionsMenu', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    await fireEvent.click(await screen.findByText('Trả lời'));
+    await fireEvent.click(await screen.findByText('Reply'));
     expect(onReply).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText('Thu hồi')).toBeNull();
+    expect(screen.queryByText('Recall')).toBeNull();
   });
 
   it('renders quick reaction options when canReact is true', async () => {
@@ -38,7 +38,7 @@ describe('MessageActionsMenu', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    const heartQuickBtn = screen.getByRole('button', { name: /Thả cảm xúc ❤️/i });
+    const heartQuickBtn = screen.getByRole('button', { name: /React ❤️/i });
     expect(heartQuickBtn).toBeTruthy();
 
     await fireEvent.click(heartQuickBtn);
@@ -59,7 +59,7 @@ describe('MessageActionsMenu', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    const forwardBtn = await screen.findByText('Chuyển tiếp');
+    const forwardBtn = await screen.findByText('Forward');
     expect(forwardBtn).toBeTruthy();
 
     await fireEvent.click(forwardBtn);
@@ -77,7 +77,7 @@ describe('MessageActionsMenu', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    expect(screen.getByText('Trả lời')).toBeTruthy();
+    expect(screen.getByText('Reply')).toBeTruthy();
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     document.body.dispatchEvent(

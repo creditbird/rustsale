@@ -173,10 +173,10 @@
           type="button"
           onclick={handleOpenLicenseModal}
           class="h-9 px-3 rounded-md border border-emerald-500/20 bg-emerald-500/10 hover:bg-emerald-500/20 flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-xs font-semibold transition-colors"
-          title="Quản lý Bản quyền & HWID"
+          title="License & HWID Management"
         >
           <ShieldCheck class="w-4 h-4" />
-          <span class="hidden sm:inline">Bản quyền & HWID</span>
+          <span class="hidden sm:inline">License & HWID</span>
         </button>
 
         <!-- Notifications -->

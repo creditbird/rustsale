@@ -263,7 +263,7 @@
 
     const safeClicked = safeConversationUrl(clickedUrl) ?? clickedUrl;
     if (images.length === 0 && safeClicked) {
-      images.push({ url: safeClicked, alt: 'Hình ảnh' });
+      images.push({ url: safeClicked, alt: 'Image' });
     }
 
     galleryImages = images;
@@ -1049,7 +1049,7 @@
 
   function getParticipantsPreview(item: InboxItem): string {
     if (!item.participants || item.participants.length === 0) return '';
-    return item.participants.map((p) => p.displayName || 'Thành viên').join(', ');
+    return item.participants.map((p) => p.displayName || 'Member').join(', ');
   }
 </script>
 
@@ -1099,10 +1099,10 @@
                   type="button"
                   class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary transition-colors cursor-pointer truncate text-left group"
                   onclick={() => (groupMembersModalOpen = true)}
-                  title="Xem các thành viên đã đồng bộ và thêm Lead/Category"
+                  title="View synchronized members and add Lead/Category"
                 >
                   <Users class="w-3.5 h-3.5 shrink-0 group-hover:scale-110 transition-transform" />
-                  <span class="font-medium underline decoration-dashed underline-offset-2">{selectedItem.participantCount} thành viên</span>
+                  <span class="font-medium underline decoration-dashed underline-offset-2">{selectedItem.participantCount} members</span>
                   {#if getParticipantsPreview(selectedItem)}
                     <span class="truncate">({getParticipantsPreview(selectedItem)})</span>
                   {/if}
@@ -1121,7 +1121,7 @@
             <Button
               variant="outline"
               size="icon"
-              title="Tìm trong cuộc trò chuyện (Ctrl+F)"
+              title="Search in conversation (Ctrl+F)"
               onclick={() => (inThreadSearchOpen = !inThreadSearchOpen)}
               class="h-8 w-8 text-muted-foreground hover:text-foreground"
             >
@@ -1131,7 +1131,7 @@
             <Button
               variant="outline"
               size="icon"
-              title="Xóa cuộc trò chuyện này"
+              title="Delete this conversation"
               onclick={() => (deleteHeaderDialogOpen = true)}
               class="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
             >
@@ -1174,7 +1174,7 @@
         >
           <div class="flex items-center gap-1.5 min-w-0">
             <AlertCircle class="w-4 h-4 shrink-0" />
-            <span class="truncate">Trạng thái tài khoản gián đoạn: {runtimeError}</span>
+            <span class="truncate">Account status degraded: {runtimeError}</span>
           </div>
           <Button
             type="button"
@@ -1184,7 +1184,7 @@
             class="h-7 text-xs flex items-center gap-1 shrink-0"
           >
             <RefreshCw class="w-3 h-3" />
-            <span>Thử lại</span>
+            <span>Retry</span>
           </Button>
         </div>
       {/if}
@@ -1197,8 +1197,8 @@
         loadingOlder={loadingOlder}
         hasMore={Boolean(currentVariant.nextCursor)}
         emptyMessage={activeChannels.length === 0 && selectedItem.kind !== 'group'
-          ? 'Không có kênh nào đang được hiển thị'
-          : 'Chưa có tin nhắn trong cuộc trò chuyện này'}
+          ? 'No channels currently visible'
+          : 'No messages in this conversation'}
         onLoadOlder={handleLoadOlder}
         isGroup={selectedItem.kind === 'group'}
         {capabilitiesForMessage}
@@ -1230,9 +1230,9 @@
     {:else}
       <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-center">
         <MessageSquare class="w-12 h-12 mb-3 opacity-30" />
-        <h3 class="font-medium text-base text-foreground mb-1">Chưa có hội thoại nào được chọn</h3>
+        <h3 class="font-medium text-base text-foreground mb-1">No conversation selected</h3>
         <p class="text-xs text-muted-foreground">
-          {inbox.length === 0 ? 'Chưa có hội thoại' : 'Chọn một cuộc trò chuyện từ danh sách bên trái'}
+          {inbox.length === 0 ? 'No conversations' : 'Select a conversation from the list on the left'}
         </p>
       </div>
     {/if}

@@ -802,7 +802,7 @@
             <label class="flex items-center gap-2 cursor-pointer">
               <input type="radio" value="never_sent" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
               <span>Never Sent Successfully</span>
-              <span class="text-[10px] text-muted-foreground font-normal">(Bỏ qua số chặn / không Zalo)</span>
+              <span class="text-[10px] text-muted-foreground font-normal">(Skip blocked / non-Zalo numbers)</span>
             </label>
             <label class="flex items-center gap-2 cursor-pointer">
               <input type="radio" value="last_failed" bind:group={segmentationFilter} disabled={isCampaignRunning} class="text-primary" />
@@ -927,9 +927,9 @@
                     {#if lead.has_zalo === 1}
                       <Badge variant="secondary" class="text-[9px] px-1 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/20">Zalo Verified</Badge>
                     {:else if lead.zalo_status === 'BLOCKED_STRANGER'}
-                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-amber-500/10 text-amber-600 border-amber-500/20">Chặn người lạ</Badge>
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-amber-500/10 text-amber-600 border-amber-500/20">Blocks Strangers</Badge>
                     {:else if lead.zalo_status === 'VERIFIED_NOT_EXIST' || lead.zalo_status === 'NOT_FOUND'}
-                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-muted text-muted-foreground border-border">Không có Zalo</Badge>
+                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-muted text-muted-foreground border-border">No Zalo</Badge>
                     {/if}
                   </div>
                   <div class="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
@@ -955,12 +955,12 @@
                 disabled={isCampaignRunning}
                 onCheckedChange={(checked) => enableBurstLimit = !!checked}
               />
-              <span>Kích hoạt Burst Limit (Chống block Zalo)</span>
+              <span>Enable Burst Limit (Anti-block Protection)</span>
             </label>
             {#if enableBurstLimit}
-              <Badge variant="outline" class="text-[9px] px-1.5 py-0.5 border-emerald-500/30 text-emerald-600 bg-emerald-500/10 font-semibold">Đã bật bảo vệ</Badge>
+              <Badge variant="outline" class="text-[9px] px-1.5 py-0.5 border-emerald-500/30 text-emerald-600 bg-emerald-500/10 font-semibold">Protected</Badge>
             {:else}
-              <Badge variant="outline" class="text-[9px] px-1.5 py-0.5 text-muted-foreground border-border">Đã tắt</Badge>
+              <Badge variant="outline" class="text-[9px] px-1.5 py-0.5 text-muted-foreground border-border">Disabled</Badge>
             {/if}
           </div>
 
@@ -1088,7 +1088,7 @@
           bind:this={templateTextareaRef}
           rows="7"
           bind:value={templateContent}
-          placeholder="Write template content here... e.g. Chào [name], bên mình chuyên cung cấp giải pháp..."
+          placeholder="Write template content here... e.g. Hello [name], we would like to introduce..."
           class="w-full rounded-md border border-input bg-background p-3 text-xs leading-relaxed focus:outline-hidden focus:ring-1 focus:ring-ring min-h-[160px] resize-y"
         ></textarea>
       </div>
