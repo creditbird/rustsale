@@ -1339,4 +1339,68 @@ describe('ConversationWorkspace Component', () => {
     const directRecipientInput = await screen.findByPlaceholderText('e.g. 0987654321 or Zalo UID');
     expect((directRecipientInput as HTMLInputElement).value).toBe('5025114793295720787');
   });
+
+  test('18e. Clicking View / Create Lead in UserProfilePopover opens CreateLeadDialog with pre-filled candidate Zalo UID and name', async () => {
+    mockListConversationMentionCandidates.mockImplementationOnce(async () => [
+      {
+        identityId: 3230066,
+        externalId: '5054685013624794058',
+        displayName: 'Little Cat',
+        avatarUrl: null,
+        participantRole: 'member'
+      }
+    ]);
+    mockGetConversationTimeline.mockImplementationOnce(async () => ({
+      items: [
+        {
+          id: 200,
+          conversationId: 30,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          senderIdentityId: 100,
+          senderDisplayName: 'Nguyễn Văn A',
+          direction: 'inbound',
+          contentType: 'text',
+          textContent: '@Little Cat how',
+          content: { text: '@Little Cat how' },
+          occurredAt: '2026-08-14T10:00:00Z',
+          status: 'received',
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: null,
+          sendBatch: null,
+          mentions: [],
+          actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+        }
+      ],
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getByText('Nhóm VIP'));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await fireEvent.click(screen.getByText('@Little Cat'));
+    await tick();
+
+    expect(screen.getByText('UID: 5054685013624794058')).toBeTruthy();
+    const leadBtn = screen.getByTestId('btn-lead-crm');
+    await fireEvent.click(leadBtn);
+    await tick();
+
+    expect(screen.getByText('Create New CRM Lead')).toBeTruthy();
+    const nameInput = screen.getByDisplayValue('Little Cat') as HTMLInputElement;
+    const phoneInput = screen.getByDisplayValue('5054685013624794058') as HTMLInputElement;
+    expect(nameInput).toBeTruthy();
+    expect(phoneInput).toBeTruthy();
+  });
 });

@@ -233,14 +233,14 @@
       name: payload.displayName ?? undefined
     });
 
-    if (matching) {
+    if (matching?.leadId) {
       selectItem(matching);
     } else {
       createLeadName = payload.displayName || '';
       createLeadPhoneOrUid = hasUsableExternalZaloId(targetPhoneOrUid, targetIdentityId)
         ? targetPhoneOrUid || ''
         : '';
-      createLeadIdentityId = targetIdentityId ?? null;
+      createLeadIdentityId = targetIdentityId ?? matching?.identityId ?? null;
       createLeadOpen = true;
     }
   }
@@ -457,25 +457,26 @@
   function findMatchingInboxItem(lead: TargetLeadPayload): InboxItem | null {
     if (!lead || inbox.length === 0) return null;
 
-    // 0. Match by identityId
+    // 0. Match by identityId (excluding group chats)
     if (lead.identityId) {
       const matchIdentity = inbox.find(
-        (i) => i.identityId === lead.identityId || i.key === `identity:${lead.identityId}`
+        (i) => i.kind !== 'group' && (i.identityId === lead.identityId || i.key === `identity:${lead.identityId}`)
       );
       if (matchIdentity) return matchIdentity;
     }
 
-    // 1. Match by leadId
+    // 1. Match by leadId (excluding group chats)
     if (lead.leadId) {
-      const match = inbox.find((i) => i.leadId === lead.leadId);
+      const match = inbox.find((i) => i.kind !== 'group' && i.leadId === lead.leadId);
       if (match) return match;
     }
 
-    // 2. Match by zalo_uid
+    // 2. Match by zalo_uid (excluding group chats)
     if (lead.zalo_uid) {
       const cleanUid = lead.zalo_uid.trim();
       if (cleanUid) {
         const matchUid = inbox.find((i) => {
+          if (i.kind === 'group') return false;
           const keyMatch = i.key ? i.key.includes(cleanUid) : false;
           const titleMatch = i.title ? i.title.includes(cleanUid) : false;
           const participantMatch = i.participants?.some(
@@ -487,10 +488,11 @@
       }
     }
 
-    // 3. Match by phone number
+    // 3. Match by phone number (excluding group chats)
     const cleanPhone = lead.phone ? lead.phone.replace(/[^0-9]/g, '') : '';
     if (cleanPhone && cleanPhone.length >= 6) {
       const matchPhone = inbox.find((i) => {
+        if (i.kind === 'group') return false;
         const titleClean = i.title ? i.title.replace(/[^0-9]/g, '') : '';
         const keyClean = i.key ? i.key.replace(/[^0-9]/g, '') : '';
         const participantPhoneMatch = i.participants?.some((p) => {
