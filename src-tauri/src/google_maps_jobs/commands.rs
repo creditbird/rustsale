@@ -372,7 +372,7 @@ fn plan_initial_units(
 ) -> Result<Vec<ScrapeUnit>> {
     match request.mode {
         ScrapeMode::Keyword => {
-            let locations = if request.districts.is_empty() {
+            let raw_locations: Vec<Option<String>> = if request.districts.is_empty() {
                 vec![request.location.clone()]
             } else {
                 request
@@ -381,19 +381,29 @@ fn plan_initial_units(
                     .map(|district| Some(district.trim().to_string()))
                     .collect()
             };
-            if locations.len() > 500 {
+            if raw_locations.len() > 500 {
                 return Err(anyhow!("district count exceeds the 500-unit safety limit"));
             }
-            Ok(locations
+
+            let mut seen_keys = std::collections::HashSet::new();
+            let mut unique_locations = Vec::with_capacity(raw_locations.len());
+            for location in raw_locations {
+                let unit_key = format!(
+                    "keyword:{}",
+                    location.as_deref().unwrap_or("all").to_lowercase()
+                );
+                if seen_keys.insert(unit_key.clone()) {
+                    unique_locations.push((unit_key, location));
+                }
+            }
+
+            Ok(unique_locations
                 .into_iter()
                 .enumerate()
-                .map(|(index, location)| ScrapeUnit {
+                .map(|(index, (unit_key, location))| ScrapeUnit {
                     id: format!("{job_id}-unit-{index:05}"),
                     job_id: job_id.to_string(),
-                    unit_key: format!(
-                        "keyword:{}",
-                        location.as_deref().unwrap_or("all").to_lowercase()
-                    ),
+                    unit_key,
                     unit_type: if request.districts.is_empty() {
                         "keyword".to_string()
                     } else {
@@ -757,6 +767,54 @@ mod tests {
         let second = receiver.recv().await.unwrap();
         assert_eq!(first.job_id, "job-event");
         assert_eq!((first.sequence, second.sequence), (1, 2));
+    }
+
+    #[tokio::test]
+    async fn google_maps_scrape_job_command_deduplicates_duplicate_target_paths_without_rollback() {
+        let harness = Harness::new(false);
+        let request = CreateScrapeJobRequest {
+            mode: ScrapeMode::Keyword,
+            keyword: "spa".to_string(),
+            location: Some("Vietnam".to_string()),
+            bbox: None,
+            step_km: None,
+            districts: vec![
+                "Quận 1, Ho Chi Minh City, Vietnam".to_string(),
+                "quận 1, ho chi minh city, vietnam".to_string(),
+                "Quận 1, Ho Chi Minh City, Vietnam".to_string(),
+                "Quận 3, Ho Chi Minh City, Vietnam".to_string(),
+                "QUẬN 3, HO CHI MINH CITY, VIETNAM".to_string(),
+            ],
+            headless: true,
+        };
+
+        let created = harness
+            .service
+            .create_job(request)
+            .await
+            .expect("job should be created successfully despite duplicate target districts");
+
+        assert_eq!(created.status, ScrapeJobStatus::Queued);
+        assert_eq!(created.total_units, 2);
+
+        let units = harness.repository.list_units(&created.id).await.unwrap();
+        assert_eq!(units.len(), 2);
+        assert_eq!(
+            units[0].unit_key,
+            "keyword:quận 1, ho chi minh city, vietnam"
+        );
+        assert_eq!(
+            units[0].payload["location"],
+            "Quận 1, Ho Chi Minh City, Vietnam"
+        );
+        assert_eq!(
+            units[1].unit_key,
+            "keyword:quận 3, ho chi minh city, vietnam"
+        );
+        assert_eq!(
+            units[1].payload["location"],
+            "Quận 3, Ho Chi Minh City, Vietnam"
+        );
     }
 
     fn test_job(id: &str) -> ScrapeJob {
