@@ -410,6 +410,33 @@ const mockBatchImportGroupMembersToLeads = mock(async (_request: unknown) => ({
 const mockListConversationMentionCandidates = mock(
   async (_request: unknown): Promise<import('$lib/services/conversationService').ConversationMentionCandidate[]> => []
 );
+const mockStartDirectConversation = mock(
+  async (_request: any): Promise<any> => ({
+    id: 501,
+    conversationId: 888,
+    channelAccountId: 1,
+    channel: 'zalo' as const,
+    accountDisplayName: 'Zalo Main',
+    senderIdentityId: 100,
+    senderDisplayName: 'Admin',
+    direction: 'outbound' as const,
+    contentType: 'text',
+    textContent: 'Hello',
+    content: { text: 'Hello' },
+    occurredAt: '2026-08-14T10:05:00Z',
+    status: 'sent' as const,
+    removedAt: null,
+    errorMessage: null,
+    replyToMessageId: null,
+    attachments: [],
+    replyTarget: null,
+    reactions: [],
+    batchIndex: null,
+    sendBatch: null,
+    mentions: [],
+    actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+  })
+);
 
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
@@ -438,6 +465,7 @@ mock.module('$lib/services/conversationService', () => ({
   linkConversationIdentity: mock(async () => {}),
   listConversationMentionCandidates: (request: unknown) =>
     mockListConversationMentionCandidates(request),
+  startDirectConversation: (request: any) => mockStartDirectConversation(request),
   getGroupMembersUnrestricted: (conversationId: number) =>
     mockGetGroupMembersUnrestricted(conversationId),
   syncAndDeepScanGroupMembers: (conversationId: number) =>
@@ -1402,5 +1430,104 @@ describe('ConversationWorkspace Component', () => {
     const phoneInput = screen.getByDisplayValue('5054685013624794058') as HTMLInputElement;
     expect(nameInput).toBeTruthy();
     expect(phoneInput).toBeTruthy();
+  });
+
+  test('18f. Creating a new direct conversation selects the new contact chat via replyTargets instead of selecting the first group conversation', async () => {
+    const directCreatedItem = {
+      key: 'identity:999',
+      kind: 'unknown' as const,
+      leadId: null,
+      conversationId: null,
+      identityId: 999,
+      title: 'Ktv Dung',
+      avatarUrl: null,
+      lastMessagePreview: 'Hello Ktv Dung',
+      lastMessageAt: '2026-08-14T10:05:00Z',
+      channels: [{ channel: 'zalo' as const, messageCount: 1, unreadCount: 0 }],
+      replyTargets: [
+        {
+          conversationId: 888,
+          channelAccountId: 1,
+          channel: 'zalo' as const,
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct' as const,
+          lastInboundAt: null,
+          lastMessageAt: '2026-08-14T10:05:00Z'
+        }
+      ],
+      participantCount: 0,
+      participants: []
+    };
+
+    mockListConversationInbox.mockImplementation(async () => [
+      // First item in inbox is a group
+      {
+        key: 'conversation:30',
+        kind: 'group' as const,
+        leadId: null,
+        conversationId: 30,
+        identityId: null,
+        title: 'Nhóm VIP',
+        avatarUrl: null,
+        lastMessagePreview: 'Group message',
+        lastMessageAt: '2026-08-14T10:00:00Z',
+        channels: [{ channel: 'zalo' as const, messageCount: 5 }],
+        replyTargets: [],
+        participantCount: 5,
+        participants: []
+      },
+      directCreatedItem
+    ]);
+
+    mockStartDirectConversation.mockImplementationOnce(async () => ({
+      id: 501,
+      conversationId: 888,
+      channelAccountId: 1,
+      channel: 'zalo' as const,
+      accountDisplayName: 'Zalo Main',
+      senderIdentityId: 100,
+      senderDisplayName: 'Admin',
+      direction: 'outbound' as const,
+      contentType: 'text',
+      textContent: 'Hello Ktv Dung',
+      content: { text: 'Hello Ktv Dung' },
+      occurredAt: '2026-08-14T10:05:00Z',
+      status: 'sent' as const,
+      removedAt: null,
+      errorMessage: null,
+      replyToMessageId: null,
+      attachments: [],
+      replyTarget: null,
+      reactions: [],
+      batchIndex: null,
+      sendBatch: null,
+      mentions: [],
+      actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // Open new chat dialog from sidebar
+    const newChatBtn = screen.getByText('New Chat');
+    await fireEvent.click(newChatBtn);
+    await tick();
+
+    const phoneInput = screen.getByPlaceholderText('e.g. 0987654321 or Zalo UID') as HTMLInputElement;
+    const msgInput = screen.getByPlaceholderText('Enter initial message to send to customer...') as HTMLTextAreaElement;
+
+    await fireEvent.input(phoneInput, { target: { value: '0987654321' } });
+    await fireEvent.input(msgInput, { target: { value: 'Hello Ktv Dung' } });
+    await tick();
+
+    const sendBtn = screen.getByText('Start Chat');
+    await fireEvent.click(sendBtn);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Header must show Ktv Dung, not Nhóm VIP
+    const headerTitle = screen.getByRole('heading', { level: 2 });
+    expect(headerTitle.textContent).toBe('Ktv Dung');
   });
 });

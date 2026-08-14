@@ -1034,13 +1034,10 @@
     const createdItem = inbox.find(
       (i) =>
         i.conversationId === msg.conversationId ||
-        (msg.senderIdentityId && i.identityId === msg.senderIdentityId) ||
-        (msg.senderIdentityId && i.key === `identity:${msg.senderIdentityId}`)
+        i.replyTargets?.some((t) => t.conversationId === msg.conversationId)
     );
     if (createdItem) {
       selectItem(createdItem);
-    } else if (inbox.length > 0) {
-      selectItem(inbox[0]);
     }
   }
 
