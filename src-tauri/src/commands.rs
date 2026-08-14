@@ -5575,12 +5575,17 @@ pub fn get_hardware_id() -> Result<HardwareInfo, String> {
     })
 }
 
-#[tauri::command]
-pub async fn export_leads_csv_file(path: String, content: String) -> Result<(), String> {
-    let file_path = std::path::Path::new(&path);
+pub async fn write_leads_csv_to_path(
+    file_path: &std::path::Path,
+    content: &str,
+) -> Result<(), String> {
     match file_path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("csv") => {}
         _ => return Err("Only .csv files can be exported".to_string()),
+    }
+
+    if file_path.is_symlink() {
+        return Err("Export to symbolic links is not permitted".to_string());
     }
 
     if let Some(parent) = file_path.parent() {
@@ -5589,6 +5594,40 @@ pub async fn export_leads_csv_file(path: String, content: String) -> Result<(), 
         }
     }
 
-    std::fs::write(file_path, content.as_bytes())
+    tokio::fs::write(file_path, content.as_bytes())
+        .await
         .map_err(|e| format!("Failed to save export file: {}", e))
+}
+
+#[tauri::command]
+pub async fn export_leads_csv_file(
+    app: tauri::AppHandle,
+    default_filename: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let selected_path = tokio::task::spawn_blocking(move || {
+        let mut builder = app.dialog().file();
+        if !default_filename.trim().is_empty() {
+            builder = builder.set_file_name(&default_filename);
+        }
+        builder
+            .add_filter("CSV File (*.csv)", &["csv"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("Dialog worker failed: {}", e))?;
+
+    let file_path = match selected_path {
+        Some(fp) => match fp.into_path() {
+            Ok(p) => p,
+            Err(e) => return Err(format!("Invalid file path selected: {}", e)),
+        },
+        None => return Ok(None),
+    };
+
+    write_leads_csv_to_path(&file_path, &content).await?;
+
+    Ok(Some(file_path.to_string_lossy().into_owned()))
 }

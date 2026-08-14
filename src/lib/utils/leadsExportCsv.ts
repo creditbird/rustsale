@@ -1,5 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { Lead } from '$lib/services/crmService';
 
 export const CSV_LEAD_HEADERS = [
@@ -21,8 +20,20 @@ const SPREADSHEET_FORMULA_PREFIX = /^\s*[=+\-@\t\r]/u;
 const VIETNAMESE_PHONE_PREFIX = /^\s*0\d+/u;
 
 export interface ExportRuntimeDeps {
-  saveDialog?: typeof save;
+  isTauri?: () => boolean;
   invokeCommand?: typeof invoke;
+}
+
+/**
+ * Checks whether the current runtime is running inside the Tauri native desktop container.
+ */
+export function isTauriEnvironment(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Boolean(
+    (window as any).__TAURI_INTERNALS__ ||
+    (window as any).__TAURI__ ||
+    (typeof isTauri === 'function' && isTauri())
+  );
 }
 
 /**
@@ -101,7 +112,7 @@ export function generateExportFilename(entityType: 'leads' | 'contacts' = 'leads
 }
 
 /**
- * Triggers a native Save File Dialog (or browser fallback) to save the CSV file.
+ * Triggers a native Save File Dialog in Rust (or browser fallback) to save the CSV file.
  * Returns the saved path/filename, or null if the user cancelled the dialog.
  * Throws on filesystem write errors so callers can display proper error feedback.
  */
@@ -110,30 +121,17 @@ export async function exportLeadsToCsv(
   entityType: 'leads' | 'contacts' = 'leads',
   deps?: ExportRuntimeDeps
 ): Promise<string | null> {
-  const saveFn = deps?.saveDialog ?? save;
+  const isTauriFn = deps?.isTauri ?? isTauriEnvironment;
   const invokeFn = deps?.invokeCommand ?? invoke;
   const csvContent = buildLeadsCsv(leads);
   const defaultFilename = generateExportFilename(entityType);
 
-  let isTauri = false;
-  let selectedPath: string | null = null;
-
-  try {
-    selectedPath = await saveFn({
-      defaultPath: defaultFilename,
-      filters: [{ name: 'CSV File (*.csv)', extensions: ['csv'] }]
+  if (isTauriFn()) {
+    const savedPath = await invokeFn<string | null>('export_leads_csv_file', {
+      defaultFilename,
+      content: csvContent
     });
-    isTauri = true;
-  } catch {
-    isTauri = false;
-  }
-
-  if (isTauri) {
-    if (!selectedPath) {
-      return null;
-    }
-    await invokeFn('export_leads_csv_file', { path: selectedPath, content: csvContent });
-    return selectedPath;
+    return savedPath;
   }
 
   if (typeof document !== 'undefined') {

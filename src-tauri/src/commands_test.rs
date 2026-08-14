@@ -3027,22 +3027,14 @@ mod tests {
         let content = "Name,Company,Phone\nJohn,Acme,0901234567";
 
         // 1. Valid .csv write succeeds
-        let res = commands::export_leads_csv_file(
-            valid_csv_path.to_string_lossy().to_string(),
-            content.to_string(),
-        )
-        .await;
+        let res = commands::write_leads_csv_to_path(&valid_csv_path, content).await;
         assert!(res.is_ok());
         let read_back = std::fs::read_to_string(&valid_csv_path).unwrap();
         assert_eq!(read_back, content);
 
         // 2. Non-.csv extension is rejected
         let invalid_ext_path = temp_dir.path().join("script.sh");
-        let res_invalid = commands::export_leads_csv_file(
-            invalid_ext_path.to_string_lossy().to_string(),
-            "echo hack".to_string(),
-        )
-        .await;
+        let res_invalid = commands::write_leads_csv_to_path(&invalid_ext_path, "echo hack").await;
         assert!(res_invalid.is_err());
         assert!(res_invalid.unwrap_err().contains("Only .csv files"));
 
@@ -3051,14 +3043,25 @@ mod tests {
             .path()
             .join("non_existent_folder_xyz")
             .join("leads.csv");
-        let res_no_parent = commands::export_leads_csv_file(
-            non_existent_dir_path.to_string_lossy().to_string(),
-            content.to_string(),
-        )
-        .await;
+        let res_no_parent =
+            commands::write_leads_csv_to_path(&non_existent_dir_path, content).await;
         assert!(res_no_parent.is_err());
         assert!(res_no_parent
             .unwrap_err()
             .contains("Destination directory does not exist"));
+
+        // 4. Symlinks are rejected
+        let target_file = temp_dir.path().join("real_target.csv");
+        std::fs::write(&target_file, "real").unwrap();
+        let symlink_path = temp_dir.path().join("symlink.csv");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target_file, &symlink_path).unwrap();
+            let res_symlink = commands::write_leads_csv_to_path(&symlink_path, "new content").await;
+            assert!(res_symlink.is_err());
+            assert!(res_symlink
+                .unwrap_err()
+                .contains("Export to symbolic links is not permitted"));
+        }
     }
 }

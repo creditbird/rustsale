@@ -5,7 +5,8 @@ import {
   buildLeadsCsv,
   exportLeadsToCsv,
   formatZaloStatus,
-  generateExportFilename
+  generateExportFilename,
+  isTauriEnvironment
 } from '../leadsExportCsv';
 
 describe('leadsExportCsv Utility', () => {
@@ -130,6 +131,10 @@ describe('leadsExportCsv Utility', () => {
     const contactsFile = generateExportFilename('contacts');
     expect(contactsFile).toMatch(/^RustSale_Contacts_\d{8}_\d{6}\.csv$/);
   });
+
+  test('isTauriEnvironment detects tauri runtime presence', () => {
+    expect(typeof isTauriEnvironment()).toBe('boolean');
+  });
 });
 
 describe('exportLeadsToCsv Native & Fallback Execution', () => {
@@ -147,54 +152,56 @@ describe('exportLeadsToCsv Native & Fallback Execution', () => {
     }
   ];
 
-  test('returns null when user cancels native save dialog', async () => {
-    const saveDialog = mock(() => Promise.resolve(null));
-    const invokeCommand = mock((_cmd: string, _args: any) => Promise.resolve());
+  test('returns null when user cancels native save dialog in Tauri', async () => {
+    const invokeCommand = mock((_cmd: string, _args: any) => Promise.resolve(null));
 
     const result = await exportLeadsToCsv(testLeads, 'leads', {
-      saveDialog: saveDialog as any,
+      isTauri: () => true,
       invokeCommand: invokeCommand as any
     });
 
     expect(result).toBeNull();
-    expect(invokeCommand).not.toHaveBeenCalled();
+    expect(invokeCommand).toHaveBeenCalledWith('export_leads_csv_file', {
+      defaultFilename: expect.stringMatching(/^RustSale_Leads_\d{8}_\d{6}\.csv$/),
+      content: expect.stringContaining('Test Lead')
+    });
   });
 
-  test('saves via Tauri command export_leads_csv_file when path is selected', async () => {
-    const saveDialog = mock(() => Promise.resolve('/home/user/Desktop/leads_export.csv'));
-    const invokeCommand = mock((_cmd: string, _args: any) => Promise.resolve());
+  test('saves via Tauri command and returns path when user selects a file', async () => {
+    const invokeCommand = mock((_cmd: string, _args: any) => Promise.resolve('/home/user/Desktop/leads_export.csv'));
 
     const result = await exportLeadsToCsv(testLeads, 'leads', {
-      saveDialog: saveDialog as any,
+      isTauri: () => true,
       invokeCommand: invokeCommand as any
     });
 
     expect(result).toBe('/home/user/Desktop/leads_export.csv');
     expect(invokeCommand).toHaveBeenCalledWith('export_leads_csv_file', {
-      path: '/home/user/Desktop/leads_export.csv',
+      defaultFilename: expect.stringMatching(/^RustSale_Leads_\d{8}_\d{6}\.csv$/),
       content: expect.stringContaining('Test Lead')
     });
   });
 
-  test('throws error when native write command fails (no false success)', async () => {
-    const saveDialog = mock(() => Promise.resolve('/restricted/leads.csv'));
+  test('throws error when native command fails in Tauri without fallback to browser', async () => {
     const invokeCommand = mock((_cmd: string, _args: any) => Promise.reject(new Error('Permission denied')));
 
     await expect(
       exportLeadsToCsv(testLeads, 'leads', {
-        saveDialog: saveDialog as any,
+        isTauri: () => true,
         invokeCommand: invokeCommand as any
       })
     ).rejects.toThrow('Permission denied');
   });
 
-  test('falls back to browser download when Tauri save dialog is unavailable', async () => {
-    const saveDialog = mock(() => Promise.reject(new Error('Tauri API unavailable in browser')));
+  test('falls back to browser download when in web browser environment', async () => {
+    const invokeCommand = mock((_cmd: string, _args: any) => Promise.resolve('/not/used.csv'));
 
     const result = await exportLeadsToCsv(testLeads, 'leads', {
-      saveDialog: saveDialog as any
+      isTauri: () => false,
+      invokeCommand: invokeCommand as any
     });
 
     expect(result).toMatch(/^RustSale_Leads_\d{8}_\d{6}\.csv$/);
+    expect(invokeCommand).not.toHaveBeenCalled();
   });
 });
