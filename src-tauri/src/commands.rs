@@ -5574,3 +5574,9 @@ pub fn get_hardware_id() -> Result<HardwareInfo, String> {
         os_info: format!("{} ({})", os_name, arch),
     })
 }
+
+#[tauri::command]
+pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())
+}
+

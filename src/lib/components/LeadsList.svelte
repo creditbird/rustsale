@@ -227,14 +227,19 @@
     selectedRows = new Set(selectedRows);
   }
 
-  function handleExportSelected() {
+  async function handleExportSelected() {
     if (selectedRows.size === 0) return;
     const leadsToExport = leads.filter((l: Lead) => l.id !== undefined && selectedRows.has(l.id));
     if (leadsToExport.length === 0) return;
 
     try {
-      const filename = exportLeadsToCsv(leadsToExport, entityType);
-      toast.success(`Exported ${leadsToExport.length} ${entityLabelPlural} to ${filename}`);
+      const savedPath = await exportLeadsToCsv(leadsToExport, entityType);
+      if (!savedPath) {
+        // User cancelled the file save dialog
+        return;
+      }
+      const displayName = savedPath.split(/[\/\\]/).pop() || savedPath;
+      toast.success(`Exported ${leadsToExport.length} ${entityLabelPlural} to ${displayName}`);
     } catch (err) {
       console.error('Failed to export leads', err);
       toast.error('Failed to export data');

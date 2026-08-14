@@ -283,7 +283,8 @@ pub fn run() {
             commands::get_group_members_unrestricted,
             commands::batch_import_group_members_to_leads,
             commands::sync_and_deep_scan_group_members,
-            commands::get_hardware_id
+            commands::get_hardware_id,
+            commands::write_text_file
         ])
 
 

@@ -89,18 +89,44 @@ export function generateExportFilename(entityType: 'leads' | 'contacts' = 'leads
   return `${prefix}_${yyyy}${mm}${dd}_${hh}${min}${ss}.csv`;
 }
 
+import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
+
 /**
- * Triggers a browser download of the CSV content.
+ * Triggers a native Save File Dialog (or browser fallback) to save the CSV file.
+ * Returns the saved path/filename, or null if the user cancelled the dialog.
  */
-export function exportLeadsToCsv(leads: readonly Lead[], entityType: 'leads' | 'contacts' = 'leads'): string {
+export async function exportLeadsToCsv(
+  leads: readonly Lead[],
+  entityType: 'leads' | 'contacts' = 'leads'
+): Promise<string | null> {
   const csvContent = buildLeadsCsv(leads);
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  const filename = generateExportFilename(entityType);
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-  return filename;
+  const defaultFilename = generateExportFilename(entityType);
+
+  try {
+    const selectedPath = await save({
+      defaultPath: defaultFilename,
+      filters: [{ name: 'CSV File (*.csv)', extensions: ['csv'] }]
+    });
+
+    if (!selectedPath) {
+      return null;
+    }
+
+    await invoke('write_text_file', { path: selectedPath, content: csvContent });
+    return selectedPath;
+  } catch {
+    if (typeof document !== 'undefined') {
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = defaultFilename;
+      link.click();
+      URL.revokeObjectURL(url);
+      return defaultFilename;
+    }
+    return defaultFilename;
+  }
 }
+
