@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
 import type { Lead } from '$lib/services/crmService';
 
 export const CSV_LEAD_HEADERS = [
@@ -18,6 +20,11 @@ export const CSV_LEAD_HEADERS = [
 const SPREADSHEET_FORMULA_PREFIX = /^\s*[=+\-@\t\r]/u;
 const VIETNAMESE_PHONE_PREFIX = /^\s*0\d+/u;
 
+export interface ExportRuntimeDeps {
+  saveDialog?: typeof save;
+  invokeCommand?: typeof invoke;
+}
+
 /**
  * Escapes and neutralizes a value for safe CSV output.
  * - Adds leading `'` if the value starts with spreadsheet formula symbols (=, +, -, @).
@@ -29,19 +36,23 @@ export function sanitizeCsvField(value: string | number | null | undefined): str
     return '""';
   }
   const str = String(value);
-  
+
   let neutralized = str;
   if (SPREADSHEET_FORMULA_PREFIX.test(str) || VIETNAMESE_PHONE_PREFIX.test(str)) {
     neutralized = `'${str}`;
   }
-  
+
   return `"${neutralized.replace(/"/g, '""')}"`;
 }
 
 /**
  * Maps raw has_zalo & zalo_status values into human-readable labels.
+ * Preserves explicit raw zalo_status if present (e.g. RATE_LIMITED, BLOCKED_STRANGER, LOOKUP_FAILED).
  */
 export function formatZaloStatus(lead: Lead): string {
+  if (lead.zalo_status && lead.zalo_status.trim()) {
+    return lead.zalo_status.trim();
+  }
   if (lead.has_zalo === 1) return 'Verified';
   if (lead.has_zalo === 0) return 'No Zalo';
   return 'Unchecked';
@@ -89,44 +100,52 @@ export function generateExportFilename(entityType: 'leads' | 'contacts' = 'leads
   return `${prefix}_${yyyy}${mm}${dd}_${hh}${min}${ss}.csv`;
 }
 
-import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
-
 /**
  * Triggers a native Save File Dialog (or browser fallback) to save the CSV file.
  * Returns the saved path/filename, or null if the user cancelled the dialog.
+ * Throws on filesystem write errors so callers can display proper error feedback.
  */
 export async function exportLeadsToCsv(
   leads: readonly Lead[],
-  entityType: 'leads' | 'contacts' = 'leads'
+  entityType: 'leads' | 'contacts' = 'leads',
+  deps?: ExportRuntimeDeps
 ): Promise<string | null> {
+  const saveFn = deps?.saveDialog ?? save;
+  const invokeFn = deps?.invokeCommand ?? invoke;
   const csvContent = buildLeadsCsv(leads);
   const defaultFilename = generateExportFilename(entityType);
 
+  let isTauri = false;
+  let selectedPath: string | null = null;
+
   try {
-    const selectedPath = await save({
+    selectedPath = await saveFn({
       defaultPath: defaultFilename,
       filters: [{ name: 'CSV File (*.csv)', extensions: ['csv'] }]
     });
+    isTauri = true;
+  } catch {
+    isTauri = false;
+  }
 
+  if (isTauri) {
     if (!selectedPath) {
       return null;
     }
-
-    await invoke('write_text_file', { path: selectedPath, content: csvContent });
+    await invokeFn('export_leads_csv_file', { path: selectedPath, content: csvContent });
     return selectedPath;
-  } catch {
-    if (typeof document !== 'undefined') {
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = defaultFilename;
-      link.click();
-      URL.revokeObjectURL(url);
-      return defaultFilename;
-    }
+  }
+
+  if (typeof document !== 'undefined') {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = defaultFilename;
+    link.click();
+    URL.revokeObjectURL(url);
     return defaultFilename;
   }
-}
 
+  return defaultFilename;
+}

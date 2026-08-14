@@ -1,8 +1,10 @@
 /// <reference types="bun-types" />
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import type { Lead } from '$lib/services/crmService';
 import LeadsList from '../LeadsList.svelte';
+import * as leadsExportCsv from '$lib/utils/leadsExportCsv';
+import { toast } from 'svelte-sonner';
 
 describe('LeadsList Component & Selection Banner', () => {
   const mockLeads: Lead[] = Array.from({ length: 25 }, (_, i) => ({
@@ -123,5 +125,96 @@ describe('LeadsList Component & Selection Banner', () => {
     expect(screen.getByText((_, el) => el?.tagName === 'SPAN' && el?.textContent?.includes('All 3 contacts matching') === true)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Export \(3\)/i })).toBeTruthy();
   });
-});
 
+  test('clicking Export button triggers exportLeadsToCsv and displays toast success on completion', async () => {
+    let capturedLeads: any = null;
+    let capturedEntityType: any = null;
+    let toastSuccessMessage = '';
+
+    const exportSpy = spyOn(leadsExportCsv, 'exportLeadsToCsv').mockImplementation(
+      async (leads: readonly Lead[], entityType?: 'leads' | 'contacts') => {
+        capturedLeads = leads;
+        capturedEntityType = entityType;
+        return '/path/to/exported_leads.csv';
+      }
+    );
+
+    const toastSuccessSpy = spyOn(toast, 'success').mockImplementation((msg: string | any) => {
+      toastSuccessMessage = String(msg);
+      return '' as any;
+    });
+
+    render(LeadsList, { props: { leads: mockLeads.slice(0, 3) } });
+
+    // Select row 1
+    const checkboxes = screen.getAllByRole('checkbox');
+    await fireEvent.click(checkboxes[1]);
+
+    const exportBtn = screen.getByRole('button', { name: /Export \(1\)/i });
+    expect(exportBtn).toBeTruthy();
+
+    await fireEvent.click(exportBtn);
+
+    expect(capturedLeads).not.toBeNull();
+    expect(capturedLeads.length).toBe(1);
+    expect(capturedLeads[0].name).toBe('Lead 1');
+    expect(capturedEntityType).toBe('leads');
+    expect(toastSuccessMessage).toContain('Exported 1 leads to exported_leads.csv');
+
+    exportSpy.mockRestore();
+    toastSuccessSpy.mockRestore();
+  });
+
+  test('clicking Export button does nothing when user cancels dialog', async () => {
+    let toastCalled = false;
+
+    const exportSpy = spyOn(leadsExportCsv, 'exportLeadsToCsv').mockImplementation(async () => null);
+    const toastSuccessSpy = spyOn(toast, 'success').mockImplementation(() => {
+      toastCalled = true;
+      return '' as any;
+    });
+    const toastErrorSpy = spyOn(toast, 'error').mockImplementation(() => {
+      toastCalled = true;
+      return '' as any;
+    });
+
+    render(LeadsList, { props: { leads: mockLeads.slice(0, 3) } });
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    await fireEvent.click(checkboxes[1]);
+
+    const exportBtn = screen.getByRole('button', { name: /Export \(1\)/i });
+    await fireEvent.click(exportBtn);
+
+    expect(toastCalled).toBe(false);
+
+    exportSpy.mockRestore();
+    toastSuccessSpy.mockRestore();
+    toastErrorSpy.mockRestore();
+  });
+
+  test('clicking Export button displays toast error when export fails', async () => {
+    let toastErrorMessage = '';
+
+    const exportSpy = spyOn(leadsExportCsv, 'exportLeadsToCsv').mockImplementation(async () => {
+      throw new Error('Write failed');
+    });
+    const toastErrorSpy = spyOn(toast, 'error').mockImplementation((msg: string | any) => {
+      toastErrorMessage = String(msg);
+      return '' as any;
+    });
+
+    render(LeadsList, { props: { leads: mockLeads.slice(0, 3) } });
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    await fireEvent.click(checkboxes[1]);
+
+    const exportBtn = screen.getByRole('button', { name: /Export \(1\)/i });
+    await fireEvent.click(exportBtn);
+
+    expect(toastErrorMessage).toBe('Failed to export data');
+
+    exportSpy.mockRestore();
+    toastErrorSpy.mockRestore();
+  });
+});

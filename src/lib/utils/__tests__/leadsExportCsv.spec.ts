@@ -1,7 +1,12 @@
 /// <reference types="bun-types" />
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
 import type { Lead } from '$lib/services/crmService';
-import { buildLeadsCsv, exportLeadsToCsv } from '../leadsExportCsv';
+import {
+  buildLeadsCsv,
+  exportLeadsToCsv,
+  formatZaloStatus,
+  generateExportFilename
+} from '../leadsExportCsv';
 
 describe('leadsExportCsv Utility', () => {
   const mockLeads: Lead[] = [
@@ -18,7 +23,7 @@ describe('leadsExportCsv Utility', () => {
       address: '123 Đường Số 1, TP.HCM',
       about: 'Khách hàng quan tâm gói VIP\nCó hẹn gọi lại',
       has_zalo: 1,
-      zalo_status: 'verified',
+      zalo_status: 'VERIFIED_EXIST',
       zalo_uid: 'zalo_12345'
     },
     {
@@ -34,7 +39,7 @@ describe('leadsExportCsv Utility', () => {
       address: null,
       about: null,
       has_zalo: 0,
-      zalo_status: null,
+      zalo_status: 'RATE_LIMITED',
       zalo_uid: null
     },
     {
@@ -49,7 +54,8 @@ describe('leadsExportCsv Utility', () => {
       phone: '+84981234567',
       address: 'Hà Nội',
       about: '',
-      has_zalo: null
+      has_zalo: null,
+      zalo_status: null
     }
   ];
 
@@ -97,12 +103,17 @@ describe('leadsExportCsv Utility', () => {
     expect(csv).toContain('"\'=SUM(1,2)"');
   });
 
-  test('correctly maps Zalo status labels (Verified, No Zalo, Unchecked)', () => {
-    const csv = buildLeadsCsv(mockLeads);
+  test('preserves explicit raw zalo_status and falls back correctly when not set', () => {
+    // 1. Raw status preserved
+    expect(formatZaloStatus({ name: '', company: '', status: '', value: 0, last_activity: '', owner: '', email: '', phone: '', zalo_status: 'RATE_LIMITED' })).toBe('RATE_LIMITED');
+    expect(formatZaloStatus({ name: '', company: '', status: '', value: 0, last_activity: '', owner: '', email: '', phone: '', zalo_status: 'BLOCKED_STRANGER' })).toBe('BLOCKED_STRANGER');
+    expect(formatZaloStatus({ name: '', company: '', status: '', value: 0, last_activity: '', owner: '', email: '', phone: '', zalo_status: 'LOOKUP_FAILED' })).toBe('LOOKUP_FAILED');
+    expect(formatZaloStatus({ name: '', company: '', status: '', value: 0, last_activity: '', owner: '', email: '', phone: '', zalo_status: 'VERIFIED_EXIST' })).toBe('VERIFIED_EXIST');
 
-    expect(csv).toContain('"Verified"');
-    expect(csv).toContain('"No Zalo"');
-    expect(csv).toContain('"Unchecked"');
+    // 2. Fallbacks when zalo_status is null/empty
+    expect(formatZaloStatus({ name: '', company: '', status: '', value: 0, last_activity: '', owner: '', email: '', phone: '', has_zalo: 1, zalo_status: null })).toBe('Verified');
+    expect(formatZaloStatus({ name: '', company: '', status: '', value: 0, last_activity: '', owner: '', email: '', phone: '', has_zalo: 0, zalo_status: '' })).toBe('No Zalo');
+    expect(formatZaloStatus({ name: '', company: '', status: '', value: 0, last_activity: '', owner: '', email: '', phone: '', has_zalo: null, zalo_status: null })).toBe('Unchecked');
   });
 
   test('handles empty lead array without error', () => {
@@ -110,5 +121,80 @@ describe('leadsExportCsv Utility', () => {
     expect(csv.startsWith('\uFEFF')).toBe(true);
     const lines = csv.replace('\uFEFF', '').split('\r\n').filter(Boolean);
     expect(lines.length).toBe(1); // Header only
+  });
+
+  test('generateExportFilename generates valid timestamps', () => {
+    const leadsFile = generateExportFilename('leads');
+    expect(leadsFile).toMatch(/^RustSale_Leads_\d{8}_\d{6}\.csv$/);
+
+    const contactsFile = generateExportFilename('contacts');
+    expect(contactsFile).toMatch(/^RustSale_Contacts_\d{8}_\d{6}\.csv$/);
+  });
+});
+
+describe('exportLeadsToCsv Native & Fallback Execution', () => {
+  const testLeads: Lead[] = [
+    {
+      id: 1,
+      name: 'Test Lead',
+      company: 'Test Co',
+      status: 'New',
+      value: 1000,
+      last_activity: '2026-08-14',
+      owner: 'Self',
+      email: 'test@example.com',
+      phone: '0901234567'
+    }
+  ];
+
+  test('returns null when user cancels native save dialog', async () => {
+    const saveDialog = mock(() => Promise.resolve(null));
+    const invokeCommand = mock((_cmd: string, _args: any) => Promise.resolve());
+
+    const result = await exportLeadsToCsv(testLeads, 'leads', {
+      saveDialog: saveDialog as any,
+      invokeCommand: invokeCommand as any
+    });
+
+    expect(result).toBeNull();
+    expect(invokeCommand).not.toHaveBeenCalled();
+  });
+
+  test('saves via Tauri command export_leads_csv_file when path is selected', async () => {
+    const saveDialog = mock(() => Promise.resolve('/home/user/Desktop/leads_export.csv'));
+    const invokeCommand = mock((_cmd: string, _args: any) => Promise.resolve());
+
+    const result = await exportLeadsToCsv(testLeads, 'leads', {
+      saveDialog: saveDialog as any,
+      invokeCommand: invokeCommand as any
+    });
+
+    expect(result).toBe('/home/user/Desktop/leads_export.csv');
+    expect(invokeCommand).toHaveBeenCalledWith('export_leads_csv_file', {
+      path: '/home/user/Desktop/leads_export.csv',
+      content: expect.stringContaining('Test Lead')
+    });
+  });
+
+  test('throws error when native write command fails (no false success)', async () => {
+    const saveDialog = mock(() => Promise.resolve('/restricted/leads.csv'));
+    const invokeCommand = mock((_cmd: string, _args: any) => Promise.reject(new Error('Permission denied')));
+
+    await expect(
+      exportLeadsToCsv(testLeads, 'leads', {
+        saveDialog: saveDialog as any,
+        invokeCommand: invokeCommand as any
+      })
+    ).rejects.toThrow('Permission denied');
+  });
+
+  test('falls back to browser download when Tauri save dialog is unavailable', async () => {
+    const saveDialog = mock(() => Promise.reject(new Error('Tauri API unavailable in browser')));
+
+    const result = await exportLeadsToCsv(testLeads, 'leads', {
+      saveDialog: saveDialog as any
+    });
+
+    expect(result).toMatch(/^RustSale_Leads_\d{8}_\d{6}\.csv$/);
   });
 });

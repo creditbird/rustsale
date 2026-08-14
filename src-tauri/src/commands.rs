@@ -5576,7 +5576,19 @@ pub fn get_hardware_id() -> Result<HardwareInfo, String> {
 }
 
 #[tauri::command]
-pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())
-}
+pub async fn export_leads_csv_file(path: String, content: String) -> Result<(), String> {
+    let file_path = std::path::Path::new(&path);
+    match file_path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("csv") => {}
+        _ => return Err("Only .csv files can be exported".to_string()),
+    }
 
+    if let Some(parent) = file_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            return Err("Destination directory does not exist".to_string());
+        }
+    }
+
+    std::fs::write(file_path, content.as_bytes())
+        .map_err(|e| format!("Failed to save export file: {}", e))
+}

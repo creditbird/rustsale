@@ -3019,4 +3019,46 @@ mod tests {
         assert!(!hw_info.hostname.is_empty());
         assert!(!hw_info.os_info.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_export_leads_csv_file_validation_and_writing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let valid_csv_path = temp_dir.path().join("leads.csv");
+        let content = "Name,Company,Phone\nJohn,Acme,0901234567";
+
+        // 1. Valid .csv write succeeds
+        let res = commands::export_leads_csv_file(
+            valid_csv_path.to_string_lossy().to_string(),
+            content.to_string(),
+        )
+        .await;
+        assert!(res.is_ok());
+        let read_back = std::fs::read_to_string(&valid_csv_path).unwrap();
+        assert_eq!(read_back, content);
+
+        // 2. Non-.csv extension is rejected
+        let invalid_ext_path = temp_dir.path().join("script.sh");
+        let res_invalid = commands::export_leads_csv_file(
+            invalid_ext_path.to_string_lossy().to_string(),
+            "echo hack".to_string(),
+        )
+        .await;
+        assert!(res_invalid.is_err());
+        assert!(res_invalid.unwrap_err().contains("Only .csv files"));
+
+        // 3. Non-existent parent directory is rejected
+        let non_existent_dir_path = temp_dir
+            .path()
+            .join("non_existent_folder_xyz")
+            .join("leads.csv");
+        let res_no_parent = commands::export_leads_csv_file(
+            non_existent_dir_path.to_string_lossy().to_string(),
+            content.to_string(),
+        )
+        .await;
+        assert!(res_no_parent.is_err());
+        assert!(res_no_parent
+            .unwrap_err()
+            .contains("Destination directory does not exist"));
+    }
 }

@@ -567,11 +567,11 @@
 
         <div class="flex flex-col gap-1">
           <label for="lead-about" class="font-medium text-foreground">Description</label>
-          <textarea 
-            id="lead-about" 
-            bind:value={about} 
-            rows="3" 
-            placeholder="{entityLabelCap} background & details..." 
+          <textarea
+            id="lead-about"
+            bind:value={about}
+            rows="3"
+            placeholder="{entityLabelCap} background & details..."
             class="w-full p-2.5 rounded-md border border-input bg-background text-xs text-foreground focus:outline-hidden"
           ></textarea>
         </div>
