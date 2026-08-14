@@ -260,11 +260,11 @@
     </div>
     <div class="flex items-center gap-2">
       {#if selectedRows.size > 0}
-        <Button variant="outline" size="sm" onclick={handleExportSelected} class="gap-2 border-blue-500/40 text-blue-600 hover:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30">
+        <Button variant="outline" size="sm" onclick={handleExportSelected} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400">
           <Download class="size-4" />
           Export ({selectedRows.size})
         </Button>
-        <Button variant="outline" size="sm" onclick={openCategoryModal} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10">
+        <Button variant="outline" size="sm" onclick={openCategoryModal} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400">
           <FolderPlus class="size-4" />
           Assign to Category ({selectedRows.size})
         </Button>
