@@ -673,6 +673,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_send_zalo_outreach_with_cached_uid_and_uid_persistence() {
+        use std::sync::Mutex;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "rustsale-cmd-cached-uid-test-{}.db",
+            rand::random::<u64>()
+        ));
+        let db_str = db_path.to_str().unwrap().to_string();
+        struct TestCleanup(std::path::PathBuf);
+        impl Drop for TestCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+                let _ = std::fs::remove_file(self.0.with_extension("db-wal"));
+                let _ = std::fs::remove_file(self.0.with_extension("db-shm"));
+            }
+        }
+        let _cleanup = TestCleanup(db_path.clone());
+
+        let mut conn = db::init_db(&db_str).unwrap();
+        db::seed_data(&mut conn).unwrap();
+
+        let template_id =
+            db::create_outreach_template(&conn, "Cached UID Template", "Hello [name]!", None).unwrap();
+
+        // Lead 1: has pre-cached zalo_uid, but phone is "not-found" (simulating phone search would fail or non-mobile)
+        let lead_id_1 = commands::add_lead_internal(
+            &mut conn,
+            "Cached User".to_string(),
+            "Cached Corp".to_string(),
+            "New".to_string(),
+            1000.0,
+            "Alex".to_string(),
+            "cached@example.com".to_string(),
+            "not-found".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = 'cached-uid-99999' WHERE id = ?1",
+            rusqlite::params![lead_id_1],
+        )
+        .unwrap();
+
+        // Lead 2: has no zalo_uid, valid phone
+        let lead_id_2 = commands::add_lead_internal(
+            &mut conn,
+            "Uncached User".to_string(),
+            "Uncached Corp".to_string(),
+            "New".to_string(),
+            2000.0,
+            "Alex".to_string(),
+            "uncached@example.com".to_string(),
+            "0987654321".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let db_mutex = Mutex::new(conn);
+
+        let res = commands::send_zalo_outreach_internal(
+            None,
+            &db_mutex,
+            "mock-imei".to_string(),
+            vec![lead_id_1, lead_id_2],
+            template_id,
+            commands::ZaloOutreachRunOptions::default(),
+            commands::OutreachProgressScope::default(),
+        )
+        .await;
+
+        assert_eq!(res.unwrap().total_sent, 2);
+
+        let conn_locked = db_mutex.lock().unwrap();
+
+        // Check Lead 1: Sent using cached UID
+        let lead_1 = commands::get_lead_details_internal(&conn_locked, lead_id_1).unwrap();
+        assert_eq!(lead_1.zalo_reached, 1);
+        assert_eq!(lead_1.has_zalo, Some(1));
+        assert_eq!(lead_1.zalo_uid, Some("cached-uid-99999".to_string()));
+
+        // Check Lead 2: Sent and UID was persisted
+        let lead_2 = commands::get_lead_details_internal(&conn_locked, lead_id_2).unwrap();
+        assert_eq!(lead_2.zalo_reached, 1);
+        assert_eq!(lead_2.has_zalo, Some(1));
+        assert_eq!(lead_2.zalo_uid, Some("mock-uid-0987654321".to_string()));
+
+        // Check channel_conversations table has both external_thread_ids recorded
+        let mut stmt = conn_locked
+            .prepare("SELECT external_thread_id FROM channel_conversations ORDER BY id ASC")
+            .unwrap();
+        let recipients: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(recipients, vec!["cached-uid-99999", "mock-uid-0987654321"]);
+    }
+
+    #[tokio::test]
     async fn test_send_zalo_outreach_burst_limit() {
         use std::sync::Mutex;
 

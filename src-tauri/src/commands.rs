@@ -2093,12 +2093,12 @@ pub async fn send_zalo_outreach_internal(
         let mut total_sent = 0;
         let mut burst_counter: u32 = 0;
         for (idx, lead_id) in lead_ids.iter().enumerate() {
-            let (lead_name, phone) = {
+            let (lead_name, phone, existing_zalo_uid) = {
                 let conn_guard = conn_mutex.lock().unwrap();
                 let res = conn_guard.query_row(
-                    "SELECT name, phone FROM leads WHERE id = ?1",
+                    "SELECT name, phone, zalo_uid FROM leads WHERE id = ?1",
                     [lead_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)),
                 );
                 match res {
                     Ok(val) => val,
@@ -2114,100 +2114,106 @@ pub async fn send_zalo_outreach_internal(
 
             let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
 
-            if phone.trim().is_empty() {
-                let msg = format!("Lead {} is missing phone number", lead_id);
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "outreach-log",
-                        OutreachLogPayload {
-                            message: msg.clone(),
-                        },
-                    );
-                    let current_num = processed_offset + idx + 1;
-                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
-                    let _ = app.emit(
-                        "outreach-progress",
-                        OutreachProgressPayload {
-                            progress: progress_val,
-                            status: "running".to_string(),
-                            message: msg,
-                        },
-                    );
+            let target_uid = if let Some(uid) = existing_zalo_uid.filter(|u| !u.trim().is_empty()) {
+                uid
+            } else {
+                if phone.trim().is_empty() {
+                    let msg = format!("Lead {} is missing phone number", lead_id);
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: msg.clone(),
+                            },
+                        );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "running".to_string(),
+                                message: msg,
+                            },
+                        );
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            if phone != "not-found" && !is_vn_mobile(&phone) {
-                let msg = format!("Skipping non-mobile number: {}", phone);
-                println!("{}", msg);
-                let _ = {
-                    let conn_guard = conn_mutex.lock().unwrap();
-                    conn_guard.execute(
-                        "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
-                        rusqlite::params![lead_id],
-                    )
-                };
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "outreach-log",
-                        OutreachLogPayload {
-                            message: msg.clone(),
-                        },
-                    );
-                    let current_num = processed_offset + idx + 1;
-                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
-                    let _ = app.emit(
-                        "outreach-progress",
-                        OutreachProgressPayload {
-                            progress: progress_val,
-                            status: "running".to_string(),
-                            message: msg,
-                        },
-                    );
+                if phone != "not-found" && !is_vn_mobile(&phone) {
+                    let msg = format!("Skipping non-mobile number: {}", phone);
+                    println!("{}", msg);
+                    let _ = {
+                        let conn_guard = conn_mutex.lock().unwrap();
+                        conn_guard.execute(
+                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                            rusqlite::params![lead_id],
+                        )
+                    };
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: msg.clone(),
+                            },
+                        );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "running".to_string(),
+                                message: msg,
+                            },
+                        );
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            if phone == "not-found" {
-                let msg = format!("Phone number {} not found on Zalo (Mock)", phone);
-                let _ = {
-                    let conn_guard = conn_mutex.lock().unwrap();
-                    conn_guard.execute(
-                        "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
-                        rusqlite::params![lead_id],
-                    )
-                };
-                if let Some(app) = app_handle {
-                    let _ = app.emit(
-                        "outreach-log",
-                        OutreachLogPayload {
-                            message: msg.clone(),
-                        },
-                    );
-                    let current_num = processed_offset + idx + 1;
-                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
-                    let _ = app.emit(
-                        "outreach-progress",
-                        OutreachProgressPayload {
-                            progress: progress_val,
-                            status: "running".to_string(),
-                            message: msg,
-                        },
-                    );
+                if phone == "not-found" {
+                    let msg = format!("Phone number {} not found on Zalo (Mock)", phone);
+                    let _ = {
+                        let conn_guard = conn_mutex.lock().unwrap();
+                        conn_guard.execute(
+                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                            rusqlite::params![lead_id],
+                        )
+                    };
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: msg.clone(),
+                            },
+                        );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "running".to_string(),
+                                message: msg,
+                            },
+                        );
+                    }
+                    continue;
                 }
-                continue;
-            }
+
+                format!("mock-uid-{sanitized_phone}")
+            };
 
             let formatted_content = render_zalo_template(&template_content, &lead_name);
             let local_request_id = format!("outreach-{}", rand::random::<u128>());
             let conversation_sent_at = crate::conversation::types::utc_now();
             let provider_receipt =
                 crate::conversation::outreach::ZaloProviderReceipt::mock(&local_request_id);
-            let external_user_id = format!("mock-uid-{sanitized_phone}");
+            let external_user_id = target_uid.clone();
 
             total_sent += 1;
             burst_counter += 1;
-            let log_msg = format!("Message sent to {} ({}) (Mock)", lead_name, sanitized_phone);
+            let log_msg = format!("Message sent to {} ({}) (Mock)", lead_name, target_uid);
             if let Some(app) = app_handle {
                 let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
             }
@@ -2238,8 +2244,8 @@ pub async fn send_zalo_outreach_internal(
                 ).map_err(|e| format!("Database query error: {}", e))?;
 
                 tx.execute(
-                    "UPDATE leads SET last_activity = ?1, has_zalo = 1, zalo_reached = 1 WHERE id = ?2",
-                    rusqlite::params![&now, lead_id],
+                    "UPDATE leads SET last_activity = ?1, has_zalo = 1, zalo_reached = 1, zalo_uid = ?2, zalo_status = 'VERIFIED_EXIST' WHERE id = ?3",
+                    rusqlite::params![&now, &target_uid, lead_id],
                 )
                 .map_err(|e| format!("Database query error: {}", e))?;
 
@@ -2506,16 +2512,17 @@ pub async fn send_zalo_outreach_internal(
     let mut burst_counter: u32 = 0;
     let mut was_rate_limited = false;
     for (idx, lead_id) in lead_ids.iter().enumerate() {
-        let (lead_name, phone, lead_zalo_status) = {
+        let (lead_name, phone, lead_zalo_status, existing_zalo_uid) = {
             let conn_guard = conn_mutex.lock().unwrap();
             let res = conn_guard.query_row(
-                "SELECT name, phone, zalo_status FROM leads WHERE id = ?1",
+                "SELECT name, phone, zalo_status, zalo_uid FROM leads WHERE id = ?1",
                 [lead_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 },
             );
@@ -2532,60 +2539,6 @@ pub async fn send_zalo_outreach_internal(
         };
 
         let sanitized_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-
-        if phone.trim().is_empty() {
-            let msg = format!("Lead {} ({}) is missing phone number", lead_name, lead_id);
-            if let Some(app) = app_handle {
-                let _ = app.emit(
-                    "outreach-log",
-                    OutreachLogPayload {
-                        message: msg.clone(),
-                    },
-                );
-                let current_num = processed_offset + idx + 1;
-                let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
-                let _ = app.emit(
-                    "outreach-progress",
-                    OutreachProgressPayload {
-                        progress: progress_val,
-                        status: "running".to_string(),
-                        message: msg,
-                    },
-                );
-            }
-            continue;
-        }
-
-        if !is_vn_mobile(&phone) {
-            let msg = format!("Skipping non-mobile number: {}", phone);
-            println!("{}", msg);
-            let _ = {
-                let conn_guard = conn_mutex.lock().unwrap();
-                conn_guard.execute(
-                    "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
-                    rusqlite::params![lead_id],
-                )
-            };
-            if let Some(app) = app_handle {
-                let _ = app.emit(
-                    "outreach-log",
-                    OutreachLogPayload {
-                        message: msg.clone(),
-                    },
-                );
-                let current_num = processed_offset + idx + 1;
-                let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
-                let _ = app.emit(
-                    "outreach-progress",
-                    OutreachProgressPayload {
-                        progress: progress_val,
-                        status: "running".to_string(),
-                        message: msg,
-                    },
-                );
-            }
-            continue;
-        }
 
         if let Some(ref zs) = lead_zalo_status {
             if matches!(
@@ -2618,65 +2571,22 @@ pub async fn send_zalo_outreach_internal(
             }
         }
 
-        if let Some(app) = app_handle {
-            let _ = app.emit(
-                "outreach-log",
-                OutreachLogPayload {
-                    message: format!(
-                        "Looking up Zalo UID for {} ({})",
-                        lead_name, sanitized_phone
-                    ),
-                },
-            );
-        }
-
-        let user_opt = match zalo.find_user(&sanitized_phone, None).await {
-            Ok(opt) => opt,
-            Err(e) => {
-                let msg = format!(
-                    "Failed to look up phone {} for {}: {:?}",
-                    sanitized_phone, lead_name, e
+        let target_uid = if let Some(uid) = existing_zalo_uid.filter(|u| !u.trim().is_empty()) {
+            if let Some(app) = app_handle {
+                let _ = app.emit(
+                    "outreach-log",
+                    OutreachLogPayload {
+                        message: format!(
+                            "Using cached Zalo UID for {} (UID: {})",
+                            lead_name, uid
+                        ),
+                    },
                 );
-                let now: String = chrono::Utc::now().to_rfc3339();
-                let err_str = format!("{:?}", e).to_lowercase();
-                let is_rate_limit = should_rotate_zalo_session(&e);
-
-                let status_str = if err_str.contains("không tìm thấy")
-                    || err_str.contains("not found")
-                    || err_str.contains("212")
-                {
-                    "VERIFIED_NOT_EXIST"
-                } else if err_str.contains("chặn")
-                    || err_str.contains("người lạ")
-                    || err_str.contains("stranger")
-                    || err_str.contains("privacy")
-                    || err_str.contains("122")
-                {
-                    "BLOCKED_STRANGER"
-                } else if is_rate_limit {
-                    "RATE_LIMITED"
-                } else {
-                    "LOOKUP_FAILED"
-                };
-
-                let conn_guard = conn_mutex.lock();
-                if let Ok(conn) = conn_guard {
-                    let _ = conn.execute(
-                        "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
-                        rusqlite::params![status_str, lead_id],
-                    );
-                    if status_str == "VERIFIED_NOT_EXIST" {
-                        let _ = conn.execute(
-                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
-                            rusqlite::params![lead_id],
-                        );
-                    }
-                    let _ = conn.execute(
-                        "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
-                        rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
-                    );
-                }
-
+            }
+            uid
+        } else {
+            if phone.trim().is_empty() {
+                let msg = format!("Lead {} ({}) is missing phone number", lead_name, lead_id);
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "outreach-log",
@@ -2695,227 +2605,79 @@ pub async fn send_zalo_outreach_internal(
                         },
                     );
                 }
-
-                if should_rotate_zalo_session(&e) {
-                    let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần tra cứu/gửi tin ({:?}). Tạm dừng chiến dịch...", e);
-                    if let Some(app) = app_handle {
-                        let _ = app.emit(
-                            "outreach-log",
-                            OutreachLogPayload {
-                                message: rate_msg.clone(),
-                            },
-                        );
-                        let current_num = processed_offset + idx + 1;
-                        let progress_val =
-                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
-                        let _ = app.emit(
-                            "outreach-progress",
-                            OutreachProgressPayload {
-                                progress: progress_val,
-                                status: "rate_limited".to_string(),
-                                message: rate_msg,
-                            },
-                        );
-                    }
-                    was_rate_limited = true;
-                    break;
-                }
-
                 continue;
             }
-        };
 
-        if let Some(user) = user_opt {
-            let formatted_content = render_zalo_template(&template_content, &lead_name);
-
-            let attachments = template_image_url
-                .as_ref()
-                .filter(|s| !s.trim().is_empty())
-                .map(|url| {
-                    if url.starts_with("data:image/") {
-                        use base64::Engine;
-                        let parts: Vec<&str> = url.split(',').collect();
-                        let base64_str = parts.get(1).copied().unwrap_or("");
-                        let data = base64::engine::general_purpose::STANDARD
-                            .decode(base64_str)
-                            .unwrap_or_default();
-                        let ext = if url.contains("image/png") {
-                            "png"
-                        } else if url.contains("image/webp") {
-                            "webp"
-                        } else if url.contains("image/gif") {
-                            "gif"
-                        } else {
-                            "jpg"
-                        };
-                        vec![zca_rs::models::AttachmentSource::Buffer {
-                            data: data.clone(),
-                            filename: format!("attachment.{}", ext),
-                            metadata: zca_rs::models::AttachmentMetadata {
-                                total_size: data.len() as u64,
-                                width: None,
-                                height: None,
-                            },
-                        }]
-                    } else if url.starts_with("http://") || url.starts_with("https://") {
-                        vec![zca_rs::models::AttachmentSource::Url(url.clone())]
-                    } else {
-                        vec![zca_rs::models::AttachmentSource::Buffer {
-                            data: std::fs::read(url).unwrap_or_default(),
-                            filename: std::path::Path::new(url)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("image.jpg")
-                                .to_string(),
-                            metadata: zca_rs::models::AttachmentMetadata {
-                                total_size: std::fs::metadata(url).map(|m| m.len()).unwrap_or(0),
-                                width: None,
-                                height: None,
-                            },
-                        }]
-                    }
-                });
-
-            let msg_content = zca_rs::models::MessageContent {
-                msg: formatted_content.clone(),
-                styles: None,
-                urgency: None,
-                quote: None,
-                mentions: None,
-                attachments,
-                ttl: None,
-            };
-
-            let local_request_id = format!("outreach-{}", rand::random::<u128>());
-            let conversation_sent_at = crate::conversation::types::utc_now();
-
-            match zalo
-                .send_message(msg_content, &user.uid, zca_rs::models::ThreadType::User)
-                .await
-            {
-                Ok(response) => {
-                    let provider_receipt =
-                        crate::conversation::outreach::ZaloProviderReceipt::from_response(response);
-                    total_sent += 1;
-                    burst_counter += 1;
-                    let log_msg = format!("Message sent to {} ({})", lead_name, sanitized_phone);
-                    if let Some(app) = app_handle {
-                        let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
-                    }
-
-                    let act_res: Result<
-                        crate::conversation::outreach::AppliedOutreachMessage,
-                        String,
-                    > = {
-                        let mut conn_guard = conn_mutex
-                            .lock()
-                            .map_err(|e| format!("Database lock error: {}", e))?;
-                        let tx = conn_guard
-                            .transaction()
-                            .map_err(|e| format!("Database transaction error: {}", e))?;
-
-                        let now: String = tx
-                            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
-                                row.get(0)
-                            })
-                            .map_err(|e| format!("Database query error: {}", e))?;
-
-                        tx.execute(
-                            "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by) VALUES (?1, ?2, ?3, ?4, ?5)",
-                            rusqlite::params![
-                                lead_id,
-                                "Outreach",
-                                format!("Zalo message sent: {}", formatted_content),
-                                &now,
-                                "System (Zalo Outreach)"
-                            ]
-                        ).map_err(|e| format!("Database query error: {}", e))?;
-
-                        tx.execute(
-                            "UPDATE leads SET last_activity = ?1, has_zalo = 1, zalo_reached = 1 WHERE id = ?2",
-                            rusqlite::params![&now, lead_id],
-                        )
-                        .map_err(|e| format!("Database query error: {}", e))?;
-
-                        tx.execute(
-                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'SUCCESS', NULL, ?3, ?4)",
-                            rusqlite::params![lead_id, template_id, &now, &imei],
-                        )
-                        .map_err(|e| format!("Database query error: {}", e))?;
-
-                        let applied_outreach =
-                            crate::conversation::outreach::record_outreach_success_in_transaction(
-                                &tx,
-                                &crate::conversation::outreach::OutreachConversationRecord {
-                                    lead_id: i64::from(*lead_id),
-                                    provider_account_key: imei.clone(),
-                                    account_display_name: None,
-                                    external_user_id: user.uid.clone(),
-                                    user_display_name: Some(lead_name.clone()),
-                                    user_avatar_url: None,
-                                    template_id: i64::from(template_id),
-                                    source: "zalo_outreach".to_string(),
-                                    text: formatted_content.clone(),
-                                    local_request_id,
-                                    provider_receipt,
-                                    sent_at: conversation_sent_at,
-                                },
-                            )
-                            .map_err(|e| format!("Outreach conversation record error: {}", e))?;
-
-                        tx.commit()
-                            .map_err(|e| format!("Database transaction commit error: {}", e))?;
-                        Ok(applied_outreach)
-                    };
-
-                    match act_res {
-                        Ok(applied_outreach) => {
-                            if let Some(app) = app_handle {
-                                if let Some(state) =
-                                    app.try_state::<crate::conversation::commands::ConversationState>()
-                                {
-                                    state.service.publish_outreach_success(&applied_outreach);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            if let Some(app) = app_handle {
-                                let _ = app.emit(
-                                    "outreach-log",
-                                    OutreachLogPayload {
-                                        message: format!(
-                                            "Delivery succeeded but local persistence failed: {}",
-                                            e
-                                        ),
-                                    },
-                                );
-                            }
-                        }
-                    }
+            if !is_vn_mobile(&phone) {
+                let msg = format!("Skipping non-mobile number: {}", phone);
+                println!("{}", msg);
+                let _ = {
+                    let conn_guard = conn_mutex.lock().unwrap();
+                    conn_guard.execute(
+                        "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                        rusqlite::params![lead_id],
+                    )
+                };
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                    let current_num = processed_offset + idx + 1;
+                    let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                    let _ = app.emit(
+                        "outreach-progress",
+                        OutreachProgressPayload {
+                            progress: progress_val,
+                            status: "running".to_string(),
+                            message: msg,
+                        },
+                    );
                 }
+                continue;
+            }
+
+            if let Some(app) = app_handle {
+                let _ = app.emit(
+                    "outreach-log",
+                    OutreachLogPayload {
+                        message: format!(
+                            "Looking up Zalo UID for {} ({})",
+                            lead_name, sanitized_phone
+                        ),
+                    },
+                );
+            }
+
+            let user_opt = match zalo.find_user(&sanitized_phone, None).await {
+                Ok(opt) => opt,
                 Err(e) => {
                     let msg = format!(
-                        "Failed to send Zalo message to {} ({}): {:?}",
-                        lead_name, sanitized_phone, e
+                        "Failed to look up phone {} for {}: {:?}",
+                        sanitized_phone, lead_name, e
                     );
                     let now: String = chrono::Utc::now().to_rfc3339();
                     let err_str = format!("{:?}", e).to_lowercase();
-                    let status_str = if err_str.contains("người lạ")
-                        || err_str.contains("stranger")
-                        || err_str.contains("privacy")
-                        || err_str.contains("chặn")
-                        || err_str.contains("122")
-                    {
-                        "BLOCKED_STRANGER"
-                    } else if err_str.contains("không tìm thấy")
+                    let is_rate_limit = should_rotate_zalo_session(&e);
+
+                    let status_str = if err_str.contains("không tìm thấy")
                         || err_str.contains("not found")
                         || err_str.contains("212")
                     {
                         "VERIFIED_NOT_EXIST"
-                    } else if should_rotate_zalo_session(&e) {
+                    } else if err_str.contains("chặn")
+                        || err_str.contains("người lạ")
+                        || err_str.contains("stranger")
+                        || err_str.contains("privacy")
+                        || err_str.contains("122")
+                    {
+                        "BLOCKED_STRANGER"
+                    } else if is_rate_limit {
                         "RATE_LIMITED"
                     } else {
-                        "SEND_FAILED"
+                        "LOOKUP_FAILED"
                     };
 
                     let conn_guard = conn_mutex.lock();
@@ -2924,11 +2686,18 @@ pub async fn send_zalo_outreach_internal(
                             "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
                             rusqlite::params![status_str, lead_id],
                         );
+                        if status_str == "VERIFIED_NOT_EXIST" {
+                            let _ = conn.execute(
+                                "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                                rusqlite::params![lead_id],
+                            );
+                        }
                         let _ = conn.execute(
                             "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                             rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
                         );
                     }
+
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "outreach-log",
@@ -2936,10 +2705,20 @@ pub async fn send_zalo_outreach_internal(
                                 message: msg.clone(),
                             },
                         );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "running".to_string(),
+                                message: msg,
+                            },
+                        );
                     }
 
                     if should_rotate_zalo_session(&e) {
-                        let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần gửi tin ({:?}). Tạm dừng chiến dịch...", e);
+                        let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần tra cứu/gửi tin ({:?}). Tạm dừng chiến dịch...", e);
                         if let Some(app) = app_handle {
                             let _ = app.emit(
                                 "outreach-log",
@@ -2962,32 +2741,289 @@ pub async fn send_zalo_outreach_internal(
                         was_rate_limited = true;
                         break;
                     }
+
+                    continue;
+                }
+            };
+
+            match user_opt {
+                Some(user) => user.uid,
+                None => {
+                    let msg = format!(
+                        "Phone number {} for {} not found on Zalo",
+                        sanitized_phone, lead_name
+                    );
+                    let now: String = chrono::Utc::now().to_rfc3339();
+                    let conn_guard = conn_mutex.lock();
+                    if let Ok(conn) = conn_guard {
+                        let _ = conn.execute(
+                            "UPDATE leads SET has_zalo = 0, zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
+                            rusqlite::params![lead_id],
+                        );
+                        let _ = conn.execute(
+                            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                            rusqlite::params![lead_id, template_id, "Phone number not found on Zalo", &now, &imei],
+                        );
+                    }
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: msg.clone(),
+                            },
+                        );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val = (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "running".to_string(),
+                                message: msg,
+                            },
+                        );
+                    }
+                    continue;
                 }
             }
-        } else {
-            let msg = format!(
-                "Phone number {} for {} not found on Zalo",
-                sanitized_phone, lead_name
-            );
-            let now: String = chrono::Utc::now().to_rfc3339();
-            let conn_guard = conn_mutex.lock();
-            if let Ok(conn) = conn_guard {
-                let _ = conn.execute(
-                    "UPDATE leads SET has_zalo = 0, zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
-                    rusqlite::params![lead_id],
-                );
-                let _ = conn.execute(
-                    "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
-                    rusqlite::params![lead_id, template_id, "Phone number not found on Zalo", &now, &imei],
-                );
+        };
+
+        let formatted_content = render_zalo_template(&template_content, &lead_name);
+
+        let attachments = template_image_url
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|url| {
+                if url.starts_with("data:image/") {
+                    use base64::Engine;
+                    let parts: Vec<&str> = url.split(',').collect();
+                    let base64_str = parts.get(1).copied().unwrap_or("");
+                    let data = base64::engine::general_purpose::STANDARD
+                        .decode(base64_str)
+                        .unwrap_or_default();
+                    let ext = if url.contains("image/png") {
+                        "png"
+                    } else if url.contains("image/webp") {
+                        "webp"
+                    } else if url.contains("image/gif") {
+                        "gif"
+                    } else {
+                        "jpg"
+                    };
+                    vec![zca_rs::models::AttachmentSource::Buffer {
+                        data: data.clone(),
+                        filename: format!("attachment.{}", ext),
+                        metadata: zca_rs::models::AttachmentMetadata {
+                            total_size: data.len() as u64,
+                            width: None,
+                            height: None,
+                        },
+                    }]
+                } else if url.starts_with("http://") || url.starts_with("https://") {
+                    vec![zca_rs::models::AttachmentSource::Url(url.clone())]
+                } else {
+                    vec![zca_rs::models::AttachmentSource::Buffer {
+                        data: std::fs::read(url).unwrap_or_default(),
+                        filename: std::path::Path::new(url)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("image.jpg")
+                            .to_string(),
+                        metadata: zca_rs::models::AttachmentMetadata {
+                            total_size: std::fs::metadata(url).map(|m| m.len()).unwrap_or(0),
+                            width: None,
+                            height: None,
+                        },
+                    }]
+                }
+            });
+
+        let msg_content = zca_rs::models::MessageContent {
+            msg: formatted_content.clone(),
+            styles: None,
+            urgency: None,
+            quote: None,
+            mentions: None,
+            attachments,
+            ttl: None,
+        };
+
+        let local_request_id = format!("outreach-{}", rand::random::<u128>());
+        let conversation_sent_at = crate::conversation::types::utc_now();
+
+        match zalo
+            .send_message(msg_content, &target_uid, zca_rs::models::ThreadType::User)
+            .await
+        {
+            Ok(response) => {
+                let provider_receipt =
+                    crate::conversation::outreach::ZaloProviderReceipt::from_response(response);
+                total_sent += 1;
+                burst_counter += 1;
+                let log_msg = format!("Message sent to {} ({})", lead_name, target_uid);
+                if let Some(app) = app_handle {
+                    let _ = app.emit("outreach-log", OutreachLogPayload { message: log_msg });
+                }
+
+                let act_res: Result<
+                    crate::conversation::outreach::AppliedOutreachMessage,
+                    String,
+                > = {
+                    let mut conn_guard = conn_mutex
+                        .lock()
+                        .map_err(|e| format!("Database lock error: {}", e))?;
+                    let tx = conn_guard
+                        .transaction()
+                        .map_err(|e| format!("Database transaction error: {}", e))?;
+
+                    let now: String = tx
+                        .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+                            row.get(0)
+                        })
+                        .map_err(|e| format!("Database query error: {}", e))?;
+
+                    tx.execute(
+                        "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            lead_id,
+                            "Outreach",
+                            format!("Zalo message sent: {}", formatted_content),
+                            &now,
+                            "System (Zalo Outreach)"
+                        ]
+                    ).map_err(|e| format!("Database query error: {}", e))?;
+
+                    tx.execute(
+                        "UPDATE leads SET last_activity = ?1, has_zalo = 1, zalo_reached = 1, zalo_uid = ?2, zalo_status = 'VERIFIED_EXIST' WHERE id = ?3",
+                        rusqlite::params![&now, &target_uid, lead_id],
+                    )
+                    .map_err(|e| format!("Database query error: {}", e))?;
+
+                    tx.execute(
+                        "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'SUCCESS', NULL, ?3, ?4)",
+                        rusqlite::params![lead_id, template_id, &now, &imei],
+                    )
+                    .map_err(|e| format!("Database query error: {}", e))?;
+
+                    let applied_outreach =
+                        crate::conversation::outreach::record_outreach_success_in_transaction(
+                            &tx,
+                            &crate::conversation::outreach::OutreachConversationRecord {
+                                lead_id: i64::from(*lead_id),
+                                provider_account_key: imei.clone(),
+                                account_display_name: None,
+                                external_user_id: target_uid.clone(),
+                                user_display_name: Some(lead_name.clone()),
+                                user_avatar_url: None,
+                                template_id: i64::from(template_id),
+                                source: "zalo_outreach".to_string(),
+                                text: formatted_content.clone(),
+                                local_request_id,
+                                provider_receipt,
+                                sent_at: conversation_sent_at,
+                            },
+                        )
+                        .map_err(|e| format!("Outreach conversation record error: {}", e))?;
+
+                    tx.commit()
+                        .map_err(|e| format!("Database transaction commit error: {}", e))?;
+                    Ok(applied_outreach)
+                };
+
+                match act_res {
+                    Ok(applied_outreach) => {
+                        if let Some(app) = app_handle {
+                            if let Some(state) =
+                                app.try_state::<crate::conversation::commands::ConversationState>()
+                            {
+                                state.service.publish_outreach_success(&applied_outreach);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(app) = app_handle {
+                            let _ = app.emit(
+                                "outreach-log",
+                                OutreachLogPayload {
+                                    message: format!(
+                                        "Delivery succeeded but local persistence failed: {}",
+                                        e
+                                    ),
+                                },
+                            );
+                        }
+                    }
+                }
             }
-            if let Some(app) = app_handle {
-                let _ = app.emit(
-                    "outreach-log",
-                    OutreachLogPayload {
-                        message: msg.clone(),
-                    },
+            Err(e) => {
+                let msg = format!(
+                    "Failed to send Zalo message to {} ({}): {:?}",
+                    lead_name, target_uid, e
                 );
+                let now: String = chrono::Utc::now().to_rfc3339();
+                let err_str = format!("{:?}", e).to_lowercase();
+                let status_str = if err_str.contains("người lạ")
+                    || err_str.contains("stranger")
+                    || err_str.contains("privacy")
+                    || err_str.contains("chặn")
+                    || err_str.contains("122")
+                {
+                    "BLOCKED_STRANGER"
+                } else if err_str.contains("không tìm thấy")
+                    || err_str.contains("not found")
+                    || err_str.contains("212")
+                {
+                    "VERIFIED_NOT_EXIST"
+                } else if should_rotate_zalo_session(&e) {
+                    "RATE_LIMITED"
+                } else {
+                    "SEND_FAILED"
+                };
+
+                let conn_guard = conn_mutex.lock();
+                if let Ok(conn) = conn_guard {
+                    let _ = conn.execute(
+                        "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
+                        rusqlite::params![status_str, lead_id],
+                    );
+                    let _ = conn.execute(
+                        "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
+                        rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
+                    );
+                }
+                if let Some(app) = app_handle {
+                    let _ = app.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                }
+
+                if should_rotate_zalo_session(&e) {
+                    let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần gửi tin ({:?}). Tạm dừng chiến dịch...", e);
+                    if let Some(app) = app_handle {
+                        let _ = app.emit(
+                            "outreach-log",
+                            OutreachLogPayload {
+                                message: rate_msg.clone(),
+                            },
+                        );
+                        let current_num = processed_offset + idx + 1;
+                        let progress_val =
+                            (current_num as f64 / display_total.max(1) as f64) * 100.0;
+                        let _ = app.emit(
+                            "outreach-progress",
+                            OutreachProgressPayload {
+                                progress: progress_val,
+                                status: "rate_limited".to_string(),
+                                message: rate_msg,
+                            },
+                        );
+                    }
+                    was_rate_limited = true;
+                    break;
+                }
             }
         }
 
