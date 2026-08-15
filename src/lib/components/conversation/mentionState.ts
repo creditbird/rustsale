@@ -134,10 +134,10 @@ export function toMentionInputs(mentions: ComposerMentionRange[]): ConversationM
   return mentions
     .slice()
     .sort((a, b) => a.startUtf16 - b.startUtf16)
-    .map(({ identityId, displayText, startUtf16, lengthUtf16 }) => ({
-      identityId,
-      displayText,
-      startUtf16,
-      lengthUtf16
+    .map(({ identityId, startUtf16, lengthUtf16 }) => ({
+      pos: startUtf16,
+      len: lengthUtf16,
+      targetIdentityId: identityId,
+      isAll: false
     }));
 }

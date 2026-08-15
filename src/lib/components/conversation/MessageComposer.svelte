@@ -367,7 +367,20 @@
   }
 
   function formatError(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+    if (!error) return 'Unknown error';
+    if (typeof error === 'string') return error;
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'object') {
+      const record = error as Record<string, unknown>;
+      if (typeof record.message === 'string' && record.message.trim()) return record.message;
+      if (typeof record.error === 'string' && record.error.trim()) return record.error;
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return String(error);
+      }
+    }
+    return String(error);
   }
 
   function fileNameFromPath(path: string): string {
@@ -772,7 +785,11 @@
     const parts: SendPartRequest[] = [];
     const trimmed = snapshotText.trim();
     if (trimmed) {
-      const mentionInputs = toMentionInputs(snapshotMentions);
+      const validMentions = snapshotMentions.filter((m) => {
+        const slice = snapshotText.slice(m.startUtf16, m.startUtf16 + m.lengthUtf16);
+        return slice.startsWith('@');
+      });
+      const mentionInputs = toMentionInputs(validMentions);
       parts.push({
         clientPartId: newClientId('part'),
         type: 'text',

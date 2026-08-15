@@ -148,8 +148,8 @@ describe('mentionState', () => {
       ];
       const inputs = toMentionInputs(mentions);
       expect(inputs).toEqual([
-        { identityId: 1, displayText: '@Alice', startUtf16: 0, lengthUtf16: 6 },
-        { identityId: 2, displayText: '@Bob', startUtf16: 15, lengthUtf16: 4 }
+        { pos: 0, len: 6, targetIdentityId: 1, isAll: false },
+        { pos: 15, len: 4, targetIdentityId: 2, isAll: false }
       ]);
     });
   });

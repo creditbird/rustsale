@@ -3127,6 +3127,51 @@ fn sticker_must_be_the_only_part_in_phase_one() {
 }
 
 #[test]
+fn enqueue_batch_group_with_null_display_name_participant_succeeds() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'zalo', 'imei-a', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (127, 1, 'group-127', 'group', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, identity_namespace, external_id, display_name, created_at, updated_at) VALUES (10, 'zalo', 'zalo_uid', 'uid-null', NULL, '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (127, 10, 'member')",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    use crate::conversation::types::{
+        ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest,
+    };
+
+    let req = SendConversationBatchRequest {
+        conversation_id: 127,
+        client_batch_id: "batch-null-test".into(),
+        reply_to_message_id: None,
+        parts: vec![ConversationSendPartRequest {
+            client_part_id: "part-1".into(),
+            content: ConversationSendPartContent::Text {
+                text: "Hello from group".into(),
+                mentions: vec![],
+            },
+        }],
+    };
+
+    let res = harness.repository.enqueue_outbound_batch(&req, "2026-08-01T00:00:00Z").unwrap();
+    assert_eq!(res.messages.len(), 1);
+    assert_eq!(res.messages[0].text_content.as_deref(), Some("Hello from group"));
+}
+
+#[test]
 fn mention_incoming_mentions_upsert_without_duplicates() {
     let harness = Harness::new();
     let mut msg = direct_message("imei-a", "msg-mention-1");

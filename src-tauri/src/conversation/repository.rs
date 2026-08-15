@@ -2975,12 +2975,12 @@ impl ConversationRepository {
                 .query_map([request.conversation_id], |row| {
                     let identity_id: i64 = row.get(0)?;
                     let external_id: Option<String> = row.get(1)?;
-                    let display_name: String = row.get(2)?;
+                    let display_name: Option<String> = row.get(2)?;
                     let is_active_int: i32 = row.get(3)?;
                     Ok(crate::conversation::mentions::MentionParticipant {
                         identity_id,
                         external_id,
-                        display_name,
+                        display_name: display_name.unwrap_or_default(),
                         is_active: is_active_int != 0,
                     })
                 })

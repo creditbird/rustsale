@@ -647,10 +647,10 @@ describe('MessageComposer', () => {
       if (textPart.type === 'text') {
         expect(textPart.mentions).toEqual([
           {
-            identityId: 501,
-            displayText: '@Nguyễn Văn A',
-            startUtf16: 0,
-            lengthUtf16: 13
+            pos: 0,
+            len: 13,
+            targetIdentityId: 501,
+            isAll: false
           }
         ]);
       }

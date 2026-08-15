@@ -46,10 +46,10 @@ export interface InboxReplyTarget {
 export type ConversationReactionCode = 'heart' | 'like' | 'haha' | 'wow' | 'cry' | 'angry';
 
 export interface ConversationMentionInput {
-  identityId: number;
-  displayText: string;
-  startUtf16: number;
-  lengthUtf16: number;
+  pos: number;
+  len: number;
+  targetIdentityId?: number | null;
+  isAll?: boolean;
 }
 
 export interface ConversationMention {

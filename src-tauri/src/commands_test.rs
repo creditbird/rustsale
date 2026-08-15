@@ -3051,7 +3051,7 @@ mod tests {
             .unwrap_err()
             .contains("Destination directory does not exist"));
 
-        // 4. Direct symlinks are rejected
+        // 4. Direct symlinks to another file are rejected
         let target_file = temp_dir.path().join("real_target.csv");
         std::fs::write(&target_file, "real").unwrap();
         let symlink_path = temp_dir.path().join("symlink.csv");
@@ -3063,25 +3063,26 @@ mod tests {
             assert!(res_symlink
                 .unwrap_err()
                 .contains("Export to symbolic links is not permitted"));
+            // Ensure target file was NOT overwritten
+            assert_eq!(std::fs::read_to_string(&target_file).unwrap(), "real");
         }
 
-        // 5. Parent directory symlink canonicalizes to real path
+        // 5. Parent directory symlink pinning & TOCTOU protection
         #[cfg(unix)]
         {
             let real_parent = temp_dir.path().join("real_parent_dir");
             std::fs::create_dir(&real_parent).unwrap();
-            let symlink_parent = temp_dir.path().join("symlink_parent_dir");
-            std::os::unix::fs::symlink(&real_parent, &symlink_parent).unwrap();
 
-            let file_via_symlink_parent = symlink_parent.join("exported.csv");
-            let res_parent_symlink =
-                commands::write_leads_csv_to_path(&file_via_symlink_parent, content).await;
-            assert!(res_parent_symlink.is_ok());
-            let canonical_written = res_parent_symlink.unwrap();
-            assert_eq!(
-                canonical_written,
-                real_parent.canonicalize().unwrap().join("exported.csv")
-            );
+            // When path points to a file in an existing real directory, write succeeds
+            let normal_file = real_parent.join("exported.csv");
+            let res_normal = commands::write_leads_csv_to_path(&normal_file, content).await;
+            assert!(res_normal.is_ok());
+
+            // If an attacker attempts to point to a target that is a directory
+            let dir_as_file = real_parent.join("dir_target.csv");
+            std::fs::create_dir(&dir_as_file).unwrap();
+            let res_dir = commands::write_leads_csv_to_path(&dir_as_file, content).await;
+            assert!(res_dir.is_err());
         }
     }
 
@@ -3127,5 +3128,151 @@ mod tests {
         .await;
         assert!(res_panic.is_err());
         assert!(res_panic.unwrap_err().contains("Dialog worker failed"));
+    }
+
+    #[tokio::test]
+    async fn test_export_leads_csv_file_symlink_and_toctou_adversarial_matrix() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let content = "Name,Phone\nVictim,0901234567";
+
+        // 1. Target symlink to sensitive file cannot be overwritten
+        #[cfg(unix)]
+        {
+            let sensitive_file = temp_dir.path().join("sensitive.csv");
+            std::fs::write(&sensitive_file, "DO_NOT_OVERWRITE").unwrap();
+
+            let attacker_symlink = temp_dir.path().join("attacker_link.csv");
+            std::os::unix::fs::symlink(&sensitive_file, &attacker_symlink).unwrap();
+
+            let res = commands::write_leads_csv_to_path(&attacker_symlink, content).await;
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("symbolic links"));
+            assert_eq!(
+                std::fs::read_to_string(&sensitive_file).unwrap(),
+                "DO_NOT_OVERWRITE"
+            );
+        }
+
+        // 2. Ancestor directory replaced with symlink is rejected at descriptor open
+        #[cfg(unix)]
+        {
+            let target_dir = temp_dir.path().join("swapped_dir");
+            std::fs::create_dir(&target_dir).unwrap();
+
+            let sensitive_dest_dir = temp_dir.path().join("sensitive_dest_dir");
+            std::fs::create_dir(&sensitive_dest_dir).unwrap();
+            let sensitive_in_dir = sensitive_dest_dir.join("leaked.csv");
+            std::fs::write(&sensitive_in_dir, "SENSITIVE").unwrap();
+
+            // Simulate TOCTOU: remove directory and replace it with a symlink to sensitive_dest_dir
+            std::fs::remove_dir(&target_dir).unwrap();
+            std::os::unix::fs::symlink(&sensitive_dest_dir, &target_dir).unwrap();
+
+            // Attempt to write through the symlinked ancestor directory
+            let res =
+                commands::write_leads_csv_to_path(&target_dir.join("leaked.csv"), content).await;
+            assert!(res.is_err());
+            let err_msg = res.unwrap_err();
+            assert!(
+                err_msg.contains("symbolic links")
+                    || err_msg.contains("cannot contain symbolic links")
+            );
+            assert_eq!(
+                std::fs::read_to_string(&sensitive_in_dir).unwrap(),
+                "SENSITIVE"
+            );
+        }
+
+        // 3. FIFO / named pipe protection: opening existing FIFO never blocks and rejects non-regular file
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let fifo_path = temp_dir.path().join("fifo_target.csv");
+            let mut fifo_c = fifo_path.as_os_str().as_bytes().to_vec();
+            fifo_c.push(0);
+
+            let res_fifo_create =
+                unsafe { libc::mkfifo(fifo_c.as_ptr() as *const libc::c_char, 0o666) };
+            if res_fifo_create == 0 {
+                // Must return error immediately without hanging the thread
+                let res = commands::write_leads_csv_to_path(&fifo_path, content).await;
+                assert!(res.is_err());
+                let err_msg = res.unwrap_err();
+                assert!(
+                    err_msg.contains("regular file")
+                        || err_msg.contains("open export file")
+                        || err_msg.contains("cannot be accessed")
+                );
+            }
+        }
+
+        // 4. Real concurrent TOCTOU race test: background thread actively swaps directory with symlink
+        #[cfg(unix)]
+        {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::Arc;
+
+            let race_root = temp_dir.path().join("race_root");
+            std::fs::create_dir(&race_root).unwrap();
+
+            let real_dir = race_root.join("real_folder");
+            std::fs::create_dir(&real_dir).unwrap();
+
+            let victim_dir = race_root.join("victim_folder");
+            std::fs::create_dir(&victim_dir).unwrap();
+            let victim_file = victim_dir.join("victim.csv");
+            std::fs::write(&victim_file, "VICTIM_ORIGINAL").unwrap();
+
+            let volatile_target = race_root.join("volatile_parent");
+            std::fs::create_dir(&volatile_target).unwrap();
+
+            let stop_flag = Arc::new(AtomicBool::new(false));
+            let stop_clone = stop_flag.clone();
+            let volatile_path = volatile_target.clone();
+            let victim_path = victim_dir.clone();
+
+            // Swapper thread continuously switches volatile_parent between real dir and symlink to victim_dir
+            let swapper_handle = std::thread::spawn(move || {
+                let mut is_symlink = false;
+                while !stop_clone.load(Ordering::Relaxed) {
+                    if is_symlink {
+                        let _ = std::fs::remove_file(&volatile_path);
+                        let _ = std::fs::create_dir(&volatile_path);
+                        is_symlink = false;
+                    } else {
+                        let _ = std::fs::remove_dir(&volatile_path);
+                        let _ = std::os::unix::fs::symlink(&victim_path, &volatile_path);
+                        is_symlink = true;
+                    }
+                    std::thread::yield_now();
+                }
+                // Cleanup to real dir so tempdir drop succeeds
+                let _ = std::fs::remove_file(&volatile_path);
+                let _ = std::fs::create_dir(&volatile_path);
+            });
+
+            // Perform concurrent write attempts in a loop
+            for _ in 0..40 {
+                let res = commands::write_leads_csv_to_path(
+                    &volatile_target.join("victim.csv"),
+                    "COMPROMISED_DATA",
+                )
+                .await;
+                // If the operation succeeded, it MUST have written to the real dir, NEVER the victim file
+                // If it failed, it caught the symlink/descriptor error
+                if res.is_ok() {
+                    let written_path = res.unwrap();
+                    assert!(!written_path.starts_with(&victim_dir));
+                }
+                // Invariant: Victim file must NEVER be corrupted by any race
+                assert_eq!(
+                    std::fs::read_to_string(&victim_file).unwrap(),
+                    "VICTIM_ORIGINAL"
+                );
+            }
+
+            stop_flag.store(true, Ordering::Relaxed);
+            let _ = swapper_handle.join();
+        }
     }
 }

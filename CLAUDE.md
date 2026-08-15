@@ -7,12 +7,15 @@
 > • Use `bunx <tool>` instead of `npx <tool>` (e.g. `bunx gitnexus analyze`, `bunx --bun shadcn-svelte@latest`).
 > • **Do NOT use `node`, `npm`, or `npx` under any circumstances.**
 
+> [!IMPORTANT]
+> **MANDATORY IMPLEMENTATION HARNESS:** Before any task that creates, changes, fixes, refactors, migrates, or ships behavior, read and follow [`docs/IMPLEMENTATION_COMPLETION_HARNESS.md`](docs/IMPLEMENTATION_COMPLETION_HARNESS.md). Its requirement ledger, adversarial verification, evidence ladder, and Completion Lock control all implementation and remediation work. Do not claim completion while any lock condition remains open.
+
 ***
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **RustSale_v2** (5539 symbols, 14259 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **RustSale_v2** (5577 symbols, 14336 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `bunx gitnexus analyze` in terminal first.
 
@@ -85,13 +88,13 @@ Before completing any code modification task, verify:
 After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
 
 ```bash
-npx gitnexus analyze
+bunx gitnexus analyze
 ```
 
 If the index previously included embeddings, preserve them by adding `--embeddings`:
 
 ```bash
-npx gitnexus analyze --embeddings
+bunx gitnexus analyze --embeddings
 ```
 
 To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**

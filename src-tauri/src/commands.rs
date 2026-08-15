@@ -5575,6 +5575,399 @@ pub fn get_hardware_id() -> Result<HardwareInfo, String> {
     })
 }
 
+#[cfg(unix)]
+fn open_export_file_unix_sync(file_path: &std::path::Path) -> Result<std::fs::File, String> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+
+    struct FdGuard(libc::c_int);
+    impl Drop for FdGuard {
+        fn drop(&mut self) {
+            if self.0 >= 0 {
+                unsafe { libc::close(self.0) };
+            }
+        }
+    }
+
+    let components: Vec<_> = file_path.components().collect();
+    if components.is_empty() {
+        return Err("Invalid export path".to_string());
+    }
+
+    let (parent_components, file_component) = match components.split_last() {
+        Some((last, rest)) => (rest, last),
+        None => return Err("Invalid export path".to_string()),
+    };
+
+    let file_name = match file_component {
+        std::path::Component::Normal(name) => name,
+        _ => return Err("Export target filename is invalid".to_string()),
+    };
+
+    let mut current_fd = -1;
+    let mut is_root = false;
+
+    for (i, comp) in parent_components.iter().enumerate() {
+        match comp {
+            std::path::Component::RootDir => {
+                let fd = unsafe {
+                    libc::open(
+                        c"/".as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    )
+                };
+                if fd < 0 {
+                    return Err("Failed to open root directory".to_string());
+                }
+                current_fd = fd;
+                is_root = true;
+            }
+            std::path::Component::Normal(name) => {
+                let mut name_c = name.as_bytes().to_vec();
+                name_c.push(0);
+
+                let next_fd = if current_fd >= 0 {
+                    unsafe {
+                        libc::openat(
+                            current_fd,
+                            name_c.as_ptr() as *const libc::c_char,
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                        )
+                    }
+                } else {
+                    unsafe {
+                        libc::open(
+                            name_c.as_ptr() as *const libc::c_char,
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                        )
+                    }
+                };
+
+                if next_fd < 0 {
+                    let err = std::io::Error::last_os_error();
+                    let mut comp_stat: libc::stat = unsafe { std::mem::zeroed() };
+                    let stat_res = if current_fd >= 0 {
+                        unsafe {
+                            libc::fstatat(
+                                current_fd,
+                                name_c.as_ptr() as *const libc::c_char,
+                                &mut comp_stat,
+                                libc::AT_SYMLINK_NOFOLLOW,
+                            )
+                        }
+                    } else {
+                        unsafe {
+                            libc::lstat(name_c.as_ptr() as *const libc::c_char, &mut comp_stat)
+                        }
+                    };
+
+                    if current_fd >= 0 && (i > 0 || is_root) {
+                        unsafe { libc::close(current_fd) };
+                    }
+
+                    if (stat_res == 0 && (comp_stat.st_mode & libc::S_IFMT) == libc::S_IFLNK)
+                        || err.raw_os_error() == Some(libc::ELOOP)
+                        || err.raw_os_error() == Some(libc::EMLINK)
+                    {
+                        return Err(
+                            "Export path cannot contain symbolic links in parent directories"
+                                .to_string(),
+                        );
+                    }
+                    return Err(format!(
+                        "Destination directory does not exist or cannot be accessed ({:?}): {}",
+                        name, err
+                    ));
+                }
+
+                if current_fd >= 0 && (i > 0 || is_root) {
+                    unsafe { libc::close(current_fd) };
+                }
+
+                let mut dir_stat: libc::stat = unsafe { std::mem::zeroed() };
+                if unsafe { libc::fstat(next_fd, &mut dir_stat) } != 0
+                    || (dir_stat.st_mode & libc::S_IFMT) != libc::S_IFDIR
+                {
+                    unsafe { libc::close(next_fd) };
+                    return Err(format!(
+                        "Destination component {:?} is not a directory",
+                        name
+                    ));
+                }
+
+                current_fd = next_fd;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if current_fd >= 0 {
+                    unsafe { libc::close(current_fd) };
+                }
+                return Err("Path traversal (..) is not permitted in export path".to_string());
+            }
+            std::path::Component::Prefix(_) => {}
+        }
+    }
+
+    if current_fd < 0 {
+        let fd = unsafe {
+            libc::open(
+                c".".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err("Failed to open current working directory".to_string());
+        }
+        current_fd = fd;
+    }
+
+    let _parent_guard = FdGuard(current_fd);
+
+    let mut file_name_c = file_name.as_bytes().to_vec();
+    file_name_c.push(0);
+
+    // Open target non-blocking without O_TRUNC to prevent hangs on existing FIFOs / named pipes
+    let file_fd = unsafe {
+        libc::openat(
+            current_fd,
+            file_name_c.as_ptr() as *const libc::c_char,
+            libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            0o644,
+        )
+    };
+
+    if file_fd < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ELOOP) || err.raw_os_error() == Some(libc::EMLINK) {
+            return Err("Export to symbolic links is not permitted".to_string());
+        }
+        return Err(format!("Failed to open export file for writing: {}", err));
+    }
+
+    // Verify opened file descriptor is a regular file before truncation or writing
+    let mut file_stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(file_fd, &mut file_stat) } != 0 {
+        unsafe { libc::close(file_fd) };
+        return Err("Failed to verify opened file descriptor".to_string());
+    }
+
+    if (file_stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
+        unsafe { libc::close(file_fd) };
+        return Err("Export target must be a regular file".to_string());
+    }
+
+    // Safely truncate regular file to 0 bytes
+    if unsafe { libc::ftruncate(file_fd, 0) } != 0 {
+        unsafe { libc::close(file_fd) };
+        return Err("Failed to truncate export file".to_string());
+    }
+
+    // Clear O_NONBLOCK flag so standard async writes via tokio/std behave normally
+    let flags = unsafe { libc::fcntl(file_fd, libc::F_GETFL) };
+    if flags >= 0 {
+        unsafe { libc::fcntl(file_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+    }
+
+    let std_file = unsafe { std::fs::File::from_raw_fd(file_fd) };
+    Ok(std_file)
+}
+
+#[cfg(unix)]
+async fn open_export_file_unix(file_path: &std::path::Path) -> Result<tokio::fs::File, String> {
+    let path = file_path.to_path_buf();
+    let std_file = tokio::task::spawn_blocking(move || open_export_file_unix_sync(&path))
+        .await
+        .map_err(|e| format!("Filesystem worker failed: {}", e))??;
+    Ok(tokio::fs::File::from_std(std_file))
+}
+
+#[cfg(windows)]
+fn open_export_file_windows_sync(file_path: &std::path::Path) -> Result<std::fs::File, String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x00200000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+    const FILE_TYPE_DISK: u32 = 0x0001;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct BY_HANDLE_FILE_INFORMATION {
+        dwFileAttributes: u32,
+        ftCreationTime: [u32; 2],
+        ftLastAccessTime: [u32; 2],
+        ftLastWriteTime: [u32; 2],
+        dwVolumeSerialNumber: u32,
+        nFileSizeHigh: u32,
+        nFileSizeLow: u32,
+        nNumberOfLinks: u32,
+        nFileIndexHigh: u32,
+        nFileIndexLow: u32,
+    }
+
+    extern "system" {
+        fn GetFileInformationByHandle(
+            hFile: *mut std::ffi::c_void,
+            lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION,
+        ) -> i32;
+        fn GetFileType(hFile: *mut std::ffi::c_void) -> u32;
+        fn GetFinalPathNameByHandleW(
+            hFile: *mut std::ffi::c_void,
+            lpszFilePath: *mut u16,
+            cchFilePath: u32,
+            dwFlags: u32,
+        ) -> u32;
+        fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut std::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+    }
+
+    const GENERIC_READ: u32 = 0x80000000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const FILE_SHARE_DELETE: u32 = 4;
+    const OPEN_EXISTING: u32 = 3;
+    const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+
+    // 1. Step-by-step traversal: verify no ancestor directory is a symlink or junction
+    let mut current = std::path::PathBuf::new();
+    let components: Vec<_> = file_path.components().collect();
+    if components.is_empty() {
+        return Err("Invalid export path".to_string());
+    }
+
+    let (parent_components, _) = match components.split_last() {
+        Some((last, rest)) => (rest, last),
+        None => return Err("Invalid export path".to_string()),
+    };
+
+    for comp in parent_components {
+        match comp {
+            std::path::Component::ParentDir => {
+                return Err("Path traversal (..) is not permitted in export path".to_string());
+            }
+            std::path::Component::CurDir => {}
+            _ => {
+                current.push(comp);
+                let wide_path: Vec<u16> =
+                    current.as_os_str().encode_wide().chain(Some(0)).collect();
+                let dir_handle = unsafe {
+                    CreateFileW(
+                        wide_path.as_ptr(),
+                        GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        std::ptr::null_mut(),
+                        OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                        std::ptr::null_mut(),
+                    )
+                };
+
+                if dir_handle == INVALID_HANDLE_VALUE {
+                    let err = std::io::Error::last_os_error();
+                    return Err(format!(
+                        "Destination directory component {:?} cannot be opened: {}",
+                        current, err
+                    ));
+                }
+
+                let mut dir_info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+                let ok = unsafe { GetFileInformationByHandle(dir_handle, &mut dir_info) };
+                unsafe { CloseHandle(dir_handle) };
+
+                if ok == 0 {
+                    return Err(format!(
+                        "Failed to verify directory information for {:?}",
+                        current
+                    ));
+                }
+
+                if (dir_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    return Err(format!(
+                        "Export path cannot contain symbolic links or junctions in parent directory ({:?})",
+                        current
+                    ));
+                }
+            }
+        }
+    }
+
+    // 2. Open target file with FILE_FLAG_OPEN_REPARSE_POINT (0x00200000)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+
+    let std_file = options
+        .open(file_path)
+        .map_err(|e| format!("Failed to open export file for writing: {}", e))?;
+
+    let raw_handle = std_file.as_raw_handle();
+
+    let file_type = unsafe { GetFileType(raw_handle as *mut std::ffi::c_void) };
+    if file_type != FILE_TYPE_DISK {
+        return Err("Export target must be a regular disk file".to_string());
+    }
+
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(raw_handle as *mut std::ffi::c_void, &mut info) };
+    if ok == 0 {
+        return Err("Failed to verify opened file handle information".to_string());
+    }
+
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+        return Err("Export to symbolic links or reparse points is not permitted".to_string());
+    }
+
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 {
+        return Err("Export target cannot be a directory".to_string());
+    }
+
+    // 3. Post-open handle verification: query normalized kernel path from handle and ensure it matches expected path
+    let mut path_buf = vec![0u16; 1024];
+    let len = unsafe {
+        GetFinalPathNameByHandleW(
+            raw_handle as *mut std::ffi::c_void,
+            path_buf.as_mut_ptr(),
+            path_buf.len() as u32,
+            0,
+        )
+    };
+
+    if len > 0 && (len as usize) < path_buf.len() {
+        let final_path_os = std::ffi::OsString::from_wide(&path_buf[..len as usize]);
+        let final_path_str = final_path_os.to_string_lossy();
+        let target_str = file_path.to_string_lossy();
+        let target_norm = target_str.trim_start_matches(r"\\?\").replace('/', r"\");
+        let final_norm = final_path_str
+            .trim_start_matches(r"\\?\")
+            .replace('/', r"\");
+        if !final_norm.eq_ignore_ascii_case(&target_norm) {
+            return Err("Export destination was redirected during path resolution".to_string());
+        }
+    }
+
+    Ok(std_file)
+}
+
+#[cfg(windows)]
+async fn open_export_file_windows(file_path: &std::path::Path) -> Result<tokio::fs::File, String> {
+    let path = file_path.to_path_buf();
+    let std_file = tokio::task::spawn_blocking(move || open_export_file_windows_sync(&path))
+        .await
+        .map_err(|e| format!("Filesystem worker failed: {}", e))??;
+    Ok(tokio::fs::File::from_std(std_file))
+}
+
 pub async fn write_leads_csv_to_path(
     file_path: &std::path::Path,
     content: &str,
@@ -5587,46 +5980,32 @@ pub async fn write_leads_csv_to_path(
         _ => return Err("Only .csv files can be exported".to_string()),
     }
 
-    // 2. Canonicalize parent directory asynchronously (resolves any parent symlinks/junctions/traversal)
-    let parent = match file_path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => std::path::Path::new("."),
+    // 2. Reject path traversal
+    if file_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Path traversal (..) is not permitted in export path".to_string());
+    }
+
+    // 3. Open file descriptor atomically pinning ancestors with O_NOFOLLOW
+    #[cfg(unix)]
+    let mut file = open_export_file_unix(file_path).await?;
+
+    #[cfg(windows)]
+    let mut file = open_export_file_windows(file_path).await?;
+
+    #[cfg(not(any(unix, windows)))]
+    let mut file = {
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        options
+            .open(file_path)
+            .await
+            .map_err(|e| format!("Failed to open export file for writing: {}", e))?
     };
 
-    let canonical_parent = tokio::fs::canonicalize(parent).await.map_err(|e| {
-        format!(
-            "Destination directory does not exist or cannot be accessed: {}",
-            e
-        )
-    })?;
-
-    let file_name = file_path
-        .file_name()
-        .ok_or_else(|| "Invalid export file name".to_string())?;
-
-    let canonical_target = canonical_parent.join(file_name);
-
-    // 3. Reject if the target itself is an existing symlink/reparse point
-    if let Ok(metadata) = tokio::fs::symlink_metadata(&canonical_target).await {
-        if metadata.file_type().is_symlink() {
-            return Err("Export to symbolic links is not permitted".to_string());
-        }
-    }
-
-    // 4. Open and write asynchronously with O_NOFOLLOW on Unix to prevent TOCTOU race
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-
-    #[cfg(unix)]
-    {
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-
-    let mut file = options
-        .open(&canonical_target)
-        .await
-        .map_err(|e| format!("Failed to open export file for writing: {}", e))?;
-
+    // 4. Write content asynchronously and flush
     file.write_all(content.as_bytes())
         .await
         .map_err(|e| format!("Failed to write export content: {}", e))?;
@@ -5635,7 +6014,7 @@ pub async fn write_leads_csv_to_path(
         .await
         .map_err(|e| format!("Failed to flush export file: {}", e))?;
 
-    Ok(canonical_target)
+    Ok(file_path.to_path_buf())
 }
 
 /// Helper that orchestrates dialog resolution and file writing, enabling unit testing of full command workflows
@@ -5662,8 +6041,8 @@ where
 }
 
 #[tauri::command]
-pub async fn export_leads_csv_file(
-    app: tauri::AppHandle,
+pub async fn export_leads_csv_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     default_filename: String,
     content: String,
 ) -> Result<Option<String>, String> {
