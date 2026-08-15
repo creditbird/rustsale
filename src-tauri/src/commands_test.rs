@@ -3029,7 +3029,8 @@ mod tests {
         // 1. Valid .csv write succeeds
         let res = commands::write_leads_csv_to_path(&valid_csv_path, content).await;
         assert!(res.is_ok());
-        let read_back = std::fs::read_to_string(&valid_csv_path).unwrap();
+        let written_target = res.unwrap();
+        let read_back = std::fs::read_to_string(&written_target).unwrap();
         assert_eq!(read_back, content);
 
         // 2. Non-.csv extension is rejected
@@ -3050,7 +3051,7 @@ mod tests {
             .unwrap_err()
             .contains("Destination directory does not exist"));
 
-        // 4. Symlinks are rejected
+        // 4. Direct symlinks are rejected
         let target_file = temp_dir.path().join("real_target.csv");
         std::fs::write(&target_file, "real").unwrap();
         let symlink_path = temp_dir.path().join("symlink.csv");
@@ -3063,5 +3064,68 @@ mod tests {
                 .unwrap_err()
                 .contains("Export to symbolic links is not permitted"));
         }
+
+        // 5. Parent directory symlink canonicalizes to real path
+        #[cfg(unix)]
+        {
+            let real_parent = temp_dir.path().join("real_parent_dir");
+            std::fs::create_dir(&real_parent).unwrap();
+            let symlink_parent = temp_dir.path().join("symlink_parent_dir");
+            std::os::unix::fs::symlink(&real_parent, &symlink_parent).unwrap();
+
+            let file_via_symlink_parent = symlink_parent.join("exported.csv");
+            let res_parent_symlink =
+                commands::write_leads_csv_to_path(&file_via_symlink_parent, content).await;
+            assert!(res_parent_symlink.is_ok());
+            let canonical_written = res_parent_symlink.unwrap();
+            assert_eq!(
+                canonical_written,
+                real_parent.canonicalize().unwrap().join("exported.csv")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_export_leads_csv_file_with_dialog_workflow() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let valid_path = temp_dir.path().join("dialog_export.csv");
+        let content = "Name,Phone\nTest,0901234567";
+
+        // 1. Dialog returns valid path -> writes and returns Some(path)
+        let valid_path_clone = valid_path.clone();
+        let res_ok =
+            commands::export_leads_csv_file_with_dialog("default.csv", content, move || {
+                Ok(Some(valid_path_clone))
+            })
+            .await;
+        assert!(res_ok.is_ok());
+        let returned_path = res_ok.unwrap();
+        assert!(returned_path.is_some());
+        assert!(returned_path.unwrap().ends_with("dialog_export.csv"));
+        assert_eq!(std::fs::read_to_string(&valid_path).unwrap(), content);
+
+        // 2. Dialog cancelled by user -> returns Ok(None) without writing
+        let unwritten_path = temp_dir.path().join("cancelled.csv");
+        let res_cancel =
+            commands::export_leads_csv_file_with_dialog("default.csv", content, || Ok(None)).await;
+        assert!(res_cancel.is_ok());
+        assert!(res_cancel.unwrap().is_none());
+        assert!(!unwritten_path.exists());
+
+        // 3. Dialog backend error -> returns Err
+        let res_err = commands::export_leads_csv_file_with_dialog("default.csv", content, || {
+            Err("Native dialog failed to open".to_string())
+        })
+        .await;
+        assert!(res_err.is_err());
+        assert_eq!(res_err.unwrap_err(), "Native dialog failed to open");
+
+        // 4. Dialog worker thread panic -> caught and returns Err
+        let res_panic = commands::export_leads_csv_file_with_dialog("default.csv", content, || {
+            panic!("Worker crash")
+        })
+        .await;
+        assert!(res_panic.is_err());
+        assert!(res_panic.unwrap_err().contains("Dialog worker failed"));
     }
 }

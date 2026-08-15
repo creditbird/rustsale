@@ -5578,25 +5578,87 @@ pub fn get_hardware_id() -> Result<HardwareInfo, String> {
 pub async fn write_leads_csv_to_path(
     file_path: &std::path::Path,
     content: &str,
-) -> Result<(), String> {
+) -> Result<std::path::PathBuf, String> {
+    use tokio::io::AsyncWriteExt;
+
+    // 1. Validate file extension
     match file_path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("csv") => {}
         _ => return Err("Only .csv files can be exported".to_string()),
     }
 
-    if file_path.is_symlink() {
-        return Err("Export to symbolic links is not permitted".to_string());
-    }
+    // 2. Canonicalize parent directory asynchronously (resolves any parent symlinks/junctions/traversal)
+    let parent = match file_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
 
-    if let Some(parent) = file_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            return Err("Destination directory does not exist".to_string());
+    let canonical_parent = tokio::fs::canonicalize(parent).await.map_err(|e| {
+        format!(
+            "Destination directory does not exist or cannot be accessed: {}",
+            e
+        )
+    })?;
+
+    let file_name = file_path
+        .file_name()
+        .ok_or_else(|| "Invalid export file name".to_string())?;
+
+    let canonical_target = canonical_parent.join(file_name);
+
+    // 3. Reject if the target itself is an existing symlink/reparse point
+    if let Ok(metadata) = tokio::fs::symlink_metadata(&canonical_target).await {
+        if metadata.file_type().is_symlink() {
+            return Err("Export to symbolic links is not permitted".to_string());
         }
     }
 
-    tokio::fs::write(file_path, content.as_bytes())
+    // 4. Open and write asynchronously with O_NOFOLLOW on Unix to prevent TOCTOU race
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let mut file = options
+        .open(&canonical_target)
         .await
-        .map_err(|e| format!("Failed to save export file: {}", e))
+        .map_err(|e| format!("Failed to open export file for writing: {}", e))?;
+
+    file.write_all(content.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write export content: {}", e))?;
+
+    file.flush()
+        .await
+        .map_err(|e| format!("Failed to flush export file: {}", e))?;
+
+    Ok(canonical_target)
+}
+
+/// Helper that orchestrates dialog resolution and file writing, enabling unit testing of full command workflows
+pub async fn export_leads_csv_file_with_dialog<F>(
+    _default_filename: &str,
+    content: &str,
+    save_dialog_fn: F,
+) -> Result<Option<String>, String>
+where
+    F: FnOnce() -> Result<Option<std::path::PathBuf>, String> + Send + 'static,
+{
+    let selected_path = tokio::task::spawn_blocking(save_dialog_fn)
+        .await
+        .map_err(|e| format!("Dialog worker failed: {}", e))??;
+
+    let file_path = match selected_path {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    let final_path = write_leads_csv_to_path(&file_path, content).await?;
+
+    Ok(Some(final_path.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -5607,27 +5669,23 @@ pub async fn export_leads_csv_file(
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let selected_path = tokio::task::spawn_blocking(move || {
+    let default_name = default_filename.clone();
+    export_leads_csv_file_with_dialog(&default_filename, &content, move || {
         let mut builder = app.dialog().file();
-        if !default_filename.trim().is_empty() {
-            builder = builder.set_file_name(&default_filename);
+        if !default_name.trim().is_empty() {
+            builder = builder.set_file_name(&default_name);
         }
-        builder
+        let res = builder
             .add_filter("CSV File (*.csv)", &["csv"])
-            .blocking_save_file()
+            .blocking_save_file();
+
+        match res {
+            Some(fp) => fp
+                .into_path()
+                .map(Some)
+                .map_err(|e| format!("Invalid file path selected: {}", e)),
+            None => Ok(None),
+        }
     })
     .await
-    .map_err(|e| format!("Dialog worker failed: {}", e))?;
-
-    let file_path = match selected_path {
-        Some(fp) => match fp.into_path() {
-            Ok(p) => p,
-            Err(e) => return Err(format!("Invalid file path selected: {}", e)),
-        },
-        None => return Ok(None),
-    };
-
-    write_leads_csv_to_path(&file_path, &content).await?;
-
-    Ok(Some(file_path.to_string_lossy().into_owned()))
 }

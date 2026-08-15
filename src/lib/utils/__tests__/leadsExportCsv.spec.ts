@@ -132,8 +132,29 @@ describe('leadsExportCsv Utility', () => {
     expect(contactsFile).toMatch(/^RustSale_Contacts_\d{8}_\d{6}\.csv$/);
   });
 
-  test('isTauriEnvironment detects tauri runtime presence', () => {
-    expect(typeof isTauriEnvironment()).toBe('boolean');
+  test('isTauriEnvironment correctly discriminates Tauri vs browser runtime', () => {
+    const originalInternals = (window as any).__TAURI_INTERNALS__;
+    const originalTauri = (window as any).__TAURI__;
+
+    try {
+      // 1. When __TAURI_INTERNALS__ exists -> returns true
+      (window as any).__TAURI_INTERNALS__ = { plugins: {} };
+      (window as any).__TAURI__ = undefined;
+      expect(isTauriEnvironment()).toBe(true);
+
+      // 2. When __TAURI__ exists -> returns true
+      (window as any).__TAURI_INTERNALS__ = undefined;
+      (window as any).__TAURI__ = { transformCallback: () => {} };
+      expect(isTauriEnvironment()).toBe(true);
+
+      // 3. When neither exists -> returns false
+      (window as any).__TAURI_INTERNALS__ = undefined;
+      (window as any).__TAURI__ = undefined;
+      expect(isTauriEnvironment()).toBe(false);
+    } finally {
+      (window as any).__TAURI_INTERNALS__ = originalInternals;
+      (window as any).__TAURI__ = originalTauri;
+    }
   });
 });
 
