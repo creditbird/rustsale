@@ -1,13 +1,6 @@
-name: Google Maps Scraper
+name: CI & Quality Checks
 
 on:
-  push:
-    branches:
-      - master
-      - main
-    tags-ignore:
-      - 'v*'
-  pull_request:
   workflow_dispatch:
     inputs:
       run_runtime_smoke:
