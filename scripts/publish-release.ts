@@ -165,21 +165,28 @@ function scanForArtifacts(dir: string, platformKey: string) {
   }
 }
 
-// Determine macOS arch
-const isMac = process.platform === 'darwin';
-const macPlatformKey = process.arch === 'arm64' ? 'darwin-aarch64' : 'darwin-x86_64';
+// Check all possible bundle directories (including cross-compilation target triples)
+const targetDirs = [
+  resolve('src-tauri/target/release/bundle'),
+  resolve('src-tauri/target/x86_64-pc-windows-msvc/release/bundle'),
+  resolve('src-tauri/target/x86_64-unknown-linux-gnu/release/bundle'),
+  resolve('src-tauri/target/aarch64-apple-darwin/release/bundle'),
+  resolve('src-tauri/target/x86_64-apple-darwin/release/bundle'),
+];
 
-// Windows
-scanForArtifacts(join(bundleDir, 'nsis'), 'windows-x86_64');
-scanForArtifacts(join(bundleDir, 'msi'), 'windows-x86_64');
+for (const bDir of targetDirs) {
+  // Windows
+  scanForArtifacts(join(bDir, 'nsis'), 'windows-x86_64');
+  scanForArtifacts(join(bDir, 'msi'), 'windows-x86_64');
 
-// Linux
-scanForArtifacts(join(bundleDir, 'appimage'), 'linux-x86_64');
-scanForArtifacts(join(bundleDir, 'deb'), 'linux-x86_64');
+  // Linux
+  scanForArtifacts(join(bDir, 'appimage'), 'linux-x86_64');
+  scanForArtifacts(join(bDir, 'deb'), 'linux-x86_64');
 
-// macOS
-scanForArtifacts(join(bundleDir, 'dmg'), macPlatformKey);
-scanForArtifacts(join(bundleDir, 'macos'), macPlatformKey);
+  // macOS
+  scanForArtifacts(join(bDir, 'dmg'), macPlatformKey);
+  scanForArtifacts(join(bDir, 'macos'), macPlatformKey);
+}
 
 // Fetch and merge existing platforms from R2 if same version
 let mergedPlatforms = { ...platforms };
