@@ -35,9 +35,6 @@ jobs:
           - os: macos-14
             platform: darwin-aarch64
             target: aarch64-apple-darwin
-          - os: macos-13
-            platform: darwin-x86_64
-            target: x86_64-apple-darwin
 
     steps:
       - name: Checkout repository
