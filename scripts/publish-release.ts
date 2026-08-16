@@ -83,10 +83,14 @@ if (!skipBuild) {
   }
 
   console.log(`\n📦 [2/4] Building and signing Tauri bundle with Ed25519 key...`);
+  const privateKeyContent = existsSync(privateKeyPath) ? readFileSync(privateKeyPath, 'utf8').trim() : (process.env.TAURI_SIGNING_PRIVATE_KEY || '');
   const envVars = {
     ...process.env,
+    TAURI_SIGNING_PRIVATE_KEY: privateKeyContent,
+    TAURI_PRIVATE_KEY: privateKeyContent,
     TAURI_SIGNING_PRIVATE_KEY_PATH: privateKeyPath,
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: privateKeyPassword,
+    TAURI_KEY_PASSWORD: privateKeyPassword,
   };
 
   const tauriBuild = Bun.spawnSync(['bunx', 'tauri', 'build'], {
@@ -150,13 +154,13 @@ function scanForArtifacts(dir: string, platformKey: string) {
         const sizeMb = (statSync(targetPath).size / 1024 / 1024).toFixed(2);
         console.log(`   ✅ ${platformKey}: ${targetFile} (${sizeMb} MB) [Signed]`);
       }
-    } else if (file.endsWith('.deb') || file.endsWith('.rpm')) {
+    } else if (file.endsWith('.deb') || file.endsWith('.rpm') || file.endsWith('.AppImage')) {
       const targetPath = join(dir, file);
       if (!statSync(targetPath).isDirectory()) {
         filesToUpload.push({
           path: targetPath,
           key: `v${version}/${file}`,
-          contentType: file.endsWith('.deb') ? 'application/vnd.debian.binary-package' : 'application/x-rpm',
+          contentType: file.endsWith('.deb') ? 'application/vnd.debian.binary-package' : file.endsWith('.rpm') ? 'application/x-rpm' : 'application/octet-stream',
         });
         const sizeMb = (statSync(targetPath).size / 1024 / 1024).toFixed(2);
         console.log(`   📦 Direct Installer (${platformKey}): ${file} (${sizeMb} MB)`);
@@ -167,14 +171,14 @@ function scanForArtifacts(dir: string, platformKey: string) {
 
 // Check all possible bundle directories (including cross-compilation target triples)
 const targetDirs = [
-  resolve('src-tauri/target/release/bundle'),
-  resolve('src-tauri/target/x86_64-pc-windows-msvc/release/bundle'),
-  resolve('src-tauri/target/x86_64-unknown-linux-gnu/release/bundle'),
-  resolve('src-tauri/target/aarch64-apple-darwin/release/bundle'),
-  resolve('src-tauri/target/x86_64-apple-darwin/release/bundle'),
+  { dir: resolve('src-tauri/target/release/bundle'), macKey: 'darwin-x86_64' },
+  { dir: resolve('src-tauri/target/x86_64-pc-windows-msvc/release/bundle'), macKey: 'darwin-x86_64' },
+  { dir: resolve('src-tauri/target/x86_64-unknown-linux-gnu/release/bundle'), macKey: 'darwin-x86_64' },
+  { dir: resolve('src-tauri/target/aarch64-apple-darwin/release/bundle'), macKey: 'darwin-aarch64' },
+  { dir: resolve('src-tauri/target/x86_64-apple-darwin/release/bundle'), macKey: 'darwin-x86_64' },
 ];
 
-for (const bDir of targetDirs) {
+for (const { dir: bDir, macKey } of targetDirs) {
   // Windows
   scanForArtifacts(join(bDir, 'nsis'), 'windows-x86_64');
   scanForArtifacts(join(bDir, 'msi'), 'windows-x86_64');
@@ -184,8 +188,8 @@ for (const bDir of targetDirs) {
   scanForArtifacts(join(bDir, 'deb'), 'linux-x86_64');
 
   // macOS
-  scanForArtifacts(join(bDir, 'dmg'), macPlatformKey);
-  scanForArtifacts(join(bDir, 'macos'), macPlatformKey);
+  scanForArtifacts(join(bDir, 'dmg'), macKey);
+  scanForArtifacts(join(bDir, 'macos'), macKey);
 }
 
 // Fetch and merge existing platforms from R2 if same version
