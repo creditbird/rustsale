@@ -88,11 +88,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ runner.temp }}/../.tauri/rustsale.key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
-          tagName: v${{ github.event.inputs.version || github.ref_name }}
-          releaseName: 'RustSale CRM v${{ github.event.inputs.version || github.ref_name }}'
-          releaseBody: ${{ github.event.inputs.notes || 'Automated release build' }}
+          tagName: ${{ startsWith(github.ref_name, 'v') && github.ref_name || format('v{0}', github.event.inputs.version || github.ref_name) }}
+          releaseName: ${{ startsWith(github.ref_name, 'v') && github.ref_name || format('v{0}', github.event.inputs.version || github.ref_name) }}
+          releaseBody: ${{ github.event.inputs.notes || 'Bản phát hành cập nhật cho RustSale CRM' }}
           releaseDraft: false
           prerelease: false
+          args: ${{ matrix.platform == 'linux-x86_64' && '--bundles deb' || '' }}
 
       - name: Upload to Cloudflare R2
         shell: bash
