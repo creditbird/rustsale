@@ -94,7 +94,15 @@ if (!skipBuild) {
     TAURI_KEY_PASSWORD: privateKeyPassword,
   };
 
-  const tauriBuild = Bun.spawnSync(['bunx', 'tauri', 'build'], {
+  const tauriBuildArgs = ['bunx', 'tauri', 'build'];
+  const bundleArg = getArg('--bundles', '-b');
+  if (bundleArg) {
+    tauriBuildArgs.push('--bundles', bundleArg);
+  } else if (process.platform === 'linux') {
+    tauriBuildArgs.push('--bundles', 'deb');
+  }
+
+  const tauriBuild = Bun.spawnSync(tauriBuildArgs, {
     stdout: 'inherit',
     stderr: 'inherit',
     env: envVars,

@@ -1,6 +1,11 @@
 {
-  "version": "0.1.2",
-  "notes": "Phiên bản v0.1.2: Cập nhật tính năng và cải thiện hiệu năng cho RustSale CRM.",
-  "pub_date": "2026-08-16T14:54:44.202Z",
-  "platforms": {}
+  "version": "0.1.3",
+  "notes": "Bản phát hành v0.1.3 - Cải thiện tính năng và kích hoạt auto-update R2",
+  "pub_date": "2026-08-16T15:15:17.548Z",
+  "platforms": {
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHl6NVc4ZG81RkJqMHlNNFdjMElleXR4SXptY091dlI3bmNSZUh5a0JWQTE2dEZZSVBFYU5BNW13dlp4Sk52cm1iMzZJSXlEOUFhQnRDZGhNOWphYlFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2ODkzMzAyCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4zX2FtZDY0LmRlYgpPRW9KN3dZRE8vS3l6V0p1dWRsamtsZ3h5cG52N2lJQ2gya091YjZqMEZxKzBsdENSU3phRjJRaXRMa2kzWm83NFJLeUgvWlU0VnE2YkpCTUVjQVhDUT09Cg==",
+      "url": "https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev/v0.1.3/RustSale%20CRM_0.1.3_amd64.deb"
+    }
+  }
 }
