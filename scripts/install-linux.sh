@@ -55,13 +55,13 @@ fi
 echo -e "${GREEN}✅ Tìm thấy phiên bản:${RESET} ${BOLD}v${VERSION}${RESET}"
 
 # 3. Download package
-DEB_URL="${BASE_URL}/v${VERSION}/RustSale.CRM_${VERSION}_amd64.deb"
+DEB_URL="${BASE_URL}/v${VERSION}/RustSale%20CRM_${VERSION}_amd64.deb"
 DEB_FILE="${TMP_DIR}/rustsale.deb"
 
 echo -e "${CYAN}📥 Đang tải RustSale CRM v${VERSION} (~50MB)...${RESET}"
 if ! curl -# -fSL "$DEB_URL" -o "$DEB_FILE"; then
-  # Fallback to alternate naming if needed
-  DEB_URL="${BASE_URL}/v${VERSION}/RustSale%20CRM_${VERSION}_amd64.deb"
+  # Fallback to dot naming if needed
+  DEB_URL="${BASE_URL}/v${VERSION}/RustSale.CRM_${VERSION}_amd64.deb"
   curl -# -fSL "$DEB_URL" -o "$DEB_FILE" || {
     echo -e "${RED}❌ Không thể tải bộ cài đặt từ $DEB_URL${RESET}"
     exit 1
@@ -85,17 +85,29 @@ fi
 DATA_TAR=$(ls data.tar.* 2>/dev/null | head -1 || true)
 INSTALL_PREFIX="$HOME/.local"
 
+copy_extracted_files() {
+  local src_root="$1"
+  mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/share/applications" "$INSTALL_PREFIX/share/icons"
+  if [ -d "$src_root/usr/bin" ]; then
+    for bin in "$src_root/usr/bin/"*; do
+      if [ -f "$bin" ]; then
+        install -m 755 "$bin" "$INSTALL_PREFIX/bin/$(basename "$bin")"
+      fi
+    done
+  fi
+  if [ -d "$src_root/usr/share/icons" ]; then
+    cp -r -f --remove-destination "$src_root/usr/share/icons/"* "$INSTALL_PREFIX/share/icons/" 2>/dev/null || true
+  fi
+  if [ -d "$src_root/usr/share/applications" ]; then
+    cp -r -f --remove-destination "$src_root/usr/share/applications/"* "$INSTALL_PREFIX/share/applications/" 2>/dev/null || true
+  fi
+}
+
 if [ -n "$DATA_TAR" ]; then
   tar -xf "$DATA_TAR" -C "$TMP_DIR"
-  mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/share/applications" "$INSTALL_PREFIX/share/icons"
-  cp -r "$TMP_DIR/usr/bin/"* "$INSTALL_PREFIX/bin/"
-  cp -r "$TMP_DIR/usr/share/icons/"* "$INSTALL_PREFIX/share/icons/" 2>/dev/null || true
-  cp -r "$TMP_DIR/usr/share/applications/"* "$INSTALL_PREFIX/share/applications/" 2>/dev/null || true
+  copy_extracted_files "$TMP_DIR"
 elif [ -d "$TMP_DIR/extracted" ]; then
-  mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/share/applications" "$INSTALL_PREFIX/share/icons"
-  cp -r "$TMP_DIR/extracted/usr/bin/"* "$INSTALL_PREFIX/bin/"
-  cp -r "$TMP_DIR/extracted/usr/share/icons/"* "$INSTALL_PREFIX/share/icons/" 2>/dev/null || true
-  cp -r "$TMP_DIR/extracted/usr/share/applications/"* "$INSTALL_PREFIX/share/applications/" 2>/dev/null || true
+  copy_extracted_files "$TMP_DIR/extracted"
 else
   echo -e "${RED}❌ Lỗi: Không thể trích xuất file cài đặt.${RESET}"
   exit 1

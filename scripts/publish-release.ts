@@ -311,6 +311,23 @@ await s3.send(
 );
 console.log(`   ✅ Succeeded: latest.json`);
 
+// Upload install-linux.sh installer script
+const installScriptPath = resolve('scripts/install-linux.sh');
+if (existsSync(installScriptPath)) {
+  const installScriptBody = readFileSync(installScriptPath);
+  console.log(`   📤 Uploading install-linux.sh (root)...`);
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucketName,
+      Key: 'install-linux.sh',
+      Body: installScriptBody,
+      ContentType: 'text/x-shellscript',
+      CacheControl: 'no-cache, no-store, must-revalidate',
+    })
+  );
+  console.log(`   ✅ Succeeded: install-linux.sh`);
+}
+
 // 5. Verification
 console.log(`\n======================================================`);
 console.log(`🎉 PHÁT HÀNH BẢN V${version} LÊN CLOUDFLARE R2 THÀNH CÔNG!`);
