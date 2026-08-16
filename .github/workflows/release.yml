@@ -81,12 +81,28 @@ jobs:
           echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > ~/.tauri/rustsale.key
           chmod 600 ~/.tauri/rustsale.key || true
 
+      - name: Setup .env for Frontend Build
+        shell: bash
+        run: |
+          cat << 'EOF' > .env
+          VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_VIETQR_BANK_ID=${{ vars.VITE_VIETQR_BANK_ID || 'ICB' }}
+          VITE_VIETQR_ACCOUNT_NO=${{ vars.VITE_VIETQR_ACCOUNT_NO || '101874355801' }}
+          VITE_VIETQR_ACCOUNT_NAME=${{ vars.VITE_VIETQR_ACCOUNT_NAME || 'TRAN TRONG TRI' }}
+          EOF
+
       - name: Build Tauri Desktop App & Sign
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ runner.temp }}/../.tauri/rustsale.key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_VIETQR_BANK_ID: ${{ vars.VITE_VIETQR_BANK_ID || 'ICB' }}
+          VITE_VIETQR_ACCOUNT_NO: ${{ vars.VITE_VIETQR_ACCOUNT_NO || '101874355801' }}
+          VITE_VIETQR_ACCOUNT_NAME: ${{ vars.VITE_VIETQR_ACCOUNT_NAME || 'TRAN TRONG TRI' }}
         with:
           tagName: ${{ startsWith(github.ref_name, 'v') && github.ref_name || format('v{0}', github.event.inputs.version || github.ref_name) }}
           releaseName: ${{ startsWith(github.ref_name, 'v') && github.ref_name || format('v{0}', github.event.inputs.version || github.ref_name) }}
