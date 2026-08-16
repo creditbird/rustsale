@@ -1,15 +1,15 @@
 {
   "version": "0.1.3",
   "notes": "Phiên bản v0.1.3: Cập nhật tính năng và cải thiện hiệu năng cho RustSale CRM.",
-  "pub_date": "2026-08-16T15:28:27.920Z",
+  "pub_date": "2026-08-16T16:07:21.110Z",
   "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDlNRzVmY0dwMTNRYUJUVWEzbFJ6aVVMK21VZittVGlPTEdpUWw5RHN6aWd3YXpMTFBxVHEvcWtvT253MWMwbkppMUZnVU9GM0FyUzlsMXIrSkEwK1FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2ODk0ODkzCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4zX3g2NF9lbi1VUy5tc2kKbTlEZXhOWU80K3p0ZXlJL25NSktrMExRcE1PSk82VzhrT2trdWdQTXI2STRvMDJldURobVp2cjMxL0x6S1RCTGg2UjZ5aXQ3dk1sTFJabVV0cGJDQVE9PQo=",
+      "url": "https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev/v0.1.3/RustSale%20CRM_0.1.3_x64_en-US.msi"
+    },
     "linux-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHl6NVc4ZG81RkJqMHlNNFdjMElleXR4SXptY091dlI3bmNSZUh5a0JWQTE2dEZZSVBFYU5BNW13dlp4Sk52cm1iMzZJSXlEOUFhQnRDZGhNOWphYlFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2ODkzMzAyCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4zX2FtZDY0LmRlYgpPRW9KN3dZRE8vS3l6V0p1dWRsamtsZ3h5cG52N2lJQ2gya091YjZqMEZxKzBsdENSU3phRjJRaXRMa2kzWm83NFJLeUgvWlU0VnE2YkpCTUVjQVhDUT09Cg==",
-      "url": "https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev/v0.1.3/RustSale%20CRM_0.1.3_amd64.deb"
-    },
-    "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDNwTk1FdTAvMktScjlJYlpJT3FwKzlZaDJSS0Fwd000VVo3TmRFT3ZmeTNYOHJoRTQzTHFFVUNSOC9Ba2VDbHNPNHBrbWZNZEx6MVM1OEZtczIrMnc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2ODkzOTAwCWZpbGU6UnVzdFNhbGUgQ1JNLmFwcC50YXIuZ3oKdFduRWZQM3UzdGF4SGlRZUkxenRIVmVLSVhTcXhhTTVxY1BZTWoyeG02VXpvdS9RUlpnamtDUDJCeTJxb3owZmJPRElUb01uMHNtTnF5UXZmcU1oQlE9PQo=",
-      "url": "https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev/v0.1.3/RustSale%20CRM.app.tar.gz"
+      "url": "https://rustsale.trantrongtri.com/v0.1.3/RustSale%20CRM_0.1.3_amd64.deb"
     }
   }
 }

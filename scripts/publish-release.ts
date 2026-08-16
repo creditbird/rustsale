@@ -52,7 +52,7 @@ const notes = requestedNotes || defaultNotes;
 
 const privateKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH || resolve(process.env.HOME || '~', '.tauri/rustsale.key');
 const privateKeyPassword = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '';
-const publicUrl = process.env.R2_PUBLIC_URL || 'https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev';
+const publicUrl = process.env.R2_PUBLIC_URL || 'https://rustsale.trantrongtri.com';
 const bucketName = process.env.R2_BUCKET_NAME || 'rustsale-releases';
 const endpoint = process.env.R2_ENDPOINT || 'https://94af112d3d793eb10ab906f0bf8254cd.r2.cloudflarestorage.com';
 const accessKeyId = process.env.R2_ACCESS_KEY_ID;

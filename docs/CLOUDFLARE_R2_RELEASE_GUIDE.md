@@ -8,7 +8,8 @@ Tài liệu này hướng dẫn toàn bộ quy trình phát hành bản cập nh
 
 - **Backend / Tauri:** `tauri-plugin-updater` xác thực chữ ký mã hóa Ed25519 trước khi tải và cài đặt.
 - **Frontend / Svelte 5:** `updaterService.ts` quản lý kiểm tra nền, thanh tiến trình tải (`%`), và hộp thoại cập nhật `UpdateModal.svelte`.
-- **Hạ tầng phân phối:** **Cloudflare R2 Bucket** (`rustsale-releases` qua CDN `pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev`).
+- **Hạ tầng phân phối:** **Cloudflare R2 Bucket** (`rustsale-releases` qua CDN `rustsale.trantrongtri.com`).
+- **Endpoint Manifest:** `https://rustsale.trantrongtri.com/latest.json`.
 
 ---
 

@@ -283,6 +283,44 @@ class UpdaterStore {
     } catch (err: any) {
       const errorMsg = err?.message || String(err) || 'Lỗi trong quá trình tải bản cập nhật.';
       console.error('[Updater] Download & install failed:', err);
+
+      // Smart Fallback for Linux (Arch, CachyOS, Fedora, openSUSE, portable user installs)
+      const isLinux = typeof navigator !== 'undefined' && /linux/i.test(navigator.userAgent || '');
+      const isPackageInstallFailure =
+        errorMsg.includes('Failed to install package') ||
+        errorMsg.includes('dpkg') ||
+        errorMsg.includes('command not found') ||
+        errorMsg.includes('permission denied');
+
+      if (isTauri() && (isLinux || isPackageInstallFailure) && this.state.availableVersion) {
+        console.log('[Updater] Native installer failed or non-Debian Linux detected. Triggering Smart In-App Portable Updater fallback...');
+        try {
+          this.state.status = 'downloading';
+          this.state.errorMessage = null;
+          this.state.progress = { downloaded: 50, total: 100, percentage: 50 };
+          this.notify();
+
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('install_portable_linux_update', {
+            version: this.state.availableVersion,
+          });
+
+          this.state.status = 'downloaded';
+          this.state.progress = { downloaded: 100, total: 100, percentage: 100 };
+          this.notify();
+          toast.success('Đã tự động cập nhật bản mới thành công! Khởi động lại ứng dụng để áp dụng.');
+          return;
+        } catch (fallbackErr: any) {
+          const fallbackMsg = fallbackErr?.message || String(fallbackErr) || errorMsg;
+          console.error('[Updater] Portable fallback failed:', fallbackErr);
+          this.state.status = 'error';
+          this.state.errorMessage = fallbackMsg;
+          this.notify();
+          toast.error(`Cập nhật thất bại: ${fallbackMsg}`);
+          return;
+        }
+      }
+
       this.state.status = 'error';
       this.state.errorMessage = errorMsg;
       this.notify();

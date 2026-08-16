@@ -24,7 +24,7 @@
 >   - Re-upload existing build without rebuild: `./scripts/release.sh --skip-build --notes "Updated notes"`
 >   - Dry run test: `./scripts/release.sh --dry-run`
 > • **Keys & Security**: Signing private key is at `~/.tauri/rustsale.key`. Public key is embedded in `src-tauri/tauri.conf.json`.
-> • **Storage & CDN**: Cloudflare R2 bucket `rustsale-releases` (public manifest: `https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev/latest.json`).
+> • **Storage & CDN**: Cloudflare R2 bucket `rustsale-releases` (public manifest: `https://rustsale.trantrongtri.com/latest.json`).
 > • **Guide**: See [`docs/CLOUDFLARE_R2_RELEASE_GUIDE.md`](docs/CLOUDFLARE_R2_RELEASE_GUIDE.md).
 
 ***

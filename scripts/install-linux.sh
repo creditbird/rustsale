@@ -5,7 +5,7 @@ set -e
 # RustSale CRM - Universal Linux One-Line Installer
 # ==============================================================================
 # Usage:
-#   curl -fsSL https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev/install-linux.sh | bash
+#   curl -fsSL https://rustsale.trantrongtri.com/install-linux.sh | bash
 # ==============================================================================
 
 BOLD="\033[1m"
@@ -40,7 +40,7 @@ for tool in curl tar; do
   fi
 done
 
-BASE_URL="https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev"
+BASE_URL="https://rustsale.trantrongtri.com"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 

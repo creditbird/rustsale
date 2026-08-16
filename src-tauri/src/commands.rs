@@ -6068,3 +6068,173 @@ pub async fn export_leads_csv_file<R: tauri::Runtime>(
     })
     .await
 }
+
+#[tauri::command]
+pub async fn install_portable_linux_update(version: String) -> Result<bool, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = version;
+        return Err("Portable Linux update is only supported on Linux".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let clean_version = version.trim().trim_start_matches('v');
+        let download_url = format!(
+            "https://rustsale.trantrongtri.com/v{}/RustSale%20CRM_{}_amd64.deb",
+            clean_version, clean_version
+        );
+
+        let random_suffix: u64 = rand::random();
+        let temp_dir = std::env::temp_dir().join(format!("rustsale-update-{}", random_suffix));
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| format!("Không thể tạo thư mục tạm: {}", e))?;
+
+        let deb_path = temp_dir.join("rustsale.deb");
+
+        // 1. Download package
+        let response = reqwest::get(&download_url)
+            .await
+            .map_err(|e| format!("Không thể tải bản cập nhật: {}", e))?;
+
+        if !response.status().is_success() {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(format!("Tải bản cập nhật thất bại (HTTP {})", response.status()));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("Không thể đọc nội dung file: {}", e))?;
+
+        std::fs::write(&deb_path, bytes)
+            .map_err(|e| format!("Không thể ghi file cập nhật: {}", e))?;
+
+        // 2. Extract package
+        let extracted_dir = temp_dir.join("extracted");
+        std::fs::create_dir_all(&extracted_dir).map_err(|e| e.to_string())?;
+
+        let mut extracted = false;
+
+        // Try 'ar x'
+        if std::process::Command::new("ar")
+            .args(["x", deb_path.to_str().unwrap_or("")])
+            .current_dir(&temp_dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("data.tar") {
+                        let res = std::process::Command::new("tar")
+                            .args(["-xf", &name, "-C", extracted_dir.to_str().unwrap_or("")])
+                            .current_dir(&temp_dir)
+                            .status();
+                        if res.map(|s| s.success()).unwrap_or(false) {
+                            extracted = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: 7z
+        if !extracted {
+            if std::process::Command::new("7z")
+                .args(["x", deb_path.to_str().unwrap_or(""), "-y"])
+                .current_dir(&temp_dir)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with("data.tar") {
+                            let _ = std::process::Command::new("7z")
+                                .args(["x", &name, &format!("-o{}", extracted_dir.to_str().unwrap_or("")), "-y"])
+                                .current_dir(&temp_dir)
+                                .status();
+                            extracted = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: dpkg-deb
+        if !extracted {
+            if std::process::Command::new("dpkg-deb")
+                .args(["-x", deb_path.to_str().unwrap_or(""), extracted_dir.to_str().unwrap_or("")])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                extracted = true;
+            }
+        }
+
+        if !extracted {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err("Không thể giải nén gói cập nhật (cần 'ar', '7z' hoặc 'dpkg-deb')".to_string());
+        }
+
+        // 3. Install binaries & icons
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let local_bin = std::path::PathBuf::from(&home).join(".local/bin");
+        let local_apps = std::path::PathBuf::from(&home).join(".local/share/applications");
+        let local_icons = std::path::PathBuf::from(&home).join(".local/share/icons");
+        let _ = std::fs::create_dir_all(&local_bin);
+        let _ = std::fs::create_dir_all(&local_apps);
+        let _ = std::fs::create_dir_all(&local_icons);
+
+        let src_bin_dir = extracted_dir.join("usr/bin");
+        if src_bin_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&src_bin_dir) {
+                for entry in entries.flatten() {
+                    let file_path = entry.path();
+                    if file_path.is_file() {
+                        let file_name = entry.file_name();
+                        let target_path = local_bin.join(&file_name);
+
+                        // Use install -m 755 to safely overwrite running executable
+                        let _ = std::process::Command::new("install")
+                            .args(["-m", "755", file_path.to_str().unwrap_or(""), target_path.to_str().unwrap_or("")])
+                            .status();
+
+                        // Also update current executable path if different and writable
+                        if let Ok(current_exe) = std::env::current_exe() {
+                            if current_exe.file_name() == Some(&file_name) && current_exe != target_path {
+                                let _ = std::process::Command::new("install")
+                                    .args(["-m", "755", file_path.to_str().unwrap_or(""), current_exe.to_str().unwrap_or("")])
+                                    .status();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let src_icons = extracted_dir.join("usr/share/icons");
+        if src_icons.exists() {
+            let _ = std::process::Command::new("cp")
+                .args(["-r", "-f", "--remove-destination", src_icons.to_str().unwrap_or(""), local_icons.to_str().unwrap_or("")])
+                .status();
+        }
+        let src_apps = extracted_dir.join("usr/share/applications");
+        if src_apps.exists() {
+            let _ = std::process::Command::new("cp")
+                .args(["-r", "-f", "--remove-destination", src_apps.to_str().unwrap_or(""), local_apps.to_str().unwrap_or("")])
+                .status();
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        Ok(true)
+    }
+}
