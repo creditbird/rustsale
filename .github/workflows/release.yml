@@ -63,7 +63,8 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            libfuse2
 
       - name: Install dependencies
         run: bun install
@@ -106,7 +107,7 @@ jobs:
           releaseBody: ${{ github.event.inputs.notes || 'Bản phát hành cập nhật cho RustSale CRM' }}
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.platform == 'linux-x86_64' && '--bundles deb' || '' }}
+          args: ${{ matrix.platform == 'linux-x86_64' && '--bundles deb,appimage' || '' }}
 
       - name: Upload to Cloudflare R2
         shell: bash

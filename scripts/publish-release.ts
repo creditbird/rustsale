@@ -18,7 +18,8 @@ function getArg(flag: string, alias?: string): string | null {
 }
 const hasFlag = (flag: string) => args.includes(flag);
 
-const requestedVersion = getArg('--version', '-v');
+const rawRequestedVersion = getArg('--version', '-v') || process.env.RELEASE_VERSION;
+const requestedVersion = rawRequestedVersion ? rawRequestedVersion.replace(/^v/, '') : null;
 const requestedNotes = getArg('--notes', '-n') || process.env.RELEASE_NOTES;
 const skipBuild = hasFlag('--skip-build');
 const dryRun = hasFlag('--dry-run');
@@ -109,9 +110,14 @@ if (!skipBuild) {
 
 // 3. Scan & Sign Artifacts
 console.log(`\n🔍 [3/4] Scanning release artifacts & signatures...`);
-const bundleDir = resolve('src-tauri/target/release/bundle');
 const platforms: Record<string, { signature: string; url: string }> = {};
 const filesToUpload: Array<{ path: string; key: string; contentType: string }> = [];
+
+function addUploadFile(filePath: string, key: string, contentType: string) {
+  if (!filesToUpload.some(f => f.key === key)) {
+    filesToUpload.push({ path: filePath, key, contentType });
+  }
+}
 
 function scanForArtifacts(dir: string, platformKey: string) {
   if (!existsSync(dir)) return;
@@ -125,7 +131,7 @@ function scanForArtifacts(dir: string, platformKey: string) {
 
       if (existsSync(targetPath)) {
         const signature = readFileSync(sigPath, 'utf8').trim();
-        const downloadUrl = `${publicUrl.replace(/\/$/, '')}/v${version}/${basename(targetFile)}`;
+        const downloadUrl = `${publicUrl.replace(/\/$/, '')}/v${version}/${encodeURIComponent(basename(targetFile))}`;
         platforms[platformKey] = {
           signature,
           url: downloadUrl,
@@ -133,45 +139,70 @@ function scanForArtifacts(dir: string, platformKey: string) {
         const isExe = targetFile.endsWith('.exe');
         const isMsi = targetFile.endsWith('.msi');
         const isZip = targetFile.endsWith('.zip');
+        const isTarGz = targetFile.endsWith('.tar.gz');
+        const isDeb = targetFile.endsWith('.deb');
+        const isAppImage = targetFile.endsWith('.AppImage');
         const contentType = isExe
           ? 'application/vnd.microsoft.portable-executable'
           : isMsi
           ? 'application/x-msi'
           : isZip
           ? 'application/zip'
+          : isTarGz
+          ? 'application/gzip'
+          : isDeb
+          ? 'application/vnd.debian.binary-package'
+          : isAppImage
+          ? 'application/vnd.appimage'
           : 'application/octet-stream';
 
-        filesToUpload.push({
-          path: targetPath,
-          key: `v${version}/${basename(targetFile)}`,
-          contentType,
-        });
-        filesToUpload.push({
-          path: sigPath,
-          key: `v${version}/${file}`,
-          contentType: 'text/plain',
-        });
+        addUploadFile(targetPath, `v${version}/${basename(targetFile)}`, contentType);
+        addUploadFile(sigPath, `v${version}/${file}`, 'text/plain');
         const sizeMb = (statSync(targetPath).size / 1024 / 1024).toFixed(2);
-        console.log(`   ✅ ${platformKey}: ${targetFile} (${sizeMb} MB) [Signed]`);
+        console.log(`   ✅ Updater Artifact [${platformKey}]: ${targetFile} (${sizeMb} MB) [Signed]`);
       }
-    } else if (file.endsWith('.deb') || file.endsWith('.rpm') || file.endsWith('.AppImage')) {
+    } else if (
+      file.endsWith('.deb') ||
+      file.endsWith('.rpm') ||
+      file.endsWith('.AppImage') ||
+      file.endsWith('.exe') ||
+      file.endsWith('.msi') ||
+      file.endsWith('.dmg')
+    ) {
       const targetPath = join(dir, file);
       if (!statSync(targetPath).isDirectory()) {
-        filesToUpload.push({
-          path: targetPath,
-          key: `v${version}/${file}`,
-          contentType: file.endsWith('.deb') ? 'application/vnd.debian.binary-package' : file.endsWith('.rpm') ? 'application/x-rpm' : 'application/octet-stream',
-        });
+        const isExe = file.endsWith('.exe');
+        const isMsi = file.endsWith('.msi');
+        const isDeb = file.endsWith('.deb');
+        const isRpm = file.endsWith('.rpm');
+        const isDmg = file.endsWith('.dmg');
+        const isAppImage = file.endsWith('.AppImage');
+        const contentType = isExe
+          ? 'application/vnd.microsoft.portable-executable'
+          : isMsi
+          ? 'application/x-msi'
+          : isDeb
+          ? 'application/vnd.debian.binary-package'
+          : isRpm
+          ? 'application/x-rpm'
+          : isDmg
+          ? 'application/x-apple-diskimage'
+          : isAppImage
+          ? 'application/vnd.appimage'
+          : 'application/octet-stream';
+
+        addUploadFile(targetPath, `v${version}/${file}`, contentType);
         const sizeMb = (statSync(targetPath).size / 1024 / 1024).toFixed(2);
-        console.log(`   📦 Direct Installer (${platformKey}): ${file} (${sizeMb} MB)`);
+        console.log(`   📦 Standalone Installer [${platformKey}]: ${file} (${sizeMb} MB)`);
       }
     }
   }
 }
 
 // Check all possible bundle directories (including cross-compilation target triples)
+const currentArch = process.arch === 'arm64' ? 'darwin-aarch64' : 'darwin-x86_64';
 const targetDirs = [
-  { dir: resolve('src-tauri/target/release/bundle'), macKey: 'darwin-x86_64' },
+  { dir: resolve('src-tauri/target/release/bundle'), macKey: currentArch },
   { dir: resolve('src-tauri/target/x86_64-pc-windows-msvc/release/bundle'), macKey: 'darwin-x86_64' },
   { dir: resolve('src-tauri/target/x86_64-unknown-linux-gnu/release/bundle'), macKey: 'darwin-x86_64' },
   { dir: resolve('src-tauri/target/aarch64-apple-darwin/release/bundle'), macKey: 'darwin-aarch64' },
