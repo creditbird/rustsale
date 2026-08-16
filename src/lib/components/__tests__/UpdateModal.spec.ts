@@ -25,7 +25,7 @@ describe('UpdateModal component', () => {
 
   test('does not render dialog content when isModalOpen is false', () => {
     render(UpdateModal);
-    expect(document.body.textContent).not.toContain('Bản cập nhật mới');
+    expect(document.body.textContent).not.toContain('New Software Update');
   });
 
   test('renders update details when modal is open and update available', async () => {
@@ -39,10 +39,10 @@ describe('UpdateModal component', () => {
 
     render(UpdateModal);
 
-    expect(document.body.textContent).toContain('Bản cập nhật mới');
+    expect(document.body.textContent).toContain('New Software Update');
     expect(document.body.textContent).toContain('v0.2.0');
     expect(document.body.textContent).toContain('Fixed Google Maps scraper and sync issue.');
-    expect(document.body.textContent).toContain('Cập nhật ngay');
+    expect(document.body.textContent).toContain('Update Now');
   });
 
   test('shows downloading progress when status is downloading', async () => {
@@ -56,7 +56,7 @@ describe('UpdateModal component', () => {
 
     render(UpdateModal);
 
-    expect(document.body.textContent).toContain('Đang tải bản cập nhật...');
+    expect(document.body.textContent).toContain('Downloading update...');
     expect(document.body.textContent).toContain('50%');
   });
 });

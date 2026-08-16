@@ -33,7 +33,7 @@
   });
 
   async function handleManualCheck() {
-    lastCheckedTime = new Date().toLocaleTimeString('vi-VN', {
+    lastCheckedTime = new Date().toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit'
@@ -53,10 +53,10 @@
           </div>
           <div>
             <Card.Title class="text-base font-bold text-foreground">
-              Cập nhật phần mềm (Auto-Update)
+              Software Update (Auto-Update)
             </Card.Title>
             <Card.Description class="text-xs text-muted-foreground mt-0.5">
-              Hệ thống cập nhật bảo mật qua Cloudflare R2 CDN và mã hóa Ed25519.
+              Secure update system distributed via Cloudflare R2 CDN with Ed25519 signature encryption.
             </Card.Description>
           </div>
         </div>
@@ -70,7 +70,7 @@
             onclick={handleManualCheck}
           >
             <RefreshCw class="size-3.5 {updaterState.status === 'checking' ? 'animate-spin text-primary' : ''}" />
-            {updaterState.status === 'checking' ? 'Đang kiểm tra...' : 'Kiểm tra cập nhật'}
+            {updaterState.status === 'checking' ? 'Checking...' : 'Check for updates'}
           </Button>
         </div>
       </div>
@@ -80,15 +80,15 @@
       <!-- Status & Version Details -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div class="p-4 rounded-xl border border-border/70 bg-background/60 flex flex-col gap-1.5">
-          <span class="text-xs text-muted-foreground font-medium">Phiên bản hiện tại</span>
+          <span class="text-xs text-muted-foreground font-medium">Current Version</span>
           <div class="flex items-center gap-2">
             <span class="text-lg font-bold text-foreground">v{updaterState.currentVersion}</span>
-            <Badge variant="secondary" class="text-[10px] font-semibold">Bản cài đặt</Badge>
+            <Badge variant="secondary" class="text-[10px] font-semibold">Installed</Badge>
           </div>
         </div>
 
         <div class="p-4 rounded-xl border border-border/70 bg-background/60 flex flex-col gap-1.5">
-          <span class="text-xs text-muted-foreground font-medium">Kênh phân phối</span>
+          <span class="text-xs text-muted-foreground font-medium">Release Channel</span>
           <div class="flex items-center gap-2">
             <span class="text-sm font-semibold text-foreground flex items-center gap-1.5">
               <Cloud class="size-4 text-sky-500" /> Cloudflare R2
@@ -100,29 +100,29 @@
         </div>
 
         <div class="p-4 rounded-xl border border-border/70 bg-background/60 flex flex-col gap-1.5">
-          <span class="text-xs text-muted-foreground font-medium">Trạng thái cập nhật</span>
+          <span class="text-xs text-muted-foreground font-medium">Update Status</span>
           <div class="flex items-center gap-2">
             {#if updaterState.status === 'available'}
               <span class="text-sm font-bold text-primary flex items-center gap-1.5">
                 <span class="size-2 rounded-full bg-primary animate-ping"></span>
-                Có bản v{updaterState.availableVersion}
+                v{updaterState.availableVersion} available
               </span>
             {:else if updaterState.status === 'checking'}
               <span class="text-sm text-muted-foreground flex items-center gap-1.5">
-                <RefreshCw class="size-3.5 animate-spin" /> Đang kiểm tra...
+                <RefreshCw class="size-3.5 animate-spin" /> Checking...
               </span>
             {:else if updaterState.status === 'error'}
               <span class="text-sm font-medium text-destructive flex items-center gap-1.5">
-                <AlertCircle class="size-4" /> Lỗi kết nối
+                <AlertCircle class="size-4" /> Connection Error
               </span>
             {:else}
               <span class="text-sm font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                <CheckCircle2 class="size-4 text-emerald-600" /> Mới nhất
+                <CheckCircle2 class="size-4 text-emerald-600" /> Up to date
               </span>
             {/if}
           </div>
           {#if lastCheckedTime}
-            <span class="text-[10px] text-muted-foreground">Kiểm tra lúc: {lastCheckedTime}</span>
+            <span class="text-[10px] text-muted-foreground">Last checked: {lastCheckedTime}</span>
           {/if}
         </div>
       </div>
@@ -134,10 +134,10 @@
             <Sparkles class="size-5 text-primary shrink-0 mt-0.5" />
             <div>
               <span class="text-sm font-bold text-foreground">
-                Đã có bản cập nhật mới v{updaterState.availableVersion}
+                New version v{updaterState.availableVersion} is available
               </span>
               <p class="text-xs text-muted-foreground mt-0.5 line-clamp-1">
-                {updaterState.releaseNotes || 'Nhấn cập nhật để tải và cài đặt phiên bản mới nhất.'}
+                {updaterState.releaseNotes || 'Click update to download and install the latest version.'}
               </p>
             </div>
           </div>
@@ -147,7 +147,7 @@
             onclick={() => updaterService.openModal()}
           >
             <DownloadCloud class="size-4" />
-            Xem & Cài đặt
+            View & Install
           </Button>
         </div>
       {/if}
@@ -159,16 +159,16 @@
     <Card.Header class="bg-muted/10 border-b border-border/60 pb-3">
       <div class="flex items-center gap-2.5">
         <ShieldCheck class="size-4 text-emerald-600" />
-        <Card.Title class="text-sm font-semibold text-foreground">Bảo mật & Toàn vẹn dữ liệu</Card.Title>
+        <Card.Title class="text-sm font-semibold text-foreground">Security & Data Integrity</Card.Title>
       </div>
     </Card.Header>
     <Card.Content class="p-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs text-muted-foreground">
       <div class="flex items-start gap-3 p-3 rounded-lg bg-muted/20 border border-border/60">
         <ShieldCheck class="size-4 text-emerald-600 shrink-0 mt-0.5" />
         <div>
-          <span class="font-semibold text-foreground">Chữ ký số Ed25519</span>
+          <span class="font-semibold text-foreground">Ed25519 Digital Signature</span>
           <p class="mt-0.5 text-[11px] leading-relaxed">
-            Mọi bản cập nhật đều được kiểm tra chữ ký mã hóa trước khi cài đặt, đảm bảo chống giả mạo mã nguồn tuyệt đối.
+            Every update package is cryptographically verified before installation to ensure code authenticity.
           </p>
         </div>
       </div>
@@ -176,9 +176,9 @@
       <div class="flex items-start gap-3 p-3 rounded-lg bg-muted/20 border border-border/60">
         <HardDrive class="size-4 text-sky-600 shrink-0 mt-0.5" />
         <div>
-          <span class="font-semibold text-foreground">Bảo toàn SQLite Local DB</span>
+          <span class="font-semibold text-foreground">SQLite Local DB Preservation</span>
           <p class="mt-0.5 text-[11px] leading-relaxed">
-            Dữ liệu CRM, chiến dịch và cấu hình nằm trong thư mục người dùng riêng biệt, không bị ảnh hưởng khi nâng cấp app.
+            CRM data, campaigns, and configuration are stored in an isolated user directory and persist seamlessly across app updates.
           </p>
         </div>
       </div>

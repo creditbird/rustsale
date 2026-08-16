@@ -134,14 +134,14 @@ class UpdaterStore {
         this.activeUpdateHandle = this.mockAdapter;
         this.state.status = 'available';
         this.state.availableVersion = this.mockAdapter.version;
-        this.state.releaseNotes = this.mockAdapter.body || 'Bản cập nhật mới với nhiều cải tiến và vá lỗi.';
+        this.state.releaseNotes = this.mockAdapter.body || 'New update with performance improvements and bug fixes.';
         this.state.releaseDate = this.mockAdapter.date || new Date().toISOString();
         this.state.isModalOpen = true;
         this.notify();
         if (silent) {
-          toast.success(`Đã có phiên bản mới v${this.mockAdapter.version}!`, {
+          toast.success(`New version available: v${this.mockAdapter.version}!`, {
             action: {
-              label: 'Xem chi tiết',
+              label: 'View details',
               onClick: () => this.openModal(),
             },
           });
@@ -157,7 +157,7 @@ class UpdaterStore {
         this.state.availableVersion = null;
         this.notify();
         if (!silent) {
-          toast.success('Bạn đang sử dụng phiên bản mới nhất.');
+          toast.success('You are using the latest version.');
         }
         return null;
       }
@@ -168,7 +168,7 @@ class UpdaterStore {
       this.state.status = 'up-to-date';
       this.notify();
       if (!silent) {
-        toast.info('Bạn đang sử dụng phiên bản mới nhất (Môi trường Web/Dev).');
+        toast.info('You are using the latest version (Web/Dev environment).');
       }
       return null;
     }
@@ -181,15 +181,15 @@ class UpdaterStore {
         this.activeUpdateHandle = update;
         this.state.status = 'available';
         this.state.availableVersion = update.version;
-        this.state.releaseNotes = update.body || 'Bản cập nhật mới với nhiều cải tiến và vá lỗi.';
+        this.state.releaseNotes = update.body || 'New update with performance improvements and bug fixes.';
         this.state.releaseDate = update.date || new Date().toISOString();
         this.state.isModalOpen = true;
         this.notify();
 
         if (silent) {
-          toast.success(`Đã có phiên bản mới v${update.version}!`, {
+          toast.success(`New version available: v${update.version}!`, {
             action: {
-              label: 'Xem chi tiết',
+              label: 'View details',
               onClick: () => this.openModal(),
             },
           });
@@ -205,19 +205,19 @@ class UpdaterStore {
         this.state.availableVersion = null;
         this.notify();
         if (!silent) {
-          toast.success('Bạn đang sử dụng phiên bản mới nhất.');
+          toast.success('You are using the latest version.');
         }
         return null;
       }
     } catch (err: any) {
-      const errorMsg = err?.message || String(err) || 'Không thể kiểm tra bản cập nhật.';
+      const errorMsg = err?.message || String(err) || 'Unable to check for updates.';
       console.error('[Updater] Check failed:', err);
       this.state.status = 'error';
       this.state.errorMessage = errorMsg;
       this.notify();
 
       if (!silent) {
-        toast.error(`Lỗi kiểm tra cập nhật: ${errorMsg}`);
+        toast.error(`Update check failed: ${errorMsg}`);
       }
       return null;
     }
@@ -236,7 +236,7 @@ class UpdaterStore {
         this.notify();
         return;
       }
-      toast.error('Không tìm thấy thông tin bản cập nhật để tải về.');
+      toast.error('Update package information not found for download.');
       return;
     }
 
@@ -279,9 +279,9 @@ class UpdaterStore {
 
       this.state.status = 'downloaded';
       this.notify();
-      toast.success('Đã tải xong bản cập nhật! Khởi động lại ứng dụng để áp dụng.');
+      toast.success('Update downloaded successfully! Restart the application to apply.');
     } catch (err: any) {
-      const errorMsg = err?.message || String(err) || 'Lỗi trong quá trình tải bản cập nhật.';
+      const errorMsg = err?.message || String(err) || 'Error while downloading the update package.';
       console.error('[Updater] Download & install failed:', err);
 
       // Smart Fallback for Linux (Arch, CachyOS, Fedora, openSUSE, portable user installs)
@@ -308,7 +308,7 @@ class UpdaterStore {
           this.state.status = 'downloaded';
           this.state.progress = { downloaded: 100, total: 100, percentage: 100 };
           this.notify();
-          toast.success('Đã tự động cập nhật bản mới thành công! Khởi động lại ứng dụng để áp dụng.');
+          toast.success('Update installed successfully! Restart the application to apply.');
           return;
         } catch (fallbackErr: any) {
           const fallbackMsg = fallbackErr?.message || String(fallbackErr) || errorMsg;
@@ -316,7 +316,7 @@ class UpdaterStore {
           this.state.status = 'error';
           this.state.errorMessage = fallbackMsg;
           this.notify();
-          toast.error(`Cập nhật thất bại: ${fallbackMsg}`);
+          toast.error(`Update failed: ${fallbackMsg}`);
           return;
         }
       }
@@ -324,7 +324,7 @@ class UpdaterStore {
       this.state.status = 'error';
       this.state.errorMessage = errorMsg;
       this.notify();
-      toast.error(`Cập nhật thất bại: ${errorMsg}`);
+      toast.error(`Update failed: ${errorMsg}`);
     }
   }
 
@@ -338,7 +338,7 @@ class UpdaterStore {
         console.warn('[Updater] plugin-process relaunch failed:', err);
       }
     }
-    toast.info('Vui lòng khởi động lại ứng dụng thủ công.');
+    toast.info('Please restart the application manually.');
   }
 
   public setMockState(partial: Partial<UpdaterState>) {

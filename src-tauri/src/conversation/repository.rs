@@ -5229,7 +5229,7 @@ fn resolve_group_member_import_tx(
         identity_id: identity.0,
         external_id: identity.1,
         display_name: non_empty(identity.2.as_deref())
-            .unwrap_or_else(|| "Thành viên Zalo".to_string()),
+            .unwrap_or_else(|| "Zalo Member".to_string()),
         linked_lead_id: identity.3,
         phone,
     })

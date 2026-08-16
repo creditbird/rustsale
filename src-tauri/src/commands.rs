@@ -2401,7 +2401,7 @@ pub async fn send_zalo_outreach_internal(
                 && (idx + 1) < lead_ids.len()
             {
                 let msg = format!(
-                    "[Burst Limit] Đã gửi {} tin. Tạm dừng {} giây để tránh khóa tài khoản Zalo...",
+                    "[Burst Limit] Sent {} messages. Pausing {} seconds to protect Zalo account...",
                     burst_counter, burst_delay_seconds
                 );
                 if let Some(app) = app_handle {
@@ -2824,7 +2824,7 @@ pub async fn send_zalo_outreach_internal(
                     }
 
                     if should_rotate_zalo_session(&e) {
-                        let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần tra cứu/gửi tin ({:?}). Tạm dừng chiến dịch...", e);
+                        let rate_msg = format!("[Zalo Rate Limit Warning] Zalo lookup/message limit reached ({:?}). Pausing campaign...", e);
                         if let Some(app) = app_handle {
                             let _ = app.emit(
                                 "outreach-log",
@@ -3135,7 +3135,7 @@ pub async fn send_zalo_outreach_internal(
                 }
 
                 if should_rotate_zalo_session(&e) {
-                    let rate_msg = format!("[Cảnh báo Zalo Rate Limit] Zalo giới hạn số lần gửi tin ({:?}). Tạm dừng chiến dịch...", e);
+                    let rate_msg = format!("[Zalo Rate Limit Warning] Zalo message limit reached ({:?}). Pausing campaign...", e);
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "outreach-log",
@@ -3180,7 +3180,7 @@ pub async fn send_zalo_outreach_internal(
             && (idx + 1) < lead_ids.len()
         {
             let msg = format!(
-                "[Burst Limit] Đã gửi {} tin. Tạm dừng {} giây để tránh khóa tài khoản Zalo...",
+                "[Burst Limit] Sent {} messages. Pausing {} seconds to protect Zalo account...",
                 burst_counter, burst_delay_seconds
             );
             if let Some(app) = app_handle {
@@ -4865,7 +4865,7 @@ pub fn fetch_group_members_impl(
          SELECT
              ci.id,
              ci.external_id,
-             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Thành viên Zalo'),
+             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Zalo Member'),
              ci.avatar_url,
              COALESCE((
                  SELECT cp.participant_role
@@ -4884,7 +4884,7 @@ pub fn fetch_group_members_impl(
          WHERE ci.identity_rank = 1
          ORDER BY
              CASE participant_role WHEN 'admin' THEN 1 WHEN 'deputy' THEN 2 ELSE 3 END,
-             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Thành viên Zalo') ASC"
+             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Zalo Member') ASC"
     );
 
     let mut values = Vec::<Value>::with_capacity(external_ids.len() + 1);
@@ -6088,27 +6088,27 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
         let random_suffix: u64 = rand::random();
         let temp_dir = std::env::temp_dir().join(format!("rustsale-update-{}", random_suffix));
         std::fs::create_dir_all(&temp_dir)
-            .map_err(|e| format!("Không thể tạo thư mục tạm: {}", e))?;
+            .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
 
         let deb_path = temp_dir.join("rustsale.deb");
 
         // 1. Download package
         let response = reqwest::get(&download_url)
             .await
-            .map_err(|e| format!("Không thể tải bản cập nhật: {}", e))?;
+            .map_err(|e| format!("Failed to download update: {}", e))?;
 
         if !response.status().is_success() {
             let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err(format!("Tải bản cập nhật thất bại (HTTP {})", response.status()));
+            return Err(format!("Update download failed with HTTP {}", response.status()));
         }
 
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| format!("Không thể đọc nội dung file: {}", e))?;
+            .map_err(|e| format!("Failed to read update body: {}", e))?;
 
         std::fs::write(&deb_path, bytes)
-            .map_err(|e| format!("Không thể ghi file cập nhật: {}", e))?;
+            .map_err(|e| format!("Failed to write update package: {}", e))?;
 
         // 2. Extract package
         let extracted_dir = temp_dir.join("extracted");
@@ -6180,7 +6180,7 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
 
         if !extracted {
             let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err("Không thể giải nén gói cập nhật (cần 'ar', '7z' hoặc 'dpkg-deb')".to_string());
+            return Err("Failed to extract update package (requires 'ar', '7z', or 'dpkg-deb')".to_string());
         }
 
         // 3. Install binaries & icons

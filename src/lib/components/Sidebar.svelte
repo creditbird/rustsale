@@ -65,7 +65,7 @@
       <button
         type="button"
         onclick={() => updaterService.openModal()}
-        title="Đã có bản cập nhật mới v{updaterState.availableVersion}"
+        title="New update available: v{updaterState.availableVersion}"
         class="size-7 rounded-lg bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30 flex items-center justify-center transition-all animate-pulse shrink-0 cursor-pointer"
       >
         <Sparkles class="size-3.5" />
