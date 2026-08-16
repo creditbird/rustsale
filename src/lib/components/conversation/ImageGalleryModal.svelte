@@ -26,12 +26,24 @@
 
   let currentIndex = $state(0);
   let zoomScale = $state(1.0);
+  let panX = $state(0);
+  let panY = $state(0);
+  let isDragging = $state(false);
+
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let startPanX = 0;
+  let startPanY = 0;
+  let hasDragged = false;
   let lastOpen = false;
 
   $effect(() => {
     if (open && !lastOpen) {
       currentIndex = Math.max(0, Math.min(initialIndex, images.length - 1));
       zoomScale = 1.0;
+      panX = 0;
+      panY = 0;
+      isDragging = false;
     }
     lastOpen = open;
   });
@@ -44,6 +56,9 @@
     const newIdx = (currentIndex - 1 + totalImages) % totalImages;
     currentIndex = newIdx;
     zoomScale = 1.0;
+    panX = 0;
+    panY = 0;
+    isDragging = false;
     onIndexChange(newIdx);
   }
 
@@ -52,6 +67,9 @@
     const newIdx = (currentIndex + 1) % totalImages;
     currentIndex = newIdx;
     zoomScale = 1.0;
+    panX = 0;
+    panY = 0;
+    isDragging = false;
     onIndexChange(newIdx);
   }
 
@@ -59,19 +77,104 @@
     if (idx < 0 || idx >= totalImages) return;
     currentIndex = idx;
     zoomScale = 1.0;
+    panX = 0;
+    panY = 0;
+    isDragging = false;
     onIndexChange(idx);
   }
 
   function zoomIn() {
-    zoomScale = Math.min(3.0, Number((zoomScale + 0.25).toFixed(2)));
+    zoomScale = Math.min(5.0, Number((zoomScale + 0.25).toFixed(2)));
   }
 
   function zoomOut() {
-    zoomScale = Math.max(0.5, Number((zoomScale - 0.25).toFixed(2)));
+    const nextScale = Math.max(0.5, Number((zoomScale - 0.25).toFixed(2)));
+    zoomScale = nextScale;
+    if (nextScale <= 1.0) {
+      panX = 0;
+      panY = 0;
+    }
   }
 
   function resetZoom() {
     zoomScale = 1.0;
+    panX = 0;
+    panY = 0;
+    isDragging = false;
+  }
+
+  function handlePointerDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    if (zoomScale <= 1.0) return;
+    isDragging = true;
+    hasDragged = false;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    startPanX = panX;
+    startPanY = panY;
+
+    if (e.currentTarget && 'setPointerCapture' in e.currentTarget) {
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function handlePointerMove(e: PointerEvent) {
+    if (!isDragging) return;
+    const dx = e.clientX - dragStartX;
+    const dy = e.clientY - dragStartY;
+    if (Math.hypot(dx, dy) > 4) {
+      hasDragged = true;
+    }
+    panX = startPanX + dx;
+    panY = startPanY + dy;
+  }
+
+  function handlePointerUp(e: PointerEvent) {
+    if (!isDragging) return;
+    isDragging = false;
+    if (e.currentTarget && 'releasePointerCapture' in e.currentTarget) {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function handlePointerCancel(e: PointerEvent) {
+    if (!isDragging) return;
+    isDragging = false;
+    if (e.currentTarget && 'releasePointerCapture' in e.currentTarget) {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function handleWheel(e: WheelEvent) {
+    e.preventDefault();
+    if (e.deltaY < 0) {
+      zoomIn();
+    } else if (e.deltaY > 0) {
+      zoomOut();
+    }
+  }
+
+  function handleDoubleClick(e: MouseEvent) {
+    e.stopPropagation();
+    if (zoomScale > 1.0) {
+      resetZoom();
+    } else {
+      zoomScale = 2.0;
+      panX = 0;
+      panY = 0;
+    }
   }
 
   function downloadImage() {
@@ -96,10 +199,20 @@
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
       nextImage();
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      zoomIn();
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      zoomOut();
+    } else if (e.key === '0') {
+      e.preventDefault();
+      resetZoom();
     }
   }
 
   function handleBackdropClick(e: MouseEvent) {
+    if (hasDragged) return;
     if (e.target === e.currentTarget) {
       onClose();
     }
@@ -147,10 +260,14 @@
           <ZoomOut class="size-4" />
         </button>
 
+        <span class="text-xs font-mono px-2 py-1 bg-white/10 rounded-md text-white/80 select-none min-w-[3.5rem] text-center" data-testid="gallery-zoom-level">
+          {Math.round(zoomScale * 100)}%
+        </span>
+
         <button
           type="button"
           class="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors text-xs font-mono"
-          title="Reset zoom"
+          title="Reset zoom (0)"
           data-testid="gallery-zoom-reset-btn"
           onclick={resetZoom}
         >
@@ -192,7 +309,16 @@
     </div>
 
     <!-- Main image display area -->
-    <div class="relative flex-1 flex items-center justify-center overflow-hidden p-4 select-none" onclick={handleBackdropClick}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="relative flex-1 flex items-center justify-center overflow-hidden p-4 select-none {isDragging ? 'cursor-grabbing' : zoomScale > 1 ? 'cursor-grab' : ''}"
+      onclick={handleBackdropClick}
+      onwheel={handleWheel}
+      onpointerdown={handlePointerDown}
+      onpointermove={handlePointerMove}
+      onpointerup={handlePointerUp}
+      onpointercancel={handlePointerCancel}
+    >
       <!-- Prev Button -->
       {#if totalImages > 1}
         <button
@@ -200,6 +326,7 @@
           class="absolute left-6 z-10 p-3 rounded-full bg-black/50 hover:bg-black/80 border border-white/20 text-white transition-all hover:scale-105"
           title="Previous image (Left arrow)"
           data-testid="gallery-prev-btn"
+          onpointerdown={(e) => e.stopPropagation()}
           onclick={(e) => { e.stopPropagation(); prevImage(); }}
         >
           <ChevronLeft class="size-6" />
@@ -210,9 +337,12 @@
       <img
         src={currentImage.url}
         alt={currentImage.alt || 'Image preview'}
-        class="max-h-[82vh] max-w-[90vw] object-contain transition-transform duration-150 rounded-lg shadow-2xl"
-        style="transform: scale({zoomScale});"
+        class="max-h-[82vh] max-w-[90vw] object-contain rounded-lg shadow-2xl select-none {isDragging ? 'cursor-grabbing duration-0' : zoomScale > 1 ? 'cursor-grab transition-transform duration-150' : 'cursor-zoom-in transition-transform duration-150'}"
+        style="transform: translate({panX}px, {panY}px) scale({zoomScale}); touch-action: none;"
         data-testid="gallery-main-image"
+        draggable="false"
+        ondragstart={(e) => e.preventDefault()}
+        ondblclick={handleDoubleClick}
       />
 
       <!-- Next Button -->
@@ -222,6 +352,7 @@
           class="absolute right-6 z-10 p-3 rounded-full bg-black/50 hover:bg-black/80 border border-white/20 text-white transition-all hover:scale-105"
           title="Next image (Right arrow)"
           data-testid="gallery-next-btn"
+          onpointerdown={(e) => e.stopPropagation()}
           onclick={(e) => { e.stopPropagation(); nextImage(); }}
         >
           <ChevronRight class="size-6" />

@@ -155,4 +155,177 @@ describe('ImageGalleryModal Component', () => {
     await fireEvent.click(closeBtn);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('displays the current zoom percentage', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const zoomLevel = screen.getByTestId('gallery-zoom-level');
+    expect(zoomLevel.textContent?.trim()).toBe('100%');
+
+    const zoomInBtn = screen.getByTestId('gallery-zoom-in-btn');
+    await fireEvent.click(zoomInBtn);
+    expect(zoomLevel.textContent?.trim()).toBe('125%');
+  });
+
+  it('allows dragging/panning image when zoomed in', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const zoomInBtn = screen.getByTestId('gallery-zoom-in-btn');
+    await fireEvent.click(zoomInBtn); // zoomScale = 1.25
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+    const container = mainImg.parentElement!;
+
+    // Start dragging
+    await fireEvent.pointerDown(container, {
+      button: 0,
+      clientX: 100,
+      clientY: 100,
+      pointerId: 1
+    });
+
+    // Move pointer by dx=40, dy=60
+    await fireEvent.pointerMove(container, {
+      clientX: 140,
+      clientY: 160,
+      pointerId: 1
+    });
+
+    expect(mainImg.style.transform).toContain('translate(40px, 60px)');
+    expect(mainImg.style.transform).toContain('scale(1.25)');
+
+    // Release drag
+    await fireEvent.pointerUp(container, {
+      clientX: 140,
+      clientY: 160,
+      pointerId: 1
+    });
+  });
+
+  it('does not pan when zoomScale is 1.0', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+    const container = mainImg.parentElement!;
+
+    await fireEvent.pointerDown(container, {
+      button: 0,
+      clientX: 100,
+      clientY: 100,
+      pointerId: 1
+    });
+
+    await fireEvent.pointerMove(container, {
+      clientX: 140,
+      clientY: 160,
+      pointerId: 1
+    });
+
+    expect(mainImg.style.transform).toContain('translate(0px, 0px)');
+    expect(mainImg.style.transform).toContain('scale(1)');
+  });
+
+  it('toggles zoom on double-click', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+
+    // Double click to zoom to 2.0x
+    await fireEvent.dblClick(mainImg);
+    expect(mainImg.style.transform).toContain('scale(2)');
+
+    // Double click again to reset to 1.0x
+    await fireEvent.dblClick(mainImg);
+    expect(mainImg.style.transform).toContain('scale(1)');
+    expect(mainImg.style.transform).toContain('translate(0px, 0px)');
+  });
+
+  it('supports wheel zoom', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+    const container = mainImg.parentElement!;
+
+    // Wheel up (deltaY < 0) zooms in
+    await fireEvent.wheel(container, { deltaY: -100 });
+    expect(mainImg.style.transform).toContain('scale(1.25)');
+
+    // Wheel down (deltaY > 0) zooms out
+    await fireEvent.wheel(container, { deltaY: 100 });
+    expect(mainImg.style.transform).toContain('scale(1)');
+  });
+
+  it('supports keyboard zoom controls (+, -, 0)', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+
+    // Key + zooms in
+    await fireEvent.keyDown(window, { key: '+' });
+    expect(mainImg.style.transform).toContain('scale(1.25)');
+
+    // Key - zooms out
+    await fireEvent.keyDown(window, { key: '-' });
+    expect(mainImg.style.transform).toContain('scale(1)');
+
+    // Key = zooms in
+    await fireEvent.keyDown(window, { key: '=' });
+    expect(mainImg.style.transform).toContain('scale(1.25)');
+
+    // Key 0 resets zoom
+    await fireEvent.keyDown(window, { key: '0' });
+    expect(mainImg.style.transform).toContain('scale(1)');
+    expect(mainImg.style.transform).toContain('translate(0px, 0px)');
+  });
+
+  it('resets pan offset when navigating to another image', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const zoomInBtn = screen.getByTestId('gallery-zoom-in-btn');
+    await fireEvent.click(zoomInBtn);
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+    const container = mainImg.parentElement!;
+
+    await fireEvent.pointerDown(container, { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
+    await fireEvent.pointerMove(container, { clientX: 100, clientY: 100, pointerId: 1 });
+    await fireEvent.pointerUp(container, { clientX: 100, clientY: 100, pointerId: 1 });
+
+    expect(mainImg.style.transform).toContain('translate(50px, 50px)');
+
+    // Navigate to next
+    const nextBtn = screen.getByTestId('gallery-next-btn');
+    await fireEvent.click(nextBtn);
+
+    expect(mainImg.style.transform).toContain('translate(0px, 0px)');
+    expect(mainImg.style.transform).toContain('scale(1)');
+  });
 });
