@@ -84,6 +84,14 @@ Object.getOwnPropertyNames(dom.window).forEach((key) => {
   invoke: async (_cmd: string, _args: any) => []
 };
 
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as any;
+}
+
 // Polyfill svelte module for Bun test runner to use client implementation
 import { mock } from "bun:test";
 // @ts-ignore

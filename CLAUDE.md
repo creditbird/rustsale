@@ -10,14 +10,28 @@
 > [!IMPORTANT]
 > **MANDATORY IMPLEMENTATION HARNESS:** Before any task that creates, changes, fixes, refactors, migrates, or ships behavior, read and follow [`docs/IMPLEMENTATION_COMPLETION_HARNESS.md`](docs/IMPLEMENTATION_COMPLETION_HARNESS.md). Its requirement ledger, adversarial verification, evidence ladder, and Completion Lock control all implementation and remediation work. Do not claim completion while any lock condition remains open.
 
+# Release & Auto-Update Workflow (Cloudflare R2)
+
+> [!IMPORTANT]
+> **Always use the All-in-One release script to build and publish updates.**
+> • **Script**: `./scripts/release.sh` or `bun run release` (which runs `scripts/publish-release.ts`).
+> • **Usage examples**:
+>   - Bump version, build, and publish: `./scripts/release.sh --version 0.2.0 --notes "Changelog description"`
+>   - Publish current version: `./scripts/release.sh --notes "Hotfix description"`
+>   - Re-upload existing build without rebuild: `./scripts/release.sh --skip-build --notes "Updated notes"`
+>   - Dry run test: `./scripts/release.sh --dry-run`
+> • **Keys & Security**: Signing private key is at `~/.tauri/rustsale.key`. Public key is embedded in `src-tauri/tauri.conf.json`.
+> • **Storage & CDN**: Cloudflare R2 bucket `rustsale-releases` (public manifest: `https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev/latest.json`).
+> • **Guide**: See [`docs/CLOUDFLARE_R2_RELEASE_GUIDE.md`](docs/CLOUDFLARE_R2_RELEASE_GUIDE.md).
+
 ***
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **RustSale_v2** (5577 symbols, 14336 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **RustSale_v2** (5609 symbols, 14396 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run `bunx gitnexus analyze` in terminal first.
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
 ## Always Do
 
@@ -88,13 +102,13 @@ Before completing any code modification task, verify:
 After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
 
 ```bash
-bunx gitnexus analyze
+npx gitnexus analyze
 ```
 
 If the index previously included embeddings, preserve them by adding `--embeddings`:
 
 ```bash
-bunx gitnexus analyze --embeddings
+npx gitnexus analyze --embeddings
 ```
 
 To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**

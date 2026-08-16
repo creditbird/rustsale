@@ -1,0 +1,108 @@
+name: Release and Publish to Cloudflare R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (e.g. 0.1.0)'
+        required: true
+        default: '0.1.0'
+      notes:
+        description: 'Changelog / Release Notes'
+        required: false
+        default: 'Bản phát hành ổn định cho RustSale CRM'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            platform: darwin-aarch64
+            target: aarch64-apple-darwin
+          - os: macos-13
+            platform: darwin-x86_64
+            target: x86_64-apple-darwin
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build Cloak Runtime sidecar
+        run: bun run build:cloak-runtime
+
+      - name: Setup Private Signing Key
+        shell: bash
+        run: |
+          mkdir -p ~/.tauri
+          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > ~/.tauri/rustsale.key
+          chmod 600 ~/.tauri/rustsale.key || true
+
+      - name: Build Tauri Desktop App & Sign
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ runner.temp }}/../.tauri/rustsale.key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: v${{ github.event.inputs.version || github.ref_name }}
+          releaseName: 'RustSale CRM v${{ github.event.inputs.version || github.ref_name }}'
+          releaseBody: ${{ github.event.inputs.notes || 'Automated release build' }}
+          releaseDraft: false
+          prerelease: false
+
+      - name: Upload to Cloudflare R2
+        shell: bash
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_URL: https://pub-6f14359d39ae4d50ac90b7e759b6de56.r2.dev
+          R2_BUCKET_NAME: rustsale-releases
+          R2_ENDPOINT: https://94af112d3d793eb10ab906f0bf8254cd.r2.cloudflarestorage.com
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+          RELEASE_NOTES: ${{ github.event.inputs.notes || 'Bản phát hành cập nhật cho RustSale CRM' }}
+        run: |
+          bun run scripts/publish-release.ts --skip-build

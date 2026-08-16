@@ -10,10 +10,28 @@
     Kanban,
     UserCheck,
     Settings2,
-    ShieldCheck
+    ShieldCheck,
+    Sparkles
   } from 'lucide-svelte';
+  import { updaterService, type UpdaterState } from '$lib/services/updaterService';
+  import { onMount, onDestroy } from 'svelte';
 
   let { activeTab = $bindable(), onOpenLicense }: { activeTab: string; onOpenLicense?: () => void } = $props();
+
+  let updaterState = $state<UpdaterState>(updaterService.getState());
+  let unsubscribe: (() => void) | null = null;
+
+  onMount(() => {
+    unsubscribe = updaterService.subscribe((s) => {
+      updaterState = s;
+    });
+  });
+
+  onDestroy(() => {
+    if (unsubscribe) {
+      unsubscribe();
+    }
+  });
 
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -31,12 +49,28 @@
 
 <aside class="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col text-sidebar-foreground select-none shrink-0">
   <!-- Brand Header -->
-  <div class="h-16 px-4 border-b border-sidebar-border flex items-center gap-3">
-    <img src="/logo.png" alt="RustSale Logo" class="size-10 rounded-lg object-contain shrink-0 shadow-2xs" />
-    <div class="flex flex-col">
-      <span class="font-bold text-base tracking-tight text-foreground">RustSale</span>
-      <span class="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">CRM & Outreach Pro</span>
+  <div class="h-16 px-4 border-b border-sidebar-border flex items-center justify-between gap-3">
+    <div class="flex items-center gap-3 min-w-0">
+      <img src="/logo.png" alt="RustSale Logo" class="size-10 rounded-lg object-contain shrink-0 shadow-2xs" />
+      <div class="flex flex-col min-w-0">
+        <div class="flex items-center gap-1.5">
+          <span class="font-bold text-base tracking-tight text-foreground">RustSale</span>
+          <span class="text-[10px] text-muted-foreground font-mono">v{updaterState.currentVersion}</span>
+        </div>
+        <span class="text-[11px] text-muted-foreground font-medium uppercase tracking-wider truncate">CRM & Outreach Pro</span>
+      </div>
     </div>
+
+    {#if updaterState.status === 'available'}
+      <button
+        type="button"
+        onclick={() => updaterService.openModal()}
+        title="Đã có bản cập nhật mới v{updaterState.availableVersion}"
+        class="size-7 rounded-lg bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30 flex items-center justify-center transition-all animate-pulse shrink-0 cursor-pointer"
+      >
+        <Sparkles class="size-3.5" />
+      </button>
+    {/if}
   </div>
 
   <!-- Navigation Links -->

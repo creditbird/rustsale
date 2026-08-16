@@ -1,6 +1,7 @@
 <script lang="ts">
   import ZaloAccountsSettings from './settings/ZaloAccountsSettings.svelte';
   import EmailAccountsSettings from './settings/EmailAccountsSettings.svelte';
+  import AppUpdateSettings from './settings/AppUpdateSettings.svelte';
   import * as Card from '$lib/components/ui/card';
   import * as Tabs from '$lib/components/ui/tabs';
   import { Badge } from '$lib/components/ui/badge';
@@ -19,7 +20,7 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col gap-5 overflow-y-auto">
+<div class="flex h-full min-h-0 flex-col gap-5 overflow-y-auto pr-1">
   <Card.Root class="shrink-0 overflow-hidden">
     <Card.Header class="border-b border-border/70 bg-muted/20">
       <div class="flex items-start gap-3">
@@ -53,4 +54,8 @@
     <Tabs.Content value="zalo" class="min-h-0"><ZaloAccountsSettings bind:this={zaloSettingsRef} /></Tabs.Content>
     <Tabs.Content value="email" class="min-h-0"><EmailAccountsSettings /></Tabs.Content>
   </Tabs.Root>
+
+  <div class="pt-2 pb-6">
+    <AppUpdateSettings />
+  </div>
 </div>

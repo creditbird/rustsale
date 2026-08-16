@@ -19,7 +19,7 @@ describe('MessageMentionText.svelte', () => {
   it('renders text with highlighted mention spans', () => {
     const text = 'Xin chào @John Doe chúc một ngày tốt lành!';
     const mentions = [
-      { identityId: 101, displayText: '@John Doe', startUtf16: 9, lengthUtf16: 9 }
+      { identityId: 101, externalId: '101', displayText: '@John Doe', startUtf16: 9, lengthUtf16: 9 }
     ];
 
     const { getByTestId, getAllByTestId } = render(MessageMentionText, {
@@ -41,7 +41,7 @@ describe('MessageMentionText.svelte', () => {
   it('prevents HTML injection by rendering raw text safely', () => {
     const text = '<script>alert("xss")</script> @Hacker';
     const mentions = [
-      { identityId: 999, displayText: '@Hacker', startUtf16: 30, lengthUtf16: 7 }
+      { identityId: 999, externalId: '999', displayText: '@Hacker', startUtf16: 30, lengthUtf16: 7 }
     ];
 
     const { getByTestId, container } = render(MessageMentionText, {
