@@ -29,3 +29,22 @@ test('updates activeTab on navigation item click', async () => {
   await fireEvent.click(screen.getByText('Settings'));
   expect(activeTab).toBe('settings');
 });
+
+test('renders interactive Account & License card in footer and triggers onOpenLicense when clicked', async () => {
+  let opened = false;
+  render(Sidebar, {
+    props: {
+      activeTab: 'dashboard',
+      onOpenLicense: () => { opened = true; }
+    }
+  });
+
+  const accountCard = screen.getByTitle('Tài khoản & Quản lý Bản quyền');
+  expect(accountCard).toBeTruthy();
+  expect(screen.getByText('Admin Workspace')).toBeTruthy();
+  expect(screen.getByText('HWID Active')).toBeTruthy();
+
+  await fireEvent.click(accountCard);
+  expect(opened).toBe(true);
+});
+

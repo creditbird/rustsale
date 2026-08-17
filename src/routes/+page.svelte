@@ -14,7 +14,7 @@
   import { verifyDeviceAndSubscription } from '$lib/services/licenseService';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
-  import { AlertCircle, Search, Bell, ShieldCheck } from 'lucide-svelte';
+  import { AlertCircle, Search, Bell } from 'lucide-svelte';
 
   let activeTab = $state('dashboard');
   let showLicenseModal = $state(false);
@@ -167,17 +167,6 @@
             class="w-full h-9 pl-9 pr-4 rounded-md border border-input bg-background text-xs text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring transition-all"
           />
         </div>
-
-        <!-- License & HWID Quick Status Button -->
-        <button
-          type="button"
-          onclick={handleOpenLicenseModal}
-          class="h-9 px-3 rounded-md border border-emerald-500/20 bg-emerald-500/10 hover:bg-emerald-500/20 flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-xs font-semibold transition-colors"
-          title="License & HWID Management"
-        >
-          <ShieldCheck class="w-4 h-4" />
-          <span class="hidden sm:inline">License & HWID</span>
-        </button>
 
         <!-- Notifications -->
         <button

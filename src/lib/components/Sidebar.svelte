@@ -10,26 +10,76 @@
     Kanban,
     UserCheck,
     Settings2,
-    ShieldCheck,
-    Sparkles
+    Sparkles,
+    ChevronRight
   } from 'lucide-svelte';
   import { updaterService, type UpdaterState } from '$lib/services/updaterService';
+  import { getCurrentUser, verifyDeviceAndSubscription, type DeviceVerificationResult } from '$lib/services/licenseService';
+  import { getSupabaseClient } from '$lib/services/supabaseClient';
   import { onMount, onDestroy } from 'svelte';
+  import type { User as SupabaseUser } from '@supabase/supabase-js';
 
   let { activeTab = $bindable(), onOpenLicense }: { activeTab: string; onOpenLicense?: () => void } = $props();
 
   let updaterState = $state<UpdaterState>(updaterService.getState());
-  let unsubscribe: (() => void) | null = null;
+  let currentUser = $state<SupabaseUser | null>(null);
+  let verification = $state<DeviceVerificationResult | null>(null);
+  let unsubscribeUpdater: (() => void) | null = null;
+  let authListenerSub: { unsubscribe: () => void } | null = null;
+
+  function getInitials(emailOrName?: string | null): string {
+    if (!emailOrName) return 'RS';
+    const name = emailOrName.split('@')[0];
+    const parts = name.split(/[._-]/).filter(Boolean);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
+  }
+
+  async function loadUserAndLicense() {
+    try {
+      const user = await getCurrentUser();
+      currentUser = user;
+      if (user) {
+        verification = await verifyDeviceAndSubscription();
+      } else {
+        verification = null;
+      }
+    } catch (err) {
+      console.warn('Failed to load user info in sidebar:', err);
+    }
+  }
 
   onMount(() => {
-    unsubscribe = updaterService.subscribe((s) => {
+    unsubscribeUpdater = updaterService.subscribe((s) => {
       updaterState = s;
     });
+
+    loadUserAndLicense();
+
+    try {
+      const supabase = getSupabaseClient();
+      const { data } = supabase.auth.onAuthStateChange(async (_event, session) => {
+        currentUser = session?.user ?? null;
+        if (currentUser) {
+          verification = await verifyDeviceAndSubscription();
+        } else {
+          verification = null;
+        }
+      });
+      authListenerSub = data?.subscription ?? null;
+    } catch (err) {
+      console.warn('Failed to setup auth listener in sidebar:', err);
+    }
   });
 
   onDestroy(() => {
-    if (unsubscribe) {
-      unsubscribe();
+    if (unsubscribeUpdater) {
+      unsubscribeUpdater();
+    }
+    if (authListenerSub) {
+      authListenerSub.unsubscribe();
     }
   });
 
@@ -92,30 +142,39 @@
     {/each}
   </nav>
 
-  <!-- User / Status Footer -->
-  <div class="p-3 border-t border-sidebar-border flex items-center justify-between bg-sidebar-accent/20">
-    <div class="flex items-center gap-3 overflow-hidden">
-      <div class="size-8 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center justify-center text-xs font-bold shrink-0">
-        RS
+  <!-- User / Status Footer (Interactive Account Card) -->
+  <div class="p-2.5 border-t border-sidebar-border bg-sidebar-accent/15">
+    <button
+      type="button"
+      onclick={onOpenLicense}
+      class="w-full p-2 rounded-lg flex items-center justify-between gap-2.5 text-left transition-all duration-150 group cursor-pointer hover:bg-sidebar-accent/70 hover:shadow-2xs border border-transparent hover:border-sidebar-border"
+      title="Tài khoản & Quản lý Bản quyền"
+    >
+      <div class="flex items-center gap-2.5 overflow-hidden min-w-0">
+        <div class="size-8 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center justify-center text-xs font-bold shrink-0 transition-transform group-hover:scale-105">
+          {getInitials(currentUser?.email)}
+        </div>
+        <div class="flex flex-col overflow-hidden min-w-0">
+          <span class="text-xs font-semibold truncate text-foreground group-hover:text-primary transition-colors">
+            {currentUser?.email || 'Admin Workspace'}
+          </span>
+          <span class="text-[10px] font-medium flex items-center gap-1.5 truncate {currentUser ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}">
+            <span class="size-1.5 rounded-full {currentUser ? 'bg-emerald-500 animate-pulse' : 'bg-emerald-500/60'} shrink-0"></span>
+            <span class="truncate">
+              {#if currentUser}
+                {verification?.plan_id ? `${verification.plan_id.toUpperCase()} Plan • HWID Active` : 'HWID Active'}
+              {:else}
+                HWID Active
+              {/if}
+            </span>
+          </span>
+        </div>
       </div>
-      <div class="flex flex-col overflow-hidden">
-        <span class="text-xs font-semibold truncate text-foreground">Admin Workspace</span>
-        <span class="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
-          <span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span> HWID Active
-        </span>
-      </div>
-    </div>
 
-    {#if onOpenLicense}
-      <button
-        type="button"
-        onclick={onOpenLicense}
-        title="License & HWID Management"
-        class="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-500/10 border border-emerald-500/20 transition-colors shrink-0"
-      >
-        <ShieldCheck class="size-4" />
-      </button>
-    {/if}
+      <div class="text-muted-foreground/60 group-hover:text-foreground transition-colors shrink-0 pr-0.5">
+        <ChevronRight class="size-4 transition-transform group-hover:translate-x-0.5" />
+      </div>
+    </button>
   </div>
 </aside>
 
