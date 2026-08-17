@@ -6753,12 +6753,25 @@ pub async fn write_image_bytes_to_path(
 }
 
 pub async fn download_image_http(initial_url_str: &str) -> Result<Vec<u8>, String> {
-    download_image_http_with_verifier(initial_url_str, is_public_ip).await
+    download_image_http_internal(initial_url_str, is_public_ip, None).await
 }
 
-pub async fn download_image_http_with_verifier<F>(
+#[cfg(test)]
+pub(crate) async fn download_image_http_test_helper<F>(
     initial_url_str: &str,
     ip_verifier: F,
+    dns_override: Option<std::net::SocketAddr>,
+) -> Result<Vec<u8>, String>
+where
+    F: Fn(std::net::IpAddr) -> bool,
+{
+    download_image_http_internal(initial_url_str, ip_verifier, dns_override).await
+}
+
+async fn download_image_http_internal<F>(
+    initial_url_str: &str,
+    ip_verifier: F,
+    dns_override: Option<std::net::SocketAddr>,
 ) -> Result<Vec<u8>, String>
 where
     F: Fn(std::net::IpAddr) -> bool,
@@ -6787,7 +6800,16 @@ where
         let host_port = format!("{}:{}", host, port);
 
         // Resolve DNS and strictly verify ALL resolved IP addresses
-        let target_socket_addr = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let target_socket_addr = if let Some(override_addr) = dns_override {
+            if !ip_verifier(override_addr.ip()) {
+                return Err(format!(
+                    "Host {} resolved to non-public address {}",
+                    host,
+                    override_addr.ip()
+                ));
+            }
+            override_addr
+        } else if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             if !ip_verifier(ip) {
                 return Err(format!(
                     "Destination IP address {} is non-public/private",

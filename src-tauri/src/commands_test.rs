@@ -3789,13 +3789,17 @@ mod tests {
         let target_url = format!("http://127.0.0.1:{}/start_download", addr.port());
 
         // Verifier allows initial mock server IP, but strictly checks subsequent hops
-        let res = commands::download_image_http_with_verifier(&target_url, |ip| {
-            if ip == addr.ip() {
-                true // allow hop 1 in test harness
-            } else {
-                commands::is_public_ip(ip) // evaluate hop 2 redirect destination
-            }
-        })
+        let res = commands::download_image_http_test_helper(
+            &target_url,
+            |ip| {
+                if ip == addr.ip() {
+                    true // allow hop 1 in test harness
+                } else {
+                    commands::is_public_ip(ip) // evaluate hop 2 redirect destination
+                }
+            },
+            None,
+        )
         .await;
 
         assert!(res.is_err());
@@ -3824,7 +3828,7 @@ mod tests {
         });
 
         let target_url = format!("http://127.0.0.1:{}/start", addr.port());
-        let res = commands::download_image_http_with_verifier(&target_url, |_| true).await;
+        let res = commands::download_image_http_test_helper(&target_url, |_| true, None).await;
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Too many redirects"));
     }
@@ -3870,10 +3874,48 @@ mod tests {
         std::env::set_var("http_proxy", "http://192.0.2.1:9999");
 
         let target_url = format!("http://127.0.0.1:{}/initial", addr.port());
-        let res = commands::download_image_http_with_verifier(&target_url, |_| true).await;
+        let res = commands::download_image_http_test_helper(&target_url, |_| true, None).await;
 
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("http_proxy");
+
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), png_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_hostname_socket_pinning_and_rebinding_protection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x02];
+        let png_bytes_clone = png_bytes;
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n",
+                    png_bytes_clone.len()
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&png_bytes_clone).await;
+            }
+        });
+
+        // Using an unresolvable mock hostname with port
+        let unresolvable_url = format!(
+            "http://unresolvable-mock-image-domain.test:{}/pinned.png",
+            addr.port()
+        );
+
+        // Prove that .resolve() pins the mock hostname to the vetted socket address
+        let res =
+            commands::download_image_http_test_helper(&unresolvable_url, |_| true, Some(addr))
+                .await;
 
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), png_bytes);
