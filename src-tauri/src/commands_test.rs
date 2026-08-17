@@ -3703,20 +3703,21 @@ mod tests {
         assert!(res_cancel.is_ok());
         assert!(res_cancel.unwrap().is_none());
 
-        // 3. User types name without extension -> auto-appends detected .png
+        // 3. User types name without extension -> rejected to enforce explicit extension
         let path_without_ext = temp_dir.path().join("photo_no_ext");
         let path_without_ext_clone = path_without_ext.clone();
-        let res_auto_ext = commands::save_image_file_with_dialog(
+        let res_no_ext = commands::save_image_file_with_dialog(
             Some("suggested".to_string()),
             None,
             Some(b64.clone()),
             move |_| Ok(Some(path_without_ext_clone)),
         )
         .await;
-        assert!(res_auto_ext.is_ok());
-        let final_path = res_auto_ext.unwrap().unwrap();
-        assert!(final_path.ends_with("photo_no_ext.png"));
-        assert!(std::path::Path::new(&final_path).exists());
+        assert!(res_no_ext.is_err());
+        assert!(res_no_ext
+            .unwrap_err()
+            .contains("must include a valid image extension"));
+        assert!(!path_without_ext.exists());
 
         // 4. Format alias acceptance: JPEG payload saved to .jpeg path succeeds
         let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];

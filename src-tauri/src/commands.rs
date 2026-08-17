@@ -6987,27 +6987,31 @@ where
         return Err("Image content is empty".to_string());
     }
 
-    // 4. Validate image format and enforce format integrity on user-selected path
+    // 4. Validate image format and enforce strict format integrity on user-selected path
     let detected_ext = detect_image_format(&bytes)?;
-    let target_path = match file_path.extension().and_then(|e| e.to_str()) {
-        None => file_path.with_extension(detected_ext),
-        Some(ext) => {
-            let is_matching = match (detected_ext, ext.to_ascii_lowercase().as_str()) {
-                ("jpg", "jpg" | "jpeg") => true,
-                ("tiff", "tif" | "tiff") => true,
-                (det, e) => det == e,
-            };
-            if !is_matching {
-                return Err(format!(
-                    "Selected file extension '.{}' does not match detected image format '.{}'",
-                    ext, detected_ext
-                ));
-            }
-            file_path // Maintain the exact user-authorized path confirmed in the OS dialog
-        }
-    };
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .ok_or_else(|| {
+            format!(
+                "Selected destination path must include a valid image extension (e.g. '.{}')",
+                detected_ext
+            )
+        })?;
 
-    let final_path = write_image_bytes_to_path(&target_path, &bytes).await?;
+    let is_matching = match (detected_ext, ext.to_ascii_lowercase().as_str()) {
+        ("jpg", "jpg" | "jpeg") => true,
+        ("tiff", "tif" | "tiff") => true,
+        (det, e) => det == e,
+    };
+    if !is_matching {
+        return Err(format!(
+            "Selected file extension '.{}' does not match detected image format '.{}'",
+            ext, detected_ext
+        ));
+    }
+
+    let final_path = write_image_bytes_to_path(&file_path, &bytes).await?;
     Ok(Some(final_path.to_string_lossy().into_owned()))
 }
 
