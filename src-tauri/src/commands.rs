@@ -6099,7 +6099,10 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
 
         if !response.status().is_success() {
             let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err(format!("Update download failed with HTTP {}", response.status()));
+            return Err(format!(
+                "Update download failed with HTTP {}",
+                response.status()
+            ));
         }
 
         let bytes = response
@@ -6142,45 +6145,54 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
         }
 
         // Fallback: 7z
-        if !extracted {
-            if std::process::Command::new("7z")
+        if !extracted
+            && std::process::Command::new("7z")
                 .args(["x", deb_path.to_str().unwrap_or(""), "-y"])
                 .current_dir(&temp_dir)
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false)
-            {
-                if let Ok(entries) = std::fs::read_dir(&temp_dir) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if name.starts_with("data.tar") {
-                            let _ = std::process::Command::new("7z")
-                                .args(["x", &name, &format!("-o{}", extracted_dir.to_str().unwrap_or("")), "-y"])
-                                .current_dir(&temp_dir)
-                                .status();
-                            extracted = true;
-                            break;
-                        }
+        {
+            if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("data.tar") {
+                        let _ = std::process::Command::new("7z")
+                            .args([
+                                "x",
+                                &name,
+                                &format!("-o{}", extracted_dir.to_str().unwrap_or("")),
+                                "-y",
+                            ])
+                            .current_dir(&temp_dir)
+                            .status();
+                        extracted = true;
+                        break;
                     }
                 }
             }
         }
 
         // Fallback: dpkg-deb
-        if !extracted {
-            if std::process::Command::new("dpkg-deb")
-                .args(["-x", deb_path.to_str().unwrap_or(""), extracted_dir.to_str().unwrap_or("")])
+        if !extracted
+            && std::process::Command::new("dpkg-deb")
+                .args([
+                    "-x",
+                    deb_path.to_str().unwrap_or(""),
+                    extracted_dir.to_str().unwrap_or(""),
+                ])
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false)
-            {
-                extracted = true;
-            }
+        {
+            extracted = true;
         }
 
         if !extracted {
             let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err("Failed to extract update package (requires 'ar', '7z', or 'dpkg-deb')".to_string());
+            return Err(
+                "Failed to extract update package (requires 'ar', '7z', or 'dpkg-deb')".to_string(),
+            );
         }
 
         // 3. Install binaries & icons
@@ -6203,14 +6215,26 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
 
                         // Use install -m 755 to safely overwrite running executable
                         let _ = std::process::Command::new("install")
-                            .args(["-m", "755", file_path.to_str().unwrap_or(""), target_path.to_str().unwrap_or("")])
+                            .args([
+                                "-m",
+                                "755",
+                                file_path.to_str().unwrap_or(""),
+                                target_path.to_str().unwrap_or(""),
+                            ])
                             .status();
 
                         // Also update current executable path if different and writable
                         if let Ok(current_exe) = std::env::current_exe() {
-                            if current_exe.file_name() == Some(&file_name) && current_exe != target_path {
+                            if current_exe.file_name() == Some(&file_name)
+                                && current_exe != target_path
+                            {
                                 let _ = std::process::Command::new("install")
-                                    .args(["-m", "755", file_path.to_str().unwrap_or(""), current_exe.to_str().unwrap_or("")])
+                                    .args([
+                                        "-m",
+                                        "755",
+                                        file_path.to_str().unwrap_or(""),
+                                        current_exe.to_str().unwrap_or(""),
+                                    ])
                                     .status();
                             }
                         }
@@ -6222,13 +6246,25 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
         let src_icons = extracted_dir.join("usr/share/icons");
         if src_icons.exists() {
             let _ = std::process::Command::new("cp")
-                .args(["-r", "-f", "--remove-destination", src_icons.to_str().unwrap_or(""), local_icons.to_str().unwrap_or("")])
+                .args([
+                    "-r",
+                    "-f",
+                    "--remove-destination",
+                    src_icons.to_str().unwrap_or(""),
+                    local_icons.to_str().unwrap_or(""),
+                ])
                 .status();
         }
         let src_apps = extracted_dir.join("usr/share/applications");
         if src_apps.exists() {
             let _ = std::process::Command::new("cp")
-                .args(["-r", "-f", "--remove-destination", src_apps.to_str().unwrap_or(""), local_apps.to_str().unwrap_or("")])
+                .args([
+                    "-r",
+                    "-f",
+                    "--remove-destination",
+                    src_apps.to_str().unwrap_or(""),
+                    local_apps.to_str().unwrap_or(""),
+                ])
                 .status();
         }
 

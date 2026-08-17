@@ -20,9 +20,6 @@ const compileArgs = [
   '--no-compile-autoload-dotenv',
   '--no-compile-autoload-bunfig',
 ];
-if (targetTriple.includes('windows') && process.platform === 'win32') {
-  compileArgs.push('--windows-hide-console');
-}
 
 const result = Bun.spawnSync(compileArgs);
 if (!result.success) {

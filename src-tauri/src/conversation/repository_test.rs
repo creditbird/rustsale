@@ -3166,9 +3166,15 @@ fn enqueue_batch_group_with_null_display_name_participant_succeeds() {
         }],
     };
 
-    let res = harness.repository.enqueue_outbound_batch(&req, "2026-08-01T00:00:00Z").unwrap();
+    let res = harness
+        .repository
+        .enqueue_outbound_batch(&req, "2026-08-01T00:00:00Z")
+        .unwrap();
     assert_eq!(res.messages.len(), 1);
-    assert_eq!(res.messages[0].text_content.as_deref(), Some("Hello from group"));
+    assert_eq!(
+        res.messages[0].text_content.as_deref(),
+        Some("Hello from group")
+    );
 }
 
 #[test]

@@ -1069,7 +1069,10 @@ mod tests {
         let lead2_val: f64 = conn
             .query_row("SELECT value FROM leads WHERE id = 2", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(lead2_val, 45000000.0, "45M VND amount must remain 45,000,000.0");
+        assert_eq!(
+            lead2_val, 45000000.0,
+            "45M VND amount must remain 45,000,000.0"
+        );
 
         let lead3_val: f64 = conn
             .query_row("SELECT value FROM leads WHERE id = 3", [], |row| row.get(0))
@@ -1084,7 +1087,10 @@ mod tests {
         let deal2_val: f64 = conn
             .query_row("SELECT value FROM deals WHERE id = 2", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(deal2_val, 15000000.0, "15M VND deal must remain 15,000,000.0");
+        assert_eq!(
+            deal2_val, 15000000.0,
+            "15M VND deal must remain 15,000,000.0"
+        );
 
         // 5. Verify idempotency: re-running init_db preserves values and metadata
         drop(conn);

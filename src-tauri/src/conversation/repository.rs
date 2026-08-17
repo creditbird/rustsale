@@ -5228,8 +5228,7 @@ fn resolve_group_member_import_tx(
     Ok(ResolvedGroupMemberImport {
         identity_id: identity.0,
         external_id: identity.1,
-        display_name: non_empty(identity.2.as_deref())
-            .unwrap_or_else(|| "Zalo Member".to_string()),
+        display_name: non_empty(identity.2.as_deref()).unwrap_or_else(|| "Zalo Member".to_string()),
         linked_lead_id: identity.3,
         phone,
     })

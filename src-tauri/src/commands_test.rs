@@ -3260,8 +3260,7 @@ mod tests {
                 .await;
                 // If the operation succeeded, it MUST have written to the real dir, NEVER the victim file
                 // If it failed, it caught the symlink/descriptor error
-                if res.is_ok() {
-                    let written_path = res.unwrap();
+                if let Ok(written_path) = res {
                     assert!(!written_path.starts_with(&victim_dir));
                 }
                 // Invariant: Victim file must NEVER be corrupted by any race

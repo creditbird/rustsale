@@ -184,7 +184,7 @@ pub struct BrowserSupervisor {
 
 impl BrowserSupervisor {
     pub async fn spawn(path: &Path) -> BrowserResult<Self> {
-        if !path.is_file() {
+        if !path.is_absolute() || !path.is_file() {
             return Err(scrape_error(
                 ScrapeErrorKind::RuntimeUnavailable,
                 format!("CloakBrowser sidecar not found: {}", path.display()),
@@ -198,6 +198,8 @@ impl BrowserSupervisor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
         let mut child = command.spawn().map_err(|error| {
             scrape_error(
                 ScrapeErrorKind::BrowserStartup,
@@ -877,7 +879,14 @@ fn disconnected_error(message: impl Into<String>) -> ScrapeJobError {
 
 fn default_sidecar_path() -> PathBuf {
     if let Some(path) = std::env::var_os("RUSTSALE_CLOAK_RUNTIME_PATH") {
-        return PathBuf::from(path);
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            return path;
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            return cwd.join(path);
+        }
+        return path;
     }
 
     let executable_name = if cfg!(windows) {
@@ -885,20 +894,68 @@ fn default_sidecar_path() -> PathBuf {
     } else {
         "cloak-runtime"
     };
+    let triple = host_target_triple();
+    let extension = if cfg!(windows) { ".exe" } else { "" };
+    let triple_name = format!("cloak-runtime-{triple}{extension}");
+
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
-            let bundled = parent.join(executable_name);
-            if bundled.is_file() {
-                return bundled;
+            let candidates = [
+                parent.join(executable_name),
+                parent.join(&triple_name),
+                parent.join("binaries").join(executable_name),
+                parent.join("binaries").join(&triple_name),
+                parent.join("resources").join(executable_name),
+                parent.join("resources").join(&triple_name),
+                parent
+                    .join("resources")
+                    .join("binaries")
+                    .join(executable_name),
+                parent.join("resources").join("binaries").join(&triple_name),
+            ];
+            for candidate in candidates {
+                if candidate.is_file() {
+                    return candidate;
+                }
             }
         }
     }
 
-    let triple = host_target_triple();
-    let extension = if cfg!(windows) { ".exe" } else { "" };
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("binaries")
-        .join(format!("cloak-runtime-{triple}{extension}"))
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidates = [
+                cwd.join("src-tauri").join("binaries").join(&triple_name),
+                cwd.join("binaries").join(&triple_name),
+                cwd.join("src-tauri").join("binaries").join(executable_name),
+                cwd.join("binaries").join(executable_name),
+            ];
+            for candidate in candidates {
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+
+        let manifest_candidate = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(&triple_name);
+        if manifest_candidate.is_file() {
+            return manifest_candidate;
+        }
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            return parent.join(executable_name);
+        }
+    }
+
+    if cfg!(windows) {
+        PathBuf::from(r"C:\untrusted_sidecar_not_found\cloak-runtime.exe")
+    } else {
+        PathBuf::from("/untrusted_sidecar_not_found/cloak-runtime")
+    }
 }
 
 fn host_target_triple() -> &'static str {
