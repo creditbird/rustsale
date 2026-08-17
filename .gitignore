@@ -16,3 +16,4 @@ src-tauri/target/
 src-tauri/vendor/zca-rs/target/
 .gstack/
 scratch/
+/src/lib/paraglide/

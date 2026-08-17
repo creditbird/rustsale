@@ -40,6 +40,11 @@ for tool in curl tar; do
   fi
 done
 
+if ! command -v ar >/dev/null 2>&1 && ! command -v dpkg-deb >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1; then
+  echo -e "${RED}❌ Lỗi: Cần có 'ar' (gói binutils), 'dpkg-deb' hoặc '7z' để giải nén bộ cài.${RESET}"
+  exit 1
+fi
+
 BASE_URL="https://rustsale.trantrongtri.com"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT

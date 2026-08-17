@@ -1,9 +1,15 @@
 /// <reference types="bun-types" />
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import Sidebar from '../Sidebar.svelte';
-import { expect, test } from 'bun:test';
+import { expect, test, beforeEach } from 'bun:test';
+import { setLocale } from '$lib/i18n';
 
-test('renders Sidebar with CRM logo and options', () => {
+beforeEach(() => {
+  setLocale('en');
+});
+
+test('renders Sidebar with CRM logo and options in English', () => {
+  setLocale('en');
   render(Sidebar, { props: { activeTab: 'dashboard' } });
   expect(screen.getByText('RustSale')).toBeTruthy();
   expect(screen.getByText('CRM & Outreach Pro')).toBeTruthy();
@@ -13,7 +19,17 @@ test('renders Sidebar with CRM logo and options', () => {
   expect(screen.getByText('Settings')).toBeTruthy();
 });
 
+test('renders Sidebar with Vietnamese options when locale is vi', () => {
+  setLocale('vi');
+  render(Sidebar, { props: { activeTab: 'dashboard' } });
+  expect(screen.getByText('Bảng điều khiển')).toBeTruthy();
+  expect(screen.getByText('Hội thoại hợp nhất')).toBeTruthy();
+  expect(screen.getByText('Tiếp cận Email')).toBeTruthy();
+  expect(screen.getByText('Cài đặt hệ thống')).toBeTruthy();
+});
+
 test('updates activeTab on navigation item click', async () => {
+  setLocale('en');
   let activeTab = 'dashboard';
   render(Sidebar, {
     props: {
@@ -47,4 +63,3 @@ test('renders interactive Account & License card in footer and triggers onOpenLi
   await fireEvent.click(accountCard);
   expect(opened).toBe(true);
 });
-
