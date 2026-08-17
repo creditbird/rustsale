@@ -3478,4 +3478,105 @@ mod tests {
             let _ = swapper_handle.join();
         }
     }
+
+    #[tokio::test]
+    async fn test_write_image_bytes_to_path_validation_and_writing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let valid_png_path = temp_dir.path().join("test_image.png");
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01, 0x02];
+
+        // 1. Valid write
+        let res = commands::write_image_bytes_to_path(&valid_png_path, &png_bytes).await;
+        assert!(res.is_ok());
+        assert_eq!(std::fs::read(&valid_png_path).unwrap(), png_bytes);
+
+        // 2. Reject non-image extension (e.g. .exe, .sh, .txt)
+        let invalid_ext_path = temp_dir.path().join("malicious.sh");
+        let err_res = commands::write_image_bytes_to_path(&invalid_ext_path, &png_bytes).await;
+        assert!(err_res.is_err());
+        assert!(err_res.unwrap_err().contains("valid image extension"));
+
+        // 3. Reject path traversal
+        let traversal_path = temp_dir.path().join("subdir/../escape.png");
+        let trav_res = commands::write_image_bytes_to_path(&traversal_path, &png_bytes).await;
+        assert!(trav_res.is_err());
+        assert!(trav_res.unwrap_err().contains("Path traversal"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_image_bytes_base64_and_data_url() {
+        use base64::prelude::*;
+
+        let raw_bytes = b"RustSale CRM Image Test 12345";
+        let b64_str = BASE64_STANDARD.encode(raw_bytes);
+
+        // 1. Direct base64 data
+        let res_b64 = commands::resolve_image_bytes(None, Some(&b64_str)).await;
+        assert!(res_b64.is_ok());
+        assert_eq!(res_b64.unwrap(), raw_bytes);
+
+        // 2. Data URL with prefix
+        let data_url = format!("data:image/png;base64,{}", b64_str);
+        let res_data_url = commands::resolve_image_bytes(Some(&data_url), None).await;
+        assert!(res_data_url.is_ok());
+        assert_eq!(res_data_url.unwrap(), raw_bytes);
+
+        // 3. Empty inputs
+        let res_empty = commands::resolve_image_bytes(None, None).await;
+        assert!(res_empty.is_err());
+
+        // 4. Invalid base64
+        let res_invalid_b64 = commands::resolve_image_bytes(None, Some("!!!invalid base64!!!")).await;
+        assert!(res_invalid_b64.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_image_file_with_dialog_workflow() {
+        use base64::prelude::*;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let valid_path = temp_dir.path().join("saved_photo.png");
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let b64 = BASE64_STANDARD.encode(&png_bytes);
+
+        // 1. User picks a valid path
+        let valid_path_clone = valid_path.clone();
+        let res_ok = commands::save_image_file_with_dialog(
+            Some("suggested.png".to_string()),
+            None,
+            Some(b64.clone()),
+            move |_| Ok(Some(valid_path_clone)),
+        )
+        .await;
+        assert!(res_ok.is_ok());
+        let returned = res_ok.unwrap();
+        assert!(returned.is_some());
+        assert!(returned.unwrap().ends_with("saved_photo.png"));
+        assert_eq!(std::fs::read(&valid_path).unwrap(), png_bytes);
+
+        // 2. User cancelled dialog
+        let res_cancel = commands::save_image_file_with_dialog(
+            Some("suggested.png".to_string()),
+            None,
+            Some(b64.clone()),
+            |_| Ok(None),
+        )
+        .await;
+        assert!(res_cancel.is_ok());
+        assert!(res_cancel.unwrap().is_none());
+
+        // 3. User types name without extension -> auto-appends .png
+        let path_without_ext = temp_dir.path().join("photo_no_ext");
+        let path_without_ext_clone = path_without_ext.clone();
+        let res_auto_ext = commands::save_image_file_with_dialog(
+            Some("suggested.png".to_string()),
+            None,
+            Some(b64),
+            move |_| Ok(Some(path_without_ext_clone)),
+        )
+        .await;
+        assert!(res_auto_ext.is_ok());
+        let final_path = res_auto_ext.unwrap().unwrap();
+        assert!(final_path.ends_with("photo_no_ext.png"));
+        assert!(std::path::Path::new(&final_path).exists());
+    }
 }

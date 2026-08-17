@@ -6565,3 +6565,217 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
         Ok(true)
     }
 }
+
+pub async fn write_image_bytes_to_path(
+    file_path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, String> {
+    use tokio::io::AsyncWriteExt;
+
+    // 1. Validate file extension
+    let valid_extensions = [
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "tiff", "tif", "avif",
+    ];
+    match file_path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if valid_extensions.iter().any(|&e| ext.eq_ignore_ascii_case(e)) => {}
+        _ => {
+            return Err(
+                "Destination file must have a valid image extension (.png, .jpg, .jpeg, .webp, .gif, .bmp, .svg, .ico, .avif)"
+                    .to_string(),
+            )
+        }
+    }
+
+    // 2. Reject path traversal
+    if file_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Path traversal (..) is not permitted in destination path".to_string());
+    }
+
+    // 3. Open file descriptor atomically pinning ancestors with O_NOFOLLOW
+    #[cfg(unix)]
+    let mut file = open_export_file_unix(file_path).await?;
+
+    #[cfg(windows)]
+    let mut file = open_export_file_windows(file_path).await?;
+
+    #[cfg(not(any(unix, windows)))]
+    let mut file = {
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        options
+            .open(file_path)
+            .await
+            .map_err(|e| format!("Failed to open destination file for writing: {}", e))?
+    };
+
+    // 4. Write content asynchronously and flush
+    file.write_all(bytes)
+        .await
+        .map_err(|e| format!("Failed to write image content: {}", e))?;
+
+    file.flush()
+        .await
+        .map_err(|e| format!("Failed to flush destination file: {}", e))?;
+
+    Ok(file_path.to_path_buf())
+}
+
+pub async fn resolve_image_bytes(
+    url: Option<&str>,
+    base64_data: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    use base64::prelude::*;
+
+    if let Some(b64) = base64_data {
+        let clean_b64 = if let Some(idx) = b64.find(',') {
+            &b64[idx + 1..]
+        } else {
+            b64
+        };
+        return BASE64_STANDARD
+            .decode(clean_b64.trim())
+            .map_err(|e| format!("Failed to decode base64 image data: {}", e));
+    }
+
+    if let Some(u) = url {
+        let trimmed = u.trim();
+        if trimmed.starts_with("data:") {
+            let clean_b64 = if let Some(idx) = trimmed.find(',') {
+                &trimmed[idx + 1..]
+            } else {
+                return Err("Invalid data URL format".to_string());
+            };
+            return BASE64_STANDARD
+                .decode(clean_b64.trim())
+                .map_err(|e| format!("Failed to decode data URL image: {}", e));
+        }
+
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
+            let response = client
+                .get(trimmed)
+                .send()
+                .await
+                .map_err(|e| format!("Failed to download image from URL: {}", e))?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "Image download failed with HTTP status {}",
+                    response.status()
+                ));
+            }
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read image response body: {}", e))?;
+            return Ok(bytes.to_vec());
+        }
+
+        return Err("Unsupported image URL scheme".to_string());
+    }
+
+    Err("No image URL or data provided".to_string())
+}
+
+pub async fn save_image_file_with_dialog<F>(
+    default_filename: Option<String>,
+    url: Option<String>,
+    base64_data: Option<String>,
+    save_dialog_fn: F,
+) -> Result<Option<String>, String>
+where
+    F: FnOnce(&str) -> Result<Option<std::path::PathBuf>, String> + Send + 'static,
+{
+    let bytes = resolve_image_bytes(url.as_deref(), base64_data.as_deref()).await?;
+    if bytes.is_empty() {
+        return Err("Image content is empty".to_string());
+    }
+
+    let default_name = default_filename
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if let Some(ref u) = url {
+                if let Ok(parsed) = url::Url::parse(u) {
+                    if let Some(segments) = parsed.path_segments() {
+                        if let Some(last) = segments.last() {
+                            let clean_last = last.split('?').next().unwrap_or(last);
+                            if !clean_last.is_empty() && clean_last.contains('.') {
+                                return clean_last.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+            "image.png".to_string()
+        });
+
+    let dialog_name = default_name.clone();
+    let selected_path = tokio::task::spawn_blocking(move || save_dialog_fn(&dialog_name))
+        .await
+        .map_err(|e| format!("Dialog worker failed: {}", e))??;
+
+    let file_path = match selected_path {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    // If selected path does not have an extension, add an appropriate one
+    let target_path = if file_path.extension().is_none() {
+        let ext = if let Some(kind) = infer::get(&bytes) {
+            kind.extension().to_string()
+        } else if let Some(ext) = std::path::Path::new(&default_name)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            ext.to_string()
+        } else {
+            "png".to_string()
+        };
+        file_path.with_extension(ext)
+    } else {
+        file_path
+    };
+
+    let final_path = write_image_bytes_to_path(&target_path, &bytes).await?;
+    Ok(Some(final_path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub async fn save_image_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    default_filename: Option<String>,
+    url: Option<String>,
+    base64_data: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    save_image_file_with_dialog(default_filename, url, base64_data, move |def_name| {
+        let mut builder = app.dialog().file();
+        if !def_name.trim().is_empty() {
+            builder = builder.set_file_name(def_name);
+        }
+        let res = builder
+            .add_filter(
+                "Image Files (*.png, *.jpg, *.jpeg, *.webp, *.gif, *.svg)",
+                &["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "ico", "avif"],
+            )
+            .add_filter("All Files (*.*)", &["*"])
+            .blocking_save_file();
+
+        match res {
+            Some(fp) => fp
+                .into_path()
+                .map(Some)
+                .map_err(|e| format!("Invalid file path selected: {}", e)),
+            None => Ok(None),
+        }
+    })
+    .await
+}
+

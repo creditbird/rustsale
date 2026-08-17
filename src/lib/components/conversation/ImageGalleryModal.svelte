@@ -1,6 +1,18 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
-  import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw, Download } from 'lucide-svelte';
+  import {
+    X,
+    ChevronLeft,
+    ChevronRight,
+    ZoomIn,
+    ZoomOut,
+    RotateCcw,
+    Download,
+    Loader2,
+    Copy,
+    Check
+  } from 'lucide-svelte';
+  import { saveImageToFile } from '$lib/utils/imageExport';
+  import { toast } from 'svelte-sonner';
 
   export interface GalleryImage {
     url: string;
@@ -29,6 +41,10 @@
   let panX = $state(0);
   let panY = $state(0);
   let isDragging = $state(false);
+  let isSaving = $state(false);
+  let contextMenuOpen = $state(false);
+  let contextMenuPos = $state({ x: 0, y: 0 });
+  let copied = $state(false);
 
   let dragStartX = 0;
   let dragStartY = 0;
@@ -44,6 +60,8 @@
       panX = 0;
       panY = 0;
       isDragging = false;
+      contextMenuOpen = false;
+      copied = false;
     }
     lastOpen = open;
   });
@@ -59,6 +77,7 @@
     panX = 0;
     panY = 0;
     isDragging = false;
+    contextMenuOpen = false;
     onIndexChange(newIdx);
   }
 
@@ -70,6 +89,7 @@
     panX = 0;
     panY = 0;
     isDragging = false;
+    contextMenuOpen = false;
     onIndexChange(newIdx);
   }
 
@@ -80,6 +100,7 @@
     panX = 0;
     panY = 0;
     isDragging = false;
+    contextMenuOpen = false;
     onIndexChange(idx);
   }
 
@@ -105,6 +126,9 @@
 
   function handlePointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
+    if (contextMenuOpen) {
+      closeContextMenu();
+    }
     if (zoomScale <= 1.0) return;
     isDragging = true;
     hasDragged = false;
@@ -177,27 +201,75 @@
     }
   }
 
-  function downloadImage() {
+  async function downloadImage() {
+    if (!currentImage?.url || isSaving) return;
+    isSaving = true;
+    try {
+      const fallbackName = currentImage.alt || `image-${currentIndex + 1}.png`;
+      await saveImageToFile(currentImage.url, fallbackName);
+    } catch (err) {
+      console.error('Failed to save image:', err);
+    } finally {
+      isSaving = false;
+      closeContextMenu();
+    }
+  }
+
+  async function copyImageUrl() {
     if (!currentImage?.url) return;
-    const a = document.createElement('a');
-    a.href = currentImage.url;
-    a.download = currentImage.alt || `image-${currentIndex + 1}.png`;
-    a.target = '_blank';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(currentImage.url);
+        toast.success('Đã sao chép liên kết ảnh');
+        copied = true;
+        setTimeout(() => (copied = false), 2000);
+      }
+    } catch {
+      toast.error('Không thể sao chép liên kết');
+    } finally {
+      closeContextMenu();
+    }
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 220;
+    const menuHeight = 260;
+    const winWidth = typeof window !== 'undefined' ? window.innerWidth : 800;
+    const winHeight = typeof window !== 'undefined' ? window.innerHeight : 600;
+    const x = Math.min(e.clientX, winWidth - menuWidth - 10);
+    const y = Math.min(e.clientY, winHeight - menuHeight - 10);
+    contextMenuPos = { x: Math.max(10, x), y: Math.max(10, y) };
+    contextMenuOpen = true;
+  }
+
+  function closeContextMenu() {
+    contextMenuOpen = false;
   }
 
   function handleKeydown(e: KeyboardEvent) {
     if (!open) return;
     if (e.key === 'Escape') {
       e.preventDefault();
-      onClose();
+      if (contextMenuOpen) {
+        closeContextMenu();
+      } else {
+        onClose();
+      }
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      void downloadImage();
+    } else if (e.key === 's' || e.key === 'S') {
+      e.preventDefault();
+      void downloadImage();
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
+      closeContextMenu();
       prevImage();
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
+      closeContextMenu();
       nextImage();
     } else if (e.key === '+' || e.key === '=') {
       e.preventDefault();
@@ -212,6 +284,10 @@
   }
 
   function handleBackdropClick(e: MouseEvent) {
+    if (contextMenuOpen) {
+      closeContextMenu();
+      return;
+    }
     if (hasDragged) return;
     if (e.target === e.currentTarget) {
       onClose();
@@ -288,12 +364,17 @@
 
         <button
           type="button"
-          class="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
-          title="Download image"
+          class="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Lưu ảnh về máy (Ctrl+S)"
+          disabled={isSaving}
           data-testid="gallery-download-btn"
           onclick={downloadImage}
         >
-          <Download class="size-4" />
+          {#if isSaving}
+            <Loader2 class="size-4 animate-spin" />
+          {:else}
+            <Download class="size-4" />
+          {/if}
         </button>
 
         <button
@@ -318,6 +399,7 @@
       onpointermove={handlePointerMove}
       onpointerup={handlePointerUp}
       onpointercancel={handlePointerCancel}
+      oncontextmenu={handleContextMenu}
     >
       <!-- Prev Button -->
       {#if totalImages > 1}
@@ -343,6 +425,7 @@
         draggable="false"
         ondragstart={(e) => e.preventDefault()}
         ondblclick={handleDoubleClick}
+        oncontextmenu={handleContextMenu}
       />
 
       <!-- Next Button -->
@@ -373,6 +456,92 @@
             <img src={img.url} alt={img.alt || `Thumb ${idx + 1}`} class="size-full object-cover" />
           </button>
         {/each}
+      </div>
+    {/if}
+
+    <!-- Custom Right-Click Context Menu -->
+    {#if contextMenuOpen}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="fixed z-[60] min-w-[200px] overflow-hidden rounded-xl border border-white/15 bg-zinc-900/95 p-1.5 text-zinc-100 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100"
+        style="left: {contextMenuPos.x}px; top: {contextMenuPos.y}px;"
+        data-testid="gallery-context-menu"
+        onclick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/15 transition-colors text-left"
+          data-testid="context-menu-save-btn"
+          onclick={downloadImage}
+        >
+          <Download class="size-4 text-primary" />
+          <span>Lưu ảnh về máy...</span>
+          <span class="ml-auto text-[10px] text-white/50 font-mono">Ctrl+S</span>
+        </button>
+
+        <button
+          type="button"
+          class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/15 transition-colors text-left"
+          data-testid="context-menu-copy-url-btn"
+          onclick={copyImageUrl}
+        >
+          {#if copied}
+            <Check class="size-4 text-emerald-400" />
+            <span class="text-emerald-400">Đã sao chép URL</span>
+          {:else}
+            <Copy class="size-4 text-white/70" />
+            <span>Sao chép URL ảnh</span>
+          {/if}
+        </button>
+
+        <div class="h-px bg-white/10 my-1"></div>
+
+        <button
+          type="button"
+          class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/15 transition-colors text-left"
+          data-testid="context-menu-zoom-in-btn"
+          onclick={() => { zoomIn(); closeContextMenu(); }}
+        >
+          <ZoomIn class="size-4 text-white/70" />
+          <span>Phóng to</span>
+          <span class="ml-auto text-[10px] text-white/50 font-mono">+</span>
+        </button>
+
+        <button
+          type="button"
+          class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/15 transition-colors text-left"
+          data-testid="context-menu-zoom-out-btn"
+          onclick={() => { zoomOut(); closeContextMenu(); }}
+        >
+          <ZoomOut class="size-4 text-white/70" />
+          <span>Thu nhỏ</span>
+          <span class="ml-auto text-[10px] text-white/50 font-mono">-</span>
+        </button>
+
+        <button
+          type="button"
+          class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/15 transition-colors text-left"
+          data-testid="context-menu-zoom-reset-btn"
+          onclick={() => { resetZoom(); closeContextMenu(); }}
+        >
+          <RotateCcw class="size-4 text-white/70" />
+          <span>Đặt lại kích thước</span>
+          <span class="ml-auto text-[10px] text-white/50 font-mono">0</span>
+        </button>
+
+        <div class="h-px bg-white/10 my-1"></div>
+
+        <button
+          type="button"
+          class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-500/20 transition-colors text-left"
+          data-testid="context-menu-close-btn"
+          onclick={() => { closeContextMenu(); onClose(); }}
+        >
+          <X class="size-4 text-red-400" />
+          <span>Đóng xem ảnh</span>
+          <span class="ml-auto text-[10px] text-white/50 font-mono">Esc</span>
+        </button>
       </div>
     {/if}
   </div>
