@@ -371,5 +371,58 @@ describe('ConversationSidebar Component', () => {
     // Counter must update to exactly 1 (not 0 caused by double-toggle)
     expect(screen.getByText(/Selected 1/)).toBeTruthy();
   });
+
+  test('renders large conversation list with 100 items without error', () => {
+    const largeItems: InboxItem[] = Array.from({ length: 100 }, (_, idx) => ({
+      key: `customer-${idx}`,
+      kind: 'customer',
+      leadId: idx,
+      conversationId: idx,
+      identityId: 1000 + idx,
+      title: `Customer ${idx}`,
+      avatarUrl: null,
+      lastMessagePreview: `Message preview ${idx}`,
+      lastMessageAt: new Date(2026, 7, 1, 10, idx).toISOString(),
+      channels: [{ channel: 'zalo', messageCount: 1 }],
+      replyTargets: [],
+      participantCount: 1,
+      participants: []
+    }));
+
+    render(ConversationSidebar, {
+      props: {
+        items: largeItems,
+        selectedKey: 'customer-0',
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    expect(screen.getAllByText('All (100)').length).toBeGreaterThan(0);
+    expect(screen.getByText('Customer 0')).toBeTruthy();
+  });
+
+  test('toggles pin conversation and updates pinned section', async () => {
+    const { container } = render(ConversationSidebar, {
+      props: {
+        items,
+        selectedKey: null,
+        loading: false,
+        onSelect: () => {}
+      }
+    });
+
+    // Initially 0 pinned items
+    expect(screen.queryByText(/Pinned \(/)).toBeNull();
+
+    // Click pin button on first item
+    const pinButton = container.querySelector('button[title="Pin conversation"]');
+    expect(pinButton).toBeTruthy();
+    await fireEvent.click(pinButton!);
+
+    // Pinned header appears
+    expect(screen.getByText('Pinned (1)')).toBeTruthy();
+  });
 });
+
 

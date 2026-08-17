@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Channel, ConversationMessage, InboxItem } from '$lib/services/conversationService';
+  import type { ConversationMessage, InboxItem } from '$lib/services/conversationService';
   import { Button } from '$lib/components/ui/button';
   import { Checkbox } from '$lib/components/ui/checkbox';
   import { Input } from '$lib/components/ui/input';
@@ -7,12 +7,7 @@
   import { Skeleton } from '$lib/components/ui/skeleton';
   import { cn } from '$lib/utils';
 
-  import MessageSquare from 'lucide-svelte/icons/message-square';
-  import MessageCircle from 'lucide-svelte/icons/message-circle';
-  import Mail from 'lucide-svelte/icons/mail';
-  import Phone from 'lucide-svelte/icons/phone';
   import Search from 'lucide-svelte/icons/search';
-  import Users from 'lucide-svelte/icons/users';
   import Plus from 'lucide-svelte/icons/plus';
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import Pin from 'lucide-svelte/icons/pin';
@@ -22,7 +17,8 @@
 
   import NewChatDialog from './NewChatDialog.svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
-  import { parseEmoticons } from './emoticonUtils';
+  import ConversationItemRow from './ConversationItemRow.svelte';
+  import { computeVirtualWindow } from './sidebarState';
 
   let {
     items,
@@ -53,6 +49,33 @@
   let isSelectionMode = $state(false);
   let selectedKeys = $state<Set<string>>(new Set());
 
+  // Virtualization state
+  let viewportEl = $state<HTMLElement | null>(null);
+  let scrollTop = $state(0);
+  let viewportHeight = $state(0);
+
+  function handleScroll(e: Event) {
+    const target = e.currentTarget as HTMLElement;
+    scrollTop = target.scrollTop;
+  }
+
+  $effect(() => {
+    if (viewportEl) {
+      viewportHeight = viewportEl.clientHeight;
+      const resizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          viewportHeight = entry.contentRect.height;
+        }
+      });
+      resizeObserver.observe(viewportEl);
+      viewportEl.addEventListener('scroll', handleScroll, { passive: true });
+      return () => {
+        resizeObserver.disconnect();
+        viewportEl?.removeEventListener('scroll', handleScroll);
+      };
+    }
+  });
+
   onMount(() => {
     try {
       const saved = localStorage.getItem('rustsale_pinned_conversations');
@@ -76,14 +99,6 @@
     } catch {}
   }
 
-
-  const channelIcons: Record<Channel, typeof MessageSquare> = {
-    zalo: MessageSquare,
-    whatsapp: Phone,
-    messenger: MessageCircle,
-    email: Mail
-  };
-
   function isUnreadItem(item: InboxItem): boolean {
     if (item.replyTargets && item.replyTargets.length > 0) {
       return item.replyTargets.some((t) => {
@@ -98,7 +113,6 @@
     return item.kind === 'unknown';
   }
 
-
   function isStuckItem(item: InboxItem): boolean {
     if (!isUnreadItem(item) || !item.lastMessageAt) return false;
     const time = new Date(item.lastMessageAt).getTime();
@@ -110,7 +124,6 @@
   function isPriorityItem(item: InboxItem): boolean {
     return item.leadId !== null || (item.channels && item.channels.some((c) => c.messageCount >= 3));
   }
-
 
   let unreadCount = $derived(items.filter(isUnreadItem).length);
   let priorityCount = $derived(items.filter(isPriorityItem).length);
@@ -147,7 +160,6 @@
     })
   );
 
-
   function sortByLatest(a: InboxItem, b: InboxItem): number {
     const aAt = a.lastMessageAt ?? '';
     const bAt = b.lastMessageAt ?? '';
@@ -169,6 +181,26 @@
 
   let groupItems = $derived(
     filteredByKindItems.filter((i) => !pinnedKeys.has(i.key) && i.kind === 'group').slice().sort(sortByLatest)
+  );
+
+  let activeMainItems = $derived(
+    activeKindTab === 'customer'
+      ? customerItems
+      : activeKindTab === 'group'
+        ? groupItems
+        : unpinnedItems
+  );
+
+  let virtualResult = $derived(
+    computeVirtualWindow({
+      totalItems: activeMainItems.length,
+      scrollTop,
+      viewportHeight
+    })
+  );
+
+  let visibleMainItems = $derived(
+    activeMainItems.slice(virtualResult.startIndex, virtualResult.endIndex)
   );
 
   // Multi-selection derived helpers
@@ -220,25 +252,6 @@
     itemToDelete = null;
     itemsToDelete = [];
     onDeleted?.();
-  }
-
-  function getInitials(title: string): string {
-    if (!title) return '?';
-    const clean = title.trim();
-    if (/^unknown\b/i.test(clean)) {
-      return 'UN';
-    }
-    const sanitized = clean.replace(/[()]/g, '').trim();
-    const parts = sanitized.split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    }
-    return sanitized.slice(0, 2).toUpperCase();
-  }
-
-  function getParticipantsPreview(item: InboxItem): string {
-    if (!item.participants || item.participants.length === 0) return '';
-    return item.participants.map((p) => p.displayName || 'Member').join(', ');
   }
 
   function promptDelete(e: MouseEvent, item: InboxItem) {
@@ -429,7 +442,7 @@
     </div>
   </div>
 
-  <ScrollArea class="flex-1 min-h-0 w-full h-full">
+  <ScrollArea bind:viewportRef={viewportEl} class="flex-1 min-h-0 w-full h-full">
     {#if loading}
       <div class="space-y-3 p-3">
         {#each Array(5) as _, i}
@@ -452,500 +465,62 @@
             </h3>
             <div class="space-y-1">
               {#each pinnedItems as item (item.key)}
-                {@const isSelected = selectedKey === item.key}
-                {@const isChecked = selectedKeys.has(item.key)}
-                <div
-                  role="button"
-                  tabindex="0"
-                  data-inbox-item
-                  data-key={item.key}
-                  aria-current={isSelected ? 'true' : 'false'}
-                  onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      if (isSelectionMode) {
-                        toggleItemSelection(item.key);
-                      } else {
-                        onSelect(item);
-                      }
-                    }
-                  }}
-                  class={cn(
-                    'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none border-l-2 border-amber-500/80',
-                    isSelectionMode && isChecked
-                      ? 'bg-primary/10 text-foreground font-medium'
-                      : isSelected
-                        ? 'bg-accent text-accent-foreground font-medium'
-                        : 'hover:bg-muted/60 text-foreground bg-amber-500/5'
-                  )}
-                >
-                  {#if isSelectionMode}
-                    <Checkbox
-                      checked={isChecked}
-                      tabindex={-1}
-                      class="mt-3 shrink-0 pointer-events-none"
-                    />
-                  {/if}
-
-                  {#if item.avatarUrl}
-                    <img
-                      src={item.avatarUrl}
-                      alt={item.title}
-                      class="w-10 h-10 rounded-full object-cover shrink-0"
-                    />
-                  {:else}
-                    <div
-                      class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
-                    >
-                      {getInitials(item.title)}
-                    </div>
-                  {/if}
-
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center justify-between gap-1 group/item">
-                      <span class="font-semibold text-sm truncate">{item.title}</span>
-                      <div class="flex items-center gap-0.5 shrink-0">
-                        <button
-                          type="button"
-                          title="Unpin conversation"
-                          onclick={(e) => togglePinConversation(e, item)}
-                          class="p-1 rounded text-amber-500 hover:bg-amber-500/10 shrink-0"
-                        >
-                          <Pin class="w-3.5 h-3.5 fill-amber-500" />
-                        </button>
-                        {#if !isSelectionMode}
-                          <button
-                            type="button"
-                            title="Delete conversation"
-                            onclick={(e) => promptDelete(e, item)}
-                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                          >
-                            <Trash2 class="w-3.5 h-3.5" />
-                          </button>
-                        {/if}
-                      </div>
-                    </div>
-
-                    {#if item.lastMessagePreview}
-                      <p class="text-xs text-muted-foreground truncate mt-0.5">
-                        {parseEmoticons(item.lastMessagePreview)}
-                      </p>
-                    {/if}
-
-                    {#if item.channels && item.channels.length > 0}
-                      <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                        {#each item.channels as ch (ch.channel)}
-                          {@const Icon = channelIcons[ch.channel] || MessageSquare}
-                          {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
-                          <span
-                            class={cn(
-                              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-colors",
-                              count > 0
-                                ? "bg-destructive/15 text-destructive font-bold ring-1 ring-destructive/30"
-                                : "bg-muted/80 text-muted-foreground"
-                            )}
-                          >
-                            <Icon class="w-3 h-3" />
-                            {#if count > 0}
-                              <span class="font-bold">{count}</span>
-                            {/if}
-                          </span>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                </div>
+                <ConversationItemRow
+                  {item}
+                  isSelected={selectedKey === item.key}
+                  isChecked={selectedKeys.has(item.key)}
+                  isPinned={true}
+                  {isSelectionMode}
+                  {onSelect}
+                  onToggleSelection={toggleItemSelection}
+                  onTogglePin={togglePinConversation}
+                  onPromptDelete={promptDelete}
+                />
               {/each}
             </div>
           </div>
         {/if}
 
-        {#if activeKindTab === 'all'}
-          {#if unpinnedItems.length > 0}
-            <div>
-              <div class="space-y-1">
-                {#each unpinnedItems as item (item.key)}
-                  {@const isSelected = selectedKey === item.key}
-                  {@const isChecked = selectedKeys.has(item.key)}
-                  <div
-                    role="button"
-                    tabindex="0"
-                    data-inbox-item
-                    data-key={item.key}
-                    aria-current={isSelected ? 'true' : 'false'}
-                    onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
-                    onkeydown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        if (isSelectionMode) {
-                          toggleItemSelection(item.key);
-                        } else {
-                          onSelect(item);
-                        }
-                      }
-                    }}
-                    class={cn(
-                      'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                      isSelectionMode && isChecked
-                        ? 'bg-primary/10 text-foreground font-medium'
-                        : isSelected
-                          ? 'bg-accent text-accent-foreground font-medium'
-                          : 'hover:bg-muted/60 text-foreground'
-                    )}
-                  >
-                    {#if isSelectionMode}
-                      <Checkbox
-                        checked={isChecked}
-                        tabindex={-1}
-                        class="mt-3 shrink-0 pointer-events-none"
-                      />
-                    {/if}
-
-                    {#if item.avatarUrl}
-                      <img
-                        src={item.avatarUrl}
-                        alt={item.title}
-                        class="w-10 h-10 rounded-full object-cover shrink-0"
-                      />
-                    {:else}
-                      <div
-                        class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
-                      >
-                        {getInitials(item.title)}
-                      </div>
-                    {/if}
-
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center justify-between gap-1 group/item">
-                        <span class="font-semibold text-sm truncate">{item.title}</span>
-                        <div class="flex items-center gap-0.5 shrink-0">
-                          <button
-                            type="button"
-                            title="Pin conversation"
-                            onclick={(e) => togglePinConversation(e, item)}
-                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
-                          >
-                            <Pin class="w-3.5 h-3.5" />
-                          </button>
-                          {#if !isSelectionMode}
-                            <button
-                              type="button"
-                              title="Delete conversation"
-                              onclick={(e) => promptDelete(e, item)}
-                              class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                            >
-                              <Trash2 class="w-3.5 h-3.5" />
-                            </button>
-                          {/if}
-                        </div>
-                      </div>
-
-                      {#if item.lastMessagePreview}
-                        <p class="text-xs text-muted-foreground truncate mt-0.5">
-                          {parseEmoticons(item.lastMessagePreview)}
-                        </p>
-                      {/if}
-
-                      {#if item.kind === 'group'}
-                        <div class="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
-                          <Users class="w-3.5 h-3.5 shrink-0" />
-                          <span class="shrink-0 font-medium">{item.participantCount}</span>
-                          {#if getParticipantsPreview(item)}
-                            <span class="truncate">({getParticipantsPreview(item)})</span>
-                          {/if}
-                        </div>
-                      {/if}
-
-                      {#if item.channels && item.channels.length > 0}
-                        <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                          {#each item.channels as ch (ch.channel)}
-                            {@const Icon = channelIcons[ch.channel] || MessageSquare}
-                            {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
-                            {@const chName = ch.channel.toLowerCase()}
-                            <span
-                              class={cn(
-                                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
-                                count > 0
-                                    ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
-                                    : chName === 'zalo'
-                                      ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
-                                      : chName === 'whatsapp'
-                                        ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
-                                        : chName === 'messenger'
-                                          ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
-                                          : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
-                              )}
-                            >
-                              <Icon class="w-3 h-3" />
-                              {#if count > 0}
-                                <span class="font-bold">{count}</span>
-                              {/if}
-                            </span>
-                          {/each}
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        {:else if activeKindTab === 'customer'}
-          {#if customerItems.length > 0}
-            <div>
+        {#if activeMainItems.length > 0}
+          <div>
+            {#if activeKindTab === 'customer'}
               <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
                 Customers ({customerItems.length})
               </h3>
-              <div class="space-y-1">
-                {#each customerItems as item (item.key)}
-                  {@const isSelected = selectedKey === item.key}
-                  {@const isChecked = selectedKeys.has(item.key)}
-                  <div
-                    role="button"
-                    tabindex="0"
-                    data-inbox-item
-                    data-key={item.key}
-                    aria-current={isSelected ? 'true' : 'false'}
-                    onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
-                    onkeydown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        if (isSelectionMode) {
-                          toggleItemSelection(item.key);
-                        } else {
-                          onSelect(item);
-                        }
-                      }
-                    }}
-                    class={cn(
-                      'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                      isSelectionMode && isChecked
-                        ? 'bg-primary/10 text-foreground font-medium'
-                        : isSelected
-                          ? 'bg-accent text-accent-foreground font-medium'
-                          : 'hover:bg-muted/60 text-foreground'
-                    )}
-                  >
-                    {#if isSelectionMode}
-                      <Checkbox
-                        checked={isChecked}
-                        tabindex={-1}
-                        class="mt-3 shrink-0 pointer-events-none"
-                      />
-                    {/if}
-
-                    {#if item.avatarUrl}
-                      <img
-                        src={item.avatarUrl}
-                        alt={item.title}
-                        class="w-10 h-10 rounded-full object-cover shrink-0"
-                      />
-                    {:else}
-                      <div
-                        class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
-                      >
-                        {getInitials(item.title)}
-                      </div>
-                    {/if}
-
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center justify-between gap-1 group/item">
-                        <span class="font-semibold text-sm truncate">{item.title}</span>
-                        <div class="flex items-center gap-0.5 shrink-0">
-                          <button
-                            type="button"
-                            title="Pin conversation"
-                            onclick={(e) => togglePinConversation(e, item)}
-                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
-                          >
-                            <Pin class="w-3.5 h-3.5" />
-                          </button>
-                          {#if !isSelectionMode}
-                            <button
-                              type="button"
-                              title="Delete conversation"
-                              onclick={(e) => promptDelete(e, item)}
-                              class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                            >
-                              <Trash2 class="w-3.5 h-3.5" />
-                            </button>
-                          {/if}
-                        </div>
-                      </div>
-
-                      {#if item.lastMessagePreview}
-                        <p class="text-xs text-muted-foreground truncate mt-0.5">
-                          {parseEmoticons(item.lastMessagePreview)}
-                        </p>
-                      {/if}
-
-                      {#if item.channels && item.channels.length > 0}
-                        <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                          {#each item.channels as ch (ch.channel)}
-                            {@const Icon = channelIcons[ch.channel] || MessageSquare}
-                            {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
-                            {@const chName = ch.channel.toLowerCase()}
-                            <span
-                              class={cn(
-                                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
-                                count > 0
-                                  ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
-                                  : chName === 'zalo'
-                                    ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/40"
-                                    : chName === 'whatsapp'
-                                      ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40"
-                                      : chName === 'messenger'
-                                        ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/40"
-                                        : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/40"
-                              )}
-                            >
-                              <Icon class="w-3 h-3" />
-                              {#if count > 0}
-                                <span class="font-bold">{count}</span>
-                              {/if}
-                            </span>
-                          {/each}
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        {:else if activeKindTab === 'group'}
-          {#if groupItems.length > 0}
-            <div>
+            {:else if activeKindTab === 'group'}
               <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
                 Groups ({groupItems.length})
               </h3>
-              <div class="space-y-1">
-                {#each groupItems as item (item.key)}
-                  {@const isSelected = selectedKey === item.key}
-                  {@const isChecked = selectedKeys.has(item.key)}
-                  <div
-                    role="button"
-                    tabindex="0"
-                    data-inbox-item
-                    data-key={item.key}
-                    aria-current={isSelected ? 'true' : 'false'}
-                    onclick={() => (isSelectionMode ? toggleItemSelection(item.key) : onSelect(item))}
-                    onkeydown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        if (isSelectionMode) {
-                          toggleItemSelection(item.key);
-                        } else {
-                          onSelect(item);
-                        }
-                      }
-                    }}
-                    class={cn(
-                      'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
-                      isSelectionMode && isChecked
-                        ? 'bg-primary/10 text-foreground font-medium'
-                        : isSelected
-                          ? 'bg-accent text-accent-foreground font-medium'
-                          : 'hover:bg-muted/60 text-foreground'
-                    )}
-                  >
-                    {#if isSelectionMode}
-                      <Checkbox
-                        checked={isChecked}
-                        tabindex={-1}
-                        class="mt-3 shrink-0 pointer-events-none"
-                      />
-                    {/if}
+            {/if}
 
-                    {#if item.avatarUrl}
-                      <img
-                        src={item.avatarUrl}
-                        alt={item.title}
-                        class="w-10 h-10 rounded-full object-cover shrink-0"
-                      />
-                    {:else}
-                      <div
-                        class="w-10 h-10 rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center shrink-0 text-sm"
-                      >
-                        {getInitials(item.title)}
-                      </div>
-                    {/if}
-
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center justify-between gap-1 group/item">
-                        <span class="font-semibold text-sm truncate">{item.title}</span>
-                        <div class="flex items-center gap-0.5 shrink-0">
-                          <button
-                            type="button"
-                            title="Pin conversation"
-                            onclick={(e) => togglePinConversation(e, item)}
-                            class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
-                          >
-                            <Pin class="w-3.5 h-3.5" />
-                          </button>
-                          {#if !isSelectionMode}
-                            <button
-                              type="button"
-                              title="Delete conversation"
-                              onclick={(e) => promptDelete(e, item)}
-                              class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
-                            >
-                              <Trash2 class="w-3.5 h-3.5" />
-                            </button>
-                          {/if}
-                        </div>
-                      </div>
-
-                      {#if item.lastMessagePreview}
-                        <p class="text-xs text-muted-foreground truncate mt-0.5">
-                          {parseEmoticons(item.lastMessagePreview)}
-                        </p>
-                      {/if}
-
-                      <div class="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
-                        <Users class="w-3.5 h-3.5 shrink-0" />
-                        <span class="shrink-0 font-medium">{item.participantCount}</span>
-                        {#if getParticipantsPreview(item)}
-                          <span class="truncate">({getParticipantsPreview(item)})</span>
-                        {/if}
-                      </div>
-
-                      {#if item.channels && item.channels.length > 0}
-                        <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                          {#each item.channels as ch (ch.channel)}
-                            {@const Icon = channelIcons[ch.channel] || MessageSquare}
-                            {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
-                            <span
-                              class={cn(
-                                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-colors",
-                                count > 0
-                                  ? "bg-destructive/15 text-destructive font-bold ring-1 ring-destructive/30"
-                                  : "bg-muted/80 text-muted-foreground"
-                              )}
-                            >
-                              <Icon class="w-3 h-3" />
-                              {#if count > 0}
-                                <span class="font-bold">{count}</span>
-                              {/if}
-                            </span>
-                          {/each}
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
+            <div
+              class="space-y-1"
+              style={virtualResult.isVirtualized
+                ? `padding-top: ${virtualResult.topPadding}px; padding-bottom: ${virtualResult.bottomPadding}px;`
+                : ''}
+            >
+              {#each visibleMainItems as item (item.key)}
+                <ConversationItemRow
+                  {item}
+                  isSelected={selectedKey === item.key}
+                  isChecked={selectedKeys.has(item.key)}
+                  isPinned={pinnedKeys.has(item.key)}
+                  {isSelectionMode}
+                  {onSelect}
+                  onToggleSelection={toggleItemSelection}
+                  onTogglePin={togglePinConversation}
+                  onPromptDelete={promptDelete}
+                />
+              {/each}
             </div>
-          {/if}
+          </div>
         {/if}
 
-        {#if unpinnedItems.length === 0 && pinnedItems.length === 0}
+        {#if activeMainItems.length === 0 && pinnedItems.length === 0}
           <div class="p-4 text-center text-sm text-muted-foreground">
             No conversations found
           </div>
         {/if}
-
       </div>
     {/if}
   </ScrollArea>
