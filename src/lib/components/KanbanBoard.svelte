@@ -12,7 +12,15 @@
     Building, DollarSign, Search, UserCheck, TrendingUp, Layers, CheckCircle2,
     ChevronDown, User
   } from 'lucide-svelte';
-  import { m, formatCurrency, formatCompactCurrency, formatDate } from '$lib/i18n';
+  import {
+    m,
+    formatCurrency,
+    formatCompactCurrency,
+    formatDate,
+    currencyState,
+    convertCurrency,
+    type Currency
+  } from '$lib/i18n';
 
   let deals = $state<Deal[]>([]);
   let leads = $state<Lead[]>([]);
@@ -30,6 +38,7 @@
   let isLeadDropdownOpen = $state(false);
 
   let newTitle = $state('');
+  let newCurrency = $state<Currency>('VND');
   let newValue = $state(10000000);
   let newStage = $state('Prospecting');
   let creatingDeal = $state(false);
@@ -45,7 +54,16 @@
 
   const stages = ['Prospecting', 'Demo', 'Proposal', 'Negotiation', 'Won'];
 
-  const presetValues = [5000000, 10000000, 25000000, 50000000, 100000000];
+  const vndPresets = [5000000, 10000000, 25000000, 50000000, 100000000];
+  const usdPresets = [200, 500, 1000, 2500, 5000];
+
+  let currentPresets = $derived(newCurrency === 'USD' ? usdPresets : vndPresets);
+
+  function handleCurrencyChange(c: Currency) {
+    if (newCurrency === c) return;
+    newCurrency = c;
+    newValue = c === 'USD' ? 500 : 10000000;
+  }
 
   async function loadDeals() {
     try {
@@ -80,7 +98,8 @@
       newTitle = '';
     }
 
-    newValue = 10000000;
+    newCurrency = currencyState.baseCurrency;
+    newValue = newCurrency === 'USD' ? 500 : 10000000;
     showCreateModal = true;
   }
 
@@ -126,9 +145,33 @@
     })
   );
 
-  // Pipeline metrics
-  let totalPipelineValue = $derived(deals.reduce((sum, d) => sum + (d.value || 0), 0));
-  let wonDealsValue = $derived(deals.filter(d => d.stage === 'Won').reduce((sum, d) => sum + (d.value || 0), 0));
+  // Pipeline metrics converted to Base Currency
+  let totalPipelineValue = $derived(
+    deals.reduce((sum, d) => {
+      const val = convertCurrency(
+        d.value || 0,
+        (d.currency as Currency) || 'VND',
+        currencyState.baseCurrency,
+        currencyState.exchangeRate
+      );
+      return sum + val;
+    }, 0)
+  );
+
+  let wonDealsValue = $derived(
+    deals
+      .filter(d => d.stage === 'Won')
+      .reduce((sum, d) => {
+        const val = convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        return sum + val;
+      }, 0)
+  );
+
   let avgDealSize = $derived(deals.length > 0 ? totalPipelineValue / deals.length : 0);
 
   async function handleCreateDeal(e: Event) {
@@ -146,7 +189,13 @@
     createErrorMsg = null;
     try {
       const createdTitle = newTitle.trim();
-      await crmService.createDeal(selectedLead.id, createdTitle, Number(newValue) || 0, newStage);
+      await crmService.createDeal(
+        selectedLead.id,
+        createdTitle,
+        Number(newValue) || 0,
+        newStage,
+        newCurrency
+      );
       showCreateModal = false;
       toast.success(m.kanban_deal_created_toast(), {
         description: `Created opportunity "${createdTitle}" for ${selectedLead.name}.`
@@ -254,7 +303,7 @@
       </div>
       <div>
         <p class="text-[11px] text-muted-foreground font-medium">{m.pipeline_total_value()}</p>
-        <p class="text-base font-extrabold text-foreground tracking-tight">{formatCurrency(totalPipelineValue, 'VND')}</p>
+        <p class="text-base font-extrabold text-foreground tracking-tight">{formatCurrency(totalPipelineValue, currencyState.baseCurrency)}</p>
       </div>
     </div>
 
@@ -274,7 +323,7 @@
       </div>
       <div>
         <p class="text-[11px] text-muted-foreground font-medium">{m.pipeline_won_value()}</p>
-        <p class="text-base font-extrabold text-emerald-600 tracking-tight">{formatCurrency(wonDealsValue, 'VND')}</p>
+        <p class="text-base font-extrabold text-emerald-600 tracking-tight">{formatCurrency(wonDealsValue, currencyState.baseCurrency)}</p>
       </div>
     </div>
 
@@ -284,7 +333,7 @@
       </div>
       <div>
         <p class="text-[11px] text-muted-foreground font-medium">{m.pipeline_avg_deal()}</p>
-        <p class="text-base font-extrabold text-foreground tracking-tight">{formatCurrency(Math.round(avgDealSize), 'VND')}</p>
+        <p class="text-base font-extrabold text-foreground tracking-tight">{formatCurrency(Math.round(avgDealSize), currencyState.baseCurrency)}</p>
       </div>
     </div>
   </div>
@@ -320,7 +369,7 @@
     {#each stages as stage}
       {@const cfg = stageConfig[stage]}
       {@const stageDeals = filteredDeals.filter(d => d.stage === stage)}
-      {@const totalValue = stageDeals.reduce((sum, d) => sum + (d.value || 0), 0)}
+      {@const totalValue = stageDeals.reduce((sum, d) => sum + convertCurrency(d.value || 0, (d.currency as Currency) || 'VND', currencyState.baseCurrency, currencyState.exchangeRate), 0)}
       {@const isOver = dragOverColumn === stage}
 
       <div
@@ -354,7 +403,7 @@
             </div>
           </div>
           <div class="flex items-center justify-between mt-0.5">
-            <span class="text-xs font-extrabold text-emerald-600">{formatCurrency(totalValue, 'VND')}</span>
+            <span class="text-xs font-extrabold text-emerald-600">{formatCurrency(totalValue, currencyState.baseCurrency)}</span>
           </div>
         </div>
 
@@ -407,7 +456,7 @@
 
                   <div class="flex items-center justify-between pt-2 border-t border-border/40 text-[11px]">
                     <span class="font-extrabold text-emerald-600 text-xs flex items-center gap-0.5">
-                      {formatCurrency(deal.value, 'VND')}
+                      {formatCurrency(deal.value, (deal.currency as Currency) || 'VND')}
                     </span>
                     {#if deal.created_at}
                       <span class="text-muted-foreground text-[10px] flex items-center gap-1 font-medium">
@@ -557,52 +606,74 @@
           />
         </div>
 
-        <!-- 3. Value & Stage Row -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div class="space-y-1.5">
+        <!-- 3. Value, Currency & Stage -->
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
             <label for="deal-value-input" class="text-xs font-bold text-foreground flex items-center gap-1.5">
               <DollarSign class="w-3.5 h-3.5 text-emerald-600" />
-              {m.kanban_deal_value_label()} (₫) <span class="text-destructive">*</span>
+              {m.kanban_deal_value_label()} ({newCurrency === 'USD' ? '$' : '₫'}) <span class="text-destructive">*</span>
             </label>
-            <Input
-              id="deal-value-input"
-              type="number"
-              bind:value={newValue}
-              placeholder="10000000"
-              class="h-10 text-xs rounded-xl font-bold text-emerald-600"
-              min="0"
-              step="500000"
-              required
-            />
-
-            <!-- Quick Value Presets (VND) -->
-            <div class="flex items-center gap-1 pt-1 flex-wrap">
-              {#each presetValues as preset}
-                <button
-                  type="button"
-                  onclick={() => newValue = preset}
-                  class="text-[10px] font-semibold px-2 py-0.5 rounded-lg border border-border hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-600 transition-colors"
-                >
-                  {formatCompactCurrency(preset, 'VND')}
-                </button>
-              {/each}
+            <!-- Currency selector buttons -->
+            <div class="flex items-center p-0.5 rounded-lg bg-muted border border-border">
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer {newCurrency === 'VND'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => handleCurrencyChange('VND')}
+              >
+                VND (₫)
+              </button>
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer {newCurrency === 'USD'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => handleCurrencyChange('USD')}
+              >
+                USD ($)
+              </button>
             </div>
           </div>
 
-          <div class="space-y-1.5">
-            <label for="deal-stage-select" class="text-xs font-bold text-foreground flex items-center gap-1.5">
-              <Layers class="w-3.5 h-3.5 text-primary" />
-              {m.kanban_initial_stage_label()}
-            </label>
-            <select
-              id="deal-stage-select"
-              bind:value={newStage}
-              class="w-full h-10 px-3 rounded-xl border border-input bg-background text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
-            >
-              {#each stages as stage}
-                <option value={stage}>{stageConfig[stage].label} ({stageConfig[stage].prob})</option>
-              {/each}
-            </select>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="space-y-1.5">
+              <Input
+                id="deal-value-input"
+                type="number"
+                bind:value={newValue}
+                placeholder={newCurrency === 'USD' ? '500' : '10000000'}
+                class="h-10 text-xs rounded-xl font-bold text-emerald-600"
+                min="0"
+                step={newCurrency === 'USD' ? '50' : '500000'}
+                required
+              />
+
+              <!-- Quick Value Presets -->
+              <div class="flex items-center gap-1 pt-1 flex-wrap">
+                {#each currentPresets as preset}
+                  <button
+                    type="button"
+                    onclick={() => newValue = preset}
+                    class="text-[10px] font-semibold px-2 py-0.5 rounded-lg border border-border hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-600 transition-colors cursor-pointer"
+                  >
+                    {formatCompactCurrency(preset, newCurrency)}
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <div class="space-y-1.5">
+              <select
+                id="deal-stage-select"
+                bind:value={newStage}
+                class="w-full h-10 px-3 rounded-xl border border-input bg-background text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+              >
+                {#each stages as stage}
+                  <option value={stage}>{stageConfig[stage].label} ({stageConfig[stage].prob})</option>
+                {/each}
+              </select>
+            </div>
           </div>
         </div>
 

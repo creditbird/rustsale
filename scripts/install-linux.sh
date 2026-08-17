@@ -93,6 +93,9 @@ INSTALL_PREFIX="$HOME/.local"
 copy_extracted_files() {
   local src_root="$1"
   mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/share/applications" "$INSTALL_PREFIX/share/icons"
+  # Clean up legacy erroneous nested dirs if present
+  rm -rf "$INSTALL_PREFIX/share/applications/applications" 2>/dev/null || true
+  rm -rf "$INSTALL_PREFIX/share/icons/icons" 2>/dev/null || true
   if [ -d "$src_root/usr/bin" ]; then
     for bin in "$src_root/usr/bin/"*; do
       if [ -f "$bin" ]; then

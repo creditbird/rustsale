@@ -12,7 +12,7 @@
   import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink, Download } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
   import { exportLeadsToCsv } from '$lib/utils/leadsExportCsv';
-  import { m, formatCurrency } from '$lib/i18n';
+  import { m, formatCurrency, convertCurrency, currencyState, type Currency } from '$lib/i18n';
 
   let { leads = [], entityType = 'leads', onRefresh, onOpenConversation } = $props<{
     leads: Lead[];
@@ -44,6 +44,7 @@
   let name = $state('');
   let company = $state('');
   let value = $state(0);
+  let currency = $state<Currency>('VND');
   let owner = $state('Self');
   let email = $state('');
   let phone = $state('');
@@ -82,10 +83,15 @@
       if (filterOwner && filterOwner !== 'all' && lead.owner !== filterOwner) return false;
       
       if (filterValueRange && filterValueRange !== 'all') {
-        const val = lead.value || 0;
-        if (filterValueRange === 'under_10m' && val >= 10000000) return false;
-        if (filterValueRange === '10m_to_50m' && (val < 10000000 || val > 50000000)) return false;
-        if (filterValueRange === 'above_50m' && val <= 50000000) return false;
+        const valVnd = convertCurrency(
+          lead.value || 0,
+          (lead.currency as Currency) || 'VND',
+          'VND',
+          currencyState.exchangeRate
+        );
+        if (filterValueRange === 'under_10m' && valVnd >= 10000000) return false;
+        if (filterValueRange === '10m_to_50m' && (valVnd < 10000000 || valVnd > 50000000)) return false;
+        if (filterValueRange === 'above_50m' && valVnd <= 50000000) return false;
       }
 
       if (filterZaloStatus && filterZaloStatus !== 'all') {
@@ -162,6 +168,20 @@
     }
   });
 
+  function handleAddCurrencySwitch(targetCurrency: Currency) {
+    if (currency === targetCurrency) return;
+    if (value && value > 0) {
+      if (currency === 'VND' && targetCurrency === 'USD') {
+        const converted = convertCurrency(value, 'VND', 'USD', currencyState.exchangeRate);
+        value = Math.round(converted * 100) / 100;
+      } else if (currency === 'USD' && targetCurrency === 'VND') {
+        const converted = convertCurrency(value, 'USD', 'VND', currencyState.exchangeRate);
+        value = Math.round(converted);
+      }
+    }
+    currency = targetCurrency;
+  }
+
   async function handleAddLead(e: Event) {
     e.preventDefault();
     const trimmedName = name.trim();
@@ -186,7 +206,9 @@
         owner.trim() || 'Self',
         trimmedEmail,
         trimmedPhone,
-        trimmedAbout || null
+        trimmedAbout || null,
+        null,
+        currency
       );
       name = '';
       company = '';
@@ -486,7 +508,7 @@
                 </Badge>
               </Table.Cell>
               <Table.Cell class="text-right font-bold text-xs text-foreground">
-                {formatCurrency(lead.value, 'VND')}
+                {formatCurrency(lead.value, (lead.currency as Currency) || 'VND')}
               </Table.Cell>
               <Table.Cell class="text-xs text-muted-foreground">{lead.owner || '—'}</Table.Cell>
             </Table.Row>
@@ -587,7 +609,25 @@
           </div>
           <div class="flex flex-col gap-1">
             <label for="lead-value" class="font-medium text-foreground">{m.leads_modal_value_label()}</label>
-            <Input id="lead-value" type="number" bind:value={value} min="0" />
+            <div class="flex items-center gap-1.5">
+              <Input id="lead-value" type="number" bind:value={value} min="0" step={currency === 'USD' ? '100' : '500000'} class="flex-1" />
+              <div class="flex bg-muted p-0.5 rounded-md border text-[11px] font-medium shrink-0">
+                <button
+                  type="button"
+                  class="px-2 py-1 rounded transition-colors {currency === 'VND' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                  onclick={() => handleAddCurrencySwitch('VND')}
+                >
+                  VND (₫)
+                </button>
+                <button
+                  type="button"
+                  class="px-2 py-1 rounded transition-colors {currency === 'USD' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                  onclick={() => handleAddCurrencySwitch('USD')}
+                >
+                  USD ($)
+                </button>
+              </div>
+            </div>
           </div>
           <div class="flex flex-col gap-1">
             <label for="lead-owner" class="font-medium text-foreground">{m.leads_modal_owner_label()}</label>

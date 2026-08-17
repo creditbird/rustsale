@@ -197,6 +197,8 @@ pub fn run() {
             commands::add_activity,
             commands::update_lead,
             commands::delete_lead,
+            commands::get_currency_settings,
+            commands::update_currency_settings,
             commands::start_google_maps_scrape,
             commands::stop_google_maps_scrape,
             commands::get_preset_provinces,

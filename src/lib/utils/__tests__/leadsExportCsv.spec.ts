@@ -17,6 +17,7 @@ describe('leadsExportCsv Utility', () => {
       company: 'Công ty TNHH HUKI',
       status: 'New',
       value: 50000,
+      currency: 'VND',
       last_activity: '2026-08-14',
       owner: 'Nguyễn Văn A',
       email: 'huki@example.com',
@@ -32,7 +33,8 @@ describe('leadsExportCsv Utility', () => {
       name: '=SUM(1,2)',
       company: 'Tech "Plus" Corp',
       status: 'Converted',
-      value: 0,
+      value: 2500,
+      currency: 'USD',
       last_activity: '2026-08-10',
       owner: 'Admin',
       email: 'tech@corp.com',
@@ -75,12 +77,20 @@ describe('leadsExportCsv Utility', () => {
     expect(header).toContain('"Email"');
     expect(header).toContain('"Status"');
     expect(header).toContain('"Value"');
+    expect(header).toContain('"Currency"');
     expect(header).toContain('"Zalo_Status"');
     expect(header).toContain('"Zalo_UID"');
     expect(header).toContain('"Owner"');
     expect(header).toContain('"Address"');
     expect(header).toContain('"About"');
     expect(header).toContain('"Last_Activity"');
+
+    // Test row 1 has VND
+    expect(lines[1]).toContain('"50000","VND"');
+    // Test row 2 has USD
+    expect(lines[2]).toContain('"2500","USD"');
+    // Test row 3 defaults to VND
+    expect(lines[3]).toContain('"12000","VND"');
   });
 
   test('preserves leading zero for Vietnamese phone numbers and escapes quotes/multiline', () => {

@@ -20,7 +20,15 @@
     DollarSign, Layers, Send, MessageCircle, ExternalLink, RefreshCw, MessageSquare
   } from 'lucide-svelte';
   import * as m from '$lib/paraglide/messages';
-  import { formatCurrency, formatCompactCurrency, formatDate, formatDateTime } from '$lib/i18n';
+  import {
+    formatCurrency,
+    formatCompactCurrency,
+    convertCurrency,
+    formatDate,
+    formatDateTime,
+    currencyState,
+    type Currency
+  } from '$lib/i18n';
 
   interface ZaloTemplate {
     id: number;
@@ -56,6 +64,7 @@
   let editCompany = $state('');
   let editStatus = $state('');
   let editValue = $state(0);
+  let editCurrency = $state<Currency>('VND');
   let editOwner = $state('');
   let editEmail = $state('');
   let editPhone = $state('');
@@ -67,6 +76,7 @@
   // Create Deal Modal State for this lead
   let showCreateDealModal = $state(false);
   let newDealTitle = $state('');
+  let newDealCurrency = $state<Currency>('VND');
   let newDealValue = $state(10000000);
   let newDealStage = $state('Prospecting');
   let creatingDeal = $state(false);
@@ -90,7 +100,16 @@
   let sendingEmail = $state(false);
   let sendEmailErrorMsg = $state<string | null>(null);
 
-  const presetValues = [5000000, 10000000, 25000000, 50000000, 100000000];
+  const vndPresets = [5000000, 10000000, 25000000, 50000000, 100000000];
+  const usdPresets = [200, 500, 1000, 2500, 5000];
+
+  let dealPresets = $derived(newDealCurrency === 'USD' ? usdPresets : vndPresets);
+
+  function handleDealCurrencyChange(c: Currency) {
+    if (newDealCurrency === c) return;
+    newDealCurrency = c;
+    newDealValue = c === 'USD' ? 500 : 10000000;
+  }
 
   const stages = ['Prospecting', 'Demo', 'Proposal', 'Negotiation', 'Won'] as const;
   const stageBadges: Record<string, { label: () => string; bg: string; text: string }> = {
@@ -129,6 +148,7 @@
     editCompany = lead.company;
     editStatus = lead.status;
     editValue = lead.value;
+    editCurrency = (lead.currency as Currency) || 'VND';
     editOwner = lead.owner || '';
     editEmail = lead.email;
     editPhone = lead.phone || '';
@@ -137,10 +157,25 @@
     isEditing = true;
   }
 
+  function handleCurrencySwitch(targetCurrency: Currency) {
+    if (editCurrency === targetCurrency) return;
+    if (editValue && editValue > 0) {
+      if (editCurrency === 'VND' && targetCurrency === 'USD') {
+        const converted = convertCurrency(editValue, 'VND', 'USD', currencyState.exchangeRate);
+        editValue = Math.round(converted * 100) / 100;
+      } else if (editCurrency === 'USD' && targetCurrency === 'VND') {
+        const converted = convertCurrency(editValue, 'USD', 'VND', currencyState.exchangeRate);
+        editValue = Math.round(converted);
+      }
+    }
+    editCurrency = targetCurrency;
+  }
+
   function openCreateDealModal() {
     createDealErrorMsg = null;
     newDealTitle = `Deal - ${lead?.company || lead?.name || ''}`;
-    newDealValue = 10000000;
+    newDealCurrency = (lead?.currency as Currency) || currencyState.baseCurrency;
+    newDealValue = newDealCurrency === 'USD' ? 500 : 10000000;
     newDealStage = 'Prospecting';
     showCreateDealModal = true;
   }
@@ -308,7 +343,13 @@
     createDealErrorMsg = null;
     try {
       const createdTitle = newDealTitle.trim();
-      await crmService.createDeal(leadId, createdTitle, Number(newDealValue) || 0, newDealStage);
+      await crmService.createDeal(
+        leadId,
+        createdTitle,
+        Number(newDealValue) || 0,
+        newDealStage,
+        newDealCurrency
+      );
       showCreateDealModal = false;
       toast.success(m.lead_details_toast_deal_created(), {
         description: m.lead_details_toast_deal_created_desc({ title: createdTitle, name: lead?.name || m.lead_details_fallback_customer() })
@@ -375,7 +416,8 @@
         editEmail.trim(),
         editPhone.trim(),
         editAbout.trim() || null,
-        editAddress.trim() || null
+        editAddress.trim() || null,
+        editCurrency
       );
       isEditing = false;
       await loadLeadDetails(leadId);
@@ -603,7 +645,7 @@
                     </Badge>
                   </div>
                   <div class="flex items-center gap-3 text-[11px]">
-                    <span class="font-extrabold text-emerald-600 text-xs">{formatCurrency(deal.value, 'VND')}</span>
+                    <span class="font-extrabold text-emerald-600 text-xs">{formatCurrency(deal.value, (deal.currency as Currency) || 'VND')}</span>
                     {#if deal.created_at}
                       <span class="text-muted-foreground text-[10px] flex items-center gap-1 font-medium">
                         <Calendar class="w-3 h-3 text-muted-foreground/60" />
@@ -671,7 +713,25 @@
             </div>
             <div class="space-y-1">
               <label for="edit-value" class="font-medium text-foreground">{m.lead_details_estimated_value()}</label>
-              <Input id="edit-value" type="number" bind:value={editValue} min="0" step="500000" class="h-9 text-xs font-semibold text-emerald-600" />
+              <div class="flex items-center gap-1.5">
+                <Input id="edit-value" type="number" bind:value={editValue} min="0" step={editCurrency === 'USD' ? '100' : '500000'} class="h-9 text-xs font-semibold text-emerald-600 flex-1" />
+                <div class="flex bg-muted p-0.5 rounded-md border text-[11px] font-medium shrink-0">
+                  <button
+                    type="button"
+                    class="px-2 py-1 rounded transition-colors {editCurrency === 'VND' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                    onclick={() => handleCurrencySwitch('VND')}
+                  >
+                    VND (₫)
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2 py-1 rounded transition-colors {editCurrency === 'USD' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                    onclick={() => handleCurrencySwitch('USD')}
+                  >
+                    USD ($)
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div class="space-y-1 sm:col-span-2">
@@ -727,7 +787,7 @@
               </div>
               <div>
                 <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Building class="w-3.5 h-3.5 text-primary" /> {m.lead_details_estimated_value()}</span>
-                <span class="text-emerald-600 font-bold text-sm">{formatCurrency(lead.value || 0, 'VND')}</span>
+                <span class="text-emerald-600 font-bold text-sm">{formatCurrency(lead.value || 0, (lead.currency as Currency) || 'VND')}</span>
               </div>
             </div>
 
@@ -844,45 +904,74 @@
           />
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div class="space-y-1.5">
-            <label for="lead-deal-value" class="text-xs font-bold text-foreground">{m.lead_details_deal_value()}</label>
-            <Input
-              id="lead-deal-value"
-              type="number"
-              bind:value={newDealValue}
-              placeholder="10000000"
-              class="h-10 text-xs rounded-xl font-bold text-emerald-600"
-              min="0"
-              step="500000"
-              required
-            />
-
-            <!-- Quick Value Presets (VND) -->
-            <div class="flex items-center gap-1 pt-1 flex-wrap">
-              {#each presetValues as preset}
-                <button
-                  type="button"
-                  onclick={() => newDealValue = preset}
-                  class="text-[10px] font-semibold px-2 py-0.5 rounded-lg border border-border hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-600 transition-colors"
-                >
-                  {formatCompactCurrency(preset, 'VND')}
-                </button>
-              {/each}
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <label for="lead-deal-value" class="text-xs font-bold text-foreground flex items-center gap-1.5">
+              <DollarSign class="w-3.5 h-3.5 text-emerald-600" />
+              {m.lead_details_deal_value()} ({newDealCurrency === 'USD' ? '$' : '₫'}) <span class="text-destructive">*</span>
+            </label>
+            <!-- Currency selector buttons -->
+            <div class="flex items-center p-0.5 rounded-lg bg-muted border border-border">
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer {newDealCurrency === 'VND'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => handleDealCurrencyChange('VND')}
+              >
+                VND (₫)
+              </button>
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer {newDealCurrency === 'USD'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => handleDealCurrencyChange('USD')}
+              >
+                USD ($)
+              </button>
             </div>
           </div>
 
-          <div class="space-y-1.5">
-            <label for="lead-deal-stage" class="text-xs font-bold text-foreground">{m.lead_details_initial_stage()}</label>
-            <select
-              id="lead-deal-stage"
-              bind:value={newDealStage}
-              class="w-full h-10 px-3 rounded-xl border border-input bg-background text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
-            >
-              {#each stages as stage}
-                <option value={stage}>{stageBadges[stage]?.label() || stage}</option>
-              {/each}
-            </select>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="space-y-1.5">
+              <Input
+                id="lead-deal-value"
+                type="number"
+                bind:value={newDealValue}
+                placeholder={newDealCurrency === 'USD' ? '500' : '10000000'}
+                class="h-10 text-xs rounded-xl font-bold text-emerald-600"
+                min="0"
+                step={newDealCurrency === 'USD' ? '50' : '500000'}
+                required
+              />
+
+              <!-- Quick Value Presets -->
+              <div class="flex items-center gap-1 pt-1 flex-wrap">
+                {#each dealPresets as preset}
+                  <button
+                    type="button"
+                    onclick={() => newDealValue = preset}
+                    class="text-[10px] font-semibold px-2 py-0.5 rounded-lg border border-border hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-600 transition-colors cursor-pointer"
+                  >
+                    {formatCompactCurrency(preset, newDealCurrency)}
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <div class="space-y-1.5">
+              <label for="lead-deal-stage" class="text-xs font-bold text-foreground">{m.lead_details_initial_stage()}</label>
+              <select
+                id="lead-deal-stage"
+                bind:value={newDealStage}
+                class="w-full h-10 px-3 rounded-xl border border-input bg-background text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+              >
+                {#each stages as stage}
+                  <option value={stage}>{stageBadges[stage]?.label() || stage}</option>
+                {/each}
+              </select>
+            </div>
           </div>
         </div>
 

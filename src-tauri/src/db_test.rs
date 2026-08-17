@@ -1050,7 +1050,7 @@ mod tests {
         // 2. Open via db::init_db to initialize schema and metadata
         let conn = db::init_db(&path_str).expect("init_db should succeed on pre-existing database");
 
-        // 3. Verify app_metadata has currency_semantics = 'VND_v1'
+        // 3. Verify app_metadata has currency_semantics = 'MULTI_CURRENCY_v1'
         let version: String = conn
             .query_row(
                 "SELECT value FROM app_metadata WHERE key = 'currency_semantics'",
@@ -1058,13 +1058,19 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("app_metadata currency_semantics should be set");
-        assert_eq!(version, "VND_v1");
+        assert_eq!(version, "MULTI_CURRENCY_v1");
 
         // 4. Verify all monetary values were preserved exactly without distortion or heuristic scaling
         let lead1_val: f64 = conn
             .query_row("SELECT value FROM leads WHERE id = 1", [], |row| row.get(0))
             .unwrap();
         assert_eq!(lead1_val, 500000.0, "500k VND amount must remain 500,000.0");
+        let lead1_curr: String = conn
+            .query_row("SELECT currency FROM leads WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(lead1_curr, "VND", "Migrated lead should default to VND");
 
         let lead2_val: f64 = conn
             .query_row("SELECT value FROM leads WHERE id = 2", [], |row| row.get(0))
@@ -1083,6 +1089,12 @@ mod tests {
             .query_row("SELECT value FROM deals WHERE id = 1", [], |row| row.get(0))
             .unwrap();
         assert_eq!(deal1_val, 750000.0, "750k VND deal must remain 750,000.0");
+        let deal1_curr: String = conn
+            .query_row("SELECT currency FROM deals WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(deal1_curr, "VND", "Migrated deal should default to VND");
 
         let deal2_val: f64 = conn
             .query_row("SELECT value FROM deals WHERE id = 2", [], |row| row.get(0))
@@ -1092,7 +1104,34 @@ mod tests {
             "15M VND deal must remain 15,000,000.0"
         );
 
-        // 5. Verify idempotency: re-running init_db preserves values and metadata
+        // 5. Test SQLite triggers: inserting or updating invalid currency MUST fail
+        let bad_deal_insert = conn.execute(
+            "INSERT INTO deals (lead_id, title, value, stage, created_at, currency)
+             VALUES (1, 'Bad Deal', 100.0, 'Lead', '2026-07-01T00:00:00Z', 'EUR')",
+            [],
+        );
+        assert!(
+            bad_deal_insert.is_err(),
+            "Trigger must reject invalid currency EUR on deal insert"
+        );
+
+        let bad_lead_insert = conn.execute(
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, currency)
+             VALUES ('Bad Lead', 'Co', 'New', 100.0, '2026-07-01T00:00:00Z', 'Owner', 'a@b.com', '123', 'XYZ')",
+            [],
+        );
+        assert!(
+            bad_lead_insert.is_err(),
+            "Trigger must reject invalid currency XYZ on lead insert"
+        );
+
+        let bad_deal_update = conn.execute("UPDATE deals SET currency = 'JPY' WHERE id = 1", []);
+        assert!(
+            bad_deal_update.is_err(),
+            "Trigger must reject invalid currency JPY on deal update"
+        );
+
+        // 6. Verify idempotency: re-running init_db preserves values and metadata
         drop(conn);
         let conn_again = db::init_db(&path_str).expect("re-opening db succeeds");
         let lead1_again: f64 = conn_again

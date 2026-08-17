@@ -17,6 +17,7 @@ export interface Lead {
   zalo_reached?: number;     // 0 = no, 1 = yes
   zalo_status?: string | null;
   zalo_uid?: string | null;
+  currency?: 'VND' | 'USD' | null;
 }
 
 export interface OutreachLeadFilters {
@@ -43,6 +44,7 @@ export interface Deal {
   value: number;
   stage: string;
   created_at: string;
+  currency?: 'VND' | 'USD';
 }
 
 export interface Activity {
@@ -206,6 +208,25 @@ export function initScraperEventBridge(): () => void {
   };
 }
 
+export interface CurrencySettings {
+  base_currency: 'VND' | 'USD';
+  exchange_rate: number;
+}
+
+export async function getCurrencySettings(): Promise<CurrencySettings> {
+  return invoke<CurrencySettings>('get_currency_settings');
+}
+
+export async function updateCurrencySettings(
+  baseCurrency: 'VND' | 'USD',
+  exchangeRate: number
+): Promise<CurrencySettings> {
+  return invoke<CurrencySettings>('update_currency_settings', {
+    baseCurrency,
+    exchangeRate
+  });
+}
+
 export async function addLead(
   name: string,
   company: string,
@@ -215,7 +236,8 @@ export async function addLead(
   email: string,
   phone: string,
   about?: string | null,
-  address?: string | null
+  address?: string | null,
+  currency?: 'VND' | 'USD'
 ): Promise<number> {
   const result = await invoke<number>('add_lead', {
     name,
@@ -226,7 +248,8 @@ export async function addLead(
     email,
     phone,
     about: about ?? null,
-    address: address ?? null
+    address: address ?? null,
+    currency: currency ?? 'VND'
   });
   notifyLeadsChanged();
   return result;
@@ -245,13 +268,15 @@ export async function createDeal(
   leadId: number,
   title: string,
   value: number,
-  stage: string
+  stage: string,
+  currency?: 'VND' | 'USD'
 ): Promise<Deal> {
   const result = await invoke<Deal>('create_deal', {
     leadId,
     title,
     value,
-    stage
+    stage,
+    currency: currency ?? 'VND'
   });
   notifyLeadsChanged();
   return result;
@@ -300,7 +325,8 @@ export async function updateLead(
   email: string,
   phone: string,
   about?: string | null,
-  address?: string | null
+  address?: string | null,
+  currency?: 'VND' | 'USD' | null
 ): Promise<void> {
   await invoke<void>('update_lead', {
     id,
@@ -312,7 +338,8 @@ export async function updateLead(
     email,
     phone,
     about: about ?? null,
-    address: address ?? null
+    address: address ?? null,
+    currency: currency ?? null
   });
   notifyLeadsChanged();
 }

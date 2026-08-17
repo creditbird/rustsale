@@ -50,6 +50,209 @@ mod tests {
         // Test get_deals
         let deals = commands::get_deals_internal(&conn).unwrap();
         assert_eq!(deals.len(), 2);
+        assert_eq!(deals[0].currency, Some("VND".to_string()));
+
+        // Test create_deal_internal with USD
+        let usd_deal = commands::create_deal_internal(
+            &conn,
+            new_lead_id,
+            "International Deal".to_string(),
+            5000.0,
+            "Prospecting".to_string(),
+            Some("USD".to_string()),
+        )
+        .unwrap();
+        assert_eq!(usd_deal.currency, Some("USD".to_string()));
+
+        // Test create_deal_internal defaulting to VND
+        let vnd_deal = commands::create_deal_internal(
+            &conn,
+            new_lead_id,
+            "Local Deal".to_string(),
+            10000000.0,
+            "Prospecting".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(vnd_deal.currency, Some("VND".to_string()));
+
+        // Test create_deal_internal rejecting invalid currency
+        let bad_deal_err = commands::create_deal_internal(
+            &conn,
+            new_lead_id,
+            "Bad Currency Deal".to_string(),
+            100.0,
+            "Prospecting".to_string(),
+            Some("EUR".to_string()),
+        );
+        assert!(bad_deal_err.is_err(), "Must reject invalid currency EUR");
+
+        // Test add_lead_with_currency_internal with USD
+        let usd_lead_id = commands::add_lead_with_currency_internal(
+            &mut conn,
+            "Global Client".to_string(),
+            "Global Corp".to_string(),
+            "Qualified".to_string(),
+            2500.0,
+            "Alex Rivera".to_string(),
+            "global@client.com".to_string(),
+            "+1998877".to_string(),
+            None,
+            None,
+            Some("USD".to_string()),
+        )
+        .unwrap();
+        let usd_lead = commands::get_lead_details_internal(&conn, usd_lead_id).unwrap();
+        assert_eq!(usd_lead.currency, Some("USD".to_string()));
+        assert_eq!(usd_lead.value, 2500.0);
+
+        // Test add_lead_with_currency_internal rejecting invalid currency
+        let bad_lead_err = commands::add_lead_with_currency_internal(
+            &mut conn,
+            "Bad Lead".to_string(),
+            "Bad Corp".to_string(),
+            "New".to_string(),
+            100.0,
+            "Alex Rivera".to_string(),
+            "bad@lead.com".to_string(),
+            "+1998877".to_string(),
+            None,
+            None,
+            Some("GBP".to_string()),
+        );
+        assert!(
+            bad_lead_err.is_err(),
+            "Must reject invalid currency GBP on add_lead"
+        );
+
+        // Test update_lead_with_currency_internal updating to USD
+        commands::update_lead_with_currency_internal(
+            &conn,
+            new_lead_id,
+            "John Doe Updated".to_string(),
+            "Example Inc".to_string(),
+            "Proposal".to_string(),
+            3000.0,
+            "Alex Rivera".to_string(),
+            "john@example.com".to_string(),
+            "+11223344".to_string(),
+            None,
+            None,
+            Some("USD".to_string()),
+        )
+        .unwrap();
+        let updated_lead = commands::get_lead_details_internal(&conn, new_lead_id).unwrap();
+        assert_eq!(updated_lead.currency, Some("USD".to_string()));
+        assert_eq!(updated_lead.value, 3000.0);
+
+        // Test update_lead_with_currency_internal preserving existing USD currency when currency is None
+        commands::update_lead_with_currency_internal(
+            &conn,
+            new_lead_id,
+            "John Doe Name Changed".to_string(),
+            "Example Inc".to_string(),
+            "Proposal".to_string(),
+            3500.0,
+            "Alex Rivera".to_string(),
+            "john@example.com".to_string(),
+            "+11223344".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let preserved_lead = commands::get_lead_details_internal(&conn, new_lead_id).unwrap();
+        assert_eq!(
+            preserved_lead.currency,
+            Some("USD".to_string()),
+            "Omitted currency in update must preserve existing USD currency"
+        );
+        assert_eq!(preserved_lead.value, 3500.0);
+
+        // Test update_lead_with_currency_internal rejecting invalid currency
+        let bad_update_err = commands::update_lead_with_currency_internal(
+            &conn,
+            new_lead_id,
+            "John Doe".to_string(),
+            "Example Inc".to_string(),
+            "Proposal".to_string(),
+            3000.0,
+            "Alex Rivera".to_string(),
+            "john@example.com".to_string(),
+            "+11223344".to_string(),
+            None,
+            None,
+            Some("AUD".to_string()),
+        );
+        assert!(
+            bad_update_err.is_err(),
+            "Must reject invalid currency AUD on update_lead"
+        );
+
+        // Test get_currency_settings_internal default
+        let default_settings = commands::get_currency_settings_internal(&conn).unwrap();
+        assert_eq!(default_settings.base_currency, "VND");
+        assert_eq!(default_settings.exchange_rate, 25400.0);
+
+        // Test update_currency_settings_internal
+        let updated_settings =
+            commands::update_currency_settings_internal(&mut conn, "USD".to_string(), 25000.0)
+                .unwrap();
+        assert_eq!(updated_settings.base_currency, "USD");
+        assert_eq!(updated_settings.exchange_rate, 25000.0);
+
+        let retrieved_settings = commands::get_currency_settings_internal(&conn).unwrap();
+        assert_eq!(retrieved_settings.base_currency, "USD");
+        assert_eq!(retrieved_settings.exchange_rate, 25000.0);
+
+        // Test update_currency_settings_internal rejecting invalid rate or currency
+        assert!(
+            commands::update_currency_settings_internal(&mut conn, "EUR".to_string(), 25000.0)
+                .is_err()
+        );
+        assert!(
+            commands::update_currency_settings_internal(&mut conn, "USD".to_string(), -10.0)
+                .is_err()
+        );
+        assert!(
+            commands::update_currency_settings_internal(&mut conn, "USD".to_string(), 0.0).is_err()
+        );
+
+        // Ensure rejected updates did not modify existing settings (atomic validation check)
+        let uncorrupted_settings = commands::get_currency_settings_internal(&conn).unwrap();
+        assert_eq!(uncorrupted_settings.base_currency, "USD");
+        assert_eq!(uncorrupted_settings.exchange_rate, 25000.0);
+
+        // Test true SQLite transaction rollback when second statement fails mid-transaction
+        conn.execute(
+            "CREATE TRIGGER fail_second_fx_write BEFORE INSERT ON app_metadata WHEN NEW.key = 'usd_vnd_exchange_rate' BEGIN SELECT RAISE(ABORT, 'forced mid-transaction second write failure'); END;",
+            [],
+        )
+        .unwrap();
+
+        let mid_tx_failure =
+            commands::update_currency_settings_internal(&mut conn, "VND".to_string(), 24000.0);
+        assert!(
+            mid_tx_failure.is_err(),
+            "Must fail when second SQL statement errors mid-transaction"
+        );
+
+        conn.execute("DROP TRIGGER fail_second_fx_write;", [])
+            .unwrap();
+
+        // Verify base_currency was rolled back and not left at "VND"
+        let rolled_back_settings = commands::get_currency_settings_internal(&conn).unwrap();
+        assert_eq!(
+            rolled_back_settings.base_currency, "USD",
+            "First key (base_currency) must roll back if second key fails"
+        );
+        assert_eq!(
+            rolled_back_settings.exchange_rate, 25000.0,
+            "Second key must remain uncorrupted"
+        );
+
+        let deals_after_create = commands::get_deals_internal(&conn).unwrap();
+        assert_eq!(deals_after_create.len(), 4);
 
         // Test update_deal_stage_internal
         commands::update_deal_stage_internal(&conn, 1, "Demo".to_string()).unwrap();
@@ -1679,6 +1882,7 @@ mod tests {
             zalo_status: None,
             relationship_status: None,
             last_lookup_attempt: None,
+            currency: Some("VND".to_string()),
         };
         let tpl = "Hello {{name}} from {{company}}! Email: {{email}}, Phone: {{phone}}";
         let replaced = commands::replace_email_template_variables(tpl, &lead);

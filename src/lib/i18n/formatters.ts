@@ -1,4 +1,32 @@
-import { localeState } from './state.svelte';
+import { localeState, type Currency } from './state.svelte';
+
+export type { Currency };
+
+/**
+ * Convert a numeric monetary amount between currencies given an exchange rate.
+ * Exchange rate represents: 1 USD = rate VND (e.g. 25400).
+ */
+export function convertCurrency(
+  amount: number | undefined | null,
+  fromCurrency: Currency = 'VND',
+  toCurrency: Currency = 'VND',
+  exchangeRate: number = 25400
+): number {
+  if (amount === undefined || amount === null || isNaN(amount)) {
+    return 0;
+  }
+  if (fromCurrency === toCurrency) {
+    return amount;
+  }
+  const safeRate = typeof exchangeRate === 'number' && !isNaN(exchangeRate) && exchangeRate > 0 ? exchangeRate : 25400;
+  if (fromCurrency === 'USD' && toCurrency === 'VND') {
+    return amount * safeRate;
+  }
+  if (fromCurrency === 'VND' && toCurrency === 'USD') {
+    return amount / safeRate;
+  }
+  return amount;
+}
 
 /**
  * Maps app locale code to standard BCP 47 locale tag
@@ -21,7 +49,7 @@ export function getIntlLocale(): string {
  */
 export function formatCurrency(
   value: number | undefined | null,
-  currency: 'VND' | 'USD' = 'VND'
+  currency: Currency = 'VND'
 ): string {
   if (value === undefined || value === null || isNaN(value)) {
     return '0 ' + (currency === 'VND' ? '₫' : '$');
@@ -40,7 +68,7 @@ export function formatCurrency(
  */
 export function formatCompactCurrency(
   value: number | undefined | null,
-  currency: 'VND' | 'USD' = 'VND'
+  currency: Currency = 'VND'
 ): string {
   if (value === undefined || value === null || isNaN(value)) {
     return '0 ' + (currency === 'VND' ? '₫' : '$');

@@ -1,5 +1,16 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { m, setLocale, getLocale } from '../index';
+import {
+  m,
+  setLocale,
+  getLocale,
+  currencyState,
+  getBaseCurrency,
+  setBaseCurrency,
+  getExchangeRate,
+  setExchangeRate,
+  DEFAULT_USD_VND_RATE,
+  convertCurrency
+} from '../index';
 import {
   formatCurrency,
   formatCompactCurrency,
@@ -12,6 +23,8 @@ import {
 describe('i18n & Paraglide Integration', () => {
   beforeEach(() => {
     setLocale('vi');
+    setBaseCurrency('VND');
+    setExchangeRate(DEFAULT_USD_VND_RATE);
   });
 
   it('correctly translates common keys into Vietnamese when locale is vi', () => {
@@ -84,6 +97,140 @@ describe('i18n & Paraglide Integration', () => {
     expect(formatCompactCurrency(1500000000, 'VND')).toBe('1.5B ₫');
     expect(formatCompactCurrency(25000000, 'VND')).toBe('25M ₫');
     expect(formatCompactCurrency(50000, 'VND')).toBe('50k ₫');
+  });
+
+  it('correctly converts between VND and USD based on exchange rate', () => {
+    // USD -> VND (100 USD at 25,400 = 2,540,000 VND)
+    expect(convertCurrency(100, 'USD', 'VND', 25400)).toBe(2540000);
+    // VND -> USD (2,540,000 VND at 25,400 = 100 USD)
+    expect(convertCurrency(2540000, 'VND', 'USD', 25400)).toBe(100);
+    // Same currency identity
+    expect(convertCurrency(5000, 'USD', 'USD')).toBe(5000);
+    expect(convertCurrency(1000000, 'VND', 'VND')).toBe(1000000);
+    // Edge cases: null, undefined, NaN, 0, negative
+    expect(convertCurrency(null, 'USD', 'VND')).toBe(0);
+    expect(convertCurrency(undefined, 'USD', 'VND')).toBe(0);
+    expect(convertCurrency(NaN, 'USD', 'VND')).toBe(0);
+    expect(convertCurrency(0, 'USD', 'VND')).toBe(0);
+    // Custom exchange rate
+    expect(convertCurrency(200, 'USD', 'VND', 25000)).toBe(5000000);
+    expect(convertCurrency(5000000, 'VND', 'USD', 25000)).toBe(200);
+  });
+
+  it('manages Base Currency and Exchange Rate state reactively and rolls back on failure', async () => {
+    expect(getBaseCurrency()).toBe('VND');
+    expect(getExchangeRate()).toBe(25400);
+
+    await setBaseCurrency('USD');
+    expect(getBaseCurrency()).toBe('USD');
+    expect(currencyState.baseCurrency).toBe('USD');
+
+    await setExchangeRate(26000);
+    expect(getExchangeRate()).toBe(26000);
+    expect(currencyState.exchangeRate).toBe(26000);
+
+    await currencyState.resetExchangeRate();
+    expect(getExchangeRate()).toBe(25400);
+
+    // Invalid inputs are rejected with Error
+    // @ts-expect-error invalid currency test
+    await expect(setBaseCurrency('EUR')).rejects.toThrow();
+    expect(getBaseCurrency()).toBe('USD');
+
+    await expect(setExchangeRate(-100)).rejects.toThrow();
+    expect(getExchangeRate()).toBe(25400);
+    await expect(setExchangeRate(NaN)).rejects.toThrow();
+    expect(getExchangeRate()).toBe(25400);
+
+    // Rollback test: simulate backend sync failure
+    const originalSync = currencyState.syncToBackend;
+    currencyState.syncToBackend = async () => {
+      throw new Error('Simulated backend persistence failure');
+    };
+
+    await expect(setBaseCurrency('VND')).rejects.toThrow('Simulated backend persistence failure');
+    expect(currencyState.baseCurrency).toBe('USD'); // Rolled back to USD
+
+    await expect(setExchangeRate(30000)).rejects.toThrow('Simulated backend persistence failure');
+    expect(currencyState.exchangeRate).toBe(25400); // Rolled back to 25400
+
+    currencyState.syncToBackend = originalSync;
+  });
+
+  it('awaits backend hydration before user mutations to avoid clobbering authoritative sibling settings with stale cache', async () => {
+    const { CurrencyStore } = await import('../state.svelte.js');
+    
+    // Set stale localStorage cache before creating fresh store
+    localStorage.setItem('rustsale_base_currency', 'VND');
+    localStorage.setItem('rustsale_usd_vnd_exchange_rate', '25400');
+
+    // Create a new store instance with a deferred backend hydration promise
+    const testStore = new CurrencyStore();
+    
+    /** @type {((val: any) => void) | null} */
+    let resolveHydration = null;
+    const hydrationPromise = new Promise((resolve) => {
+      resolveHydration = resolve;
+    });
+
+    // Mock backend sync with authoritative settings in SQLite (rate = 26000, different from stale cache 25400)
+    testStore.syncFromBackend = async () => {
+      await hydrationPromise;
+      testStore.baseCurrency = 'VND';
+      testStore.exchangeRate = 26000;
+      testStore.isHydrated = true;
+    };
+    testStore.ready = testStore.syncFromBackend();
+
+    /** @type {Array<{baseCurrency: string, exchangeRate: number}>} */
+    const syncCalls: Array<{baseCurrency: string, exchangeRate: number}> = [];
+    testStore.syncToBackend = async (baseCurrency, exchangeRate) => {
+      syncCalls.push({ baseCurrency, exchangeRate });
+    };
+
+    // User triggers a mutation while hydration is still in-flight
+    const mutationPromise = testStore.setBaseCurrency('USD');
+
+    // Mutation should not have completed sync yet because it is awaiting hydration
+    expect(syncCalls.length).toBe(0);
+
+    // Resolve backend hydration with authoritative rate 26000
+    resolveHydration!({});
+    await mutationPromise;
+
+    // Verify final state: user's baseCurrency is 'USD', and authoritative exchangeRate 26000 is preserved
+    expect(testStore.baseCurrency).toBe('USD');
+    expect(testStore.exchangeRate).toBe(26000);
+
+    // Verify that syncToBackend was invoked with the authoritative rate (26000) rather than stale cache (25400)
+    expect(syncCalls.length).toBe(1);
+    expect(syncCalls[0]).toEqual({ baseCurrency: 'USD', exchangeRate: 26000 });
+  });
+
+  it('serializes concurrent currency and exchange rate mutations safely', async () => {
+    const { CurrencyStore } = await import('../state.svelte.js');
+    const testStore = new CurrencyStore();
+    await testStore.ensureReady();
+
+    /** @type {Array<{baseCurrency: string, exchangeRate: number}>} */
+    const syncCalls: Array<{baseCurrency: string, exchangeRate: number}> = [];
+    testStore.syncToBackend = async (baseCurrency, exchangeRate) => {
+      // Simulate minor async latency
+      await new Promise(r => setTimeout(r, 5));
+      syncCalls.push({ baseCurrency, exchangeRate });
+    };
+
+    // Launch concurrent mutations
+    await Promise.all([
+      testStore.setBaseCurrency('USD'),
+      testStore.setExchangeRate(27500)
+    ]);
+
+    expect(testStore.baseCurrency).toBe('USD');
+    expect(testStore.exchangeRate).toBe(27500);
+    expect(syncCalls.length).toBe(2);
+    // Final sync call contains both updated values
+    expect(syncCalls[1]).toEqual({ baseCurrency: 'USD', exchangeRate: 27500 });
   });
 
   it('formats numbers according to active locale', () => {

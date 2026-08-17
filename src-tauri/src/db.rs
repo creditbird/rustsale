@@ -38,10 +38,10 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
     {
         let tx = conn.transaction()?;
 
-        // ARCHITECTURAL INVARIANT:
-        // All numeric monetary amounts in the database (`leads.value`, `deals.value`) are canonical
-        // Vietnamese Đồng (VND). Raw values are persisted directly as `f64` / `REAL` without
-        // ad-hoc FX conversion or multi-currency mutations.
+        // ARCHITECTURAL INVARIANT (MULTI_CURRENCY_v1):
+        // Numeric monetary amounts in the database (`leads.value`, `deals.value`) represent the raw
+        // numeric quantity in their respective row `currency` ('VND' | 'USD'). Database integrity
+        // triggers and backend validation ensure valid currency codes, with legacy rows defaulting to 'VND'.
         tx.execute(
             "CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +92,34 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             "last_lookup_attempt",
             "last_lookup_attempt TEXT",
         )?;
+        add_column_if_missing(
+            &tx,
+            "leads",
+            "currency",
+            "currency TEXT NOT NULL DEFAULT 'VND'",
+        )?;
+
+        // SQLite triggers to enforce currency integrity on insert and update for leads
+        tx.execute(
+            "CREATE TRIGGER IF NOT EXISTS validate_lead_currency_insert
+             BEFORE INSERT ON leads
+             FOR EACH ROW
+             WHEN NEW.currency NOT IN ('VND', 'USD')
+             BEGIN
+                 SELECT RAISE(ABORT, 'Invalid currency: must be VND or USD');
+             END;",
+            [],
+        )?;
+        tx.execute(
+            "CREATE TRIGGER IF NOT EXISTS validate_lead_currency_update
+             BEFORE UPDATE OF currency ON leads
+             FOR EACH ROW
+             WHEN NEW.currency NOT IN ('VND', 'USD')
+             BEGIN
+                 SELECT RAISE(ABORT, 'Invalid currency: must be VND or USD');
+             END;",
+            [],
+        )?;
 
         crate::conversation::migration::migrate(&tx)?;
 
@@ -116,8 +144,37 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 value REAL NOT NULL DEFAULT 0.0,
                 stage TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'VND',
                 FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE
             )",
+            [],
+        )?;
+        add_column_if_missing(
+            &tx,
+            "deals",
+            "currency",
+            "currency TEXT NOT NULL DEFAULT 'VND'",
+        )?;
+
+        // SQLite triggers to enforce currency integrity on insert and update for deals
+        tx.execute(
+            "CREATE TRIGGER IF NOT EXISTS validate_deal_currency_insert
+             BEFORE INSERT ON deals
+             FOR EACH ROW
+             WHEN NEW.currency NOT IN ('VND', 'USD')
+             BEGIN
+                 SELECT RAISE(ABORT, 'Invalid currency: must be VND or USD');
+             END;",
+            [],
+        )?;
+        tx.execute(
+            "CREATE TRIGGER IF NOT EXISTS validate_deal_currency_update
+             BEFORE UPDATE OF currency ON deals
+             FOR EACH ROW
+             WHEN NEW.currency NOT IN ('VND', 'USD')
+             BEGIN
+                 SELECT RAISE(ABORT, 'Invalid currency: must be VND or USD');
+             END;",
             [],
         )?;
 
@@ -409,10 +466,20 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         )?;
 
         // Monetary metadata versioning:
-        // Canonical monetary storage is VND (VND_v1).
-        // Ensure currency_semantics metadata is recorded as VND_v1 without mutating existing rows.
+        // Multi-currency storage (MULTI_CURRENCY_v1):
+        // leads.value and deals.value store the monetary amount in their designated leads.currency / deals.currency column ('VND' | 'USD').
+        // Defaults to 'VND' for existing rows and fallback.
         tx.execute(
-            "INSERT OR IGNORE INTO app_metadata (key, value) VALUES ('currency_semantics', 'VND_v1')",
+            "INSERT INTO app_metadata (key, value) VALUES ('currency_semantics', 'MULTI_CURRENCY_v1')
+             ON CONFLICT(key) DO UPDATE SET value = 'MULTI_CURRENCY_v1'",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO app_metadata (key, value) VALUES ('base_currency', 'VND')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO app_metadata (key, value) VALUES ('usd_vnd_exchange_rate', '25400')",
             [],
         )?;
 
@@ -730,7 +797,7 @@ pub fn get_leads_by_category(
     category_id: i32,
 ) -> Result<Vec<crate::models::Lead>> {
     let mut stmt = conn.prepare(
-        "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt
+        "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency
          FROM leads l
          JOIN lead_categories lc ON l.id = lc.lead_id
          WHERE lc.category_id = ?1"
@@ -754,6 +821,11 @@ pub fn get_leads_by_category(
             zalo_status: row.get(14)?,
             relationship_status: row.get(15)?,
             last_lookup_attempt: row.get(16)?,
+            currency: row
+                .get::<_, Option<String>>(17)
+                .ok()
+                .flatten()
+                .or(Some("VND".to_string())),
         })
     })?;
     let mut leads = Vec::new();

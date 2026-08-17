@@ -30,6 +30,31 @@ pub struct OutreachLeadsPage {
     pub next_cursor: Option<i32>,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct CurrencySettings {
+    pub base_currency: String,
+    pub exchange_rate: f64,
+}
+
+pub fn validate_currency(currency: Option<&str>) -> Result<String, String> {
+    match currency {
+        None => Ok("VND".to_string()),
+        Some(c) => {
+            let trimmed = c.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("VND") {
+                Ok("VND".to_string())
+            } else if trimmed.eq_ignore_ascii_case("USD") {
+                Ok("USD".to_string())
+            } else {
+                Err(format!(
+                    "Invalid currency '{}': RustSale CRM currently only supports 'VND' and 'USD'",
+                    trimmed
+                ))
+            }
+        }
+    }
+}
+
 fn outreach_lead_from_row(row: &Row<'_>) -> rusqlite::Result<Lead> {
     Ok(Lead {
         id: row.get(0)?,
@@ -49,6 +74,11 @@ fn outreach_lead_from_row(row: &Row<'_>) -> rusqlite::Result<Lead> {
         zalo_status: row.get(14)?,
         relationship_status: row.get(15)?,
         last_lookup_attempt: row.get(16)?,
+        currency: row
+            .get::<_, Option<String>>(17)
+            .ok()
+            .flatten()
+            .or(Some("VND".to_string())),
     })
 }
 
@@ -146,7 +176,7 @@ pub fn get_outreach_leads_page_internal(
 
     let bounded_limit = limit.clamp(1, 200);
     let mut page_sql = format!(
-        "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt{filter_sql}"
+        "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency{filter_sql}"
     );
     let mut page_params = filter_params;
     if let Some(cursor) = cursor {
@@ -278,7 +308,7 @@ pub fn get_leads(state: tauri::State<DbState>) -> Result<Vec<Lead>, String> {
 
 pub fn get_leads_internal(conn: &Connection) -> Result<Vec<Lead>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, zalo_uid, zalo_status, relationship_status, last_lookup_attempt FROM leads")
+        .prepare("SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, zalo_uid, zalo_status, relationship_status, last_lookup_attempt, currency FROM leads")
         .map_err(|e| format!("Database query error: {}", e))?;
 
     let rows = stmt
@@ -301,6 +331,11 @@ pub fn get_leads_internal(conn: &Connection) -> Result<Vec<Lead>, String> {
                 zalo_status: row.get(14)?,
                 relationship_status: row.get(15)?,
                 last_lookup_attempt: row.get(16)?,
+                currency: row
+                    .get::<_, Option<String>>(17)
+                    .ok()
+                    .flatten()
+                    .or(Some("VND".to_string())),
             })
         })
         .map_err(|e| format!("Database query error: {}", e))?;
@@ -323,7 +358,7 @@ pub fn get_lead_details(id: i32, state: tauri::State<DbState>) -> Result<Lead, S
 
 pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, String> {
     conn.query_row(
-        "SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, zalo_uid, zalo_status, relationship_status, last_lookup_attempt FROM leads WHERE id = ?1",
+        "SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, zalo_uid, zalo_status, relationship_status, last_lookup_attempt, currency FROM leads WHERE id = ?1",
         [id],
         |row| {
             Ok(Lead {
@@ -344,6 +379,7 @@ pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, Str
                 zalo_status: row.get(14)?,
                 relationship_status: row.get(15)?,
                 last_lookup_attempt: row.get(16)?,
+                currency: row.get::<_, Option<String>>(17).ok().flatten().or(Some("VND".to_string())),
             })
         }
     ).map_err(|e| format!("Database query error: {}", e))
@@ -352,7 +388,7 @@ pub fn get_lead_details_internal(conn: &Connection, id: i32) -> Result<Lead, Str
 #[tauri::command]
 #[expect(
     clippy::too_many_arguments,
-    reason = "preserve the existing Tauri add_lead IPC argument contract"
+    reason = "preserve the existing Tauri add_lead IPC argument contract with optional currency"
 )]
 pub fn add_lead(
     name: String,
@@ -364,17 +400,19 @@ pub fn add_lead(
     phone: String,
     about: Option<String>,
     address: Option<String>,
+    currency: Option<String>,
     state: tauri::State<DbState>,
 ) -> Result<i32, String> {
     let mut conn = state
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    add_lead_internal(
-        &mut conn, name, company, status, value, owner, email, phone, about, address,
+    add_lead_with_currency_internal(
+        &mut conn, name, company, status, value, owner, email, phone, about, address, currency,
     )
 }
 
+#[allow(dead_code)]
 #[expect(
     clippy::too_many_arguments,
     reason = "preserve the established CRM helper contract and its audited callers"
@@ -391,14 +429,37 @@ pub fn add_lead_internal(
     about: Option<String>,
     address: Option<String>,
 ) -> Result<i32, String> {
+    add_lead_with_currency_internal(
+        conn, name, company, status, value, owner, email, phone, about, address, None,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the established CRM helper contract and its audited callers"
+)]
+pub fn add_lead_with_currency_internal(
+    conn: &mut Connection,
+    name: String,
+    company: String,
+    status: String,
+    value: f64,
+    owner: String,
+    email: String,
+    phone: String,
+    about: Option<String>,
+    address: Option<String>,
+    currency: Option<String>,
+) -> Result<i32, String> {
+    let valid_curr = validate_currency(currency.as_deref())?;
     let now: String = conn
         .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
             row.get(0)
         })
         .map_err(|e| format!("Database query error: {}", e))?;
     conn.execute(
-        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, 0)",
-        rusqlite::params![name, company, status, value, now, owner, email, phone, about, address],
+        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, currency) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, 0, ?11)",
+        rusqlite::params![name, company, status, value, now, owner, email, phone, about, address, valid_curr],
     ).map_err(|e| format!("Database query error: {}", e))?;
     let last_id = conn.last_insert_rowid() as i32;
     Ok(last_id)
@@ -441,7 +502,7 @@ pub fn get_deals(state: tauri::State<DbState>) -> Result<Vec<Deal>, String> {
 
 pub fn get_deals_internal(conn: &Connection) -> Result<Vec<Deal>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, lead_id, title, value, stage, created_at FROM deals")
+        .prepare("SELECT id, lead_id, title, value, stage, created_at, currency FROM deals")
         .map_err(|e| format!("Database query error: {}", e))?;
 
     let rows = stmt
@@ -453,6 +514,11 @@ pub fn get_deals_internal(conn: &Connection) -> Result<Vec<Deal>, String> {
                 value: row.get(3)?,
                 stage: row.get(4)?,
                 created_at: row.get(5)?,
+                currency: row
+                    .get::<_, Option<String>>(6)
+                    .ok()
+                    .flatten()
+                    .or(Some("VND".to_string())),
             })
         })
         .map_err(|e| format!("Database query error: {}", e))?;
@@ -492,13 +558,14 @@ pub fn create_deal(
     title: String,
     value: f64,
     stage: String,
+    currency: Option<String>,
     state: tauri::State<DbState>,
 ) -> Result<Deal, String> {
     let conn = state
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    create_deal_internal(&conn, lead_id, title, value, stage)
+    create_deal_internal(&conn, lead_id, title, value, stage, currency)
 }
 
 pub fn create_deal_internal(
@@ -507,11 +574,13 @@ pub fn create_deal_internal(
     title: String,
     value: f64,
     stage: String,
+    currency: Option<String>,
 ) -> Result<Deal, String> {
+    let valid_curr = validate_currency(currency.as_deref())?;
     let created_at = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO deals (lead_id, title, value, stage, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![lead_id, title, value, stage, created_at],
+        "INSERT INTO deals (lead_id, title, value, stage, created_at, currency) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![lead_id, title, value, stage, created_at, valid_curr],
     )
     .map_err(|e| format!("Database query error: {}", e))?;
 
@@ -523,6 +592,91 @@ pub fn create_deal_internal(
         value,
         stage,
         created_at,
+        currency: Some(valid_curr),
+    })
+}
+
+#[tauri::command]
+pub fn get_currency_settings(state: tauri::State<DbState>) -> Result<CurrencySettings, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_currency_settings_internal(&conn)
+}
+
+pub fn get_currency_settings_internal(conn: &Connection) -> Result<CurrencySettings, String> {
+    let base_currency: String = conn
+        .query_row(
+            "SELECT value FROM app_metadata WHERE key = 'base_currency'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "VND".to_string());
+
+    let rate_str: String = conn
+        .query_row(
+            "SELECT value FROM app_metadata WHERE key = 'usd_vnd_exchange_rate'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "25400".to_string());
+
+    let exchange_rate: f64 = rate_str.parse().unwrap_or(25400.0);
+
+    Ok(CurrencySettings {
+        base_currency,
+        exchange_rate,
+    })
+}
+
+#[tauri::command]
+pub fn update_currency_settings(
+    base_currency: String,
+    exchange_rate: f64,
+    state: tauri::State<DbState>,
+) -> Result<CurrencySettings, String> {
+    let mut conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    update_currency_settings_internal(&mut conn, base_currency, exchange_rate)
+}
+
+pub fn update_currency_settings_internal(
+    conn: &mut Connection,
+    base_currency: String,
+    exchange_rate: f64,
+) -> Result<CurrencySettings, String> {
+    let valid_curr = validate_currency(Some(&base_currency))?;
+    if exchange_rate <= 0.0 || exchange_rate.is_nan() || exchange_rate.is_infinite() {
+        return Err("Exchange rate must be a positive number".to_string());
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Database transaction error: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('base_currency', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = ?1",
+        rusqlite::params![valid_curr],
+    )
+    .map_err(|e| format!("Database query error: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('usd_vnd_exchange_rate', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = ?1",
+        rusqlite::params![exchange_rate.to_string()],
+    )
+    .map_err(|e| format!("Database query error: {}", e))?;
+
+    tx.commit()
+        .map_err(|e| format!("Database commit error: {}", e))?;
+
+    Ok(CurrencySettings {
+        base_currency: valid_curr,
+        exchange_rate,
     })
 }
 
@@ -659,7 +813,7 @@ pub fn add_activity_internal(
 #[tauri::command]
 #[expect(
     clippy::too_many_arguments,
-    reason = "preserve the existing Tauri update_lead IPC argument contract"
+    reason = "preserve the existing Tauri update_lead IPC argument contract with optional currency"
 )]
 pub fn update_lead(
     id: i32,
@@ -672,15 +826,88 @@ pub fn update_lead(
     phone: String,
     about: Option<String>,
     address: Option<String>,
+    currency: Option<String>,
     state: tauri::State<DbState>,
 ) -> Result<(), String> {
     let conn = state
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
+    update_lead_with_currency_internal(
+        &conn, id, name, company, status, value, owner, email, phone, about, address, currency,
+    )
+}
+
+#[allow(dead_code)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the established CRM helper contract and its audited callers"
+)]
+pub fn update_lead_internal(
+    conn: &Connection,
+    id: i32,
+    name: String,
+    company: String,
+    status: String,
+    value: f64,
+    owner: String,
+    email: String,
+    phone: String,
+    about: Option<String>,
+    address: Option<String>,
+) -> Result<(), String> {
+    let existing_currency: Option<String> = conn
+        .query_row("SELECT currency FROM leads WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .ok();
+    update_lead_with_currency_internal(
+        conn,
+        id,
+        name,
+        company,
+        status,
+        value,
+        owner,
+        email,
+        phone,
+        about,
+        address,
+        existing_currency,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the established CRM helper contract and its audited callers"
+)]
+pub fn update_lead_with_currency_internal(
+    conn: &Connection,
+    id: i32,
+    name: String,
+    company: String,
+    status: String,
+    value: f64,
+    owner: String,
+    email: String,
+    phone: String,
+    about: Option<String>,
+    address: Option<String>,
+    currency: Option<String>,
+) -> Result<(), String> {
+    let valid_curr = if let Some(ref c) = currency {
+        validate_currency(Some(c.as_str()))?
+    } else {
+        conn.query_row("SELECT currency FROM leads WHERE id = ?1", [id], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "VND".to_string())
+    };
     conn.execute(
-        "UPDATE leads SET name = ?1, company = ?2, status = ?3, value = ?4, owner = ?5, email = ?6, phone = ?7, about = ?8, address = ?9 WHERE id = ?10",
-        rusqlite::params![name, company, status, value, owner, email, phone, about, address, id],
+        "UPDATE leads SET name = ?1, company = ?2, status = ?3, value = ?4, owner = ?5, email = ?6, phone = ?7, about = ?8, address = ?9, currency = ?10 WHERE id = ?11",
+        rusqlite::params![name, company, status, value, owner, email, phone, about, address, valid_curr, id],
     ).map_err(|e| format!("Database query error: {}", e))?;
     Ok(())
 }
@@ -3983,12 +4210,12 @@ pub async fn get_campaign_leads(
     let query_str = match segmentation.as_str() {
         "never_sent" => {
             if is_email {
-                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  WHERE lc.category_id = ?1
                    AND l.id NOT IN (SELECT DISTINCT lead_id FROM email_outreach_history WHERE status = 'SUCCESS')"
             } else {
-                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  WHERE lc.category_id = ?1
                    AND COALESCE(l.zalo_reached, 0) = 0
@@ -4001,14 +4228,14 @@ pub async fn get_campaign_leads(
                 return Err("Template ID is required for success filtering".to_string());
             }
             if is_email {
-                "SELECT DISTINCT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                "SELECT DISTINCT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  JOIN email_outreach_history oh ON l.id = oh.lead_id
                  WHERE lc.category_id = ?1
                    AND oh.template_id = ?2
                    AND oh.status = 'SUCCESS'"
             } else {
-                "SELECT DISTINCT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                "SELECT DISTINCT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  JOIN outreach_history oh ON l.id = oh.lead_id
                  WHERE lc.category_id = ?1
@@ -4018,7 +4245,7 @@ pub async fn get_campaign_leads(
         },
         "last_failed" => {
             if is_email {
-                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  WHERE lc.category_id = ?1
                    AND l.id IN (
@@ -4027,7 +4254,7 @@ pub async fn get_campaign_leads(
                        ) WHERE status = 'FAILED'
                    )"
             } else {
-                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+                "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency FROM leads l
                  JOIN lead_categories lc ON l.id = lc.lead_id
                  WHERE lc.category_id = ?1
                    AND l.id IN (
@@ -4038,7 +4265,7 @@ pub async fn get_campaign_leads(
             }
         },
         _ => {
-            "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt FROM leads l
+            "SELECT l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency FROM leads l
              JOIN lead_categories lc ON l.id = lc.lead_id
              WHERE lc.category_id = ?1"
         }
@@ -4069,6 +4296,11 @@ pub async fn get_campaign_leads(
                         zalo_status: row.get(14)?,
                         relationship_status: row.get(15)?,
                         last_lookup_attempt: row.get(16)?,
+                        currency: row
+                            .get::<_, Option<String>>(17)
+                            .ok()
+                            .flatten()
+                            .or(Some("VND".to_string())),
                     })
                 },
             )
@@ -4098,6 +4330,11 @@ pub async fn get_campaign_leads(
                     zalo_status: row.get(14)?,
                     relationship_status: row.get(15)?,
                     last_lookup_attempt: row.get(16)?,
+                    currency: row
+                        .get::<_, Option<String>>(17)
+                        .ok()
+                        .flatten()
+                        .or(Some("VND".to_string())),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -6243,28 +6480,82 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
             }
         }
 
+        // Clean up legacy nested directories if present from earlier versions
+        let nested_apps = local_apps.join("applications");
+        if nested_apps.exists() {
+            let _ = std::fs::remove_dir_all(&nested_apps);
+        }
+        let nested_icons = local_icons.join("icons");
+        if nested_icons.exists() {
+            let _ = std::fs::remove_dir_all(&nested_icons);
+        }
+
+        // Copy icon contents into ~/.local/share/icons
         let src_icons = extracted_dir.join("usr/share/icons");
         if src_icons.exists() {
-            let _ = std::process::Command::new("cp")
-                .args([
-                    "-r",
-                    "-f",
-                    "--remove-destination",
-                    src_icons.to_str().unwrap_or(""),
-                    local_icons.to_str().unwrap_or(""),
-                ])
-                .status();
+            if let Ok(entries) = std::fs::read_dir(&src_icons) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let _ = std::process::Command::new("cp")
+                        .args([
+                            "-r",
+                            "-f",
+                            "--remove-destination",
+                            path.to_str().unwrap_or(""),
+                            local_icons.to_str().unwrap_or(""),
+                        ])
+                        .status();
+                }
+            }
         }
+
+        // Copy .desktop files into ~/.local/share/applications and patch paths
         let src_apps = extracted_dir.join("usr/share/applications");
         if src_apps.exists() {
-            let _ = std::process::Command::new("cp")
-                .args([
-                    "-r",
-                    "-f",
-                    "--remove-destination",
-                    src_apps.to_str().unwrap_or(""),
-                    local_apps.to_str().unwrap_or(""),
-                ])
+            if let Ok(entries) = std::fs::read_dir(&src_apps) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let file_name = entry.file_name();
+                        let target_desktop = local_apps.join(&file_name);
+                        if std::fs::copy(&path, &target_desktop).is_ok() {
+                            if let Ok(content) = std::fs::read_to_string(&target_desktop) {
+                                let exec_path = local_bin.join("rustsale-crm");
+                                let mut new_lines = Vec::new();
+                                for line in content.lines() {
+                                    if line.starts_with("Exec=") {
+                                        new_lines.push(format!("Exec={} %U", exec_path.display()));
+                                    } else if line.starts_with("Icon=") {
+                                        new_lines.push("Icon=rustsale-crm".to_string());
+                                    } else {
+                                        new_lines.push(line.to_string());
+                                    }
+                                }
+                                let _ = std::fs::write(&target_desktop, new_lines.join("\n"));
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let _ = std::fs::set_permissions(
+                                        &target_desktop,
+                                        std::fs::Permissions::from_mode(0o755),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update desktop and icon databases
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(local_apps.to_str().unwrap_or(""))
+            .status();
+
+        let hicolor_dir = local_icons.join("hicolor");
+        if hicolor_dir.exists() {
+            let _ = std::process::Command::new("gtk-update-icon-cache")
+                .args(["-f", "-t", hicolor_dir.to_str().unwrap_or("")])
                 .status();
         }
 

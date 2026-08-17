@@ -30,15 +30,36 @@ if (typeof Element !== 'undefined' && !Element.prototype.animate) {
 }
 
 // Sample mock data
-const defaultLeads = [
-  { id: 1, name: "Alice Smith", company: "Acme Corp", status: "Qualified", value: 5000, last_activity: "2026-07-17", owner: "Self", email: "alice@acme.com", phone: "123-456", about: "Interested in enterprise plan" },
-  { id: 2, name: "Bob Jones", company: "Globex", status: "New", value: 2500, last_activity: "2026-07-16", owner: "Self", email: "bob@globex.com", phone: "789-101", about: "Needs custom integrations" }
+const defaultLeads: Array<{
+  id: number;
+  name: string;
+  company: string;
+  status: string;
+  value: number;
+  last_activity: string;
+  owner: string;
+  email: string;
+  phone: string;
+  about: string;
+  address?: string;
+  currency?: 'VND' | 'USD';
+}> = [
+  { id: 1, name: "Alice Smith", company: "Acme Corp", status: "Qualified", value: 5000, last_activity: "2026-07-17", owner: "Self", email: "alice@acme.com", phone: "123-456", about: "Interested in enterprise plan", currency: "VND" },
+  { id: 2, name: "Bob Jones", company: "Globex", status: "New", value: 2500, last_activity: "2026-07-16", owner: "Self", email: "bob@globex.com", phone: "789-101", about: "Needs custom integrations", currency: "VND" }
 ];
 let mockLeads: typeof defaultLeads = [];
 
-const defaultDeals = [
-  { id: 10, lead_id: 1, title: "Acme Enterprise deal", value: 12000000, stage: "Prospecting", created_at: "2026-07-15" },
-  { id: 11, lead_id: 2, title: "Globex Pilot plan", value: 3000000, stage: "Proposal", created_at: "2026-07-16" }
+const defaultDeals: Array<{
+  id: number;
+  lead_id: number;
+  title: string;
+  value: number;
+  stage: string;
+  created_at: string;
+  currency?: 'VND' | 'USD';
+}> = [
+  { id: 10, lead_id: 1, title: "Acme Enterprise deal", value: 12000000, stage: "Prospecting", created_at: "2026-07-15", currency: "VND" },
+  { id: 11, lead_id: 2, title: "Globex Pilot plan", value: 3000000, stage: "Proposal", created_at: "2026-07-16", currency: "VND" }
 ];
 let mockDeals: typeof defaultDeals = [];
 
@@ -87,10 +108,11 @@ mock.module('@tauri-apps/api/core', () => {
           title: args.title,
           value: args.value,
           stage: args.stage,
+          currency: args.currency || 'VND',
           created_at: new Date().toISOString()
         };
         mockDeals.push(newDeal);
-        return Promise.resolve(newDeal.id);
+        return Promise.resolve(newDeal);
       }
       if (cmd === 'delete_deal') {
         const index = mockDeals.findIndex(d => d.id === args.id);
@@ -113,8 +135,27 @@ mock.module('@tauri-apps/api/core', () => {
           lead.email = args.email;
           lead.phone = args.phone;
           lead.about = args.about;
+          lead.currency = args.currency || lead.currency || 'VND';
         }
         return Promise.resolve();
+      }
+      if (cmd === 'add_lead') {
+        const newLead = {
+          id: Math.floor(Math.random() * 1000) + 100,
+          name: args.name,
+          company: args.company,
+          status: args.status,
+          value: args.value,
+          owner: args.owner,
+          email: args.email,
+          phone: args.phone,
+          about: args.about,
+          address: args.address,
+          currency: args.currency || 'VND',
+          last_activity: new Date().toISOString()
+        };
+        mockLeads.push(newLead);
+        return Promise.resolve(newLead.id);
       }
       if (cmd === 'delete_lead') {
         const index = mockLeads.findIndex(l => l.id === args.id);
@@ -148,7 +189,8 @@ import { afterEach } from 'bun:test';
 import LeadsList from '../LeadsList.svelte';
 import KanbanBoard from '../KanbanBoard.svelte';
 import LeadDetails from '../LeadDetails.svelte';
-import { setLocale, formatCurrency, formatCompactCurrency } from '$lib/i18n';
+import * as crmService from '$lib/services/crmService';
+import { setLocale, formatCurrency, formatCompactCurrency, setBaseCurrency, setExchangeRate } from '$lib/i18n';
 
 afterEach(() => {
   cleanup();
@@ -278,6 +320,81 @@ test('edits a lead and saves changes', async () => {
   expect(screen.getAllByText('Converted').length).toBeGreaterThan(0);
 });
 
+test('edits a lead with USD currency and verifies updated currency formatting', async () => {
+  render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
+  await screen.findByText('Alice Smith');
+
+  // Trigger edit mode
+  const editBtn = screen.getByRole('button', { name: 'Edit' });
+  await fireEvent.click(editBtn);
+
+  // Switch lead currency to USD
+  const usdBtn = screen.getByRole('button', { name: 'USD ($)' });
+  await fireEvent.click(usdBtn);
+
+  const valueInput = screen.getByLabelText('Estimated Value') as HTMLInputElement;
+  await fireEvent.input(valueInput, { target: { value: '4500' } });
+
+  // Save changes
+  const saveBtn = screen.getByRole('button', { name: 'Save' });
+  const form = saveBtn.closest('form')!;
+  await fireEvent.submit(form);
+
+  // Check that new USD value is rendered
+  const expectedUsd = formatCurrency(4500, 'USD');
+  const usdElement = await screen.findByText(expectedUsd);
+  expect(usdElement).toBeTruthy();
+});
+
+test('safely converts monetary value when switching currency between VND and USD in LeadDetails', async () => {
+  // Set lead 1 value to 25,400,000 VND
+  mockLeads[0].value = 25400000;
+  mockLeads[0].currency = 'VND';
+
+  render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
+  await screen.findByText('Alice Smith');
+
+  // Trigger edit mode
+  const editBtn = screen.getByRole('button', { name: 'Edit' });
+  await fireEvent.click(editBtn);
+
+  const valueInput = screen.getByLabelText('Estimated Value') as HTMLInputElement;
+  expect(Number(valueInput.value)).toBe(25400000);
+
+  // 1. Switch VND -> USD: should convert using FX rate (25,400,000 / 25,400 = 1000)
+  const usdBtn = screen.getByRole('button', { name: 'USD ($)' });
+  await fireEvent.click(usdBtn);
+  expect(Number(valueInput.value)).toBe(1000);
+
+  // 2. Switch USD -> VND: should convert back (1000 * 25,400 = 25,400,000)
+  const vndBtn = screen.getByRole('button', { name: 'VND (₫)' });
+  await fireEvent.click(vndBtn);
+  expect(Number(valueInput.value)).toBe(25400000);
+});
+
+test('updateLead preserves existing USD currency when currency is omitted', async () => {
+  mockLeads[0].currency = 'USD';
+  mockLeads[0].value = 1500;
+
+  // Call updateLead without passing currency argument
+  await (crmService.updateLead as any)(
+    1,
+    'Alice Smith',
+    'Acme Corp',
+    'Qualified',
+    1800,
+    'Self',
+    'alice@acme.com',
+    '123-456',
+    'Notes',
+    'Address'
+  );
+
+  const updatedLead = mockLeads.find(l => l.id === 1);
+  expect(updatedLead?.currency).toBe('USD');
+  expect(updatedLead?.value).toBe(1800);
+});
+
 test('deletes a lead with confirmation', async () => {
   let closed = false;
 
@@ -352,6 +469,44 @@ test('creates a deal via LeadDetails using VND currency preset and renders with 
   expect(screen.getAllByText(expectedValueStr).length).toBeGreaterThanOrEqual(1);
 });
 
+test('creates a USD deal and renders with accurate USD currency formatting and base conversion', async () => {
+  setLocale('en');
+  render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
+  await screen.findByText('Alice Smith');
+
+  // Open Create Deal Modal
+  const createDealBtn = screen.getByRole('button', { name: '+ Create Deal' });
+  await fireEvent.click(createDealBtn);
+
+  // Switch currency to USD
+  const usdBtn = screen.getByRole('button', { name: 'USD ($)' });
+  await fireEvent.click(usdBtn);
+
+  // Fill in deal info
+  const titleInput = screen.getByLabelText('Deal Title *') as HTMLInputElement;
+  await fireEvent.input(titleInput, { target: { value: 'Global Software License deal' } });
+
+  const preset1K = screen.getByRole('button', { name: '$1K' });
+  await fireEvent.click(preset1K);
+
+  const submitDealBtn = screen.getByRole('button', { name: 'Create Deal' });
+  await fireEvent.click(submitDealBtn);
+
+  // Verify created deal rendered in LeadDetails with explicit USD formatting
+  const expectedUsdStr = formatCurrency(1000, 'USD');
+  const renderedDealInDetails = await screen.findByText('Global Software License deal');
+  expect(renderedDealInDetails).toBeTruthy();
+  expect(screen.getAllByText(expectedUsdStr).length).toBeGreaterThanOrEqual(1);
+
+  // Unmount LeadDetails and render KanbanBoard
+  cleanup();
+  render(KanbanBoard);
+
+  const renderedDealInKanban = await screen.findByText('Global Software License deal');
+  expect(renderedDealInKanban).toBeTruthy();
+  expect(screen.getAllByText(expectedUsdStr).length).toBeGreaterThanOrEqual(1);
+});
+
 test('renders LeadDetails with full Vietnamese translations and interaction flow when locale is vi', async () => {
   setLocale('vi');
   render(LeadDetails, { props: { leadId: 1, onClose: () => {} } });
@@ -419,4 +574,33 @@ test('filters leads by VND value ranges across 9,999,999 / 10,000,000 / 50,000,0
   // 9,999,999 < 10,000,000 -> true; 10,000,000 >= 10,000,000 -> false
   const filterTrigger = screen.getByText('Tất cả Giá trị');
   expect(filterTrigger).toBeTruthy();
+});
+
+test('classifies a $5,000 USD lead into above_50m value range filter accurately based on FX conversion', async () => {
+  setLocale('en');
+  setBaseCurrency('VND');
+  setExchangeRate(25400);
+
+  const mixedLeads: crmService.Lead[] = [
+    { id: 201, name: "Small VND Lead", company: "Corp A", status: "New", value: 5000000, currency: "VND", last_activity: "2026-08-01", owner: "Self", email: "a@test.com", phone: "111", about: null },
+    { id: 202, name: "Big USD Lead", company: "Corp B", status: "New", value: 5000, currency: "USD", last_activity: "2026-08-01", owner: "Self", email: "b@test.com", phone: "222", about: null }
+  ];
+
+  render(LeadsList, { props: { leads: mixedLeads } });
+
+  expect(screen.getByText('Small VND Lead')).toBeTruthy();
+  expect(screen.getByText('Big USD Lead')).toBeTruthy();
+
+  // Open Value Range select
+  const valueFilterTrigger = screen.getByText('All Values');
+  await fireEvent.keyDown(valueFilterTrigger, { key: 'Enter', code: 'Enter' });
+
+  // Select 'Above 50M ₫'
+  const above50mOption = await screen.findByRole('option', { name: /Above 50M/i });
+  await fireEvent.pointerUp(above50mOption, { pointerType: 'mouse' });
+
+  // Big USD Lead ($5,000 = 127,000,000 VND) is classified as > 50M
+  expect(screen.getByText('Big USD Lead')).toBeTruthy();
+  // Small VND Lead (5,000,000 VND) is NOT > 50M
+  expect(screen.queryByText('Small VND Lead')).toBeNull();
 });

@@ -10,7 +10,14 @@
     DollarSign, Trophy, Users, CheckCircle2, TrendingUp, TrendingDown, AlertCircle,
     Layers, Activity, RefreshCw, MessageCircle, Settings, X, Edit3, Save, Target
   } from 'lucide-svelte';
-  import { m, formatCurrency, formatNumber } from '$lib/i18n';
+  import {
+    m,
+    formatCurrency,
+    formatNumber,
+    currencyState,
+    convertCurrency,
+    type Currency
+  } from '$lib/i18n';
 
   let { activeTab = 'dashboard' }: { activeTab?: string } = $props();
 
@@ -150,12 +157,20 @@
   const activePeriodTarget = $derived(Math.round(targetRevenue * periodMultiplier));
   const activePeriodStretch = $derived(Math.round(stretchRevenue * periodMultiplier));
 
+  const convertedActivePeriodTarget = $derived(
+    convertCurrency(activePeriodTarget, 'VND', currencyState.baseCurrency, currencyState.exchangeRate)
+  );
+  const convertedActivePeriodStretch = $derived(
+    convertCurrency(activePeriodStretch, 'VND', currencyState.baseCurrency, currencyState.exchangeRate)
+  );
+
   // Filter deals based on selectedPeriod
   const activeDeals = $derived.by(() => {
-    const filtered = deals.filter(d => {
-      if (!d.created_at) return true;
+    return deals.filter(d => {
+      if (selectedPeriod === 'All' || !selectedPeriod) return true;
+      if (!d.created_at) return false;
       const dDate = new Date(d.created_at);
-      if (isNaN(dDate.getTime())) return true;
+      if (isNaN(dDate.getTime())) return false;
       const year = dDate.getFullYear();
       const month = dDate.getMonth();
 
@@ -169,11 +184,20 @@
       }
       return true;
     });
-    return filtered.length > 0 ? filtered : deals;
   });
 
   const totalRevenue = $derived(
-    activeDeals.filter(d => d.stage === 'Won').reduce((sum, d) => sum + d.value, 0)
+    activeDeals
+      .filter(d => d.stage === 'Won')
+      .reduce((sum, d) => {
+        const val = convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        return sum + val;
+      }, 0)
   );
 
   const dealsWon = $derived(
@@ -185,7 +209,17 @@
   );
 
   const totalPipelineValue = $derived(
-    activeDeals.filter(d => d.stage !== 'Won' && d.stage !== 'Lost').reduce((sum, d) => sum + d.value, 0)
+    activeDeals
+      .filter(d => d.stage !== 'Won' && d.stage !== 'Lost')
+      .reduce((sum, d) => {
+        const val = convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        return sum + val;
+      }, 0)
   );
 
   const totalDealsCount = $derived(activeDeals.length);
@@ -195,15 +229,15 @@
   );
 
   const targetProgressPct = $derived(
-    activePeriodTarget > 0 ? Math.min(100, Math.round((totalRevenue / activePeriodTarget) * 100)) : 0
+    convertedActivePeriodTarget > 0 ? Math.min(100, Math.round((totalRevenue / convertedActivePeriodTarget) * 100)) : 0
   );
 
   const targetPosX = $derived(
-    activePeriodStretch > 0 ? Math.min(380, Math.max(20, Math.round(10 + (activePeriodTarget / activePeriodStretch) * 380))) : 314
+    convertedActivePeriodStretch > 0 ? Math.min(380, Math.max(20, Math.round(10 + (convertedActivePeriodTarget / convertedActivePeriodStretch) * 380))) : 314
   );
 
   function formatCompactCurrency(val: number) {
-    return formatCurrency(val, 'VND');
+    return formatCurrency(val, currencyState.baseCurrency);
   }
 
   // Calculation of Previous Period Data for 100% Real Comparative Trends
@@ -230,7 +264,17 @@
   });
 
   const previousRevenue = $derived(
-    previousPeriodDeals.filter(d => d.stage === 'Won').reduce((sum, d) => sum + d.value, 0)
+    previousPeriodDeals
+      .filter(d => d.stage === 'Won')
+      .reduce((sum, d) => {
+        const val = convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        return sum + val;
+      }, 0)
   );
 
   const previousWonCount = $derived(
@@ -303,7 +347,7 @@
   });
 
   const stats = $derived([
-    { label: m.dashboard_total_revenue(), value: formatCurrency(totalRevenue, 'VND'), change: revenueChangeStr, up: totalRevenue >= previousRevenue, icon: DollarSign },
+    { label: m.dashboard_total_revenue(), value: formatCurrency(totalRevenue, currencyState.baseCurrency), change: revenueChangeStr, up: totalRevenue >= previousRevenue, icon: DollarSign },
     { label: m.dashboard_deals_won(), value: String(dealsWon), change: dealsWonChangeStr, up: dealsWon >= previousWonCount, icon: Trophy },
     { label: m.dashboard_active_leads(), value: String(activeLeadsCount), change: leadsChangeStr, up: currentPeriodLeads.length >= previousPeriodLeads.length, icon: Users }
   ]);
@@ -320,7 +364,14 @@
   const stageBreakdown = $derived(
     Object.keys(stageConfig).map(stage => {
       const stageDeals = activeDeals.filter(d => d.stage === stage);
-      const value = stageDeals.reduce((sum, d) => sum + d.value, 0);
+      const value = stageDeals.reduce((sum, d) => {
+        return sum + convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+      }, 0);
       const count = stageDeals.length;
       return {
         stage,
@@ -332,11 +383,25 @@
     })
   );
 
-  // Top Active Deals
+  // Top Active Deals sorted by value converted to common base currency
   const topActiveDeals = $derived(
     activeDeals
       .filter(d => d.stage !== 'Won')
-      .sort((a, b) => b.value - a.value)
+      .sort((a, b) => {
+        const valA = convertCurrency(
+          a.value || 0,
+          (a.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        const valB = convertCurrency(
+          b.value || 0,
+          (b.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        return valB - valA;
+      })
       .slice(0, 4)
   );
 
@@ -374,9 +439,15 @@
         if (isNaN(dt.getTime())) return;
         const day = dt.getDate();
         const weekIdx = Math.min(3, Math.floor((day - 1) / 7));
-        weekBuckets[weekIdx] += d.value;
+        const val = convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        weekBuckets[weekIdx] += val;
       });
-      const targetPerWeek = Math.round(activePeriodTarget / 4);
+      const targetPerWeek = Math.round(convertedActivePeriodTarget / 4);
       return [
         { month: 'Week 1', value: weekBuckets[0], target: targetPerWeek },
         { month: 'Week 2', value: weekBuckets[1], target: targetPerWeek },
@@ -391,9 +462,15 @@
         if (isNaN(dt.getTime())) return;
         const m = dt.getMonth();
         const qIdx = Math.floor(m / 3);
-        qBuckets[qIdx] += d.value;
+        const val = convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        qBuckets[qIdx] += val;
       });
-      const targetPerQ = Math.round(activePeriodTarget / 4);
+      const targetPerQ = Math.round(convertedActivePeriodTarget / 4);
       return [
         { month: 'Q1 2026', value: qBuckets[0], target: targetPerQ },
         { month: 'Q2 2026', value: qBuckets[1], target: targetPerQ },
@@ -410,10 +487,16 @@
       if (isNaN(dt.getTime())) return;
       const m = dt.getMonth();
       if (m in monthBuckets) {
-        monthBuckets[m] += d.value;
+        const val = convertCurrency(
+          d.value || 0,
+          (d.currency as Currency) || 'VND',
+          currencyState.baseCurrency,
+          currencyState.exchangeRate
+        );
+        monthBuckets[m] += val;
       }
     });
-    const targetPerMonth = Math.round(activePeriodTarget / 3);
+    const targetPerMonth = Math.round(convertedActivePeriodTarget / 3);
     return [
       { month: 'Jul 2026', value: monthBuckets[6], target: targetPerMonth },
       { month: 'Aug 2026', value: monthBuckets[7], target: targetPerMonth },
@@ -526,7 +609,7 @@
             <span class="text-xs text-muted-foreground font-medium">Actual Progress ({selectedPeriod})</span>
             <div class="flex items-baseline gap-2">
               <span class="text-2xl font-extrabold text-emerald-600 tracking-tight">Revenue: {formatCompactCurrency(totalRevenue)}</span>
-              <span class="text-xs font-bold text-muted-foreground">/ {formatCompactCurrency(activePeriodTarget)} Target</span>
+              <span class="text-xs font-bold text-muted-foreground">/ {formatCompactCurrency(convertedActivePeriodTarget)} Target</span>
             </div>
           </div>
           <div class="flex items-center gap-4">
@@ -546,8 +629,8 @@
             <span>Progress Visualizer ({selectedPeriod})</span>
             <div class="flex items-center gap-3 text-[11px]">
               <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> Actual</span>
-              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> Target ({formatCompactCurrency(activePeriodTarget)})</span>
-              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span> Stretch ({formatCompactCurrency(activePeriodStretch)})</span>
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> Target ({formatCompactCurrency(convertedActivePeriodTarget)})</span>
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span> Stretch ({formatCompactCurrency(convertedActivePeriodStretch)})</span>
             </div>
           </div>
 
@@ -556,13 +639,13 @@
               <!-- Background Bar -->
               <rect x="10" y="30" width="380" height="24" rx="6" fill="var(--color-muted, #f1f5f9)"></rect>
               <!-- Progress Bar -->
-              <rect x="10" y="30" width="{Math.min(380, (totalRevenue / activePeriodStretch) * 380)}" height="24" rx="6" fill="#10b981"></rect>
+              <rect x="10" y="30" width="{convertedActivePeriodStretch > 0 ? Math.min(380, (totalRevenue / convertedActivePeriodStretch) * 380) : 0}" height="24" rx="6" fill="#10b981"></rect>
               <!-- Target Marker line -->
               <line x1="{targetPosX}" y1="20" x2="{targetPosX}" y2="60" stroke="#f43f5e" stroke-width="2" stroke-dasharray="3 3"></line>
-              <text x="{targetPosX}" y="14" text-anchor="middle" fill="#f43f5e" font-size="10" font-weight="700">Target: {formatCompactCurrency(activePeriodTarget)}</text>
+              <text x="{targetPosX}" y="14" text-anchor="middle" fill="#f43f5e" font-size="10" font-weight="700">Target: {formatCompactCurrency(convertedActivePeriodTarget)}</text>
               <!-- Stretch Goal Line -->
               <line x1="380" y1="20" x2="380" y2="60" stroke="#6366f1" stroke-width="2" stroke-dasharray="3 3"></line>
-              <text x="380" y="78" text-anchor="end" fill="#6366f1" font-size="10" font-weight="700">Stretch: {formatCompactCurrency(activePeriodStretch)}</text>
+              <text x="380" y="78" text-anchor="end" fill="#6366f1" font-size="10" font-weight="700">Stretch: {formatCompactCurrency(convertedActivePeriodStretch)}</text>
             </svg>
           </div>
         </div>
@@ -692,7 +775,7 @@
             <div class="p-3 rounded-xl border border-border/80 bg-card hover:border-primary/40 transition-colors space-y-1.5 shadow-2xs">
               <div class="flex items-start justify-between gap-2">
                 <h4 class="text-xs font-bold text-foreground truncate">{deal.title}</h4>
-                <span class="text-xs font-black text-emerald-600 shrink-0">{formatCurrency(deal.value, 'VND')}</span>
+                <span class="text-xs font-black text-emerald-600 shrink-0">{formatCurrency(deal.value, (deal.currency as Currency) || 'VND')}</span>
               </div>
               <div class="flex items-center justify-between text-[11px]">
                 <span class="text-muted-foreground truncate">{lead ? lead.name : m.kanban_unassigned()}</span>

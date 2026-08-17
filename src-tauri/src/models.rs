@@ -19,6 +19,12 @@ pub struct Lead {
     pub zalo_status: Option<String>,
     pub relationship_status: Option<String>,
     pub last_lookup_attempt: Option<String>,
+    #[serde(default = "default_currency")]
+    pub currency: Option<String>,
+}
+
+fn default_currency() -> Option<String> {
+    Some("VND".to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -56,6 +62,8 @@ pub struct Deal {
     pub value: f64,
     pub stage: String,
     pub created_at: String,
+    #[serde(default = "default_currency")]
+    pub currency: Option<String>,
 }
 
 #[allow(dead_code)]

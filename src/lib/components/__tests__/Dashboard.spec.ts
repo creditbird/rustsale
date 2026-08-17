@@ -1,10 +1,15 @@
 /// <reference types="bun-types" />
 import { afterEach, mock } from 'bun:test';
 
-let leadsList = [
-  { id: 1, name: "Lead One", company: "Company A", status: "New", value: 1000, last_activity: "2026-07-17", owner: "Owner A", email: "a@test.com", phone: "123", about: null },
-  { id: 2, name: "Lead Two", company: "Company B", status: "Contacted", value: 2000, last_activity: "2026-07-17", owner: "Owner B", email: "b@test.com", phone: "456", about: null },
-  { id: 3, name: "Lead Three", company: "Company C", status: "Lost", value: 1500, last_activity: "2026-07-17", owner: "Owner C", email: "c@test.com", phone: "789", about: null }
+let leadsList: any[] = [
+  { id: 1, name: "Lead One", company: "Company A", status: "New", value: 1000, last_activity: "2026-07-17", owner: "Owner A", email: "a@test.com", phone: "123", about: null, currency: "VND" },
+  { id: 2, name: "Lead Two", company: "Company B", status: "Contacted", value: 2000, last_activity: "2026-07-17", owner: "Owner B", email: "b@test.com", phone: "456", about: null, currency: "VND" },
+  { id: 3, name: "Lead Three", company: "Company C", status: "Lost", value: 1500, last_activity: "2026-07-17", owner: "Owner C", email: "c@test.com", phone: "789", about: null, currency: "VND" }
+];
+let dealsList: any[] = [
+  { id: 1, lead_id: 1, title: "Deal One", value: 15000, stage: "Won", created_at: "2026-07-17", currency: "VND" },
+  { id: 2, lead_id: 2, title: "Deal Two", value: 30000, stage: "Won", created_at: "2026-07-17", currency: "VND" },
+  { id: 3, lead_id: 3, title: "Deal Three", value: 20000, stage: "Proposal", created_at: "2026-07-17", currency: "VND" }
 ];
 let getLeadsInvokeCount = 0;
 
@@ -17,11 +22,7 @@ mock.module('@tauri-apps/api/core', () => {
         return Promise.resolve(leadsList);
       }
       if (cmd === 'get_deals') {
-        return Promise.resolve([
-          { id: 1, lead_id: 1, title: "Deal One", value: 15000, stage: "Won", created_at: "2026-07-17" },
-          { id: 2, lead_id: 2, title: "Deal Two", value: 30000, stage: "Won", created_at: "2026-07-17" },
-          { id: 3, lead_id: 3, title: "Deal Three", value: 20000, stage: "Proposal", created_at: "2026-07-17" }
-        ]);
+        return Promise.resolve(dealsList);
       }
       if (cmd === 'get_recent_activities') {
         return Promise.resolve([]);
@@ -39,10 +40,22 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/svelte';
 import Dashboard from '../Dashboard.svelte';
 import { notifyLeadsChanged } from '$lib/services/crmService';
 import { expect, test, beforeEach } from 'bun:test';
-import { setLocale, formatCurrency, formatCompactCurrency } from '$lib/i18n';
+import { setLocale, formatCurrency, formatCompactCurrency, setBaseCurrency, setExchangeRate } from '$lib/i18n';
 
 beforeEach(() => {
   setLocale('en');
+  setBaseCurrency('VND');
+  setExchangeRate(25400);
+  dealsList = [
+    { id: 1, lead_id: 1, title: "Deal One", value: 15000, stage: "Won", created_at: "2026-07-17", currency: "VND" },
+    { id: 2, lead_id: 2, title: "Deal Two", value: 30000, stage: "Won", created_at: "2026-07-17", currency: "VND" },
+    { id: 3, lead_id: 3, title: "Deal Three", value: 20000, stage: "Proposal", created_at: "2026-07-17", currency: "VND" }
+  ];
+  leadsList = [
+    { id: 1, name: "Lead One", company: "Company A", status: "New", value: 1000, last_activity: "2026-07-17", owner: "Owner A", email: "a@test.com", phone: "123", about: null, currency: "VND" },
+    { id: 2, name: "Lead Two", company: "Company B", status: "Contacted", value: 2000, last_activity: "2026-07-17", owner: "Owner B", email: "b@test.com", phone: "456", about: null, currency: "VND" },
+    { id: 3, name: "Lead Three", company: "Company C", status: "Lost", value: 1500, last_activity: "2026-07-17", owner: "Owner C", email: "c@test.com", phone: "789", about: null, currency: "VND" }
+  ];
 });
 
 afterEach(() => {
@@ -203,4 +216,101 @@ test('persists updated VND targets using versioned keys in localStorage', async 
   // Verify localStorage keys were versioned and persisted
   expect(localStorage.getItem('rustsale_target_revenue_v2')).toBe('200000000');
   expect(localStorage.getItem('rustsale_stretch_revenue_v2')).toBe('250000000');
+});
+
+test('accurately calculates target completion % when Base Currency is USD without dimension error', async () => {
+  setBaseCurrency('USD');
+  setExchangeRate(25400);
+
+  // 127,000,000 VND target ($5,000 USD at 25400)
+  localStorage.setItem('rustsale_target_revenue_v2', '127000000');
+  localStorage.setItem('rustsale_stretch_revenue_v2', '254000000');
+
+  // Won deal of $2,500 USD (50% of target)
+  dealsList = [
+    { id: 10, lead_id: 1, title: "USD Won Deal", value: 2500, currency: "USD", stage: "Won", created_at: "2026-07-15" }
+  ];
+
+  render(Dashboard, { props: { activeTab: 'dashboard' } });
+
+  // Completion rate should be exactly 50% (not 0.002% from raw VND division)
+  const completionElements = await screen.findAllByText('50%', {}, { timeout: 3000 });
+  expect(completionElements.length).toBeGreaterThanOrEqual(1);
+
+  // Formatted converted target should display ~$5,000.00 (not $127,000,000)
+  expect(screen.getByText(/\/ \$5,000\.00 Target/i)).toBeTruthy();
+});
+
+test('accurately sums mixed-currency won deals in monthly trend data with FX conversion', async () => {
+  setBaseCurrency('VND');
+  setExchangeRate(25400);
+
+  // 1 VND won deal (25,400,000 VND) + 1 USD won deal ($1,000 = 25,400,000 VND)
+  dealsList = [
+    { id: 1, lead_id: 1, title: "VND Deal", value: 25400000, currency: "VND", stage: "Won", created_at: "2026-07-10" },
+    { id: 2, lead_id: 2, title: "USD Deal", value: 1000, currency: "USD", stage: "Won", created_at: "2026-07-15" }
+  ];
+
+  render(Dashboard, { props: { activeTab: 'dashboard' } });
+
+  // Total revenue is 50,800,000 VND (not 25,401,000 raw)
+  const expectedTotalStr = formatCurrency(50800000, 'VND');
+  const revenueElements = await screen.findAllByText(expectedTotalStr, {}, { timeout: 3000 });
+  expect(revenueElements.length).toBeGreaterThanOrEqual(1);
+
+  // Jul 2026 trend data displays 50,800,000 VND
+  expect(screen.getByText('Jul 2026')).toBeTruthy();
+  expect(screen.getAllByText(expectedTotalStr).length).toBeGreaterThanOrEqual(2);
+});
+
+test('ranks top active deals by converted base currency value', async () => {
+  setBaseCurrency('VND');
+  setExchangeRate(25400);
+
+  // Deal A: $5,000 USD (~127,000,000 VND)
+  // Deal B: 100,000,000 VND
+  dealsList = [
+    { id: 1, lead_id: 1, title: "VND Deal 100M", value: 100000000, currency: "VND", stage: "Demo", created_at: "2026-07-10" },
+    { id: 2, lead_id: 2, title: "USD Deal 5K", value: 5000, currency: "USD", stage: "Proposal", created_at: "2026-07-10" }
+  ];
+
+  render(Dashboard, { props: { activeTab: 'dashboard' } });
+
+  // Wait for deals to load
+  await screen.findByText('USD Deal 5K', {}, { timeout: 3000 });
+
+  const dealTitles = screen.getAllByRole('heading', { level: 4 }).map(el => el.textContent);
+  const usdIndex = dealTitles.indexOf('USD Deal 5K');
+  const vndIndex = dealTitles.indexOf('VND Deal 100M');
+
+  // $5,000 USD (127m VND) MUST rank higher than 100,000,000 VND
+  expect(usdIndex).toBeLessThan(vndIndex);
+});
+
+test('returns zero metrics when selected period has zero matching deals and excludes missing/invalid created_at', async () => {
+  setBaseCurrency('VND');
+  setExchangeRate(25400);
+
+  // All deals are from 2025 or have missing/invalid created_at dates
+  dealsList = [
+    { id: 1, lead_id: 1, title: "2025 Deal", value: 100000000, currency: "VND", stage: "Won", created_at: "2025-05-10" },
+    { id: 2, lead_id: 2, title: "Missing Date Deal", value: 50000000, currency: "VND", stage: "Won", created_at: null },
+    { id: 3, lead_id: 3, title: "Invalid Date Deal", value: 20000000, currency: "VND", stage: "Won", created_at: "invalid-date-string" }
+  ];
+
+  render(Dashboard, { props: { activeTab: 'dashboard' } });
+
+  // Default selected period is 'Q3 2026'
+  // When no deals match Q3 2026, activeDeals MUST be empty (0 deals), totalRevenue MUST be 0 ₫
+  // It MUST NOT fall back to the 2025 historical deals (100,000,000 VND)
+  const zeroRevenueStr = formatCurrency(0, 'VND');
+  const revenueElements = await screen.findAllByText(zeroRevenueStr, {}, { timeout: 3000 });
+  expect(revenueElements.length).toBeGreaterThanOrEqual(1);
+
+  // Deals count badge and stage counts should show 0 deals
+  const zeroDealsElements = screen.getAllByText('0 deals');
+  expect(zeroDealsElements.length).toBeGreaterThanOrEqual(1);
+  // Deals won should be 0
+  const zeroCounts = screen.getAllByText('0');
+  expect(zeroCounts.length).toBeGreaterThanOrEqual(1);
 });

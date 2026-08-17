@@ -4,7 +4,7 @@ import type { Lead } from '$lib/services/crmService';
 import LeadsList from '../LeadsList.svelte';
 import * as leadsExportCsv from '$lib/utils/leadsExportCsv';
 import { toast } from 'svelte-sonner';
-import { setLocale } from '$lib/i18n';
+import { setLocale, convertCurrency, type Currency } from '$lib/i18n';
 
 describe('LeadsList Component & Selection Banner', () => {
   const mockLeads: Lead[] = Array.from({ length: 25 }, (_, i) => ({
@@ -298,34 +298,36 @@ describe('LeadsList Component & Selection Banner', () => {
     expect(screen.getByText(/Showing 1 to/i)).toBeTruthy();
   });
 
-  test('filters leads by canonical VND value boundaries (9,999,999 / 10,000,000 / 50,000,000 / 50,000,001)', () => {
+  test('filters leads by canonical VND value boundaries (9,999,999 / 10,000,000 / 50,000,000 / 50,000,001) and handles USD leads with FX conversion', () => {
     const boundaryLeads: Lead[] = [
-      { id: 1, name: 'Lead 9.99M', company: 'Corp A', status: 'New', value: 9999999, last_activity: '2026-08-01', owner: 'Self', email: 'a@test.com', phone: '111' },
-      { id: 2, name: 'Lead 10M', company: 'Corp B', status: 'New', value: 10000000, last_activity: '2026-08-01', owner: 'Self', email: 'b@test.com', phone: '222' },
-      { id: 3, name: 'Lead 50M', company: 'Corp C', status: 'New', value: 50000000, last_activity: '2026-08-01', owner: 'Self', email: 'c@test.com', phone: '333' },
-      { id: 4, name: 'Lead 50.001M', company: 'Corp D', status: 'New', value: 50000001, last_activity: '2026-08-01', owner: 'Self', email: 'd@test.com', phone: '444' }
+      { id: 1, name: 'Lead 9.99M', company: 'Corp A', status: 'New', value: 9999999, currency: 'VND', last_activity: '2026-08-01', owner: 'Self', email: 'a@test.com', phone: '111' },
+      { id: 2, name: 'Lead 10M', company: 'Corp B', status: 'New', value: 10000000, currency: 'VND', last_activity: '2026-08-01', owner: 'Self', email: 'b@test.com', phone: '222' },
+      { id: 3, name: 'Lead 50M', company: 'Corp C', status: 'New', value: 50000000, currency: 'VND', last_activity: '2026-08-01', owner: 'Self', email: 'c@test.com', phone: '333' },
+      { id: 4, name: 'Lead 50.001M', company: 'Corp D', status: 'New', value: 50000001, currency: 'VND', last_activity: '2026-08-01', owner: 'Self', email: 'd@test.com', phone: '444' },
+      { id: 5, name: 'Lead USD 5K', company: 'Corp E', status: 'New', value: 5000, currency: 'USD', last_activity: '2026-08-01', owner: 'Self', email: 'e@test.com', phone: '555' },
+      { id: 6, name: 'Lead USD 200', company: 'Corp F', status: 'New', value: 200, currency: 'USD', last_activity: '2026-08-01', owner: 'Self', email: 'f@test.com', phone: '666' }
     ];
 
-    const filterFn = (leads: Lead[], range: string) => {
+    const filterFn = (leads: Lead[], range: string, rate = 25400) => {
       return leads.filter((lead) => {
-        const val = lead.value || 0;
-        if (range === 'under_10m' && val >= 10000000) return false;
-        if (range === '10m_to_50m' && (val < 10000000 || val > 50000000)) return false;
-        if (range === 'above_50m' && val <= 50000000) return false;
+        const valVnd = convertCurrency(lead.value || 0, (lead.currency as Currency) || 'VND', 'VND', rate);
+        if (range === 'under_10m' && valVnd >= 10000000) return false;
+        if (range === '10m_to_50m' && (valVnd < 10000000 || valVnd > 50000000)) return false;
+        if (range === 'above_50m' && valVnd <= 50000000) return false;
         return true;
       });
     };
 
-    // Under 10M: should only match 9,999,999 (excludes 10,000,000)
+    // Under 10M: should match 9,999,999 VND and $200 USD (5,080,000 VND)
     const under10M = filterFn(boundaryLeads, 'under_10m');
-    expect(under10M.map(l => l.name)).toEqual(['Lead 9.99M']);
+    expect(under10M.map(l => l.name)).toEqual(['Lead 9.99M', 'Lead USD 200']);
 
-    // 10M - 50M: should match 10,000,000 and 50,000,000 inclusive (excludes 9,999,999 and 50,000,001)
+    // 10M - 50M: should match 10,000,000 and 50,000,000 inclusive
     const between10M50M = filterFn(boundaryLeads, '10m_to_50m');
     expect(between10M50M.map(l => l.name)).toEqual(['Lead 10M', 'Lead 50M']);
 
-    // Above 50M: should only match 50,000,001 (excludes 50,000,000)
+    // Above 50M: should match 50,000,001 VND and $5,000 USD (127,000,000 VND)
     const above50M = filterFn(boundaryLeads, 'above_50m');
-    expect(above50M.map(l => l.name)).toEqual(['Lead 50.001M']);
+    expect(above50M.map(l => l.name)).toEqual(['Lead 50.001M', 'Lead USD 5K']);
   });
 });
