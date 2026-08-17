@@ -6753,6 +6753,16 @@ pub async fn write_image_bytes_to_path(
 }
 
 pub async fn download_image_http(initial_url_str: &str) -> Result<Vec<u8>, String> {
+    download_image_http_with_verifier(initial_url_str, is_public_ip).await
+}
+
+pub async fn download_image_http_with_verifier<F>(
+    initial_url_str: &str,
+    ip_verifier: F,
+) -> Result<Vec<u8>, String>
+where
+    F: Fn(std::net::IpAddr) -> bool,
+{
     use futures_util::StreamExt;
 
     let mut current_url =
@@ -6778,7 +6788,7 @@ pub async fn download_image_http(initial_url_str: &str) -> Result<Vec<u8>, Strin
 
         // Resolve DNS and strictly verify ALL resolved IP addresses
         let target_socket_addr = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-            if !is_public_ip(ip) {
+            if !ip_verifier(ip) {
                 return Err(format!(
                     "Destination IP address {} is non-public/private",
                     ip
@@ -6796,7 +6806,7 @@ pub async fn download_image_http(initial_url_str: &str) -> Result<Vec<u8>, Strin
             }
 
             for socket_addr in &addrs {
-                if !is_public_ip(socket_addr.ip()) {
+                if !ip_verifier(socket_addr.ip()) {
                     return Err(format!(
                         "Host {} resolved to non-public address {}",
                         host,

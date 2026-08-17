@@ -3769,20 +3769,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_download_image_http_proxy_isolation() {
-        // Set environment proxy variables
-        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:9999");
-        std::env::set_var("http_proxy", "http://127.0.0.1:9999");
-        std::env::set_var("ALL_PROXY", "socks5://127.0.0.1:9999");
+    async fn test_download_image_http_redirect_to_private_target_rejected() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        // download_image_http must reject direct non-public host without connecting to the proxy
-        let res = commands::download_image_http("http://localhost:8080/image.png").await;
+        // Start mock HTTP server on random local port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn mock server task that returns a 302 Redirect to an internal private IP
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: http://10.254.1.1:8080/private_image.png\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let target_url = format!("http://127.0.0.1:{}/start_download", addr.port());
+
+        // Verifier allows initial mock server IP, but strictly checks subsequent hops
+        let res = commands::download_image_http_with_verifier(&target_url, |ip| {
+            if ip == addr.ip() {
+                true // allow hop 1 in test harness
+            } else {
+                commands::is_public_ip(ip) // evaluate hop 2 redirect destination
+            }
+        })
+        .await;
+
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(err.contains("non-public") || err.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_redirect_chain_bounded() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server continuously redirects to itself
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/loop\r\n\r\n",
+                    addr.port()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let target_url = format!("http://127.0.0.1:{}/start", addr.port());
+        let res = commands::download_image_http_with_verifier(&target_url, |_| true).await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Too many redirects"));
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_successful_redirect_and_no_proxy_isolation() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
+
+        // Server handles hop 1 (redirect) and hop 2 (image bytes)
+        let png_bytes_clone = png_bytes;
+        tokio::spawn(async move {
+            // Hop 1: Redirect
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/image.png\r\n\r\n",
+                    addr.port()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+
+            // Hop 2: Return PNG payload
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n",
+                    png_bytes_clone.len()
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&png_bytes_clone).await;
+            }
+        });
+
+        // Set invalid proxy in environment to verify .no_proxy() connects directly to mock server
+        std::env::set_var("HTTP_PROXY", "http://192.0.2.1:9999");
+        std::env::set_var("http_proxy", "http://192.0.2.1:9999");
+
+        let target_url = format!("http://127.0.0.1:{}/initial", addr.port());
+        let res = commands::download_image_http_with_verifier(&target_url, |_| true).await;
 
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("http_proxy");
-        std::env::remove_var("ALL_PROXY");
+
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), png_bytes);
     }
 }
