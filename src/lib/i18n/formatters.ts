@@ -20,17 +20,20 @@ export function getIntlLocale(): string {
  */
 export function formatCurrency(
   value: number | undefined | null,
-  currency: 'VND' | 'USD' = 'VND'
+  currency?: 'VND' | 'USD'
 ): string {
+  const defaultCurrency: 'VND' | 'USD' = localeState.current === 'en' ? 'USD' : 'VND';
+  const targetCurrency = currency ?? defaultCurrency;
+
   if (value === undefined || value === null || isNaN(value)) {
-    return '0 ' + (currency === 'VND' ? '₫' : '$');
+    return '0 ' + (targetCurrency === 'VND' ? '₫' : '$');
   }
 
   const intlLocale = getIntlLocale();
   return new Intl.NumberFormat(intlLocale, {
     style: 'currency',
-    currency,
-    maximumFractionDigits: currency === 'VND' ? 0 : 2
+    currency: targetCurrency,
+    maximumFractionDigits: targetCurrency === 'VND' ? 0 : 2
   }).format(value);
 }
 
@@ -55,7 +58,7 @@ export function formatDate(
   dateInput: string | Date | number | undefined | null,
   options?: Intl.DateTimeFormatOptions
 ): string {
-  if (!dateInput) return '';
+  if (dateInput === null || dateInput === undefined || dateInput === '') return '';
   const date = typeof dateInput === 'string' || typeof dateInput === 'number' ? new Date(dateInput) : dateInput;
   if (isNaN(date.getTime())) return '';
 
@@ -76,7 +79,7 @@ export function formatDateTime(
   dateInput: string | Date | number | undefined | null,
   options?: Intl.DateTimeFormatOptions
 ): string {
-  if (!dateInput) return '';
+  if (dateInput === null || dateInput === undefined || dateInput === '') return '';
   const date = typeof dateInput === 'string' || typeof dateInput === 'number' ? new Date(dateInput) : dateInput;
   if (isNaN(date.getTime())) return '';
 
@@ -98,7 +101,7 @@ export function formatDateTime(
 export function formatRelativeTime(
   dateInput: string | Date | number | undefined | null
 ): string {
-  if (!dateInput) return '';
+  if (dateInput === null || dateInput === undefined || dateInput === '') return '';
   const date = typeof dateInput === 'string' || typeof dateInput === 'number' ? new Date(dateInput) : dateInput;
   if (isNaN(date.getTime())) return '';
 

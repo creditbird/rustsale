@@ -6,20 +6,20 @@
   import { m, localeState, setLocale, type Locale, formatCurrency, formatDate } from '$lib/i18n';
   import { toast } from 'svelte-sonner';
 
-  const languages: Array<{ id: Locale; label: string; native: string; flag: string; desc: string }> = [
+  const languages = [
     {
-      id: 'vi',
+      id: 'vi' as const,
       label: 'Vietnamese',
       native: 'Tiếng Việt',
       flag: '🇻🇳',
-      desc: 'Ngôn ngữ Tiếng Việt, định dạng tiền tệ VND (₫), ngày dd/mm/yyyy'
+      get desc() { return m.settings_lang_vi_desc(); }
     },
     {
-      id: 'en',
+      id: 'en' as const,
       label: 'English',
       native: 'English (US)',
       flag: '🇺🇸',
-      desc: 'English language, USD ($) currency format, date mm/dd/yyyy'
+      get desc() { return m.settings_lang_en_desc(); }
     }
   ];
 
@@ -53,7 +53,7 @@
         {@const isSelected = localeState.current === lang.id}
         <button
           type="button"
-          class="flex flex-col text-left p-4 rounded-xl border transition-all relative {isSelected
+          class="flex flex-col text-left p-4 rounded-xl border transition-all relative cursor-pointer {isSelected
             ? 'border-primary bg-primary/5 ring-2 ring-primary/20 shadow-sm'
             : 'border-border/70 hover:border-border hover:bg-muted/30'}"
           onclick={() => handleSelectLanguage(lang.id)}
@@ -81,11 +81,11 @@
     <div class="rounded-lg bg-muted/30 border border-border/50 p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
       <div class="flex items-center gap-2">
         <Globe class="size-4 text-primary shrink-0" />
-        <span>Định dạng mẫu ({localeState.current.toUpperCase()}):</span>
+        <span>{m.settings_preview({ locale: localeState.current.toUpperCase() })}</span>
       </div>
       <div class="flex items-center gap-4 font-mono font-medium text-foreground">
-        <span>Tiền tệ: <strong class="text-emerald-600 dark:text-emerald-400">{formatCurrency(15000000, localeState.current === 'vi' ? 'VND' : 'USD')}</strong></span>
-        <span>Ngày: <strong>{formatDate(new Date())}</strong></span>
+        <span>{m.settings_currency()} <strong class="text-emerald-600 dark:text-emerald-400">{formatCurrency(15000000, localeState.current === 'vi' ? 'VND' : 'USD')}</strong></span>
+        <span>{m.settings_date()} <strong>{formatDate(new Date())}</strong></span>
       </div>
     </div>
   </Card.Content>

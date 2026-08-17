@@ -36,16 +36,20 @@ describe('i18n & Paraglide Integration', () => {
     expect(String(m.scraper_results_found({ count: 15 }))).toBe('15 places found');
   });
 
-  it('formats currency according to active locale', () => {
+  it('formats currency according to active locale and explicit currency', () => {
     setLocale('vi');
-    const viVnd = formatCurrency(5000000, 'VND');
+    const viVnd = formatCurrency(5000000);
     expect(viVnd).toContain('5.000.000');
     expect(viVnd).toContain('₫');
 
     setLocale('en');
-    const enUsd = formatCurrency(1500.5, 'USD');
+    const enUsd = formatCurrency(1500.5);
     expect(enUsd).toContain('1,500.50');
     expect(enUsd).toContain('$');
+
+    // Explicit override
+    const viUsd = formatCurrency(100, 'USD');
+    expect(viUsd).toContain('$');
   });
 
   it('formats numbers according to active locale', () => {
@@ -58,7 +62,7 @@ describe('i18n & Paraglide Integration', () => {
     expect(enNum).toBe('1,234,567.89');
   });
 
-  it('formats dates properly', () => {
+  it('formats dates properly including timestamp 0', () => {
     const testDate = new Date('2026-08-17T12:00:00Z');
     setLocale('vi');
     const viDate = formatDate(testDate);
@@ -67,13 +71,20 @@ describe('i18n & Paraglide Integration', () => {
     setLocale('en');
     const enDate = formatDate(testDate);
     expect(enDate).toContain('2026');
+
+    // Epoch timestamp 0
+    const epochDate = formatDate(0);
+    expect(epochDate).toContain('1970');
   });
 
   it('handles invalid or empty inputs gracefully in formatters', () => {
     expect(formatCurrency(null)).toBe('0 ₫');
     expect(formatNumber(null)).toBe('0');
     expect(formatDate(null)).toBe('');
+    expect(formatDate('')).toBe('');
     expect(formatDateTime(null)).toBe('');
+    expect(formatDateTime('')).toBe('');
     expect(formatRelativeTime(null)).toBe('');
+    expect(formatRelativeTime('')).toBe('');
   });
 });
