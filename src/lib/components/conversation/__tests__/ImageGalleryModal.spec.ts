@@ -1,9 +1,22 @@
 /// <reference types="bun-types" />
-import { afterEach, describe, expect, test as it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test as it, mock } from 'bun:test';
+
+const saveImageMock = mock(() => Promise.resolve('/path/to/saved.png'));
+
+mock.module('$lib/utils/imageExport', () => ({
+  saveImageToFile: saveImageMock,
+  isTauriEnvironment: () => true,
+  sanitizeImageFilename: (n?: string | null) => n || 'image.png'
+}));
+
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
 import ImageGalleryModal from '../ImageGalleryModal.svelte';
 
 describe('ImageGalleryModal Component', () => {
+  beforeEach(() => {
+    saveImageMock.mockClear();
+  });
+
   afterEach(() => {
     cleanup();
   });
@@ -327,5 +340,88 @@ describe('ImageGalleryModal Component', () => {
 
     expect(mainImg.style.transform).toContain('translate(0px, 0px)');
     expect(mainImg.style.transform).toContain('scale(1)');
+  });
+
+  it('triggers saveImageToFile when download button is clicked', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const downloadBtn = screen.getByTestId('gallery-download-btn');
+    await fireEvent.click(downloadBtn);
+
+    expect(saveImageMock).toHaveBeenCalledTimes(1);
+    expect(saveImageMock).toHaveBeenCalledWith('https://example.com/img1.png', 'Image 1');
+  });
+
+  it('triggers saveImageToFile via keyboard shortcut (Ctrl+S or S)', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 1
+    });
+
+    await fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    expect(saveImageMock).toHaveBeenCalledTimes(1);
+    expect(saveImageMock).toHaveBeenCalledWith('https://example.com/img2.png', 'Image 2');
+  });
+
+  it('opens context menu on right click on image and allows saving or copying', async () => {
+    const clipboardWriteMock = mock(() => Promise.resolve());
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: clipboardWriteMock
+      }
+    });
+
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+    expect(screen.queryByTestId('gallery-context-menu')).toBeNull();
+
+    // Right click on image
+    await fireEvent.contextMenu(mainImg, { clientX: 200, clientY: 150 });
+    const contextMenu = screen.getByTestId('gallery-context-menu');
+    expect(contextMenu).not.toBeNull();
+
+    // Click "Lưu ảnh về máy..." in context menu
+    const saveBtn = screen.getByTestId('context-menu-save-btn');
+    await fireEvent.click(saveBtn);
+    expect(saveImageMock).toHaveBeenCalledTimes(1);
+
+    // Reopen context menu
+    await fireEvent.contextMenu(mainImg, { clientX: 200, clientY: 150 });
+    const copyUrlBtn = screen.getByTestId('context-menu-copy-url-btn');
+    await fireEvent.click(copyUrlBtn);
+    expect(clipboardWriteMock).toHaveBeenCalledWith('https://example.com/img1.png');
+  });
+
+  it('closes context menu with Escape key without closing modal', async () => {
+    const onClose = mock();
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0,
+      onClose
+    });
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+    await fireEvent.contextMenu(mainImg, { clientX: 200, clientY: 150 });
+    expect(screen.getByTestId('gallery-context-menu')).not.toBeNull();
+
+    // First escape closes context menu
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByTestId('gallery-context-menu')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Second escape closes modal
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

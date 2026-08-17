@@ -3478,4 +3478,446 @@ mod tests {
             let _ = swapper_handle.join();
         }
     }
+
+    #[test]
+    fn test_is_public_ip_adversarial_matrix() {
+        use std::net::IpAddr;
+
+        // Disallowed IPv4 addresses
+        let private_v4 = [
+            "127.0.0.1",
+            "127.255.255.255",
+            "10.0.0.1",
+            "10.255.255.255",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.0.1",
+            "192.168.255.255",
+            "169.254.169.254", // AWS/cloud metadata
+            "0.0.0.0",
+            "255.255.255.255",
+            "100.64.0.1", // CGNAT
+            "192.0.2.1",  // Documentation
+            "198.18.0.1", // Benchmark
+            "224.0.0.1",  // Multicast
+            "240.0.0.1",  // Reserved
+        ];
+        for ip_str in private_v4 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                !commands::is_public_ip(ip),
+                "Expected {} to be blocked",
+                ip_str
+            );
+        }
+
+        // Allowed IPv4 addresses
+        let public_v4 = ["8.8.8.8", "1.1.1.1", "142.250.190.46", "104.26.10.228"];
+        for ip_str in public_v4 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                commands::is_public_ip(ip),
+                "Expected {} to be allowed",
+                ip_str
+            );
+        }
+
+        // Disallowed IPv6 addresses
+        let private_v6 = [
+            "::1",
+            "::",
+            "fc00::1",
+            "fd00::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.168.1.1",
+        ];
+        for ip_str in private_v6 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                !commands::is_public_ip(ip),
+                "Expected {} to be blocked",
+                ip_str
+            );
+        }
+
+        // Allowed IPv6 addresses
+        let public_v6 = ["2607:f8b0:4005:805::200e", "2606:4700:4700::1111"];
+        for ip_str in public_v6 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                commands::is_public_ip(ip),
+                "Expected {} to be allowed",
+                ip_str
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_blocks_ssrf_destinations() {
+        // Direct private IPs and localhost are strictly blocked
+        let res_local = commands::download_image_http("http://127.0.0.1:8080/image.png").await;
+        assert!(res_local.is_err());
+        let err_str = res_local.unwrap_err();
+        assert!(err_str.contains("non-public") || err_str.contains("private"));
+
+        let res_private = commands::download_image_http("http://10.10.10.10/admin.png").await;
+        assert!(res_private.is_err());
+
+        let res_meta = commands::download_image_http("http://169.254.169.254/meta-data").await;
+        assert!(res_meta.is_err());
+
+        let res_scheme = commands::download_image_http("ftp://example.com/pic.png").await;
+        assert!(res_scheme.is_err());
+    }
+
+    #[test]
+    fn test_detect_image_format_and_integrity() {
+        // PNG
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 1];
+        assert_eq!(commands::detect_image_format(&png_bytes).unwrap(), "png");
+
+        // JPEG
+        let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        assert_eq!(commands::detect_image_format(&jpeg_bytes).unwrap(), "jpg");
+
+        // GIF
+        let gif_bytes = b"GIF89a\x01\x00\x01\x00\x80\x00\x00";
+        assert_eq!(commands::detect_image_format(gif_bytes).unwrap(), "gif");
+
+        // WebP
+        let webp_bytes = b"RIFF\x1a\x00\x00\x00WEBPVP8 \x0e\x00\x00\x00";
+        assert_eq!(commands::detect_image_format(webp_bytes).unwrap(), "webp");
+
+        // SVG
+        let svg_bytes =
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"></svg>";
+        assert_eq!(commands::detect_image_format(svg_bytes).unwrap(), "svg");
+
+        // XML SVG
+        let xml_svg_bytes = b"<?xml version=\"1.0\" encoding=\"utf-8\"?><svg width=\"100\"></svg>";
+        assert_eq!(commands::detect_image_format(xml_svg_bytes).unwrap(), "svg");
+
+        // Non-image / Malicious executable or script
+        let bash_bytes = b"#!/bin/bash\necho hello world";
+        assert!(commands::detect_image_format(bash_bytes).is_err());
+
+        let exe_bytes = b"MZ\x90\x00\x03\x00\x00\x00";
+        assert!(commands::detect_image_format(exe_bytes).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_write_image_bytes_to_path_validation_and_writing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let valid_png_path = temp_dir.path().join("test_image.png");
+        let png_bytes = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01, 0x02,
+        ];
+
+        // 1. Valid write
+        let res = commands::write_image_bytes_to_path(&valid_png_path, &png_bytes).await;
+        assert!(res.is_ok());
+        assert_eq!(std::fs::read(&valid_png_path).unwrap(), png_bytes);
+
+        // 2. Reject non-image extension (e.g. .exe, .sh, .txt)
+        let invalid_ext_path = temp_dir.path().join("malicious.sh");
+        let err_res = commands::write_image_bytes_to_path(&invalid_ext_path, &png_bytes).await;
+        assert!(err_res.is_err());
+        assert!(err_res.unwrap_err().contains("valid image extension"));
+
+        // 3. Reject path traversal
+        let traversal_path = temp_dir.path().join("subdir/../escape.png");
+        let trav_res = commands::write_image_bytes_to_path(&traversal_path, &png_bytes).await;
+        assert!(trav_res.is_err());
+        assert!(trav_res.unwrap_err().contains("Path traversal"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_image_bytes_base64_and_data_url() {
+        use base64::prelude::*;
+
+        let raw_png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
+        let b64_str = BASE64_STANDARD.encode(raw_png);
+
+        // 1. Direct base64 data
+        let res_b64 = commands::resolve_image_bytes(None, Some(&b64_str)).await;
+        assert!(res_b64.is_ok());
+        assert_eq!(res_b64.unwrap(), raw_png);
+
+        // 2. Data URL with prefix
+        let data_url = format!("data:image/png;base64,{}", b64_str);
+        let res_data_url = commands::resolve_image_bytes(Some(&data_url), None).await;
+        assert!(res_data_url.is_ok());
+        assert_eq!(res_data_url.unwrap(), raw_png);
+
+        // 3. Empty inputs
+        let res_empty = commands::resolve_image_bytes(None, None).await;
+        assert!(res_empty.is_err());
+
+        // 4. Invalid base64
+        let res_invalid_b64 =
+            commands::resolve_image_bytes(None, Some("!!!invalid base64!!!")).await;
+        assert!(res_invalid_b64.is_err());
+
+        // 5. Non-image decoded bytes rejection
+        let invalid_image_b64 = BASE64_STANDARD.encode(b"hello world plaintext not an image");
+        let res_non_image = commands::resolve_image_bytes(None, Some(&invalid_image_b64)).await;
+        assert!(res_non_image.is_err());
+        assert!(res_non_image
+            .unwrap_err()
+            .contains("supported image format"));
+    }
+
+    #[tokio::test]
+    async fn test_save_image_file_with_dialog_workflow() {
+        use base64::prelude::*;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let valid_path = temp_dir.path().join("saved_photo.png");
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let b64 = BASE64_STANDARD.encode(&png_bytes);
+
+        // 1. User picks a valid path
+        let valid_path_clone = valid_path.clone();
+        let res_ok = commands::save_image_file_with_dialog(
+            Some("suggested.png".to_string()),
+            None,
+            Some(b64.clone()),
+            move |_| Ok(Some(valid_path_clone)),
+        )
+        .await;
+        assert!(res_ok.is_ok());
+        let returned = res_ok.unwrap();
+        assert!(returned.is_some());
+        assert!(returned.unwrap().ends_with("saved_photo.png"));
+        assert_eq!(std::fs::read(&valid_path).unwrap(), png_bytes);
+
+        // 2. User cancelled dialog (before any bytes fetched/processed)
+        let res_cancel = commands::save_image_file_with_dialog(
+            Some("suggested.png".to_string()),
+            Some("http://127.0.0.1/never_called.png".to_string()),
+            None,
+            |_| Ok(None),
+        )
+        .await;
+        assert!(res_cancel.is_ok());
+        assert!(res_cancel.unwrap().is_none());
+
+        // 3. User types name without extension -> rejected to enforce explicit extension
+        let path_without_ext = temp_dir.path().join("photo_no_ext");
+        let path_without_ext_clone = path_without_ext.clone();
+        let res_no_ext = commands::save_image_file_with_dialog(
+            Some("suggested".to_string()),
+            None,
+            Some(b64.clone()),
+            move |_| Ok(Some(path_without_ext_clone)),
+        )
+        .await;
+        assert!(res_no_ext.is_err());
+        assert!(res_no_ext
+            .unwrap_err()
+            .contains("must include a valid image extension"));
+        assert!(!path_without_ext.exists());
+
+        // 4. Format alias acceptance: JPEG payload saved to .jpeg path succeeds
+        let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        let jpeg_b64 = BASE64_STANDARD.encode(&jpeg_bytes);
+        let jpeg_path = temp_dir.path().join("my_picture.jpeg");
+        let jpeg_path_clone = jpeg_path.clone();
+        let res_alias = commands::save_image_file_with_dialog(
+            Some("my_picture.jpeg".to_string()),
+            None,
+            Some(jpeg_b64.clone()),
+            move |_| Ok(Some(jpeg_path_clone)),
+        )
+        .await;
+        assert!(res_alias.is_ok());
+        assert!(jpeg_path.exists());
+        assert_eq!(std::fs::read(&jpeg_path).unwrap(), jpeg_bytes);
+
+        // 5. Format mismatch rejection: JPEG payload saved to .png path is rejected
+        let mismatch_png_path = temp_dir.path().join("my_picture.png");
+        let mismatch_png_clone = mismatch_png_path.clone();
+        let res_mismatch = commands::save_image_file_with_dialog(
+            Some("my_picture.png".to_string()),
+            None,
+            Some(jpeg_b64),
+            move |_| Ok(Some(mismatch_png_clone)),
+        )
+        .await;
+        assert!(res_mismatch.is_err());
+        let err = res_mismatch.unwrap_err();
+        assert!(err.contains("does not match detected image format"));
+        assert!(!mismatch_png_path.exists());
+
+        // 6. Overwrite isolation: Existing sentinel.jpg must remain untouched
+        let existing_jpg = temp_dir.path().join("sentinel.jpg");
+        std::fs::write(&existing_jpg, b"DO_NOT_OVERWRITE").unwrap();
+
+        let req_png = temp_dir.path().join("other_file.png");
+        let req_png_clone = req_png.clone();
+        let res_png = commands::save_image_file_with_dialog(
+            Some("other_file.png".to_string()),
+            None,
+            Some(b64),
+            move |_| Ok(Some(req_png_clone)),
+        )
+        .await;
+        assert!(res_png.is_ok());
+        assert!(req_png.exists());
+        assert_eq!(std::fs::read(&existing_jpg).unwrap(), b"DO_NOT_OVERWRITE");
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_redirect_to_private_target_rejected() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Start mock HTTP server on random local port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn mock server task that returns a 302 Redirect to an internal private IP
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: http://10.254.1.1:8080/private_image.png\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let target_url = format!("http://127.0.0.1:{}/start_download", addr.port());
+
+        // Verifier allows initial mock server IP, but strictly checks subsequent hops
+        let res = commands::download_image_http_test_helper(
+            &target_url,
+            |ip| {
+                if ip == addr.ip() {
+                    true // allow hop 1 in test harness
+                } else {
+                    commands::is_public_ip(ip) // evaluate hop 2 redirect destination
+                }
+            },
+            None,
+        )
+        .await;
+
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(err.contains("non-public") || err.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_redirect_chain_bounded() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server continuously redirects to itself
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/loop\r\n\r\n",
+                    addr.port()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let target_url = format!("http://127.0.0.1:{}/start", addr.port());
+        let res = commands::download_image_http_test_helper(&target_url, |_| true, None).await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Too many redirects"));
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_successful_redirect_and_no_proxy_isolation() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
+
+        // Server handles hop 1 (redirect) and hop 2 (image bytes)
+        let png_bytes_clone = png_bytes;
+        tokio::spawn(async move {
+            // Hop 1: Redirect
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/image.png\r\n\r\n",
+                    addr.port()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+
+            // Hop 2: Return PNG payload
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n",
+                    png_bytes_clone.len()
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&png_bytes_clone).await;
+            }
+        });
+
+        // Set invalid proxy in environment to verify .no_proxy() connects directly to mock server
+        std::env::set_var("HTTP_PROXY", "http://192.0.2.1:9999");
+        std::env::set_var("http_proxy", "http://192.0.2.1:9999");
+
+        let target_url = format!("http://127.0.0.1:{}/initial", addr.port());
+        let res = commands::download_image_http_test_helper(&target_url, |_| true, None).await;
+
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("http_proxy");
+
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), png_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_hostname_socket_pinning_and_rebinding_protection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x02];
+        let png_bytes_clone = png_bytes;
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n",
+                    png_bytes_clone.len()
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&png_bytes_clone).await;
+            }
+        });
+
+        // Using an unresolvable mock hostname with port
+        let unresolvable_url = format!(
+            "http://unresolvable-mock-image-domain.test:{}/pinned.png",
+            addr.port()
+        );
+
+        // Prove that .resolve() pins the mock hostname to the vetted socket address
+        let res =
+            commands::download_image_http_test_helper(&unresolvable_url, |_| true, Some(addr))
+                .await;
+
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), png_bytes);
+    }
 }
