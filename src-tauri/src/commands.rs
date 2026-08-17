@@ -6566,6 +6566,139 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
     }
 }
 
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ipv4) => {
+            let octets = ipv4.octets();
+            if ipv4.is_loopback()
+                || ipv4.is_private()
+                || ipv4.is_link_local()
+                || ipv4.is_broadcast()
+                || ipv4.is_unspecified()
+                || ipv4.is_multicast()
+            {
+                return false;
+            }
+            // 100.64.0.0/10 (Carrier-Grade NAT)
+            if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
+                return false;
+            }
+            // 192.0.0.0/24 (IETF Protocol Assignments) and 192.0.2.0/24 (TEST-NET-1)
+            if octets[0] == 192 && octets[1] == 0 && (octets[2] == 0 || octets[2] == 2) {
+                return false;
+            }
+            // 198.51.100.0/24 (TEST-NET-2)
+            if octets[0] == 198 && octets[1] == 51 && octets[2] == 100 {
+                return false;
+            }
+            // 203.0.113.0/24 (TEST-NET-3)
+            if octets[0] == 203 && octets[1] == 0 && octets[2] == 113 {
+                return false;
+            }
+            // 198.18.0.0/15 (Benchmarking)
+            if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+                return false;
+            }
+            // 240.0.0.0/4 (Reserved)
+            if octets[0] >= 240 {
+                return false;
+            }
+            true
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            if ipv6.is_loopback() || ipv6.is_unspecified() || ipv6.is_multicast() {
+                return false;
+            }
+            let segments = ipv6.segments();
+            // Unique local (fc00::/7)
+            if (segments[0] & 0xfe00) == 0xfc00 {
+                return false;
+            }
+            // Link-local (fe80::/10)
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                return false;
+            }
+            // IPv4-mapped IPv6 address (::ffff:0:0/96)
+            if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+                return is_public_ip(std::net::IpAddr::V4(ipv4));
+            }
+            true
+        }
+    }
+}
+
+pub const MAX_IMAGE_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024; // 50MB
+pub const MAX_BASE64_PAYLOAD_LEN: usize = 70 * 1024 * 1024; // ~50MB decoded
+
+pub async fn validate_public_http_url(url_str: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(url_str).map_err(|e| format!("Invalid image URL: {}", e))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err("Only http and https schemes are permitted for image download".to_string());
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
+
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if !is_public_ip(ip) {
+            return Err("Access to non-public/private IP address is not permitted".to_string());
+        }
+    } else {
+        let port = parsed
+            .port_or_known_default()
+            .unwrap_or(if scheme == "https" { 443 } else { 80 });
+        let host_port = format!("{}:{}", host, port);
+        let addrs = tokio::net::lookup_host(host_port)
+            .await
+            .map_err(|e| format!("Failed to resolve image host {}: {}", host, e))?;
+
+        let mut has_addr = false;
+        for socket_addr in addrs {
+            has_addr = true;
+            if !is_public_ip(socket_addr.ip()) {
+                return Err(format!(
+                    "Host {} resolved to non-public address {}",
+                    host,
+                    socket_addr.ip()
+                ));
+            }
+        }
+        if !has_addr {
+            return Err(format!("No IP address found for host {}", host));
+        }
+    }
+
+    Ok(parsed)
+}
+
+pub fn detect_image_format(bytes: &[u8]) -> Result<&'static str, String> {
+    if let Some(kind) = infer::get(bytes) {
+        match kind.extension() {
+            "jpg" | "jpeg" => return Ok("jpg"),
+            "png" => return Ok("png"),
+            "webp" => return Ok("webp"),
+            "gif" => return Ok("gif"),
+            "bmp" => return Ok("bmp"),
+            "ico" => return Ok("ico"),
+            "tif" | "tiff" => return Ok("tiff"),
+            "avif" => return Ok("avif"),
+            _ => {}
+        }
+    }
+
+    if bytes.len() >= 4 {
+        let snippet = String::from_utf8_lossy(&bytes[..std::cmp::min(bytes.len(), 1024)]);
+        let lower = snippet.to_ascii_lowercase();
+        if lower.contains("<svg") || (lower.contains("<?xml") && lower.contains("<svg")) {
+            return Ok("svg");
+        }
+    }
+
+    Err("Payload is not a recognized or supported image format".to_string())
+}
+
 pub async fn write_image_bytes_to_path(
     file_path: &std::path::Path,
     bytes: &[u8],
@@ -6580,7 +6713,7 @@ pub async fn write_image_bytes_to_path(
         Some(ext) if valid_extensions.iter().any(|&e| ext.eq_ignore_ascii_case(e)) => {}
         _ => {
             return Err(
-                "Destination file must have a valid image extension (.png, .jpg, .jpeg, .webp, .gif, .bmp, .svg, .ico, .avif)"
+                "Destination file must have a valid image extension (.png, .jpg, .jpeg, .webp, .gif, .bmp, .svg, .ico, .tiff, .tif, .avif)"
                     .to_string(),
             )
         }
@@ -6628,52 +6761,128 @@ pub async fn resolve_image_bytes(
     base64_data: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     use base64::prelude::*;
+    use futures_util::StreamExt;
 
     if let Some(b64) = base64_data {
-        let clean_b64 = if let Some(idx) = b64.find(',') {
-            &b64[idx + 1..]
+        let trimmed = b64.trim();
+        if trimmed.len() > MAX_BASE64_PAYLOAD_LEN {
+            return Err(format!(
+                "Base64 image data exceeds size limit of {} MB",
+                MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+            ));
+        }
+        let clean_b64 = if let Some(idx) = trimmed.find(',') {
+            &trimmed[idx + 1..]
         } else {
-            b64
+            trimmed
         };
-        return BASE64_STANDARD
+        let bytes = BASE64_STANDARD
             .decode(clean_b64.trim())
-            .map_err(|e| format!("Failed to decode base64 image data: {}", e));
+            .map_err(|e| format!("Failed to decode base64 image data: {}", e))?;
+        if bytes.len() > MAX_IMAGE_DOWNLOAD_BYTES {
+            return Err(format!(
+                "Image payload exceeds size limit of {} MB",
+                MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+            ));
+        }
+        let _ = detect_image_format(&bytes)?;
+        return Ok(bytes);
     }
 
     if let Some(u) = url {
         let trimmed = u.trim();
         if trimmed.starts_with("data:") {
+            if trimmed.len() > MAX_BASE64_PAYLOAD_LEN {
+                return Err(format!(
+                    "Data URL image exceeds size limit of {} MB",
+                    MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+                ));
+            }
             let clean_b64 = if let Some(idx) = trimmed.find(',') {
                 &trimmed[idx + 1..]
             } else {
                 return Err("Invalid data URL format".to_string());
             };
-            return BASE64_STANDARD
+            let bytes = BASE64_STANDARD
                 .decode(clean_b64.trim())
-                .map_err(|e| format!("Failed to decode data URL image: {}", e));
+                .map_err(|e| format!("Failed to decode data URL image: {}", e))?;
+            if bytes.len() > MAX_IMAGE_DOWNLOAD_BYTES {
+                return Err(format!(
+                    "Image payload exceeds size limit of {} MB",
+                    MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+                ));
+            }
+            let _ = detect_image_format(&bytes)?;
+            return Ok(bytes);
         }
 
         if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            let parsed_url = validate_public_http_url(trimmed).await?;
+
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 5 {
+                        attempt.error("Too many redirects")
+                    } else {
+                        let next_url = attempt.url();
+                        let scheme = next_url.scheme();
+                        if scheme != "http" && scheme != "https" {
+                            attempt.error("Invalid redirect scheme")
+                        } else if let Some(host) = next_url.host_str() {
+                            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                                if !is_public_ip(ip) {
+                                    return attempt
+                                        .error("Redirect to non-public IP is not permitted");
+                                }
+                            }
+                            attempt.follow()
+                        } else {
+                            attempt.error("Redirect has no host")
+                        }
+                    }
+                }))
                 .build()
                 .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
+
             let response = client
-                .get(trimmed)
+                .get(parsed_url.as_str())
                 .send()
                 .await
                 .map_err(|e| format!("Failed to download image from URL: {}", e))?;
+
             if !response.status().is_success() {
                 return Err(format!(
                     "Image download failed with HTTP status {}",
                     response.status()
                 ));
             }
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|e| format!("Failed to read image response body: {}", e))?;
-            return Ok(bytes.to_vec());
+
+            if let Some(cl) = response.content_length() {
+                if cl as usize > MAX_IMAGE_DOWNLOAD_BYTES {
+                    return Err(format!(
+                        "Image file exceeds size limit of {} MB",
+                        MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+                    ));
+                }
+            }
+
+            let mut stream = response.bytes_stream();
+            let mut bytes = Vec::new();
+            while let Some(chunk_res) = stream.next().await {
+                let chunk = chunk_res
+                    .map_err(|e| format!("Error while downloading image stream: {}", e))?;
+                if bytes.len() + chunk.len() > MAX_IMAGE_DOWNLOAD_BYTES {
+                    return Err(format!(
+                        "Image file exceeds size limit of {} MB",
+                        MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+
+            let _ = detect_image_format(&bytes)?;
+            return Ok(bytes);
         }
 
         return Err("Unsupported image URL scheme".to_string());
@@ -6691,11 +6900,7 @@ pub async fn save_image_file_with_dialog<F>(
 where
     F: FnOnce(&str) -> Result<Option<std::path::PathBuf>, String> + Send + 'static,
 {
-    let bytes = resolve_image_bytes(url.as_deref(), base64_data.as_deref()).await?;
-    if bytes.is_empty() {
-        return Err("Image content is empty".to_string());
-    }
-
+    // 1. Prepare default filename for the dialog
     let default_name = default_filename
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -6715,6 +6920,7 @@ where
             "image.png".to_string()
         });
 
+    // 2. Open dialog FIRST before network/download side-effects
     let dialog_name = default_name.clone();
     let selected_path = tokio::task::spawn_blocking(move || save_dialog_fn(&dialog_name))
         .await
@@ -6722,24 +6928,32 @@ where
 
     let file_path = match selected_path {
         Some(p) => p,
-        None => return Ok(None),
+        None => return Ok(None), // User cancelled without incurring download
     };
 
-    // If selected path does not have an extension, add an appropriate one
-    let target_path = if file_path.extension().is_none() {
-        let ext = if let Some(kind) = infer::get(&bytes) {
-            kind.extension().to_string()
-        } else if let Some(ext) = std::path::Path::new(&default_name)
-            .extension()
-            .and_then(|e| e.to_str())
-        {
-            ext.to_string()
-        } else {
-            "png".to_string()
-        };
-        file_path.with_extension(ext)
-    } else {
-        file_path
+    // 3. Acquire bytes (with bounded streaming, size caps, and SSRF protection)
+    let bytes = resolve_image_bytes(url.as_deref(), base64_data.as_deref()).await?;
+    if bytes.is_empty() {
+        return Err("Image content is empty".to_string());
+    }
+
+    // 4. Validate image format and align extension
+    let detected_ext = detect_image_format(&bytes)?;
+    let target_path = match file_path.extension().and_then(|e| e.to_str()) {
+        None => file_path.with_extension(detected_ext),
+        Some(ext) => {
+            let is_matching = match (detected_ext, ext.to_ascii_lowercase().as_str()) {
+                ("jpg", "jpg" | "jpeg") => true,
+                ("tiff", "tif" | "tiff") => true,
+                (det, e) => det == e,
+            };
+            if is_matching {
+                file_path
+            } else {
+                // If user selected generic or mismatched extension, normalize to actual detected extension
+                file_path.with_extension(detected_ext)
+            }
+        }
     };
 
     let final_path = write_image_bytes_to_path(&target_path, &bytes).await?;
@@ -6762,8 +6976,11 @@ pub async fn save_image_file<R: tauri::Runtime>(
         }
         let res = builder
             .add_filter(
-                "Image Files (*.png, *.jpg, *.jpeg, *.webp, *.gif, *.svg)",
-                &["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "ico", "avif"],
+                "Image Files (*.png, *.jpg, *.jpeg, *.webp, *.gif, *.svg, *.bmp, *.ico, *.avif, *.tiff)",
+                &[
+                    "png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "ico", "avif", "tiff",
+                    "tif",
+                ],
             )
             .add_filter("All Files (*.*)", &["*"])
             .blocking_save_file();
@@ -6778,4 +6995,3 @@ pub async fn save_image_file<R: tauri::Runtime>(
     })
     .await
 }
-

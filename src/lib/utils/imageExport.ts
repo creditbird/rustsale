@@ -20,6 +20,8 @@ export function isTauriEnvironment(): boolean {
   );
 }
 
+export const VALID_IMAGE_EXT_REGEX = /\.(png|jpe?g|webp|gif|bmp|svg|ico|avif|tiff?)$/i;
+
 export function sanitizeImageFilename(name?: string | null, fallbackUrl?: string | null): string {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -30,10 +32,31 @@ export function sanitizeImageFilename(name?: string | null, fallbackUrl?: string
   const ss = String(now.getSeconds()).padStart(2, '0');
   const defaultFallback = `image_${yyyy}${mm}${dd}_${hh}${min}${ss}.png`;
 
+  let urlExt: string | null = null;
+  if (fallbackUrl && fallbackUrl.trim()) {
+    try {
+      const parsed = new URL(fallbackUrl.trim());
+      const segments = parsed.pathname.split('/');
+      const last = segments[segments.length - 1];
+      if (last) {
+        const cleanLast = last.split('?')[0];
+        const match = cleanLast.match(VALID_IMAGE_EXT_REGEX);
+        if (match) {
+          urlExt = match[0].toLowerCase();
+        }
+      }
+    } catch {
+      // not a standard URL, continue
+    }
+  }
+
   if (name && name.trim()) {
     const clean = name.trim().replace(/[\\/:*?"<>|]/g, '_');
-    if (/\.(png|jpe?g|webp|gif|bmp|svg|ico|avif)$/i.test(clean)) {
+    if (VALID_IMAGE_EXT_REGEX.test(clean)) {
       return clean;
+    }
+    if (urlExt) {
+      return `${clean}${urlExt}`;
     }
     return `${clean}.png`;
   }
@@ -43,8 +66,11 @@ export function sanitizeImageFilename(name?: string | null, fallbackUrl?: string
       const parsed = new URL(fallbackUrl.trim());
       const segments = parsed.pathname.split('/');
       const last = segments[segments.length - 1];
-      if (last && /\.(png|jpe?g|webp|gif|bmp|svg|ico|avif)$/i.test(last)) {
-        return last.replace(/[\\/:*?"<>|]/g, '_');
+      if (last) {
+        const cleanLast = last.split('?')[0];
+        if (VALID_IMAGE_EXT_REGEX.test(cleanLast)) {
+          return cleanLast.replace(/[\\/:*?"<>|]/g, '_');
+        }
       }
     } catch {
       // not a standard URL, continue to fallback

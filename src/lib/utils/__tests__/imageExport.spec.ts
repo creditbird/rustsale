@@ -25,8 +25,14 @@ describe('imageExport utility', () => {
       expect(sanitizeImageFilename('graphic.webp')).toBe('graphic.webp');
     });
 
-    it('appends .png if no extension provided in name', () => {
+    it('appends .png if no extension provided in name and no URL extension available', () => {
       expect(sanitizeImageFilename('my_picture')).toBe('my_picture.png');
+    });
+
+    it('derives extension from fallbackUrl when name lacks one', () => {
+      expect(sanitizeImageFilename('custom_name', 'https://cdn.example.com/photo.webp')).toBe('custom_name.webp');
+      expect(sanitizeImageFilename('custom_name', 'https://cdn.example.com/photo.jpg?token=123')).toBe('custom_name.jpg');
+      expect(sanitizeImageFilename('custom_name', 'https://cdn.example.com/photo.tiff')).toBe('custom_name.tiff');
     });
 
     it('sanitizes illegal path characters from filename', () => {
@@ -36,6 +42,7 @@ describe('imageExport utility', () => {
     it('extracts filename from URL when name is missing', () => {
       expect(sanitizeImageFilename(null, 'https://cdn.example.com/assets/banner.jpg')).toBe('banner.jpg');
       expect(sanitizeImageFilename('', 'https://cdn.example.com/images/icon.png?v=2')).toBe('icon.png');
+      expect(sanitizeImageFilename('', 'https://cdn.example.com/images/scan.tiff')).toBe('scan.tiff');
     });
 
     it('falls back to timestamp filename if neither name nor url has valid filename', () => {

@@ -205,7 +205,10 @@
     if (!currentImage?.url || isSaving) return;
     isSaving = true;
     try {
-      const fallbackName = currentImage.alt || `image-${currentIndex + 1}.png`;
+      const fallbackName =
+        currentImage.alt && currentImage.alt.trim() && currentImage.alt !== 'Image'
+          ? currentImage.alt.trim()
+          : undefined;
       await saveImageToFile(currentImage.url, fallbackName);
     } catch (err) {
       console.error('Failed to save image:', err);
@@ -223,6 +226,23 @@
         toast.success('Đã sao chép liên kết ảnh');
         copied = true;
         setTimeout(() => (copied = false), 2000);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = currentImage.url;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const successful = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (successful) {
+          toast.success('Đã sao chép liên kết ảnh');
+          copied = true;
+          setTimeout(() => (copied = false), 2000);
+        } else {
+          toast.error('Không thể sao chép liên kết');
+        }
       }
     } catch {
       toast.error('Không thể sao chép liên kết');

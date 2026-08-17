@@ -3479,11 +3479,146 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_is_public_ip_adversarial_matrix() {
+        use std::net::IpAddr;
+
+        // Disallowed IPv4 addresses
+        let private_v4 = [
+            "127.0.0.1",
+            "127.255.255.255",
+            "10.0.0.1",
+            "10.255.255.255",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.0.1",
+            "192.168.255.255",
+            "169.254.169.254", // AWS/cloud metadata
+            "0.0.0.0",
+            "255.255.255.255",
+            "100.64.0.1", // CGNAT
+            "192.0.2.1",  // Documentation
+            "198.18.0.1", // Benchmark
+            "224.0.0.1",  // Multicast
+            "240.0.0.1",  // Reserved
+        ];
+        for ip_str in private_v4 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                !commands::is_public_ip(ip),
+                "Expected {} to be blocked",
+                ip_str
+            );
+        }
+
+        // Allowed IPv4 addresses
+        let public_v4 = ["8.8.8.8", "1.1.1.1", "142.250.190.46", "104.26.10.228"];
+        for ip_str in public_v4 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                commands::is_public_ip(ip),
+                "Expected {} to be allowed",
+                ip_str
+            );
+        }
+
+        // Disallowed IPv6 addresses
+        let private_v6 = [
+            "::1",
+            "::",
+            "fc00::1",
+            "fd00::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.168.1.1",
+        ];
+        for ip_str in private_v6 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                !commands::is_public_ip(ip),
+                "Expected {} to be blocked",
+                ip_str
+            );
+        }
+
+        // Allowed IPv6 addresses
+        let public_v6 = ["2607:f8b0:4005:805::200e", "2606:4700:4700::1111"];
+        for ip_str in public_v6 {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                commands::is_public_ip(ip),
+                "Expected {} to be allowed",
+                ip_str
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_public_http_url_rejections() {
+        // 1. Direct private IP
+        let res_loopback = commands::validate_public_http_url("http://127.0.0.1/test.png").await;
+        assert!(res_loopback.is_err());
+        assert!(res_loopback.unwrap_err().contains("non-public"));
+
+        let res_private =
+            commands::validate_public_http_url("https://10.0.0.1:8080/image.jpg").await;
+        assert!(res_private.is_err());
+
+        let res_metadata =
+            commands::validate_public_http_url("http://169.254.169.254/latest/meta-data/").await;
+        assert!(res_metadata.is_err());
+
+        // 2. Disallowed schemes
+        let res_file = commands::validate_public_http_url("file:///etc/passwd").await;
+        assert!(res_file.is_err());
+
+        let res_ftp = commands::validate_public_http_url("ftp://example.com/pic.png").await;
+        assert!(res_ftp.is_err());
+    }
+
+    #[test]
+    fn test_detect_image_format_and_integrity() {
+        // PNG
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 1];
+        assert_eq!(commands::detect_image_format(&png_bytes).unwrap(), "png");
+
+        // JPEG
+        let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        assert_eq!(commands::detect_image_format(&jpeg_bytes).unwrap(), "jpg");
+
+        // GIF
+        let gif_bytes = b"GIF89a\x01\x00\x01\x00\x80\x00\x00";
+        assert_eq!(commands::detect_image_format(gif_bytes).unwrap(), "gif");
+
+        // WebP
+        let webp_bytes = b"RIFF\x1a\x00\x00\x00WEBPVP8 \x0e\x00\x00\x00";
+        assert_eq!(commands::detect_image_format(webp_bytes).unwrap(), "webp");
+
+        // SVG
+        let svg_bytes =
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"></svg>";
+        assert_eq!(commands::detect_image_format(svg_bytes).unwrap(), "svg");
+
+        // XML SVG
+        let xml_svg_bytes = b"<?xml version=\"1.0\" encoding=\"utf-8\"?><svg width=\"100\"></svg>";
+        assert_eq!(commands::detect_image_format(xml_svg_bytes).unwrap(), "svg");
+
+        // Non-image / Malicious executable or script
+        let bash_bytes = b"#!/bin/bash\necho hello world";
+        assert!(commands::detect_image_format(bash_bytes).is_err());
+
+        let exe_bytes = b"MZ\x90\x00\x03\x00\x00\x00";
+        assert!(commands::detect_image_format(exe_bytes).is_err());
+    }
+
     #[tokio::test]
     async fn test_write_image_bytes_to_path_validation_and_writing() {
         let temp_dir = tempfile::tempdir().unwrap();
         let valid_png_path = temp_dir.path().join("test_image.png");
-        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01, 0x02];
+        let png_bytes = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01, 0x02,
+        ];
 
         // 1. Valid write
         let res = commands::write_image_bytes_to_path(&valid_png_path, &png_bytes).await;
@@ -3507,27 +3642,36 @@ mod tests {
     async fn test_resolve_image_bytes_base64_and_data_url() {
         use base64::prelude::*;
 
-        let raw_bytes = b"RustSale CRM Image Test 12345";
-        let b64_str = BASE64_STANDARD.encode(raw_bytes);
+        let raw_png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
+        let b64_str = BASE64_STANDARD.encode(raw_png);
 
         // 1. Direct base64 data
         let res_b64 = commands::resolve_image_bytes(None, Some(&b64_str)).await;
         assert!(res_b64.is_ok());
-        assert_eq!(res_b64.unwrap(), raw_bytes);
+        assert_eq!(res_b64.unwrap(), raw_png);
 
         // 2. Data URL with prefix
         let data_url = format!("data:image/png;base64,{}", b64_str);
         let res_data_url = commands::resolve_image_bytes(Some(&data_url), None).await;
         assert!(res_data_url.is_ok());
-        assert_eq!(res_data_url.unwrap(), raw_bytes);
+        assert_eq!(res_data_url.unwrap(), raw_png);
 
         // 3. Empty inputs
         let res_empty = commands::resolve_image_bytes(None, None).await;
         assert!(res_empty.is_err());
 
         // 4. Invalid base64
-        let res_invalid_b64 = commands::resolve_image_bytes(None, Some("!!!invalid base64!!!")).await;
+        let res_invalid_b64 =
+            commands::resolve_image_bytes(None, Some("!!!invalid base64!!!")).await;
         assert!(res_invalid_b64.is_err());
+
+        // 5. Non-image decoded bytes rejection
+        let invalid_image_b64 = BASE64_STANDARD.encode(b"hello world plaintext not an image");
+        let res_non_image = commands::resolve_image_bytes(None, Some(&invalid_image_b64)).await;
+        assert!(res_non_image.is_err());
+        assert!(res_non_image
+            .unwrap_err()
+            .contains("supported image format"));
     }
 
     #[tokio::test]
@@ -3553,24 +3697,24 @@ mod tests {
         assert!(returned.unwrap().ends_with("saved_photo.png"));
         assert_eq!(std::fs::read(&valid_path).unwrap(), png_bytes);
 
-        // 2. User cancelled dialog
+        // 2. User cancelled dialog (before any bytes fetched/processed)
         let res_cancel = commands::save_image_file_with_dialog(
             Some("suggested.png".to_string()),
+            Some("http://127.0.0.1/never_called.png".to_string()),
             None,
-            Some(b64.clone()),
             |_| Ok(None),
         )
         .await;
         assert!(res_cancel.is_ok());
         assert!(res_cancel.unwrap().is_none());
 
-        // 3. User types name without extension -> auto-appends .png
+        // 3. User types name without extension -> auto-appends detected .png
         let path_without_ext = temp_dir.path().join("photo_no_ext");
         let path_without_ext_clone = path_without_ext.clone();
         let res_auto_ext = commands::save_image_file_with_dialog(
-            Some("suggested.png".to_string()),
+            Some("suggested".to_string()),
             None,
-            Some(b64),
+            Some(b64.clone()),
             move |_| Ok(Some(path_without_ext_clone)),
         )
         .await;
@@ -3578,5 +3722,22 @@ mod tests {
         let final_path = res_auto_ext.unwrap().unwrap();
         assert!(final_path.ends_with("photo_no_ext.png"));
         assert!(std::path::Path::new(&final_path).exists());
+
+        // 4. Mismatched extension normalization: JPEG payload saved to .png path -> normalizes to .jpg
+        let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        let jpeg_b64 = BASE64_STANDARD.encode(&jpeg_bytes);
+        let mismatched_path = temp_dir.path().join("my_picture.png");
+        let mismatched_path_clone = mismatched_path.clone();
+        let res_mismatch = commands::save_image_file_with_dialog(
+            Some("my_picture.png".to_string()),
+            None,
+            Some(jpeg_b64),
+            move |_| Ok(Some(mismatched_path_clone)),
+        )
+        .await;
+        assert!(res_mismatch.is_ok());
+        let norm_path = res_mismatch.unwrap().unwrap();
+        assert!(norm_path.ends_with("my_picture.jpg"));
+        assert!(std::path::Path::new(&norm_path).exists());
     }
 }
