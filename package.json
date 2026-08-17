@@ -10,7 +10,7 @@
     "build:cloak-runtime": "bun run scripts/build-cloak-runtime.ts",
     "preview": "vite preview",
     "check": "bun run i18n:compile && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "check:watch": "bun run i18n:compile && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "bun run i18n:compile && bun test --conditions=browser --conditions=svelte",
     "test:cloak-runtime": "bun test sidecars/cloak-runtime/src",
     "release": "bun run scripts/publish-release.ts",

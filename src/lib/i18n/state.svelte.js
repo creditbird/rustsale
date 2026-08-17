@@ -1,6 +1,4 @@
 import {
-  baseLocale,
-  locales,
   overwriteGetLocale,
   isLocale
 } from '$lib/paraglide/runtime';
@@ -8,6 +6,8 @@ import {
 /** @typedef {import('$lib/paraglide/runtime').Locale} Locale */
 
 const STORAGE_KEY = 'rustsale_locale';
+/** Default fallback UI locale determined by product target market (Vietnamese CRM) */
+const DEFAULT_PRODUCT_LOCALE = 'vi';
 
 /**
  * @returns {Locale}
@@ -27,7 +27,7 @@ function getInitialLocale() {
       // Ignore storage errors in restricted contexts
     }
   }
-  return 'vi';
+  return DEFAULT_PRODUCT_LOCALE;
 }
 
 export class LocaleStore {

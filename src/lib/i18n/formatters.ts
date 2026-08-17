@@ -16,24 +16,22 @@ export function getIntlLocale(): string {
 }
 
 /**
- * Format a number to currency with standard Intl formatting
+ * Format a number to currency with standard Intl formatting.
+ * Currency is a business data property and is NOT inferred from the UI locale.
  */
 export function formatCurrency(
   value: number | undefined | null,
-  currency?: 'VND' | 'USD'
+  currency: 'VND' | 'USD' = 'VND'
 ): string {
-  const defaultCurrency: 'VND' | 'USD' = localeState.current === 'en' ? 'USD' : 'VND';
-  const targetCurrency = currency ?? defaultCurrency;
-
   if (value === undefined || value === null || isNaN(value)) {
-    return '0 ' + (targetCurrency === 'VND' ? '₫' : '$');
+    return '0 ' + (currency === 'VND' ? '₫' : '$');
   }
 
   const intlLocale = getIntlLocale();
   return new Intl.NumberFormat(intlLocale, {
     style: 'currency',
-    currency: targetCurrency,
-    maximumFractionDigits: targetCurrency === 'VND' ? 0 : 2
+    currency,
+    maximumFractionDigits: currency === 'VND' ? 0 : 2
   }).format(value);
 }
 

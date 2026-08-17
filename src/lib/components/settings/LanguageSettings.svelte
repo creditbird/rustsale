@@ -1,7 +1,5 @@
 <script lang="ts">
   import * as Card from '$lib/components/ui/card';
-  import { Badge } from '$lib/components/ui/badge';
-  import { Button } from '$lib/components/ui/button';
   import { Languages, Check, Globe } from 'lucide-svelte';
   import { m, localeState, setLocale, type Locale, formatCurrency, formatDate } from '$lib/i18n';
   import { toast } from 'svelte-sonner';

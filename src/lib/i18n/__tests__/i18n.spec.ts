@@ -36,20 +36,28 @@ describe('i18n & Paraglide Integration', () => {
     expect(String(m.scraper_results_found({ count: 15 }))).toBe('15 places found');
   });
 
-  it('formats currency according to active locale and explicit currency', () => {
+  it('does NOT infer business currency from UI locale (financial data integrity)', () => {
+    // Default base currency is VND regardless of UI locale
     setLocale('vi');
     const viVnd = formatCurrency(5000000);
     expect(viVnd).toContain('5.000.000');
     expect(viVnd).toContain('₫');
 
     setLocale('en');
-    const enUsd = formatCurrency(1500.5);
+    const enVnd = formatCurrency(5000000);
+    // In English locale, 5,000,000 VND must still format as VND, NEVER inferred as USD ($)
+    expect(enVnd).toContain('5,000,000');
+    expect(enVnd).toContain('₫');
+    expect(enVnd).not.toContain('$');
+
+    // Explicit USD format
+    const enUsd = formatCurrency(1500.5, 'USD');
     expect(enUsd).toContain('1,500.50');
     expect(enUsd).toContain('$');
 
-    // Explicit override
-    const viUsd = formatCurrency(100, 'USD');
-    expect(viUsd).toContain('$');
+    setLocale('vi');
+    const viUsd = formatCurrency(1500.5, 'USD');
+    expect(viUsd).toContain('1.500,50');
   });
 
   it('formats numbers according to active locale', () => {
@@ -79,6 +87,7 @@ describe('i18n & Paraglide Integration', () => {
 
   it('handles invalid or empty inputs gracefully in formatters', () => {
     expect(formatCurrency(null)).toBe('0 ₫');
+    expect(formatCurrency(null, 'USD')).toBe('0 $');
     expect(formatNumber(null)).toBe('0');
     expect(formatDate(null)).toBe('');
     expect(formatDate('')).toBe('');
