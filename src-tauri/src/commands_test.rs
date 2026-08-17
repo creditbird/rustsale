@@ -3754,5 +3754,25 @@ mod tests {
         let norm_path = res_mismatch.unwrap().unwrap();
         assert!(norm_path.ends_with("my_picture.jpg"));
         assert!(std::path::Path::new(&norm_path).exists());
+
+        // 5. Collision protection: If user authorized .png, but payload is JPEG and .jpg already exists, REJECT to prevent silent unconfirmed overwrite!
+        let existing_jpg = temp_dir.path().join("sentinel.jpg");
+        std::fs::write(&existing_jpg, b"DO_NOT_OVERWRITE").unwrap();
+
+        let req_png = temp_dir.path().join("sentinel.png");
+        let req_png_clone = req_png.clone();
+        let res_collision = commands::save_image_file_with_dialog(
+            Some("sentinel.png".to_string()),
+            None,
+            Some(BASE64_STANDARD.encode(&jpeg_bytes)),
+            move |_| Ok(Some(req_png_clone)),
+        )
+        .await;
+        assert!(res_collision.is_err());
+        assert!(res_collision
+            .unwrap_err()
+            .contains("already exists and was not authorized"));
+        // Confirm sentinel file content was not overwritten
+        assert_eq!(std::fs::read(&existing_jpg).unwrap(), b"DO_NOT_OVERWRITE");
     }
 }

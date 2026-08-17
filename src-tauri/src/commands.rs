@@ -6848,9 +6848,10 @@ pub async fn download_image_http(initial_url_str: &str) -> Result<Vec<u8>, Strin
             addrs[0]
         };
 
-        // Build pinned client with zero auto-redirects
+        // Build pinned client with zero auto-redirects and explicit no_proxy
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .resolve(&host, target_socket_addr)
             .build()
@@ -7039,8 +7040,14 @@ where
             if is_matching {
                 file_path
             } else {
-                // If user selected generic or mismatched extension, normalize to actual detected extension
-                file_path.with_extension(detected_ext)
+                let normalized = file_path.with_extension(detected_ext);
+                if normalized.exists() && normalized != file_path {
+                    return Err(format!(
+                        "Destination file {:?} already exists and was not authorized in save dialog",
+                        normalized.file_name().unwrap_or_default()
+                    ));
+                }
+                normalized
             }
         }
     };
