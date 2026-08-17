@@ -83,17 +83,19 @@
     }
   });
 
+  import { m } from '$lib/i18n';
+
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'scraper', label: 'Google Maps Scraper', icon: MapPin },
-    { id: 'leads', label: 'Leads', icon: Users },
-    { id: 'categories', label: 'Category Manager', icon: Tags },
-    { id: 'conversation', label: 'Conversations', icon: MessagesSquare },
-    { id: 'outreach', label: 'Zalo Outreach', icon: MessageSquare },
-    { id: 'email_outreach', label: 'Email Outreach', icon: Mail },
-    { id: 'pipeline', label: 'Deal Pipeline', icon: Kanban },
-    { id: 'contacts', label: 'Contacts', icon: UserCheck },
-    { id: 'settings', label: 'Settings', icon: Settings2 }
+    { id: 'dashboard', get label() { return m.nav_dashboard(); }, icon: LayoutDashboard },
+    { id: 'scraper', get label() { return m.nav_scraper(); }, icon: MapPin },
+    { id: 'leads', get label() { return m.nav_leads(); }, icon: Users },
+    { id: 'categories', get label() { return m.nav_categories(); }, icon: Tags },
+    { id: 'conversation', get label() { return m.nav_conversation(); }, icon: MessagesSquare },
+    { id: 'outreach', get label() { return m.nav_outreach(); }, icon: MessageSquare },
+    { id: 'email_outreach', get label() { return m.nav_email_outreach(); }, icon: Mail },
+    { id: 'pipeline', get label() { return m.nav_pipeline(); }, icon: Kanban },
+    { id: 'contacts', get label() { return m.nav_contacts(); }, icon: UserCheck },
+    { id: 'settings', get label() { return m.nav_settings(); }, icon: Settings2 }
   ];
 </script>
 

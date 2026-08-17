@@ -311,11 +311,12 @@ await s3.send(
 );
 console.log(`   ✅ Succeeded: latest.json`);
 
-// Upload install-linux.sh installer script
+// Upload install-linux.sh installer script (ensuring Unix LF line endings)
 const installScriptPath = resolve('scripts/install-linux.sh');
 if (existsSync(installScriptPath)) {
-  const installScriptBody = readFileSync(installScriptPath);
-  console.log(`   📤 Uploading install-linux.sh (root)...`);
+  const rawContent = readFileSync(installScriptPath, 'utf-8');
+  const installScriptBody = Buffer.from(rawContent.replace(/\r\n/g, '\n'), 'utf-8');
+  console.log(`   📤 Uploading install-linux.sh (root, sanitized LF)...`);
   await s3.send(
     new PutObjectCommand({
       Bucket: bucketName,

@@ -30,20 +30,19 @@
     activeTab = 'conversation';
   }
 
+  import { m } from '$lib/i18n';
+
   const tabTitles: Record<string, { title: string; subtitle: string }> = {
-    dashboard: { title: 'Dashboard System', subtitle: 'Overview KPI statistics and recent lead activity' },
-    scraper: { title: 'Google Maps Scraper', subtitle: 'Extract local business lead data dynamically across regions' },
-    leads: { title: 'Lead Management', subtitle: 'Potential lead contacts, acquisition details and verification status' },
-    categories: { title: 'Category Manager', subtitle: 'Organize, tag and structure lead segments' },
-    conversation: {
-      title: 'Unified Conversations',
-      subtitle: 'Zalo, WhatsApp, Messenger and Email customer history'
-    },
-    outreach: { title: 'Zalo Outreach Manager', subtitle: 'Select connected accounts, customize templates, and launch Zalo flows' },
-    email_outreach: { title: 'Email Outreach Manager', subtitle: 'Select configured senders, manage templates, and launch targeted broadcasts' },
-    pipeline: { title: 'Deal Pipeline', subtitle: 'Kanban view for deal stages and sales conversion workflow' },
-    contacts: { title: 'Converted Contacts', subtitle: 'Official converted customer database' },
-    settings: { title: 'Channels & Accounts', subtitle: 'Manage provider authentication, senders, and realtime connection health' }
+    get dashboard() { return { title: m.tab_dashboard_title(), subtitle: m.tab_dashboard_subtitle() }; },
+    get scraper() { return { title: m.tab_scraper_title(), subtitle: m.tab_scraper_subtitle() }; },
+    get leads() { return { title: m.tab_leads_title(), subtitle: m.tab_leads_subtitle() }; },
+    get categories() { return { title: m.tab_categories_title(), subtitle: m.tab_categories_subtitle() }; },
+    get conversation() { return { title: m.tab_conversation_title(), subtitle: m.tab_conversation_subtitle() }; },
+    get outreach() { return { title: m.tab_outreach_title(), subtitle: m.tab_outreach_subtitle() }; },
+    get email_outreach() { return { title: m.tab_email_outreach_title(), subtitle: m.tab_email_outreach_subtitle() }; },
+    get pipeline() { return { title: m.tab_pipeline_title(), subtitle: m.tab_pipeline_subtitle() }; },
+    get contacts() { return { title: m.tab_contacts_title(), subtitle: m.tab_contacts_subtitle() }; },
+    get settings() { return { title: m.tab_settings_title(), subtitle: m.tab_settings_subtitle() }; }
   };
 
   let isStale = $state(false);
