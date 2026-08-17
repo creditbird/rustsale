@@ -6743,9 +6743,13 @@ pub async fn write_image_bytes_to_path(
         .and_then(|s| s.to_str())
         .unwrap_or("image");
     let temp_name = format!(
-        ".{}_{}_{}.tmp",
+        ".{}_{}_{}_{}.tmp",
         file_stem,
         std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
         rand::random::<u32>()
     );
     let temp_path = parent.join(&temp_name);
@@ -6759,7 +6763,7 @@ pub async fn write_image_bytes_to_path(
     #[cfg(not(any(unix, windows)))]
     let mut file = {
         let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         options
             .open(&temp_path)
             .await
@@ -7027,29 +7031,11 @@ where
         return Err("Image content is empty".to_string());
     }
 
-    // 4. Validate image format and align extension
+    // 4. Validate image format and respect exact user-selected destination path
     let detected_ext = detect_image_format(&bytes)?;
     let target_path = match file_path.extension().and_then(|e| e.to_str()) {
         None => file_path.with_extension(detected_ext),
-        Some(ext) => {
-            let is_matching = match (detected_ext, ext.to_ascii_lowercase().as_str()) {
-                ("jpg", "jpg" | "jpeg") => true,
-                ("tiff", "tif" | "tiff") => true,
-                (det, e) => det == e,
-            };
-            if is_matching {
-                file_path
-            } else {
-                let normalized = file_path.with_extension(detected_ext);
-                if normalized.exists() && normalized != file_path {
-                    return Err(format!(
-                        "Destination file {:?} already exists and was not authorized in save dialog",
-                        normalized.file_name().unwrap_or_default()
-                    ));
-                }
-                normalized
-            }
-        }
+        Some(_) => file_path, // Maintain the exact user-authorized path confirmed in the OS dialog
     };
 
     let final_path = write_image_bytes_to_path(&target_path, &bytes).await?;

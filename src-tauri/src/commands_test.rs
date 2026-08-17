@@ -3738,41 +3738,58 @@ mod tests {
         assert!(final_path.ends_with("photo_no_ext.png"));
         assert!(std::path::Path::new(&final_path).exists());
 
-        // 4. Mismatched extension normalization: JPEG payload saved to .png path -> normalizes to .jpg
+        // 4. User-authorized path preservation: JPEG payload saved to .png path writes to .png as confirmed by user in dialog
         let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
         let jpeg_b64 = BASE64_STANDARD.encode(&jpeg_bytes);
-        let mismatched_path = temp_dir.path().join("my_picture.png");
-        let mismatched_path_clone = mismatched_path.clone();
-        let res_mismatch = commands::save_image_file_with_dialog(
+        let user_path = temp_dir.path().join("my_picture.png");
+        let user_path_clone = user_path.clone();
+        let res_save = commands::save_image_file_with_dialog(
             Some("my_picture.png".to_string()),
             None,
-            Some(jpeg_b64),
-            move |_| Ok(Some(mismatched_path_clone)),
+            Some(jpeg_b64.clone()),
+            move |_| Ok(Some(user_path_clone)),
         )
         .await;
-        assert!(res_mismatch.is_ok());
-        let norm_path = res_mismatch.unwrap().unwrap();
-        assert!(norm_path.ends_with("my_picture.jpg"));
-        assert!(std::path::Path::new(&norm_path).exists());
+        assert!(res_save.is_ok());
+        let final_path = res_save.unwrap().unwrap();
+        assert_eq!(final_path, user_path.to_string_lossy());
+        assert!(user_path.exists());
+        assert_eq!(std::fs::read(&user_path).unwrap(), jpeg_bytes);
 
-        // 5. Collision protection: If user authorized .png, but payload is JPEG and .jpg already exists, REJECT to prevent silent unconfirmed overwrite!
+        // 5. Overwrite isolation: Existing sentinel.jpg must remain untouched when user saves sentinel.png
         let existing_jpg = temp_dir.path().join("sentinel.jpg");
         std::fs::write(&existing_jpg, b"DO_NOT_OVERWRITE").unwrap();
 
         let req_png = temp_dir.path().join("sentinel.png");
         let req_png_clone = req_png.clone();
-        let res_collision = commands::save_image_file_with_dialog(
+        let res_png = commands::save_image_file_with_dialog(
             Some("sentinel.png".to_string()),
             None,
-            Some(BASE64_STANDARD.encode(&jpeg_bytes)),
+            Some(jpeg_b64),
             move |_| Ok(Some(req_png_clone)),
         )
         .await;
-        assert!(res_collision.is_err());
-        assert!(res_collision
-            .unwrap_err()
-            .contains("already exists and was not authorized"));
-        // Confirm sentinel file content was not overwritten
+        assert!(res_png.is_ok());
+        assert!(req_png.exists());
+        // Confirm sentinel file content was never touched or overwritten
         assert_eq!(std::fs::read(&existing_jpg).unwrap(), b"DO_NOT_OVERWRITE");
+    }
+
+    #[tokio::test]
+    async fn test_download_image_http_proxy_isolation() {
+        // Set environment proxy variables
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:9999");
+        std::env::set_var("http_proxy", "http://127.0.0.1:9999");
+        std::env::set_var("ALL_PROXY", "socks5://127.0.0.1:9999");
+
+        // download_image_http must reject direct non-public host without connecting to the proxy
+        let res = commands::download_image_http("http://localhost:8080/image.png").await;
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(err.contains("non-public") || err.contains("private"));
+
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("http_proxy");
+        std::env::remove_var("ALL_PROXY");
     }
 }
