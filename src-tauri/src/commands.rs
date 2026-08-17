@@ -6630,50 +6630,6 @@ pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
 pub const MAX_IMAGE_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024; // 50MB
 pub const MAX_BASE64_PAYLOAD_LEN: usize = 70 * 1024 * 1024; // ~50MB decoded
 
-#[allow(dead_code)]
-pub async fn validate_public_http_url(url_str: &str) -> Result<url::Url, String> {
-    let parsed = url::Url::parse(url_str).map_err(|e| format!("Invalid image URL: {}", e))?;
-    let scheme = parsed.scheme();
-    if scheme != "http" && scheme != "https" {
-        return Err("Only http and https schemes are permitted for image download".to_string());
-    }
-
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| "URL has no host".to_string())?;
-
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if !is_public_ip(ip) {
-            return Err("Access to non-public/private IP address is not permitted".to_string());
-        }
-    } else {
-        let port = parsed
-            .port_or_known_default()
-            .unwrap_or(if scheme == "https" { 443 } else { 80 });
-        let host_port = format!("{}:{}", host, port);
-        let addrs = tokio::net::lookup_host(host_port)
-            .await
-            .map_err(|e| format!("Failed to resolve image host {}: {}", host, e))?;
-
-        let mut has_addr = false;
-        for socket_addr in addrs {
-            has_addr = true;
-            if !is_public_ip(socket_addr.ip()) {
-                return Err(format!(
-                    "Host {} resolved to non-public address {}",
-                    host,
-                    socket_addr.ip()
-                ));
-            }
-        }
-        if !has_addr {
-            return Err(format!("No IP address found for host {}", host));
-        }
-    }
-
-    Ok(parsed)
-}
-
 pub fn detect_image_format(bytes: &[u8]) -> Result<&'static str, String> {
     if let Some(kind) = infer::get(bytes) {
         match kind.extension() {
@@ -7031,11 +6987,24 @@ where
         return Err("Image content is empty".to_string());
     }
 
-    // 4. Validate image format and respect exact user-selected destination path
+    // 4. Validate image format and enforce format integrity on user-selected path
     let detected_ext = detect_image_format(&bytes)?;
     let target_path = match file_path.extension().and_then(|e| e.to_str()) {
         None => file_path.with_extension(detected_ext),
-        Some(_) => file_path, // Maintain the exact user-authorized path confirmed in the OS dialog
+        Some(ext) => {
+            let is_matching = match (detected_ext, ext.to_ascii_lowercase().as_str()) {
+                ("jpg", "jpg" | "jpeg") => true,
+                ("tiff", "tif" | "tiff") => true,
+                (det, e) => det == e,
+            };
+            if !is_matching {
+                return Err(format!(
+                    "Selected file extension '.{}' does not match detected image format '.{}'",
+                    ext, detected_ext
+                ));
+            }
+            file_path // Maintain the exact user-authorized path confirmed in the OS dialog
+        }
     };
 
     let final_path = write_image_bytes_to_path(&target_path, &bytes).await?;

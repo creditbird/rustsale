@@ -3555,29 +3555,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_public_http_url_rejections() {
-        // 1. Direct private IP
-        let res_loopback = commands::validate_public_http_url("http://127.0.0.1/test.png").await;
-        assert!(res_loopback.is_err());
-        assert!(res_loopback.unwrap_err().contains("non-public"));
-
-        let res_private =
-            commands::validate_public_http_url("https://10.0.0.1:8080/image.jpg").await;
-        assert!(res_private.is_err());
-
-        let res_metadata =
-            commands::validate_public_http_url("http://169.254.169.254/latest/meta-data/").await;
-        assert!(res_metadata.is_err());
-
-        // 2. Disallowed schemes
-        let res_file = commands::validate_public_http_url("file:///etc/passwd").await;
-        assert!(res_file.is_err());
-
-        let res_ftp = commands::validate_public_http_url("ftp://example.com/pic.png").await;
-        assert!(res_ftp.is_err());
-    }
-
-    #[tokio::test]
     async fn test_download_image_http_blocks_ssrf_destinations() {
         // Direct private IPs and localhost are strictly blocked
         let res_local = commands::download_image_http("http://127.0.0.1:8080/image.png").await;
@@ -3590,6 +3567,9 @@ mod tests {
 
         let res_meta = commands::download_image_http("http://169.254.169.254/meta-data").await;
         assert!(res_meta.is_err());
+
+        let res_scheme = commands::download_image_http("ftp://example.com/pic.png").await;
+        assert!(res_scheme.is_err());
     }
 
     #[test]
@@ -3738,40 +3718,52 @@ mod tests {
         assert!(final_path.ends_with("photo_no_ext.png"));
         assert!(std::path::Path::new(&final_path).exists());
 
-        // 4. User-authorized path preservation: JPEG payload saved to .png path writes to .png as confirmed by user in dialog
+        // 4. Format alias acceptance: JPEG payload saved to .jpeg path succeeds
         let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
         let jpeg_b64 = BASE64_STANDARD.encode(&jpeg_bytes);
-        let user_path = temp_dir.path().join("my_picture.png");
-        let user_path_clone = user_path.clone();
-        let res_save = commands::save_image_file_with_dialog(
-            Some("my_picture.png".to_string()),
+        let jpeg_path = temp_dir.path().join("my_picture.jpeg");
+        let jpeg_path_clone = jpeg_path.clone();
+        let res_alias = commands::save_image_file_with_dialog(
+            Some("my_picture.jpeg".to_string()),
             None,
             Some(jpeg_b64.clone()),
-            move |_| Ok(Some(user_path_clone)),
+            move |_| Ok(Some(jpeg_path_clone)),
         )
         .await;
-        assert!(res_save.is_ok());
-        let final_path = res_save.unwrap().unwrap();
-        assert_eq!(final_path, user_path.to_string_lossy());
-        assert!(user_path.exists());
-        assert_eq!(std::fs::read(&user_path).unwrap(), jpeg_bytes);
+        assert!(res_alias.is_ok());
+        assert!(jpeg_path.exists());
+        assert_eq!(std::fs::read(&jpeg_path).unwrap(), jpeg_bytes);
 
-        // 5. Overwrite isolation: Existing sentinel.jpg must remain untouched when user saves sentinel.png
+        // 5. Format mismatch rejection: JPEG payload saved to .png path is rejected
+        let mismatch_png_path = temp_dir.path().join("my_picture.png");
+        let mismatch_png_clone = mismatch_png_path.clone();
+        let res_mismatch = commands::save_image_file_with_dialog(
+            Some("my_picture.png".to_string()),
+            None,
+            Some(jpeg_b64),
+            move |_| Ok(Some(mismatch_png_clone)),
+        )
+        .await;
+        assert!(res_mismatch.is_err());
+        let err = res_mismatch.unwrap_err();
+        assert!(err.contains("does not match detected image format"));
+        assert!(!mismatch_png_path.exists());
+
+        // 6. Overwrite isolation: Existing sentinel.jpg must remain untouched
         let existing_jpg = temp_dir.path().join("sentinel.jpg");
         std::fs::write(&existing_jpg, b"DO_NOT_OVERWRITE").unwrap();
 
-        let req_png = temp_dir.path().join("sentinel.png");
+        let req_png = temp_dir.path().join("other_file.png");
         let req_png_clone = req_png.clone();
         let res_png = commands::save_image_file_with_dialog(
-            Some("sentinel.png".to_string()),
+            Some("other_file.png".to_string()),
             None,
-            Some(jpeg_b64),
+            Some(b64),
             move |_| Ok(Some(req_png_clone)),
         )
         .await;
         assert!(res_png.is_ok());
         assert!(req_png.exists());
-        // Confirm sentinel file content was never touched or overwritten
         assert_eq!(std::fs::read(&existing_jpg).unwrap(), b"DO_NOT_OVERWRITE");
     }
 
