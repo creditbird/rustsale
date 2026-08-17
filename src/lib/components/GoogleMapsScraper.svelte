@@ -293,6 +293,9 @@
     activeJob = updatedJob;
     jobs = jobs.map((job) => job.id === updatedJob.id ? updatedJob : job);
     appendLog(`[${event.status}] ${event.message}`);
+    if (event.error?.message && (event.status === 'failed' || event.status === 'partial')) {
+      appendLog(`[error] Details (${event.error?.kind ?? 'unknown'}): ${event.error?.message}`);
+    }
   }
 
   function selectJob(job: GoogleMapsScrapeJob): void {

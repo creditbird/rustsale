@@ -195,6 +195,37 @@ describe('Google Maps block detection', () => {
         bodyText: 'One review mentions the rate limit on their loyalty card.',
       }),
     ).toBe('ready');
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://google.com/maps/search/quan-an',
+        hasFeed: true,
+        bodyText: 'Quán ăn ngon — "tôi đồng ý với đánh giá trước, quá nhiều yêu cầu nên phải thử lại sau"',
+      }),
+    ).toBe('ready');
+  });
+
+  test('detects Vietnamese consent and rate limits when structural feed is absent', () => {
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://google.com/maps',
+        hasFeed: false,
+        bodyText: 'Trước khi tiếp tục đến Google, vui lòng xem xét điều khoản...',
+      }),
+    ).toBe('consent_required');
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://google.com/maps/search/cafe',
+        hasFeed: false,
+        bodyText: 'Google Maps không thể tìm thấy bất kỳ kết quả nào cho tìm kiếm của bạn.',
+      }),
+    ).toBe('empty_results');
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://google.com/maps',
+        hasFeed: false,
+        bodyText: 'Quá nhiều yêu cầu, vui lòng thử lại sau.',
+      }),
+    ).toBe('rate_limited');
   });
 
   test('a challenge overlay is detected even while the feed DOM survives', () => {

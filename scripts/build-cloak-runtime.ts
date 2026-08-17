@@ -8,6 +8,17 @@ const outputDir = resolve('src-tauri/binaries');
 const outputPath = resolve(outputDir, `cloak-runtime-${targetTriple}${extension}`);
 mkdirSync(outputDir, { recursive: true });
 
+// 1. Patch Playwright runtime lookups before compilation
+const patchResult = Bun.spawnSync([
+  process.execPath,
+  'run',
+  resolve('scripts/patch-playwright-for-bun-compile.ts'),
+]);
+if (!patchResult.success) {
+  process.stderr.write(patchResult.stderr);
+  process.exit(patchResult.exitCode || 1);
+}
+
 const compileArgs = [
   process.execPath,
   'build',
@@ -26,6 +37,34 @@ if (!result.success) {
   process.stderr.write(result.stderr);
   process.exit(result.exitCode || 1);
 }
+
+// 2. Verify compiled binary is fully portable without leaked CI build paths
+const assertResult = Bun.spawnSync([
+  process.execPath,
+  'run',
+  resolve('scripts/assert-portable-sidecar.ts'),
+  outputPath,
+]);
+if (!assertResult.success) {
+  process.stderr.write(assertResult.stderr);
+  process.exit(assertResult.exitCode || 1);
+}
+
+// 3. Clean-room smoke test: verify binary launches and navigates in an isolated environment without node_modules
+const hostTriple = detectHostTriple();
+if (targetTriple === hostTriple && process.env.SKIP_CLEAN_ROOM_SMOKE !== '1') {
+  const smokeResult = Bun.spawnSync([
+    process.execPath,
+    'run',
+    resolve('scripts/smoke-test-compiled-sidecar.ts'),
+    outputPath,
+  ]);
+  if (!smokeResult.success) {
+    process.stderr.write(smokeResult.stderr);
+    process.exit(smokeResult.exitCode || 1);
+  }
+}
+
 process.stdout.write(`${outputPath}\n`);
 
 function detectHostTriple(): string {

@@ -1,4 +1,6 @@
+import * as cloak from 'cloakbrowser';
 import type { BinaryInfo } from 'cloakbrowser';
+import * as playwright from 'playwright-core';
 import type { BrowserContext, Page } from 'playwright-core';
 import { inspectGoogleMapsPage } from './googleMaps';
 import {
@@ -33,8 +35,6 @@ export function pinnedCloakBrowserBinaryVersion(
 
 export const PINNED_CLOAKBROWSER_BINARY_VERSION = pinnedCloakBrowserBinaryVersion();
 
-type CloakBrowserModule = typeof import('cloakbrowser');
-
 export interface CloakRuntimeOptions {
   cacheDir?: string;
 }
@@ -57,7 +57,6 @@ export function persistentLaunchOptions(payload: LaunchPayload): PersistentLaunc
 }
 
 export class CloakRuntime {
-  private modulePromise: Promise<CloakBrowserModule> | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
 
@@ -66,7 +65,6 @@ export class CloakRuntime {
   }
 
   async runtimeStatus(): Promise<BinaryInfo & { wrapperVersion: string }> {
-    const cloak = await this.loadModule();
     return {
       ...cloak.binaryInfo(PINNED_CLOAKBROWSER_BINARY_VERSION),
       wrapperVersion: PINNED_CLOAKBROWSER_WRAPPER_VERSION,
@@ -74,7 +72,6 @@ export class CloakRuntime {
   }
 
   async ensureRuntime(): Promise<BinaryInfo & { wrapperVersion: string }> {
-    const cloak = await this.loadModule();
     await diagnosticsToStderr(() =>
       cloak.ensureBinary(undefined, PINNED_CLOAKBROWSER_BINARY_VERSION),
     );
@@ -84,7 +81,6 @@ export class CloakRuntime {
   async launch(payload: LaunchPayload): Promise<{ launched: true; url: string }> {
     const launchOptions = persistentLaunchOptions(payload);
     await this.shutdown();
-    const cloak = await this.loadModule();
     await this.ensureRuntime();
     try {
       this.context = await diagnosticsToStderr(() =>
@@ -161,11 +157,6 @@ export class CloakRuntime {
       throw new RuntimeFault('disconnected', 'browser page is not available', true);
     }
     return this.page;
-  }
-
-  private loadModule(): Promise<CloakBrowserModule> {
-    this.modulePromise ??= diagnosticsToStderr(() => import('cloakbrowser'));
-    return this.modulePromise;
   }
 }
 

@@ -31,40 +31,73 @@ export function classifyGoogleMapsPageState(
   // and a text-first order let ordinary page content pause an entire job.
   // A challenge can be served as an overlay that leaves the underlying feed DOM
   // intact, so the structural captcha signal has to outrank the feed.
-  if (url.includes('/sorry/') || snapshot.hasCaptchaChallenge) {
+  // 1. Structural signals that definitively indicate a hard block / captcha / consent overlay
+  // even if the underlying feed DOM is still mounted in the background.
+  if (
+    url.includes('/sorry/') ||
+    snapshot.hasCaptchaChallenge ||
+    body.includes('unusual traffic') ||
+    body.includes('not a robot') ||
+    body.includes('recaptcha') ||
+    body.includes('lưu lượng bất thường') ||
+    body.includes('lưu lượng truy cập bất thường') ||
+    body.includes('không phải là người máy') ||
+    body.includes('xác minh bạn là con người')
+  ) {
     return 'captcha';
   }
+
   if (url.includes('consent.google.') || snapshot.hasConsentDialog) {
     return 'consent_required';
   }
+
+  // 2. Structural presence of search results feed or place details heading
   if (snapshot.hasFeed || snapshot.hasPlaceHeading) {
     return 'ready';
   }
+
+  // 3. Fallback text inspection when structural feed/heading is absent
   if (
-    body.includes('unusual traffic') ||
-    body.includes('not a robot') ||
-    body.includes('recaptcha')
+    body.includes('before you continue to google') ||
+    body.includes('trước khi tiếp tục đến google') ||
+    body.includes('trước khi bạn tiếp tục đến google') ||
+    body.includes('trước khi tiếp tục') ||
+    body.includes('chấp nhận tất cả') ||
+    body.includes('đồng ý tất cả')
   ) {
-    return 'captcha';
-  }
-  if (body.includes('before you continue to google')) {
     return 'consent_required';
   }
+
   if (
     body.includes('too many requests') ||
     body.includes('rate limit') ||
-    body.includes('try again later')
+    body.includes('try again later') ||
+    body.includes('quá nhiều yêu cầu') ||
+    body.includes('thử lại sau') ||
+    body.includes('vui lòng thử lại sau')
   ) {
     return 'rate_limited';
   }
+
   if (
     body.includes('no results found') ||
     body.includes('không tìm thấy kết quả') ||
+    body.includes('không tìm thấy bất kỳ kết quả') ||
+    body.includes('không thể tìm thấy') ||
+    body.includes('google maps không thể tìm thấy') ||
+    body.includes('google maps không tìm thấy') ||
+    body.includes('chúng tôi không tìm thấy') ||
+    body.includes('không có kết quả') ||
     body.includes('couldn\'t find') ||
-    body.includes('google maps can\'t find')
+    body.includes('cannot find') ||
+    body.includes('google maps can\'t find') ||
+    body.includes('google maps cannot find') ||
+    body.includes('make sure your search is spelled correctly') ||
+    body.includes('đảm bảo rằng tất cả các từ đều đúng chính tả')
   ) {
     return 'empty_results';
   }
+
   if (body.trim().length === 0) {
     return 'blank_page';
   }
@@ -83,7 +116,9 @@ export async function inspectGoogleMapsPage(page: Page): Promise<{
     hasFeed: Boolean(document.querySelector('div[role="feed"]')),
     hasPlaceHeading: Boolean(document.querySelector('h1, [role="main"] h1')),
     hasConsentDialog: Boolean(
-      document.querySelector('form[action*="consent"], [aria-label*="consent" i]'),
+      document.querySelector(
+        'form[action*="consent"], [aria-label*="consent" i], [aria-label*="Đồng ý" i], [aria-label*="Chấp nhận" i]',
+      ),
     ),
     hasCaptchaChallenge: Boolean(
       document.querySelector(
