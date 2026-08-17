@@ -107,7 +107,7 @@ jobs:
           releaseBody: ${{ github.event.inputs.notes || 'Bản phát hành cập nhật cho RustSale CRM' }}
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.platform == 'linux-x86_64' && '--bundles deb,appimage' || '' }}
+          args: ${{ matrix.platform == 'linux-x86_64' && '--bundles deb' || '' }}
 
       - name: Upload to Cloudflare R2
         shell: bash
