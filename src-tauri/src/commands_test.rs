@@ -3577,6 +3577,21 @@ mod tests {
         assert!(res_ftp.is_err());
     }
 
+    #[tokio::test]
+    async fn test_download_image_http_blocks_ssrf_destinations() {
+        // Direct private IPs and localhost are strictly blocked
+        let res_local = commands::download_image_http("http://127.0.0.1:8080/image.png").await;
+        assert!(res_local.is_err());
+        let err_str = res_local.unwrap_err();
+        assert!(err_str.contains("non-public") || err_str.contains("private"));
+
+        let res_private = commands::download_image_http("http://10.10.10.10/admin.png").await;
+        assert!(res_private.is_err());
+
+        let res_meta = commands::download_image_http("http://169.254.169.254/meta-data").await;
+        assert!(res_meta.is_err());
+    }
+
     #[test]
     fn test_detect_image_format_and_integrity() {
         // PNG

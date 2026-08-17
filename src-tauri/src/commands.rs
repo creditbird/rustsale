@@ -6630,6 +6630,7 @@ pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
 pub const MAX_IMAGE_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024; // 50MB
 pub const MAX_BASE64_PAYLOAD_LEN: usize = 70 * 1024 * 1024; // ~50MB decoded
 
+#[allow(dead_code)]
 pub async fn validate_public_http_url(url_str: &str) -> Result<url::Url, String> {
     let parsed = url::Url::parse(url_str).map_err(|e| format!("Invalid image URL: {}", e))?;
     let scheme = parsed.scheme();
@@ -6689,10 +6690,15 @@ pub fn detect_image_format(bytes: &[u8]) -> Result<&'static str, String> {
     }
 
     if bytes.len() >= 4 {
-        let snippet = String::from_utf8_lossy(&bytes[..std::cmp::min(bytes.len(), 1024)]);
-        let lower = snippet.to_ascii_lowercase();
-        if lower.contains("<svg") || (lower.contains("<?xml") && lower.contains("<svg")) {
-            return Ok("svg");
+        if let Ok(text) = std::str::from_utf8(&bytes[..std::cmp::min(bytes.len(), 2048)]) {
+            let trimmed = text.trim_start();
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("<svg")
+                || (lower.starts_with("<?xml") && lower.contains("<svg"))
+                || (lower.starts_with("<!doctype svg") && lower.contains("<svg"))
+            {
+                return Ok("svg");
+            }
         }
     }
 
@@ -6727,33 +6733,182 @@ pub async fn write_image_bytes_to_path(
         return Err("Path traversal (..) is not permitted in destination path".to_string());
     }
 
-    // 3. Open file descriptor atomically pinning ancestors with O_NOFOLLOW
+    // 3. Write to temporary file adjacent to destination
+    let parent = file_path
+        .parent()
+        .ok_or_else(|| "Invalid destination path: no parent directory".to_string())?;
+
+    let file_stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("image");
+    let temp_name = format!(
+        ".{}_{}_{}.tmp",
+        file_stem,
+        std::process::id(),
+        rand::random::<u32>()
+    );
+    let temp_path = parent.join(&temp_name);
+
     #[cfg(unix)]
-    let mut file = open_export_file_unix(file_path).await?;
+    let mut file = open_export_file_unix(&temp_path).await?;
 
     #[cfg(windows)]
-    let mut file = open_export_file_windows(file_path).await?;
+    let mut file = open_export_file_windows(&temp_path).await?;
 
     #[cfg(not(any(unix, windows)))]
     let mut file = {
         let mut options = tokio::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         options
-            .open(file_path)
+            .open(&temp_path)
             .await
-            .map_err(|e| format!("Failed to open destination file for writing: {}", e))?
+            .map_err(|e| format!("Failed to open temporary file for writing: {}", e))?
     };
 
-    // 4. Write content asynchronously and flush
-    file.write_all(bytes)
-        .await
-        .map_err(|e| format!("Failed to write image content: {}", e))?;
+    let write_res: Result<(), String> = async {
+        file.write_all(bytes)
+            .await
+            .map_err(|e| format!("Failed to write image content: {}", e))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush temporary file: {}", e))?;
+        drop(file);
+        Ok(())
+    }
+    .await;
 
-    file.flush()
-        .await
-        .map_err(|e| format!("Failed to flush destination file: {}", e))?;
+    if let Err(e) = write_res {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(e);
+    }
+
+    // 4. Atomically rename/replace temp_path -> file_path
+    if let Err(e) = tokio::fs::rename(&temp_path, file_path).await {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(format!("Failed to finalize destination image file: {}", e));
+    }
 
     Ok(file_path.to_path_buf())
+}
+
+pub async fn download_image_http(initial_url_str: &str) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+
+    let mut current_url =
+        url::Url::parse(initial_url_str).map_err(|e| format!("Invalid image URL: {}", e))?;
+
+    let max_redirects = 5;
+    for _ in 0..=max_redirects {
+        let scheme = current_url.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err("Only http and https schemes are permitted for image download".to_string());
+        }
+
+        let host = current_url
+            .host_str()
+            .ok_or_else(|| "URL has no host".to_string())?
+            .to_string();
+
+        let port = current_url
+            .port_or_known_default()
+            .unwrap_or(if scheme == "https" { 443 } else { 80 });
+
+        let host_port = format!("{}:{}", host, port);
+
+        // Resolve DNS and strictly verify ALL resolved IP addresses
+        let target_socket_addr = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if !is_public_ip(ip) {
+                return Err(format!(
+                    "Destination IP address {} is non-public/private",
+                    ip
+                ));
+            }
+            std::net::SocketAddr::new(ip, port)
+        } else {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(&host_port)
+                .await
+                .map_err(|e| format!("Failed to resolve image host {}: {}", host, e))?
+                .collect();
+
+            if addrs.is_empty() {
+                return Err(format!("No IP address found for host {}", host));
+            }
+
+            for socket_addr in &addrs {
+                if !is_public_ip(socket_addr.ip()) {
+                    return Err(format!(
+                        "Host {} resolved to non-public address {}",
+                        host,
+                        socket_addr.ip()
+                    ));
+                }
+            }
+
+            addrs[0]
+        };
+
+        // Build pinned client with zero auto-redirects
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(&host, target_socket_addr)
+            .build()
+            .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
+
+        let response = client
+            .get(current_url.as_str())
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download image from URL: {}", e))?;
+
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .ok_or_else(|| format!("Redirect response {} missing Location header", status))?
+                .to_str()
+                .map_err(|_| "Invalid characters in Location header".to_string())?;
+
+            current_url = current_url
+                .join(location)
+                .map_err(|e| format!("Invalid redirect target URL '{}': {}", location, e))?;
+            continue;
+        }
+
+        if !status.is_success() {
+            return Err(format!("Image download failed with HTTP status {}", status));
+        }
+
+        if let Some(cl) = response.content_length() {
+            if cl as usize > MAX_IMAGE_DOWNLOAD_BYTES {
+                return Err(format!(
+                    "Image file exceeds size limit of {} MB",
+                    MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+                ));
+            }
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::new();
+        while let Some(chunk_res) = stream.next().await {
+            let chunk =
+                chunk_res.map_err(|e| format!("Error while downloading image stream: {}", e))?;
+            if bytes.len() + chunk.len() > MAX_IMAGE_DOWNLOAD_BYTES {
+                return Err(format!(
+                    "Image file exceeds size limit of {} MB",
+                    MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+
+        let _ = detect_image_format(&bytes)?;
+        return Ok(bytes);
+    }
+
+    Err("Too many redirects while downloading image".to_string())
 }
 
 pub async fn resolve_image_bytes(
@@ -6761,7 +6916,6 @@ pub async fn resolve_image_bytes(
     base64_data: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     use base64::prelude::*;
-    use futures_util::StreamExt;
 
     if let Some(b64) = base64_data {
         let trimmed = b64.trim();
@@ -6817,72 +6971,7 @@ pub async fn resolve_image_bytes(
         }
 
         if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-            let parsed_url = validate_public_http_url(trimmed).await?;
-
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() >= 5 {
-                        attempt.error("Too many redirects")
-                    } else {
-                        let next_url = attempt.url();
-                        let scheme = next_url.scheme();
-                        if scheme != "http" && scheme != "https" {
-                            attempt.error("Invalid redirect scheme")
-                        } else if let Some(host) = next_url.host_str() {
-                            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                                if !is_public_ip(ip) {
-                                    return attempt
-                                        .error("Redirect to non-public IP is not permitted");
-                                }
-                            }
-                            attempt.follow()
-                        } else {
-                            attempt.error("Redirect has no host")
-                        }
-                    }
-                }))
-                .build()
-                .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
-
-            let response = client
-                .get(parsed_url.as_str())
-                .send()
-                .await
-                .map_err(|e| format!("Failed to download image from URL: {}", e))?;
-
-            if !response.status().is_success() {
-                return Err(format!(
-                    "Image download failed with HTTP status {}",
-                    response.status()
-                ));
-            }
-
-            if let Some(cl) = response.content_length() {
-                if cl as usize > MAX_IMAGE_DOWNLOAD_BYTES {
-                    return Err(format!(
-                        "Image file exceeds size limit of {} MB",
-                        MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
-                    ));
-                }
-            }
-
-            let mut stream = response.bytes_stream();
-            let mut bytes = Vec::new();
-            while let Some(chunk_res) = stream.next().await {
-                let chunk = chunk_res
-                    .map_err(|e| format!("Error while downloading image stream: {}", e))?;
-                if bytes.len() + chunk.len() > MAX_IMAGE_DOWNLOAD_BYTES {
-                    return Err(format!(
-                        "Image file exceeds size limit of {} MB",
-                        MAX_IMAGE_DOWNLOAD_BYTES / (1024 * 1024)
-                    ));
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-
-            let _ = detect_image_format(&bytes)?;
-            return Ok(bytes);
+            return download_image_http(trimmed).await;
         }
 
         return Err("Unsupported image URL scheme".to_string());
