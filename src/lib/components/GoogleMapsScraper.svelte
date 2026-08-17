@@ -36,6 +36,7 @@
     type GoogleMapsScrapeJob
   } from '$lib/services/googleMapsScraperService';
   import { Search, MapPin, Play, Building, Grid, Locate } from 'lucide-svelte';
+  import { m } from '$lib/i18n';
 
   let mode = $state<'keyword' | 'grid'>('keyword');
   let keyword = $state('');
@@ -352,8 +353,8 @@
   <!-- Top Header Bar -->
   <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
     <div class="flex flex-col">
-      <h2 class="text-xl font-bold text-foreground tracking-tight">Google Maps Scraper</h2>
-      <p class="text-xs text-muted-foreground mt-0.5">Extract local business lead data dynamically across regions</p>
+      <h2 class="text-xl font-bold text-foreground tracking-tight">{m.tab_scraper_title()}</h2>
+      <p class="text-xs text-muted-foreground mt-0.5">{m.tab_scraper_subtitle()}</p>
     </div>
     <div class="w-full max-w-xl">
       <GoogleMapsRuntimePanel
@@ -372,7 +373,7 @@
       <Card.Header class="pb-3 border-b border-border">
         <Card.Title class="text-base font-bold flex items-center gap-2">
           <Building class="size-4 text-emerald-600" />
-          Scraper Configuration
+          {m.scraper_search_config()}
         </Card.Title>
       </Card.Header>
       <Card.Content class="p-5 flex flex-col gap-4 text-xs">
@@ -398,10 +399,10 @@
 
         <!-- Search Keyword -->
         <div class="flex flex-col gap-1">
-          <label for="keyword-input" class="font-semibold text-foreground">Search Keyword *</label>
+          <label for="keyword-input" class="font-semibold text-foreground">{m.scraper_keywords_label()} *</label>
           <div class="relative">
             <Search class="size-4 absolute left-3 top-2.5 text-muted-foreground" />
-            <Input id="keyword-input" bind:value={keyword} placeholder="e.g. Cafe, Spa, Dental Clinic..." class="pl-9 text-xs" disabled={isScraping} />
+            <Input id="keyword-input" bind:value={keyword} placeholder={m.scraper_keywords_placeholder()} class="pl-9 text-xs" disabled={isScraping} />
           </div>
         </div>
 

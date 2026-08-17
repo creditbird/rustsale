@@ -2,6 +2,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from 'bun:test';
 import { render, fireEvent, screen, cleanup } from '@testing-library/svelte';
 import ForwardConversationDialog from '../ForwardConversationDialog.svelte';
 import type { ConversationMessage, InboxItem } from '$lib/services/conversationService';
+import { setLocale } from '$lib/i18n';
 
 const mockForwardConversationMessage = mock();
 const mockGetConversationForwardOperation = mock();
@@ -122,6 +123,7 @@ describe('ForwardConversationDialog', () => {
   });
 
   beforeEach(() => {
+    setLocale('en');
     mockForwardConversationMessage.mockReset();
     mockGetConversationForwardOperation.mockReset();
     mockRetryConversationForwardTarget.mockReset();

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { Lead } from '$lib/services/crmService';
   import * as crmService from '$lib/services/crmService';
   import LeadDetails from './LeadDetails.svelte';
@@ -11,6 +12,7 @@
   import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink, Download } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
   import { exportLeadsToCsv } from '$lib/utils/leadsExportCsv';
+  import { m, formatCurrency } from '$lib/i18n';
 
   let { leads = [], entityType = 'leads', onRefresh, onOpenConversation } = $props<{
     leads: Lead[];
@@ -24,8 +26,8 @@
   let selectedRows = $state<Set<number>>(new Set());
 
   // Entity label derivations
-  let entityLabel = $derived(entityType === 'contacts' ? 'contact' : 'lead');
-  let entityLabelPlural = $derived(entityType === 'contacts' ? 'contacts' : 'leads');
+  let entityLabel = $derived(entityType === 'contacts' ? m.leads_entity_contacts() : m.leads_entity_leads());
+  let entityLabelPlural = $derived(entityType === 'contacts' ? m.leads_entity_contacts() : m.leads_entity_leads());
   let entityLabelCap = $derived(entityType === 'contacts' ? 'Contact' : 'Lead');
   let entityLabelPluralCap = $derived(entityType === 'contacts' ? 'Contacts' : 'Leads');
   
@@ -81,9 +83,9 @@
       
       if (filterValueRange && filterValueRange !== 'all') {
         const val = lead.value || 0;
-        if (filterValueRange === 'under_10k' && val >= 10000) return false;
-        if (filterValueRange === '10k_to_50k' && (val < 10000 || val > 50000)) return false;
-        if (filterValueRange === 'above_50k' && val <= 50000) return false;
+        if (filterValueRange === 'under_10m' && val >= 10000000) return false;
+        if (filterValueRange === '10m_to_50m' && (val < 10000000 || val > 50000000)) return false;
+        if (filterValueRange === 'above_50m' && val <= 50000000) return false;
       }
 
       if (filterZaloStatus && filterZaloStatus !== 'all') {
@@ -101,32 +103,28 @@
     })
   );
 
-  $effect(() => {
-    const _s = searchQuery;
-    const _st = filterStatus;
-    const _o = filterOwner;
-    const _v = filterValueRange;
-    const _z = filterZaloStatus;
-    const _or = filterOutreachStatus;
-    const _p = pageSize;
-    currentPage = 1;
-    selectedRows = new Set();
-  });
+  let totalPages = $derived(Math.max(1, Math.ceil(filteredLeads.length / pageSize)));
 
   let paginatedLeads = $derived(
     filteredLeads.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   );
 
-  let isAllFilteredSelected = $derived(
-    filteredLeads.length > 0 && selectedRows.size === filteredLeads.length
-  );
+  // Pagination bounds info
+  let totalEntries = $derived(filteredLeads.length);
+  let showingStart = $derived(totalEntries === 0 ? 0 : (currentPage - 1) * pageSize + 1);
+  let showingEnd = $derived(Math.min(currentPage * pageSize, totalEntries));
 
+  // Selection computed helpers
   let isCurrentPageAllSelected = $derived(
     paginatedLeads.length > 0 && paginatedLeads.every((l: Lead) => l.id !== undefined && selectedRows.has(l.id))
   );
 
   let isCurrentPagePartiallySelected = $derived(
-    !isCurrentPageAllSelected && paginatedLeads.some((l: Lead) => l.id !== undefined && selectedRows.has(l.id))
+    paginatedLeads.some((l: Lead) => l.id !== undefined && selectedRows.has(l.id)) && !isCurrentPageAllSelected
+  );
+
+  let isAllFilteredSelected = $derived(
+    filteredLeads.length > 0 && filteredLeads.every((l: Lead) => l.id !== undefined && selectedRows.has(l.id))
   );
 
   function selectAllFiltered() {
@@ -141,27 +139,54 @@
     selectedRows = new Set(selectedRows);
   }
 
-  let totalPages = $derived(Math.max(1, Math.ceil(filteredLeads.length / pageSize)));
-  let totalEntries = $derived(filteredLeads.length);
-  let showingStart = $derived(totalEntries === 0 ? 0 : (currentPage - 1) * pageSize + 1);
-  let showingEnd = $derived(Math.min(totalEntries, currentPage * pageSize));
+  // Reset pagination to page 1 and clear selected rows on search / filter / pageSize updates
+  let prevFilterKey = $state('');
+  $effect(() => {
+    // Read reactive filter values and page size
+    const currentKey = `${searchQuery}|${filterStatus}|${filterOwner}|${filterValueRange}|${filterZaloStatus}|${filterOutreachStatus}|${pageSize}`;
+    untrack(() => {
+      if (prevFilterKey !== currentKey) {
+        if (prevFilterKey !== '') {
+          currentPage = 1;
+          selectedRows = new Set();
+        }
+        prevFilterKey = currentKey;
+      }
+    });
+  });
+
+  // Clamp currentPage when totalPages changes
+  $effect(() => {
+    if (currentPage > totalPages) {
+      currentPage = Math.max(1, totalPages);
+    }
+  });
 
   async function handleAddLead(e: Event) {
     e.preventDefault();
-    if (!name.trim() || !company.trim() || !email.trim()) return;
+    const trimmedName = name.trim();
+    const trimmedCompany = company.trim();
+    const trimmedEmail = email.trim();
+    const trimmedPhone = phone.trim();
+    const trimmedAbout = about.trim();
+
+    if (!trimmedName || !trimmedCompany || !trimmedEmail) {
+      modalErrorMsg = m.errors_required_field();
+      return;
+    }
 
     saving = true;
     modalErrorMsg = null;
     try {
       await crmService.addLead(
-        name.trim(),
-        company.trim(),
+        trimmedName,
+        trimmedCompany,
         entityType === 'contacts' ? 'Converted' : 'New',
-        value,
-        owner.trim(),
-        email.trim(),
-        phone.trim(),
-        about.trim()
+        Number(value) || 0,
+        owner.trim() || 'Self',
+        trimmedEmail,
+        trimmedPhone,
+        trimmedAbout || null
       );
       name = '';
       company = '';
@@ -198,7 +223,7 @@
     assignErrorMsg = null;
     try {
       await crmService.addLeadsToCategory(Array.from(selectedRows), selectedCategoryId);
-      assignSuccessMsg = 'Successfully assigned leads to category.';
+      assignSuccessMsg = m.common_success();
       setTimeout(() => {
         showCategoryModal = false;
         selectedRows.clear();
@@ -235,14 +260,13 @@
     try {
       const savedPath = await exportLeadsToCsv(leadsToExport, entityType);
       if (!savedPath) {
-        // User cancelled the file save dialog
         return;
       }
       const displayName = savedPath.split(/[\/\\]/).pop() || savedPath;
-      toast.success(`Exported ${leadsToExport.length} ${entityLabelPlural} to ${displayName}`);
+      toast.success(m.leads_export_success({ count: leadsToExport.length, entity: entityLabelPlural, destination: displayName }));
     } catch (err) {
       console.error('Failed to export leads', err);
-      toast.error('Failed to export data');
+      toast.error(m.leads_export_failed());
     }
   }
 </script>
@@ -252,26 +276,26 @@
   <div class="flex items-center justify-between">
     <div>
       <h2 class="text-xl font-bold text-foreground tracking-tight">
-        {entityType === 'contacts' ? 'Converted Contacts' : 'Leads & Contacts'}
+        {entityType === 'contacts' ? m.tab_contacts_title() : m.leads_title()}
       </h2>
       <p class="text-xs text-muted-foreground mt-0.5">
-        Click any row to view {entityLabel} profile & timeline, or click checkbox to select
+        {entityType === 'contacts' ? m.tab_contacts_subtitle() : m.tab_leads_subtitle()}
       </p>
     </div>
     <div class="flex items-center gap-2">
       {#if selectedRows.size > 0}
         <Button variant="outline" size="sm" onclick={handleExportSelected} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400">
           <Download class="size-4" />
-          Export ({selectedRows.size})
+          {m.leads_export_csv({ count: selectedRows.size })}
         </Button>
         <Button variant="outline" size="sm" onclick={openCategoryModal} class="gap-2 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400">
           <FolderPlus class="size-4" />
-          Assign to Category ({selectedRows.size})
+          {m.leads_assign_category({ count: selectedRows.size })}
         </Button>
       {/if}
       <Button size="sm" onclick={() => { showAddModal = true; modalErrorMsg = null; }} class="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
         <Plus class="size-4" />
-        Add {entityLabelCap}
+        {entityType === 'contacts' ? m.leads_add_contact() : m.leads_new_lead()}
       </Button>
     </div>
   </div>
@@ -283,7 +307,7 @@
       <Search class="size-4 absolute left-3 top-2.5 text-muted-foreground" />
       <Input
         type="text"
-        placeholder="Search name, company, email, owner..."
+        placeholder={m.leads_search_placeholder()}
         bind:value={searchQuery}
         class="pl-9 text-xs h-9"
       />
@@ -294,10 +318,10 @@
       {#if uniqueStatuses.length > 1}
         <Select.Root type="single" bind:value={filterStatus}>
           <Select.Trigger class="h-9 text-xs min-w-[120px]">
-            {filterStatus === 'all' || !filterStatus ? 'All Statuses' : filterStatus}
+            {filterStatus === 'all' || !filterStatus ? m.leads_filter_status() : filterStatus}
           </Select.Trigger>
           <Select.Content>
-            <Select.Item value="all">All Statuses</Select.Item>
+            <Select.Item value="all">{m.leads_filter_status()}</Select.Item>
             {#each uniqueStatuses as status (status)}
               <Select.Item value={status}>{status}</Select.Item>
             {/each}
@@ -307,10 +331,10 @@
 
       <Select.Root type="single" bind:value={filterOwner}>
         <Select.Trigger class="h-9 text-xs min-w-[120px]">
-          {filterOwner === 'all' || !filterOwner ? 'All Owners' : filterOwner}
+          {filterOwner === 'all' || !filterOwner ? m.leads_filter_all_owners() : filterOwner}
         </Select.Trigger>
         <Select.Content>
-          <Select.Item value="all">All Owners</Select.Item>
+          <Select.Item value="all">{m.leads_filter_all_owners()}</Select.Item>
           {#each uniqueOwners as owner (owner)}
             <Select.Item value={owner}>{owner}</Select.Item>
           {/each}
@@ -318,26 +342,26 @@
       </Select.Root>
 
       <Select.Root type="single" bind:value={filterValueRange}>
-        <Select.Trigger class="h-9 text-xs min-w-[120px]">
-          {filterValueRange === 'under_10k' ? 'Under $10k' : filterValueRange === '10k_to_50k' ? '$10k - $50k' : filterValueRange === 'above_50k' ? 'Above $50k' : 'All Values'}
+        <Select.Trigger class="h-9 text-xs min-w-[130px]">
+          {filterValueRange === 'under_10m' ? m.leads_filter_under_10m() : filterValueRange === '10m_to_50m' ? m.leads_filter_10m_50m() : filterValueRange === 'above_50m' ? m.leads_filter_above_50m() : m.leads_filter_all_values()}
         </Select.Trigger>
         <Select.Content>
-          <Select.Item value="all">All Values</Select.Item>
-          <Select.Item value="under_10k">Under $10k</Select.Item>
-          <Select.Item value="10k_to_50k">$10k - $50k</Select.Item>
-          <Select.Item value="above_50k">Above $50k</Select.Item>
+          <Select.Item value="all">{m.leads_filter_all_values()}</Select.Item>
+          <Select.Item value="under_10m">{m.leads_filter_under_10m()}</Select.Item>
+          <Select.Item value="10m_to_50m">{m.leads_filter_10m_50m()}</Select.Item>
+          <Select.Item value="above_50m">{m.leads_filter_above_50m()}</Select.Item>
         </Select.Content>
       </Select.Root>
 
       <Select.Root type="single" bind:value={filterZaloStatus}>
         <Select.Trigger class="h-9 text-xs min-w-[130px]">
-          {filterZaloStatus === 'verified' ? 'Verified Zalo' : filterZaloStatus === 'no_zalo' ? 'No Zalo' : filterZaloStatus === 'unchecked' ? 'Unchecked' : 'All Zalo Statuses'}
+          {filterZaloStatus === 'verified' ? m.leads_filter_zalo_verified() : filterZaloStatus === 'no_zalo' ? m.leads_filter_zalo_none() : filterZaloStatus === 'unchecked' ? m.leads_filter_zalo_unchecked() : m.leads_filter_zalo_all()}
         </Select.Trigger>
         <Select.Content>
-          <Select.Item value="all">All Zalo Statuses</Select.Item>
-          <Select.Item value="verified">Verified Zalo</Select.Item>
-          <Select.Item value="no_zalo">No Zalo</Select.Item>
-          <Select.Item value="unchecked">Unchecked</Select.Item>
+          <Select.Item value="all">{m.leads_filter_zalo_all()}</Select.Item>
+          <Select.Item value="verified">{m.leads_filter_zalo_verified()}</Select.Item>
+          <Select.Item value="no_zalo">{m.leads_filter_zalo_none()}</Select.Item>
+          <Select.Item value="unchecked">{m.leads_filter_zalo_unchecked()}</Select.Item>
         </Select.Content>
       </Select.Root>
 
@@ -348,7 +372,7 @@
           onclick={() => { searchQuery = ''; filterStatus = 'all'; filterOwner = 'all'; filterValueRange = 'all'; filterZaloStatus = 'all'; filterOutreachStatus = 'all'; }}
           class="h-9 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
         >
-          <X class="size-3.5" /> Clear
+          <X class="size-3.5" /> {m.common_clear_filters()}
         </Button>
       {/if}
     </div>
@@ -360,9 +384,9 @@
       <div class="flex items-center gap-2">
         <span>
           {#if isAllFilteredSelected}
-            All <strong>{filteredLeads.length}</strong> {entityLabelPlural} matching this search/filter are selected.
+            {m.leads_all_selected_matching({ count: filteredLeads.length, entity: entityLabelPlural })}
           {:else}
-            Selected <strong>{selectedRows.size}</strong> {entityLabel}(s).
+            {m.leads_selected_count({ count: selectedRows.size, entity: entityLabel })}
           {/if}
         </span>
         {#if !isAllFilteredSelected}
@@ -371,7 +395,7 @@
             onclick={selectAllFiltered}
             class="underline font-bold hover:text-emerald-800 dark:hover:text-emerald-100 transition-colors ml-1 cursor-pointer"
           >
-            Select all {filteredLeads.length} {entityLabelPlural} matching search
+            {m.leads_select_all_matching({ count: filteredLeads.length, entity: entityLabelPlural })}
           </button>
         {/if}
       </div>
@@ -380,7 +404,7 @@
         onclick={clearSelection}
         class="text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
       >
-        Clear selection
+        {m.leads_clear_selection()}
       </button>
     </div>
   {/if}
@@ -400,21 +424,21 @@
               />
             </div>
           </Table.Head>
-          <Table.Head>Name</Table.Head>
-          <Table.Head>Company</Table.Head>
-          <Table.Head>Phone</Table.Head>
-          <Table.Head>Email</Table.Head>
-          <Table.Head>Zalo</Table.Head>
-          <Table.Head>Status</Table.Head>
-          <Table.Head class="text-right">Value</Table.Head>
-          <Table.Head>Owner</Table.Head>
+          <Table.Head>{m.leads_table_name()}</Table.Head>
+          <Table.Head>{m.leads_table_company()}</Table.Head>
+          <Table.Head>{m.leads_table_phone()}</Table.Head>
+          <Table.Head>{m.leads_table_email()}</Table.Head>
+          <Table.Head>{m.leads_table_zalo()}</Table.Head>
+          <Table.Head>{m.common_status()}</Table.Head>
+          <Table.Head class="text-right">{m.leads_table_value()}</Table.Head>
+          <Table.Head>{m.leads_table_owner()}</Table.Head>
         </Table.Row>
       </Table.Header>
       <Table.Body>
         {#if paginatedLeads.length === 0}
           <Table.Row>
             <Table.Cell colspan={9} class="text-center py-8 text-xs text-muted-foreground">
-              No matching {entityLabel} records found.
+              {m.common_no_data()}
             </Table.Cell>
           </Table.Row>
         {:else}
@@ -446,11 +470,11 @@
               <Table.Cell>
                 {#if lead.has_zalo === 1}
                   <Badge variant="outline" class="gap-1 border-sky-500/30 text-sky-600 bg-sky-500/10 text-[10px] py-0">
-                    <CheckCircle2 class="size-3 text-sky-500" /> Verified
+                    <CheckCircle2 class="size-3 text-sky-500" /> {m.leads_filter_zalo_verified()}
                   </Badge>
                 {:else if lead.has_zalo === 0}
                   <Badge variant="outline" class="gap-1 border-slate-300 text-slate-500 bg-slate-100 text-[10px] py-0">
-                    <XCircle class="size-3 text-slate-400" /> No Zalo
+                    <XCircle class="size-3 text-slate-400" /> {m.leads_filter_zalo_none()}
                   </Badge>
                 {:else}
                   <span class="text-xs text-muted-foreground/50">—</span>
@@ -462,7 +486,7 @@
                 </Badge>
               </Table.Cell>
               <Table.Cell class="text-right font-bold text-xs text-foreground">
-                ${(lead.value || 0).toLocaleString()}
+                {formatCurrency(lead.value, 'VND')}
               </Table.Cell>
               <Table.Cell class="text-xs text-muted-foreground">{lead.owner || '—'}</Table.Cell>
             </Table.Row>
@@ -475,7 +499,7 @@
   <!-- Pagination Controls -->
   {#if totalEntries > 0}
     <div class="flex items-center justify-between px-2 py-1 text-xs text-muted-foreground">
-      <span>Showing {showingStart} to {showingEnd} of {totalEntries} entries</span>
+      <span>{m.common_showing({ start: showingStart, end: showingEnd, total: totalEntries })}</span>
       
       <div class="flex items-center gap-2">
         <Select.Root
@@ -525,7 +549,7 @@
   <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg flex flex-col gap-4">
       <div class="flex items-center justify-between border-b border-border pb-3">
-        <h3 class="text-base font-bold text-foreground">Create New {entityLabelCap}</h3>
+        <h3 class="text-base font-bold text-foreground">{m.leads_modal_add_title({ entity: entityLabelCap })}</h3>
         <Button variant="ghost" size="sm" onclick={() => showAddModal = false} class="size-8 p-0">
           <X class="size-4" />
         </Button>
@@ -540,46 +564,52 @@
       <form onsubmit={handleAddLead} class="flex flex-col gap-4 text-xs">
         <div class="grid grid-cols-2 gap-3">
           <div class="flex flex-col gap-1">
-            <label for="lead-name" class="font-medium text-foreground">Name *</label>
+            <label for="lead-name" class="font-medium text-foreground">
+              {m.leads_modal_name_label()} <span class="text-destructive">*</span>
+            </label>
             <Input id="lead-name" bind:value={name} required placeholder="Full Name" />
           </div>
           <div class="flex flex-col gap-1">
-            <label for="lead-company" class="font-medium text-foreground">Company *</label>
+            <label for="lead-company" class="font-medium text-foreground">
+              {m.leads_modal_company_label()} <span class="text-destructive">*</span>
+            </label>
             <Input id="lead-company" bind:value={company} required placeholder="Company Name" />
           </div>
           <div class="flex flex-col gap-1">
-            <label for="lead-email" class="font-medium text-foreground">Email *</label>
+            <label for="lead-email" class="font-medium text-foreground">
+              {m.leads_modal_email_label()} <span class="text-destructive">*</span>
+            </label>
             <Input id="lead-email" type="email" bind:value={email} required placeholder="email@example.com" />
           </div>
           <div class="flex flex-col gap-1">
-            <label for="lead-phone" class="font-medium text-foreground">Phone</label>
+            <label for="lead-phone" class="font-medium text-foreground">{m.leads_modal_phone_label()}</label>
             <Input id="lead-phone" bind:value={phone} placeholder="Phone number" />
           </div>
           <div class="flex flex-col gap-1">
-            <label for="lead-value" class="font-medium text-foreground">Value ($)</label>
+            <label for="lead-value" class="font-medium text-foreground">{m.leads_modal_value_label()}</label>
             <Input id="lead-value" type="number" bind:value={value} min="0" />
           </div>
           <div class="flex flex-col gap-1">
-            <label for="lead-owner" class="font-medium text-foreground">Owner</label>
+            <label for="lead-owner" class="font-medium text-foreground">{m.leads_modal_owner_label()}</label>
             <Input id="lead-owner" bind:value={owner} placeholder="Owner Name" />
           </div>
         </div>
 
         <div class="flex flex-col gap-1">
-          <label for="lead-about" class="font-medium text-foreground">Description</label>
+          <label for="lead-about" class="font-medium text-foreground">{m.leads_modal_about_label()}</label>
           <textarea
             id="lead-about"
             bind:value={about}
             rows="3"
-            placeholder="{entityLabelCap} background & details..."
+            placeholder={`${entityLabelCap} background & details...`}
             class="w-full p-2.5 rounded-md border border-input bg-background text-xs text-foreground focus:outline-hidden"
           ></textarea>
         </div>
 
         <div class="flex items-center justify-end gap-2 pt-2 border-t border-border">
-          <Button type="button" variant="outline" size="sm" onclick={() => showAddModal = false}>Cancel</Button>
+          <Button type="button" variant="outline" size="sm" onclick={() => showAddModal = false}>{m.common_cancel()}</Button>
           <Button type="submit" size="sm" disabled={saving}>
-            {saving ? 'Saving...' : `Save ${entityLabelCap}`}
+            {saving ? m.common_loading() : m.leads_modal_save_btn({ entity: entityLabelCap })}
           </Button>
         </div>
       </form>
@@ -592,7 +622,7 @@
   <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-lg flex flex-col gap-4">
       <div class="flex items-center justify-between border-b border-border pb-3">
-        <h3 class="text-sm font-bold text-foreground">Assign to Category</h3>
+        <h3 class="text-sm font-bold text-foreground">{m.leads_modal_assign_title({ count: selectedRows.size, entity: entityLabelCap })}</h3>
         <Button variant="ghost" size="sm" onclick={() => showCategoryModal = false} class="size-7 p-0">
           <X class="size-4" />
         </Button>
@@ -605,14 +635,14 @@
       {/if}
 
       <div class="flex flex-col gap-3 text-xs">
-        <p class="text-muted-foreground">Assign {selectedRows.size} selected {entityLabel}(s) to:</p>
+        <p class="text-muted-foreground">{m.leads_modal_assign_title({ count: selectedRows.size, entity: entityLabel })}</p>
         <Select.Root
           type="single"
           value={selectedCategoryId != null ? String(selectedCategoryId) : ""}
           onValueChange={(val) => selectedCategoryId = val ? Number(val) : null}
         >
           <Select.Trigger class="w-full h-9 text-xs">
-            {categories.find(c => String(c.id) === String(selectedCategoryId))?.name || "-- Select Category --"}
+            {categories.find(c => String(c.id) === String(selectedCategoryId))?.name || m.leads_modal_select_category()}
           </Select.Trigger>
           <Select.Content>
             {#each categories as cat (cat.id)}
@@ -623,9 +653,9 @@
       </div>
 
       <div class="flex items-center justify-end gap-2 pt-2">
-        <Button variant="outline" size="sm" onclick={() => showCategoryModal = false} disabled={assigningCategory}>Cancel</Button>
+        <Button variant="outline" size="sm" onclick={() => showCategoryModal = false} disabled={assigningCategory}>{m.common_cancel()}</Button>
         <Button size="sm" onclick={handleAssignCategory} disabled={assigningCategory || categories.length === 0}>
-          {assigningCategory ? 'Assigning...' : `Assign ${entityLabelPluralCap}`}
+          {assigningCategory ? m.common_loading() : m.leads_modal_assign_btn({ entity: entityLabel })}
         </Button>
       </div>
     </div>

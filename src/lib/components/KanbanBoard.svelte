@@ -12,6 +12,7 @@
     Building, DollarSign, Search, UserCheck, TrendingUp, Layers, CheckCircle2,
     ChevronDown, User
   } from 'lucide-svelte';
+  import { m, formatCurrency, formatCompactCurrency, formatDate } from '$lib/i18n';
 
   let deals = $state<Deal[]>([]);
   let leads = $state<Lead[]>([]);
@@ -29,22 +30,22 @@
   let isLeadDropdownOpen = $state(false);
 
   let newTitle = $state('');
-  let newValue = $state(10000);
+  let newValue = $state(10000000);
   let newStage = $state('Prospecting');
   let creatingDeal = $state(false);
   let createErrorMsg = $state<string | null>(null);
 
   const stageConfig: Record<string, { label: string; color: string; bgLight: string; border: string; barColor: string; prob: string }> = {
-    'Prospecting': { label: 'Prospecting', color: 'text-blue-500', bgLight: 'bg-blue-500/10', border: 'border-blue-500/30', barColor: 'bg-blue-500', prob: '20%' },
-    'Demo': { label: 'Demo / Pitch', color: 'text-purple-500', bgLight: 'bg-purple-500/10', border: 'border-purple-500/30', barColor: 'bg-purple-500', prob: '40%' },
-    'Proposal': { label: 'Proposal Sent', color: 'text-amber-500', bgLight: 'bg-amber-500/10', border: 'border-amber-500/30', barColor: 'bg-amber-500', prob: '60%' },
-    'Negotiation': { label: 'Negotiation', color: 'text-indigo-500', bgLight: 'bg-indigo-500/10', border: 'border-indigo-500/30', barColor: 'bg-indigo-500', prob: '80%' },
-    'Won': { label: 'Closed Won', color: 'text-emerald-500', bgLight: 'bg-emerald-500/10', border: 'border-emerald-500/30', barColor: 'bg-emerald-500', prob: '100%' }
+    get 'Prospecting'() { return { label: m.pipeline_stage_prospecting(), color: 'text-blue-500', bgLight: 'bg-blue-500/10', border: 'border-blue-500/30', barColor: 'bg-blue-500', prob: '20%' }; },
+    get 'Demo'() { return { label: m.pipeline_stage_demo(), color: 'text-purple-500', bgLight: 'bg-purple-500/10', border: 'border-purple-500/30', barColor: 'bg-purple-500', prob: '40%' }; },
+    get 'Proposal'() { return { label: m.pipeline_stage_proposal(), color: 'text-amber-500', bgLight: 'bg-amber-500/10', border: 'border-amber-500/30', barColor: 'bg-amber-500', prob: '60%' }; },
+    get 'Negotiation'() { return { label: m.pipeline_stage_negotiation(), color: 'text-indigo-500', bgLight: 'bg-indigo-500/10', border: 'border-indigo-500/30', barColor: 'bg-indigo-500', prob: '80%' }; },
+    get 'Won'() { return { label: m.pipeline_stage_won(), color: 'text-emerald-500', bgLight: 'bg-emerald-500/10', border: 'border-emerald-500/30', barColor: 'bg-emerald-500', prob: '100%' }; }
   };
 
   const stages = ['Prospecting', 'Demo', 'Proposal', 'Negotiation', 'Won'];
 
-  const presetValues = [5000, 10000, 25000, 50000, 100000];
+  const presetValues = [5000000, 10000000, 25000000, 50000000, 100000000];
 
   async function loadDeals() {
     try {
@@ -79,7 +80,7 @@
       newTitle = '';
     }
 
-    newValue = 10000;
+    newValue = 10000000;
     showCreateModal = true;
   }
 
@@ -147,13 +148,13 @@
       const createdTitle = newTitle.trim();
       await crmService.createDeal(selectedLead.id, createdTitle, Number(newValue) || 0, newStage);
       showCreateModal = false;
-      toast.success('Deal created successfully!', {
+      toast.success(m.kanban_deal_created_toast(), {
         description: `Created opportunity "${createdTitle}" for ${selectedLead.name}.`
       });
       await loadDeals();
     } catch (err) {
       createErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Failed to create deal', {
+      toast.error(m.common_error(), {
         description: createErrorMsg
       });
     } finally {
@@ -179,13 +180,13 @@
       await crmService.deleteDeal(dealToDelete.id);
       showDeleteModal = false;
       dealToDelete = null;
-      toast.success('Deal deleted successfully!', {
+      toast.success(m.kanban_deal_deleted_toast(), {
         description: `Deleted opportunity "${deletedTitle}".`
       });
       await loadDeals();
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Failed to delete deal', {
+      toast.error(m.common_error(), {
         description: errorMsg
       });
     } finally {
@@ -252,8 +253,8 @@
         <DollarSign class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Total Pipeline Value</p>
-        <p class="text-base font-extrabold text-foreground tracking-tight">${totalPipelineValue.toLocaleString()}</p>
+        <p class="text-[11px] text-muted-foreground font-medium">{m.pipeline_total_value()}</p>
+        <p class="text-base font-extrabold text-foreground tracking-tight">{formatCurrency(totalPipelineValue, 'VND')}</p>
       </div>
     </div>
 
@@ -262,8 +263,8 @@
         <Layers class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Total Deals</p>
-        <p class="text-base font-extrabold text-foreground tracking-tight">{deals.length} <span class="text-xs font-normal text-muted-foreground">deals</span></p>
+        <p class="text-[11px] text-muted-foreground font-medium">{m.dashboard_deals_overview()}</p>
+        <p class="text-base font-extrabold text-foreground tracking-tight">{m.pipeline_deals_count({ count: deals.length })}</p>
       </div>
     </div>
 
@@ -272,8 +273,8 @@
         <TrendingUp class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Won Deals Revenue</p>
-        <p class="text-base font-extrabold text-emerald-600 tracking-tight">${wonDealsValue.toLocaleString()}</p>
+        <p class="text-[11px] text-muted-foreground font-medium">{m.pipeline_won_value()}</p>
+        <p class="text-base font-extrabold text-emerald-600 tracking-tight">{formatCurrency(wonDealsValue, 'VND')}</p>
       </div>
     </div>
 
@@ -282,8 +283,8 @@
         <UserCheck class="w-4 h-4" />
       </div>
       <div>
-        <p class="text-[11px] text-muted-foreground font-medium">Average Deal Value</p>
-        <p class="text-base font-extrabold text-foreground tracking-tight">${Math.round(avgDealSize).toLocaleString()}</p>
+        <p class="text-[11px] text-muted-foreground font-medium">{m.pipeline_avg_deal()}</p>
+        <p class="text-base font-extrabold text-foreground tracking-tight">{formatCurrency(Math.round(avgDealSize), 'VND')}</p>
       </div>
     </div>
   </div>
@@ -294,7 +295,7 @@
       <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
       <Input
         bind:value={searchQuery}
-        placeholder="Search deals by name, contact, company..."
+        placeholder={m.kanban_search_placeholder()}
         class="pl-9 h-9 text-xs bg-background"
       />
     </div>
@@ -302,7 +303,7 @@
     <div class="flex items-center gap-2 self-end sm:self-auto">
       <Button onclick={() => openCreateModal('Prospecting')} size="sm" class="gap-1.5 font-semibold shadow-xs bg-primary hover:bg-primary/90 text-primary-foreground">
         <Plus class="w-4 h-4" />
-        <span>Add New Deal</span>
+        <span>{m.kanban_add_deal()}</span>
       </Button>
     </div>
   </div>
@@ -328,7 +329,7 @@
         ondragleave={(e) => handleDragLeave(e, stage)}
         ondrop={(e) => handleDrop(e, stage)}
         role="region"
-        aria-label="{stage} stage column"
+        aria-label="{cfg.label} stage column"
       >
         <!-- Column Top Indicator Bar -->
         <div class="h-1.5 w-full {cfg.barColor}"></div>
@@ -337,7 +338,7 @@
         <div class="px-3 pt-1 pb-2 flex flex-col gap-1 border-b border-border/60">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-1.5">
-              <span class="text-xs font-bold uppercase tracking-wider text-foreground">{stage}</span>
+              <span class="text-xs font-bold uppercase tracking-wider text-foreground">{cfg.label}</span>
               <span class="text-[10px] font-semibold text-muted-foreground">({cfg.prob})</span>
             </div>
             <div class="flex items-center gap-1">
@@ -346,14 +347,14 @@
                 type="button"
                 onclick={() => openCreateModal(stage)}
                 class="p-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                title="Create new deal in {stage}"
+                title="{m.kanban_add_deal()} - {cfg.label}"
               >
                 <Plus class="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
           <div class="flex items-center justify-between mt-0.5">
-            <span class="text-xs font-extrabold text-emerald-600">${totalValue.toLocaleString()}</span>
+            <span class="text-xs font-extrabold text-emerald-600">{formatCurrency(totalValue, 'VND')}</span>
           </div>
         </div>
 
@@ -362,7 +363,7 @@
           {#if stageDeals.length === 0}
             <div class="h-32 border border-dashed border-border/70 rounded-xl flex flex-col items-center justify-center text-muted-foreground/60 p-4 text-center bg-muted/20">
               <Inbox class="w-6 h-6 stroke-1 mb-1 text-muted-foreground/40" />
-              <span class="text-[11px] italic font-medium">Drag and drop deals here</span>
+              <span class="text-[11px] font-medium text-muted-foreground">{m.kanban_empty_column()}</span>
             </div>
           {:else}
             {#each stageDeals as deal}
@@ -396,7 +397,7 @@
                         type="button"
                         onclick={() => promptDeleteDeal(deal.id!, deal.title)}
                         class="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all rounded-md"
-                        title="Delete this deal"
+                        title={m.common_delete()}
                       >
                         <Trash2 class="w-3.5 h-3.5" />
                       </button>
@@ -406,12 +407,12 @@
 
                   <div class="flex items-center justify-between pt-2 border-t border-border/40 text-[11px]">
                     <span class="font-extrabold text-emerald-600 text-xs flex items-center gap-0.5">
-                      ${deal.value.toLocaleString()}
+                      {formatCurrency(deal.value, 'VND')}
                     </span>
                     {#if deal.created_at}
                       <span class="text-muted-foreground text-[10px] flex items-center gap-1 font-medium">
                         <Calendar class="w-3 h-3 text-muted-foreground/60" />
-                        {new Date(deal.created_at).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
+                        {formatDate(deal.created_at, { month: 'numeric', day: 'numeric' })}
                       </span>
                     {/if}
                   </div>
@@ -437,14 +438,15 @@
             <Plus class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-base text-foreground">Create New Sales Opportunity</h3>
-            <p class="text-xs text-muted-foreground">Add a new deal to the CRM pipeline</p>
+            <h3 class="font-bold text-base text-foreground">{m.kanban_create_deal_title()}</h3>
+            <p class="text-xs text-muted-foreground">{m.kanban_create_deal_subtitle()}</p>
           </div>
         </div>
         <button
           type="button"
           onclick={() => showCreateModal = false}
           class="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-accent transition-colors"
+          aria-label={m.common_close()}
         >
           <X class="w-4 h-4" />
         </button>
@@ -462,7 +464,7 @@
         <div class="space-y-1.5 relative">
           <label for="lead-search-input" class="text-xs font-bold text-foreground flex items-center gap-1.5">
             <User class="w-3.5 h-3.5 text-primary" />
-            1. Select Associated Lead <span class="text-destructive">*</span>
+            {m.kanban_select_lead_label()} <span class="text-destructive">*</span>
           </label>
 
           <div class="relative">
@@ -473,7 +475,7 @@
               bind:value={leadSearchQuery}
               onfocus={() => isLeadDropdownOpen = true}
               oninput={() => isLeadDropdownOpen = true}
-              placeholder="Search by contact name, company, phone..."
+              placeholder={m.kanban_lead_search_placeholder()}
               class="w-full h-10 pl-9 pr-8 rounded-xl border border-input bg-background text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 font-medium"
             />
             <button
@@ -490,7 +492,7 @@
             <div class="absolute left-0 right-0 top-full mt-1 z-20 max-h-48 overflow-y-auto bg-popover border border-border rounded-xl shadow-xl py-1 divide-y divide-border/40">
               {#if filteredModalLeads.length === 0}
                 <div class="px-4 py-3 text-xs text-muted-foreground text-center">
-                  No leads found matching query
+                  {m.kanban_no_leads_found()}
                 </div>
               {:else}
                 {#each filteredModalLeads as lead}
@@ -526,15 +528,15 @@
               </div>
             </div>
             <div class="flex items-center gap-2">
-              <Badge variant="outline" class="text-[10px] bg-background">Selected</Badge>
+              <Badge variant="outline" class="text-[10px] bg-background">{m.common_info()}</Badge>
               <button
                 type="button"
                 onclick={clearSelectedLead}
                 class="px-2 py-1 rounded-lg bg-destructive/10 hover:bg-destructive/20 text-destructive transition-colors text-[11px] font-semibold flex items-center gap-1 border border-destructive/20"
-                title="Deselect this lead"
+                title={m.kanban_deselect_lead()}
               >
                 <X class="w-3.5 h-3.5" />
-                <span>Deselect</span>
+                <span>{m.kanban_deselect_lead()}</span>
               </button>
             </div>
           </div>
@@ -544,12 +546,12 @@
         <div class="space-y-1.5">
           <label for="deal-title-input" class="text-xs font-bold text-foreground flex items-center gap-1.5">
             <Building class="w-3.5 h-3.5 text-primary" />
-            2. Deal Title <span class="text-destructive">*</span>
+            {m.kanban_deal_title_label()} <span class="text-destructive">*</span>
           </label>
           <Input
             id="deal-title-input"
             bind:value={newTitle}
-            placeholder="e.g. CRM Software Implementation Contract"
+            placeholder={m.kanban_deal_title_placeholder()}
             class="h-10 text-xs rounded-xl"
             required
           />
@@ -560,20 +562,20 @@
           <div class="space-y-1.5">
             <label for="deal-value-input" class="text-xs font-bold text-foreground flex items-center gap-1.5">
               <DollarSign class="w-3.5 h-3.5 text-emerald-600" />
-              3. Deal Value ($) <span class="text-destructive">*</span>
+              {m.kanban_deal_value_label()} (₫) <span class="text-destructive">*</span>
             </label>
             <Input
               id="deal-value-input"
               type="number"
               bind:value={newValue}
-              placeholder="10000"
+              placeholder="10000000"
               class="h-10 text-xs rounded-xl font-bold text-emerald-600"
               min="0"
-              step="500"
+              step="500000"
               required
             />
 
-            <!-- Quick Value Presets -->
+            <!-- Quick Value Presets (VND) -->
             <div class="flex items-center gap-1 pt-1 flex-wrap">
               {#each presetValues as preset}
                 <button
@@ -581,7 +583,7 @@
                   onclick={() => newValue = preset}
                   class="text-[10px] font-semibold px-2 py-0.5 rounded-lg border border-border hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-600 transition-colors"
                 >
-                  ${preset >= 1000 ? `${preset/1000}k` : preset}
+                  {formatCompactCurrency(preset, 'VND')}
                 </button>
               {/each}
             </div>
@@ -590,7 +592,7 @@
           <div class="space-y-1.5">
             <label for="deal-stage-select" class="text-xs font-bold text-foreground flex items-center gap-1.5">
               <Layers class="w-3.5 h-3.5 text-primary" />
-              4. Initial Stage
+              {m.kanban_initial_stage_label()}
             </label>
             <select
               id="deal-stage-select"
@@ -614,7 +616,7 @@
             disabled={creatingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Cancel
+            {m.common_cancel()}
           </Button>
           <Button
             type="submit"
@@ -622,7 +624,7 @@
             disabled={creatingDeal || !selectedLead}
             class="rounded-xl h-10 px-6 text-xs font-bold bg-primary text-primary-foreground hover:bg-primary/90 shadow-md"
           >
-            {creatingDeal ? 'Creating...' : 'Create Deal'}
+            {creatingDeal ? m.kanban_creating_btn() : m.kanban_create_btn()}
           </Button>
         </div>
       </form>
@@ -640,9 +642,9 @@
         </div>
 
         <div class="space-y-1.5">
-          <h3 class="font-bold text-base text-foreground">Confirm Delete Deal</h3>
+          <h3 class="font-bold text-base text-foreground">{m.kanban_delete_deal_title()}</h3>
           <p class="text-xs text-muted-foreground leading-relaxed">
-            Are you sure you want to delete the opportunity <span class="font-bold text-foreground">"{dealToDelete.title}"</span>? This action cannot be undone.
+            {m.kanban_delete_deal_prompt({ title: dealToDelete.title })}
           </p>
         </div>
 
@@ -655,7 +657,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Cancel
+            {m.common_cancel()}
           </Button>
           <Button
             type="button"
@@ -665,7 +667,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-6 text-xs font-bold shadow-md bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {deletingDeal ? 'Deleting...' : 'Delete Deal'}
+            {deletingDeal ? m.kanban_deleting_btn() : m.kanban_delete_btn()}
           </Button>
         </div>
       </div>

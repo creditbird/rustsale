@@ -38,6 +38,10 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
     {
         let tx = conn.transaction()?;
 
+        // ARCHITECTURAL INVARIANT:
+        // All numeric monetary amounts in the database (`leads.value`, `deals.value`) are canonical
+        // Vietnamese Đồng (VND). Raw values are persisted directly as `f64` / `REAL` without
+        // ad-hoc FX conversion or multi-currency mutations.
         tx.execute(
             "CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -396,6 +400,22 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS app_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Monetary metadata versioning:
+        // Canonical monetary storage is VND (VND_v1).
+        // Ensure currency_semantics metadata is recorded as VND_v1 without mutating existing rows.
+        tx.execute(
+            "INSERT OR IGNORE INTO app_metadata (key, value) VALUES ('currency_semantics', 'VND_v1')",
+            [],
+        )?;
+
         tx.commit()?;
     }
 
@@ -409,15 +429,15 @@ pub fn seed_data(conn: &mut Connection) -> Result<()> {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached) VALUES 
-             ('Sarah Harrington', 'Acme Corp', 'Qualified', 45000.0, '2026-07-15T10:00:00Z', 'Alex Rivera', 'sarah@acme.com', '+12345678', 'CTO of Acme Corp', '123 Main St, New York', 1, 0),
-             ('Jordan Smith', 'CloudSync', 'New', 15000.0, '2026-07-16T15:30:00Z', 'Jordan Smith', 'jordan@cloudsync.com', '+87654321', 'Procurement lead', '456 Oak Ave, Boston', NULL, 0),
-             ('lele', 'Zalo Corp', 'Qualified', 20000.0, '2026-07-17T12:00:00Z', 'Alex Rivera', 'lele@example.com', '+84987654321', 'Zalo developer', '789 Pine Rd, Seattle', 1, 1)",
+             ('Sarah Harrington', 'Acme Corp', 'Qualified', 45000000.0, '2026-07-15T10:00:00Z', 'Alex Rivera', 'sarah@acme.com', '+12345678', 'CTO of Acme Corp', '123 Main St, New York', 1, 0),
+             ('Jordan Smith', 'CloudSync', 'New', 15000000.0, '2026-07-16T15:30:00Z', 'Jordan Smith', 'jordan@cloudsync.com', '+87654321', 'Procurement lead', '456 Oak Ave, Boston', NULL, 0),
+             ('lele', 'Zalo Corp', 'Qualified', 20000000.0, '2026-07-17T12:00:00Z', 'Alex Rivera', 'lele@example.com', '+84987654321', 'Zalo developer', '789 Pine Rd, Seattle', 1, 1)",
             [],
         )?;
         tx.execute(
             "INSERT INTO deals (lead_id, title, value, stage, created_at) VALUES 
-             (1, 'Acme Platform Expansion', 45000.0, 'Proposal', '2026-07-15T10:00:00Z'),
-             (2, 'CloudSync Core Migration', 15000.0, 'Prospecting', '2026-07-16T15:30:00Z')",
+             (1, 'Acme Platform Expansion', 45000000.0, 'Proposal', '2026-07-15T10:00:00Z'),
+             (2, 'CloudSync Core Migration', 15000000.0, 'Prospecting', '2026-07-16T15:30:00Z')",
             [],
         )?;
         tx.execute(

@@ -11,6 +11,7 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import * as Select from '$lib/components/ui/select';
   import { Folder, Plus, Trash2, Search, FolderMinus, AlertCircle, CheckCircle2 } from 'lucide-svelte';
+  import { m } from '$lib/i18n';
 
   let { activeTab = 'categories' }: { activeTab?: string } = $props();
 
@@ -294,20 +295,20 @@
     <!-- LEFT PANEL: Category Sidebar -->
     <aside class="w-72 rounded-xl border border-border bg-card flex flex-col shrink-0 overflow-hidden shadow-2xs">
       <div class="h-12 px-4 border-b border-border flex items-center justify-between font-bold text-xs uppercase tracking-wider text-foreground">
-        <span>Categories</span>
+        <span>{m.nav_categories()}</span>
         <Badge variant="secondary" class="text-[10px]">{categories.length}</Badge>
       </div>
 
+      <!-- Add Category Input -->
       <div class="p-3 border-b border-border flex gap-2">
         <Input 
-          type="text" 
           bind:value={newCategoryName} 
-          placeholder="New Category..." 
-          class="h-8 text-xs flex-1"
+          placeholder={m.category_name_col()} 
+          class="h-8 text-xs bg-background"
           onkeydown={(e) => { if (e.key === 'Enter') handleCreateCategory(); }}
         />
-        <Button size="sm" class="size-8 p-0 shrink-0" onclick={handleCreateCategory}>
-          <Plus class="size-4" />
+        <Button size="sm" class="h-8 px-2.5 bg-primary hover:bg-primary/90 text-primary-foreground" onclick={handleCreateCategory}>
+          <Plus class="size-3.5" />
         </Button>
       </div>
 

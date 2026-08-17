@@ -85,18 +85,18 @@
 
   import { m } from '$lib/i18n';
 
-  const menuItems = [
-    { id: 'dashboard', get label() { return m.nav_dashboard(); }, icon: LayoutDashboard },
-    { id: 'scraper', get label() { return m.nav_scraper(); }, icon: MapPin },
-    { id: 'leads', get label() { return m.nav_leads(); }, icon: Users },
-    { id: 'categories', get label() { return m.nav_categories(); }, icon: Tags },
-    { id: 'conversation', get label() { return m.nav_conversation(); }, icon: MessagesSquare },
-    { id: 'outreach', get label() { return m.nav_outreach(); }, icon: MessageSquare },
-    { id: 'email_outreach', get label() { return m.nav_email_outreach(); }, icon: Mail },
-    { id: 'pipeline', get label() { return m.nav_pipeline(); }, icon: Kanban },
-    { id: 'contacts', get label() { return m.nav_contacts(); }, icon: UserCheck },
-    { id: 'settings', get label() { return m.nav_settings(); }, icon: Settings2 }
-  ];
+  const menuItems = $derived([
+    { id: 'dashboard', label: m.nav_dashboard(), icon: LayoutDashboard },
+    { id: 'scraper', label: m.nav_scraper(), icon: MapPin },
+    { id: 'leads', label: m.nav_leads(), icon: Users },
+    { id: 'categories', label: m.nav_categories(), icon: Tags },
+    { id: 'conversation', label: m.nav_conversation(), icon: MessagesSquare },
+    { id: 'outreach', label: m.nav_outreach(), icon: MessageSquare },
+    { id: 'email_outreach', label: m.nav_email_outreach(), icon: Mail },
+    { id: 'pipeline', label: m.nav_pipeline(), icon: Kanban },
+    { id: 'contacts', label: m.nav_contacts(), icon: UserCheck },
+    { id: 'settings', label: m.nav_settings(), icon: Settings2 }
+  ]);
 </script>
 
 <aside class="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col text-sidebar-foreground select-none shrink-0">
@@ -150,7 +150,7 @@
       type="button"
       onclick={onOpenLicense}
       class="w-full p-2 rounded-lg flex items-center justify-between gap-2.5 text-left transition-all duration-150 group cursor-pointer hover:bg-sidebar-accent/70 hover:shadow-2xs border border-transparent hover:border-sidebar-border"
-      title="Tài khoản & Quản lý Bản quyền"
+      title={m.settings_license_title()}
     >
       <div class="flex items-center gap-2.5 overflow-hidden min-w-0">
         <div class="size-8 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center justify-center text-xs font-bold shrink-0 transition-transform group-hover:scale-105">

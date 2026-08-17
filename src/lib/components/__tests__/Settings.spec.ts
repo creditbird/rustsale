@@ -1,5 +1,5 @@
-/// <reference types="bun-types" />
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { setLocale } from '$lib/i18n';
 
 type EventListener = (event: { payload: any }) => void;
 
@@ -85,6 +85,7 @@ async function waitForListener(eventName: string) {
 }
 
 beforeEach(() => {
+  setLocale('en');
   invokedCommands = [];
   eventListeners.clear();
   zaloRuntimeStatus = 'disconnected';

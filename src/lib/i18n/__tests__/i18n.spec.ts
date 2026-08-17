@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { m, setLocale, getLocale } from '../index';
-import { formatCurrency, formatDate, formatDateTime, formatNumber, formatRelativeTime } from '../formatters';
+import {
+  formatCurrency,
+  formatCompactCurrency,
+  formatDate,
+  formatDateTime,
+  formatNumber,
+  formatRelativeTime
+} from '../formatters';
 
 describe('i18n & Paraglide Integration', () => {
   beforeEach(() => {
@@ -13,8 +20,11 @@ describe('i18n & Paraglide Integration', () => {
     expect(String(m.app_name())).toBe('RustSale CRM');
     expect(String(m.common_save())).toBe('Lưu');
     expect(String(m.common_cancel())).toBe('Hủy');
+    expect(String(m.common_clear_filters())).toBe('Xóa bộ lọc');
     expect(String(m.nav_dashboard())).toBe('Bảng điều khiển');
-    expect(String(m.nav_leads())).toBe('Quản lý Leads');
+    expect(String(m.nav_leads())).toBe('Khách hàng tiềm năng');
+    expect(String(m.pipeline_stage_prospecting())).toBe('Tìm kiếm Tiềm năng');
+    expect(String(m.pipeline_stage_won())).toBe('Thành công');
   });
 
   it('correctly translates common keys into English when locale is en', () => {
@@ -22,14 +32,17 @@ describe('i18n & Paraglide Integration', () => {
     expect(getLocale()).toBe('en');
     expect(String(m.common_save())).toBe('Save');
     expect(String(m.common_cancel())).toBe('Cancel');
+    expect(String(m.common_clear_filters())).toBe('Clear filters');
     expect(String(m.nav_dashboard())).toBe('Dashboard');
     expect(String(m.nav_leads())).toBe('Leads');
+    expect(String(m.pipeline_stage_prospecting())).toBe('Prospecting');
+    expect(String(m.pipeline_stage_won())).toBe('Closed Won');
   });
 
   it('correctly interpolates parameters in messages', () => {
     setLocale('vi');
     expect(String(m.common_total({ count: 42 }))).toBe('Tổng: 42');
-    expect(String(m.scraper_results_found({ count: 15 }))).toBe('Tìm thấy 15 địa điểm');
+    expect(String(m.scraper_results_found({ count: 15 }))).toBe('Đã tìm thấy 15 địa điểm');
 
     setLocale('en');
     expect(String(m.common_total({ count: 42 }))).toBe('Total: 42');
@@ -58,6 +71,19 @@ describe('i18n & Paraglide Integration', () => {
     setLocale('vi');
     const viUsd = formatCurrency(1500.5, 'USD');
     expect(viUsd).toContain('1.500,50');
+  });
+
+  it('correctly formats compact currency notation for VND and USD', () => {
+    setLocale('vi');
+    expect(formatCompactCurrency(1500000000, 'VND')).toBe('1,5 Tỷ ₫');
+    expect(formatCompactCurrency(25000000, 'VND')).toBe('25 Tr ₫');
+    expect(formatCompactCurrency(50000, 'VND')).toBe('50k ₫');
+    expect(formatCompactCurrency(500, 'VND')).toContain('500');
+
+    setLocale('en');
+    expect(formatCompactCurrency(1500000000, 'VND')).toBe('1.5B ₫');
+    expect(formatCompactCurrency(25000000, 'VND')).toBe('25M ₫');
+    expect(formatCompactCurrency(50000, 'VND')).toBe('50k ₫');
   });
 
   it('formats numbers according to active locale', () => {
@@ -95,5 +121,29 @@ describe('i18n & Paraglide Integration', () => {
     expect(formatDateTime('')).toBe('');
     expect(formatRelativeTime(null)).toBe('');
     expect(formatRelativeTime('')).toBe('');
+  });
+
+  it('guarantees 100% key parity and non-empty values between en.json and vi.json', async () => {
+    const enFile = await Bun.file('messages/en.json').json();
+    const viFile = await Bun.file('messages/vi.json').json();
+
+    const enKeys = Object.keys(enFile).sort();
+    const viKeys = Object.keys(viFile).sort();
+
+    const missingInVi = enKeys.filter((k) => !(k in viFile));
+    const missingInEn = viKeys.filter((k) => !(k in enFile));
+
+    expect(missingInVi).toEqual([]);
+    expect(missingInEn).toEqual([]);
+    expect(enKeys.length).toBe(viKeys.length);
+
+    // Verify all keys have non-empty string content
+    for (const key of enKeys) {
+      if (key === '$schema') continue;
+      expect(typeof enFile[key]).toBe('string');
+      expect(enFile[key].trim().length).toBeGreaterThan(0);
+      expect(typeof viFile[key]).toBe('string');
+      expect(viFile[key].trim().length).toBeGreaterThan(0);
+    }
   });
 });

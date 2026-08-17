@@ -3,6 +3,7 @@ import * as m from '$lib/paraglide/messages';
 import { localeState, getLocale, setLocale } from './state.svelte';
 import {
   formatCurrency,
+  formatCompactCurrency,
   formatDate,
   formatDateTime,
   formatNumber,
@@ -18,6 +19,7 @@ export {
   getLocale,
   setLocale,
   formatCurrency,
+  formatCompactCurrency,
   formatDate,
   formatDateTime,
   formatNumber,

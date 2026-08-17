@@ -1,6 +1,6 @@
-/// <reference types="bun-types" />
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { setLocale } from '$lib/i18n';
 
 import type {
   GoogleMapsJobEvent,
@@ -228,6 +228,7 @@ async function switchToSimpleKeywordMode(): Promise<void> {
 }
 
 beforeEach(() => {
+  setLocale('en');
   invocations.length = 0;
   eventListeners.clear();
   jobs = [];

@@ -19,6 +19,8 @@
     AlertCircle, Calendar, Clock, MapPin, Building, Briefcase, Plus,
     DollarSign, Layers, Send, MessageCircle, ExternalLink, RefreshCw, MessageSquare
   } from 'lucide-svelte';
+  import * as m from '$lib/paraglide/messages';
+  import { formatCurrency, formatCompactCurrency, formatDate, formatDateTime } from '$lib/i18n';
 
   interface ZaloTemplate {
     id: number;
@@ -65,7 +67,7 @@
   // Create Deal Modal State for this lead
   let showCreateDealModal = $state(false);
   let newDealTitle = $state('');
-  let newDealValue = $state(10000);
+  let newDealValue = $state(10000000);
   let newDealStage = $state('Prospecting');
   let creatingDeal = $state(false);
   let createDealErrorMsg = $state<string | null>(null);
@@ -88,16 +90,38 @@
   let sendingEmail = $state(false);
   let sendEmailErrorMsg = $state<string | null>(null);
 
-  const presetValues = [5000, 10000, 25000, 50000, 100000];
+  const presetValues = [5000000, 10000000, 25000000, 50000000, 100000000];
 
-  const stages = ['Prospecting', 'Demo', 'Proposal', 'Negotiation', 'Won'];
-  const stageBadges: Record<string, { label: string; bg: string; text: string }> = {
-    'Prospecting': { label: 'Prospecting (20%)', bg: 'bg-blue-500/10 border-blue-500/30', text: 'text-blue-600' },
-    'Demo': { label: 'Demo (40%)', bg: 'bg-purple-500/10 border-purple-500/30', text: 'text-purple-600' },
-    'Proposal': { label: 'Proposal (60%)', bg: 'bg-amber-500/10 border-amber-500/30', text: 'text-amber-600' },
-    'Negotiation': { label: 'Negotiation (80%)', bg: 'bg-indigo-500/10 border-indigo-500/30', text: 'text-indigo-600' },
-    'Won': { label: 'Won (100%)', bg: 'bg-emerald-500/10 border-emerald-500/30', text: 'text-emerald-600' }
+  const stages = ['Prospecting', 'Demo', 'Proposal', 'Negotiation', 'Won'] as const;
+  const stageBadges: Record<string, { label: () => string; bg: string; text: string }> = {
+    'Prospecting': { label: () => `${m.pipeline_stage_prospecting()} (20%)`, bg: 'bg-blue-500/10 border-blue-500/30', text: 'text-blue-600' },
+    'Demo': { label: () => `${m.pipeline_stage_demo()} (40%)`, bg: 'bg-purple-500/10 border-purple-500/30', text: 'text-purple-600' },
+    'Proposal': { label: () => `${m.pipeline_stage_proposal()} (60%)`, bg: 'bg-amber-500/10 border-amber-500/30', text: 'text-amber-600' },
+    'Negotiation': { label: () => `${m.pipeline_stage_negotiation()} (80%)`, bg: 'bg-indigo-500/10 border-indigo-500/30', text: 'text-indigo-600' },
+    'Won': { label: () => `${m.pipeline_stage_won()} (100%)`, bg: 'bg-emerald-500/10 border-emerald-500/30', text: 'text-emerald-600' }
   };
+
+  function getLeadStatusLabel(status: string): string {
+    switch (status) {
+      case 'New': return m.leads_status_new();
+      case 'Contacted': return m.leads_status_contacted();
+      case 'Qualified': return m.leads_status_qualified();
+      case 'Proposal': return m.leads_status_proposal();
+      case 'Won': return m.leads_status_won();
+      case 'Lost': return m.leads_status_lost();
+      case 'Converted': return m.leads_status_converted();
+      default: return status;
+    }
+  }
+
+  function getActivityTypeLabel(type: string): string {
+    switch (type) {
+      case 'Call': return m.lead_details_activity_call();
+      case 'Email': return m.lead_details_activity_email();
+      case 'Meeting': return m.lead_details_activity_meeting();
+      default: return type;
+    }
+  }
 
   function startEditing() {
     if (!lead) return;
@@ -116,7 +140,7 @@
   function openCreateDealModal() {
     createDealErrorMsg = null;
     newDealTitle = `Deal - ${lead?.company || lead?.name || ''}`;
-    newDealValue = 10000;
+    newDealValue = 10000000;
     newDealStage = 'Prospecting';
     showCreateDealModal = true;
   }
@@ -146,11 +170,11 @@
   async function handleSendZalo(e: Event) {
     e.preventDefault();
     if (!selectedZaloAccountKey) {
-      sendZaloErrorMsg = 'Please select a sender Zalo account.';
+      sendZaloErrorMsg = m.lead_details_no_zalo_acc();
       return;
     }
     if (!selectedZaloTemplateId) {
-      sendZaloErrorMsg = 'Please select a Zalo template.';
+      sendZaloErrorMsg = m.lead_details_no_zalo_tpl();
       return;
     }
     sendingZalo = true;
@@ -161,22 +185,22 @@
         leadIds: [leadId],
         templateId: selectedZaloTemplateId
       });
-      const tplName = zaloTemplates.find((t) => t.id === selectedZaloTemplateId)?.name || 'Zalo Template';
+      const tplName = zaloTemplates.find((t) => t.id === selectedZaloTemplateId)?.name || m.lead_details_fallback_zalo_tpl();
       await crmService.addActivity(
         leadId,
         'Zalo',
-        `Sent Zalo message to ${lead?.name || 'customer'} (Template: ${tplName})`,
+        m.lead_details_log_zalo_prefix({ name: lead?.name || m.lead_details_fallback_customer(), template: tplName }),
         'Self'
       );
       showSendZaloModal = false;
-      toast.success('Zalo message scheduled successfully!', {
-        description: `Zalo message has been queued for ${lead?.name || 'customer'}.`
+      toast.success(m.lead_details_toast_zalo_sent(), {
+        description: m.lead_details_toast_zalo_sent_desc({ name: lead?.name || m.lead_details_fallback_customer() })
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       sendZaloErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Failed to send Zalo outreach', { description: sendZaloErrorMsg });
+      toast.error(m.lead_details_toast_zalo_fail(), { description: sendZaloErrorMsg });
     } finally {
       sendingZalo = false;
     }
@@ -184,8 +208,8 @@
 
   async function openSendEmailModal() {
     if (!lead?.email) {
-      toast.error('Lead has no email address', {
-        description: 'Please update the email address in lead information first.'
+      toast.error(m.lead_details_toast_no_email(), {
+        description: m.lead_details_toast_no_email_desc()
       });
       return;
     }
@@ -212,11 +236,11 @@
   async function handleSendEmail(e: Event) {
     e.preventDefault();
     if (!selectedSmtpId) {
-      sendEmailErrorMsg = 'Please select a sender Email/SMTP account.';
+      sendEmailErrorMsg = m.lead_details_no_smtp();
       return;
     }
     if (!selectedEmailTemplateId) {
-      sendEmailErrorMsg = 'Please select an email template.';
+      sendEmailErrorMsg = m.lead_details_no_email_tpl();
       return;
     }
     sendingEmail = true;
@@ -231,18 +255,18 @@
       await crmService.addActivity(
         leadId,
         'Email',
-        `Sent Email to ${lead?.email} (Subject: ${tpl?.subject || tpl?.name || 'Outreach email'})`,
+        m.lead_details_log_email_prefix({ email: lead?.email || '', subject: tpl?.subject || tpl?.name || m.lead_details_fallback_outreach_email() }),
         'Self'
       );
       showSendEmailModal = false;
-      toast.success('Email sent successfully!', {
-        description: `Email message has been dispatched to ${lead?.email}.`
+      toast.success(m.lead_details_toast_email_sent(), {
+        description: m.lead_details_toast_email_sent_desc({ email: lead?.email || '' })
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       sendEmailErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Failed to send Email', { description: sendEmailErrorMsg });
+      toast.error(m.lead_details_toast_email_fail(), { description: sendEmailErrorMsg });
     } finally {
       sendingEmail = false;
     }
@@ -276,7 +300,7 @@
   async function handleCreateDeal(e: Event) {
     e.preventDefault();
     if (!newDealTitle.trim()) {
-      createDealErrorMsg = 'Please enter a deal title.';
+      createDealErrorMsg = m.lead_details_err_enter_deal_title();
       return;
     }
 
@@ -286,14 +310,14 @@
       const createdTitle = newDealTitle.trim();
       await crmService.createDeal(leadId, createdTitle, Number(newDealValue) || 0, newDealStage);
       showCreateDealModal = false;
-      toast.success('Deal created successfully!', {
-        description: `Created opportunity "${createdTitle}" for ${lead?.name || 'customer'}.`
+      toast.success(m.lead_details_toast_deal_created(), {
+        description: m.lead_details_toast_deal_created_desc({ title: createdTitle, name: lead?.name || m.lead_details_fallback_customer() })
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       createDealErrorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Failed to create deal', {
+      toast.error(m.lead_details_toast_deal_create_fail(), {
         description: createDealErrorMsg
       });
     } finally {
@@ -319,14 +343,14 @@
       await crmService.deleteDeal(dealToDelete.id);
       showDeleteDealModal = false;
       dealToDelete = null;
-      toast.success('Deal deleted successfully!', {
-        description: `Deleted opportunity "${deletedTitle}".`
+      toast.success(m.lead_details_toast_deal_deleted(), {
+        description: m.lead_details_toast_deal_deleted_desc({ title: deletedTitle })
       });
       await loadLeadDetails(leadId);
       if (onRefresh) onRefresh();
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error('Failed to delete deal', {
+      toast.error(m.lead_details_toast_deal_delete_fail(), {
         description: errorMsg
       });
     } finally {
@@ -443,22 +467,6 @@
       if (currentLeadId === leadId) logging = false;
     }
   }
-
-  function formatDateTime(dateStr: string) {
-    if (!dateStr) return '';
-    try {
-      const date = new Date(dateStr);
-      if (isNaN(date.getTime())) return dateStr;
-      return date.toLocaleString('vi-VN', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-    } catch (e) {
-      return dateStr;
-    }
-  }
 </script>
 
 <!-- Backdrop overlay -->
@@ -477,9 +485,9 @@
   <!-- Drawer Header -->
   <header class="h-14 px-6 border-b border-border flex items-center justify-between shrink-0 bg-muted/20">
     <div class="flex items-center gap-2">
-      <h3 class="text-sm font-bold text-foreground tracking-wide">Lead Profile Details</h3>
+      <h3 class="text-sm font-bold text-foreground tracking-wide">{m.lead_details_title()}</h3>
       {#if lead}
-        <Badge variant="outline" class="text-[10px] uppercase font-mono">{lead.status}</Badge>
+        <Badge variant="outline" class="text-[10px] uppercase font-mono">{getLeadStatusLabel(lead.status)}</Badge>
       {/if}
     </div>
     <Button variant="ghost" size="sm" onclick={onClose} class="h-8 w-8 p-0 text-muted-foreground hover:text-foreground">
@@ -490,7 +498,7 @@
   {#if loading && !lead}
     <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-xs gap-2">
       <div class="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
-      <p>Loading lead details...</p>
+      <p>{m.lead_details_loading()}</p>
     </div>
   {:else if errorMsg && !lead}
     <div class="flex-1 flex flex-col items-center justify-center p-6 text-destructive text-xs gap-2">
@@ -516,14 +524,14 @@
             <h4 class="text-lg font-bold text-foreground truncate">{lead.name}</h4>
             <p class="text-xs text-muted-foreground font-medium">{lead.company}</p>
             <div class="flex flex-wrap gap-2 mt-2.5">
-              <Badge variant="default" class="text-[10px] py-0.5 px-2.5">{lead.status}</Badge>
+              <Badge variant="default" class="text-[10px] py-0.5 px-2.5">{getLeadStatusLabel(lead.status)}</Badge>
               {#if lead.has_zalo === 1}
                 <Badge variant="outline" class="gap-1 border-sky-500/30 text-sky-600 bg-sky-500/10 text-[10px] py-0.5 px-2 font-semibold">
-                  <CheckCircle2 class="w-3 h-3 text-sky-500" /> Zalo Verified
+                  <CheckCircle2 class="w-3 h-3 text-sky-500" /> {m.lead_details_zalo_verified()}
                 </Badge>
               {:else if lead.has_zalo === 0}
                 <Badge variant="outline" class="gap-1 border-slate-300 text-slate-500 bg-slate-100 text-[10px] py-0.5 px-2">
-                  <XCircle class="w-3 h-3 text-slate-400" /> No Zalo
+                  <XCircle class="w-3 h-3 text-slate-400" /> {m.lead_details_no_zalo()}
                 </Badge>
               {/if}
             </div>
@@ -531,7 +539,7 @@
           {#if !isEditing}
             <Button variant="outline" size="sm" onclick={startEditing} class="h-8 gap-1.5 absolute top-4 right-4 text-xs shadow-2xs">
               <Edit2 class="w-3.5 h-3.5" />
-              Edit
+              {m.common_edit()}
             </Button>
           {/if}
         </div>
@@ -545,7 +553,7 @@
               class="gap-1.5 font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm h-8 rounded-lg"
             >
               <Briefcase class="w-3.5 h-3.5" />
-              <span>+ Create Deal</span>
+              <span>{m.lead_details_create_deal_btn()}</span>
             </Button>
 
             <Button
@@ -554,7 +562,7 @@
               class="gap-1.5 font-bold text-xs border border-sky-500/30 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 shadow-2xs h-8 rounded-lg"
             >
               <MessageCircle class="w-3.5 h-3.5" />
-              <span>Send Zalo</span>
+              <span>{m.lead_details_send_zalo_action()}</span>
             </Button>
 
             <Button
@@ -563,7 +571,7 @@
               class="gap-1.5 font-bold text-xs border border-border bg-muted/40 hover:bg-muted text-foreground shadow-2xs h-8 rounded-lg"
             >
               <Mail class="w-3.5 h-3.5" />
-              <span>Send Email</span>
+              <span>{m.lead_details_send_email_action()}</span>
             </Button>
           </div>
         {/if}
@@ -574,32 +582,32 @@
         <div class="flex items-center justify-between">
           <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
             <Briefcase class="w-3.5 h-3.5 text-emerald-600" />
-            Deals & Opportunities ({deals.length})
+            {m.lead_details_deals_heading({ count: deals.length })}
           </h5>
         </div>
 
         {#if deals.length === 0}
           <div class="p-4 rounded-xl border border-dashed border-border bg-card/50 text-center py-5">
-            <p class="text-xs text-muted-foreground">No deals or contracts associated with this lead yet.</p>
+            <p class="text-xs text-muted-foreground">{m.lead_details_no_deals()}</p>
           </div>
         {:else}
           <div class="space-y-2.5">
             {#each deals as deal}
-              {@const badge = stageBadges[deal.stage] || { label: deal.stage, bg: 'bg-muted', text: 'text-foreground' }}
+              {@const badge = stageBadges[deal.stage] || { label: () => deal.stage, bg: 'bg-muted', text: 'text-foreground' }}
               <div class="p-3.5 rounded-xl border border-border bg-card shadow-2xs hover:border-emerald-500/40 transition-colors flex items-center justify-between gap-3">
                 <div class="min-w-0 space-y-1">
                   <div class="flex items-center gap-2">
                     <h6 class="text-xs font-bold text-foreground truncate">{deal.title}</h6>
                     <Badge variant="outline" class="text-[10px] font-semibold px-2 py-0.5 {badge.bg} {badge.text}">
-                      {badge.label}
+                      {badge.label()}
                     </Badge>
                   </div>
                   <div class="flex items-center gap-3 text-[11px]">
-                    <span class="font-extrabold text-emerald-600 text-xs">${deal.value.toLocaleString()}</span>
+                    <span class="font-extrabold text-emerald-600 text-xs">{formatCurrency(deal.value, 'VND')}</span>
                     {#if deal.created_at}
                       <span class="text-muted-foreground text-[10px] flex items-center gap-1 font-medium">
                         <Calendar class="w-3 h-3 text-muted-foreground/60" />
-                        {new Date(deal.created_at).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
+                        {formatDate(deal.created_at, { month: 'numeric', day: 'numeric' })}
                       </span>
                     {/if}
                   </div>
@@ -610,7 +618,7 @@
                   size="sm"
                   onclick={() => promptDeleteDeal(deal.id!, deal.title)}
                   class="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg shrink-0"
-                  title="Delete this deal"
+                  title={m.lead_details_delete_deal_tooltip()}
                 >
                   <Trash2 class="w-3.5 h-3.5" />
                 </Button>
@@ -624,60 +632,60 @@
         <!-- Edit Lead Form (2-column responsive layout) -->
         <form onsubmit={handleSaveLead} class="space-y-4 text-xs border border-border bg-card p-5 rounded-xl shadow-xs">
           <div class="flex items-center justify-between border-b border-border pb-3">
-            <h5 class="text-xs font-bold text-foreground uppercase tracking-wider">Edit Lead Profile</h5>
-            <span class="text-[10px] text-muted-foreground">* Required fields</span>
+            <h5 class="text-xs font-bold text-foreground uppercase tracking-wider">{m.lead_details_edit_title()}</h5>
+            <span class="text-[10px] text-muted-foreground">{m.lead_details_required_fields()}</span>
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div class="space-y-1">
-              <label for="edit-name" class="font-medium text-foreground">Full Name *</label>
+              <label for="edit-name" class="font-medium text-foreground">{m.leads_modal_name_label()} *</label>
               <Input id="edit-name" bind:value={editName} required class="h-9 text-xs" />
             </div>
             <div class="space-y-1">
-              <label for="edit-company" class="font-medium text-foreground">Company Name *</label>
+              <label for="edit-company" class="font-medium text-foreground">{m.leads_modal_company_label()} *</label>
               <Input id="edit-company" bind:value={editCompany} required class="h-9 text-xs" />
             </div>
 
             <div class="space-y-1">
-              <label for="edit-email" class="font-medium text-foreground">Email *</label>
+              <label for="edit-email" class="font-medium text-foreground">{m.leads_modal_email_label()} *</label>
               <Input id="edit-email" type="email" bind:value={editEmail} required class="h-9 text-xs" />
             </div>
             <div class="space-y-1">
-              <label for="edit-phone" class="font-medium text-foreground">Phone Number</label>
+              <label for="edit-phone" class="font-medium text-foreground">{m.leads_modal_phone_label()}</label>
               <Input id="edit-phone" bind:value={editPhone} class="h-9 text-xs" />
             </div>
 
             <div class="space-y-1">
-              <label for="edit-status" class="font-medium text-foreground">Status</label>
+              <label for="edit-status" class="font-medium text-foreground">{m.common_status()}</label>
               <select
                 id="edit-status"
                 bind:value={editStatus}
                 class="w-full h-9 text-xs border border-input bg-background rounded-md px-3 py-1 text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
               >
-                <option value="New">New</option>
-                <option value="Contacted">Contacted</option>
-                <option value="Qualified">Qualified</option>
-                <option value="Lost">Lost</option>
-                <option value="Converted">Converted (Contact)</option>
+                <option value="New">{m.leads_status_new()}</option>
+                <option value="Contacted">{m.leads_status_contacted()}</option>
+                <option value="Qualified">{m.leads_status_qualified()}</option>
+                <option value="Lost">{m.leads_status_lost()}</option>
+                <option value="Converted">{m.leads_status_converted()}</option>
               </select>
             </div>
             <div class="space-y-1">
-              <label for="edit-value" class="font-medium text-foreground">Estimated Value ($)</label>
-              <Input id="edit-value" type="number" bind:value={editValue} min="0" class="h-9 text-xs" />
+              <label for="edit-value" class="font-medium text-foreground">{m.lead_details_estimated_value()}</label>
+              <Input id="edit-value" type="number" bind:value={editValue} min="0" step="500000" class="h-9 text-xs font-semibold text-emerald-600" />
             </div>
 
             <div class="space-y-1 sm:col-span-2">
-              <label for="edit-owner" class="font-medium text-foreground">Assigned Owner</label>
+              <label for="edit-owner" class="font-medium text-foreground">{m.leads_modal_owner_label()}</label>
               <Input id="edit-owner" bind:value={editOwner} class="h-9 text-xs" />
             </div>
 
             <div class="space-y-1 sm:col-span-2">
-              <label for="edit-address" class="font-medium text-foreground">Address</label>
-              <Input id="edit-address" bind:value={editAddress} class="h-9 text-xs" placeholder="Street address, city..." />
+              <label for="edit-address" class="font-medium text-foreground">{m.lead_details_address()}</label>
+              <Input id="edit-address" bind:value={editAddress} class="h-9 text-xs" placeholder={m.lead_details_address_placeholder()} />
             </div>
 
             <div class="space-y-1 sm:col-span-2">
-              <label for="edit-about" class="font-medium text-foreground">Description / Notes</label>
+              <label for="edit-about" class="font-medium text-foreground">{m.lead_details_description()}</label>
               <textarea id="edit-about" bind:value={editAbout} rows="3" class="w-full p-3 rounded-md border border-input bg-background text-xs leading-relaxed focus:outline-hidden focus:ring-1 focus:ring-ring resize-y"></textarea>
             </div>
           </div>
@@ -685,13 +693,13 @@
           <div class="flex items-center justify-between pt-4 border-t border-border">
             <Button type="button" variant="destructive" size="sm" onclick={promptDeleteLead} disabled={deletingLead} class="gap-1.5 h-9 px-4">
               <Trash2 class="w-3.5 h-3.5" />
-              {deletingLead ? 'Deleting...' : 'Delete Lead'}
+              {deletingLead ? m.lead_details_deleting() : m.common_delete()}
             </Button>
             <div class="flex items-center gap-2">
-              <Button type="button" variant="outline" size="sm" onclick={() => isEditing = false} class="h-9 px-4">Cancel</Button>
+              <Button type="button" variant="outline" size="sm" onclick={() => isEditing = false} class="h-9 px-4">{m.common_cancel()}</Button>
               <Button type="submit" size="sm" disabled={savingLead} class="gap-1.5 h-9 px-5">
                 <Save class="w-3.5 h-3.5" />
-                {savingLead ? 'Saving...' : 'Save Changes'}
+                {savingLead ? m.lead_details_saving() : m.common_save()}
               </Button>
             </div>
           </div>
@@ -699,38 +707,38 @@
       {:else}
         <!-- Contact Details Overview -->
         <div class="space-y-3">
-          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Contact Overview</h5>
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">{m.lead_details_contact_overview()}</h5>
           <div class="rounded-xl border border-border bg-card p-4 space-y-3 text-xs shadow-xs">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-3 border-b border-border/60">
               <div>
-                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Mail class="w-3.5 h-3.5 text-primary" /> Email</span>
+                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Mail class="w-3.5 h-3.5 text-primary" /> {m.leads_modal_email_label()}</span>
                 <a href="mailto:{lead.email}" class="text-primary font-semibold hover:underline break-all">{lead.email}</a>
               </div>
               <div>
-                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Phone class="w-3.5 h-3.5 text-primary" /> Phone Number</span>
+                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Phone class="w-3.5 h-3.5 text-primary" /> {m.leads_modal_phone_label()}</span>
                 <span class="text-foreground font-semibold">{lead.phone || '—'}</span>
               </div>
             </div>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-3 border-b border-border/60">
               <div>
-                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Users class="w-3.5 h-3.5 text-primary" /> Assigned Owner</span>
+                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Users class="w-3.5 h-3.5 text-primary" /> {m.leads_modal_owner_label()}</span>
                 <span class="text-foreground font-semibold">{lead.owner || '—'}</span>
               </div>
               <div>
-                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Building class="w-3.5 h-3.5 text-primary" /> Estimated Value</span>
-                <span class="text-emerald-600 font-bold text-sm">${(lead.value || 0).toLocaleString()}</span>
+                <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Building class="w-3.5 h-3.5 text-primary" /> {m.lead_details_estimated_value()}</span>
+                <span class="text-emerald-600 font-bold text-sm">{formatCurrency(lead.value || 0, 'VND')}</span>
               </div>
             </div>
 
             <div class="pb-1">
-              <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><MapPin class="w-3.5 h-3.5 text-primary" /> Address</span>
+              <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><MapPin class="w-3.5 h-3.5 text-primary" /> {m.lead_details_address()}</span>
               <span class="text-foreground font-medium leading-relaxed break-words block bg-muted/30 p-2.5 rounded-lg border border-border/50">{lead.address || '—'}</span>
             </div>
 
             {#if lead.about}
               <div class="pt-2">
-                <span class="text-muted-foreground block mb-1 font-medium">Description / Notes</span>
+                <span class="text-muted-foreground block mb-1 font-medium">{m.lead_details_description()}</span>
                 <p class="p-3 rounded-lg bg-muted/30 border border-border/60 text-foreground leading-relaxed break-words">{lead.about}</p>
               </div>
             {/if}
@@ -739,34 +747,34 @@
 
         <!-- Log Activity Form -->
         <div class="space-y-3 pt-2">
-          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Log Activity</h5>
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">{m.lead_details_log_activity()}</h5>
           <form onsubmit={handleLogActivity} class="space-y-3 text-xs rounded-xl border border-border bg-card p-4 shadow-xs">
             <select
               bind:value={activityType}
               class="w-full h-9 text-xs border border-input bg-background rounded-md px-3 py-1 text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
             >
-              <option value="Call">Call</option>
-              <option value="Email">Email</option>
-              <option value="Meeting">Meeting</option>
+              <option value="Call">{m.lead_details_activity_call()}</option>
+              <option value="Email">{m.lead_details_activity_email()}</option>
+              <option value="Meeting">{m.lead_details_activity_meeting()}</option>
             </select>
             <textarea
               bind:value={activityContent}
-              placeholder="Enter activity details, call notes, meeting minutes..."
+              placeholder={m.lead_details_activity_placeholder()}
               rows="3"
               required
               class="w-full p-3 rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground text-xs leading-relaxed focus:outline-hidden focus:ring-1 focus:ring-ring resize-y"
             ></textarea>
             <Button type="submit" size="sm" class="w-full h-9 text-xs font-medium" disabled={logging || !activityContent.trim()}>
-              {logging ? 'Logging...' : 'Log Activity'}
+              {logging ? m.lead_details_activity_logging() : m.lead_details_activity_submit()}
             </Button>
           </form>
         </div>
 
         <!-- Activity Timeline -->
         <div class="space-y-3 pt-2">
-          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Activity History</h5>
+          <h5 class="text-xs font-bold text-muted-foreground uppercase tracking-wider">{m.lead_details_activity_history()}</h5>
           {#if activities.length === 0}
-            <p class="text-xs text-muted-foreground italic p-4 rounded-xl border border-border bg-card text-center">No activities recorded yet.</p>
+            <p class="text-xs text-muted-foreground italic p-4 rounded-xl border border-border bg-card text-center">{m.lead_details_no_activities()}</p>
           {:else}
             <div class="space-y-3 relative before:absolute before:left-3 before:top-2 before:bottom-2 before:w-0.5 before:bg-border">
               {#each activities as activity}
@@ -776,11 +784,11 @@
                   </div>
                   <div class="flex-1 p-3 rounded-xl border border-border/70 bg-card text-xs space-y-1.5 shadow-2xs">
                     <div class="flex items-center justify-between font-semibold">
-                      <span class="text-foreground">{activity.activity_type}</span>
+                      <span class="text-foreground">{getActivityTypeLabel(activity.activity_type)}</span>
                       <span class="text-[10px] text-muted-foreground font-normal">{formatDateTime(activity.created_at)}</span>
                     </div>
                     <p class="text-muted-foreground leading-relaxed break-words">{activity.content}</p>
-                    <span class="text-[10px] text-muted-foreground/70 block">Logged by {activity.performed_by}</span>
+                    <span class="text-[10px] text-muted-foreground/70 block">{m.lead_details_logged_by({ performer: activity.performed_by })}</span>
                   </div>
                 </div>
               {/each}
@@ -804,7 +812,7 @@
             <Briefcase class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-base text-foreground">Create Deal for Lead</h3>
+            <h3 class="font-bold text-base text-foreground">{m.lead_details_create_deal_modal_title()}</h3>
             <p class="text-xs text-muted-foreground">{lead.name} — {lead.company}</p>
           </div>
         </div>
@@ -826,7 +834,7 @@
         {/if}
 
         <div class="space-y-1.5">
-          <label for="lead-deal-title" class="text-xs font-bold text-foreground">Deal Title *</label>
+          <label for="lead-deal-title" class="text-xs font-bold text-foreground">{m.lead_details_deal_title()}</label>
           <Input
             id="lead-deal-title"
             bind:value={newDealTitle}
@@ -838,19 +846,19 @@
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div class="space-y-1.5">
-            <label for="lead-deal-value" class="text-xs font-bold text-foreground">Deal Value ($) *</label>
+            <label for="lead-deal-value" class="text-xs font-bold text-foreground">{m.lead_details_deal_value()}</label>
             <Input
               id="lead-deal-value"
               type="number"
               bind:value={newDealValue}
-              placeholder="10000"
+              placeholder="10000000"
               class="h-10 text-xs rounded-xl font-bold text-emerald-600"
               min="0"
-              step="500"
+              step="500000"
               required
             />
 
-            <!-- Quick Value Presets -->
+            <!-- Quick Value Presets (VND) -->
             <div class="flex items-center gap-1 pt-1 flex-wrap">
               {#each presetValues as preset}
                 <button
@@ -858,21 +866,21 @@
                   onclick={() => newDealValue = preset}
                   class="text-[10px] font-semibold px-2 py-0.5 rounded-lg border border-border hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-600 transition-colors"
                 >
-                  ${preset >= 1000 ? `${preset/1000}k` : preset}
+                  {formatCompactCurrency(preset, 'VND')}
                 </button>
               {/each}
             </div>
           </div>
 
           <div class="space-y-1.5">
-            <label for="lead-deal-stage" class="text-xs font-bold text-foreground">Initial Stage</label>
+            <label for="lead-deal-stage" class="text-xs font-bold text-foreground">{m.lead_details_initial_stage()}</label>
             <select
               id="lead-deal-stage"
               bind:value={newDealStage}
               class="w-full h-10 px-3 rounded-xl border border-input bg-background text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
             >
               {#each stages as stage}
-                <option value={stage}>{stageBadges[stage]?.label || stage}</option>
+                <option value={stage}>{stageBadges[stage]?.label() || stage}</option>
               {/each}
             </select>
           </div>
@@ -887,7 +895,7 @@
             disabled={creatingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Cancel
+            {m.common_cancel()}
           </Button>
           <Button
             type="submit"
@@ -895,7 +903,7 @@
             disabled={creatingDeal}
             class="rounded-xl h-10 px-6 text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-md"
           >
-            {creatingDeal ? 'Creating...' : 'Create Deal'}
+            {creatingDeal ? m.common_loading() : m.kanban_create_btn()}
           </Button>
         </div>
       </form>
@@ -907,16 +915,15 @@
 <Dialog.Root bind:open={isDeleteLeadModalOpen}>
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
-      <Dialog.Title>Delete Lead Profile</Dialog.Title>
+      <Dialog.Title>{m.lead_details_delete_lead_title()}</Dialog.Title>
     </Dialog.Header>
     <div class="py-2 text-xs text-muted-foreground leading-relaxed">
-      Are you sure you want to delete lead <strong class="text-foreground">{lead?.name}</strong>?
-      This action will permanently delete the lead and all associated activity history.
+      {m.lead_details_delete_lead_desc({ name: lead?.name || '' })}
     </div>
     <Dialog.Footer class="gap-2">
-      <Button variant="outline" size="sm" onclick={() => isDeleteLeadModalOpen = false} disabled={deletingLead}>Cancel</Button>
+      <Button variant="outline" size="sm" onclick={() => isDeleteLeadModalOpen = false} disabled={deletingLead}>{m.common_cancel()}</Button>
       <Button variant="destructive" size="sm" onclick={confirmDeleteLead} disabled={deletingLead}>
-        {deletingLead ? 'Deleting...' : 'Delete Customer'}
+        {deletingLead ? m.lead_details_deleting() : m.lead_details_delete_lead_btn()}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>
@@ -932,9 +939,9 @@
         </div>
 
         <div class="space-y-1.5">
-          <h3 class="font-bold text-base text-foreground">Confirm Delete Deal</h3>
+          <h3 class="font-bold text-base text-foreground">{m.lead_details_delete_deal_title()}</h3>
           <p class="text-xs text-muted-foreground leading-relaxed">
-            Are you sure you want to delete the opportunity <span class="font-bold text-foreground">"{dealToDelete.title}"</span>? This action cannot be undone.
+            {m.lead_details_delete_deal_desc({ title: dealToDelete.title })}
           </p>
         </div>
 
@@ -947,7 +954,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-5 text-xs font-semibold"
           >
-            Cancel
+            {m.common_cancel()}
           </Button>
           <Button
             type="button"
@@ -957,7 +964,7 @@
             disabled={deletingDeal}
             class="rounded-xl h-10 px-6 text-xs font-bold shadow-md bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {deletingDeal ? 'Deleting...' : 'Delete Deal'}
+            {deletingDeal ? m.lead_details_deleting() : m.lead_details_delete_deal_btn()}
           </Button>
         </div>
       </div>
@@ -971,7 +978,7 @@
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2 text-sky-600">
         <MessageCircle class="w-5 h-5" />
-        Send Zalo Message - {lead?.name}
+        {m.lead_details_send_zalo_title({ name: lead?.name || '' })}
       </Dialog.Title>
     </Dialog.Header>
 
@@ -985,19 +992,20 @@
 
       <!-- Select Zalo Account -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Sender Zalo Account</label>
+        <label for="lead-zalo-account-select" class="text-xs font-semibold text-foreground">{m.lead_details_sender_zalo_acc()}</label>
         {#if zaloAccounts.length === 0}
           <p class="text-xs text-amber-600 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
-            No Zalo accounts connected. Please connect a Zalo account in Channel Settings.
+            {m.lead_details_no_zalo_acc()}
           </p>
         {:else}
           <select
+            id="lead-zalo-account-select"
             bind:value={selectedZaloAccountKey}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-sky-500"
           >
             {#each zaloAccounts as acc}
               <option value={acc.accountKey}>
-                {acc.displayName || acc.accountKey} ({acc.authStatus === 'valid' ? 'Active' : acc.authStatus})
+                {acc.displayName || acc.accountKey} ({acc.authStatus === 'valid' ? m.common_active() : acc.authStatus})
               </option>
             {/each}
           </select>
@@ -1006,13 +1014,14 @@
 
       <!-- Select Zalo Template -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Zalo Template</label>
+        <label for="lead-zalo-template-select" class="text-xs font-semibold text-foreground">{m.lead_details_zalo_tpl()}</label>
         {#if zaloTemplates.length === 0}
           <p class="text-xs text-muted-foreground bg-muted/40 p-2.5 rounded-lg border border-border">
-            No Zalo templates found. You can create outreach templates under Zalo Outreach.
+            {m.lead_details_no_zalo_tpl()}
           </p>
         {:else}
           <select
+            id="lead-zalo-template-select"
             bind:value={selectedZaloTemplateId}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-sky-500"
           >
@@ -1025,7 +1034,7 @@
             {@const selectedTpl = zaloTemplates.find(t => t.id === selectedZaloTemplateId)}
             {#if selectedTpl}
               <div class="p-3 rounded-lg bg-muted/30 border border-border text-xs space-y-1 text-muted-foreground">
-                <span class="font-semibold text-foreground">Preview message:</span>
+                <span class="font-semibold text-foreground">{m.lead_details_preview_message()}</span>
                 <p class="whitespace-pre-wrap">{selectedTpl.content}</p>
               </div>
             {/if}
@@ -1035,7 +1044,7 @@
 
       <!-- Direct Conversation Chat Navigation -->
       <div class="pt-2 border-t border-border flex items-center justify-between">
-        <span class="text-xs text-muted-foreground">Or start a 1-on-1 direct chat:</span>
+        <span class="text-xs text-muted-foreground">{m.lead_details_or_direct_chat()}</span>
         <Button
           type="button"
           variant="outline"
@@ -1044,13 +1053,13 @@
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 text-xs font-medium border border-sky-500/30 transition-colors"
         >
           <MessageSquare class="w-3.5 h-3.5" />
-          <span>Open Chat in Conversation</span>
+          <span>{m.lead_details_open_chat()}</span>
         </Button>
       </div>
 
       <Dialog.Footer class="gap-2 pt-2">
         <Button variant="outline" size="sm" type="button" onclick={() => showSendZaloModal = false} disabled={sendingZalo}>
-          Cancel
+          {m.common_cancel()}
         </Button>
         <Button
           type="submit"
@@ -1060,10 +1069,10 @@
         >
           {#if sendingZalo}
             <RefreshCw class="w-3.5 h-3.5 animate-spin" />
-            <span>Sending...</span>
+            <span>{m.common_loading()}</span>
           {:else}
             <Send class="w-3.5 h-3.5" />
-            <span>Send Zalo Now</span>
+            <span>{m.lead_details_send_zalo_btn()}</span>
           {/if}
         </Button>
       </Dialog.Footer>
@@ -1077,7 +1086,7 @@
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2 text-foreground">
         <Mail class="w-5 h-5 text-emerald-600" />
-        Send Outreach Email - {lead?.name}
+        {m.lead_details_send_email_title({ name: lead?.name || '' })}
       </Dialog.Title>
     </Dialog.Header>
 
@@ -1090,19 +1099,20 @@
       {/if}
 
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Recipient Email</label>
-        <Input type="email" value={lead?.email || ''} readonly class="bg-muted/40 text-xs text-muted-foreground" />
+        <label for="lead-recipient-email-input" class="text-xs font-semibold text-foreground">{m.lead_details_recipient_email()}</label>
+        <Input id="lead-recipient-email-input" type="email" value={lead?.email || ''} readonly class="bg-muted/40 text-xs text-muted-foreground" />
       </div>
 
       <!-- Select SMTP Account -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Sender Email / SMTP Account</label>
+        <label for="lead-smtp-account-select" class="text-xs font-semibold text-foreground">{m.lead_details_sender_smtp()}</label>
         {#if smtpAccounts.length === 0}
           <p class="text-xs text-amber-600 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
-            No SMTP accounts configured. Please add an SMTP account in Channel Settings.
+            {m.lead_details_no_smtp()}
           </p>
         {:else}
           <select
+            id="lead-smtp-account-select"
             bind:value={selectedSmtpId}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
           >
@@ -1117,13 +1127,14 @@
 
       <!-- Select Email Template -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-foreground">Email Template</label>
+        <label for="lead-email-template-select" class="text-xs font-semibold text-foreground">{m.lead_details_email_tpl()}</label>
         {#if emailTemplates.length === 0}
           <p class="text-xs text-muted-foreground bg-muted/40 p-2.5 rounded-lg border border-border">
-            No email templates found. You can create templates under Email Outreach.
+            {m.lead_details_no_email_tpl()}
           </p>
         {:else}
           <select
+            id="lead-email-template-select"
             bind:value={selectedEmailTemplateId}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
           >
@@ -1136,7 +1147,7 @@
             {@const selectedTpl = emailTemplates.find(t => t.id === selectedEmailTemplateId)}
             {#if selectedTpl}
               <div class="p-3 rounded-lg bg-muted/30 border border-border text-xs space-y-1 text-muted-foreground">
-                <span class="font-semibold text-foreground">Subject: {selectedTpl.subject}</span>
+                <span class="font-semibold text-foreground">{m.lead_details_subject({ subject: selectedTpl.subject })}</span>
                 <p class="whitespace-pre-wrap truncate max-h-24 overflow-y-auto">{selectedTpl.content}</p>
               </div>
             {/if}
@@ -1147,12 +1158,12 @@
       <!-- Native mailto Fallback -->
       {#if lead?.email}
         <div class="pt-2 border-t border-border flex items-center justify-between">
-          <span class="text-xs text-muted-foreground">Or open default external mail app:</span>
+          <span class="text-xs text-muted-foreground">{m.lead_details_or_open_client()}</span>
           <a
             href="mailto:{lead.email}"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted/60 text-foreground hover:bg-muted text-xs font-medium border border-border transition-colors"
           >
-            <span>Open Mail client</span>
+            <span>{m.lead_details_open_mail_client()}</span>
             <ExternalLink class="w-3 h-3" />
           </a>
         </div>
@@ -1160,7 +1171,7 @@
 
       <Dialog.Footer class="gap-2 pt-2">
         <Button variant="outline" size="sm" type="button" onclick={() => showSendEmailModal = false} disabled={sendingEmail}>
-          Cancel
+          {m.common_cancel()}
         </Button>
         <Button
           type="submit"
@@ -1170,10 +1181,10 @@
         >
           {#if sendingEmail}
             <RefreshCw class="w-3.5 h-3.5 animate-spin" />
-            <span>Sending...</span>
+            <span>{m.common_loading()}</span>
           {:else}
             <Send class="w-3.5 h-3.5" />
-            <span>Send Email Now</span>
+            <span>{m.lead_details_send_email_btn()}</span>
           {/if}
         </Button>
       </Dialog.Footer>

@@ -17,6 +17,7 @@
   import ForwardTargetResultList from './ForwardTargetResultList.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Search, X, Forward, AlertCircle } from 'lucide-svelte';
+  import { m } from '$lib/i18n';
 
   let {
     open = $bindable(false),
@@ -191,11 +192,11 @@
       <div class="flex items-center justify-between border-b pb-3">
         <div class="flex items-center gap-2">
           <Forward class="size-5 text-primary" />
-          <h3 class="font-semibold text-base">Forward Message</h3>
+          <h3 class="font-semibold text-base">{m.conversation_forward_title()}</h3>
         </div>
         <button
           type="button"
-          aria-label="Close"
+          aria-label={m.common_close()}
           class="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           onclick={handleClose}
         >
@@ -205,7 +206,7 @@
 
       <!-- Source Message Preview -->
       <div class="rounded-md border bg-muted/40 p-2.5 text-xs text-muted-foreground space-y-1">
-        <span class="font-medium text-foreground">Message content:</span>
+        <span class="font-medium text-foreground">{m.forward_message_content()}</span>
         <p class="line-clamp-2 italic text-foreground/90">{getMessagePreviewText(sourceMessage)}</p>
       </div>
 
@@ -235,7 +236,7 @@
             <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
             <input
               type="text"
-              placeholder="Search conversations..."
+              placeholder={m.conversation_search_placeholder()}
               bind:value={searchQuery}
               class="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="forward-dialog-search-input"
@@ -244,9 +245,9 @@
 
           <!-- Target Selection Count -->
           <div class="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Select recipients (maximum {maxTargets}):</span>
+            <span>{m.forward_select_recipients({ max: maxTargets })}</span>
             <span class="font-medium text-foreground" data-slot="selected-count">
-              Selected {snapshot.selectedTargetIds.length}/{maxTargets}
+              {m.forward_selected_count({ count: snapshot.selectedTargetIds.length, max: maxTargets })}
             </span>
           </div>
 
@@ -257,7 +258,7 @@
           >
             {#if filteredTargets.length === 0}
               <div class="p-4 text-center text-xs text-muted-foreground">
-                No matching conversations found on this account.
+                {m.forward_no_recipients()}
               </div>
             {:else}
               {#each filteredTargets as item (item.key)}
@@ -304,7 +305,7 @@
       <!-- Footer Buttons -->
       <div class="flex items-center justify-end gap-2 border-t pt-3">
         <Button type="button" variant="outline" size="sm" onclick={handleClose}>
-          {snapshot.status === 'submitted' ? 'Close' : 'Cancel'}
+          {snapshot.status === 'submitted' ? m.common_close() : m.common_cancel()}
         </Button>
         {#if snapshot.status !== 'submitted'}
           <Button
@@ -315,7 +316,7 @@
             onclick={handleSubmit}
             data-testid="submit-forward-button"
           >
-            {submitting ? 'Forwarding...' : 'Forward'}
+            {submitting ? m.forward_sending() : m.conversation_forward()}
           </Button>
         {/if}
       </div>

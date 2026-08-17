@@ -4,9 +4,9 @@
   import { linkConversationIdentity } from '$lib/services/conversationService';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
-  import { Badge } from '$lib/components/ui/badge';
   import * as Dialog from '$lib/components/ui/dialog';
   import { UserPlus, AlertCircle, Loader2 } from 'lucide-svelte';
+  import { m } from '$lib/i18n';
 
   let {
     open = false,
@@ -52,7 +52,7 @@
 
     const trimmedName = name.trim();
     if (!trimmedName) {
-      validationError = 'Please enter customer / lead name';
+      validationError = m.create_lead_name_required();
       return;
     }
 
@@ -66,7 +66,7 @@
         'Self',
         email.trim(),
         phone.trim(),
-        `Created from Zalo Contact (${phone.trim() || 'No UID'})`
+        m.create_lead_created_from_zalo({ info: phone.trim() || 'No UID' })
       );
 
       if (identityId) {
@@ -86,12 +86,12 @@
 <Dialog.Root bind:open onOpenChange={(v) => !v && onClose()}>
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
-      <Dialog.Title class="flex items-center gap-2 text-lg font-bold text-foreground">
+      <Dialog.Title class="flex items-center gap-2">
         <UserPlus class="h-5 w-5 text-primary" />
-        <span>Create New CRM Lead</span>
+        <span>{m.leads_modal_add_title({ entity: 'CRM Lead' })}</span>
       </Dialog.Title>
       <Dialog.Description class="text-xs text-muted-foreground">
-        Save customer info from Zalo into CRM system.
+        {m.tab_leads_subtitle()}
       </Dialog.Description>
     </Dialog.Header>
 
@@ -112,24 +112,24 @@
     <form onsubmit={(e) => { e.preventDefault(); void handleCreateLead(); }} class="space-y-4 py-2">
       <div class="space-y-1.5">
         <label for="create-lead-name" class="text-xs font-semibold text-foreground">
-          Customer / Lead Name <span class="text-destructive">*</span>
+          {m.leads_modal_name_label()} <span class="text-destructive">*</span>
         </label>
         <Input
           id="create-lead-name"
           bind:value={name}
-          placeholder="Enter customer name..."
+          placeholder={m.create_lead_name_placeholder()}
           class="h-9 text-xs"
         />
       </div>
 
       <div class="space-y-1.5">
         <label for="create-lead-phone" class="text-xs font-semibold text-foreground">
-          Phone Number / Zalo ID
+          {m.leads_modal_phone_label()}
         </label>
         <Input
           id="create-lead-phone"
           bind:value={phone}
-          placeholder="Enter phone or Zalo ID..."
+          placeholder={m.create_lead_phone_placeholder()}
           class="h-9 text-xs font-mono"
         />
       </div>
@@ -137,25 +137,25 @@
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1.5">
           <label for="create-lead-company" class="text-xs font-semibold text-foreground">
-            Company / Business
+            {m.leads_modal_company_label()}
           </label>
           <Input
             id="create-lead-company"
             bind:value={company}
-            placeholder="Individual / Acme Corp"
+            placeholder={m.create_lead_company_placeholder()}
             class="h-9 text-xs"
           />
         </div>
 
         <div class="space-y-1.5">
           <label for="create-lead-email" class="text-xs font-semibold text-foreground">
-            Email
+            {m.leads_modal_email_label()}
           </label>
           <Input
             id="create-lead-email"
             type="email"
             bind:value={email}
-            placeholder="email@example.com"
+            placeholder={m.create_lead_email_placeholder()}
             class="h-9 text-xs"
           />
         </div>
@@ -163,7 +163,7 @@
 
       <Dialog.Footer class="pt-2 flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onclick={onClose} disabled={isSubmitting}>
-          Cancel
+          {m.common_cancel()}
         </Button>
         <Button
           type="submit"
@@ -173,10 +173,10 @@
         >
           {#if isSubmitting}
             <Loader2 class="h-3.5 w-3.5 animate-spin" />
-            <span>Saving...</span>
+            <span>{m.common_loading()}</span>
           {:else}
             <UserPlus class="h-3.5 w-3.5" />
-            <span>Save CRM Lead</span>
+            <span>{m.leads_modal_save_btn({ entity: 'CRM Lead' })}</span>
           {/if}
         </Button>
       </Dialog.Footer>

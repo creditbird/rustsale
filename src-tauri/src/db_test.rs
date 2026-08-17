@@ -958,4 +958,142 @@ mod tests {
         insert_result("result-1").unwrap();
         assert!(insert_result("result-2").is_err());
     }
+
+    #[test]
+    fn monetary_metadata_initialization_preserves_existing_values_without_corruption() {
+        let path = std::env::temp_dir().join(format!(
+            "rustsale-currency-metadata-init-{}.db",
+            rand::random::<u64>()
+        ));
+        let path_str = path.to_string_lossy().to_string();
+
+        // 1. Create a database without app_metadata containing mixed monetary values
+        {
+            let raw_conn = rusqlite::Connection::open(&path_str).unwrap();
+            raw_conn
+                .execute(
+                    "CREATE TABLE leads (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        company TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        value REAL NOT NULL DEFAULT 0.0,
+                        last_activity TEXT NOT NULL,
+                        owner TEXT NOT NULL,
+                        email TEXT NOT NULL,
+                        phone TEXT NOT NULL,
+                        about TEXT,
+                        address TEXT,
+                        has_zalo INTEGER DEFAULT NULL,
+                        zalo_reached INTEGER NOT NULL DEFAULT 0,
+                        zalo_uid TEXT,
+                        zalo_status TEXT DEFAULT 'UNTESTED',
+                        relationship_status TEXT DEFAULT 'UNKNOWN',
+                        last_lookup_attempt TEXT
+                    )",
+                    [],
+                )
+                .unwrap();
+            raw_conn
+                .execute(
+                    "CREATE TABLE deals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        lead_id INTEGER NOT NULL,
+                        title TEXT NOT NULL,
+                        value REAL NOT NULL DEFAULT 0.0,
+                        stage TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )",
+                    [],
+                )
+                .unwrap();
+
+            // Insert distinct monetary amounts including small values (500k VND) that must NOT be scaled
+            raw_conn
+                .execute(
+                    "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+                     VALUES ('Small Value Lead', 'Corp A', 'New', 500000.0, '2026-07-01T00:00:00Z', 'Owner', 'a@test.com', '111')",
+                    [],
+                )
+                .unwrap();
+            raw_conn
+                .execute(
+                    "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+                     VALUES ('Large Value Lead', 'Corp B', 'Qualified', 45000000.0, '2026-07-01T00:00:00Z', 'Owner', 'b@test.com', '222')",
+                    [],
+                )
+                .unwrap();
+            raw_conn
+                .execute(
+                    "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+                     VALUES ('Zero Value Lead', 'Corp C', 'New', 0.0, '2026-07-01T00:00:00Z', 'Owner', 'c@test.com', '333')",
+                    [],
+                )
+                .unwrap();
+
+            raw_conn
+                .execute(
+                    "INSERT INTO deals (lead_id, title, value, stage, created_at)
+                     VALUES (1, 'Deal 750k', 750000.0, 'Prospecting', '2026-07-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            raw_conn
+                .execute(
+                    "INSERT INTO deals (lead_id, title, value, stage, created_at)
+                     VALUES (2, 'Deal 15M', 15000000.0, 'Proposal', '2026-07-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // 2. Open via db::init_db to initialize schema and metadata
+        let conn = db::init_db(&path_str).expect("init_db should succeed on pre-existing database");
+
+        // 3. Verify app_metadata has currency_semantics = 'VND_v1'
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_metadata WHERE key = 'currency_semantics'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("app_metadata currency_semantics should be set");
+        assert_eq!(version, "VND_v1");
+
+        // 4. Verify all monetary values were preserved exactly without distortion or heuristic scaling
+        let lead1_val: f64 = conn
+            .query_row("SELECT value FROM leads WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lead1_val, 500000.0, "500k VND amount must remain 500,000.0");
+
+        let lead2_val: f64 = conn
+            .query_row("SELECT value FROM leads WHERE id = 2", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lead2_val, 45000000.0, "45M VND amount must remain 45,000,000.0");
+
+        let lead3_val: f64 = conn
+            .query_row("SELECT value FROM leads WHERE id = 3", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lead3_val, 0.0, "0.0 VND amount must remain 0.0");
+
+        let deal1_val: f64 = conn
+            .query_row("SELECT value FROM deals WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(deal1_val, 750000.0, "750k VND deal must remain 750,000.0");
+
+        let deal2_val: f64 = conn
+            .query_row("SELECT value FROM deals WHERE id = 2", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(deal2_val, 15000000.0, "15M VND deal must remain 15,000,000.0");
+
+        // 5. Verify idempotency: re-running init_db preserves values and metadata
+        drop(conn);
+        let conn_again = db::init_db(&path_str).expect("re-opening db succeeds");
+        let lead1_again: f64 = conn_again
+            .query_row("SELECT value FROM leads WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lead1_again, 500000.0);
+
+        let _ = std::fs::remove_file(path);
+    }
 }

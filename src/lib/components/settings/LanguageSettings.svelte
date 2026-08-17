@@ -82,7 +82,7 @@
         <span>{m.settings_preview({ locale: localeState.current.toUpperCase() })}</span>
       </div>
       <div class="flex items-center gap-4 font-mono font-medium text-foreground">
-        <span>{m.settings_currency()} <strong class="text-emerald-600 dark:text-emerald-400">{formatCurrency(15000000, localeState.current === 'vi' ? 'VND' : 'USD')}</strong></span>
+        <span>{m.settings_currency()} <strong class="text-emerald-600 dark:text-emerald-400">{formatCurrency(15000000, 'VND')}</strong></span>
         <span>{m.settings_date()} <strong>{formatDate(new Date())}</strong></span>
       </div>
     </div>

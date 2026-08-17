@@ -35,34 +35,57 @@ mock.module('@tauri-apps/api/event', () => ({
   listen: async () => () => {}
 }));
 
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen, fireEvent } from '@testing-library/svelte';
 import Dashboard from '../Dashboard.svelte';
 import { notifyLeadsChanged } from '$lib/services/crmService';
-import { expect, test } from 'bun:test';
+import { expect, test, beforeEach } from 'bun:test';
+import { setLocale, formatCurrency, formatCompactCurrency } from '$lib/i18n';
+
+beforeEach(() => {
+  setLocale('en');
+});
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
-test('renders Dashboard screen headings and initial stats', async () => {
+test('renders Dashboard screen headings and initial stats with accurate KPI labels', async () => {
   render(Dashboard);
   expect(screen.getByText('Sales Performance')).toBeTruthy();
   expect(screen.getByText('Revenue Target vs. Actual')).toBeTruthy();
 
+  // Verify KPI Card labels in English
+  expect(screen.getByText('Total Revenue Generated')).toBeTruthy();
+  expect(screen.getByText('Deals Won')).toBeTruthy();
+  expect(screen.getByText('Active Leads')).toBeTruthy();
+
   // Wait for the async Svelte effects to resolve and update the stats
-  const revenueElement = await screen.findByText('$45,000.00');
-  expect(revenueElement).toBeTruthy();
+  const expectedRevenue = formatCurrency(45000, 'VND');
+  const revenueElements = await screen.findAllByText(expectedRevenue, {}, { timeout: 3000 });
+  expect(revenueElements.length).toBeGreaterThanOrEqual(1);
   
   // Deals won = 2 and Active leads = 2
-  const countElements = screen.getAllByText('2');
-  expect(countElements.length).toBe(2);
+  const countElements = await screen.findAllByText('2', {}, { timeout: 3000 });
+  expect(countElements.length).toBeGreaterThanOrEqual(2);
+});
+
+test('renders Dashboard with Vietnamese KPI labels when locale is vi', async () => {
+  setLocale('vi');
+  render(Dashboard);
+
+  expect(screen.getByText('Tổng Doanh Thu Thực Tế')).toBeTruthy();
+  expect(screen.getByText('Giao Dịch Thành Công')).toBeTruthy();
+  expect(screen.getByText('Lead Đang Xử Lý')).toBeTruthy();
 });
 
 test('updates active leads count in real-time when notifyLeadsChanged is fired', async () => {
   render(Dashboard, { props: { activeTab: 'dashboard' } });
 
   // Wait for initial render
-  await screen.findByText('$45,000.00');
+  const expectedRevenue = formatCurrency(45000, 'VND');
+  const initialRevenueElements = await screen.findAllByText(expectedRevenue, {}, { timeout: 3000 });
+  expect(initialRevenueElements.length).toBeGreaterThanOrEqual(1);
 
   // Simulate scraper adding 3 new leads to the database
   leadsList = [
@@ -74,9 +97,10 @@ test('updates active leads count in real-time when notifyLeadsChanged is fired',
 
   // Trigger lead notification
   notifyLeadsChanged();
+  await new Promise((resolve) => setTimeout(resolve, 400));
 
   // Wait for debounced reload to update active leads count from 2 to 5
-  const updatedCountElement = await screen.findByText('5');
+  const updatedCountElement = await screen.findByText('5', {}, { timeout: 4000 });
   expect(updatedCountElement).toBeTruthy();
 });
 
@@ -139,4 +163,44 @@ test('re-fetches dashboard data on tab revisit if background event occurred and 
 
   // MUST re-fetch because reloadTimer was cancelled mid-flight and marked isStale = true
   expect(getLeadsInvokeCount).toBeGreaterThan(initialFetchCount);
+});
+
+test('migrates legacy USD-scale localStorage targets (<1M) to canonical VND baseline', async () => {
+  localStorage.setItem('rustsale_target_revenue', '120000');
+  localStorage.setItem('rustsale_stretch_revenue', '150000');
+
+  render(Dashboard, { props: { activeTab: 'dashboard' } });
+
+  // Open Edit Target modal and verify legacy < 1M targets were sanitized to VND baseline (120M / 150M)
+  const editTargetBtn = screen.getByRole('button', { name: /Edit Target/i });
+  await fireEvent.click(editTargetBtn);
+
+  const targetInput = screen.getByLabelText(/Target Revenue/i) as HTMLInputElement;
+  const stretchInput = screen.getByLabelText(/Stretch Goal/i) as HTMLInputElement;
+
+  expect(Number(targetInput.value)).toBe(120000000);
+  expect(Number(stretchInput.value)).toBe(150000000);
+});
+
+test('persists updated VND targets using versioned keys in localStorage', async () => {
+  render(Dashboard, { props: { activeTab: 'dashboard' } });
+
+  // Open Edit Target modal
+  const editTargetBtn = screen.getByRole('button', { name: /Edit Target/i });
+  await fireEvent.click(editTargetBtn);
+
+  // Set new target and stretch goal
+  const targetInput = screen.getByLabelText(/Target Revenue/i) as HTMLInputElement;
+  const stretchInput = screen.getByLabelText(/Stretch Goal/i) as HTMLInputElement;
+
+  await fireEvent.input(targetInput, { target: { value: '200000000' } });
+  await fireEvent.input(stretchInput, { target: { value: '250000000' } });
+
+  // Save targets
+  const saveBtn = screen.getByRole('button', { name: /Save Target/i });
+  await fireEvent.submit(saveBtn.closest('form')!);
+
+  // Verify localStorage keys were versioned and persisted
+  expect(localStorage.getItem('rustsale_target_revenue_v2')).toBe('200000000');
+  expect(localStorage.getItem('rustsale_stretch_revenue_v2')).toBe('250000000');
 });

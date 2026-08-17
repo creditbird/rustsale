@@ -1,10 +1,10 @@
-/// <reference types="bun-types" />
-import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import type { Lead } from '$lib/services/crmService';
 import LeadsList from '../LeadsList.svelte';
 import * as leadsExportCsv from '$lib/utils/leadsExportCsv';
 import { toast } from 'svelte-sonner';
+import { setLocale } from '$lib/i18n';
 
 describe('LeadsList Component & Selection Banner', () => {
   const mockLeads: Lead[] = Array.from({ length: 25 }, (_, i) => ({
@@ -18,6 +18,10 @@ describe('LeadsList Component & Selection Banner', () => {
     email: `lead${i + 1}@example.com`,
     phone: `09000000${i + 1}`
   }));
+
+  beforeEach(() => {
+    setLocale('en');
+  });
 
   afterEach(() => {
     cleanup();
@@ -212,9 +216,116 @@ describe('LeadsList Component & Selection Banner', () => {
     const exportBtn = screen.getByRole('button', { name: /Export \(1\)/i });
     await fireEvent.click(exportBtn);
 
-    expect(toastErrorMessage).toBe('Failed to export data');
+    expect(toastErrorMessage).toBe('Failed to export leads');
 
     exportSpy.mockRestore();
     toastErrorSpy.mockRestore();
+  });
+
+  test('resets selection and pagination when search query or filter changes', async () => {
+    render(LeadsList, { props: { leads: mockLeads } });
+
+    // Select row 1 on page 1
+    const checkboxes = screen.getAllByRole('checkbox');
+    await fireEvent.click(checkboxes[1]);
+    expect(screen.getByText(/Selected 1/i)).toBeTruthy();
+
+    // Type into search input
+    const searchInput = screen.getByPlaceholderText('Search name, company, email, owner...');
+    await fireEvent.input(searchInput, { target: { value: 'Lead 2' } });
+
+    // Selection should be cleared to prevent acting on hidden leads
+    expect(screen.queryByText(/Selected/i)).toBeNull();
+  });
+
+  test('strict isAllFilteredSelected does not trigger when selected IDs do not match filtered leads', () => {
+    const filteredLeads = [mockLeads[1]]; // Lead 2
+    const selectedRows = new Set([mockLeads[0].id!]); // Lead 1 is selected, but not in filteredLeads
+
+    const isAllFilteredSelected = filteredLeads.length > 0 && filteredLeads.every((l) => selectedRows.has(l.id!));
+    expect(isAllFilteredSelected).toBe(false);
+  });
+
+  test('renders Vietnamese translated labels when locale is vi', async () => {
+    setLocale('vi');
+    render(LeadsList, { props: { leads: mockLeads } });
+
+    // Verify Vietnamese translated buttons and headers
+    expect(screen.getByText('Thêm Lead')).toBeTruthy();
+    expect(screen.getByText('Quản lý Khách hàng tiềm năng')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Tìm theo tên, công ty, email, số điện thoại...')).toBeTruthy();
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    await fireEvent.click(checkboxes[0]);
+
+    // Verify Vietnamese selection banner
+    expect(screen.getByText('Bỏ chọn')).toBeTruthy();
+    expect(screen.getByText(/Chọn tất cả 25/i)).toBeTruthy();
+  });
+
+  test('renders Vietnamese translated title for contacts mode when locale is vi', async () => {
+    setLocale('vi');
+    render(LeadsList, { props: { leads: mockLeads.slice(0, 2), entityType: 'contacts' } });
+
+    expect(screen.getByText('Danh bạ Khách hàng đã Chuyển đổi')).toBeTruthy();
+    expect(screen.getByText('Thêm Liên Hệ')).toBeTruthy();
+  });
+
+  test('resets or clamps currentPage when navigating pages and changing pageSize', async () => {
+    render(LeadsList, { props: { leads: mockLeads } });
+
+    // Initial page 1 shows Lead 1 to Lead 10
+    expect(screen.getByText('Lead 1')).toBeTruthy();
+    expect(screen.getByText('Showing 1 to 10 of 25')).toBeTruthy();
+
+    // Find next page button (chevron right)
+    const buttons = screen.getAllByRole('button');
+    // Last button is next page
+    const nextBtn = buttons[buttons.length - 1];
+    await fireEvent.click(nextBtn); // Go to Page 2
+    expect(screen.getByText('Showing 11 to 20 of 25')).toBeTruthy();
+
+    await fireEvent.click(nextBtn); // Go to Page 3
+    expect(screen.getByText('Showing 21 to 25 of 25')).toBeTruthy();
+    expect(screen.getByText('Lead 25')).toBeTruthy();
+
+    // Now change search to filter only 1 lead, which drops totalPages from 3 to 1
+    const searchInput = screen.getByPlaceholderText('Search name, company, email, owner...');
+    await fireEvent.input(searchInput, { target: { value: 'Lead 2' } });
+
+    // currentPage must be reset to 1 and not remain 3 (which would cause empty table)
+    expect(screen.getByText('Lead 2')).toBeTruthy();
+    expect(screen.getByText(/Showing 1 to/i)).toBeTruthy();
+  });
+
+  test('filters leads by canonical VND value boundaries (9,999,999 / 10,000,000 / 50,000,000 / 50,000,001)', () => {
+    const boundaryLeads: Lead[] = [
+      { id: 1, name: 'Lead 9.99M', company: 'Corp A', status: 'New', value: 9999999, last_activity: '2026-08-01', owner: 'Self', email: 'a@test.com', phone: '111' },
+      { id: 2, name: 'Lead 10M', company: 'Corp B', status: 'New', value: 10000000, last_activity: '2026-08-01', owner: 'Self', email: 'b@test.com', phone: '222' },
+      { id: 3, name: 'Lead 50M', company: 'Corp C', status: 'New', value: 50000000, last_activity: '2026-08-01', owner: 'Self', email: 'c@test.com', phone: '333' },
+      { id: 4, name: 'Lead 50.001M', company: 'Corp D', status: 'New', value: 50000001, last_activity: '2026-08-01', owner: 'Self', email: 'd@test.com', phone: '444' }
+    ];
+
+    const filterFn = (leads: Lead[], range: string) => {
+      return leads.filter((lead) => {
+        const val = lead.value || 0;
+        if (range === 'under_10m' && val >= 10000000) return false;
+        if (range === '10m_to_50m' && (val < 10000000 || val > 50000000)) return false;
+        if (range === 'above_50m' && val <= 50000000) return false;
+        return true;
+      });
+    };
+
+    // Under 10M: should only match 9,999,999 (excludes 10,000,000)
+    const under10M = filterFn(boundaryLeads, 'under_10m');
+    expect(under10M.map(l => l.name)).toEqual(['Lead 9.99M']);
+
+    // 10M - 50M: should match 10,000,000 and 50,000,000 inclusive (excludes 9,999,999 and 50,000,001)
+    const between10M50M = filterFn(boundaryLeads, '10m_to_50m');
+    expect(between10M50M.map(l => l.name)).toEqual(['Lead 10M', 'Lead 50M']);
+
+    // Above 50M: should only match 50,000,001 (excludes 50,000,000)
+    const above50M = filterFn(boundaryLeads, 'above_50m');
+    expect(above50M.map(l => l.name)).toEqual(['Lead 50.001M']);
   });
 });

@@ -36,6 +36,44 @@ export function formatCurrency(
 }
 
 /**
+ * Format a number to compact currency (e.g. "10 Tr ₫" / "10M ₫" or "$10K")
+ */
+export function formatCompactCurrency(
+  value: number | undefined | null,
+  currency: 'VND' | 'USD' = 'VND'
+): string {
+  if (value === undefined || value === null || isNaN(value)) {
+    return '0 ' + (currency === 'VND' ? '₫' : '$');
+  }
+
+  const current = localeState.current;
+  if (currency === 'VND') {
+    const abs = Math.abs(value);
+    const sign = value < 0 ? '-' : '';
+    if (abs >= 1_000_000_000) {
+      const num = (abs / 1_000_000_000).toLocaleString(getIntlLocale(), { maximumFractionDigits: 1 });
+      return sign + num + (current === 'vi' ? ' Tỷ ₫' : 'B ₫');
+    }
+    if (abs >= 1_000_000) {
+      const num = (abs / 1_000_000).toLocaleString(getIntlLocale(), { maximumFractionDigits: 1 });
+      return sign + num + (current === 'vi' ? ' Tr ₫' : 'M ₫');
+    }
+    if (abs >= 1_000) {
+      const num = (abs / 1_000).toLocaleString(getIntlLocale(), { maximumFractionDigits: 1 });
+      return sign + num + 'k ₫';
+    }
+    return formatCurrency(value, 'VND');
+  }
+
+  return new Intl.NumberFormat(getIntlLocale(), {
+    style: 'currency',
+    currency: 'USD',
+    notation: 'compact',
+    maximumFractionDigits: 1
+  }).format(value);
+}
+
+/**
  * Format a plain number according to the active locale
  */
 export function formatNumber(

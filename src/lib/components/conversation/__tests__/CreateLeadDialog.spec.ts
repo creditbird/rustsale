@@ -1,8 +1,13 @@
-import { describe, it, expect, afterEach, mock } from 'bun:test';
+import { describe, it, expect, afterEach, beforeEach, mock } from 'bun:test';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import CreateLeadDialog from '../CreateLeadDialog.svelte';
+import { setLocale } from '$lib/i18n';
 
 describe('CreateLeadDialog.svelte', () => {
+  beforeEach(() => {
+    setLocale('en');
+  });
+
   afterEach(cleanup);
 
   it('renders lead creation modal with prefilled name and phone when open is true', () => {

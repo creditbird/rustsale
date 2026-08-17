@@ -1,7 +1,7 @@
-/// <reference types="bun-types" />
-import { afterEach, beforeAll, describe, expect, test, mock } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { setLocale } from '$lib/i18n';
 import type {
   InboxItem,
   ConversationRuntimeStatus,
@@ -485,6 +485,10 @@ mock.module('$lib/services/crmService', () => ({
 }));
 
 describe('ConversationWorkspace Component', () => {
+  beforeEach(() => {
+    setLocale('en');
+  });
+
   afterEach(() => {
     cleanup();
     document.body.innerHTML = '';

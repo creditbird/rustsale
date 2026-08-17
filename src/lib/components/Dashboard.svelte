@@ -10,6 +10,7 @@
     DollarSign, Trophy, Users, CheckCircle2, TrendingUp, TrendingDown, AlertCircle,
     Layers, Activity, RefreshCw, MessageCircle, Settings, X, Edit3, Save, Target
   } from 'lucide-svelte';
+  import { m, formatCurrency, formatNumber } from '$lib/i18n';
 
   let { activeTab = 'dashboard' }: { activeTab?: string } = $props();
 
@@ -22,12 +23,40 @@
   let isStale = $state(false);
   let hasLoaded = $state(false);
 
-  // Configurable Base Target & Stretch Goals (Quarterly baseline)
-  let targetRevenue = $state(120000);
-  let stretchRevenue = $state(150000);
+  function getInitialTarget(): number {
+    if (typeof localStorage === 'undefined') return 120000000;
+    try {
+      const saved = localStorage.getItem('rustsale_target_revenue_v2');
+      if (saved) return Math.max(1000000, Number(saved) || 120000000);
+      const legacy = localStorage.getItem('rustsale_target_revenue');
+      if (legacy) {
+        const num = Number(legacy);
+        return num >= 1000000 ? num : 120000000;
+      }
+    } catch {}
+    return 120000000;
+  }
+
+  function getInitialStretch(target: number): number {
+    if (typeof localStorage === 'undefined') return 150000000;
+    try {
+      const saved = localStorage.getItem('rustsale_stretch_revenue_v2');
+      if (saved) return Math.max(target, Number(saved) || 150000000);
+      const legacy = localStorage.getItem('rustsale_stretch_revenue');
+      if (legacy) {
+        const num = Number(legacy);
+        return num >= target ? num : Math.max(target, 150000000);
+      }
+    } catch {}
+    return 150000000;
+  }
+
+  // Configurable Base Target & Stretch Goals (Quarterly baseline in VND)
+  let targetRevenue = $state(getInitialTarget());
+  let stretchRevenue = $state(getInitialStretch(targetRevenue));
   let showTargetModal = $state(false);
-  let editTargetInput = $state(120000);
-  let editStretchInput = $state(150000);
+  let editTargetInput = $state(targetRevenue);
+  let editStretchInput = $state(stretchRevenue);
 
   let reloadTimer: ReturnType<typeof setTimeout> | null = null;
   function debouncedReload() {
@@ -43,16 +72,6 @@
   }
 
   $effect(() => {
-    // Load persisted targets if available
-    try {
-      const savedTarget = localStorage.getItem('rustsale_target_revenue');
-      const savedStretch = localStorage.getItem('rustsale_stretch_revenue');
-      if (savedTarget) targetRevenue = Number(savedTarget) || 120000;
-      if (savedStretch) stretchRevenue = Number(savedStretch) || 150000;
-    } catch (e) {
-      // Fallback to default
-    }
-
     if (activeTab === 'dashboard') {
       if (isStale || !hasLoaded) {
         isStale = false;
@@ -93,11 +112,11 @@
 
   function saveTargets(e: Event) {
     e.preventDefault();
-    targetRevenue = Math.max(1000, Number(editTargetInput) || 120000);
-    stretchRevenue = Math.max(targetRevenue, Number(editStretchInput) || 150000);
+    targetRevenue = Math.max(1000000, Number(editTargetInput) || 120000000);
+    stretchRevenue = Math.max(targetRevenue, Number(editStretchInput) || 150000000);
     try {
-      localStorage.setItem('rustsale_target_revenue', targetRevenue.toString());
-      localStorage.setItem('rustsale_stretch_revenue', stretchRevenue.toString());
+      localStorage.setItem('rustsale_target_revenue_v2', targetRevenue.toString());
+      localStorage.setItem('rustsale_stretch_revenue_v2', stretchRevenue.toString());
     } catch (e) {
       console.error('Failed to save target to localStorage', e);
     }
@@ -183,19 +202,8 @@
     activePeriodStretch > 0 ? Math.min(380, Math.max(20, Math.round(10 + (activePeriodTarget / activePeriodStretch) * 380))) : 314
   );
 
-  function formatCurrency(val: number) {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(val);
-  }
-
   function formatCompactCurrency(val: number) {
-    if (val >= 1000000) return `$${(val / 1000000).toFixed(1)}M`;
-    if (val >= 1000) return `$${(val / 1000).toFixed(0)}k`;
-    return `$${val}`;
+    return formatCurrency(val, 'VND');
   }
 
   // Calculation of Previous Period Data for 100% Real Comparative Trends
@@ -295,18 +303,18 @@
   });
 
   const stats = $derived([
-    { label: 'Total Revenue Gen', value: formatCurrency(totalRevenue), change: revenueChangeStr, up: totalRevenue >= previousRevenue, icon: DollarSign },
-    { label: 'Deals Won', value: String(dealsWon), change: dealsWonChangeStr, up: dealsWon >= previousWonCount, icon: Trophy },
-    { label: 'Active Leads', value: String(activeLeadsCount), change: leadsChangeStr, up: currentPeriodLeads.length >= previousPeriodLeads.length, icon: Users }
+    { label: m.dashboard_total_revenue(), value: formatCurrency(totalRevenue, 'VND'), change: revenueChangeStr, up: totalRevenue >= previousRevenue, icon: DollarSign },
+    { label: m.dashboard_deals_won(), value: String(dealsWon), change: dealsWonChangeStr, up: dealsWon >= previousWonCount, icon: Trophy },
+    { label: m.dashboard_active_leads(), value: String(activeLeadsCount), change: leadsChangeStr, up: currentPeriodLeads.length >= previousPeriodLeads.length, icon: Users }
   ]);
 
   // Pipeline Stage Distribution
   const stageConfig: Record<string, { label: string; color: string; bg: string; border: string; prob: number }> = {
-    'Prospecting': { label: 'Prospecting', color: 'text-blue-500', bg: 'bg-blue-500', border: 'border-blue-500/30', prob: 20 },
-    'Demo': { label: 'Demo / Pitch', color: 'text-purple-500', bg: 'bg-purple-500', border: 'border-purple-500/30', prob: 40 },
-    'Proposal': { label: 'Proposal Sent', color: 'text-amber-500', bg: 'bg-amber-500', border: 'border-amber-500/30', prob: 60 },
-    'Negotiation': { label: 'Negotiation', color: 'text-indigo-500', bg: 'bg-indigo-500', border: 'border-indigo-500/30', prob: 80 },
-    'Won': { label: 'Closed Won', color: 'text-emerald-500', bg: 'bg-emerald-500', border: 'border-emerald-500/30', prob: 100 }
+    get 'Prospecting'() { return { label: m.pipeline_stage_prospecting(), color: 'text-blue-500', bg: 'bg-blue-500', border: 'border-blue-500/30', prob: 20 }; },
+    get 'Demo'() { return { label: m.pipeline_stage_demo(), color: 'text-purple-500', bg: 'bg-purple-500', border: 'border-purple-500/30', prob: 40 }; },
+    get 'Proposal'() { return { label: m.pipeline_stage_proposal(), color: 'text-amber-500', bg: 'bg-amber-500', border: 'border-amber-500/30', prob: 60 }; },
+    get 'Negotiation'() { return { label: m.pipeline_stage_negotiation(), color: 'text-indigo-500', bg: 'bg-indigo-500', border: 'border-indigo-500/30', prob: 80 }; },
+    get 'Won'() { return { label: m.pipeline_stage_won(), color: 'text-emerald-500', bg: 'bg-emerald-500', border: 'border-emerald-500/30', prob: 100 }; }
   };
 
   const stageBreakdown = $derived(
@@ -667,7 +675,7 @@
     <Card.Root class="shadow-2xs border-border/80">
       <Card.Header class="pb-3 border-b border-border/60">
         <div class="flex items-center justify-between">
-          <Card.Title class="text-sm font-bold text-foreground">Top Negotiating Deals</Card.Title>
+          <Card.Title class="text-sm font-bold text-foreground">{m.dashboard_deals_overview()}</Card.Title>
           <Badge variant="secondary" class="text-[10px]">{topActiveDeals.length} active</Badge>
         </div>
         <p class="text-xs text-muted-foreground">Highest value opportunities</p>
@@ -675,7 +683,7 @@
       <Card.Content class="pt-4 space-y-3">
         {#if topActiveDeals.length === 0}
           <div class="p-4 rounded-xl border border-dashed border-border text-center text-xs text-muted-foreground py-8">
-            No active deals found in the system.
+            {m.dashboard_no_deals()}
           </div>
         {:else}
           {#each topActiveDeals as deal}
@@ -684,10 +692,10 @@
             <div class="p-3 rounded-xl border border-border/80 bg-card hover:border-primary/40 transition-colors space-y-1.5 shadow-2xs">
               <div class="flex items-start justify-between gap-2">
                 <h4 class="text-xs font-bold text-foreground truncate">{deal.title}</h4>
-                <span class="text-xs font-black text-emerald-600 shrink-0">${deal.value.toLocaleString()}</span>
+                <span class="text-xs font-black text-emerald-600 shrink-0">{formatCurrency(deal.value, 'VND')}</span>
               </div>
               <div class="flex items-center justify-between text-[11px]">
-                <span class="text-muted-foreground truncate">{lead ? lead.name : 'Unassigned'}</span>
+                <span class="text-muted-foreground truncate">{lead ? lead.name : m.kanban_unassigned()}</span>
                 <Badge variant="outline" class="text-[9px] py-0 px-1.5 font-semibold border-border">
                   {cfg.label}
                 </Badge>
@@ -702,7 +710,7 @@
     <Card.Root class="shadow-2xs border-border/80">
       <Card.Header class="pb-3 border-b border-border/60">
         <div class="flex items-center justify-between">
-          <Card.Title class="text-sm font-bold text-foreground">Recent Activities</Card.Title>
+          <Card.Title class="text-sm font-bold text-foreground">{m.dashboard_recent_activity()}</Card.Title>
           <Badge variant="outline" class="text-[10px] font-mono">{schedule.length} logs</Badge>
         </div>
         <p class="text-xs text-muted-foreground">Latest tasks & interactions log</p>
@@ -710,7 +718,7 @@
       <Card.Content class="pt-4 space-y-3">
         {#if schedule.length === 0}
           <div class="p-4 rounded-xl border border-dashed border-border text-center text-xs text-muted-foreground py-8">
-            No activities or logs recorded yet.
+            {m.dashboard_no_activities()}
           </div>
         {:else}
           {#each schedule as item}
@@ -739,14 +747,15 @@
             <Target class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-base text-foreground">Sales Target Configuration</h3>
-            <p class="text-xs text-muted-foreground">Adjust Target & Stretch Goal metrics</p>
+            <h3 class="font-bold text-base text-foreground">{m.dashboard_target_config_title()}</h3>
+            <p class="text-xs text-muted-foreground">{m.dashboard_target_config_subtitle()}</p>
           </div>
         </div>
         <button 
           type="button" 
           onclick={() => showTargetModal = false}
           class="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-accent transition-colors"
+          aria-label={m.common_close()}
         >
           <X class="w-4 h-4" />
         </button>
@@ -756,35 +765,35 @@
         <div class="space-y-1.5">
           <label for="target-revenue-input" class="font-bold text-foreground flex items-center gap-1.5">
             <DollarSign class="w-3.5 h-3.5 text-rose-500" />
-            Target Revenue ($)
+            {m.dashboard_target_revenue_label()} (₫)
           </label>
           <Input 
             id="target-revenue-input"
             type="number"
             bind:value={editTargetInput}
-            step="any"
-            min="1"
+            step="1000000"
+            min="1000000"
             class="h-10 text-xs rounded-xl font-bold text-foreground"
             required
           />
-          <p class="text-[11px] text-muted-foreground">e.g. 120000 for $120k</p>
+          <p class="text-[11px] text-muted-foreground">{m.dashboard_target_example()}</p>
         </div>
 
         <div class="space-y-1.5">
           <label for="stretch-revenue-input" class="font-bold text-foreground flex items-center gap-1.5">
             <TrendingUp class="w-3.5 h-3.5 text-indigo-500" />
-            Stretch Goal ($)
+            {m.dashboard_stretch_revenue_label()} (₫)
           </label>
           <Input 
             id="stretch-revenue-input"
             type="number"
             bind:value={editStretchInput}
-            step="any"
-            min="1"
+            step="1000000"
+            min="1000000"
             class="h-10 text-xs rounded-xl font-bold text-indigo-600"
             required
           />
-          <p class="text-[11px] text-muted-foreground">e.g. 150000 for $150k</p>
+          <p class="text-[11px] text-muted-foreground">{m.dashboard_stretch_example()}</p>
         </div>
 
         <div class="pt-4 border-t border-border flex items-center justify-end gap-3">
@@ -794,14 +803,14 @@
             onclick={() => showTargetModal = false}
             class="h-9 px-4 text-xs rounded-xl font-semibold"
           >
-            Cancel
+            {m.common_cancel()}
           </Button>
           <Button 
             type="submit" 
             class="h-9 px-5 text-xs rounded-xl font-bold bg-primary text-primary-foreground hover:bg-primary/90 shadow-md gap-1.5"
           >
             <Save class="w-3.5 h-3.5" />
-            <span>Save Target</span>
+            <span>{m.dashboard_save_target_btn()}</span>
           </Button>
         </div>
       </form>

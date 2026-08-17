@@ -84,6 +84,10 @@ Object.getOwnPropertyNames(dom.window).forEach((key) => {
   invoke: async (_cmd: string, _args: any) => []
 };
 
+try {
+  (globalThis.window as any).localStorage.setItem('rustsale_locale', 'en');
+} catch {}
+
 if (!globalThis.ResizeObserver) {
   globalThis.ResizeObserver = class ResizeObserver {
     observe() {}

@@ -1,11 +1,14 @@
-/// <reference types="bun-types" />
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
 import Sidebar from '../Sidebar.svelte';
-import { expect, test, beforeEach } from 'bun:test';
+import { expect, test, beforeEach, afterEach } from 'bun:test';
 import { setLocale } from '$lib/i18n';
 
 beforeEach(() => {
   setLocale('en');
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 test('renders Sidebar with CRM logo and options in English', () => {
@@ -23,9 +26,9 @@ test('renders Sidebar with Vietnamese options when locale is vi', () => {
   setLocale('vi');
   render(Sidebar, { props: { activeTab: 'dashboard' } });
   expect(screen.getByText('Bảng điều khiển')).toBeTruthy();
-  expect(screen.getByText('Hội thoại hợp nhất')).toBeTruthy();
+  expect(screen.getByText('Hội thoại')).toBeTruthy();
   expect(screen.getByText('Tiếp cận Email')).toBeTruthy();
-  expect(screen.getByText('Cài đặt hệ thống')).toBeTruthy();
+  expect(screen.getByText('Cài đặt Hệ thống')).toBeTruthy();
 });
 
 test('updates activeTab on navigation item click', async () => {
@@ -47,6 +50,7 @@ test('updates activeTab on navigation item click', async () => {
 });
 
 test('renders interactive Account & License card in footer and triggers onOpenLicense when clicked', async () => {
+  setLocale('en');
   let opened = false;
   render(Sidebar, {
     props: {
@@ -55,7 +59,7 @@ test('renders interactive Account & License card in footer and triggers onOpenLi
     }
   });
 
-  const accountCard = screen.getByTitle('Tài khoản & Quản lý Bản quyền');
+  const accountCard = screen.getByTitle('Account & License Management');
   expect(accountCard).toBeTruthy();
   expect(screen.getByText('Admin Workspace')).toBeTruthy();
   expect(screen.getByText('HWID Active')).toBeTruthy();
