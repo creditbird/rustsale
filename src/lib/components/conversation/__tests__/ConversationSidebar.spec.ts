@@ -423,6 +423,25 @@ describe('ConversationSidebar Component', () => {
     // Pinned header appears
     expect(screen.getByText('Pinned (1)')).toBeTruthy();
   });
+
+  test('pressing Enter on Pin button does not trigger onSelect on parent row', async () => {
+    const onSelect = mock(() => {});
+    const { container } = render(ConversationSidebar, {
+      props: {
+        items,
+        selectedKey: null,
+        loading: false,
+        onSelect
+      }
+    });
+
+    const pinButton = container.querySelector('button[title="Pin conversation"]');
+    expect(pinButton).toBeTruthy();
+
+    // Fire Enter key on the Pin button
+    await fireEvent.keyDown(pinButton!, { key: 'Enter', code: 'Enter' });
+
+    // onSelect on parent row must NOT be invoked
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });
-
-

@@ -18,7 +18,7 @@
   import NewChatDialog from './NewChatDialog.svelte';
   import DeleteConversationDialog from './DeleteConversationDialog.svelte';
   import ConversationItemRow from './ConversationItemRow.svelte';
-  import { computeVirtualWindow } from './sidebarState';
+  import { computeVirtualWindow, calculatePinnedSectionHeight } from './sidebarState';
 
   let {
     items,
@@ -49,7 +49,7 @@
   let isSelectionMode = $state(false);
   let selectedKeys = $state<Set<string>>(new Set());
 
-  // Virtualization state
+  // Virtualization viewport and scroll tracking
   let viewportEl = $state<HTMLElement | null>(null);
   let scrollTop = $state(0);
   let viewportHeight = $state(0);
@@ -74,6 +74,19 @@
         viewportEl?.removeEventListener('scroll', handleScroll);
       };
     }
+  });
+
+  // Auto reset scroll position to top when search query or filter tabs change
+  let previousFilterSignature = '';
+  $effect(() => {
+    const currentSig = `${searchQuery}:${activeKindTab}:${activeFilterTab}`;
+    if (previousFilterSignature !== '' && previousFilterSignature !== currentSig) {
+      if (viewportEl && viewportEl.scrollTop > 0) {
+        viewportEl.scrollTop = 0;
+        scrollTop = 0;
+      }
+    }
+    previousFilterSignature = currentSig;
   });
 
   onMount(() => {
@@ -191,11 +204,18 @@
         : unpinnedItems
   );
 
+  // Compute offset and effective scroll area for main items accounting for pinned items
+  let pinnedOffset = $derived(calculatePinnedSectionHeight(pinnedItems));
+  let effectiveScrollTop = $derived(Math.max(0, scrollTop - pinnedOffset));
+  let effectiveViewportHeight = $derived(
+    Math.max(0, viewportHeight - Math.max(0, pinnedOffset - scrollTop))
+  );
+
   let virtualResult = $derived(
     computeVirtualWindow({
-      totalItems: activeMainItems.length,
-      scrollTop,
-      viewportHeight
+      items: activeMainItems,
+      scrollTop: effectiveScrollTop,
+      viewportHeight: effectiveViewportHeight
     })
   );
 
@@ -459,7 +479,7 @@
       <div class="p-2 space-y-4">
         {#if pinnedItems.length > 0}
           <div>
-            <h3 class="text-xs font-semibold text-amber-500 uppercase tracking-wider px-3 py-1.5 flex items-center gap-1.5">
+            <h3 class="text-xs font-semibold text-amber-500 uppercase tracking-wider px-3 py-1.5 flex items-center gap-1.5 h-8">
               <Pin class="w-3.5 h-3.5 fill-amber-500" />
               <span>Pinned ({pinnedItems.length})</span>
             </h3>
@@ -484,11 +504,11 @@
         {#if activeMainItems.length > 0}
           <div>
             {#if activeKindTab === 'customer'}
-              <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
+              <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5 h-8">
                 Customers ({customerItems.length})
               </h3>
             {:else if activeKindTab === 'group'}
-              <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5">
+              <h3 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-1.5 h-8">
                 Groups ({groupItems.length})
               </h3>
             {/if}

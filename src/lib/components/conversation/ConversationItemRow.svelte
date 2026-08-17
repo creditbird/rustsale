@@ -41,6 +41,8 @@
     onPromptDelete: (e: MouseEvent, item: InboxItem) => void;
   } = $props();
 
+  const isGroup = $derived(item.kind === 'group');
+
   function handleClick() {
     if (isSelectionMode) {
       onToggleSelection(item.key);
@@ -50,6 +52,17 @@
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    // If the event originated from a child interactive control (such as Pin/Delete button or checkbox),
+    // do NOT trigger the row selection action.
+    const target = e.target as HTMLElement | null;
+    if (
+      target &&
+      target !== e.currentTarget &&
+      (target.tagName === 'BUTTON' || target.closest('button') || target.tagName === 'INPUT')
+    ) {
+      return;
+    }
+
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (isSelectionMode) {
@@ -70,7 +83,8 @@
   onclick={handleClick}
   onkeydown={handleKeyDown}
   class={cn(
-    'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none',
+    'flex items-start gap-3 p-2.5 rounded-lg cursor-pointer transition-colors text-left select-none overflow-hidden box-border',
+    isGroup ? 'h-[104px] min-h-[104px] max-h-[104px]' : 'h-[80px] min-h-[80px] max-h-[80px]',
     isPinned && 'border-l-2 border-amber-500/80',
     isSelectionMode && isChecked
       ? 'bg-primary/10 text-foreground font-medium'
@@ -112,6 +126,7 @@
             type="button"
             title="Unpin conversation"
             onclick={(e) => onTogglePin(e, item)}
+            onkeydown={(e) => e.stopPropagation()}
             class="p-1 rounded text-amber-500 hover:bg-amber-500/10 shrink-0"
           >
             <Pin class="w-3.5 h-3.5 fill-amber-500" />
@@ -121,6 +136,7 @@
             type="button"
             title="Pin conversation"
             onclick={(e) => onTogglePin(e, item)}
+            onkeydown={(e) => e.stopPropagation()}
             class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-amber-500 rounded hover:bg-amber-500/10 shrink-0"
           >
             <Pin class="w-3.5 h-3.5" />
@@ -132,6 +148,7 @@
             type="button"
             title="Delete conversation"
             onclick={(e) => onPromptDelete(e, item)}
+            onkeydown={(e) => e.stopPropagation()}
             class="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-destructive rounded hover:bg-destructive/10 shrink-0"
           >
             <Trash2 class="w-3.5 h-3.5" />
@@ -141,13 +158,13 @@
     </div>
 
     {#if item.lastMessagePreview}
-      <p class="text-xs text-muted-foreground truncate mt-0.5">
+      <p class="text-xs text-muted-foreground truncate mt-0.5 leading-tight">
         {parseEmoticons(item.lastMessagePreview)}
       </p>
     {/if}
 
-    {#if item.kind === 'group'}
-      <div class="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
+    {#if isGroup}
+      <div class="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground leading-tight">
         <Users class="w-3.5 h-3.5 shrink-0" />
         <span class="shrink-0 font-medium">{item.participantCount}</span>
         {#if getParticipantsPreview(item)}
@@ -157,14 +174,14 @@
     {/if}
 
     {#if item.channels && item.channels.length > 0}
-      <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+      <div class="flex items-center gap-1.5 mt-1.5 flex-nowrap overflow-x-hidden">
         {#each item.channels as ch (ch.channel)}
           {@const Icon = channelIcons[ch.channel] || MessageSquare}
           {@const count = isSelected ? 0 : (ch.unreadCount !== undefined ? ch.unreadCount : ch.messageCount)}
           {@const chName = ch.channel.toLowerCase()}
           <span
             class={cn(
-              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border",
+              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors border shrink-0",
               count > 0
                 ? "bg-emerald-600 text-white font-bold border-emerald-600 shadow-2xs"
                 : chName === 'zalo'
