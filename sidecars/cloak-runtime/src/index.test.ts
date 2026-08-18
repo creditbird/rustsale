@@ -307,19 +307,35 @@ describe('Google Maps block detection', () => {
       expect(parseDevToolsWsEndpoint('random log line')).toBeNull();
     });
 
+    test('parses loopback DevTools ws endpoint across split and fragmented chunks', () => {
+      const chunk1 = 'Some previous Chromium noise\nDevTools listening ';
+      const chunk2 = 'on ws://127.0.0.1:49152/devtools/browser/abc-split-def\nMore noise';
+      expect(parseDevToolsWsEndpoint(chunk1)).toBeNull();
+      const combined = chunk1 + chunk2;
+      expect(parseDevToolsWsEndpoint(combined)).toBe('ws://127.0.0.1:49152/devtools/browser/abc-split-def');
+    });
+
     test('refuses non-loopback DevTools endpoints for security', () => {
       const remoteEndpoint = 'DevTools listening on ws://0.0.0.0:9222/devtools/browser/abc';
       expect(() => parseDevToolsWsEndpoint(remoteEndpoint)).toThrow('Refusing non-loopback DevTools endpoint');
+
+      const hostnameEndpoint = 'DevTools listening on ws://localhost:9222/devtools/browser/abc';
+      expect(() => parseDevToolsWsEndpoint(hostnameEndpoint)).toThrow('Refusing non-loopback DevTools endpoint');
     });
 
-    test('builds Windows Chromium arguments with ephemeral remote debugging port and profile', () => {
+    test('builds Windows Chromium arguments with explicit 127.0.0.1 address and protects against overrides', () => {
       const args = buildWindowsChromiumArgs({
         profileDir: 'C:\\Users\\User\\AppData\\Local\\Temp\\profile-1',
         headless: true,
+        extraArgs: ['--remote-debugging-address=0.0.0.0', '--user-data-dir=C:\\evil', '--custom-flag=true'],
       });
 
+      expect(args).toContain('--remote-debugging-address=127.0.0.1');
+      expect(args).not.toContain('--remote-debugging-address=0.0.0.0');
       expect(args).toContain('--remote-debugging-port=0');
       expect(args).toContain('--user-data-dir=C:\\Users\\User\\AppData\\Local\\Temp\\profile-1');
+      expect(args).not.toContain('--user-data-dir=C:\\evil');
+      expect(args).toContain('--custom-flag=true');
       expect(args).toContain('--headless');
       expect(args).toContain('about:blank');
     });

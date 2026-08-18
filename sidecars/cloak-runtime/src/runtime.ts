@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import * as cloak from 'cloakbrowser';
 import type { BinaryInfo } from 'cloakbrowser';
 import * as playwright from 'playwright-core';
@@ -44,7 +44,7 @@ export function parseDevToolsWsEndpoint(logLine: string): string | null {
   if (!match) return null;
   const endpoint = match[1];
   const url = new URL(endpoint);
-  if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+  if (url.hostname !== '127.0.0.1') {
     throw new RuntimeFault('browser_startup', `Refusing non-loopback DevTools endpoint: ${endpoint}`, false);
   }
   return endpoint;
@@ -57,7 +57,9 @@ export function buildWindowsChromiumArgs(options: {
   extraArgs?: string[];
 }): string[] {
   const cdpPort = options.cdpPort ?? 0;
+  const protectedPrefixes = ['--remote-debugging-port', '--remote-debugging-address', '--user-data-dir'];
   const baseArgs = [
+    '--remote-debugging-address=127.0.0.1',
     `--remote-debugging-port=${cdpPort}`,
     `--user-data-dir=${options.profileDir}`,
     '--no-first-run',
@@ -87,13 +89,17 @@ export function buildWindowsChromiumArgs(options: {
 
   const stealthArgs = cloak.getDefaultStealthArgs();
   for (const arg of stealthArgs) {
-    if (!baseArgs.some((existing) => existing.split('=')[0] === arg.split('=')[0])) {
+    const key = arg.split('=')[0];
+    if (protectedPrefixes.includes(key)) continue;
+    if (!baseArgs.some((existing) => existing.split('=')[0] === key)) {
       baseArgs.push(arg);
     }
   }
   if (options.extraArgs) {
     for (const arg of options.extraArgs) {
-      if (!baseArgs.some((existing) => existing.split('=')[0] === arg.split('=')[0])) {
+      const key = arg.split('=')[0];
+      if (protectedPrefixes.includes(key)) continue;
+      if (!baseArgs.some((existing) => existing.split('=')[0] === key)) {
         baseArgs.push(arg);
       }
     }
@@ -225,58 +231,108 @@ export class CloakRuntime {
       detached: !isWindows,
       stdio: ['ignore', 'ignore', 'pipe'],
     });
+    this.browserProcess = proc;
+    this.profileDir = payload.profileDir;
 
     const wsEndpoint = await new Promise<string>((resolve, reject) => {
       let resolved = false;
       let accumulatedStderr = '';
+
+      const cleanupListeners = () => {
+        clearTimeout(timeoutId);
+        try {
+          proc.stderr?.removeListener('data', onData);
+          proc.removeListener('error', onError);
+          proc.removeListener('exit', onExit);
+        } catch {}
+      };
+
       const timeoutId = setTimeout(() => {
         if (!resolved) {
           resolved = true;
-          try { proc.kill(); } catch {}
-          reject(new RuntimeFault('browser_startup', `Timeout waiting for Chromium DevTools endpoint on Windows. Stderr: ${accumulatedStderr}`, true));
+          cleanupListeners();
+          try {
+            killProcessTree(proc, payload.profileDir);
+          } catch {}
+          reject(
+            new RuntimeFault(
+              'browser_startup',
+              `Timeout waiting for Chromium DevTools endpoint on Windows. Stderr: ${accumulatedStderr}`,
+              true,
+            ),
+          );
         }
       }, 30_000);
 
-      proc.stderr?.on('data', (chunk: Buffer) => {
+      const onData = (chunk: Buffer) => {
         const text = chunk.toString();
         accumulatedStderr += text;
+        if (accumulatedStderr.length > 64 * 1024) {
+          accumulatedStderr = accumulatedStderr.slice(-32 * 1024);
+        }
         try {
-          const endpoint = parseDevToolsWsEndpoint(text);
+          const endpoint = parseDevToolsWsEndpoint(accumulatedStderr);
           if (endpoint && !resolved) {
             resolved = true;
-            clearTimeout(timeoutId);
+            cleanupListeners();
             resolve(endpoint);
           }
         } catch (err) {
           if (!resolved) {
             resolved = true;
-            clearTimeout(timeoutId);
+            cleanupListeners();
+            try {
+              killProcessTree(proc, payload.profileDir);
+            } catch {}
             reject(err);
           }
         }
-      });
+      };
 
-      proc.on('error', (err) => {
+      const onError = (err: Error) => {
         if (!resolved) {
           resolved = true;
-          clearTimeout(timeoutId);
+          cleanupListeners();
+          try {
+            killProcessTree(proc, payload.profileDir);
+          } catch {}
           reject(new RuntimeFault('browser_startup', `Failed to spawn Chromium: ${err.message}`, true));
         }
-      });
+      };
 
-      proc.on('exit', (code, signal) => {
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
         if (!resolved) {
           resolved = true;
-          clearTimeout(timeoutId);
-          reject(new RuntimeFault('browser_startup', `Chromium exited prematurely (code=${code}, signal=${signal}). Stderr: ${accumulatedStderr}`, true));
+          cleanupListeners();
+          reject(
+            new RuntimeFault(
+              'browser_startup',
+              `Chromium exited prematurely (code=${code}, signal=${signal}). Stderr: ${accumulatedStderr}`,
+              true,
+            ),
+          );
         }
-      });
+      };
+
+      proc.stderr?.on('data', onData);
+      proc.on('error', onError);
+      proc.on('exit', onExit);
     });
 
-    const browser = await playwright.chromium.connectOverCDP(wsEndpoint);
-    const context = browser.contexts()[0] ?? (await browser.newContext());
-    const page = context.pages()[0] ?? (await context.newPage());
-    return { browser, context, page, proc };
+    try {
+      const browser = await playwright.chromium.connectOverCDP(wsEndpoint);
+      this.browser = browser;
+      const context = browser.contexts()[0] ?? (await browser.newContext());
+      this.context = context;
+      const page = context.pages()[0] ?? (await context.newPage());
+      this.page = page;
+      return { browser, context, page, proc };
+    } catch (err) {
+      try {
+        killProcessTree(proc, payload.profileDir);
+      } catch {}
+      throw err;
+    }
   }
 
   async navigate(payload: NavigatePayload): Promise<{ url: string; title: string }> {
@@ -364,15 +420,23 @@ export class CloakRuntime {
 }
 
 export function killProcessTree(proc?: ChildProcess, userDataDir?: string): void {
+  const rootPid = proc?.pid;
   if (process.platform === 'win32') {
-    if (proc) {
+    if (rootPid) {
       try {
-        proc.kill('SIGTERM');
-      } catch {}
+        spawnSync('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
+          windowsHide: true,
+          stdio: 'ignore',
+          shell: false,
+        });
+      } catch {
+        try {
+          proc?.kill('SIGTERM');
+        } catch {}
+      }
     }
     return;
   }
-  const rootPid = proc?.pid;
   try {
     const pidsToKill = new Set<number>();
     if (rootPid) {
