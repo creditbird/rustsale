@@ -9,6 +9,10 @@ import {
   PINNED_CLOAKBROWSER_BINARY_VERSION,
   persistentLaunchOptions,
   pinnedCloakBrowserBinaryVersion,
+  preferredBrowserTransport,
+  parseDevToolsWsEndpoint,
+  waitForDevToolsWsEndpoint,
+  buildWindowsChromiumArgs,
 } from './runtime';
 
 function runtime(overrides: Partial<RuntimeAdapter> = {}): RuntimeAdapter {
@@ -268,6 +272,156 @@ describe('Google Maps block detection', () => {
     expect(headless.userDataDir).toBe(profileDir);
     expect(headed.userDataDir).toBe(headless.userDataDir);
     expect(headed.headless).toBe(false);
+  });
+
+  describe('Browser transport and Windows CDP launcher', () => {
+    test('selects cdp-websocket on win32 and playwright-pipe on unix', () => {
+      const originalEnv = process.env.RUSTSALE_BROWSER_TRANSPORT;
+      delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      try {
+        expect(preferredBrowserTransport('win32')).toBe('cdp-websocket');
+        expect(preferredBrowserTransport('linux')).toBe('playwright-pipe');
+        expect(preferredBrowserTransport('darwin')).toBe('playwright-pipe');
+      } finally {
+        if (originalEnv) process.env.RUSTSALE_BROWSER_TRANSPORT = originalEnv;
+        else delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      }
+    });
+
+    test('honors explicit RUSTSALE_BROWSER_TRANSPORT environment override', () => {
+      const originalEnv = process.env.RUSTSALE_BROWSER_TRANSPORT;
+      try {
+        process.env.RUSTSALE_BROWSER_TRANSPORT = 'cdp-websocket';
+        expect(preferredBrowserTransport('linux')).toBe('cdp-websocket');
+
+        process.env.RUSTSALE_BROWSER_TRANSPORT = 'pipe';
+        expect(preferredBrowserTransport('win32')).toBe('playwright-pipe');
+      } finally {
+        if (originalEnv) process.env.RUSTSALE_BROWSER_TRANSPORT = originalEnv;
+        else delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      }
+    });
+
+    test('parses loopback DevTools ws endpoint from Chromium output', () => {
+      const logLine = 'DevTools listening on ws://127.0.0.1:49152/devtools/browser/abc-123-def';
+      expect(parseDevToolsWsEndpoint(logLine)).toBe('ws://127.0.0.1:49152/devtools/browser/abc-123-def');
+      expect(parseDevToolsWsEndpoint('random log line')).toBeNull();
+    });
+
+    test('parses loopback DevTools ws endpoint across split and fragmented chunks', () => {
+      const chunk1 = 'Some previous Chromium noise\nDevTools listening ';
+      const chunk2 = 'on ws://127.0.0.1:49152/devtools/browser/abc-split-def\nMore noise';
+      expect(parseDevToolsWsEndpoint(chunk1)).toBeNull();
+      const combined = chunk1 + chunk2;
+      expect(parseDevToolsWsEndpoint(combined)).toBe('ws://127.0.0.1:49152/devtools/browser/abc-split-def');
+    });
+
+    test('refuses non-loopback DevTools endpoints for security', () => {
+      const remoteEndpoint = 'DevTools listening on ws://0.0.0.0:9222/devtools/browser/abc';
+      expect(() => parseDevToolsWsEndpoint(remoteEndpoint)).toThrow('Refusing non-loopback DevTools endpoint');
+
+      const hostnameEndpoint = 'DevTools listening on ws://localhost:9222/devtools/browser/abc';
+      expect(() => parseDevToolsWsEndpoint(hostnameEndpoint)).toThrow('Refusing non-loopback DevTools endpoint');
+    });
+
+    test('builds Windows Chromium arguments with explicit 127.0.0.1 address and protects against overrides', () => {
+      const args = buildWindowsChromiumArgs({
+        profileDir: 'C:\\Users\\User\\AppData\\Local\\Temp\\profile-1',
+        headless: true,
+        extraArgs: ['--remote-debugging-address=0.0.0.0', '--user-data-dir=C:\\evil', '--custom-flag=true'],
+      });
+
+      expect(args).toContain('--remote-debugging-address=127.0.0.1');
+      expect(args).not.toContain('--remote-debugging-address=0.0.0.0');
+      expect(args).toContain('--remote-debugging-port=0');
+      expect(args).toContain('--user-data-dir=C:\\Users\\User\\AppData\\Local\\Temp\\profile-1');
+      expect(args).not.toContain('--user-data-dir=C:\\evil');
+      expect(args).toContain('--custom-flag=true');
+      expect(args).toContain('--headless');
+      expect(args).toContain('about:blank');
+    });
+
+    test('waitForDevToolsWsEndpoint parses endpoint across emitted stderr chunks and cleans up listeners', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000 });
+
+      expect(stderr.listenerCount('data')).toBe(1);
+      expect(proc.listenerCount('error')).toBe(1);
+      expect(proc.listenerCount('exit')).toBe(1);
+
+      stderr.emit('data', Buffer.from('Chrome startup noise...\nDevTools listening '));
+      stderr.emit('data', Buffer.from('on ws://127.0.0.1:51234/devtools/browser/abc-stream-def\n'));
+
+      const endpoint = await waitPromise;
+      expect(endpoint).toBe('ws://127.0.0.1:51234/devtools/browser/abc-stream-def');
+
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint removes listeners and rejects on timeout', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 50 });
+
+      await expect(waitPromise).rejects.toThrow('Timeout waiting for Chromium DevTools endpoint');
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint removes listeners and rejects on process error event', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000 });
+      proc.emit('error', new Error('Simulated binary spawn error'));
+
+      await expect(waitPromise).rejects.toThrow('Failed to spawn Chromium: Simulated binary spawn error');
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint removes listeners and rejects on premature exit event', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000 });
+      proc.emit('exit', 1, null);
+
+      await expect(waitPromise).rejects.toThrow('Chromium exited prematurely (code=1, signal=null)');
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint trims buffer when stderr exceeds maxBufferBytes', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000, maxBufferBytes: 200 });
+      stderr.emit('data', 'A'.repeat(300));
+      stderr.emit('data', '\nDevTools listening on ws://127.0.0.1:49999/devtools/browser/trimmed\n');
+
+      const endpoint = await waitPromise;
+      expect(endpoint).toBe('ws://127.0.0.1:49999/devtools/browser/trimmed');
+      expect(stderr.listenerCount('data')).toBe(0);
+    });
   });
 });
 

@@ -48,6 +48,49 @@ const patches: Array<{ file: string; target: string | RegExp; replacement: strin
     replacement: `const packageJSON = { version: "${version}", name: "playwright-core" };`,
     description: 'cli program packageJSON mock',
   },
+  {
+    file: join(playwrightCoreRoot, 'lib/server/transport.js'),
+    target: `this._ws = new import_utilsBundle.ws(url, [], {
+      maxPayload: 256 * 1024 * 1024,
+      // 256Mb,
+      headers: options.headers,
+      followRedirects: options.followRedirects,
+      agent: /^(https|wss):\\/\\//.test(url) ? import_happyEyeballs.httpsHappyEyeballsAgent : import_happyEyeballs.httpHappyEyeballsAgent,
+      perMessageDeflate
+    });`,
+    replacement: `if (typeof Bun !== "undefined" && typeof globalThis.WebSocket !== "undefined") {
+      const EventEmitter = require("events");
+      class BunWSAdapter extends EventEmitter {
+        constructor(u, p) {
+          super();
+          this.url = u;
+          this.readyState = 0;
+          const ws = new globalThis.WebSocket(u, p);
+          this._ws = ws;
+          ws.onopen = () => { this.readyState = 1; this.emit("open"); };
+          ws.onmessage = (event) => { this.emit("message", event); };
+          ws.onerror = (error) => { this.emit("error", error); };
+          ws.onclose = (event) => { this.readyState = 3; this.emit("close", event.code, event.reason); };
+        }
+        send(data, cb) {
+          try { this._ws.send(data); cb?.(); } catch (err) { cb?.(err); }
+        }
+        close(code, reason) { this._ws.close(code, reason); }
+        addEventListener(type, listener) { this.on(type, listener); }
+        removeEventListener(type, listener) { this.off(type, listener); }
+      }
+      this._ws = new BunWSAdapter(url, []);
+    } else {
+      this._ws = new import_utilsBundle.ws(url, [], {
+        maxPayload: 256 * 1024 * 1024,
+        headers: options.headers,
+        followRedirects: options.followRedirects,
+        agent: /^(https|wss):\\/\\//.test(url) ? import_happyEyeballs.httpsHappyEyeballsAgent : import_happyEyeballs.httpHappyEyeballsAgent,
+        perMessageDeflate
+      });
+    }`,
+    description: 'WebSocketTransport Bun native WebSocket adapter',
+  },
 ];
 
 for (const patch of patches) {
