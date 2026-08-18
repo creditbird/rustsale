@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as cloak from 'cloakbrowser';
 import type { BinaryInfo } from 'cloakbrowser';
 import * as playwright from 'playwright-core';
@@ -20,6 +22,95 @@ const PINNED_CLOAKBROWSER_BINARY_VERSIONS: Readonly<Record<string, string>> = {
   'darwin-arm64': '145.0.7632.109.2',
   'win32-x64': '146.0.7680.177.5',
 };
+
+export type BrowserTransport = 'playwright-pipe' | 'cdp-websocket';
+
+export function preferredBrowserTransport(platform: string = process.platform): BrowserTransport {
+  const override = process.env.RUSTSALE_BROWSER_TRANSPORT?.trim().toLowerCase();
+  if (override === 'cdp-websocket' || override === 'websocket' || override === 'tcp') {
+    return 'cdp-websocket';
+  }
+  if (override === 'playwright-pipe' || override === 'pipe') {
+    return 'playwright-pipe';
+  }
+  if (platform === 'win32') {
+    return 'cdp-websocket';
+  }
+  return 'playwright-pipe';
+}
+
+export function parseDevToolsWsEndpoint(logLine: string): string | null {
+  const match = logLine.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+  if (!match) return null;
+  const endpoint = match[1];
+  const url = new URL(endpoint);
+  if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+    throw new RuntimeFault('browser_startup', `Refusing non-loopback DevTools endpoint: ${endpoint}`, false);
+  }
+  return endpoint;
+}
+
+export function buildWindowsChromiumArgs(options: {
+  profileDir: string;
+  headless: boolean;
+  cdpPort?: number;
+  extraArgs?: string[];
+}): string[] {
+  const cdpPort = options.cdpPort ?? 0;
+  const baseArgs = [
+    `--remote-debugging-port=${cdpPort}`,
+    `--user-data-dir=${options.profileDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-breakpad',
+    '--disable-client-side-phishing-detection',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-dev-shm-usage',
+    '--disable-extensions',
+    '--disable-hang-monitor',
+    '--disable-ipc-flooding-protection',
+    '--disable-popup-blocking',
+    '--disable-prompt-on-repost',
+    '--disable-renderer-backgrounding',
+    '--disable-sync',
+    '--force-color-profile=srgb',
+    '--metrics-recording-only',
+    '--password-store=basic',
+    '--use-mock-keychain',
+    '--no-sandbox',
+    '--ignore-gpu-blocklist',
+  ];
+
+  const stealthArgs = cloak.getDefaultStealthArgs();
+  for (const arg of stealthArgs) {
+    if (!baseArgs.some((existing) => existing.split('=')[0] === arg.split('=')[0])) {
+      baseArgs.push(arg);
+    }
+  }
+  if (options.extraArgs) {
+    for (const arg of options.extraArgs) {
+      if (!baseArgs.some((existing) => existing.split('=')[0] === arg.split('=')[0])) {
+        baseArgs.push(arg);
+      }
+    }
+  }
+
+  if (options.headless) {
+    baseArgs.push(
+      '--headless',
+      '--hide-scrollbars',
+      '--mute-audio',
+      '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4',
+    );
+  }
+
+  baseArgs.push('about:blank');
+  return baseArgs;
+}
 
 export function pinnedCloakBrowserBinaryVersion(
   platform: string = process.platform,
@@ -57,8 +148,11 @@ export function persistentLaunchOptions(payload: LaunchPayload): PersistentLaunc
 }
 
 export class CloakRuntime {
+  private browser: playwright.Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private browserProcess: ChildProcess | null = null;
+  private profileDir: string | null = null;
 
   constructor(options: CloakRuntimeOptions = {}) {
     configureCloakBrowserEnvironment(options);
@@ -79,14 +173,25 @@ export class CloakRuntime {
   }
 
   async launch(payload: LaunchPayload): Promise<{ launched: true; url: string }> {
-    const launchOptions = persistentLaunchOptions(payload);
     await this.shutdown();
-    await this.ensureRuntime();
+    this.profileDir = payload.profileDir;
+    const transport = preferredBrowserTransport();
     try {
-      this.context = await diagnosticsToStderr(() =>
-        cloak.launchPersistentContext(launchOptions),
-      );
-      this.page = this.context.pages()[0] ?? (await this.context.newPage());
+      if (transport === 'cdp-websocket') {
+        const { browser, context, page, proc } = await this.launchWindowsCdp(payload);
+        this.browser = browser;
+        this.context = context;
+        this.page = page;
+        this.browserProcess = proc;
+      } else {
+        const launchOptions = persistentLaunchOptions(payload);
+        await this.ensureRuntime();
+        this.context = await diagnosticsToStderr(() =>
+          cloak.launchPersistentContext(launchOptions),
+        );
+        this.page = this.context.pages()[0] ?? (await this.context.newPage());
+      }
+
       if (payload.startUrl) {
         await this.navigate({ url: payload.startUrl });
       }
@@ -95,6 +200,83 @@ export class CloakRuntime {
       await this.shutdown();
       throw mapBrowserError(error, 'browser_startup');
     }
+  }
+
+  private async launchWindowsCdp(
+    payload: LaunchPayload,
+  ): Promise<{ browser: playwright.Browser; context: BrowserContext; page: Page; proc: ChildProcess }> {
+    if (!payload.profileDir) {
+      throw new RuntimeFault('invalid_input', 'profileDir is required', false);
+    }
+    const binaryInfo = await this.ensureRuntime();
+    const binaryPath = binaryInfo.binaryPath;
+    if (!binaryPath) {
+      throw new RuntimeFault('runtime_unavailable', 'Chromium binary path is not available', false);
+    }
+
+    const args = buildWindowsChromiumArgs({
+      profileDir: payload.profileDir,
+      headless: payload.headless,
+    });
+
+    const isWindows = process.platform === 'win32';
+    const proc = spawn(binaryPath, args, {
+      windowsHide: true,
+      detached: !isWindows,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+
+    const wsEndpoint = await new Promise<string>((resolve, reject) => {
+      let resolved = false;
+      let accumulatedStderr = '';
+      const timeoutId = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          try { proc.kill(); } catch {}
+          reject(new RuntimeFault('browser_startup', `Timeout waiting for Chromium DevTools endpoint on Windows. Stderr: ${accumulatedStderr}`, true));
+        }
+      }, 30_000);
+
+      proc.stderr?.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        accumulatedStderr += text;
+        try {
+          const endpoint = parseDevToolsWsEndpoint(text);
+          if (endpoint && !resolved) {
+            resolved = true;
+            clearTimeout(timeoutId);
+            resolve(endpoint);
+          }
+        } catch (err) {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeoutId);
+            reject(err);
+          }
+        }
+      });
+
+      proc.on('error', (err) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          reject(new RuntimeFault('browser_startup', `Failed to spawn Chromium: ${err.message}`, true));
+        }
+      });
+
+      proc.on('exit', (code, signal) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          reject(new RuntimeFault('browser_startup', `Chromium exited prematurely (code=${code}, signal=${signal}). Stderr: ${accumulatedStderr}`, true));
+        }
+      });
+    });
+
+    const browser = await playwright.chromium.connectOverCDP(wsEndpoint);
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = context.pages()[0] ?? (await context.newPage());
+    return { browser, context, page, proc };
   }
 
   async navigate(payload: NavigatePayload): Promise<{ url: string; title: string }> {
@@ -141,13 +323,34 @@ export class CloakRuntime {
   }
 
   async shutdown(): Promise<{ stopped: true }> {
+    const browser = this.browser;
     const context = this.context;
+    const proc = this.browserProcess;
+    const profileDir = this.profileDir;
+    this.browser = null;
     this.context = null;
     this.page = null;
+    this.browserProcess = null;
+    this.profileDir = null;
+
     if (context) {
+      const contextBrowser = context.browser();
       await context.close().catch((error) => {
         console.error('[cloak-runtime] context close failed', error);
       });
+      if (contextBrowser) {
+        await contextBrowser.close().catch((error) => {
+          console.error('[cloak-runtime] context browser close failed', error);
+        });
+      }
+    }
+    if (browser) {
+      await browser.close().catch((error) => {
+        console.error('[cloak-runtime] browser close failed', error);
+      });
+    }
+    if (proc || profileDir) {
+      killProcessTree(proc ?? undefined, profileDir ?? undefined);
     }
     return { stopped: true };
   }
@@ -157,6 +360,71 @@ export class CloakRuntime {
       throw new RuntimeFault('disconnected', 'browser page is not available', true);
     }
     return this.page;
+  }
+}
+
+export function killProcessTree(proc?: ChildProcess, userDataDir?: string): void {
+  if (process.platform === 'win32') {
+    if (proc) {
+      try {
+        proc.kill('SIGTERM');
+      } catch {}
+    }
+    return;
+  }
+  const rootPid = proc?.pid;
+  try {
+    const pidsToKill = new Set<number>();
+    if (rootPid) {
+      pidsToKill.add(rootPid);
+    }
+    if (process.platform === 'linux') {
+      try {
+        let addedNew = true;
+        while (addedNew) {
+          addedNew = false;
+          const entries = readdirSync('/proc');
+          for (const entry of entries) {
+            if (!/^\d+$/.test(entry)) continue;
+            const pid = parseInt(entry, 10);
+            if (pidsToKill.has(pid)) continue;
+            try {
+              if (userDataDir) {
+                const cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf8').replaceAll('\0', ' ');
+                if (cmdline.includes(userDataDir)) {
+                  pidsToKill.add(pid);
+                  addedNew = true;
+                  continue;
+                }
+              }
+              const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+              const closeParen = stat.lastIndexOf(')');
+              if (closeParen !== -1) {
+                const rest = stat.slice(closeParen + 2).split(' ');
+                const ppid = parseInt(rest[1], 10);
+                if (pidsToKill.has(ppid)) {
+                  pidsToKill.add(pid);
+                  addedNew = true;
+                }
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    if (rootPid) {
+      try {
+        process.kill(-rootPid, 'SIGKILL');
+      } catch {}
+    }
+    for (const pid of pidsToKill) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  } catch (error) {
+    console.error('[cloak-runtime] killProcessTree failed', error);
   }
 }
 

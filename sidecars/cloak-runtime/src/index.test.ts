@@ -9,6 +9,9 @@ import {
   PINNED_CLOAKBROWSER_BINARY_VERSION,
   persistentLaunchOptions,
   pinnedCloakBrowserBinaryVersion,
+  preferredBrowserTransport,
+  parseDevToolsWsEndpoint,
+  buildWindowsChromiumArgs,
 } from './runtime';
 
 function runtime(overrides: Partial<RuntimeAdapter> = {}): RuntimeAdapter {
@@ -268,6 +271,58 @@ describe('Google Maps block detection', () => {
     expect(headless.userDataDir).toBe(profileDir);
     expect(headed.userDataDir).toBe(headless.userDataDir);
     expect(headed.headless).toBe(false);
+  });
+
+  describe('Browser transport and Windows CDP launcher', () => {
+    test('selects cdp-websocket on win32 and playwright-pipe on unix', () => {
+      const originalEnv = process.env.RUSTSALE_BROWSER_TRANSPORT;
+      delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      try {
+        expect(preferredBrowserTransport('win32')).toBe('cdp-websocket');
+        expect(preferredBrowserTransport('linux')).toBe('playwright-pipe');
+        expect(preferredBrowserTransport('darwin')).toBe('playwright-pipe');
+      } finally {
+        if (originalEnv) process.env.RUSTSALE_BROWSER_TRANSPORT = originalEnv;
+        else delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      }
+    });
+
+    test('honors explicit RUSTSALE_BROWSER_TRANSPORT environment override', () => {
+      const originalEnv = process.env.RUSTSALE_BROWSER_TRANSPORT;
+      try {
+        process.env.RUSTSALE_BROWSER_TRANSPORT = 'cdp-websocket';
+        expect(preferredBrowserTransport('linux')).toBe('cdp-websocket');
+
+        process.env.RUSTSALE_BROWSER_TRANSPORT = 'pipe';
+        expect(preferredBrowserTransport('win32')).toBe('playwright-pipe');
+      } finally {
+        if (originalEnv) process.env.RUSTSALE_BROWSER_TRANSPORT = originalEnv;
+        else delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      }
+    });
+
+    test('parses loopback DevTools ws endpoint from Chromium output', () => {
+      const logLine = 'DevTools listening on ws://127.0.0.1:49152/devtools/browser/abc-123-def';
+      expect(parseDevToolsWsEndpoint(logLine)).toBe('ws://127.0.0.1:49152/devtools/browser/abc-123-def');
+      expect(parseDevToolsWsEndpoint('random log line')).toBeNull();
+    });
+
+    test('refuses non-loopback DevTools endpoints for security', () => {
+      const remoteEndpoint = 'DevTools listening on ws://0.0.0.0:9222/devtools/browser/abc';
+      expect(() => parseDevToolsWsEndpoint(remoteEndpoint)).toThrow('Refusing non-loopback DevTools endpoint');
+    });
+
+    test('builds Windows Chromium arguments with ephemeral remote debugging port and profile', () => {
+      const args = buildWindowsChromiumArgs({
+        profileDir: 'C:\\Users\\User\\AppData\\Local\\Temp\\profile-1',
+        headless: true,
+      });
+
+      expect(args).toContain('--remote-debugging-port=0');
+      expect(args).toContain('--user-data-dir=C:\\Users\\User\\AppData\\Local\\Temp\\profile-1');
+      expect(args).toContain('--headless');
+      expect(args).toContain('about:blank');
+    });
   });
 });
 
