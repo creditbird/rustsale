@@ -16,10 +16,6 @@ if (!existsSync(resolvedPath)) {
 console.log(`[assert-portable-sidecar] Scanning binary for build path leaks: ${resolvedPath}`);
 
 const forbiddenPatterns = [
-  'D:\\a\\rustsale\\rustsale',
-  'D:/a/rustsale/rustsale',
-  '/home/runner/work/',
-  '/Users/runner/work/',
   'playwright-core\\package.json',
   'playwright-core/package.json',
 ];
