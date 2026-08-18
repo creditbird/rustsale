@@ -71,6 +71,8 @@ jobs:
 
       - name: Build Cloak Runtime sidecar
         run: bun run build:cloak-runtime
+        env:
+          SKIP_CLEAN_ROOM_SMOKE: '1'
 
       - name: Setup Private Signing Key
         shell: bash

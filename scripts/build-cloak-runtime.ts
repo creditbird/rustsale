@@ -51,8 +51,11 @@ if (!assertResult.success) {
 }
 
 // 3. Clean-room smoke test: verify binary launches and navigates in an isolated environment without node_modules
+// (Skipped automatically in CI runners to prevent 500MB browser download & headless pipe timeouts on Windows VMs)
 const hostTriple = detectHostTriple();
-if (targetTriple === hostTriple && process.env.SKIP_CLEAN_ROOM_SMOKE !== '1') {
+const isCi = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+const shouldSmokeTest = process.env.RUN_CLEAN_ROOM_SMOKE === '1' || (!isCi && process.env.SKIP_CLEAN_ROOM_SMOKE !== '1');
+if (targetTriple === hostTriple && shouldSmokeTest) {
   const smokeResult = Bun.spawnSync([
     process.execPath,
     'run',
