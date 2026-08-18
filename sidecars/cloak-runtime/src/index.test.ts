@@ -370,22 +370,30 @@ describe('Google Maps block detection', () => {
       const stderr = new EventEmitter();
       proc.stderr = stderr;
 
-      let cleanedUp = false;
-      const waitPromise = waitForDevToolsWsEndpoint(proc, {
-        timeoutMs: 50,
-        onCleanup: () => {
-          cleanedUp = true;
-        },
-      });
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 50 });
 
       await expect(waitPromise).rejects.toThrow('Timeout waiting for Chromium DevTools endpoint');
-      expect(cleanedUp).toBe(true);
       expect(stderr.listenerCount('data')).toBe(0);
       expect(proc.listenerCount('error')).toBe(0);
       expect(proc.listenerCount('exit')).toBe(0);
     });
 
-    test('waitForDevToolsWsEndpoint removes listeners and rejects on premature exit or error', async () => {
+    test('waitForDevToolsWsEndpoint removes listeners and rejects on process error event', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000 });
+      proc.emit('error', new Error('Simulated binary spawn error'));
+
+      await expect(waitPromise).rejects.toThrow('Failed to spawn Chromium: Simulated binary spawn error');
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint removes listeners and rejects on premature exit event', async () => {
       const { EventEmitter } = await import('node:events');
       const proc = new EventEmitter() as any;
       const stderr = new EventEmitter();
@@ -394,7 +402,7 @@ describe('Google Maps block detection', () => {
       const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000 });
       proc.emit('exit', 1, null);
 
-      await expect(waitPromise).rejects.toThrow('Chromium exited prematurely');
+      await expect(waitPromise).rejects.toThrow('Chromium exited prematurely (code=1, signal=null)');
       expect(stderr.listenerCount('data')).toBe(0);
       expect(proc.listenerCount('error')).toBe(0);
       expect(proc.listenerCount('exit')).toBe(0);

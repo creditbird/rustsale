@@ -53,7 +53,6 @@ export function parseDevToolsWsEndpoint(logLine: string): string | null {
 export interface DevToolsEndpointWaitOptions {
   timeoutMs?: number;
   maxBufferBytes?: number;
-  onCleanup?: () => void;
 }
 
 export async function waitForDevToolsWsEndpoint(
@@ -78,7 +77,6 @@ export async function waitForDevToolsWsEndpoint(
         proc.removeListener('error', onError);
         proc.removeListener('exit', onExit);
       } catch {}
-      options.onCleanup?.();
     };
 
     const timeoutId = setTimeout(() => {
@@ -333,11 +331,6 @@ export class CloakRuntime {
     try {
       wsEndpoint = await waitForDevToolsWsEndpoint(proc, {
         timeoutMs: 30_000,
-        onCleanup: () => {
-          try {
-            killProcessTree(proc, payload.profileDir);
-          } catch {}
-        },
       });
     } catch (err) {
       try {
