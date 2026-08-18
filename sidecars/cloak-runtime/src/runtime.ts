@@ -50,6 +50,101 @@ export function parseDevToolsWsEndpoint(logLine: string): string | null {
   return endpoint;
 }
 
+export interface DevToolsEndpointWaitOptions {
+  timeoutMs?: number;
+  maxBufferBytes?: number;
+  onCleanup?: () => void;
+}
+
+export async function waitForDevToolsWsEndpoint(
+  proc: {
+    stderr?: NodeJS.ReadableStream | null;
+    on(event: string, listener: (...args: any[]) => void): any;
+    removeListener(event: string, listener: (...args: any[]) => void): any;
+  },
+  options: DevToolsEndpointWaitOptions = {},
+): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const maxBufferBytes = options.maxBufferBytes ?? 64 * 1024;
+
+  return new Promise<string>((resolve, reject) => {
+    let resolved = false;
+    let accumulatedStderr = '';
+
+    const cleanupListeners = () => {
+      clearTimeout(timeoutId);
+      try {
+        proc.stderr?.removeListener('data', onData);
+        proc.removeListener('error', onError);
+        proc.removeListener('exit', onExit);
+      } catch {}
+      options.onCleanup?.();
+    };
+
+    const timeoutId = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        cleanupListeners();
+        reject(
+          new RuntimeFault(
+            'browser_startup',
+            `Timeout waiting for Chromium DevTools endpoint. Stderr: ${accumulatedStderr}`,
+            true,
+          ),
+        );
+      }
+    }, timeoutMs);
+
+    const onData = (chunk: Buffer | string) => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString();
+      accumulatedStderr += text;
+      if (accumulatedStderr.length > maxBufferBytes) {
+        accumulatedStderr = accumulatedStderr.slice(-maxBufferBytes);
+      }
+      try {
+        const endpoint = parseDevToolsWsEndpoint(accumulatedStderr);
+        if (endpoint && !resolved) {
+          resolved = true;
+          cleanupListeners();
+          resolve(endpoint);
+        }
+      } catch (err) {
+        if (!resolved) {
+          resolved = true;
+          cleanupListeners();
+          reject(err);
+        }
+      }
+    };
+
+    const onError = (err: Error) => {
+      if (!resolved) {
+        resolved = true;
+        cleanupListeners();
+        reject(new RuntimeFault('browser_startup', `Failed to spawn Chromium: ${err.message}`, true));
+      }
+    };
+
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (!resolved) {
+        resolved = true;
+        cleanupListeners();
+        reject(
+          new RuntimeFault(
+            'browser_startup',
+            `Chromium exited prematurely (code=${code}, signal=${signal}). Stderr: ${accumulatedStderr}`,
+            true,
+          ),
+        );
+      }
+    };
+
+    proc.stderr?.on('data', onData);
+    proc.on('error', onError);
+    proc.on('exit', onExit);
+  });
+}
+
 export function buildWindowsChromiumArgs(options: {
   profileDir: string;
   headless: boolean;
@@ -234,90 +329,22 @@ export class CloakRuntime {
     this.browserProcess = proc;
     this.profileDir = payload.profileDir;
 
-    const wsEndpoint = await new Promise<string>((resolve, reject) => {
-      let resolved = false;
-      let accumulatedStderr = '';
-
-      const cleanupListeners = () => {
-        clearTimeout(timeoutId);
-        try {
-          proc.stderr?.removeListener('data', onData);
-          proc.removeListener('error', onError);
-          proc.removeListener('exit', onExit);
-        } catch {}
-      };
-
-      const timeoutId = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          cleanupListeners();
+    let wsEndpoint: string;
+    try {
+      wsEndpoint = await waitForDevToolsWsEndpoint(proc, {
+        timeoutMs: 30_000,
+        onCleanup: () => {
           try {
             killProcessTree(proc, payload.profileDir);
           } catch {}
-          reject(
-            new RuntimeFault(
-              'browser_startup',
-              `Timeout waiting for Chromium DevTools endpoint on Windows. Stderr: ${accumulatedStderr}`,
-              true,
-            ),
-          );
-        }
-      }, 30_000);
-
-      const onData = (chunk: Buffer) => {
-        const text = chunk.toString();
-        accumulatedStderr += text;
-        if (accumulatedStderr.length > 64 * 1024) {
-          accumulatedStderr = accumulatedStderr.slice(-32 * 1024);
-        }
-        try {
-          const endpoint = parseDevToolsWsEndpoint(accumulatedStderr);
-          if (endpoint && !resolved) {
-            resolved = true;
-            cleanupListeners();
-            resolve(endpoint);
-          }
-        } catch (err) {
-          if (!resolved) {
-            resolved = true;
-            cleanupListeners();
-            try {
-              killProcessTree(proc, payload.profileDir);
-            } catch {}
-            reject(err);
-          }
-        }
-      };
-
-      const onError = (err: Error) => {
-        if (!resolved) {
-          resolved = true;
-          cleanupListeners();
-          try {
-            killProcessTree(proc, payload.profileDir);
-          } catch {}
-          reject(new RuntimeFault('browser_startup', `Failed to spawn Chromium: ${err.message}`, true));
-        }
-      };
-
-      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-        if (!resolved) {
-          resolved = true;
-          cleanupListeners();
-          reject(
-            new RuntimeFault(
-              'browser_startup',
-              `Chromium exited prematurely (code=${code}, signal=${signal}). Stderr: ${accumulatedStderr}`,
-              true,
-            ),
-          );
-        }
-      };
-
-      proc.stderr?.on('data', onData);
-      proc.on('error', onError);
-      proc.on('exit', onExit);
-    });
+        },
+      });
+    } catch (err) {
+      try {
+        killProcessTree(proc, payload.profileDir);
+      } catch {}
+      throw err;
+    }
 
     try {
       const browser = await playwright.chromium.connectOverCDP(wsEndpoint);
@@ -423,13 +450,19 @@ export function killProcessTree(proc?: ChildProcess, userDataDir?: string): void
   const rootPid = proc?.pid;
   if (process.platform === 'win32') {
     if (rootPid) {
+      let taskkillSucceeded = false;
       try {
-        spawnSync('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
+        const res = spawnSync('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
           windowsHide: true,
           stdio: 'ignore',
           shell: false,
         });
-      } catch {
+        if (!res.error && res.status === 0) {
+          taskkillSucceeded = true;
+        }
+      } catch {}
+
+      if (!taskkillSucceeded) {
         try {
           proc?.kill('SIGTERM');
         } catch {}

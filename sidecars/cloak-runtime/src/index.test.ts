@@ -11,6 +11,7 @@ import {
   pinnedCloakBrowserBinaryVersion,
   preferredBrowserTransport,
   parseDevToolsWsEndpoint,
+  waitForDevToolsWsEndpoint,
   buildWindowsChromiumArgs,
 } from './runtime';
 
@@ -338,6 +339,80 @@ describe('Google Maps block detection', () => {
       expect(args).toContain('--custom-flag=true');
       expect(args).toContain('--headless');
       expect(args).toContain('about:blank');
+    });
+
+    test('waitForDevToolsWsEndpoint parses endpoint across emitted stderr chunks and cleans up listeners', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000 });
+
+      expect(stderr.listenerCount('data')).toBe(1);
+      expect(proc.listenerCount('error')).toBe(1);
+      expect(proc.listenerCount('exit')).toBe(1);
+
+      stderr.emit('data', Buffer.from('Chrome startup noise...\nDevTools listening '));
+      stderr.emit('data', Buffer.from('on ws://127.0.0.1:51234/devtools/browser/abc-stream-def\n'));
+
+      const endpoint = await waitPromise;
+      expect(endpoint).toBe('ws://127.0.0.1:51234/devtools/browser/abc-stream-def');
+
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint removes listeners and rejects on timeout', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      let cleanedUp = false;
+      const waitPromise = waitForDevToolsWsEndpoint(proc, {
+        timeoutMs: 50,
+        onCleanup: () => {
+          cleanedUp = true;
+        },
+      });
+
+      await expect(waitPromise).rejects.toThrow('Timeout waiting for Chromium DevTools endpoint');
+      expect(cleanedUp).toBe(true);
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint removes listeners and rejects on premature exit or error', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000 });
+      proc.emit('exit', 1, null);
+
+      await expect(waitPromise).rejects.toThrow('Chromium exited prematurely');
+      expect(stderr.listenerCount('data')).toBe(0);
+      expect(proc.listenerCount('error')).toBe(0);
+      expect(proc.listenerCount('exit')).toBe(0);
+    });
+
+    test('waitForDevToolsWsEndpoint trims buffer when stderr exceeds maxBufferBytes', async () => {
+      const { EventEmitter } = await import('node:events');
+      const proc = new EventEmitter() as any;
+      const stderr = new EventEmitter();
+      proc.stderr = stderr;
+
+      const waitPromise = waitForDevToolsWsEndpoint(proc, { timeoutMs: 1000, maxBufferBytes: 200 });
+      stderr.emit('data', 'A'.repeat(300));
+      stderr.emit('data', '\nDevTools listening on ws://127.0.0.1:49999/devtools/browser/trimmed\n');
+
+      const endpoint = await waitPromise;
+      expect(endpoint).toBe('ws://127.0.0.1:49999/devtools/browser/trimmed');
+      expect(stderr.listenerCount('data')).toBe(0);
     });
   });
 });
