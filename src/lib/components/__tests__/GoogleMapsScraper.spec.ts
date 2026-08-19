@@ -857,3 +857,36 @@ test('Detect A in-flight -> switch Administrative -> administrative coordinates 
   expect(createdJobs.length).toBe(0);
 });
 
+test('Detect in-flight -> user manually inputs coordinates -> late geocode resolves -> manual inputs are preserved', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  deferGeocodePromise = true;
+
+  // Trigger Detect for Area A
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), { target: { value: 'Area A' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  // While geocoding is in-flight, user directly enters manual coordinates
+  await fireEvent.input(screen.getByLabelText('Min Lat'), { target: { value: '20.5' } });
+  await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '21.5' } });
+  await fireEvent.input(screen.getByLabelText('Min Lng'), { target: { value: '105.5' } });
+  await fireEvent.input(screen.getByLabelText('Max Lng'), { target: { value: '106.5' } });
+
+  // Now late geocode resolves with different coordinates
+  if (deferredGeocodeResolve) {
+    deferredGeocodeResolve([10.75, 10.85, 106.65, 106.75]);
+  }
+
+  // Await microtasks
+  await new Promise((r) => setTimeout(r, 20));
+
+  // User manual inputs must remain intact (not overwritten by late geocode response)
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(20.5);
+  expect(Number((screen.getByLabelText('Max Lat') as HTMLInputElement).value)).toBe(21.5);
+  expect(Number((screen.getByLabelText('Min Lng') as HTMLInputElement).value)).toBe(105.5);
+  expect(Number((screen.getByLabelText('Max Lng') as HTMLInputElement).value)).toBe(106.5);
+});
+

@@ -128,6 +128,11 @@
 
   let manualGeocodeGeneration = 0;
 
+  function handleManualCoordInput() {
+    manualGeocodeGeneration += 1;
+    isGeocoding = false;
+  }
+
   function switchGridTargetingMode(targetMode: 'administrative' | 'manual') {
     if (gridTargetingMode === targetMode) return;
     gridTargetingMode = targetMode;
@@ -635,6 +640,8 @@
                     disabled={isScraping}
                     onValueChange={(val) => {
                       if (val && presetProvinces[val]) {
+                        manualGeocodeGeneration += 1;
+                        isGeocoding = false;
                         const coords = presetProvinces[val];
                         minLat = coords.minLat;
                         maxLat = coords.maxLat;
@@ -681,19 +688,19 @@
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div class="flex flex-col gap-1">
                   <label for="min-lat" class="text-[10px] text-muted-foreground">Min Lat</label>
-                  <Input id="min-lat" type="number" step="0.0001" bind:value={minLat} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
+                  <Input id="min-lat" type="number" step="0.0001" bind:value={minLat} oninput={handleManualCoordInput} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="max-lat" class="text-[10px] text-muted-foreground">Max Lat</label>
-                  <Input id="max-lat" type="number" step="0.0001" bind:value={maxLat} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
+                  <Input id="max-lat" type="number" step="0.0001" bind:value={maxLat} oninput={handleManualCoordInput} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="min-lng" class="text-[10px] text-muted-foreground">Min Lng</label>
-                  <Input id="min-lng" type="number" step="0.0001" bind:value={minLng} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
+                  <Input id="min-lng" type="number" step="0.0001" bind:value={minLng} oninput={handleManualCoordInput} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="max-lng" class="text-[10px] text-muted-foreground">Max Lng</label>
-                  <Input id="max-lng" type="number" step="0.0001" bind:value={maxLng} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
+                  <Input id="max-lng" type="number" step="0.0001" bind:value={maxLng} oninput={handleManualCoordInput} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
               </div>
             </div>

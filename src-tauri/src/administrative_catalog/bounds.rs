@@ -432,4 +432,18 @@ mod tests {
 
         assert!(repo.get_cached_bounds(1566083).await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    async fn test_geocoder_rate_limiter_serializes_concurrent_requests() {
+        let start = tokio::time::Instant::now();
+        let h1 = tokio::spawn(async {
+            acquire_geocoder_slot().await;
+        });
+        let h2 = tokio::spawn(async {
+            acquire_geocoder_slot().await;
+        });
+        let _ = tokio::join!(h1, h2);
+        let elapsed = start.elapsed();
+        assert!(elapsed >= Duration::from_millis(950));
+    }
 }
