@@ -1,3 +1,4 @@
+pub mod bounds;
 pub mod commands;
 pub mod countries;
 pub mod parser;

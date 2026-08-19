@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use super::{
     service::AdministrativeCatalogService,
-    types::{AdministrativeAreaSummary, AdministrativeCountry, AdministrativeCountryStatus},
+    types::{
+        AdministrativeAreaSummary, AdministrativeBounds, AdministrativeCountry,
+        AdministrativeCountryStatus,
+    },
 };
 
 pub struct AdministrativeCatalogState {
@@ -68,3 +71,16 @@ pub async fn search_administrative_areas(
         .await
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub async fn resolve_administrative_bounds(
+    state: tauri::State<'_, AdministrativeCatalogState>,
+    geoname_id: i64,
+) -> Result<AdministrativeBounds, String> {
+    state
+        .service
+        .resolve_bounds(geoname_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+

@@ -11,9 +11,10 @@
   import GoogleMapsJobHistory from '$lib/components/GoogleMapsJobHistory.svelte';
   import GoogleMapsJobPanel from '$lib/components/GoogleMapsJobPanel.svelte';
   import GoogleMapsRuntimePanel from '$lib/components/GoogleMapsRuntimePanel.svelte';
-  import type {
-    AdministrativeAreaSummary,
-    AdministrativeCountry
+  import {
+    resolveAdministrativeBounds,
+    type AdministrativeAreaSummary,
+    type AdministrativeCountry
   } from '$lib/services/administrativeCatalogService';
   import {
     cancelGoogleMapsScrapeJob,
@@ -35,7 +36,7 @@
     type GoogleMapsRuntimeStatus,
     type GoogleMapsScrapeJob
   } from '$lib/services/googleMapsScraperService';
-  import { Search, MapPin, Play, Building, Grid, Locate } from 'lucide-svelte';
+  import { Search, MapPin, Play, Building, Grid, Locate, Sparkles } from 'lucide-svelte';
   import { m } from '$lib/i18n';
 
   let mode = $state<'keyword' | 'grid'>('keyword');
@@ -56,8 +57,40 @@
   let selectedCountryName = $state('Vietnam');
   let selectedAreas = $state<AdministrativeAreaSummary[]>([]);
 
+  let gridTargetingMode = $state<'administrative' | 'manual'>('administrative');
+  let gridSelectedAreas = $state<AdministrativeAreaSummary[]>([]);
+  let isResolvingGridBounds = $state(false);
+
   function handleCountryChange(country: AdministrativeCountry) {
     selectedCountryName = country.name;
+  }
+
+  async function handleGridAreaSelection(areas: AdministrativeAreaSummary[]) {
+    gridSelectedAreas = areas;
+    if (areas.length > 0) {
+      const latest = areas[areas.length - 1];
+      isResolvingGridBounds = true;
+      appendLog(`Resolving bounding box for "${latest.name}"...`);
+      try {
+        const bounds = await resolveAdministrativeBounds(latest.geoname_id);
+        minLat = Number(bounds.min_lat.toFixed(4));
+        maxLat = Number(bounds.max_lat.toFixed(4));
+        minLng = Number(bounds.min_lng.toFixed(4));
+        maxLng = Number(bounds.max_lng.toFixed(4));
+        appendLog(`Resolved bounds for "${latest.name}" (${bounds.source}): Lat [${bounds.min_lat}, ${bounds.max_lat}], Lng: [${bounds.min_lng}, ${bounds.max_lng}]`);
+      } catch (err) {
+        appendLog(`Failed to resolve bounds for "${latest.name}": ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        isResolvingGridBounds = false;
+      }
+    }
+  }
+
+  function handleGridBoundingBoxChange(bbox: [number, number, number, number]) {
+    minLat = Number(bbox[0].toFixed(4));
+    maxLat = Number(bbox[1].toFixed(4));
+    minLng = Number(bbox[2].toFixed(4));
+    maxLng = Number(bbox[3].toFixed(4));
   }
 
   async function detectCoordinates() {
@@ -68,7 +101,10 @@
     isGeocoding = true;
     appendLog(`Geocoding coordinates for: "${geocodeQuery}"...`);
     try {
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(geocodeQuery + ", Vietnam")}&format=json&limit=1`;
+      const query = selectedCountryName && !geocodeQuery.toLowerCase().includes(selectedCountryName.toLowerCase())
+        ? `${geocodeQuery}, ${selectedCountryName}`
+        : geocodeQuery;
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
       const response = await fetch(url, { headers: { 'User-Agent': 'RustSale-CRM-v2-Client' } });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
@@ -126,19 +162,26 @@
     lngMin: number,
     lngMax: number,
     step: number
-  ): { initialCells: number; recommendedStepKm: number | null; error: string | null } {
+  ): {
+    initialCells: number;
+    areaKm2: number;
+    widthKm: number;
+    heightKm: number;
+    recommendedStepKm: number | null;
+    error: string | null;
+  } {
     const values = [latMin, latMax, lngMin, lngMax, step];
     if (values.some((value) => !Number.isFinite(value))) {
-      return { initialCells: 0, recommendedStepKm: null, error: 'Coordinates and step must be finite numbers.' };
+      return { initialCells: 0, areaKm2: 0, widthKm: 0, heightKm: 0, recommendedStepKm: null, error: 'Coordinates and step must be finite numbers.' };
     }
     if (latMin < -90 || latMax > 90 || lngMin < -180 || lngMax > 180) {
-      return { initialCells: 0, recommendedStepKm: null, error: 'Latitude or longitude is outside the supported range.' };
+      return { initialCells: 0, areaKm2: 0, widthKm: 0, heightKm: 0, recommendedStepKm: null, error: 'Latitude or longitude is outside the supported range.' };
     }
     if (latMin >= latMax || lngMin >= lngMax) {
-      return { initialCells: 0, recommendedStepKm: null, error: 'Bounding-box minimums must be less than maximums.' };
+      return { initialCells: 0, areaKm2: 0, widthKm: 0, heightKm: 0, recommendedStepKm: null, error: 'Bounding-box minimums must be less than maximums.' };
     }
     if (step <= 0) {
-      return { initialCells: 0, recommendedStepKm: null, error: 'Grid step must be greater than zero.' };
+      return { initialCells: 0, areaKm2: 0, widthKm: 0, heightKm: 0, recommendedStepKm: null, error: 'Grid step must be greater than zero.' };
     }
 
     const earthRadiusKm = 6_371.0088;
@@ -149,6 +192,8 @@
     const widthKm = Math.abs((lngMax - lngMin) * Math.PI / 180)
       * earthRadiusKm
       * Math.max(1e-9, Math.abs(Math.cos(nearestEquatorLat * Math.PI / 180)));
+    const areaKm2 = widthKm * heightKm;
+
     const countAtStep = (candidateStep: number) => {
       const rows = Math.max(1, Math.ceil(heightKm / candidateStep));
       const columns = Math.max(1, Math.ceil(widthKm / candidateStep));
@@ -156,7 +201,7 @@
     };
     const initialCells = countAtStep(step);
     if (initialCells <= 10_000) {
-      return { initialCells, recommendedStepKm: null, error: null };
+      return { initialCells, areaKm2, widthKm, heightKm, recommendedStepKm: null, error: null };
     }
 
     let low = step;
@@ -167,8 +212,13 @@
       if (countAtStep(middle) > 10_000) low = middle;
       else high = middle;
     }
-    return { initialCells, recommendedStepKm: high, error: null };
+    let ceiledStep = Math.ceil(high * 10) / 10;
+    while (countAtStep(ceiledStep) > 10_000) {
+      ceiledStep += 0.1;
+    }
+    return { initialCells, areaKm2, widthKm, heightKm, recommendedStepKm: ceiledStep, error: null };
   }
+
 
   function syncJob(updatedJob: GoogleMapsScrapeJob, message?: string): void {
     const existing = jobs.findIndex((job) => job.id === updatedJob.id);
@@ -456,68 +506,114 @@
         {:else}
           <!-- Grid Mode Settings -->
           <div class="flex flex-col gap-3 border-t border-border pt-3">
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div class="flex flex-col gap-1">
-                <label for="preset-select" class="font-semibold text-foreground">Quick Select Province / City</label>
-                <Select.Root
-                  type="single"
-                  bind:value={selectedPresetProvince}
+            <!-- Grid Location Targeting Mode Switcher -->
+            <div class="flex flex-col gap-1.5">
+              <span class="font-semibold text-foreground">Location Targeting Mode</span>
+              <div class="flex items-center gap-1 p-1 bg-muted/60 rounded-md">
+                <button
+                  type="button"
+                  class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all cursor-pointer {gridTargetingMode === 'administrative' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                  onclick={() => gridTargetingMode = 'administrative'}
                   disabled={isScraping}
-                  onValueChange={(val) => {
-                    if (val && presetProvinces[val]) {
-                      const coords = presetProvinces[val];
-                      minLat = coords.minLat;
-                      maxLat = coords.maxLat;
-                      minLng = coords.minLng;
-                      maxLng = coords.maxLng;
-                      appendLog(`Applied preset coords for ${val}`);
-                    }
-                  }}
                 >
-                  <Select.Trigger class="w-full h-9 text-xs">
-                    {selectedPresetProvince || '-- Select Province / City --'}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each Object.keys(presetProvinces) as prov (prov)}
-                      <Select.Item value={prov}>{prov}</Select.Item>
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-              </div>
-
-              <div class="flex flex-col gap-1">
-                <label for="geocode-query" class="font-semibold text-foreground">Search Administrative Area</label>
-                <div class="flex gap-2">
-                  <Input id="geocode-query" bind:value={geocodeQuery} placeholder="e.g. District 1, Ho Chi Minh City" class="text-xs h-9" disabled={isScraping || isGeocoding} />
-                  <Button variant="outline" size="sm" onclick={detectCoordinates} disabled={isScraping || isGeocoding} class="h-9 px-3 gap-1 shrink-0">
-                    <Locate class="size-3.5" /> {isGeocoding ? 'Detecting...' : 'Detect'}
-                  </Button>
-                </div>
+                  Select Administrative Areas (Deep Grid)
+                </button>
+                <button
+                  type="button"
+                  class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all cursor-pointer {gridTargetingMode === 'manual' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+                  onclick={() => gridTargetingMode = 'manual'}
+                  disabled={isScraping}
+                >
+                  Manual Coordinates / Radius Scan
+                </button>
               </div>
             </div>
 
-            <div class="flex flex-col gap-1.5">
-              <span class="font-semibold text-foreground">Bounding Box Coordinates (Lat/Lng)</span>
+            {#if gridTargetingMode === 'administrative'}
+              <!-- Global Administrative Area Selector for Grid -->
+              <AdministrativeAreaSelector
+                bind:selectedCountryCode
+                bind:selectedAreas={gridSelectedAreas}
+                disabled={isScraping}
+                onCountryChange={handleCountryChange}
+                onSelectionChange={handleGridAreaSelection}
+                onBoundingBoxChange={handleGridBoundingBoxChange}
+              />
+            {:else}
+              <!-- Manual Search & Quick Preset -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="flex flex-col gap-1">
+                  <label for="preset-select" class="font-semibold text-foreground">Quick Select Province / City</label>
+                  <Select.Root
+                    type="single"
+                    bind:value={selectedPresetProvince}
+                    disabled={isScraping}
+                    onValueChange={(val) => {
+                      if (val && presetProvinces[val]) {
+                        const coords = presetProvinces[val];
+                        minLat = coords.minLat;
+                        maxLat = coords.maxLat;
+                        minLng = coords.minLng;
+                        maxLng = coords.maxLng;
+                        appendLog(`Applied preset coords for ${val}`);
+                      }
+                    }}
+                  >
+                    <Select.Trigger class="w-full h-9 text-xs">
+                      {selectedPresetProvince || '-- Select Province / City --'}
+                    </Select.Trigger>
+                    <Select.Content>
+                      {#each Object.keys(presetProvinces) as prov (prov)}
+                        <Select.Item value={prov}>{prov}</Select.Item>
+                      {/each}
+                    </Select.Content>
+                  </Select.Root>
+                </div>
+
+                <div class="flex flex-col gap-1">
+                  <label for="geocode-query" class="font-semibold text-foreground">Search Administrative Area</label>
+                  <div class="flex gap-2">
+                    <Input id="geocode-query" bind:value={geocodeQuery} placeholder="e.g. District 1, Ho Chi Minh City" class="text-xs h-9" disabled={isScraping || isGeocoding} />
+                    <Button variant="outline" size="sm" onclick={detectCoordinates} disabled={isScraping || isGeocoding} class="h-9 px-3 gap-1 shrink-0">
+                      <Locate class="size-3.5" /> {isGeocoding ? 'Detecting...' : 'Detect'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            {/if}
+
+            <!-- Effective Bounding Box Coordinates -->
+            <div class="flex flex-col gap-1.5 p-3 rounded-lg border border-border/80 bg-muted/10">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold text-foreground flex items-center gap-1.5">
+                  <Locate class="size-3.5 text-emerald-600" />
+                  Bounding Box Coordinates (Lat/Lng)
+                </span>
+                {#if isResolvingGridBounds}
+                  <span class="text-[11px] text-muted-foreground animate-pulse">Resolving bounds...</span>
+                {/if}
+              </div>
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div class="flex flex-col gap-1">
                   <label for="min-lat" class="text-[10px] text-muted-foreground">Min Lat</label>
-                  <Input id="min-lat" type="number" step="0.0001" bind:value={minLat} disabled={isScraping} class="h-8 text-xs" />
+                  <Input id="min-lat" type="number" step="0.0001" bind:value={minLat} disabled={isScraping} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="max-lat" class="text-[10px] text-muted-foreground">Max Lat</label>
-                  <Input id="max-lat" type="number" step="0.0001" bind:value={maxLat} disabled={isScraping} class="h-8 text-xs" />
+                  <Input id="max-lat" type="number" step="0.0001" bind:value={maxLat} disabled={isScraping} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="min-lng" class="text-[10px] text-muted-foreground">Min Lng</label>
-                  <Input id="min-lng" type="number" step="0.0001" bind:value={minLng} disabled={isScraping} class="h-8 text-xs" />
+                  <Input id="min-lng" type="number" step="0.0001" bind:value={minLng} disabled={isScraping} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="max-lng" class="text-[10px] text-muted-foreground">Max Lng</label>
-                  <Input id="max-lng" type="number" step="0.0001" bind:value={maxLng} disabled={isScraping} class="h-8 text-xs" />
+                  <Input id="max-lng" type="number" step="0.0001" bind:value={maxLng} disabled={isScraping} class="h-8 text-xs bg-background" />
                 </div>
               </div>
             </div>
 
+            <!-- Grid Step Size & Estimation -->
             <div class="flex flex-col gap-1">
               <div class="flex justify-between items-center text-xs">
                 <label for="step-km" class="font-semibold text-foreground">Grid Step Size</label>
@@ -525,18 +621,38 @@
               </div>
               <input id="step-km" type="range" min="0.5" max="10.0" step="0.5" bind:value={stepKm} disabled={isScraping} class="w-full accent-emerald-600 cursor-pointer" />
               <p class="text-[11px] text-muted-foreground">Smaller steps increase accuracy but require more search grid points.</p>
-              <div class="flex flex-col gap-1 rounded-md border border-border bg-muted/20 p-2 text-[11px]" aria-live="polite">
+              <div class="flex flex-col gap-1.5 rounded-md border border-border bg-muted/20 p-2.5 text-[11px]" aria-live="polite">
                 {#if gridEstimate.error}
                   <span class="font-medium text-destructive">{gridEstimate.error}</span>
                 {:else}
-                  <span class="font-medium text-foreground">
-                    Estimated initial cells: {gridEstimate.initialCells.toLocaleString('en-US')}
-                  </span>
-                  {#if gridEstimate.recommendedStepKm !== null}
-                    <span class="text-destructive">
-                      Estimate exceeds the 10,000-cell safety limit. Recommended minimum step: {gridEstimate.recommendedStepKm.toFixed(2)} km.
+                  <div class="flex items-center justify-between text-foreground font-medium">
+                    <span>
+                      Estimated initial cells: <strong class="text-emerald-700 dark:text-emerald-400">{gridEstimate.initialCells.toLocaleString('en-US')}</strong>
                     </span>
+                    <span class="text-muted-foreground">
+                      Area: ~{gridEstimate.areaKm2.toLocaleString('en-US', { maximumFractionDigits: 1 })} km² ({gridEstimate.widthKm.toFixed(1)} × {gridEstimate.heightKm.toFixed(1)} km)
+                    </span>
+                  </div>
+
+                  {#if gridEstimate.recommendedStepKm !== null}
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 pt-1 border-t border-border/50">
+                      <span class="text-destructive">
+                        Estimate exceeds the 10,000-cell safety limit. Recommended minimum step: <strong>{gridEstimate.recommendedStepKm.toFixed(2)} km</strong>.
+                      </span>
+                      <button
+                        type="button"
+                        class="text-xs text-primary font-semibold underline hover:text-primary/80 cursor-pointer self-start sm:self-auto"
+                        onclick={() => {
+                          if (gridEstimate.recommendedStepKm !== null) {
+                            stepKm = Number(gridEstimate.recommendedStepKm.toFixed(1));
+                          }
+                        }}
+                      >
+                        Apply recommended step ({gridEstimate.recommendedStepKm.toFixed(1)} km)
+                      </button>
+                    </div>
                   {:else}
+
                     <span class="text-muted-foreground">Within the 10,000-cell backend safety limit.</span>
                   {/if}
                 {/if}
@@ -544,6 +660,7 @@
             </div>
           </div>
         {/if}
+
 
         <!-- Headless Option & Action Button -->
         <div class="flex items-center justify-between pt-2 border-t border-border">

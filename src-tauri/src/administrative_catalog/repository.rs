@@ -4,8 +4,8 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::types::{
-    AdministrativeAreaKind, AdministrativeAreaSummary, AdministrativeCatalogState,
-    AdministrativeCountryStatus, ParsedCountryData,
+    AdministrativeArea, AdministrativeAreaKind, AdministrativeAreaSummary, AdministrativeBounds,
+    AdministrativeCatalogState, AdministrativeCountryStatus, ParsedCountryData,
 };
 
 const MAX_QUERY_RESULTS: usize = 500;
@@ -264,6 +264,127 @@ impl AdministrativeCatalogRepository {
         .context("administrative catalog search task failed")?
     }
 
+    pub async fn get_cached_bounds(&self, geoname_id: i64) -> Result<Option<AdministrativeBounds>> {
+        let repository = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = repository.open_connection()?;
+            connection
+                .query_row(
+                    "SELECT geoname_id, country_code, min_lat, max_lat, min_lng, max_lng, source, updated_at
+                     FROM administrative_bounds_cache WHERE geoname_id=?1",
+                    params![geoname_id],
+                    |row| {
+                        Ok(AdministrativeBounds {
+                            geoname_id: row.get(0)?,
+                            country_code: row.get(1)?,
+                            min_lat: row.get(2)?,
+                            max_lat: row.get(3)?,
+                            min_lng: row.get(4)?,
+                            max_lng: row.get(5)?,
+                            source: row.get(6)?,
+                            updated_at: row.get(7)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+        .await
+        .context("administrative bounds cache query task failed")?
+    }
+
+    pub async fn save_cached_bounds(&self, bounds: &AdministrativeBounds) -> Result<()> {
+        let repository = self.clone();
+        let bounds = bounds.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = repository.open_connection()?;
+            connection.execute(
+                "INSERT INTO administrative_bounds_cache (
+                    geoname_id, country_code, min_lat, max_lat, min_lng, max_lng, source, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(geoname_id) DO UPDATE SET
+                    country_code=excluded.country_code,
+                    min_lat=excluded.min_lat,
+                    max_lat=excluded.max_lat,
+                    min_lng=excluded.min_lng,
+                    max_lng=excluded.max_lng,
+                    source=excluded.source,
+                    updated_at=excluded.updated_at",
+                params![
+                    bounds.geoname_id,
+                    bounds.country_code,
+                    bounds.min_lat,
+                    bounds.max_lat,
+                    bounds.min_lng,
+                    bounds.max_lng,
+                    bounds.source,
+                    bounds.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .context("administrative bounds cache save task failed")?
+    }
+
+    pub async fn get_area_by_id(&self, geoname_id: i64) -> Result<Option<AdministrativeArea>> {
+        let repository = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = repository.open_connection()?;
+            connection
+                .query_row(
+                    "SELECT geoname_id, country_code, parent_id, name, ascii_name,
+                            alternate_names, feature_code, administrative_level, kind,
+                            latitude, longitude, population, modification_date, canonical_path
+                     FROM administrative_catalog_areas WHERE geoname_id=?1",
+                    params![geoname_id],
+                    |row| {
+                        let admin_level: Option<i64> = row.get(7)?;
+                        let kind_str: String = row.get(8)?;
+                        let pop_int: i64 = row.get(11)?;
+                        Ok(AdministrativeArea {
+                            geoname_id: row.get(0)?,
+                            country_code: row.get(1)?,
+                            parent_id: row.get(2)?,
+                            name: row.get(3)?,
+                            ascii_name: row.get(4)?,
+                            alternate_names: row.get(5)?,
+                            feature_code: row.get(6)?,
+                            administrative_level: admin_level.map(|l| l as u8),
+                            kind: area_kind_from_db(&kind_str)?,
+                            latitude: row.get(9)?,
+                            longitude: row.get(10)?,
+                            population: pop_int.max(0) as u64,
+                            modification_date: row.get(12)?,
+                            canonical_path: row.get(13)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+        .await
+        .context("administrative area get task failed")?
+    }
+
+    pub async fn get_area_hierarchy(&self, geoname_id: i64) -> Result<Vec<AdministrativeArea>> {
+        let mut current_id = Some(geoname_id);
+        let mut chain = Vec::new();
+        while let Some(id) = current_id {
+            if let Some(area) = self.get_area_by_id(id).await? {
+                current_id = area.parent_id;
+                chain.push(area);
+                if chain.len() > 10 {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+
     pub fn db_path(&self) -> &str {
         &self.db_path
     }
@@ -315,13 +436,26 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             FOREIGN KEY(country_code) REFERENCES administrative_catalog_countries(country_code)
                 ON DELETE CASCADE
          );
+         CREATE TABLE IF NOT EXISTS administrative_bounds_cache (
+            geoname_id INTEGER PRIMARY KEY,
+            country_code TEXT NOT NULL,
+            min_lat REAL NOT NULL,
+            max_lat REAL NOT NULL,
+            min_lng REAL NOT NULL,
+            max_lng REAL NOT NULL,
+            source TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+         );
          CREATE INDEX IF NOT EXISTS idx_administrative_catalog_parent
             ON administrative_catalog_areas(country_code, parent_id, kind, canonical_path);
          CREATE INDEX IF NOT EXISTS idx_administrative_catalog_country_path
-            ON administrative_catalog_areas(country_code, canonical_path);",
+            ON administrative_catalog_areas(country_code, canonical_path);
+         CREATE INDEX IF NOT EXISTS idx_administrative_bounds_cache_country
+            ON administrative_bounds_cache(country_code);",
     )?;
     Ok(())
 }
+
 
 fn normalize_country_code(country_code: &str) -> Result<String> {
     let country_code = country_code.trim().to_ascii_uppercase();

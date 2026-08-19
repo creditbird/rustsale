@@ -196,6 +196,30 @@ mock.module('@tauri-apps/api/core', () => ({
       case 'retry_google_maps_failed_units':
       case 'retry_google_maps_email_enrichment':
         return { ...updateJob(args?.jobId, 'running') };
+      case 'resolve_administrative_bounds':
+        return {
+          geoname_id: args?.geonameId,
+          country_code: 'VN',
+          min_lat: 10.754,
+          max_lat: 10.798,
+          min_lng: 106.680,
+          max_lng: 106.714,
+          source: 'nominatim',
+          updated_at: '2026-08-19T00:00:00Z'
+        };
+      case 'plan_grid_crawl':
+        return {
+          bbox: args?.bbox,
+          area_km2: 15.2,
+          width_km: 3.8,
+          height_km: 4.0,
+          requested_step_km: args?.stepKm,
+          effective_step_km: args?.stepKm,
+          estimated_cells: 8,
+          recommended_step_km: null,
+          exceeds_limit: false,
+          estimated_chunks: 1
+        };
       case 'delete_google_maps_scrape_job':
         jobs = jobs.filter((candidate) => candidate.id !== args?.jobId);
         return true;
@@ -255,6 +279,7 @@ test('preserves preset, geocode, and custom bounding-box controls', async () => 
   render(GoogleMapsScraper);
 
   await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
 
   expect(screen.getByText('Quick Select Province / City')).toBeTruthy();
   expect(screen.getByLabelText(/Search Administrative Area/i)).toBeTruthy();
@@ -264,6 +289,7 @@ test('preserves preset, geocode, and custom bounding-box controls', async () => 
   expect(screen.getByLabelText('Max Lng')).toBeTruthy();
   expect(screen.getByLabelText('Grid Step Size')).toBeTruthy();
 });
+
 
 test('shows CloakBrowser runtime download state and installed version', async () => {
   runtimeStatus = { installed: false };
@@ -550,3 +576,44 @@ test('keeps the selected country as the deep-scan location when no area is selec
     });
   });
 });
+
+test('Grid mode resolves bounding box when administrative area is selected', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  expect(screen.getByText('Select Administrative Areas (Deep Grid)')).toBeTruthy();
+
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const resolveInv = invocations.find(({ command }) => command === 'resolve_administrative_bounds');
+    expect(resolveInv).toBeDefined();
+    expect(resolveInv?.args).toEqual({ geonameId: 200 });
+  });
+
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), {
+    target: { value: 'spa' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  await waitFor(() => {
+    const creation = invocations.find(({ command }) => command === 'create_google_maps_scrape_job');
+    expect(creation?.args?.request).toMatchObject({
+      mode: 'grid',
+      keyword: 'spa',
+      bbox: [10.754, 10.798, 106.68, 106.714]
+    });
+  });
+});
+
+test('Grid mode allows switching to manual coordinates and radius scan', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  expect(screen.getByText('Quick Select Province / City')).toBeTruthy();
+  expect(screen.getByText('Search Administrative Area')).toBeTruthy();
+});
+

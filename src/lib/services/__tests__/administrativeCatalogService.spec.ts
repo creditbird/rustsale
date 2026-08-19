@@ -14,7 +14,9 @@ import {
   listAdministrativeAreas,
   listAdministrativeCountries,
   loadAdministrativeCountry,
-  searchAdministrativeAreas
+  searchAdministrativeAreas,
+  resolveAdministrativeBounds,
+  planGridCrawl
 } from '../administrativeCatalogService';
 
 beforeEach(() => {
@@ -31,6 +33,8 @@ describe('administrativeCatalogService', () => {
     await listAdministrativeAreas('VN', 123, 50);
     await searchAdministrativeAreas('VN', 'Hà Nội');
     await searchAdministrativeAreas('KR', 'Seoul', 25);
+    await resolveAdministrativeBounds(1566083);
+    await planGridCrawl([10.754, 10.798, 106.680, 106.714], 2.0);
 
     expect(invocations).toEqual([
       { command: 'list_administrative_countries', args: undefined },
@@ -58,7 +62,16 @@ describe('administrativeCatalogService', () => {
       {
         command: 'search_administrative_areas',
         args: { countryCode: 'KR', query: 'Seoul', limit: 25 }
+      },
+      {
+        command: 'resolve_administrative_bounds',
+        args: { geonameId: 1566083 }
+      },
+      {
+        command: 'plan_grid_crawl',
+        args: { bbox: [10.754, 10.798, 106.680, 106.714], stepKm: 2.0 }
       }
     ]);
   });
 });
+

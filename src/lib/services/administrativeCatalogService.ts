@@ -85,3 +85,46 @@ export function searchAdministrativeAreas(
     limit
   });
 }
+
+export interface AdministrativeBounds {
+  geoname_id: number;
+  country_code: string;
+  min_lat: number;
+  max_lat: number;
+  min_lng: number;
+  max_lng: number;
+  source: string;
+  updated_at: string;
+}
+
+export interface GridPlan {
+  bbox: [number, number, number, number];
+  area_km2: number;
+  width_km: number;
+  height_km: number;
+  requested_step_km: number;
+  effective_step_km: number;
+  estimated_cells: number;
+  recommended_step_km: number | null;
+  exceeds_limit: boolean;
+  estimated_chunks: number;
+}
+
+export function resolveAdministrativeBounds(
+  geonameId: number
+): Promise<AdministrativeBounds> {
+  return invoke<AdministrativeBounds>('resolve_administrative_bounds', {
+    geonameId
+  });
+}
+
+export function planGridCrawl(
+  bbox: [number, number, number, number],
+  stepKm: number
+): Promise<GridPlan> {
+  return invoke<GridPlan>('plan_grid_crawl', {
+    bbox,
+    stepKm
+  });
+}
+

@@ -21,11 +21,12 @@ import {
 } from '../formatters';
 
 describe('i18n & Paraglide Integration', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setLocale('vi');
-    setBaseCurrency('VND');
-    setExchangeRate(DEFAULT_USD_VND_RATE);
+    await setBaseCurrency('VND');
+    await setExchangeRate(DEFAULT_USD_VND_RATE);
   });
+
 
   it('correctly translates common keys into Vietnamese when locale is vi', () => {
     setLocale('vi');
