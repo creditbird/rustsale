@@ -155,6 +155,8 @@ function updateJob(jobId: string, status: GoogleMapsJobStatus): GoogleMapsScrape
 }
 
 let shouldFailBoundsResolution = false;
+let deferGeocodePromise = false;
+let deferredGeocodeResolve: ((val: any) => void) | null = null;
 
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: any) => {
@@ -240,6 +242,11 @@ mock.module('@tauri-apps/api/core', () => ({
           updated_at: '2026-08-19T00:00:00Z'
         };
       case 'geocode_bounding_box':
+        if (deferGeocodePromise) {
+          return new Promise((resolve) => {
+            deferredGeocodeResolve = resolve;
+          });
+        }
         return [10.75, 10.85, 106.65, 106.75];
       case 'plan_grid_crawl':
         return {
@@ -291,6 +298,8 @@ beforeEach(() => {
   eventListeners.clear();
   jobs = [];
   shouldFailBoundsResolution = false;
+  deferGeocodePromise = false;
+  deferredGeocodeResolve = null;
   runtimeStatus = {
     installed: true,
     version: '132.0.0',
@@ -788,5 +797,63 @@ test('Manual Grid mode detects coordinates via backend geocoder', async () => {
 
   const geocodeCalls = invocations.filter(({ command }) => command === 'geocode_bounding_box');
   expect(geocodeCalls.length).toBe(1);
+});
+
+test('valid Manual bbox A -> Detect B with in-flight response -> Start before response must not create a scrape job', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  // Set initial valid manual coordinates A
+  await fireEvent.input(screen.getByLabelText('Min Lat'), { target: { value: '10.1' } });
+  await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '10.2' } });
+  await fireEvent.input(screen.getByLabelText('Min Lng'), { target: { value: '106.1' } });
+  await fireEvent.input(screen.getByLabelText('Max Lng'), { target: { value: '106.2' } });
+
+  // Defer subsequent geocode response
+  deferGeocodePromise = true;
+
+  // Trigger Detect for Area B
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), { target: { value: 'Area B' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  // Coordinates are immediately zeroed out during detection
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(0);
+
+  // Attempting to Start must be blocked because geocode is in-flight and coordinates are 0
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), { target: { value: 'coffee' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
+
+  if (deferredGeocodeResolve) {
+    deferredGeocodeResolve(null);
+  }
+});
+
+test('Detect A in-flight -> switch Administrative -> administrative coordinates remain reset and start is blocked', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  // Trigger Detect
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), { target: { value: 'Area A' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  // Switch to Administrative mode while geocoding was triggered
+  await fireEvent.click(screen.getByRole('button', { name: /Select Administrative Areas \(Deep Grid\)/i }));
+
+  // Coordinates must be 0 and no administrative target is active
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(0);
+
+  // Attempt to Start
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), { target: { value: 'coffee' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
 });
 

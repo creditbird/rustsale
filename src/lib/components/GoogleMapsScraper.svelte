@@ -126,10 +126,13 @@
     maxLng = Number(bbox[3].toFixed(4));
   }
 
+  let manualGeocodeGeneration = 0;
+
   function switchGridTargetingMode(targetMode: 'administrative' | 'manual') {
     if (gridTargetingMode === targetMode) return;
     gridTargetingMode = targetMode;
     gridResolutionGeneration += 1;
+    manualGeocodeGeneration += 1;
     resolvedGridGeonameId = null;
     gridSelectedAreas = [];
     minLat = 0;
@@ -137,6 +140,7 @@
     minLng = 0;
     maxLng = 0;
     isResolvingGridBounds = false;
+    isGeocoding = false;
   }
 
   async function detectCoordinates() {
@@ -144,13 +148,22 @@
       appendLog("Error: Please enter a region or address to search.");
       return;
     }
+    manualGeocodeGeneration += 1;
+    const currentGen = manualGeocodeGeneration;
     isGeocoding = true;
+    minLat = 0;
+    maxLat = 0;
+    minLng = 0;
+    maxLng = 0;
     appendLog(`Geocoding coordinates for: "${geocodeQuery}"...`);
     try {
       const query = selectedCountryName && !geocodeQuery.toLowerCase().includes(selectedCountryName.toLowerCase())
         ? `${geocodeQuery}, ${selectedCountryName}`
         : geocodeQuery;
       const bbox = await geocodeBoundingBox(query, selectedCountryCode);
+      if (currentGen !== manualGeocodeGeneration || gridTargetingMode !== 'manual') {
+        return;
+      }
       if (bbox) {
         minLat = Number(bbox[0].toFixed(4));
         maxLat = Number(bbox[1].toFixed(4));
@@ -161,9 +174,13 @@
         appendLog(`Error: Could not find coordinates for "${geocodeQuery}".`);
       }
     } catch (err) {
-      appendLog(`Geocoding failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (currentGen === manualGeocodeGeneration && gridTargetingMode === 'manual') {
+        appendLog(`Geocoding failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
-      isGeocoding = false;
+      if (currentGen === manualGeocodeGeneration) {
+        isGeocoding = false;
+      }
     }
   }
 
@@ -305,6 +322,11 @@
         }
         if (gridSelectedAreas.length === 0 || resolvedGridGeonameId !== gridSelectedAreas[0]?.geoname_id) {
           appendLog("Error: Please select a valid administrative area with resolved bounds.");
+          return;
+        }
+      } else if (gridTargetingMode === 'manual') {
+        if (isGeocoding) {
+          appendLog("Error: Manual geocoding is in progress. Please wait for coordinates to resolve.");
           return;
         }
       }

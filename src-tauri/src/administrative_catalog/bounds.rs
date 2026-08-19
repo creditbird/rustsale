@@ -1,10 +1,32 @@
+use std::sync::Arc;
 use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
+use tokio::sync::Mutex;
+use tokio::time::{sleep, Instant};
 
 use super::repository::AdministrativeCatalogRepository;
 use super::types::{AdministrativeArea, AdministrativeBounds};
+
+static GEOCODER_RATE_LIMITER: std::sync::OnceLock<Arc<Mutex<Option<Instant>>>> = std::sync::OnceLock::new();
+
+fn get_geocoder_limiter() -> Arc<Mutex<Option<Instant>>> {
+    GEOCODER_RATE_LIMITER.get_or_init(|| Arc::new(Mutex::new(None))).clone()
+}
+
+async fn acquire_geocoder_slot() {
+    let limiter = get_geocoder_limiter();
+    let mut last_request = limiter.lock().await;
+    if let Some(prev) = *last_request {
+        let elapsed = prev.elapsed();
+        let min_interval = Duration::from_millis(1000);
+        if elapsed < min_interval {
+            sleep(min_interval - elapsed).await;
+        }
+    }
+    *last_request = Some(Instant::now());
+}
 
 #[derive(Debug, Clone)]
 pub struct GeoBoundsResolver {
@@ -134,6 +156,8 @@ impl GeoBoundsResolver {
             country_code
         );
 
+        acquire_geocoder_slot().await;
+
         let response = self
             .http_client
             .get(&url)
@@ -182,6 +206,8 @@ impl GeoBoundsResolver {
                 url.push_str(&format!("&countrycodes={}", urlencoding::encode(&cc.trim().to_lowercase())));
             }
         }
+
+        acquire_geocoder_slot().await;
 
         let response = self
             .http_client
