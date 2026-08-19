@@ -70,7 +70,31 @@ console.log(`🌐 Public R2 URL:${publicUrl}`);
 console.log(`🪣 R2 Bucket:    ${bucketName}`);
 console.log(`======================================================\n`);
 
-// 2. Build step
+// 2. Load private key
+let privateKeyContent = '';
+if (existsSync(privateKeyPath)) {
+  privateKeyContent = readFileSync(privateKeyPath, 'utf8').trim();
+} else if (process.env.TAURI_SIGNING_PRIVATE_KEY) {
+  privateKeyContent = process.env.TAURI_SIGNING_PRIVATE_KEY.trim();
+  try {
+    const parentDir = resolve(privateKeyPath, '..');
+    if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
+    writeFileSync(privateKeyPath, privateKeyContent + '\n', 'utf8');
+  } catch {
+    // Ignore if write fails
+  }
+}
+
+// Ensure key is in base64 format for Tauri
+if (privateKeyContent.startsWith('untrusted comment:')) {
+  privateKeyContent = Buffer.from(privateKeyContent, 'utf8').toString('base64');
+}
+
+if (privateKeyContent && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
+  process.env.TAURI_SIGNING_PRIVATE_KEY = privateKeyContent;
+}
+
+// 3. Build step
 if (!skipBuild) {
   console.log(`🛠️ [1/4] Building Cloak runtime & frontend...`);
   const buildCloak = Bun.spawnSync(['bun', 'run', 'build:cloak-runtime'], { stdout: 'inherit', stderr: 'inherit' });
@@ -86,33 +110,14 @@ if (!skipBuild) {
   }
 
   console.log(`\n📦 [2/4] Building and signing Tauri bundle with Ed25519 key...`);
-  let privateKeyContent = '';
-  if (existsSync(privateKeyPath)) {
-    privateKeyContent = readFileSync(privateKeyPath, 'utf8').trim();
-  } else if (process.env.TAURI_SIGNING_PRIVATE_KEY) {
-    let raw = process.env.TAURI_SIGNING_PRIVATE_KEY.trim();
-    if (raw.startsWith('dW50cnVzdGVk')) {
-      raw = Buffer.from(raw, 'base64').toString('utf8').trim();
-    }
-    privateKeyContent = raw;
-    try {
-      const parentDir = resolve(privateKeyPath, '..');
-      if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
-      writeFileSync(privateKeyPath, privateKeyContent + '\n', 'utf8');
-    } catch {
-      // Ignore if write fails
-    }
-  }
 
   const envVars: Record<string, string | undefined> = { ...process.env };
   if (privateKeyContent) {
     envVars.TAURI_SIGNING_PRIVATE_KEY = privateKeyContent;
     envVars.TAURI_PRIVATE_KEY = privateKeyContent;
     envVars.TAURI_SIGNING_PRIVATE_KEY_PATH = privateKeyPath;
-    if (privateKeyPassword) {
-      envVars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = privateKeyPassword;
-      envVars.TAURI_KEY_PASSWORD = privateKeyPassword;
-    }
+    envVars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = privateKeyPassword;
+    envVars.TAURI_KEY_PASSWORD = privateKeyPassword;
   } else {
     delete envVars.TAURI_SIGNING_PRIVATE_KEY;
     delete envVars.TAURI_PRIVATE_KEY;
@@ -159,7 +164,7 @@ function scanForArtifacts(dir: string, platformKey: string) {
   const files = readdirSync(dir);
 
   // 1. Auto-sign any installers if .sig is missing and private key is present
-  const rawKey = (process.env.TAURI_SIGNING_PRIVATE_KEY || '').trim();
+  const rawKey = (process.env.TAURI_SIGNING_PRIVATE_KEY || privateKeyContent || '').trim();
   for (const file of files) {
     if (
       file.endsWith('.exe') ||
@@ -176,7 +181,7 @@ function scanForArtifacts(dir: string, platformKey: string) {
         const signEnv = { ...process.env };
         delete signEnv.TAURI_SIGNING_PRIVATE_KEY_PATH;
         delete signEnv.TAURI_PRIVATE_KEY_PATH;
-        const signProc = Bun.spawnSync(['bunx', 'tauri', 'signer', 'sign', '-k', rawKey, targetPath], {
+        const signProc = Bun.spawnSync(['bunx', 'tauri', 'signer', 'sign', '-p', privateKeyPassword, '-k', rawKey, targetPath], {
           env: signEnv,
         });
         if (signProc.success && existsSync(sigPath)) {

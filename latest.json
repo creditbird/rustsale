@@ -1,15 +1,11 @@
 {
-  "version": "0.1.9",
-  "notes": "Fix CloakBrowser scrape hang on Windows using native WebSocket CDP",
-  "pub_date": "2026-08-19T13:28:02.787Z",
+  "version": "0.1.10",
+  "notes": "Phát hành bản v0.1.10: Tích hợp công cụ phân tích ranh giới hành chính toàn cầu và lập kế hoạch quét lưới tự thích ứng cho Google Maps Scraper",
+  "pub_date": "2026-08-19T23:40:31.568Z",
   "platforms": {
-    "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDkzWnYzK2hFaHR0SjErQVN5TlcxcUJIMVZVQk04RVJrcTdtWEdUR0J6djJNMHR2b2dQYWZtT2FKaDN1SUJLTmF1cSsvNjlGRlIwOGRtVy9MeXErbmdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTQ2MDU0CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS45X3g2NC1zZXR1cC5leGUKL2U4V2c5L0I4VVAzcFd1SjNKKzdRN3VrZnpIM29lMlhKalNKaGNEYWZQODdxU2ZpeU03T3FvLytRWmNGNldOc2RBQmdyNE11UGdJUSs2TENDb0tIQ3c9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.9/RustSale%20CRM_0.1.9_x64-setup.exe"
-    },
-    "windows-x86_64-msi": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHhQTjVnQkFYMVhmdHRqNHRpTWNZYTR5Vk0zZ2JzK1BDeGpiR1pKa0lnRHM5ZU9WSmw2dDNoYVJtRnpoUnpYNE5GZGhCdktSbDk0dDNpeHByTmpKR1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTQ2MDU5CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS45X3g2NF9lbi1VUy5tc2kKcGJHelZaVDI2QXdmMWU0bk5UWklBazJwV21vZmlpdVlqYW9YcG9HbUErNWZ5YVpaMVVtbEx0ZmdMTm52N2h1S2EzdzBpN0xXMXBZU011bllPVjgvQ2c9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.9/RustSale%20CRM_0.1.9_x64_en-US.msi"
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDdYMnRRaUJMdWFRQ29VUytYaEw3bnZRYkJ4WXd4U3pQK2NFcFl6dXhsem40Z1RtcWhOUDdnSUFrMmF6aktnUHlSbnJGcnZHTDZqS1lIMDJGb29weVFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTgyODIxCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xMF9hbWQ2NC5kZWIKTmxTVjhEVHJUR0hWUnNWMVJrT1lMS0tEZkorRHNWWlp2c2VoK1RBZ1Q0L1RwTDJrWUx5SFl5YlgvZW12RHJidDc5N09MaXUyclExZ1FrZENJU0NoQXc9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.10/RustSale%20CRM_0.1.10_amd64.deb"
     }
   }
 }
