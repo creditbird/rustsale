@@ -50,7 +50,9 @@ if (requestedVersion && requestedVersion !== tauriConf.version) {
 const defaultNotes = `Phiên bản v${version}: Cập nhật tính năng và cải thiện hiệu năng cho RustSale CRM.`;
 const notes = requestedNotes || defaultNotes;
 
-const privateKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH || resolve(process.env.HOME || '~', '.tauri/rustsale.key');
+const defaultKeyPath = resolve(process.env.USERPROFILE || process.env.HOME || '~', '.tauri/rustsale.key');
+const rawKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH;
+const privateKeyPath = rawKeyPath && existsSync(rawKeyPath) ? rawKeyPath : (existsSync(defaultKeyPath) ? defaultKeyPath : (rawKeyPath || defaultKeyPath));
 const privateKeyPassword = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '';
 const publicUrl = process.env.R2_PUBLIC_URL || 'https://rustsale.trantrongtri.com';
 const bucketName = process.env.R2_BUCKET_NAME || 'rustsale-releases';
@@ -85,14 +87,22 @@ if (!skipBuild) {
 
   console.log(`\n📦 [2/4] Building and signing Tauri bundle with Ed25519 key...`);
   const privateKeyContent = existsSync(privateKeyPath) ? readFileSync(privateKeyPath, 'utf8').trim() : (process.env.TAURI_SIGNING_PRIVATE_KEY || '');
-  const envVars = {
-    ...process.env,
-    TAURI_SIGNING_PRIVATE_KEY: privateKeyContent,
-    TAURI_PRIVATE_KEY: privateKeyContent,
-    TAURI_SIGNING_PRIVATE_KEY_PATH: privateKeyPath,
-    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: privateKeyPassword,
-    TAURI_KEY_PASSWORD: privateKeyPassword,
-  };
+  const envVars: Record<string, string | undefined> = { ...process.env };
+  if (privateKeyContent) {
+    envVars.TAURI_SIGNING_PRIVATE_KEY = privateKeyContent;
+    envVars.TAURI_PRIVATE_KEY = privateKeyContent;
+    envVars.TAURI_SIGNING_PRIVATE_KEY_PATH = privateKeyPath;
+    if (privateKeyPassword) {
+      envVars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = privateKeyPassword;
+      envVars.TAURI_KEY_PASSWORD = privateKeyPassword;
+    }
+  } else {
+    delete envVars.TAURI_SIGNING_PRIVATE_KEY;
+    delete envVars.TAURI_PRIVATE_KEY;
+    delete envVars.TAURI_SIGNING_PRIVATE_KEY_PATH;
+    delete envVars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
+    delete envVars.TAURI_KEY_PASSWORD;
+  }
 
   const tauriBuildArgs = ['bunx', 'tauri', 'build'];
   const bundleArg = getArg('--bundles', '-b');
@@ -177,6 +187,7 @@ function scanForArtifacts(dir: string, platformKey: string) {
       file.endsWith('.msi') ||
       file.endsWith('.dmg')
     ) {
+      if (!file.includes(version)) continue;
       const targetPath = join(dir, file);
       if (!statSync(targetPath).isDirectory()) {
         const isExe = file.endsWith('.exe');

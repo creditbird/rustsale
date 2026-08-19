@@ -1,11 +1,6 @@
 {
-  "version": "0.1.6",
-  "notes": "Khắc phục lỗi khởi động CloakBrowser sidecar và đóng gói Playwright",
-  "pub_date": "2026-08-17T15:26:42.366Z",
-  "platforms": {
-    "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDFkZ0RQRzBXT1V3S05UR1ZLdjhKMUVtS0RWRUJIbEpJT1RRRDArZXo2cVZSbWZMNVI5ZllXQXJ2Q1JtT0ErQWhtYW50OThRSzJWc1p0QVArZkwya2dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2OTgwMjczCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS42X2FtZDY0LmRlYgpibDlncFcyRFc2TEFqRlBqZFJoU1RZcWFKZldQM2RseFp3V21rY1ZwRFFLRkR5NTVmRDA3TE5nYkJtTFA0Zi85bFhhOE9HUkRxSmJMM0c5RXNGamhCZz09Cg==",
-      "url": "https://rustsale.trantrongtri.com/v0.1.6/RustSale%20CRM_0.1.6_amd64.deb"
-    }
-  }
+  "version": "0.1.9",
+  "notes": "Fix CloakBrowser scrape hang on Windows using native WebSocket CDP",
+  "pub_date": "2026-08-19T11:42:22.693Z",
+  "platforms": {}
 }
