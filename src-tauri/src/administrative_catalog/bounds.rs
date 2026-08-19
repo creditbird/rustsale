@@ -132,6 +132,34 @@ impl GeoBoundsResolver {
         }
     }
 
+    async fn send_geocoding_request(&self, query_params: &str) -> Result<Vec<NominatimSearchResult>> {
+        let mut urls = vec![format!("{}/search?{}", self.base_url.trim_end_matches('/'), query_params)];
+        if self.base_url != "https://nominatim.openstreetmap.org" {
+            urls.push(format!("https://nominatim.openstreetmap.org/search?{}", query_params));
+        }
+
+        let mut last_err = anyhow!("no geocoding urls available");
+        for url in urls {
+            acquire_geocoder_slot().await;
+            match self.http_client.get(&url).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.json::<Vec<NominatimSearchResult>>().await {
+                            Ok(results) => return Ok(results),
+                            Err(e) => last_err = anyhow!("failed parsing geocoding json: {e}"),
+                        }
+                    } else {
+                        last_err = anyhow!("geocoding service returned status: {}", response.status());
+                    }
+                }
+                Err(e) => {
+                    last_err = anyhow!("failed sending geocoding request to {url}: {e}");
+                }
+            }
+        }
+        Err(last_err)
+    }
+
     async fn try_structured_geocoding(&self, area: &AdministrativeArea) -> Result<Option<[f64; 4]>> {
         let chain = self.repository.get_area_hierarchy(area.geoname_id).await?;
         let country_code = area.country_code.to_lowercase();
@@ -149,27 +177,13 @@ impl GeoBoundsResolver {
             query_parts.join(", ")
         };
 
-        let url = format!(
-            "{}/search?q={}&countrycodes={}&format=json&limit=1",
-            self.base_url.trim_end_matches('/'),
+        let params = format!(
+            "q={}&countrycodes={}&format=json&limit=1",
             urlencoding::encode(&query_str),
             country_code
         );
 
-        acquire_geocoder_slot().await;
-
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .context("failed sending geocoding request")?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("nominatim returned error status: {}", response.status()));
-        }
-
-        let results: Vec<NominatimSearchResult> = response.json().await.context("failed parsing nominatim json")?;
+        let results = self.send_geocoding_request(&params).await?;
         if let Some(first) = results.into_iter().next() {
             if first.boundingbox.len() >= 4 {
                 let min_lat = first.boundingbox[0].parse::<f64>()?;
@@ -196,31 +210,14 @@ impl GeoBoundsResolver {
     }
 
     pub async fn geocode_query(&self, query: &str, country_code: Option<&str>) -> Result<Option<[f64; 4]>> {
-        let mut url = format!(
-            "{}/search?q={}&format=json&limit=1",
-            self.base_url.trim_end_matches('/'),
-            urlencoding::encode(query)
-        );
+        let mut params = format!("q={}&format=json&limit=1", urlencoding::encode(query));
         if let Some(cc) = country_code {
             if !cc.trim().is_empty() {
-                url.push_str(&format!("&countrycodes={}", urlencoding::encode(&cc.trim().to_lowercase())));
+                params.push_str(&format!("&countrycodes={}", urlencoding::encode(&cc.trim().to_lowercase())));
             }
         }
 
-        acquire_geocoder_slot().await;
-
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .context("failed sending geocoding request")?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("geocoding service returned status: {}", response.status()));
-        }
-
-        let results: Vec<NominatimSearchResult> = response.json().await.context("failed parsing geocoding json")?;
+        let results = self.send_geocoding_request(&params).await?;
         if let Some(first) = results.into_iter().next() {
             if first.boundingbox.len() >= 4 {
                 let min_lat = first.boundingbox[0].parse::<f64>()?;
