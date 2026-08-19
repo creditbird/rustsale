@@ -87,9 +87,9 @@ impl GridPlanner {
         let area_km2 = width_km * height_km;
 
         let count_at_step = |step: f64| -> usize {
-            let rows = (height_km / step).ceil().max(1.0) as usize;
-            let cols = (width_km / step).ceil().max(1.0) as usize;
-            rows * cols
+            let rows = (height_km / step).ceil().max(1.0) as u64;
+            let cols = (width_km / step).ceil().max(1.0) as u64;
+            (rows as usize).saturating_mul(cols as usize)
         };
 
         let estimated_cells = count_at_step(requested_step_km);

@@ -75,6 +75,21 @@ const administrativeChildren: AdministrativeAreaSummary[] = [
     population: 0,
     canonical_path: 'Alpha District, Alpha Province, Vietnam',
     has_children: false
+  },
+  {
+    geoname_id: 201,
+    country_code: 'VN',
+    parent_id: 100,
+    name: 'Beta District',
+    ascii_name: 'Beta District',
+    feature_code: 'ADM2',
+    administrative_level: 2,
+    kind: 'administrative',
+    latitude: 10.8,
+    longitude: 20.8,
+    population: 0,
+    canonical_path: 'Beta District, Alpha Province, Vietnam',
+    has_children: false
   }
 ];
 
@@ -197,6 +212,18 @@ mock.module('@tauri-apps/api/core', () => ({
       case 'retry_google_maps_email_enrichment':
         return { ...updateJob(args?.jobId, 'running') };
       case 'resolve_administrative_bounds':
+        if (args?.geonameId === 201) {
+          return {
+            geoname_id: 201,
+            country_code: 'VN',
+            min_lat: 10.800,
+            max_lat: 10.850,
+            min_lng: 106.700,
+            max_lng: 106.750,
+            source: 'nominatim',
+            updated_at: '2026-08-19T00:00:00Z'
+          };
+        }
         return {
           geoname_id: args?.geonameId,
           country_code: 'VN',
@@ -615,5 +642,29 @@ test('Grid mode allows switching to manual coordinates and radius scan', async (
 
   expect(screen.getByText('Quick Select Province / City')).toBeTruthy();
   expect(screen.getByText('Search Administrative Area')).toBeTruthy();
+});
+
+test('Grid mode resolves union bounding box when multiple administrative areas are selected', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Beta District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    const maxLatInput = screen.getByLabelText('Max Lat') as HTMLInputElement;
+    const minLngInput = screen.getByLabelText('Min Lng') as HTMLInputElement;
+    const maxLngInput = screen.getByLabelText('Max Lng') as HTMLInputElement;
+
+    // Alpha District: [10.754, 10.798, 106.680, 106.714]
+    // Beta District:  [10.800, 10.850, 106.700, 106.750]
+    // Union:          [10.754, 10.850, 106.680, 106.750]
+    expect(Number(minLatInput.value)).toBe(10.754);
+    expect(Number(maxLatInput.value)).toBe(10.85);
+    expect(Number(minLngInput.value)).toBe(106.68);
+    expect(Number(maxLngInput.value)).toBe(106.75);
+  });
 });
 

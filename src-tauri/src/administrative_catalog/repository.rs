@@ -90,6 +90,10 @@ impl AdministrativeCatalogRepository {
                 "DELETE FROM administrative_catalog_areas WHERE country_code=?1",
                 params![country_code],
             )?;
+            transaction.execute(
+                "DELETE FROM administrative_bounds_cache WHERE country_code=?1",
+                params![country_code],
+            )?;
             {
                 let mut statement = transaction.prepare(
                     "INSERT INTO administrative_catalog_areas (

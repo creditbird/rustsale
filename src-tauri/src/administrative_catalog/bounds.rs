@@ -38,7 +38,7 @@ impl GeoBoundsResolver {
     }
 
     pub async fn resolve_bounds(&self, geoname_id: i64) -> Result<AdministrativeBounds> {
-        // 1. Check cache first
+        // 1. Check cache first (only authoritative entries are cached)
         if let Some(cached) = self.repository.get_cached_bounds(geoname_id).await? {
             return Ok(cached);
         }
@@ -52,25 +52,30 @@ impl GeoBoundsResolver {
 
         // 3. Try structured geocoding via OpenStreetMap Nominatim
         let geocoded = self.try_structured_geocoding(&area).await;
-        let bounds = match geocoded {
-            Ok(Some(bbox)) => AdministrativeBounds {
-                geoname_id,
-                country_code: area.country_code.clone(),
-                min_lat: bbox[0],
-                max_lat: bbox[1],
-                min_lng: bbox[2],
-                max_lng: bbox[3],
-                source: "nominatim".to_string(),
-                updated_at: chrono::Utc::now().to_rfc3339(),
-            },
+        match geocoded {
+            Ok(Some(bbox)) => {
+                let bounds = AdministrativeBounds {
+                    geoname_id,
+                    country_code: area.country_code.clone(),
+                    min_lat: bbox[0],
+                    max_lat: bbox[1],
+                    min_lng: bbox[2],
+                    max_lng: bbox[3],
+                    source: "nominatim".to_string(),
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                };
+                // Persist only authoritative Nominatim results to SQLite cache
+                let _ = self.repository.save_cached_bounds(&bounds).await;
+                Ok(bounds)
+            }
             _ => {
-                // 4. Fallback to centroid radius
+                // 4. Fallback to centroid radius in-memory without permanently poisoning the cache
                 let bbox = compute_centroid_bounds(
                     area.latitude,
                     area.longitude,
                     area.administrative_level,
                 );
-                AdministrativeBounds {
+                Ok(AdministrativeBounds {
                     geoname_id,
                     country_code: area.country_code.clone(),
                     min_lat: bbox[0],
@@ -79,47 +84,33 @@ impl GeoBoundsResolver {
                     max_lng: bbox[3],
                     source: "centroid_radius".to_string(),
                     updated_at: chrono::Utc::now().to_rfc3339(),
-                }
+                })
             }
-        };
-
-        // 5. Persist to cache
-        let _ = self.repository.save_cached_bounds(&bounds).await;
-
-        Ok(bounds)
+        }
     }
 
     async fn try_structured_geocoding(&self, area: &AdministrativeArea) -> Result<Option<[f64; 4]>> {
         let chain = self.repository.get_area_hierarchy(area.geoname_id).await?;
         let country_code = area.country_code.to_lowercase();
         
-        let area_name = &area.name;
-        let admin1 = chain
+        // Build fully disambiguated query from hierarchy (e.g. "Phường Bến Nghé, Quận 1, Thành phố Hồ Chí Minh")
+        let query_parts: Vec<&str> = chain
             .iter()
-            .find(|a| a.administrative_level == Some(1))
-            .map(|a| a.name.as_str());
+            .map(|a| a.name.as_str())
+            .filter(|name| !name.is_empty())
+            .collect();
 
-        let url = if let Some(admin1_name) = admin1 {
-            if admin1_name != area_name {
-                format!(
-                    "https://nominatim.openstreetmap.org/search?q={}&countrycodes={}&format=json&limit=1",
-                    urlencoding::encode(&format!("{area_name}, {admin1_name}")),
-                    country_code
-                )
-            } else {
-                format!(
-                    "https://nominatim.openstreetmap.org/search?q={}&countrycodes={}&format=json&limit=1",
-                    urlencoding::encode(area_name),
-                    country_code
-                )
-            }
+        let query_str = if query_parts.is_empty() {
+            area.name.clone()
         } else {
-            format!(
-                "https://nominatim.openstreetmap.org/search?q={}&countrycodes={}&format=json&limit=1",
-                urlencoding::encode(area_name),
-                country_code
-            )
+            query_parts.join(", ")
         };
+
+        let url = format!(
+            "https://nominatim.openstreetmap.org/search?q={}&countrycodes={}&format=json&limit=1",
+            urlencoding::encode(&query_str),
+            country_code
+        );
 
         let response = self
             .http_client
@@ -139,8 +130,18 @@ impl GeoBoundsResolver {
                 let max_lat = first.boundingbox[1].parse::<f64>()?;
                 let min_lng = first.boundingbox[2].parse::<f64>()?;
                 let max_lng = first.boundingbox[3].parse::<f64>()?;
+                
                 if min_lat < max_lat && min_lng < max_lng {
-                    return Ok(Some([min_lat, max_lat, min_lng, max_lng]));
+                    // Validate that catalog centroid is within or reasonably close to returned bbox
+                    let lat_margin = 0.5;
+                    let lng_margin = 0.5;
+                    if area.latitude >= min_lat - lat_margin
+                        && area.latitude <= max_lat + lat_margin
+                        && area.longitude >= min_lng - lng_margin
+                        && area.longitude <= max_lng + lng_margin
+                    {
+                        return Ok(Some([min_lat, max_lat, min_lng, max_lng]));
+                    }
                 }
             }
         }
@@ -189,7 +190,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bounds_resolver_caches_results() {
+    async fn test_bounds_resolver_returns_cached_authoritative_bounds() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = temp_dir.path().join("admin_test.db");
         let repo = AdministrativeCatalogRepository::new(&db_path).unwrap();
@@ -220,18 +221,128 @@ mod tests {
             .await
             .unwrap();
 
+        // Pre-cache an authoritative bounding box
+        let sample_bounds = AdministrativeBounds {
+            geoname_id: 1566083,
+            country_code: "VN".to_string(),
+            min_lat: 10.35,
+            max_lat: 11.15,
+            min_lng: 106.35,
+            max_lng: 107.05,
+            source: "nominatim".to_string(),
+            updated_at: "2026-08-19T00:00:00Z".to_string(),
+        };
+        repo.save_cached_bounds(&sample_bounds).await.unwrap();
+
         let resolver = GeoBoundsResolver::new(repo.clone());
         let bounds = resolver.resolve_bounds(1566083).await.unwrap();
-        
-        assert_eq!(bounds.geoname_id, 1566083);
-        assert!(bounds.min_lat < bounds.max_lat);
-        assert!(bounds.min_lng < bounds.max_lng);
 
-        // Verify it was persisted to cache
-        let cached = repo.get_cached_bounds(1566083).await.unwrap();
-        assert!(cached.is_some());
-        let cached = cached.unwrap();
-        assert_eq!(cached.geoname_id, 1566083);
-        assert_eq!(cached.min_lat, bounds.min_lat);
+        assert_eq!(bounds.geoname_id, 1566083);
+        assert_eq!(bounds.source, "nominatim");
+        assert_eq!(bounds.min_lat, 10.35);
+        assert_eq!(bounds.max_lat, 11.15);
+    }
+
+    #[tokio::test]
+    async fn test_bounds_resolver_falls_back_to_centroid_without_poisoning_cache() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("admin_test.db");
+        let repo = AdministrativeCatalogRepository::new(&db_path).unwrap();
+
+        let parsed = ParsedCountryData {
+            country_code: "VN".to_string(),
+            areas: vec![AdministrativeArea {
+                geoname_id: 999999,
+                country_code: "VN".to_string(),
+                parent_id: None,
+                name: "Unresolvable Area".to_string(),
+                ascii_name: "Unresolvable Area".to_string(),
+                alternate_names: "".to_string(),
+                feature_code: "ADM2".to_string(),
+                administrative_level: Some(2),
+                kind: AdministrativeAreaKind::Administrative,
+                latitude: 10.5,
+                longitude: 106.5,
+                population: 1000,
+                modification_date: "2026-01-01".to_string(),
+                canonical_path: "Vietnam / Unresolvable Area".to_string(),
+            }],
+            source_updated_at: None,
+            bbox: Some([8.5, 23.4, 102.1, 109.5]),
+        };
+
+        repo.replace_country(parsed.clone(), "2026-08-19T00:00:00Z".to_string(), "local".to_string())
+            .await
+            .unwrap();
+
+        // Create resolver with short timeout client pointing to invalid port (deterministic network failure)
+        let bad_client = Client::builder()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let resolver = GeoBoundsResolver::with_client(repo.clone(), bad_client);
+
+        let bounds = resolver.resolve_bounds(999999).await.unwrap();
+        assert_eq!(bounds.source, "centroid_radius");
+        assert!(bounds.min_lat < bounds.max_lat);
+
+        // Verify fallback was NOT saved to cache to avoid poisoning
+        let cached = repo.get_cached_bounds(999999).await.unwrap();
+        assert!(cached.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_bounds_resolver_invalidates_cache_on_country_replace() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("admin_test.db");
+        let repo = AdministrativeCatalogRepository::new(&db_path).unwrap();
+
+        let parsed = ParsedCountryData {
+            country_code: "VN".to_string(),
+            areas: vec![AdministrativeArea {
+                geoname_id: 1566083,
+                country_code: "VN".to_string(),
+                parent_id: None,
+                name: "Thành phố Hồ Chí Minh".to_string(),
+                ascii_name: "Ho Chi Minh City".to_string(),
+                alternate_names: "".to_string(),
+                feature_code: "ADM1".to_string(),
+                administrative_level: Some(1),
+                kind: AdministrativeAreaKind::Administrative,
+                latitude: 10.7769,
+                longitude: 106.7009,
+                population: 9000000,
+                modification_date: "2026-01-01".to_string(),
+                canonical_path: "Vietnam / Ho Chi Minh City".to_string(),
+            }],
+            source_updated_at: None,
+            bbox: Some([8.5, 23.4, 102.1, 109.5]),
+        };
+
+        repo.replace_country(parsed.clone(), "2026-08-19T00:00:00Z".to_string(), "local".to_string())
+            .await
+            .unwrap();
+
+        repo.save_cached_bounds(&AdministrativeBounds {
+            geoname_id: 1566083,
+            country_code: "VN".to_string(),
+            min_lat: 10.35,
+            max_lat: 11.15,
+            min_lng: 106.35,
+            max_lng: 107.05,
+            source: "nominatim".to_string(),
+            updated_at: "2026-08-19T00:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+
+        assert!(repo.get_cached_bounds(1566083).await.unwrap().is_some());
+
+        // Re-replacing the country must invalidate the cached bounds
+        repo.replace_country(parsed, "2026-08-20T00:00:00Z".to_string(), "local".to_string())
+            .await
+            .unwrap();
+
+        assert!(repo.get_cached_bounds(1566083).await.unwrap().is_none());
     }
 }

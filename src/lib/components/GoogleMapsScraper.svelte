@@ -65,28 +65,50 @@
     selectedCountryName = country.name;
   }
 
+  let gridResolutionGeneration = 0;
+
   async function handleGridAreaSelection(areas: AdministrativeAreaSummary[]) {
     gridSelectedAreas = areas;
-    if (areas.length > 0) {
-      const latest = areas[areas.length - 1];
-      isResolvingGridBounds = true;
-      appendLog(`Resolving bounding box for "${latest.name}"...`);
-      try {
-        const bounds = await resolveAdministrativeBounds(latest.geoname_id);
-        minLat = Number(bounds.min_lat.toFixed(4));
-        maxLat = Number(bounds.max_lat.toFixed(4));
-        minLng = Number(bounds.min_lng.toFixed(4));
-        maxLng = Number(bounds.max_lng.toFixed(4));
-        appendLog(`Resolved bounds for "${latest.name}" (${bounds.source}): Lat [${bounds.min_lat}, ${bounds.max_lat}], Lng: [${bounds.min_lng}, ${bounds.max_lng}]`);
-      } catch (err) {
-        appendLog(`Failed to resolve bounds for "${latest.name}": ${err instanceof Error ? err.message : String(err)}`);
-      } finally {
+    const currentGen = ++gridResolutionGeneration;
+
+    if (areas.length === 0) {
+      return;
+    }
+
+    isResolvingGridBounds = true;
+    appendLog(`Resolving bounding box for ${areas.length} area(s)...`);
+    try {
+      const boundsList = await Promise.all(
+        areas.map((a) => resolveAdministrativeBounds(a.geoname_id))
+      );
+      if (currentGen !== gridResolutionGeneration) {
+        return;
+      }
+      const min_lat = Math.min(...boundsList.map((b) => b.min_lat));
+      const max_lat = Math.max(...boundsList.map((b) => b.max_lat));
+      const min_lng = Math.min(...boundsList.map((b) => b.min_lng));
+      const max_lng = Math.max(...boundsList.map((b) => b.max_lng));
+
+      minLat = Number(min_lat.toFixed(4));
+      maxLat = Number(max_lat.toFixed(4));
+      minLng = Number(min_lng.toFixed(4));
+      maxLng = Number(max_lng.toFixed(4));
+      appendLog(
+        `Resolved union bounds for ${areas.length} area(s): Lat [${minLat}, ${maxLat}], Lng: [${minLng}, ${maxLng}]`
+      );
+    } catch (err) {
+      if (currentGen === gridResolutionGeneration) {
+        appendLog(`Failed to resolve bounds: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } finally {
+      if (currentGen === gridResolutionGeneration) {
         isResolvingGridBounds = false;
       }
     }
   }
 
   function handleGridBoundingBoxChange(bbox: [number, number, number, number]) {
+    gridResolutionGeneration += 1;
     minLat = Number(bbox[0].toFixed(4));
     maxLat = Number(bbox[1].toFixed(4));
     minLng = Number(bbox[2].toFixed(4));
