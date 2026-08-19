@@ -128,3 +128,13 @@ export function planGridCrawl(
   });
 }
 
+export function geocodeBoundingBox(
+  query: string,
+  countryCode?: string
+): Promise<[number, number, number, number] | null> {
+  return invoke<[number, number, number, number] | null>('geocode_bounding_box', {
+    query,
+    countryCode: countryCode || null
+  });
+}
+

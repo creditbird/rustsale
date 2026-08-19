@@ -84,3 +84,16 @@ pub async fn resolve_administrative_bounds(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub async fn geocode_bounding_box(
+    state: tauri::State<'_, AdministrativeCatalogState>,
+    query: String,
+    country_code: Option<String>,
+) -> Result<Option<[f64; 4]>, String> {
+    state
+        .service
+        .geocode_query(&query, country_code.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+

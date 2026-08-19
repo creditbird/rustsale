@@ -209,6 +209,7 @@ pub fn run() {
             administrative_catalog::commands::list_administrative_areas,
             administrative_catalog::commands::search_administrative_areas,
             administrative_catalog::commands::resolve_administrative_bounds,
+            administrative_catalog::commands::geocode_bounding_box,
             google_maps_jobs::commands::get_google_maps_runtime_status,
             google_maps_jobs::commands::prepare_google_maps_runtime,
             google_maps_jobs::commands::create_google_maps_scrape_job,

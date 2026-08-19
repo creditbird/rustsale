@@ -239,6 +239,8 @@ mock.module('@tauri-apps/api/core', () => ({
           source: 'nominatim',
           updated_at: '2026-08-19T00:00:00Z'
         };
+      case 'geocode_bounding_box':
+        return [10.75, 10.85, 106.65, 106.75];
       case 'plan_grid_crawl':
         return {
           bbox: args?.bbox,
@@ -360,8 +362,7 @@ test('restores installed CloakBrowser runtime status when the screen remounts', 
 test('shows grid preflight estimate and recommended step when the cap is exceeded', async () => {
   render(GoogleMapsScraper);
   await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
-
-  expect(await screen.findByText(/Estimated initial cells:/i)).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
 
   await fireEvent.input(screen.getByLabelText('Min Lat'), { target: { value: '10' } });
   await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '20' } });
@@ -723,5 +724,69 @@ test('Grid mode resolution failure invalidates bounding box and blocks scrape st
   // Scrape job must NOT have been created
   const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
   expect(createdJobs.length).toBe(0);
+});
+
+test('mode switching Administrative -> Manual -> alter bbox -> Administrative resets bbox and blocks immediate start', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+
+  // 1. Select Alpha District (resolves coordinates)
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.754);
+  });
+
+  // 2. Switch to Manual mode
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  // Coordinates should have been reset on mode switch
+  const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+  expect(Number(minLatInput.value)).toBe(0);
+
+  // Alter coordinates in manual mode
+  await fireEvent.input(minLatInput, { target: { value: '15.5' } });
+  await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '15.6' } });
+  await fireEvent.input(screen.getByLabelText('Min Lng'), { target: { value: '108.2' } });
+  await fireEvent.input(screen.getByLabelText('Max Lng'), { target: { value: '108.3' } });
+
+  // 3. Switch back to Administrative mode
+  await fireEvent.click(screen.getByRole('button', { name: /Select Administrative Areas \(Deep Grid\)/i }));
+
+  // State should be reset again and not retain manual coordinates
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(0);
+
+  // 4. Attempt to start scrape immediately
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), { target: { value: 'coffee' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  // Start must be blocked because no confirmed administrative resolution is active
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
+});
+
+test('Manual Grid mode detects coordinates via backend geocoder', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), {
+    target: { value: 'District 1, Ho Chi Minh City' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.75);
+    const maxLatInput = screen.getByLabelText('Max Lat') as HTMLInputElement;
+    expect(Number(maxLatInput.value)).toBe(10.85);
+  });
+
+  const geocodeCalls = invocations.filter(({ command }) => command === 'geocode_bounding_box');
+  expect(geocodeCalls.length).toBe(1);
 });
 

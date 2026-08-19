@@ -12,6 +12,7 @@
   import GoogleMapsJobPanel from '$lib/components/GoogleMapsJobPanel.svelte';
   import GoogleMapsRuntimePanel from '$lib/components/GoogleMapsRuntimePanel.svelte';
   import {
+    geocodeBoundingBox,
     resolveAdministrativeBounds,
     type AdministrativeAreaSummary,
     type AdministrativeCountry
@@ -115,7 +116,7 @@
   }
 
   function handleGridBoundingBoxChange(bbox: [number, number, number, number]) {
-    if (gridTargetingMode === 'administrative' && gridSelectedAreas.length > 0) {
+    if (gridTargetingMode === 'administrative') {
       return;
     }
     gridResolutionGeneration += 1;
@@ -123,6 +124,19 @@
     maxLat = Number(bbox[1].toFixed(4));
     minLng = Number(bbox[2].toFixed(4));
     maxLng = Number(bbox[3].toFixed(4));
+  }
+
+  function switchGridTargetingMode(targetMode: 'administrative' | 'manual') {
+    if (gridTargetingMode === targetMode) return;
+    gridTargetingMode = targetMode;
+    gridResolutionGeneration += 1;
+    resolvedGridGeonameId = null;
+    gridSelectedAreas = [];
+    minLat = 0;
+    maxLat = 0;
+    minLng = 0;
+    maxLng = 0;
+    isResolvingGridBounds = false;
   }
 
   async function detectCoordinates() {
@@ -136,17 +150,13 @@
       const query = selectedCountryName && !geocodeQuery.toLowerCase().includes(selectedCountryName.toLowerCase())
         ? `${geocodeQuery}, ${selectedCountryName}`
         : geocodeQuery;
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-      const response = await fetch(url, { headers: { 'User-Agent': 'RustSale-CRM-v2-Client' } });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
-      if (data && data.length > 0) {
-        const bbox = data[0].boundingbox;
-        minLat = parseFloat(bbox[0]);
-        maxLat = parseFloat(bbox[1]);
-        minLng = parseFloat(bbox[2]);
-        maxLng = parseFloat(bbox[3]);
-        appendLog(`Successfully detected coordinates for "${data[0].display_name}": Lat: ${minLat}-${maxLat}, Lng: ${minLng}-${maxLng}`);
+      const bbox = await geocodeBoundingBox(query, selectedCountryCode);
+      if (bbox) {
+        minLat = Number(bbox[0].toFixed(4));
+        maxLat = Number(bbox[1].toFixed(4));
+        minLng = Number(bbox[2].toFixed(4));
+        maxLng = Number(bbox[3].toFixed(4));
+        appendLog(`Successfully detected coordinates for "${query}": Lat: ${minLat}-${maxLat}, Lng: ${minLng}-${maxLng}`);
       } else {
         appendLog(`Error: Could not find coordinates for "${geocodeQuery}".`);
       }
@@ -557,7 +567,7 @@
                 <button
                   type="button"
                   class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all cursor-pointer {gridTargetingMode === 'administrative' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
-                  onclick={() => gridTargetingMode = 'administrative'}
+                  onclick={() => switchGridTargetingMode('administrative')}
                   disabled={isScraping}
                 >
                   Select Administrative Areas (Deep Grid)
@@ -565,7 +575,7 @@
                 <button
                   type="button"
                   class="flex-1 py-1 px-2.5 rounded text-xs font-medium transition-all cursor-pointer {gridTargetingMode === 'manual' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
-                  onclick={() => gridTargetingMode = 'manual'}
+                  onclick={() => switchGridTargetingMode('manual')}
                   disabled={isScraping}
                 >
                   Manual Coordinates / Radius Scan

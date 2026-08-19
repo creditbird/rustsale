@@ -170,6 +170,45 @@ impl GeoBoundsResolver {
 
         Ok(None)
     }
+
+    pub async fn geocode_query(&self, query: &str, country_code: Option<&str>) -> Result<Option<[f64; 4]>> {
+        let mut url = format!(
+            "{}/search?q={}&format=json&limit=1",
+            self.base_url.trim_end_matches('/'),
+            urlencoding::encode(query)
+        );
+        if let Some(cc) = country_code {
+            if !cc.trim().is_empty() {
+                url.push_str(&format!("&countrycodes={}", urlencoding::encode(&cc.trim().to_lowercase())));
+            }
+        }
+
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .context("failed sending geocoding request")?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("geocoding service returned status: {}", response.status()));
+        }
+
+        let results: Vec<NominatimSearchResult> = response.json().await.context("failed parsing geocoding json")?;
+        if let Some(first) = results.into_iter().next() {
+            if first.boundingbox.len() >= 4 {
+                let min_lat = first.boundingbox[0].parse::<f64>()?;
+                let max_lat = first.boundingbox[1].parse::<f64>()?;
+                let min_lng = first.boundingbox[2].parse::<f64>()?;
+                let max_lng = first.boundingbox[3].parse::<f64>()?;
+                if min_lat < max_lat && min_lng < max_lng {
+                    return Ok(Some([min_lat, max_lat, min_lng, max_lng]));
+                }
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 pub fn compute_centroid_bounds(
