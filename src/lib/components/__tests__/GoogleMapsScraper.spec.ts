@@ -644,12 +644,21 @@ test('Grid mode allows switching to manual coordinates and radius scan', async (
   expect(screen.getByText('Search Administrative Area')).toBeTruthy();
 });
 
-test('Grid mode resolves union bounding box when multiple administrative areas are selected', async () => {
+test('Grid mode replaces bounding box when another administrative area is selected and resets on uncheck', async () => {
   render(GoogleMapsScraper);
 
   await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
   await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  
+  // Select Alpha District (geoname 200: [10.754, 10.798, 106.680, 106.714])
   await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.754);
+  });
+
+  // Select Beta District (geoname 201: [10.800, 10.850, 106.700, 106.750]) -> replaces Alpha District
   await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Beta District' }));
 
   await waitFor(() => {
@@ -658,13 +667,18 @@ test('Grid mode resolves union bounding box when multiple administrative areas a
     const minLngInput = screen.getByLabelText('Min Lng') as HTMLInputElement;
     const maxLngInput = screen.getByLabelText('Max Lng') as HTMLInputElement;
 
-    // Alpha District: [10.754, 10.798, 106.680, 106.714]
-    // Beta District:  [10.800, 10.850, 106.700, 106.750]
-    // Union:          [10.754, 10.850, 106.680, 106.750]
-    expect(Number(minLatInput.value)).toBe(10.754);
+    expect(Number(minLatInput.value)).toBe(10.8);
     expect(Number(maxLatInput.value)).toBe(10.85);
-    expect(Number(minLngInput.value)).toBe(106.68);
+    expect(Number(minLngInput.value)).toBe(106.7);
     expect(Number(maxLngInput.value)).toBe(106.75);
+  });
+
+  // Uncheck Beta District -> resets bounding box to 0
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Beta District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(0);
   });
 });
 

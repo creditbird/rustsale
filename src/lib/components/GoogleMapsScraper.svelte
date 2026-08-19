@@ -72,33 +72,32 @@
     const currentGen = ++gridResolutionGeneration;
 
     if (areas.length === 0) {
+      isResolvingGridBounds = false;
+      minLat = 0;
+      maxLat = 0;
+      minLng = 0;
+      maxLng = 0;
       return;
     }
 
+    const selected = areas[0];
     isResolvingGridBounds = true;
-    appendLog(`Resolving bounding box for ${areas.length} area(s)...`);
+    appendLog(`Resolving bounding box for "${selected.name}"...`);
     try {
-      const boundsList = await Promise.all(
-        areas.map((a) => resolveAdministrativeBounds(a.geoname_id))
-      );
+      const bounds = await resolveAdministrativeBounds(selected.geoname_id);
       if (currentGen !== gridResolutionGeneration) {
         return;
       }
-      const min_lat = Math.min(...boundsList.map((b) => b.min_lat));
-      const max_lat = Math.max(...boundsList.map((b) => b.max_lat));
-      const min_lng = Math.min(...boundsList.map((b) => b.min_lng));
-      const max_lng = Math.max(...boundsList.map((b) => b.max_lng));
-
-      minLat = Number(min_lat.toFixed(4));
-      maxLat = Number(max_lat.toFixed(4));
-      minLng = Number(min_lng.toFixed(4));
-      maxLng = Number(max_lng.toFixed(4));
+      minLat = Number(bounds.min_lat.toFixed(4));
+      maxLat = Number(bounds.max_lat.toFixed(4));
+      minLng = Number(bounds.min_lng.toFixed(4));
+      maxLng = Number(bounds.max_lng.toFixed(4));
       appendLog(
-        `Resolved union bounds for ${areas.length} area(s): Lat [${minLat}, ${maxLat}], Lng: [${minLng}, ${maxLng}]`
+        `Resolved bounds for "${selected.name}" (${bounds.source}): Lat [${minLat}, ${maxLat}], Lng: [${minLng}, ${maxLng}]`
       );
     } catch (err) {
       if (currentGen === gridResolutionGeneration) {
-        appendLog(`Failed to resolve bounds: ${err instanceof Error ? err.message : String(err)}`);
+        appendLog(`Failed to resolve bounds for "${selected.name}": ${err instanceof Error ? err.message : String(err)}`);
       }
     } finally {
       if (currentGen === gridResolutionGeneration) {
@@ -277,9 +276,21 @@
       return;
     }
 
-    if (mode === 'grid' && (gridEstimate.error || gridEstimate.recommendedStepKm !== null)) {
-      appendLog(`Error: ${gridEstimate.error ?? `Grid estimate exceeds 10,000 cells. Use at least ${gridEstimate.recommendedStepKm?.toFixed(2)} km.`}`);
-      return;
+    if (mode === 'grid') {
+      if (gridTargetingMode === 'administrative') {
+        if (isResolvingGridBounds) {
+          appendLog("Error: Administrative area bounding box is still resolving. Please wait.");
+          return;
+        }
+        if (gridSelectedAreas.length === 0) {
+          appendLog("Error: Please select an administrative area to scan.");
+          return;
+        }
+      }
+      if (gridEstimate.error || gridEstimate.recommendedStepKm !== null) {
+        appendLog(`Error: ${gridEstimate.error ?? `Grid estimate exceeds 10,000 cells. Use at least ${gridEstimate.recommendedStepKm?.toFixed(2)} km.`}`);
+        return;
+      }
     }
 
     let districtsVal: string[] = [];
@@ -557,7 +568,16 @@
                 bind:selectedCountryCode
                 bind:selectedAreas={gridSelectedAreas}
                 disabled={isScraping}
-                onCountryChange={handleCountryChange}
+                maxSelection={1}
+                onCountryChange={(country) => {
+                  handleCountryChange(country);
+                  gridSelectedAreas = [];
+                  minLat = 0;
+                  maxLat = 0;
+                  minLng = 0;
+                  maxLng = 0;
+                  isResolvingGridBounds = false;
+                }}
                 onSelectionChange={handleGridAreaSelection}
                 onBoundingBoxChange={handleGridBoundingBoxChange}
               />

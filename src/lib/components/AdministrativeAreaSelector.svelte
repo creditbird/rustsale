@@ -23,6 +23,7 @@
     selectedCountryCode?: string;
     selectedAreas?: AdministrativeAreaSummary[];
     disabled?: boolean;
+    maxSelection?: number;
     onCountryChange?: (country: AdministrativeCountry) => void;
     onSelectionChange?: (areas: AdministrativeAreaSummary[]) => void;
     onBoundingBoxChange?: (bbox: [number, number, number, number]) => void;
@@ -92,6 +93,7 @@
     selectedCountryCode = $bindable('VN'),
     selectedAreas = $bindable<AdministrativeAreaSummary[]>([]),
     disabled = false,
+    maxSelection = 500,
     onCountryChange = () => {},
     onSelectionChange = () => {},
     onBoundingBoxChange = () => {}
@@ -394,11 +396,15 @@
     selectionError = null;
     if (checked) {
       if (selectedIds.has(area.geoname_id)) return;
-      if (selectedAreas.length >= 500) {
-        selectionError = 'Maximum 500 administrative targets per campaign.';
-        return;
+      if (maxSelection === 1) {
+        selectedAreas = [area];
+      } else {
+        if (selectedAreas.length >= maxSelection) {
+          selectionError = `Maximum ${maxSelection} administrative targets per campaign.`;
+          return;
+        }
+        selectedAreas = [...selectedAreas, area];
       }
-      selectedAreas = [...selectedAreas, area];
       onSelectionChange([...selectedAreas]);
       if (area.has_children && levelIndex < LEVEL_DEFINITIONS.length - 1) {
         const nextIds = new Set(expandedParentIds[levelIndex]);
@@ -414,11 +420,12 @@
   }
 
   async function selectAllLevel(levelIndex: number) {
+    if (maxSelection === 1) return;
     const areas = filteredAreas(levelIndex);
     const additions = areas.filter((area) => !selectedIds.has(area.geoname_id));
-    const room = Math.max(0, 500 - selectedAreas.length);
+    const room = Math.max(0, maxSelection - selectedAreas.length);
     if (additions.length > room) {
-      selectionError = 'Maximum 500 administrative targets per campaign.';
+      selectionError = `Maximum ${maxSelection} administrative targets per campaign.`;
     }
     selectedAreas = [...selectedAreas, ...additions.slice(0, room)];
     onSelectionChange([...selectedAreas]);
@@ -656,7 +663,7 @@
           </Button>
           <span>{searchResults.length} results</span>
         </div>
-        <Badge variant="outline">{selectedAreas.length}/500 selected</Badge>
+        <Badge variant="outline">{maxSelection > 1 ? `${selectedAreas.length}/${maxSelection} selected` : (selectedAreas.length > 0 ? '1 selected' : 'None selected')}</Badge>
       </div>
 
       <ScrollArea.Root class="h-44 rounded-md border border-border bg-background/70">
@@ -692,7 +699,7 @@
       </ScrollArea.Root>
     {:else}
       <div class="flex min-h-8 items-center justify-end">
-        <Badge variant="outline">{selectedAreas.length}/500 selected</Badge>
+        <Badge variant="outline">{maxSelection > 1 ? `${selectedAreas.length}/${maxSelection} selected` : (selectedAreas.length > 0 ? '1 selected' : 'None selected')}</Badge>
       </div>
       {#each LEVEL_DEFINITIONS as definition, levelIndex (definition.level)}
         {#if shouldShowLevel(levelIndex)}
@@ -715,16 +722,18 @@
                     );
                   }}
                 />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  aria-label={`Select all ${definition.title}`}
-                  onclick={() => void selectAllLevel(levelIndex)}
-                  disabled={disabled || loadingAreas || filteredAreas(levelIndex).length === 0}
-                >
-                  Select All
-                </Button>
+                {#if maxSelection > 1}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    aria-label={`Select all ${definition.title}`}
+                    onclick={() => void selectAllLevel(levelIndex)}
+                    disabled={disabled || loadingAreas || filteredAreas(levelIndex).length === 0}
+                  >
+                    Select All
+                  </Button>
+                {/if}
                 <Button
                   type="button"
                   variant="ghost"

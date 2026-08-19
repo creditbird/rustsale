@@ -121,7 +121,9 @@ impl GridPlanner {
             None
         };
 
-        let effective_step_km = requested_step_km;
+        let effective_step_km = requested_step_km
+            .max(policy.min_step_km)
+            .min(policy.max_step_km);
         let estimated_chunks = ((estimated_cells as f64) / (policy.max_cells_per_chunk as f64))
             .ceil()
             .max(1.0) as usize;

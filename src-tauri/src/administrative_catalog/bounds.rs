@@ -10,6 +10,7 @@ use super::types::{AdministrativeArea, AdministrativeBounds};
 pub struct GeoBoundsResolver {
     repository: AdministrativeCatalogRepository,
     http_client: Client,
+    base_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +28,7 @@ impl GeoBoundsResolver {
         Self {
             repository,
             http_client,
+            base_url: "https://nominatim.openstreetmap.org".to_string(),
         }
     }
 
@@ -34,6 +36,19 @@ impl GeoBoundsResolver {
         Self {
             repository,
             http_client,
+            base_url: "https://nominatim.openstreetmap.org".to_string(),
+        }
+    }
+
+    pub fn with_base_url(
+        repository: AdministrativeCatalogRepository,
+        http_client: Client,
+        base_url: String,
+    ) -> Self {
+        Self {
+            repository,
+            http_client,
+            base_url,
         }
     }
 
@@ -65,7 +80,9 @@ impl GeoBoundsResolver {
                     updated_at: chrono::Utc::now().to_rfc3339(),
                 };
                 // Persist only authoritative Nominatim results to SQLite cache
-                let _ = self.repository.save_cached_bounds(&bounds).await;
+                if let Err(err) = self.repository.save_cached_bounds(&bounds).await {
+                    eprintln!("Warning: failed saving administrative bounds to cache: {err}");
+                }
                 Ok(bounds)
             }
             _ => {
@@ -107,7 +124,8 @@ impl GeoBoundsResolver {
         };
 
         let url = format!(
-            "https://nominatim.openstreetmap.org/search?q={}&countrycodes={}&format=json&limit=1",
+            "{}/search?q={}&countrycodes={}&format=json&limit=1",
+            self.base_url.trim_end_matches('/'),
             urlencoding::encode(&query_str),
             country_code
         );
@@ -275,12 +293,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Create resolver with short timeout client pointing to invalid port (deterministic network failure)
-        let bad_client = Client::builder()
-            .timeout(Duration::from_millis(50))
-            .build()
-            .unwrap();
-        let resolver = GeoBoundsResolver::with_client(repo.clone(), bad_client);
+        // Pass invalid localhost URL so network request fails immediately offline
+        let resolver = GeoBoundsResolver::with_base_url(
+            repo.clone(),
+            Client::new(),
+            "http://127.0.0.1:9".to_string(),
+        );
 
         let bounds = resolver.resolve_bounds(999999).await.unwrap();
         assert_eq!(bounds.source, "centroid_radius");
