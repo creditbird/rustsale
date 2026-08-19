@@ -28,6 +28,8 @@ async fn acquire_geocoder_slot() {
     *last_request = Some(Instant::now());
 }
 
+pub const DEFAULT_NOMINATIM_BASE_URL: &str = "https://geo.rustsale.trantrongtri.com";
+
 #[derive(Debug, Clone)]
 pub struct GeoBoundsResolver {
     repository: AdministrativeCatalogRepository,
@@ -48,7 +50,7 @@ impl GeoBoundsResolver {
             .build()
             .unwrap_or_default();
         let base_url = std::env::var("RUSTSALE_NOMINATIM_BASE_URL")
-            .unwrap_or_else(|_| "https://nominatim.openstreetmap.org".to_string());
+            .unwrap_or_else(|_| DEFAULT_NOMINATIM_BASE_URL.to_string());
         Self {
             repository,
             http_client,
@@ -58,7 +60,7 @@ impl GeoBoundsResolver {
 
     pub fn with_client(repository: AdministrativeCatalogRepository, http_client: Client) -> Self {
         let base_url = std::env::var("RUSTSALE_NOMINATIM_BASE_URL")
-            .unwrap_or_else(|_| "https://nominatim.openstreetmap.org".to_string());
+            .unwrap_or_else(|_| DEFAULT_NOMINATIM_BASE_URL.to_string());
         Self {
             repository,
             http_client,
@@ -78,86 +80,74 @@ impl GeoBoundsResolver {
         }
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     pub async fn resolve_bounds(&self, geoname_id: i64) -> Result<AdministrativeBounds> {
         // 1. Check cache first (only authoritative entries are cached)
         if let Some(cached) = self.repository.get_cached_bounds(geoname_id).await? {
             return Ok(cached);
         }
 
-        // 2. Fetch area details
+        // 2. Fetch area from repository
         let area = self
             .repository
             .get_area_by_id(geoname_id)
             .await?
-            .ok_or_else(|| anyhow!("administrative area not found for geoname_id {geoname_id}"))?;
+            .ok_or_else(|| anyhow!("administrative area not found: {}", geoname_id))?;
 
-        // 3. Try structured geocoding via OpenStreetMap Nominatim
-        let geocoded = self.try_structured_geocoding(&area).await;
-        match geocoded {
-            Ok(Some(bbox)) => {
-                let bounds = AdministrativeBounds {
-                    geoname_id,
-                    country_code: area.country_code.clone(),
-                    min_lat: bbox[0],
-                    max_lat: bbox[1],
-                    min_lng: bbox[2],
-                    max_lng: bbox[3],
-                    source: "nominatim".to_string(),
-                    updated_at: chrono::Utc::now().to_rfc3339(),
-                };
-                // Persist only authoritative Nominatim results to SQLite cache
-                if let Err(err) = self.repository.save_cached_bounds(&bounds).await {
-                    eprintln!("Warning: failed saving administrative bounds to cache: {err}");
-                }
-                Ok(bounds)
-            }
-            _ => {
-                // 4. Fallback to centroid radius in-memory without permanently poisoning the cache
-                let bbox = compute_centroid_bounds(
-                    area.latitude,
-                    area.longitude,
-                    area.administrative_level,
-                );
-                Ok(AdministrativeBounds {
-                    geoname_id,
-                    country_code: area.country_code.clone(),
-                    min_lat: bbox[0],
-                    max_lat: bbox[1],
-                    min_lng: bbox[2],
-                    max_lng: bbox[3],
-                    source: "centroid_radius".to_string(),
-                    updated_at: chrono::Utc::now().to_rfc3339(),
-                })
-            }
+        // 3. Attempt geocoding lookup
+        let geocoded = self.try_structured_geocoding(&area).await.unwrap_or(None);
+
+        if let Some(bbox) = geocoded {
+            let bounds = AdministrativeBounds {
+                geoname_id: area.geoname_id,
+                country_code: area.country_code.clone(),
+                min_lat: bbox[0],
+                max_lat: bbox[1],
+                min_lng: bbox[2],
+                max_lng: bbox[3],
+                source: "nominatim".to_string(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            };
+            let _ = self.repository.save_cached_bounds(&bounds).await;
+            return Ok(bounds);
         }
+
+        // 4. Fallback to centroid estimation (NOT cached in SQLite so future attempts can retry authoritative fetch)
+        let bbox = compute_centroid_bounds(area.latitude, area.longitude, area.administrative_level);
+        Ok(AdministrativeBounds {
+            geoname_id: area.geoname_id,
+            country_code: area.country_code.clone(),
+            min_lat: bbox[0],
+            max_lat: bbox[1],
+            min_lng: bbox[2],
+            max_lng: bbox[3],
+            source: "centroid_radius".to_string(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        })
     }
 
     async fn send_geocoding_request(&self, query_params: &str) -> Result<Vec<NominatimSearchResult>> {
-        let mut urls = vec![format!("{}/search?{}", self.base_url.trim_end_matches('/'), query_params)];
-        if self.base_url != "https://nominatim.openstreetmap.org" {
-            urls.push(format!("https://nominatim.openstreetmap.org/search?{}", query_params));
+        let url = format!("{}/search?{}", self.base_url.trim_end_matches('/'), query_params);
+        acquire_geocoder_slot().await;
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .context(format!("failed sending geocoding request to {url}"))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("geocoding service returned status: {}", response.status()));
         }
 
-        let mut last_err = anyhow!("no geocoding urls available");
-        for url in urls {
-            acquire_geocoder_slot().await;
-            match self.http_client.get(&url).send().await {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        match response.json::<Vec<NominatimSearchResult>>().await {
-                            Ok(results) => return Ok(results),
-                            Err(e) => last_err = anyhow!("failed parsing geocoding json: {e}"),
-                        }
-                    } else {
-                        last_err = anyhow!("geocoding service returned status: {}", response.status());
-                    }
-                }
-                Err(e) => {
-                    last_err = anyhow!("failed sending geocoding request to {url}: {e}");
-                }
-            }
-        }
-        Err(last_err)
+        let results = response
+            .json::<Vec<NominatimSearchResult>>()
+            .await
+            .context("failed parsing geocoding json")?;
+        Ok(results)
     }
 
     async fn try_structured_geocoding(&self, area: &AdministrativeArea) -> Result<Option<[f64; 4]>> {
@@ -442,5 +432,27 @@ mod tests {
         let _ = tokio::join!(h1, h2);
         let elapsed = start.elapsed();
         assert!(elapsed >= Duration::from_millis(950));
+    }
+
+    #[tokio::test]
+    async fn test_default_resolver_targets_central_proxy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("admin_test.db");
+        let repo = AdministrativeCatalogRepository::new(&db_path).unwrap();
+        let resolver = GeoBoundsResolver::new(repo);
+        assert_eq!(resolver.base_url(), DEFAULT_NOMINATIM_BASE_URL);
+    }
+
+    #[tokio::test]
+    async fn test_custom_provider_override_is_honored() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("admin_test.db");
+        let repo = AdministrativeCatalogRepository::new(&db_path).unwrap();
+        let resolver = GeoBoundsResolver::with_base_url(
+            repo,
+            Client::new(),
+            "https://custom-nominatim.example.com".to_string(),
+        );
+        assert_eq!(resolver.base_url(), "https://custom-nominatim.example.com");
     }
 }
