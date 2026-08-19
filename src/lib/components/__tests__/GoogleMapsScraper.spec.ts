@@ -75,6 +75,21 @@ const administrativeChildren: AdministrativeAreaSummary[] = [
     population: 0,
     canonical_path: 'Alpha District, Alpha Province, Vietnam',
     has_children: false
+  },
+  {
+    geoname_id: 201,
+    country_code: 'VN',
+    parent_id: 100,
+    name: 'Beta District',
+    ascii_name: 'Beta District',
+    feature_code: 'ADM2',
+    administrative_level: 2,
+    kind: 'administrative',
+    latitude: 10.8,
+    longitude: 20.8,
+    population: 0,
+    canonical_path: 'Beta District, Alpha Province, Vietnam',
+    has_children: false
   }
 ];
 
@@ -139,6 +154,10 @@ function updateJob(jobId: string, status: GoogleMapsJobStatus): GoogleMapsScrape
   return jobs[index];
 }
 
+let shouldFailBoundsResolution = false;
+let deferGeocodePromise = false;
+let deferredGeocodeResolve: ((val: any) => void) | null = null;
+
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: any) => {
     invocations.push({ command, args });
@@ -196,6 +215,52 @@ mock.module('@tauri-apps/api/core', () => ({
       case 'retry_google_maps_failed_units':
       case 'retry_google_maps_email_enrichment':
         return { ...updateJob(args?.jobId, 'running') };
+      case 'resolve_administrative_bounds':
+        if (shouldFailBoundsResolution) {
+          throw new Error('Network timeout contacting geocoding service');
+        }
+        if (args?.geonameId === 201) {
+          return {
+            geoname_id: 201,
+            country_code: 'VN',
+            min_lat: 10.800,
+            max_lat: 10.850,
+            min_lng: 106.700,
+            max_lng: 106.750,
+            source: 'nominatim',
+            updated_at: '2026-08-19T00:00:00Z'
+          };
+        }
+        return {
+          geoname_id: args?.geonameId,
+          country_code: 'VN',
+          min_lat: 10.754,
+          max_lat: 10.798,
+          min_lng: 106.680,
+          max_lng: 106.714,
+          source: 'nominatim',
+          updated_at: '2026-08-19T00:00:00Z'
+        };
+      case 'geocode_bounding_box':
+        if (deferGeocodePromise) {
+          return new Promise((resolve) => {
+            deferredGeocodeResolve = resolve;
+          });
+        }
+        return [10.75, 10.85, 106.65, 106.75];
+      case 'plan_grid_crawl':
+        return {
+          bbox: args?.bbox,
+          area_km2: 15.2,
+          width_km: 3.8,
+          height_km: 4.0,
+          requested_step_km: args?.stepKm,
+          effective_step_km: args?.stepKm,
+          estimated_cells: 8,
+          recommended_step_km: null,
+          exceeds_limit: false,
+          estimated_chunks: 1
+        };
       case 'delete_google_maps_scrape_job':
         jobs = jobs.filter((candidate) => candidate.id !== args?.jobId);
         return true;
@@ -232,6 +297,9 @@ beforeEach(() => {
   invocations.length = 0;
   eventListeners.clear();
   jobs = [];
+  shouldFailBoundsResolution = false;
+  deferGeocodePromise = false;
+  deferredGeocodeResolve = null;
   runtimeStatus = {
     installed: true,
     version: '132.0.0',
@@ -255,6 +323,7 @@ test('preserves preset, geocode, and custom bounding-box controls', async () => 
   render(GoogleMapsScraper);
 
   await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
 
   expect(screen.getByText('Quick Select Province / City')).toBeTruthy();
   expect(screen.getByLabelText(/Search Administrative Area/i)).toBeTruthy();
@@ -264,6 +333,7 @@ test('preserves preset, geocode, and custom bounding-box controls', async () => 
   expect(screen.getByLabelText('Max Lng')).toBeTruthy();
   expect(screen.getByLabelText('Grid Step Size')).toBeTruthy();
 });
+
 
 test('shows CloakBrowser runtime download state and installed version', async () => {
   runtimeStatus = { installed: false };
@@ -301,8 +371,7 @@ test('restores installed CloakBrowser runtime status when the screen remounts', 
 test('shows grid preflight estimate and recommended step when the cap is exceeded', async () => {
   render(GoogleMapsScraper);
   await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
-
-  expect(await screen.findByText(/Estimated initial cells:/i)).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
 
   await fireEvent.input(screen.getByLabelText('Min Lat'), { target: { value: '10' } });
   await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '20' } });
@@ -550,3 +619,274 @@ test('keeps the selected country as the deep-scan location when no area is selec
     });
   });
 });
+
+test('Grid mode resolves bounding box when administrative area is selected', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  expect(screen.getByText('Select Administrative Areas (Deep Grid)')).toBeTruthy();
+
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const resolveInv = invocations.find(({ command }) => command === 'resolve_administrative_bounds');
+    expect(resolveInv).toBeDefined();
+    expect(resolveInv?.args).toEqual({ geonameId: 200 });
+  });
+
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), {
+    target: { value: 'spa' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  await waitFor(() => {
+    const creation = invocations.find(({ command }) => command === 'create_google_maps_scrape_job');
+    expect(creation?.args?.request).toMatchObject({
+      mode: 'grid',
+      keyword: 'spa',
+      bbox: [10.754, 10.798, 106.68, 106.714]
+    });
+  });
+});
+
+test('Grid mode allows switching to manual coordinates and radius scan', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  expect(screen.getByText('Quick Select Province / City')).toBeTruthy();
+  expect(screen.getByText('Search Administrative Area')).toBeTruthy();
+});
+
+test('Grid mode replaces bounding box when another administrative area is selected and resets on uncheck', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  
+  // Select Alpha District (geoname 200: [10.754, 10.798, 106.680, 106.714])
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.754);
+  });
+
+  // Select Beta District (geoname 201: [10.800, 10.850, 106.700, 106.750]) -> replaces Alpha District
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Beta District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    const maxLatInput = screen.getByLabelText('Max Lat') as HTMLInputElement;
+    const minLngInput = screen.getByLabelText('Min Lng') as HTMLInputElement;
+    const maxLngInput = screen.getByLabelText('Max Lng') as HTMLInputElement;
+
+    expect(Number(minLatInput.value)).toBe(10.8);
+    expect(Number(maxLatInput.value)).toBe(10.85);
+    expect(Number(minLngInput.value)).toBe(106.7);
+    expect(Number(maxLngInput.value)).toBe(106.75);
+  });
+
+  // Uncheck Beta District -> resets bounding box to 0
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Beta District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(0);
+    expect(minLatInput.disabled).toBe(true);
+  });
+});
+
+test('Grid mode resolution failure invalidates bounding box and blocks scrape start', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  
+  // Select Alpha District (geoname 200: resolves successfully)
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.754);
+  });
+
+  // Now enable resolution failure for subsequent selections
+  shouldFailBoundsResolution = true;
+
+  // Select Beta District (geoname 201) -> fails resolution -> bbox becomes 0, resolvedGridGeonameId becomes null
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Beta District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(0);
+  });
+
+  // Attempting to start scrape campaign must be blocked
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), {
+    target: { value: 'coffee' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  // Scrape job must NOT have been created
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
+});
+
+test('mode switching Administrative -> Manual -> alter bbox -> Administrative resets bbox and blocks immediate start', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+
+  // 1. Select Alpha District (resolves coordinates)
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.754);
+  });
+
+  // 2. Switch to Manual mode
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  // Coordinates should have been reset on mode switch
+  const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+  expect(Number(minLatInput.value)).toBe(0);
+
+  // Alter coordinates in manual mode
+  await fireEvent.input(minLatInput, { target: { value: '15.5' } });
+  await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '15.6' } });
+  await fireEvent.input(screen.getByLabelText('Min Lng'), { target: { value: '108.2' } });
+  await fireEvent.input(screen.getByLabelText('Max Lng'), { target: { value: '108.3' } });
+
+  // 3. Switch back to Administrative mode
+  await fireEvent.click(screen.getByRole('button', { name: /Select Administrative Areas \(Deep Grid\)/i }));
+
+  // State should be reset again and not retain manual coordinates
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(0);
+
+  // 4. Attempt to start scrape immediately
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), { target: { value: 'coffee' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  // Start must be blocked because no confirmed administrative resolution is active
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
+});
+
+test('Manual Grid mode detects coordinates via backend geocoder', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), {
+    target: { value: 'District 1, Ho Chi Minh City' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.75);
+    const maxLatInput = screen.getByLabelText('Max Lat') as HTMLInputElement;
+    expect(Number(maxLatInput.value)).toBe(10.85);
+  });
+
+  const geocodeCalls = invocations.filter(({ command }) => command === 'geocode_bounding_box');
+  expect(geocodeCalls.length).toBe(1);
+});
+
+test('valid Manual bbox A -> Detect B with in-flight response -> Start before response must not create a scrape job', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  // Set initial valid manual coordinates A
+  await fireEvent.input(screen.getByLabelText('Min Lat'), { target: { value: '10.1' } });
+  await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '10.2' } });
+  await fireEvent.input(screen.getByLabelText('Min Lng'), { target: { value: '106.1' } });
+  await fireEvent.input(screen.getByLabelText('Max Lng'), { target: { value: '106.2' } });
+
+  // Defer subsequent geocode response
+  deferGeocodePromise = true;
+
+  // Trigger Detect for Area B
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), { target: { value: 'Area B' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  // Coordinates are immediately zeroed out during detection
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(0);
+
+  // Attempting to Start must be blocked because geocode is in-flight and coordinates are 0
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), { target: { value: 'coffee' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
+
+  if (deferredGeocodeResolve) {
+    deferredGeocodeResolve(null);
+  }
+});
+
+test('Detect A in-flight -> switch Administrative -> administrative coordinates remain reset and start is blocked', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  // Trigger Detect
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), { target: { value: 'Area A' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  // Switch to Administrative mode while geocoding was triggered
+  await fireEvent.click(screen.getByRole('button', { name: /Select Administrative Areas \(Deep Grid\)/i }));
+
+  // Coordinates must be 0 and no administrative target is active
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(0);
+
+  // Attempt to Start
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), { target: { value: 'coffee' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
+});
+
+test('Detect in-flight -> user manually inputs coordinates -> late geocode resolves -> manual inputs are preserved', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Grid Crawl' }));
+  await fireEvent.click(screen.getByRole('button', { name: /Manual Coordinates \/ Radius Scan/i }));
+
+  deferGeocodePromise = true;
+
+  // Trigger Detect for Area A
+  await fireEvent.input(screen.getByLabelText('Search Administrative Area'), { target: { value: 'Area A' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Detect' }));
+
+  // While geocoding is in-flight, user directly enters manual coordinates
+  await fireEvent.input(screen.getByLabelText('Min Lat'), { target: { value: '20.5' } });
+  await fireEvent.input(screen.getByLabelText('Max Lat'), { target: { value: '21.5' } });
+  await fireEvent.input(screen.getByLabelText('Min Lng'), { target: { value: '105.5' } });
+  await fireEvent.input(screen.getByLabelText('Max Lng'), { target: { value: '106.5' } });
+
+  // Now late geocode resolves with different coordinates
+  if (deferredGeocodeResolve) {
+    deferredGeocodeResolve([10.75, 10.85, 106.65, 106.75]);
+  }
+
+  // Await microtasks
+  await new Promise((r) => setTimeout(r, 20));
+
+  // User manual inputs must remain intact (not overwritten by late geocode response)
+  expect(Number((screen.getByLabelText('Min Lat') as HTMLInputElement).value)).toBe(20.5);
+  expect(Number((screen.getByLabelText('Max Lat') as HTMLInputElement).value)).toBe(21.5);
+  expect(Number((screen.getByLabelText('Min Lng') as HTMLInputElement).value)).toBe(105.5);
+  expect(Number((screen.getByLabelText('Max Lng') as HTMLInputElement).value)).toBe(106.5);
+});
+

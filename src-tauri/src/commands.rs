@@ -1056,6 +1056,14 @@ pub async fn stop_google_maps_scrape(
 }
 
 #[tauri::command]
+pub fn plan_grid_crawl(
+    bbox: [f64; 4],
+    step_km: f64,
+) -> Result<crate::scrapers::grid_planner::GridPlan, String> {
+    crate::scrapers::grid_planner::GridPlanner::plan(bbox, step_km, None)
+}
+
+#[tauri::command]
 pub fn get_preset_provinces() -> Result<serde_json::Value, String> {
     let json_data = serde_json::json!({
         "Thành phố Cần Thơ": { "minLat": 9.9, "maxLat": 10.3, "minLng": 105.3, "maxLng": 105.9 },

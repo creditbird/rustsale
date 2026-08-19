@@ -80,3 +80,16 @@ pub struct AdministrativeAreaSummary {
     pub canonical_path: String,
     pub has_children: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdministrativeBounds {
+    pub geoname_id: i64,
+    pub country_code: String,
+    pub min_lat: f64,
+    pub max_lat: f64,
+    pub min_lng: f64,
+    pub max_lng: f64,
+    pub source: String,
+    pub updated_at: String,
+}
+

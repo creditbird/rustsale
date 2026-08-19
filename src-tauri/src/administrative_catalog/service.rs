@@ -12,12 +12,13 @@ use tokio::sync::Mutex;
 use zip::ZipArchive;
 
 use super::{
+    bounds::GeoBoundsResolver,
     countries::bundled_countries,
     parser::{parse_admin5_codes, parse_country_dump},
     repository::AdministrativeCatalogRepository,
     types::{
-        AdministrativeAreaSummary, AdministrativeCatalogState, AdministrativeCountry,
-        AdministrativeCountryStatus, ParsedCountryData,
+        AdministrativeAreaSummary, AdministrativeBounds, AdministrativeCatalogState,
+        AdministrativeCountry, AdministrativeCountryStatus, ParsedCountryData,
     },
 };
 
@@ -213,6 +214,16 @@ impl AdministrativeCatalogService {
     ) -> Result<Vec<AdministrativeAreaSummary>> {
         let country = self.country(country_code)?;
         self.repository.search(&country.code, query, limit).await
+    }
+
+    pub async fn resolve_bounds(&self, geoname_id: i64) -> Result<AdministrativeBounds> {
+        let resolver = GeoBoundsResolver::new(self.repository.clone());
+        resolver.resolve_bounds(geoname_id).await
+    }
+
+    pub async fn geocode_query(&self, query: &str, country_code: Option<&str>) -> Result<Option<[f64; 4]>> {
+        let resolver = GeoBoundsResolver::new(self.repository.clone());
+        resolver.geocode_query(query, country_code).await
     }
 
     fn country(&self, country_code: &str) -> Result<&AdministrativeCountry> {

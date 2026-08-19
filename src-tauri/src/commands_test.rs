@@ -3353,11 +3353,8 @@ mod tests {
                 std::fs::read_to_string(&sensitive_file).unwrap(),
                 "DO_NOT_OVERWRITE"
             );
-        }
 
-        // 2. Ancestor directory replaced with symlink is rejected at descriptor open
-        #[cfg(unix)]
-        {
+            // 2. Ancestor directory replaced with symlink is rejected at descriptor open
             let target_dir = temp_dir.path().join("swapped_dir");
             std::fs::create_dir(&target_dir).unwrap();
 
@@ -3383,11 +3380,8 @@ mod tests {
                 std::fs::read_to_string(&sensitive_in_dir).unwrap(),
                 "SENSITIVE"
             );
-        }
 
-        // 3. FIFO / named pipe protection: opening existing FIFO never blocks and rejects non-regular file
-        #[cfg(unix)]
-        {
+            // 3. FIFO / named pipe protection: opening existing FIFO never blocks and rejects non-regular file
             use std::os::unix::ffi::OsStrExt;
             let fifo_path = temp_dir.path().join("fifo_target.csv");
             let mut fifo_c = fifo_path.as_os_str().as_bytes().to_vec();
@@ -3406,11 +3400,8 @@ mod tests {
                         || err_msg.contains("cannot be accessed")
                 );
             }
-        }
 
-        // 4. Real concurrent TOCTOU race test: background thread actively swaps directory with symlink
-        #[cfg(unix)]
-        {
+            // 4. Real concurrent TOCTOU race test: background thread actively swaps directory with symlink
             use std::sync::atomic::{AtomicBool, Ordering};
             use std::sync::Arc;
 
