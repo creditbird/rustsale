@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
@@ -86,7 +86,24 @@ if (!skipBuild) {
   }
 
   console.log(`\n📦 [2/4] Building and signing Tauri bundle with Ed25519 key...`);
-  const privateKeyContent = existsSync(privateKeyPath) ? readFileSync(privateKeyPath, 'utf8').trim() : (process.env.TAURI_SIGNING_PRIVATE_KEY || '');
+  let privateKeyContent = '';
+  if (existsSync(privateKeyPath)) {
+    privateKeyContent = readFileSync(privateKeyPath, 'utf8').trim();
+  } else if (process.env.TAURI_SIGNING_PRIVATE_KEY) {
+    let raw = process.env.TAURI_SIGNING_PRIVATE_KEY.trim();
+    if (raw.startsWith('dW50cnVzdGVk')) {
+      raw = Buffer.from(raw, 'base64').toString('utf8').trim();
+    }
+    privateKeyContent = raw;
+    try {
+      const parentDir = resolve(privateKeyPath, '..');
+      if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
+      writeFileSync(privateKeyPath, privateKeyContent + '\n', 'utf8');
+    } catch {
+      // Ignore if write fails
+    }
+  }
+
   const envVars: Record<string, string | undefined> = { ...process.env };
   if (privateKeyContent) {
     envVars.TAURI_SIGNING_PRIVATE_KEY = privateKeyContent;
@@ -141,9 +158,42 @@ function scanForArtifacts(dir: string, platformKey: string) {
   if (!existsSync(dir)) return;
   const files = readdirSync(dir);
 
+  // 1. Auto-sign any installers if .sig is missing and private key is present
+  const rawKey = (process.env.TAURI_SIGNING_PRIVATE_KEY || '').trim();
   for (const file of files) {
+    if (
+      file.endsWith('.exe') ||
+      file.endsWith('.msi') ||
+      file.endsWith('.deb') ||
+      file.endsWith('.AppImage') ||
+      file.endsWith('.zip')
+    ) {
+      if (!file.includes(version)) continue;
+      const targetPath = join(dir, file);
+      const sigPath = join(dir, `${file}.sig`);
+      if (!existsSync(sigPath) && rawKey) {
+        console.log(`   🔏 Auto-signing artifact with Ed25519 key: ${file}...`);
+        const signEnv = { ...process.env };
+        delete signEnv.TAURI_SIGNING_PRIVATE_KEY_PATH;
+        delete signEnv.TAURI_PRIVATE_KEY_PATH;
+        const signProc = Bun.spawnSync(['bunx', 'tauri', 'signer', 'sign', '-k', rawKey, targetPath], {
+          env: signEnv,
+        });
+        if (signProc.success && existsSync(sigPath)) {
+          console.log(`   ✅ Successfully generated signature for: ${file}`);
+        } else {
+          console.warn(`   ⚠️ Could not generate signature for ${file}:`, signProc.stderr?.toString() || '');
+        }
+      }
+    }
+  }
+
+  // 2. Scan signatures and installer artifacts
+  const refreshedFiles = readdirSync(dir);
+  for (const file of refreshedFiles) {
     if (file.endsWith('.sig')) {
       const targetFile = file.slice(0, -4);
+      if (!targetFile.includes(version)) continue;
       const targetPath = join(dir, targetFile);
       const sigPath = join(dir, file);
 
@@ -231,7 +281,7 @@ const targetDirs = [
 for (const { dir: bDir, macKey } of targetDirs) {
   // Windows
   scanForArtifacts(join(bDir, 'nsis'), 'windows-x86_64');
-  scanForArtifacts(join(bDir, 'msi'), 'windows-x86_64');
+  scanForArtifacts(join(bDir, 'msi'), 'windows-x86_64-msi');
 
   // Linux
   scanForArtifacts(join(bDir, 'appimage'), 'linux-x86_64');
@@ -240,6 +290,14 @@ for (const { dir: bDir, macKey } of targetDirs) {
   // macOS
   scanForArtifacts(join(bDir, 'dmg'), macKey);
   scanForArtifacts(join(bDir, 'macos'), macKey);
+}
+
+// Fallback aliases for Windows updater platforms
+if (platforms['windows-x86_64'] && !platforms['windows-x86_64-msi']) {
+  platforms['windows-x86_64-msi'] = platforms['windows-x86_64'];
+}
+if (platforms['windows-x86_64-msi'] && !platforms['windows-x86_64']) {
+  platforms['windows-x86_64'] = platforms['windows-x86_64-msi'];
 }
 
 // Fetch and merge existing platforms from R2 if same version

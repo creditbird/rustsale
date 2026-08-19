@@ -1,6 +1,15 @@
 {
   "version": "0.1.9",
   "notes": "Fix CloakBrowser scrape hang on Windows using native WebSocket CDP",
-  "pub_date": "2026-08-19T11:42:22.693Z",
-  "platforms": {}
+  "pub_date": "2026-08-19T13:28:02.787Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDkzWnYzK2hFaHR0SjErQVN5TlcxcUJIMVZVQk04RVJrcTdtWEdUR0J6djJNMHR2b2dQYWZtT2FKaDN1SUJLTmF1cSsvNjlGRlIwOGRtVy9MeXErbmdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTQ2MDU0CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS45X3g2NC1zZXR1cC5leGUKL2U4V2c5L0I4VVAzcFd1SjNKKzdRN3VrZnpIM29lMlhKalNKaGNEYWZQODdxU2ZpeU03T3FvLytRWmNGNldOc2RBQmdyNE11UGdJUSs2TENDb0tIQ3c9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.9/RustSale%20CRM_0.1.9_x64-setup.exe"
+    },
+    "windows-x86_64-msi": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHhQTjVnQkFYMVhmdHRqNHRpTWNZYTR5Vk0zZ2JzK1BDeGpiR1pKa0lnRHM5ZU9WSmw2dDNoYVJtRnpoUnpYNE5GZGhCdktSbDk0dDNpeHByTmpKR1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTQ2MDU5CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS45X3g2NF9lbi1VUy5tc2kKcGJHelZaVDI2QXdmMWU0bk5UWklBazJwV21vZmlpdVlqYW9YcG9HbUErNWZ5YVpaMVVtbEx0ZmdMTm52N2h1S2EzdzBpN0xXMXBZU011bllPVjgvQ2c9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.9/RustSale%20CRM_0.1.9_x64_en-US.msi"
+    }
+  }
 }
