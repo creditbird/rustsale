@@ -25,18 +25,22 @@ impl GeoBoundsResolver {
             .user_agent("RustSale-CRM-v2-Client (support@rustsale.trantrongtri.com)")
             .build()
             .unwrap_or_default();
+        let base_url = std::env::var("RUSTSALE_NOMINATIM_BASE_URL")
+            .unwrap_or_else(|_| "https://nominatim.openstreetmap.org".to_string());
         Self {
             repository,
             http_client,
-            base_url: "https://nominatim.openstreetmap.org".to_string(),
+            base_url,
         }
     }
 
     pub fn with_client(repository: AdministrativeCatalogRepository, http_client: Client) -> Self {
+        let base_url = std::env::var("RUSTSALE_NOMINATIM_BASE_URL")
+            .unwrap_or_else(|_| "https://nominatim.openstreetmap.org".to_string());
         Self {
             repository,
             http_client,
-            base_url: "https://nominatim.openstreetmap.org".to_string(),
+            base_url,
         }
     }
 

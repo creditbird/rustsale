@@ -66,17 +66,19 @@
   }
 
   let gridResolutionGeneration = 0;
+  let resolvedGridGeonameId = $state<number | null>(null);
 
   async function handleGridAreaSelection(areas: AdministrativeAreaSummary[]) {
     gridSelectedAreas = areas;
     const currentGen = ++gridResolutionGeneration;
+    resolvedGridGeonameId = null;
+    minLat = 0;
+    maxLat = 0;
+    minLng = 0;
+    maxLng = 0;
 
     if (areas.length === 0) {
       isResolvingGridBounds = false;
-      minLat = 0;
-      maxLat = 0;
-      minLng = 0;
-      maxLng = 0;
       return;
     }
 
@@ -92,11 +94,17 @@
       maxLat = Number(bounds.max_lat.toFixed(4));
       minLng = Number(bounds.min_lng.toFixed(4));
       maxLng = Number(bounds.max_lng.toFixed(4));
+      resolvedGridGeonameId = bounds.geoname_id;
       appendLog(
         `Resolved bounds for "${selected.name}" (${bounds.source}): Lat [${minLat}, ${maxLat}], Lng: [${minLng}, ${maxLng}]`
       );
     } catch (err) {
       if (currentGen === gridResolutionGeneration) {
+        resolvedGridGeonameId = null;
+        minLat = 0;
+        maxLat = 0;
+        minLng = 0;
+        maxLng = 0;
         appendLog(`Failed to resolve bounds for "${selected.name}": ${err instanceof Error ? err.message : String(err)}`);
       }
     } finally {
@@ -107,6 +115,9 @@
   }
 
   function handleGridBoundingBoxChange(bbox: [number, number, number, number]) {
+    if (gridTargetingMode === 'administrative' && gridSelectedAreas.length > 0) {
+      return;
+    }
     gridResolutionGeneration += 1;
     minLat = Number(bbox[0].toFixed(4));
     maxLat = Number(bbox[1].toFixed(4));
@@ -282,8 +293,8 @@
           appendLog("Error: Administrative area bounding box is still resolving. Please wait.");
           return;
         }
-        if (gridSelectedAreas.length === 0) {
-          appendLog("Error: Please select an administrative area to scan.");
+        if (gridSelectedAreas.length === 0 || resolvedGridGeonameId !== gridSelectedAreas[0]?.geoname_id) {
+          appendLog("Error: Please select a valid administrative area with resolved bounds.");
           return;
         }
       }
@@ -638,19 +649,19 @@
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div class="flex flex-col gap-1">
                   <label for="min-lat" class="text-[10px] text-muted-foreground">Min Lat</label>
-                  <Input id="min-lat" type="number" step="0.0001" bind:value={minLat} disabled={isScraping} class="h-8 text-xs bg-background" />
+                  <Input id="min-lat" type="number" step="0.0001" bind:value={minLat} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="max-lat" class="text-[10px] text-muted-foreground">Max Lat</label>
-                  <Input id="max-lat" type="number" step="0.0001" bind:value={maxLat} disabled={isScraping} class="h-8 text-xs bg-background" />
+                  <Input id="max-lat" type="number" step="0.0001" bind:value={maxLat} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="min-lng" class="text-[10px] text-muted-foreground">Min Lng</label>
-                  <Input id="min-lng" type="number" step="0.0001" bind:value={minLng} disabled={isScraping} class="h-8 text-xs bg-background" />
+                  <Input id="min-lng" type="number" step="0.0001" bind:value={minLng} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
                 <div class="flex flex-col gap-1">
                   <label for="max-lng" class="text-[10px] text-muted-foreground">Max Lng</label>
-                  <Input id="max-lng" type="number" step="0.0001" bind:value={maxLng} disabled={isScraping} class="h-8 text-xs bg-background" />
+                  <Input id="max-lng" type="number" step="0.0001" bind:value={maxLng} disabled={isScraping || gridTargetingMode === 'administrative'} class="h-8 text-xs bg-background" />
                 </div>
               </div>
             </div>

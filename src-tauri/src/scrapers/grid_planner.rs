@@ -86,20 +86,24 @@ impl GridPlanner {
 
         let area_km2 = width_km * height_km;
 
+        let effective_step_km = requested_step_km
+            .max(policy.min_step_km)
+            .min(policy.max_step_km);
+
         let count_at_step = |step: f64| -> usize {
             let rows = (height_km / step).ceil().max(1.0) as u64;
             let cols = (width_km / step).ceil().max(1.0) as u64;
             (rows as usize).saturating_mul(cols as usize)
         };
 
-        let estimated_cells = count_at_step(requested_step_km);
+        let estimated_cells = count_at_step(effective_step_km);
         let exceeds_limit = estimated_cells > policy.max_cells_per_job;
 
         let recommended_step_km = if exceeds_limit {
-            let mut low = requested_step_km;
+            let mut low = effective_step_km;
             let mut high = (area_km2 / (policy.max_cells_per_job as f64))
                 .sqrt()
-                .max(requested_step_km)
+                .max(effective_step_km)
                 * 2.0;
             while count_at_step(high) > policy.max_cells_per_job {
                 high *= 2.0;
@@ -121,9 +125,6 @@ impl GridPlanner {
             None
         };
 
-        let effective_step_km = requested_step_km
-            .max(policy.min_step_km)
-            .min(policy.max_step_km);
         let estimated_chunks = ((estimated_cells as f64) / (policy.max_cells_per_chunk as f64))
             .ceil()
             .max(1.0) as usize;
@@ -167,6 +168,17 @@ mod tests {
         // Planning with recommended step should now be within limits
         let safe_plan = GridPlanner::plan([8.0, 23.0, 102.0, 110.0], rec, None).unwrap();
         assert!(!safe_plan.exceeds_limit);
+
+        // Step below min_step_km (e.g. 0.01) is clamped to min_step_km (0.2)
+        let min_clamped = GridPlanner::plan([10.754, 10.798, 106.680, 106.714], 0.01, None).unwrap();
+        assert_eq!(min_clamped.requested_step_km, 0.01);
+        assert_eq!(min_clamped.effective_step_km, 0.2);
+
+        // Step above max_step_km (e.g. 150.0) is clamped to max_step_km (50.0)
+        let max_clamped = GridPlanner::plan([8.0, 23.0, 102.0, 110.0], 150.0, None).unwrap();
+        assert_eq!(max_clamped.requested_step_km, 150.0);
+        assert_eq!(max_clamped.effective_step_km, 50.0);
+        assert_eq!(max_clamped.estimated_cells, 612); // based on 50km, not 150km
     }
 
     #[test]

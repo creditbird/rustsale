@@ -154,6 +154,8 @@ function updateJob(jobId: string, status: GoogleMapsJobStatus): GoogleMapsScrape
   return jobs[index];
 }
 
+let shouldFailBoundsResolution = false;
+
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: any) => {
     invocations.push({ command, args });
@@ -212,6 +214,9 @@ mock.module('@tauri-apps/api/core', () => ({
       case 'retry_google_maps_email_enrichment':
         return { ...updateJob(args?.jobId, 'running') };
       case 'resolve_administrative_bounds':
+        if (shouldFailBoundsResolution) {
+          throw new Error('Network timeout contacting geocoding service');
+        }
         if (args?.geonameId === 201) {
           return {
             geoname_id: 201,
@@ -283,6 +288,7 @@ beforeEach(() => {
   invocations.length = 0;
   eventListeners.clear();
   jobs = [];
+  shouldFailBoundsResolution = false;
   runtimeStatus = {
     installed: true,
     version: '132.0.0',
@@ -679,6 +685,43 @@ test('Grid mode replaces bounding box when another administrative area is select
   await waitFor(() => {
     const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
     expect(Number(minLatInput.value)).toBe(0);
+    expect(minLatInput.disabled).toBe(true);
   });
+});
+
+test('Grid mode resolution failure invalidates bounding box and blocks scrape start', async () => {
+  render(GoogleMapsScraper);
+
+  await fireEvent.click(screen.getByRole('button', { name: /Grid Crawl/i }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse Alpha Province' }));
+  
+  // Select Alpha District (geoname 200: resolves successfully)
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(10.754);
+  });
+
+  // Now enable resolution failure for subsequent selections
+  shouldFailBoundsResolution = true;
+
+  // Select Beta District (geoname 201) -> fails resolution -> bbox becomes 0, resolvedGridGeonameId becomes null
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Beta District' }));
+
+  await waitFor(() => {
+    const minLatInput = screen.getByLabelText('Min Lat') as HTMLInputElement;
+    expect(Number(minLatInput.value)).toBe(0);
+  });
+
+  // Attempting to start scrape campaign must be blocked
+  await fireEvent.input(screen.getByLabelText('Search Keyword *'), {
+    target: { value: 'coffee' }
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Start Scrape Campaign' }));
+
+  // Scrape job must NOT have been created
+  const createdJobs = invocations.filter(({ command }) => command === 'create_google_maps_scrape_job');
+  expect(createdJobs.length).toBe(0);
 });
 
