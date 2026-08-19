@@ -977,7 +977,7 @@ impl ConversationRepository {
             tx.execute(
                 "UPDATE messages
                  SET provider_message_id = COALESCE(provider_message_id, ?2),
-                     provider_client_message_id = COALESCE(provider_client_message_id, ?3),
+                     provider_client_message_id = COALESCE(?3, provider_client_message_id),
                      provider_timestamp = COALESCE(provider_timestamp, ?4),
                      raw_payload_json = COALESCE(?5, raw_payload_json),
                      reply_sender_identity_id = COALESCE(reply_sender_identity_id, ?6),
@@ -4518,7 +4518,7 @@ impl ConversationRepository {
 
         tx.execute(
             "UPDATE messages
-             SET status = 'sent', provider_message_id = ?2, provider_client_message_id = COALESCE(provider_client_message_id, ?3), sent_at = ?4
+             SET status = 'sent', provider_message_id = ?2, provider_client_message_id = CASE WHEN ?3 != '' THEN ?3 ELSE provider_client_message_id END, sent_at = ?4
              WHERE id = ?1",
             params![message_id, provider_message_id, provider_client_message_id, now],
         )?;

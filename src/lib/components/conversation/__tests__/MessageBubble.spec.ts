@@ -7,6 +7,7 @@ import type {
   ConversationReactionMutationResult
 } from '$lib/services/conversationService';
 import MessageBubble from '../MessageBubble.svelte';
+import * as m from '$lib/paraglide/messages';
 
 describe('MessageBubble Component', () => {
   afterEach(() => {
@@ -139,7 +140,7 @@ describe('MessageBubble Component', () => {
       }
     });
 
-    expect(screen.getByText('Message deleted')).toBeTruthy();
+    expect(screen.getByText(m.conversation_message_recalled())).toBeTruthy();
     expect(screen.queryByText('Nội dung bí mật đã bị xóa')).toBeNull();
     expect(screen.queryByTestId('message-reaction-summary')).toBeNull();
   });
@@ -161,9 +162,9 @@ describe('MessageBubble Component', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    expect(screen.getByText('Reply')).toBeTruthy();
-    expect(screen.getByText('Recall')).toBeTruthy();
-    await fireEvent.click(screen.getByText('Recall'));
+    expect(screen.getByText(m.conversation_reply())).toBeTruthy();
+    expect(screen.getByText(m.conversation_recall())).toBeTruthy();
+    await fireEvent.click(screen.getByText(m.conversation_recall()));
     expect(onRecall).toHaveBeenCalledWith(outbound);
   });
 
@@ -207,14 +208,14 @@ describe('MessageBubble Component', () => {
     const bubble = container.querySelector('[data-message-id="101"]') as HTMLElement;
 
     await fireEvent.contextMenu(bubble);
-    await fireEvent.click(screen.getByText('Reply'));
+    await fireEvent.click(screen.getByText(m.conversation_reply()));
     expect(onReply).toHaveBeenCalledTimes(1);
 
     await fireEvent.keyDown(screen.getByTestId('message-actions-trigger'), {
       key: 'F10',
       shiftKey: true
     });
-    await fireEvent.click(screen.getByText('Reply'));
+    await fireEvent.click(screen.getByText(m.conversation_reply()));
     expect(onReply).toHaveBeenCalledTimes(2);
   });
 

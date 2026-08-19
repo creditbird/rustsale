@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use zca_rs::apis::group::{BoardItem, GetListBoardResponse};
 use zca_rs::listener::ListenerEvent;
@@ -933,4 +933,103 @@ async fn quote_reply_with_mentions_serializes_both() {
     } else {
         panic!("Expected ProviderOutboundContent::Text");
     }
+}
+
+#[tokio::test]
+async fn execute_recall_with_retry_succeeds_first_attempt() {
+    use crate::conversation::zalo::client::execute_recall_with_retry;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = attempts.clone();
+
+    let result = execute_recall_with_retry(&[10, 20], move || {
+        let attempts = attempts_clone.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    })
+    .await;
+
+    assert!(result.is_ok());
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn execute_recall_with_retry_retries_on_code_112_and_succeeds() {
+    use crate::conversation::zalo::client::execute_recall_with_retry;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = attempts.clone();
+
+    let result = execute_recall_with_retry(&[10, 20], move || {
+        let attempts = attempts_clone.clone();
+        async move {
+            let count = attempts.fetch_add(1, Ordering::SeqCst);
+            if count == 0 {
+                Err(zca_rs::error::ZaloError::ApiError {
+                    message: "Message not indexed yet".to_string(),
+                    code: Some(112),
+                })
+            } else {
+                Ok(())
+            }
+        }
+    })
+    .await;
+
+    assert!(result.is_ok());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn execute_recall_with_retry_exhausts_retries_on_persistent_code_112() {
+    use crate::conversation::zalo::client::execute_recall_with_retry;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = attempts.clone();
+
+    let result: Result<(), _> = execute_recall_with_retry(&[5, 5], move || {
+        let attempts = attempts_clone.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(zca_rs::error::ZaloError::ApiError {
+                message: "Message not indexed yet".to_string(),
+                code: Some(112),
+            })
+        }
+    })
+    .await;
+
+    assert!(result.is_err());
+    // 1 initial attempt + 2 retries = 3 attempts total
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn execute_recall_with_retry_fails_immediately_without_retry_on_non_112_error() {
+    use crate::conversation::zalo::client::execute_recall_with_retry;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = attempts.clone();
+
+    let result: Result<(), _> = execute_recall_with_retry(&[10, 20], move || {
+        let attempts = attempts_clone.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(zca_rs::error::ZaloError::ApiError {
+                message: "Permission denied".to_string(),
+                code: Some(101),
+            })
+        }
+    })
+    .await;
+
+    assert!(result.is_err());
+    // Must fail immediately without retrying
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }

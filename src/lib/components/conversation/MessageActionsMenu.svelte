@@ -2,6 +2,7 @@
   import Ellipsis from 'lucide-svelte/icons/ellipsis';
   import type { ConversationReactionCode } from '$lib/services/conversationService';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+  import * as m from '$lib/paraglide/messages';
 
   const QUICK_REACTIONS: Array<{ code: ConversationReactionCode; icon: string; label: string }> = [
     { code: 'heart', icon: '❤️', label: 'React ❤️' },
@@ -78,11 +79,11 @@
   }
 
   let actions = $derived([
-    ...(canReply ? [{ label: 'Reply', action: onReply, destructive: false }] : []),
-    ...(canCopy ? [{ label: 'Copy', action: onCopy, destructive: false }] : []),
-    { label: isPinned ? 'Unpin' : 'Pin message', action: onPin, destructive: false },
-    ...(canForward ? [{ label: 'Forward', action: onForward, destructive: false }] : []),
-    ...(canRecall ? [{ label: 'Recall', action: onRecall, destructive: true }] : [])
+    ...(canReply ? [{ label: m.conversation_reply(), action: onReply, destructive: false }] : []),
+    ...(canCopy ? [{ label: m.conversation_copy(), action: onCopy, destructive: false }] : []),
+    { label: isPinned ? m.conversation_unpin() : m.conversation_pin(), action: onPin, destructive: false },
+    ...(canForward ? [{ label: m.conversation_forward(), action: onForward, destructive: false }] : []),
+    ...(canRecall ? [{ label: m.conversation_recall(), action: onRecall, destructive: true }] : [])
   ]);
 
 </script>

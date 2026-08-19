@@ -13,6 +13,7 @@ import type {
   SetConversationReactionRequest
 } from '$lib/services/conversationService';
 import ConversationWorkspace from '../ConversationWorkspace.svelte';
+import * as m from '$lib/paraglide/messages';
 
 beforeAll(() => {
   if (typeof globalThis.ResizeObserver === 'undefined') {
@@ -988,12 +989,12 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    await fireEvent.click(screen.getByText('Recall'));
-    await fireEvent.click(screen.getByRole('button', { name: 'Confirm Recall' }));
+    await fireEvent.click(screen.getByText(m.conversation_recall()));
+    await fireEvent.click(screen.getByRole('button', { name: m.conversation_recall_confirm() }));
     await tick();
 
     expect(mockRecallConversationMessage).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Message deleted')).toBeTruthy();
+    expect(screen.getByText(m.conversation_message_recalled())).toBeTruthy();
   });
 
   test('15. Toggling reaction calls setConversationReaction and updates reactions on success', async () => {

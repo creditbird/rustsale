@@ -669,12 +669,22 @@ pub fn normalize_listener_event(
             Ok(result)
         }
         ListenerEvent::Undo(undo) => {
+            let provider_message_id = if undo.data.content.global_msg_id != 0 {
+                undo.data.content.global_msg_id.to_string()
+            } else {
+                undo.data.msg_id.clone()
+            };
+            let provider_client_message_id = if undo.data.content.cli_msg_id != 0 {
+                undo.data.content.cli_msg_id.to_string()
+            } else {
+                undo.data.cli_msg_id.clone()
+            };
             let norm_undo = NormalizedUndo {
                 provider_account_key: provider_account_key.to_string(),
                 external_thread_id: undo.thread_id.clone(),
                 is_group: undo.is_group,
-                provider_message_id: undo.data.msg_id.clone(),
-                provider_client_message_id: undo.data.cli_msg_id.clone(),
+                provider_message_id,
+                provider_client_message_id,
                 occurred_at: provider_time(&undo.data.ts),
                 raw_payload: serde_json::to_value(&undo.data)?,
             };

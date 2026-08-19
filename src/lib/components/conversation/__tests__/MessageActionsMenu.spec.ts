@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import MessageActionsMenu from '../MessageActionsMenu.svelte';
+import * as m from '$lib/paraglide/messages';
 
 describe('MessageActionsMenu', () => {
   afterEach(cleanup);
@@ -19,9 +20,9 @@ describe('MessageActionsMenu', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    await fireEvent.click(await screen.findByText('Reply'));
+    await fireEvent.click(await screen.findByText(m.conversation_reply()));
     expect(onReply).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText('Recall')).toBeNull();
+    expect(screen.queryByText(m.conversation_recall())).toBeNull();
   });
 
   it('renders quick reaction options when canReact is true', async () => {
@@ -59,7 +60,7 @@ describe('MessageActionsMenu', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    const forwardBtn = await screen.findByText('Forward');
+    const forwardBtn = await screen.findByText(m.conversation_forward());
     expect(forwardBtn).toBeTruthy();
 
     await fireEvent.click(forwardBtn);
@@ -77,7 +78,7 @@ describe('MessageActionsMenu', () => {
     });
 
     await fireEvent.click(screen.getByTestId('message-actions-trigger'));
-    expect(screen.getByText('Reply')).toBeTruthy();
+    expect(screen.getByText(m.conversation_reply())).toBeTruthy();
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     document.body.dispatchEvent(

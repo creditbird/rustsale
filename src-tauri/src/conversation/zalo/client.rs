@@ -1311,15 +1311,19 @@ impl ZaloClient for RealZaloClient {
     }
 
     async fn recall(&self, request: ProviderRecallRequest) -> Result<(), ProviderSendError> {
-        self.inner
-            .undo(
-                &request.provider_message_id,
-                &request.provider_client_message_id,
-                &request.external_thread_id,
-                request.thread_type,
-            )
-            .await?;
-        Ok(())
+        let delays = [1500, 3000];
+        execute_recall_with_retry(&delays, || async {
+            self.inner
+                .undo(
+                    &request.provider_message_id,
+                    &request.provider_client_message_id,
+                    &request.external_thread_id,
+                    request.thread_type,
+                )
+                .await
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn set_reaction(
@@ -1426,5 +1430,55 @@ impl ZaloClientFactory for RealZaloClientFactory {
             Arc::new(zalo),
             provider_account_key,
         )))
+    }
+}
+
+pub async fn execute_recall_with_retry<F, Fut, T>(
+    delays: &[u64],
+    mut undo_fn: F,
+) -> Result<T, ProviderSendError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, zca_rs::error::ZaloError>>,
+{
+    let mut last_err = None;
+    for (i, &delay_ms) in std::iter::once(&0).chain(delays.iter()).enumerate() {
+        if delay_ms > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        }
+        match undo_fn().await {
+            Ok(res) => return Ok(res),
+            Err(err) => {
+                let is_code_112 = match &err {
+                    zca_rs::error::ZaloError::ApiError { code, .. } => *code == Some(112),
+                    _ => {
+                        let s = err.to_string();
+                        s.contains("[zalo:112]")
+                            || s.contains("code: 112")
+                            || s.contains("\"error_code\":112")
+                            || s.contains("\"error_code\": 112")
+                    }
+                };
+                if is_code_112 && i < delays.len() {
+                    tracing::warn!(
+                        "Zalo recall returned code 112 (indexing propagation delay), retrying {}/{} after {}ms",
+                        i + 1,
+                        delays.len(),
+                        delays[i],
+                    );
+                    last_err = Some(err);
+                    continue;
+                }
+                return Err(err.into());
+            }
+        }
+    }
+    if let Some(err) = last_err {
+        Err(err.into())
+    } else {
+        Err(ProviderSendError {
+            kind: crate::conversation::zalo::client::ProviderSendErrorKind::Permanent,
+            message: "Recall failed without returning error".into(),
+        })
     }
 }

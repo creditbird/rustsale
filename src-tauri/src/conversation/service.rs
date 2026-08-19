@@ -201,9 +201,17 @@ impl ConversationService {
             self.repository.lookup_message_thread_info(message_id)?;
 
         let cli_msg_id = msg
-            .content
-            .get("cliMsgId")
-            .and_then(|v| v.as_str())
+            .provider_client_message_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                msg.content
+                    .get("cliMsgId")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or(&p_msg_id)
             .to_string();
 

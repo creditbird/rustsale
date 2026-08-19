@@ -386,8 +386,8 @@ fn undo_event_normalizes_correctly() {
     };
     assert_eq!(norm_undo.provider_account_key, "imei-a");
     assert_eq!(norm_undo.external_thread_id, "peer-uid");
-    assert_eq!(norm_undo.provider_message_id, "msg-20");
-    assert_eq!(norm_undo.provider_client_message_id, "cli-20");
+    assert_eq!(norm_undo.provider_message_id, "20");
+    assert_eq!(norm_undo.provider_client_message_id, "200");
 }
 
 #[test]
@@ -719,4 +719,196 @@ fn self_reaction_in_direct_chat_resolves_to_peer_thread_id() {
     };
 
     assert_eq!(normalized.external_thread_id, "peer-uid");
+}
+
+#[test]
+fn undo_event_end_to_end_resolves_and_tombstones_message_in_db() {
+    use crate::conversation::migration::migrate;
+    use crate::conversation::repository::ConversationRepository;
+    use crate::conversation::types::MessageStatus;
+    use crate::db::open_db_connection;
+
+    let path = std::env::temp_dir().join(format!(
+        "rustsale-undo-e2e-test-{}.db",
+        rand::random::<u64>()
+    ));
+    let conn = open_db_connection(path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT NOT NULL, phone TEXT, zalo_uid TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS zalo_sessions (
+            imei TEXT PRIMARY KEY,
+            user_agent TEXT NOT NULL,
+            cookies_json TEXT NOT NULL,
+            language TEXT NOT NULL,
+            display_name TEXT,
+            avatar TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    migrate(&conn).unwrap();
+    drop(conn);
+
+    let repo = ConversationRepository::new(path.to_string_lossy().to_string());
+
+    // 1. Inbound message 1 from peer: msgId="88888", cliMsgId="client-88888"
+    let msg1_data = base_message("peer-uid", "0", "88888", json!("Xin chao shop"));
+    let event1 = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        msg1_data,
+    ))));
+    let mutations1 = normalize_listener_event("imei-e2e", Some("Sale Agent"), event1).unwrap();
+    assert_eq!(mutations1.len(), 1);
+    let ZaloMutation::Message(norm_msg1) = mutations1.into_iter().next().unwrap() else {
+        panic!("expected message mutation");
+    };
+    let applied1 = repo.apply_normalized_message(&norm_msg1).unwrap();
+
+    // 2. Inbound message 2 from peer (control message): msgId="88889", cliMsgId="client-88889"
+    let msg2_data = base_message("peer-uid", "0", "88889", json!("Tin nhan khong bi thu hoi"));
+    let event2 = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        msg2_data,
+    ))));
+    let mutations2 = normalize_listener_event("imei-e2e", Some("Sale Agent"), event2).unwrap();
+    let ZaloMutation::Message(norm_msg2) = mutations2.into_iter().next().unwrap() else {
+        panic!("expected message mutation");
+    };
+    let applied2 = repo.apply_normalized_message(&norm_msg2).unwrap();
+
+    // Verify initial states
+    let msg1_before = repo.get_message_by_id(applied1.message_id).unwrap().unwrap();
+    assert_eq!(msg1_before.status, MessageStatus::Received);
+    assert!(msg1_before.removed_at.is_none());
+
+    // 3. Receive real Undo event recalling message 1
+    // Notice: undo control packet msg_id is "999999" (packet ID), but content.global_msg_id is 88888
+    let undo_data = TUndo {
+        action_id: "act-undo-1".to_string(),
+        msg_id: "999999".to_string(), // packet ID
+        cli_msg_id: "cli-packet-999999".to_string(),
+        msg_type: "undo".to_string(),
+        uid_from: "peer-uid".to_string(),
+        id_to: "self-uid".to_string(),
+        d_name: "Peer".to_string(),
+        ts: "1785456000000".to_string(),
+        status: 1,
+        content: TUndoContent {
+            global_msg_id: 88888,
+            cli_msg_id: 0,
+            delete_msg: 1,
+            src_id: 100,
+            dest_id: 200,
+        },
+        notify: "".to_string(),
+        ttl: 0,
+        user_id: "".to_string(),
+        uin: "".to_string(),
+        cmd: 0,
+        st: 0,
+        at: 0,
+        real_msg_id: "real-undo-1".to_string(),
+    };
+    let undo_event = ListenerEvent::Undo(Box::new(Undo::new("self-uid", undo_data, false)));
+    let undo_mutations = normalize_listener_event("imei-e2e", Some("Sale Agent"), undo_event).unwrap();
+    assert_eq!(undo_mutations.len(), 1);
+    let ZaloMutation::Undo(norm_undo) = undo_mutations.into_iter().next().unwrap() else {
+        panic!("expected undo mutation");
+    };
+
+    // 4. Apply undo to repository
+    let affected_msg_id = repo.apply_undo(&norm_undo).unwrap();
+    assert_eq!(affected_msg_id, Some(applied1.message_id));
+
+    // 5. Verify message 1 is now removed/tombstoned
+    let msg1_after = repo.get_message_by_id(applied1.message_id).unwrap().unwrap();
+    assert_eq!(msg1_after.status, MessageStatus::Removed);
+    assert!(msg1_after.removed_at.is_some());
+
+    // 6. Verify message 2 remains unaffected
+    let msg2_after = repo.get_message_by_id(applied2.message_id).unwrap().unwrap();
+    assert_eq!(msg2_after.status, MessageStatus::Received);
+    assert!(msg2_after.removed_at.is_none());
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn complete_outbox_job_updates_provider_client_message_id_when_different_from_queued() {
+    use crate::conversation::migration::migrate;
+    use crate::conversation::repository::ConversationRepository;
+    use crate::conversation::types::{MessageStatus, SendConversationMessageRequest};
+    use crate::db::open_db_connection;
+
+    let path = std::env::temp_dir().join(format!(
+        "rustsale-outbox-cli-test-{}.db",
+        rand::random::<u64>()
+    ));
+    let conn = open_db_connection(path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT NOT NULL, phone TEXT, zalo_uid TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS zalo_sessions (
+            imei TEXT PRIMARY KEY,
+            user_agent TEXT NOT NULL,
+            cookies_json TEXT NOT NULL,
+            language TEXT NOT NULL,
+            display_name TEXT,
+            avatar TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    migrate(&conn).unwrap();
+    drop(conn);
+
+    let repo = ConversationRepository::new(path.to_string_lossy().to_string());
+
+    // Setup an initial normalized message to establish account and conversation
+    let msg_data = base_message("peer-thread", "0", "11111", json!("Initial message"));
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        msg_data,
+    ))));
+    let mutations = normalize_listener_event("imei-outbox", Some("Account"), event).unwrap();
+    let ZaloMutation::Message(norm_msg) = mutations.into_iter().next().unwrap() else {
+        panic!("expected message");
+    };
+    let applied = repo.apply_normalized_message(&norm_msg).unwrap();
+
+    // Enqueue outbound message
+    let req = SendConversationMessageRequest {
+        conversation_id: applied.conversation_id,
+        channel_account_id: applied.channel_account_id,
+        text: "Outbound message to be sent".to_string(),
+        reply_to_message_id: None,
+    };
+    let queued_msg = repo.enqueue_outbound_message(&req, "local-req-1", "job-outbox-1", "2026-08-18T10:00:00Z").unwrap();
+    assert_eq!(queued_msg.status, MessageStatus::Queued);
+    let initial_cli_id = queued_msg.provider_client_message_id.clone().unwrap();
+
+    // Complete outbox job where provider returns a different cli_msg_id (e.g. from attachment upload response)
+    let provider_returned_cli_id = "provider-actual-cli-789012";
+    let provider_msg_id = "server-msg-999999";
+    repo.complete_outbox_job(
+        "job-outbox-1",
+        provider_msg_id,
+        provider_returned_cli_id,
+        "2026-08-18T10:01:00Z",
+    ).unwrap();
+
+    let msg_after = repo.get_message_by_id(queued_msg.id).unwrap().unwrap();
+    assert_eq!(msg_after.status, MessageStatus::Sent);
+    assert_eq!(msg_after.provider_message_id.as_deref(), Some(provider_msg_id));
+    assert_eq!(msg_after.provider_client_message_id.as_deref(), Some(provider_returned_cli_id));
+    assert_ne!(msg_after.provider_client_message_id.as_deref(), Some(initial_cli_id.as_str()));
+
+    let _ = std::fs::remove_file(path);
 }
