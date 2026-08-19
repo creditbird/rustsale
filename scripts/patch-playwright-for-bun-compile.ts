@@ -49,47 +49,110 @@ const patches: Array<{ file: string; target: string | RegExp; replacement: strin
     description: 'cli program packageJSON mock',
   },
   {
+    file: join(playwrightCoreRoot, 'lib/server/browserType.js'),
+    target: 'supportsPipeTransport() {\n    return true;\n  }',
+    replacement: 'supportsPipeTransport() {\n    return process.platform !== "win32";\n  }',
+    description: 'browserType Windows pipe transport bypass',
+  },
+  {
+    file: join(playwrightCoreRoot, 'lib/server/chromium/chromium.js'),
+    target: 'if (options.cdpPort !== void 0)\n      chromeArguments.push(`--remote-debugging-port=${options.cdpPort}`);\n    else\n      chromeArguments.push("--remote-debugging-pipe");',
+    replacement: 'if (options.cdpPort !== void 0 || process.platform === "win32")\n      chromeArguments.push(`--remote-debugging-port=${options.cdpPort ?? 0}`);\n    else\n      chromeArguments.push("--remote-debugging-pipe");',
+    description: 'chromium defaultArgs Windows remote-debugging-port fallback',
+  },
+  {
+    file: join(playwrightCoreRoot, 'lib/server/chromium/chromium.js'),
+    target: 'async function waitForReadyState(options, browserLogsCollector) {\n  if (options.cdpPort === void 0 && !options.args?.some((a) => a.startsWith("--remote-debugging-port")))',
+    replacement: 'async function waitForReadyState(options, browserLogsCollector) {\n  if (options.cdpPort === void 0 && process.platform !== "win32" && !options.args?.some((a) => a.startsWith("--remote-debugging-port")))',
+    description: 'chromium waitForReadyState Windows port listener',
+  },
+  {
     file: join(playwrightCoreRoot, 'lib/server/transport.js'),
-    target: `this._ws = new import_utilsBundle.ws(url, [], {
-      maxPayload: 256 * 1024 * 1024,
-      // 256Mb,
-      headers: options.headers,
-      followRedirects: options.followRedirects,
-      agent: /^(https|wss):\\/\\//.test(url) ? import_happyEyeballs.httpsHappyEyeballsAgent : import_happyEyeballs.httpHappyEyeballsAgent,
-      perMessageDeflate
-    });`,
-    replacement: `if (typeof Bun !== "undefined" && typeof globalThis.WebSocket !== "undefined") {
-      const EventEmitter = require("events");
-      class BunWSAdapter extends EventEmitter {
-        constructor(u, p) {
-          super();
-          this.url = u;
-          this.readyState = 0;
-          const ws = new globalThis.WebSocket(u, p);
-          this._ws = ws;
-          ws.onopen = () => { this.readyState = 1; this.emit("open"); };
-          ws.onmessage = (event) => { this.emit("message", event); };
-          ws.onerror = (error) => { this.emit("error", error); };
-          ws.onclose = (event) => { this.readyState = 3; this.emit("close", event.code, event.reason); };
-        }
-        send(data, cb) {
-          try { this._ws.send(data); cb?.(); } catch (err) { cb?.(err); }
-        }
-        close(code, reason) { this._ws.close(code, reason); }
-        addEventListener(type, listener) { this.on(type, listener); }
-        removeEventListener(type, listener) { this.off(type, listener); }
+    target: /(?:class BunNativeWebSocket\s*\{[\s\S]*?\n\}\s*\n)?class WebSocketTransport\s*\{/,
+    replacement: `class BunNativeWebSocket {
+  constructor(url, protocols, options) {
+    this._events = { open: [], message: [], close: [], error: [], "unexpected-response": [], upgrade: [] };
+    const wsOptions = options?.headers ? { headers: options.headers } : undefined;
+    this._ws = new globalThis.WebSocket(url, wsOptions);
+    this._ws.onopen = () => this._emit("open", {});
+    this._ws.onmessage = (event) => this._emit("message", { data: event.data });
+    this._ws.onclose = (event) => this._emit("close", { code: event.code || 1000, reason: event.reason || "" });
+    this._ws.onerror = (event) => this._emit("error", event instanceof Error ? event : new Error(event?.message || "WebSocket connection error"));
+  }
+  on(event, handler) {
+    if (this._events[event]) this._events[event].push(handler);
+    if (event === "open" && this._ws.readyState === 1) {
+      queueMicrotask(() => handler({}));
+    }
+    return this;
+  }
+  once(event, handler) {
+    if (event === "open" && this._ws.readyState === 1) {
+      queueMicrotask(() => handler({}));
+      return this;
+    }
+    const wrapper = (...args) => {
+      this.removeListener(event, wrapper);
+      handler(...args);
+    };
+    return this.on(event, wrapper);
+  }
+  addEventListener(event, handler) {
+    return this.on(event, handler);
+  }
+  removeListener(event, handler) {
+    if (this._events[event]) {
+      this._events[event] = this._events[event].filter(h => h !== handler);
+    }
+    return this;
+  }
+  _emit(event, ...args) {
+    const list = this._events[event];
+    if (list) {
+      for (const handler of [...list]) {
+        handler(...args);
       }
-      this._ws = new BunWSAdapter(url, []);
-    } else {
-      this._ws = new import_utilsBundle.ws(url, [], {
-        maxPayload: 256 * 1024 * 1024,
-        headers: options.headers,
-        followRedirects: options.followRedirects,
-        agent: /^(https|wss):\\/\\//.test(url) ? import_happyEyeballs.httpsHappyEyeballsAgent : import_happyEyeballs.httpHappyEyeballsAgent,
-        perMessageDeflate
-      });
-    }`,
-    description: 'WebSocketTransport Bun native WebSocket adapter',
+    }
+  }
+  send(data, cb) {
+    try {
+      this._ws.send(data);
+      cb?.();
+    } catch (err) {
+      if (cb) cb(err);
+      else throw err;
+    }
+  }
+  close(code, reason) {
+    this._ws.close(code, reason);
+  }
+  get readyState() {
+    return this._ws.readyState;
+  }
+}
+class WebSocketTransport {`,
+    description: 'transport Bun native WebSocket class injection',
+  },
+  {
+    file: join(playwrightCoreRoot, 'lib/server/transport.js'),
+    target: /this\._ws\s*=\s*(?:\(typeof Bun !== "undefined"[\s\S]*?:\s*)?new import_utilsBundle\.ws\(url,\s*\[\],\s*\{[\s\S]*?\}\);/,
+    replacement: `this._ws = (typeof Bun !== "undefined" && typeof globalThis.WebSocket !== "undefined")
+      ? new BunNativeWebSocket(url, [], options)
+      : new import_utilsBundle.ws(url, [], {
+          maxPayload: 256 * 1024 * 1024,
+          // 256Mb,
+          headers: options.headers,
+          followRedirects: options.followRedirects,
+          agent: /^(https|wss):\\/\\//.test(url) ? import_happyEyeballs.httpsHappyEyeballsAgent : import_happyEyeballs.httpHappyEyeballsAgent,
+          perMessageDeflate
+        });`,
+    description: 'transport Bun native WebSocket instantiation',
+  },
+  {
+    file: join(playwrightCoreRoot, 'lib/server/transport.js'),
+    target: 'if (this._ws.readyState === import_utilsBundle.ws.CLOSED)',
+    replacement: 'if (this._ws.readyState === import_utilsBundle.ws.CLOSED || this._ws.readyState === 3)',
+    description: 'transport WebSocket close state check',
   },
 ];
 

@@ -27,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Patch Playwright for Bun
+        run: bun run scripts/patch-playwright-for-bun-compile.ts
+
       - name: Run Svelte typecheck
         run: bun run check
 

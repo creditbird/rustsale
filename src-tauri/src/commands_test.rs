@@ -3258,9 +3258,9 @@ mod tests {
         // 4. Direct symlinks to another file are rejected
         let target_file = temp_dir.path().join("real_target.csv");
         std::fs::write(&target_file, "real").unwrap();
-        let symlink_path = temp_dir.path().join("symlink.csv");
         #[cfg(unix)]
         {
+            let symlink_path = temp_dir.path().join("symlink.csv");
             std::os::unix::fs::symlink(&target_file, &symlink_path).unwrap();
             let res_symlink = commands::write_leads_csv_to_path(&symlink_path, "new content").await;
             assert!(res_symlink.is_err());
@@ -3336,12 +3336,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_export_leads_csv_file_symlink_and_toctou_adversarial_matrix() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let content = "Name,Phone\nVictim,0901234567";
-
-        // 1. Target symlink to sensitive file cannot be overwritten
         #[cfg(unix)]
         {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let content = "Name,Phone\nVictim,0901234567";
             let sensitive_file = temp_dir.path().join("sensitive.csv");
             std::fs::write(&sensitive_file, "DO_NOT_OVERWRITE").unwrap();
 

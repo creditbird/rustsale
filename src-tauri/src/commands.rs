@@ -5799,10 +5799,10 @@ pub fn get_hardware_id() -> Result<HardwareInfo, String> {
 
     let formatted_hwid = format!(
         "HWID-{}-{}-{}-{}",
-        &hash[0..4].to_uppercase(),
-        &hash[4..8].to_uppercase(),
-        &hash[8..12].to_uppercase(),
-        &hash[12..16].to_uppercase()
+        hash[0..4].to_uppercase(),
+        hash[4..8].to_uppercase(),
+        hash[8..12].to_uppercase(),
+        hash[12..16].to_uppercase()
     );
 
     Ok(HardwareInfo {
@@ -6113,7 +6113,7 @@ fn open_export_file_windows_sync(file_path: &std::path::Path) -> Result<std::fs:
                 if dir_handle == INVALID_HANDLE_VALUE {
                     let err = std::io::Error::last_os_error();
                     return Err(format!(
-                        "Destination directory component {:?} cannot be opened: {}",
+                        "Destination directory does not exist or cannot be accessed ({:?}): {}",
                         current, err
                     ));
                 }
@@ -6150,13 +6150,13 @@ fn open_export_file_windows_sync(file_path: &std::path::Path) -> Result<std::fs:
 
     let raw_handle = std_file.as_raw_handle();
 
-    let file_type = unsafe { GetFileType(raw_handle as *mut std::ffi::c_void) };
+    let file_type = unsafe { GetFileType(raw_handle) };
     if file_type != FILE_TYPE_DISK {
         return Err("Export target must be a regular disk file".to_string());
     }
 
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    let ok = unsafe { GetFileInformationByHandle(raw_handle as *mut std::ffi::c_void, &mut info) };
+    let ok = unsafe { GetFileInformationByHandle(raw_handle, &mut info) };
     if ok == 0 {
         return Err("Failed to verify opened file handle information".to_string());
     }
@@ -6172,12 +6172,7 @@ fn open_export_file_windows_sync(file_path: &std::path::Path) -> Result<std::fs:
     // 3. Post-open handle verification: query normalized kernel path from handle and ensure it matches expected path
     let mut path_buf = vec![0u16; 1024];
     let len = unsafe {
-        GetFinalPathNameByHandleW(
-            raw_handle as *mut std::ffi::c_void,
-            path_buf.as_mut_ptr(),
-            path_buf.len() as u32,
-            0,
-        )
+        GetFinalPathNameByHandleW(raw_handle, path_buf.as_mut_ptr(), path_buf.len() as u32, 0)
     };
 
     if len > 0 && (len as usize) < path_buf.len() {
@@ -6311,7 +6306,7 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
     #[cfg(not(target_os = "linux"))]
     {
         let _ = version;
-        return Err("Portable Linux update is only supported on Linux".to_string());
+        Err("Portable Linux update is only supported on Linux".to_string())
     }
 
     #[cfg(target_os = "linux")]
@@ -6989,8 +6984,8 @@ where
         .unwrap_or_else(|| {
             if let Some(ref u) = url {
                 if let Ok(parsed) = url::Url::parse(u) {
-                    if let Some(segments) = parsed.path_segments() {
-                        if let Some(last) = segments.last() {
+                    if let Some(mut segments) = parsed.path_segments() {
+                        if let Some(last) = segments.next_back() {
                             let clean_last = last.split('?').next().unwrap_or(last);
                             if !clean_last.is_empty() && clean_last.contains('.') {
                                 return clean_last.to_string();

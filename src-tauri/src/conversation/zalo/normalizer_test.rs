@@ -758,8 +758,7 @@ fn undo_event_end_to_end_resolves_and_tombstones_message_in_db() {
     // 1. Inbound message 1 from peer: msgId="88888", cliMsgId="client-88888"
     let msg1_data = base_message("peer-uid", "0", "88888", json!("Xin chao shop"));
     let event1 = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
-        "self-uid",
-        msg1_data,
+        "self-uid", msg1_data,
     ))));
     let mutations1 = normalize_listener_event("imei-e2e", Some("Sale Agent"), event1).unwrap();
     assert_eq!(mutations1.len(), 1);
@@ -771,8 +770,7 @@ fn undo_event_end_to_end_resolves_and_tombstones_message_in_db() {
     // 2. Inbound message 2 from peer (control message): msgId="88889", cliMsgId="client-88889"
     let msg2_data = base_message("peer-uid", "0", "88889", json!("Tin nhan khong bi thu hoi"));
     let event2 = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
-        "self-uid",
-        msg2_data,
+        "self-uid", msg2_data,
     ))));
     let mutations2 = normalize_listener_event("imei-e2e", Some("Sale Agent"), event2).unwrap();
     let ZaloMutation::Message(norm_msg2) = mutations2.into_iter().next().unwrap() else {
@@ -781,7 +779,10 @@ fn undo_event_end_to_end_resolves_and_tombstones_message_in_db() {
     let applied2 = repo.apply_normalized_message(&norm_msg2).unwrap();
 
     // Verify initial states
-    let msg1_before = repo.get_message_by_id(applied1.message_id).unwrap().unwrap();
+    let msg1_before = repo
+        .get_message_by_id(applied1.message_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(msg1_before.status, MessageStatus::Received);
     assert!(msg1_before.removed_at.is_none());
 
@@ -814,7 +815,8 @@ fn undo_event_end_to_end_resolves_and_tombstones_message_in_db() {
         real_msg_id: "real-undo-1".to_string(),
     };
     let undo_event = ListenerEvent::Undo(Box::new(Undo::new("self-uid", undo_data, false)));
-    let undo_mutations = normalize_listener_event("imei-e2e", Some("Sale Agent"), undo_event).unwrap();
+    let undo_mutations =
+        normalize_listener_event("imei-e2e", Some("Sale Agent"), undo_event).unwrap();
     assert_eq!(undo_mutations.len(), 1);
     let ZaloMutation::Undo(norm_undo) = undo_mutations.into_iter().next().unwrap() else {
         panic!("expected undo mutation");
@@ -825,12 +827,18 @@ fn undo_event_end_to_end_resolves_and_tombstones_message_in_db() {
     assert_eq!(affected_msg_id, Some(applied1.message_id));
 
     // 5. Verify message 1 is now removed/tombstoned
-    let msg1_after = repo.get_message_by_id(applied1.message_id).unwrap().unwrap();
+    let msg1_after = repo
+        .get_message_by_id(applied1.message_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(msg1_after.status, MessageStatus::Removed);
     assert!(msg1_after.removed_at.is_some());
 
     // 6. Verify message 2 remains unaffected
-    let msg2_after = repo.get_message_by_id(applied2.message_id).unwrap().unwrap();
+    let msg2_after = repo
+        .get_message_by_id(applied2.message_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(msg2_after.status, MessageStatus::Received);
     assert!(msg2_after.removed_at.is_none());
 
@@ -874,8 +882,7 @@ fn complete_outbox_job_updates_provider_client_message_id_when_different_from_qu
     // Setup an initial normalized message to establish account and conversation
     let msg_data = base_message("peer-thread", "0", "11111", json!("Initial message"));
     let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
-        "self-uid",
-        msg_data,
+        "self-uid", msg_data,
     ))));
     let mutations = normalize_listener_event("imei-outbox", Some("Account"), event).unwrap();
     let ZaloMutation::Message(norm_msg) = mutations.into_iter().next().unwrap() else {
@@ -890,7 +897,9 @@ fn complete_outbox_job_updates_provider_client_message_id_when_different_from_qu
         text: "Outbound message to be sent".to_string(),
         reply_to_message_id: None,
     };
-    let queued_msg = repo.enqueue_outbound_message(&req, "local-req-1", "job-outbox-1", "2026-08-18T10:00:00Z").unwrap();
+    let queued_msg = repo
+        .enqueue_outbound_message(&req, "local-req-1", "job-outbox-1", "2026-08-18T10:00:00Z")
+        .unwrap();
     assert_eq!(queued_msg.status, MessageStatus::Queued);
     let initial_cli_id = queued_msg.provider_client_message_id.clone().unwrap();
 
@@ -902,13 +911,23 @@ fn complete_outbox_job_updates_provider_client_message_id_when_different_from_qu
         provider_msg_id,
         provider_returned_cli_id,
         "2026-08-18T10:01:00Z",
-    ).unwrap();
+    )
+    .unwrap();
 
     let msg_after = repo.get_message_by_id(queued_msg.id).unwrap().unwrap();
     assert_eq!(msg_after.status, MessageStatus::Sent);
-    assert_eq!(msg_after.provider_message_id.as_deref(), Some(provider_msg_id));
-    assert_eq!(msg_after.provider_client_message_id.as_deref(), Some(provider_returned_cli_id));
-    assert_ne!(msg_after.provider_client_message_id.as_deref(), Some(initial_cli_id.as_str()));
+    assert_eq!(
+        msg_after.provider_message_id.as_deref(),
+        Some(provider_msg_id)
+    );
+    assert_eq!(
+        msg_after.provider_client_message_id.as_deref(),
+        Some(provider_returned_cli_id)
+    );
+    assert_ne!(
+        msg_after.provider_client_message_id.as_deref(),
+        Some(initial_cli_id.as_str())
+    );
 
     let _ = std::fs::remove_file(path);
 }

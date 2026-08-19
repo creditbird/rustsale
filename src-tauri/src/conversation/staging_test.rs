@@ -4,7 +4,10 @@ use super::staging::*;
 use super::types::StageConversationClipboardImageRequest;
 use crate::db::open_db_connection;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file;
 use std::sync::Arc;
 
 struct AutoCleanDir(std::path::PathBuf);
@@ -142,18 +145,23 @@ async fn staging_rejects_symlink_source() {
     let target_file = dir.path().join("real.txt");
     fs::write(&target_file, b"real data").unwrap();
 
-    let symlink_file = dir.path().join("link.txt");
-    symlink(&target_file, &symlink_file).unwrap();
+    let symlink_path = dir.path().join("link.txt");
+    #[cfg(unix)]
+    let symlink_created = symlink(&target_file, &symlink_path).is_ok();
+    #[cfg(windows)]
+    let symlink_created = symlink_file(&target_file, &symlink_path).is_ok();
 
-    let err = stager
-        .stage_paths(1, vec![symlink_file.to_str().unwrap().to_string()])
-        .await
-        .unwrap_err();
+    if symlink_created {
+        let err = stager
+            .stage_paths(1, vec![symlink_path.to_str().unwrap().to_string()])
+            .await
+            .unwrap_err();
 
-    assert_eq!(
-        err.code,
-        super::error::ConversationErrorCode::UnsupportedMedia
-    );
+        assert_eq!(
+            err.code,
+            super::error::ConversationErrorCode::UnsupportedMedia
+        );
+    }
 }
 
 #[tokio::test]

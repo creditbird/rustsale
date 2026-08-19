@@ -87,9 +87,23 @@ rl.on('line', (line) => {
   }
 });
 
-function sendCommand(id: string, command: string, payload: Record<string, unknown> = {}): Promise<any> {
+function sendCommand(id: string, command: string, payload: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<any> {
   return new Promise((res, rej) => {
-    pending.set(id, { resolve: res, reject: rej });
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      rej(new Error(`[clean-room-smoke] Command "${command}" (id=${id}) timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    pending.set(id, {
+      resolve: (val) => {
+        clearTimeout(timer);
+        res(val);
+      },
+      reject: (err) => {
+        clearTimeout(timer);
+        rej(err);
+      },
+    });
     const message = JSON.stringify({ id, command, payload }) + '\n';
     (proc.stdin as any).write(message);
     (proc.stdin as any).flush();

@@ -422,6 +422,73 @@ describe('Google Maps block detection', () => {
       expect(endpoint).toBe('ws://127.0.0.1:49999/devtools/browser/trimmed');
       expect(stderr.listenerCount('data')).toBe(0);
     });
+
+    test('Playwright WebSocketTransport in Bun connects, sends/receives messages, forwards headers, and closes cleanly', async () => {
+      let receivedHeader = '';
+      const server = Bun.serve({
+        port: 0,
+        fetch(req, server) {
+          receivedHeader = req.headers.get('x-custom-cdp-header') ?? '';
+          if (server.upgrade(req)) {
+            return undefined;
+          }
+          return new Response('Upgrade failed', { status: 400 });
+        },
+        websocket: {
+          open(ws) {
+            ws.send(JSON.stringify({ id: 1, method: 'Target.attachedToTarget', params: { sessionId: 's1' } }));
+          },
+          message(ws, message) {
+            const parsed = JSON.parse(String(message));
+            ws.send(JSON.stringify({ id: parsed.id, result: { success: true } }));
+          },
+          close() {},
+        },
+      });
+
+      try {
+        const wsUrl = `ws://127.0.0.1:${server.port}/devtools/browser`;
+        const { resolve } = await import('node:path');
+        const transportFilePath = resolve('node_modules/playwright-core/lib/server/transport.js');
+        const transportSource = readFileSync(transportFilePath, 'utf8');
+        expect(transportSource).toContain('class BunNativeWebSocket');
+        expect(transportSource).toContain('new BunNativeWebSocket');
+
+        // @ts-ignore
+        const { WebSocketTransport } = await import(transportFilePath);
+        const progress = {
+          log: () => {},
+          time: () => {},
+          timeEnd: () => {},
+          race: async (promises: Promise<any>[] | Promise<any>) =>
+            Promise.race(Array.isArray(promises) ? promises : [promises]),
+        };
+        const transport = await WebSocketTransport.connect(progress as any, wsUrl, {
+          headers: { 'x-custom-cdp-header': 'rustsale-test-value' },
+        });
+
+        expect(receivedHeader).toBe('rustsale-test-value');
+
+        const receivedMessages: any[] = [];
+        transport.onmessage = (msg: any) => receivedMessages.push(msg);
+
+        // Send a message
+        transport.send({ id: 2, method: 'Browser.getVersion', params: {} });
+
+        // Wait for responses
+        for (let i = 0; i < 20; i++) {
+          if (receivedMessages.length >= 2) break;
+          await Bun.sleep(20);
+        }
+
+        expect(receivedMessages).toContainEqual({ id: 1, method: 'Target.attachedToTarget', params: { sessionId: 's1' } });
+        expect(receivedMessages).toContainEqual({ id: 2, result: { success: true } });
+
+        await transport.closeAndWait();
+      } finally {
+        server.stop(true);
+      }
+    });
   });
 });
 
