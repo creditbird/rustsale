@@ -460,7 +460,6 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-
 fn normalize_country_code(country_code: &str) -> Result<String> {
     let country_code = country_code.trim().to_ascii_uppercase();
     if country_code.len() != 2 || !country_code.bytes().all(|byte| byte.is_ascii_alphabetic()) {

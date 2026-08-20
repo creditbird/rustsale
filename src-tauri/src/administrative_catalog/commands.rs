@@ -96,4 +96,3 @@ pub async fn geocode_bounding_box(
         .await
         .map_err(|error| error.to_string())
 }
-

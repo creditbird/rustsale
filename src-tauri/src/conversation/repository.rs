@@ -2576,6 +2576,14 @@ impl ConversationRepository {
              WHERE imei = ?1 OR (?2 IS NOT NULL AND zalo_uid = ?2)",
             params![imei, zalo_uid, acc_id],
         )?;
+
+        if let Some(uid) = zalo_uid.filter(|u| !u.trim().is_empty()) {
+            tx.execute(
+                "DELETE FROM zalo_sessions
+                 WHERE TRIM(zalo_uid) = ?1 AND imei != ?2",
+                params![uid.trim(), imei],
+            )?;
+        }
         tx.commit()?;
 
         Ok(acc_id)

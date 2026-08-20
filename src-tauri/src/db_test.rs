@@ -449,6 +449,94 @@ mod tests {
     }
 
     #[test]
+    fn test_zalo_sessions_deduplication_returns_latest_session() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // Insert multiple sessions with different IMEIs for the same zalo_uid (simulating multiple QR scans)
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-old-1', 'UA', '[]', 'vi', 'uid-123', 'Old Account 1')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-old-2', 'UA', '[]', 'vi', 'uid-123', 'Old Account 2')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-latest', 'UA', '[]', 'vi', 'uid-123', 'Latest Account')",
+            [],
+        ).unwrap();
+
+        // Also insert an independent account with different uid
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-other', 'UA', '[]', 'vi', 'uid-456', 'Other Account')",
+            [],
+        ).unwrap();
+
+        // Insert two distinct sessions with empty-string zalo_uid (e.g. pending QR profile sync)
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-empty-1', 'UA', '[]', 'vi', '', 'Pending Account 1')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-empty-2', 'UA', '[]', 'vi', '  ', 'Pending Account 2')",
+            [],
+        ).unwrap();
+
+        // Insert two distinct sessions with NULL zalo_uid
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, display_name)
+             VALUES ('imei-null-1', 'UA', '[]', 'vi', 'Null Account 1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, display_name)
+             VALUES ('imei-null-2', 'UA', '[]', 'vi', 'Null Account 2')",
+            [],
+        )
+        .unwrap();
+
+        let all = db::get_all_zalo_sessions(&conn).unwrap();
+        // 1 deduplicated (uid-123) + 1 (uid-456) + 2 (empty uid) + 2 (null uid) = 6 accounts
+        assert_eq!(
+            all.len(),
+            6,
+            "Must deduplicate by valid account uid without collapsing empty/null UIDs"
+        );
+
+        let s123 = all
+            .iter()
+            .find(|s| s.zalo_uid.as_deref() == Some("uid-123"))
+            .unwrap();
+        assert_eq!(
+            s123.imei, "imei-latest",
+            "Must return the latest inserted session for uid-123"
+        );
+        assert_eq!(s123.display_name.as_deref(), Some("Latest Account"));
+
+        let s456 = all
+            .iter()
+            .find(|s| s.zalo_uid.as_deref() == Some("uid-456"))
+            .unwrap();
+        assert_eq!(s456.imei, "imei-other");
+
+        assert!(all.iter().any(|s| s.imei == "imei-empty-1"));
+        assert!(all.iter().any(|s| s.imei == "imei-empty-2"));
+        assert!(all.iter().any(|s| s.imei == "imei-null-1"));
+        assert!(all.iter().any(|s| s.imei == "imei-null-2"));
+    }
+
+    #[test]
     fn test_wal_mode_and_synchronous() {
         let temp_dir = std::env::temp_dir();
         let db_path = temp_dir.join("test_wal.db");

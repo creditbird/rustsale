@@ -221,7 +221,11 @@ impl AdministrativeCatalogService {
         resolver.resolve_bounds(geoname_id).await
     }
 
-    pub async fn geocode_query(&self, query: &str, country_code: Option<&str>) -> Result<Option<[f64; 4]>> {
+    pub async fn geocode_query(
+        &self,
+        query: &str,
+        country_code: Option<&str>,
+    ) -> Result<Option<[f64; 4]>> {
         let resolver = GeoBoundsResolver::new(self.repository.clone());
         resolver.geocode_query(query, country_code).await
     }

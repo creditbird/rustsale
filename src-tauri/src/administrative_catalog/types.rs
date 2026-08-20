@@ -92,4 +92,3 @@ pub struct AdministrativeBounds {
     pub source: String,
     pub updated_at: String,
 }
-
