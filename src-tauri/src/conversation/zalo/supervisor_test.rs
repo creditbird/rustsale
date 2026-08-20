@@ -1361,3 +1361,45 @@ async fn test_steady_state_error_102_event_transitions_to_expired() {
     let _ = std::fs::remove_file(clean_path.with_extension("db-wal"));
     let _ = std::fs::remove_file(clean_path.with_extension("db-shm"));
 }
+
+#[test]
+fn test_is_terminal_auth_error_matches_valid_patterns_and_rejects_false_positives() {
+    use super::supervisor::is_terminal_auth_error;
+
+    // Valid positive cases
+    assert!(is_terminal_auth_error(
+        "Zalo API Error: The session key was improperly submitted or has reached its timeout. Direct the user to log in again to obtain another key (code: Some(102))"
+    ));
+    assert!(is_terminal_auth_error(
+        "{\"error_code\": 102, \"message\": \"Session timeout\"}"
+    ));
+    assert!(is_terminal_auth_error(
+        "{\"error_code\":102,\"message\":\"Expired\"}"
+    ));
+    assert!(is_terminal_auth_error("Zalo error_code: 102"));
+    assert!(is_terminal_auth_error("Error (code: 102)"));
+    assert!(is_terminal_auth_error(
+        "The session key was improperly submitted"
+    ));
+    assert!(is_terminal_auth_error(
+        "The user session has reached its timeout"
+    ));
+    assert!(is_terminal_auth_error(
+        "Please direct the user to log in again for this session"
+    ));
+
+    // False positives that MUST NOT be classified as terminal auth error
+    assert!(!is_terminal_auth_error("Zalo error code: 1020"));
+    assert!(!is_terminal_auth_error("HTTP error code: 1024"));
+    assert!(!is_terminal_auth_error("gateway response code: 10299"));
+    assert!(!is_terminal_auth_error(
+        "network connection has reached its timeout"
+    ));
+    assert!(!is_terminal_auth_error(
+        "http request has reached its timeout"
+    ));
+    assert!(!is_terminal_auth_error("transient proxy timeout (504)"));
+    assert!(!is_terminal_auth_error(
+        "Zalo network error: connection reset"
+    ));
+}

@@ -190,7 +190,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 auth_checked_at TEXT,
                 auth_error TEXT,
                 zalo_uid TEXT,
-                channel_account_id INTEGER
+                channel_account_id INTEGER REFERENCES channel_accounts(id) ON DELETE SET NULL
             )",
             [],
         )?;
@@ -207,7 +207,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN auth_error TEXT", []);
         let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN zalo_uid TEXT", []);
         let _ = tx.execute(
-            "ALTER TABLE zalo_sessions ADD COLUMN channel_account_id INTEGER",
+            "ALTER TABLE zalo_sessions ADD COLUMN channel_account_id INTEGER REFERENCES channel_accounts(id) ON DELETE SET NULL",
             [],
         );
         let _ = tx.execute(

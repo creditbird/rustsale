@@ -2580,7 +2580,7 @@ impl ConversationRepository {
         if let Some(uid) = zalo_uid.filter(|u| !u.trim().is_empty()) {
             tx.execute(
                 "DELETE FROM zalo_sessions
-                 WHERE zalo_uid = ?1 AND imei != ?2",
+                 WHERE TRIM(zalo_uid) = ?1 AND imei != ?2",
                 params![uid.trim(), imei],
             )?;
         }

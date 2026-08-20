@@ -348,19 +348,37 @@ fn history_batch(event: &ListenerEvent) -> Option<HistoryBatch> {
     }
 }
 
-fn is_terminal_auth_error(error_msg: &str) -> bool {
+pub(crate) fn is_terminal_auth_error(error_msg: &str) -> bool {
     let lower = error_msg.to_ascii_lowercase();
-    // All needle strings MUST be lowercase.
-    // 401/unauthorized intentionally excluded: transient/proxy auth failures are
-    // retryable and handled by mark_account_degraded. Only Zalo code 102 is terminal.
-    lower.contains("code: some(102)")
-        || lower.contains("code: 102")
-        || lower.contains("error_code: 102")
+
+    // Check for explicit Zalo error code 102 with non-digit boundary
+    let has_code_102 = lower.contains("code: some(102)")
         || lower.contains("\"error_code\":102")
         || lower.contains("\"error_code\": 102")
-        || lower.contains("session key was improperly submitted")
-        || lower.contains("has reached its timeout")
-        || lower.contains("direct the user to log in again")
+        || lower.contains("error_code: 102")
+        || lower.match_indices("code: 102").any(|(idx, s)| {
+            let after = &lower[idx + s.len()..];
+            after.is_empty() || !after.chars().next().unwrap_or(' ').is_ascii_digit()
+        });
+
+    if has_code_102 {
+        return true;
+    }
+
+    // Specific Zalo API error phrasing for session expiration
+    if lower.contains("session key was improperly submitted") {
+        return true;
+    }
+
+    // Generic phrases must co-occur with session key / auth context
+    if lower.contains("session")
+        && (lower.contains("has reached its timeout")
+            || lower.contains("direct the user to log in again"))
+    {
+        return true;
+    }
+
+    false
 }
 
 fn mark_account_auth_expired(
@@ -1421,7 +1439,7 @@ async fn run_session_loop(
                                     service.as_ref(),
                                     GroupMessageBackfillOutcome::Failed,
                                     Some("session_disconnected".to_string()),
-                                    Some("Zalo session disconnected".to_string()),
+                                    Some("Zalo session disconnected during history backfill".to_string()),
                                 );
                                 if is_terminal_auth_error(&event_err_str) {
                                     handle_terminal_auth_error(
