@@ -348,6 +348,48 @@ fn history_batch(event: &ListenerEvent) -> Option<HistoryBatch> {
     }
 }
 
+fn is_terminal_auth_error(error_msg: &str) -> bool {
+    let lower = error_msg.to_ascii_lowercase();
+    lower.contains("code: some(102)")
+        || lower.contains("code: 102")
+        || lower.contains("error_code: 102")
+        || lower.contains("\"error_code\":102")
+        || lower.contains("\"error_code\": 102")
+        || lower.contains("session key was improperly submitted")
+        || lower.contains("has reached its timeout")
+        || lower.contains("direct the user to log in again")
+        || lower.contains("code: some(401)")
+        || lower.contains("code: 401")
+        || lower.contains("unauthorized")
+}
+
+fn mark_account_auth_expired(
+    service: &ConversationService,
+    provider_account_key: &str,
+    imei: &str,
+    error: &dyn std::fmt::Display,
+) {
+    let err_str = error.to_string();
+    tracing::warn!(
+        provider_account_key,
+        error = %err_str,
+        "Zalo authentication session expired or invalidated by another login"
+    );
+    if let Ok(conn) = open_db_connection(service.repository.db_path()) {
+        let _ = crate::db::update_zalo_session_auth_status(
+            &conn,
+            imei,
+            "expired",
+            Some("Phiên đăng nhập đã hết hạn hoặc được mở trên thiết bị khác (Mã lỗi 102)"),
+        );
+    }
+    let _ = service.repository.set_account_status(
+        provider_account_key,
+        AccountConnectionStatus::Disconnected,
+        Some(&err_str),
+    );
+}
+
 fn mark_account_degraded(
     service: &ConversationService,
     provider_account_key: &str,
@@ -848,6 +890,11 @@ async fn run_session_loop(
             Ok(client) => client,
             Err(e) => {
                 let err_msg = e.to_string();
+                if is_terminal_auth_error(&err_msg) {
+                    mark_account_auth_expired(service.as_ref(), &provider_account_key, &imei, &e);
+                    cancellation.cancelled().await;
+                    return;
+                }
                 service
                     .repository
                     .set_account_status(
@@ -872,6 +919,13 @@ async fn run_session_loop(
         let mut rx = client.subscribe();
 
         if let Err(error) = client.start() {
+            let err_msg = error.to_string();
+            if is_terminal_auth_error(&err_msg) {
+                mark_account_auth_expired(service.as_ref(), &provider_account_key, &imei, &error);
+                client.stop();
+                cancellation.cancelled().await;
+                return;
+            }
             mark_account_degraded(service.as_ref(), &provider_account_key, &error);
             client.stop();
             tokio::select! {
@@ -912,6 +966,13 @@ async fn run_session_loop(
         };
 
         if let Err(error) = ready_result {
+            let err_msg = error.to_string();
+            if is_terminal_auth_error(&err_msg) {
+                mark_account_auth_expired(service.as_ref(), &provider_account_key, &imei, &error);
+                client.stop();
+                cancellation.cancelled().await;
+                return;
+            }
             mark_account_degraded(service.as_ref(), &provider_account_key, &error);
             client.stop();
             tokio::select! {
@@ -1172,6 +1233,12 @@ async fn run_session_loop(
                                     | zca_rs::listener::ListenerEvent::Closed { .. }
                                     | zca_rs::listener::ListenerEvent::Error(_)
                             );
+                            let event_err_str = match &event {
+                                zca_rs::listener::ListenerEvent::Error(err) => err.clone(),
+                                zca_rs::listener::ListenerEvent::Closed { reason, .. }
+                                | zca_rs::listener::ListenerEvent::Disconnected { reason, .. } => reason.clone(),
+                                _ => String::new(),
+                            };
 
                             let history_batch = history_batch(&event);
 
@@ -1292,6 +1359,26 @@ async fn run_session_loop(
                                     Some("session_disconnected".to_string()),
                                     Some("Zalo session disconnected during history backfill".to_string()),
                                 );
+                                if is_terminal_auth_error(&event_err_str) {
+                                    mark_account_auth_expired(
+                                        service.as_ref(),
+                                        &provider_account_key,
+                                        &imei,
+                                        &event_err_str,
+                                    );
+                                    if let Some(h) = profile_sync_handle.take() {
+                                        h.abort();
+                                    }
+                                    unregister_connected_client(
+                                        &connected_clients,
+                                        &provider_account_key,
+                                        &client,
+                                    )
+                                    .await;
+                                    client.stop();
+                                    cancellation.cancelled().await;
+                                    return;
+                                }
                                 client.stop();
                                 break true;
                             }

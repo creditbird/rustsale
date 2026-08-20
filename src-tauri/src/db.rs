@@ -607,7 +607,14 @@ pub fn get_zalo_session(
 
 pub fn get_all_zalo_sessions(conn: &Connection) -> Result<Vec<crate::models::ZaloSession>> {
     let mut stmt = conn.prepare(
-        "SELECT imei, user_agent, cookies_json, language, display_name, avatar, zalo_uid, channel_account_id FROM zalo_sessions",
+        "SELECT zs.imei, zs.user_agent, zs.cookies_json, zs.language, zs.display_name, zs.avatar, zs.zalo_uid, zs.channel_account_id
+         FROM zalo_sessions zs
+         INNER JOIN (
+             SELECT COALESCE(zalo_uid, imei) as account_key, MAX(rowid) as max_rowid
+             FROM zalo_sessions
+             GROUP BY COALESCE(zalo_uid, imei)
+         ) latest ON zs.rowid = latest.max_rowid
+         ORDER BY zs.rowid DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(crate::models::ZaloSession {

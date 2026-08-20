@@ -449,6 +449,47 @@ mod tests {
     }
 
     #[test]
+    fn test_zalo_sessions_deduplication_returns_latest_session() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // Insert multiple sessions with different IMEIs for the same zalo_uid (simulating multiple QR scans)
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-old-1', 'UA', '[]', 'vi', 'uid-123', 'Old Account 1')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-old-2', 'UA', '[]', 'vi', 'uid-123', 'Old Account 2')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-latest', 'UA', '[]', 'vi', 'uid-123', 'Latest Account')",
+            [],
+        ).unwrap();
+
+        // Also insert an independent account with different uid
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name)
+             VALUES ('imei-other', 'UA', '[]', 'vi', 'uid-456', 'Other Account')",
+            [],
+        ).unwrap();
+
+        let all = db::get_all_zalo_sessions(&conn).unwrap();
+        assert_eq!(all.len(), 2, "Must deduplicate sessions by account and return only 2 unique accounts");
+
+        let s123 = all.iter().find(|s| s.zalo_uid.as_deref() == Some("uid-123")).unwrap();
+        assert_eq!(s123.imei, "imei-latest", "Must return the latest inserted session for uid-123");
+        assert_eq!(s123.display_name.as_deref(), Some("Latest Account"));
+
+        let s456 = all.iter().find(|s| s.zalo_uid.as_deref() == Some("uid-456")).unwrap();
+        assert_eq!(s456.imei, "imei-other");
+    }
+
+    #[test]
     fn test_wal_mode_and_synchronous() {
         let temp_dir = std::env::temp_dir();
         let db_path = temp_dir.join("test_wal.db");

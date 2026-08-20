@@ -246,6 +246,15 @@ impl ZaloClientFactory for AlwaysFailZaloClientFactory {
     }
 }
 
+struct AuthError102ZaloClientFactory;
+
+#[async_trait]
+impl ZaloClientFactory for AuthError102ZaloClientFactory {
+    async fn connect(&self, _session: ZaloSession) -> anyhow::Result<Arc<dyn ZaloClient>> {
+        anyhow::bail!("Zalo login failed: Zalo API Error: The session key was improperly submitted or has reached its timeout. Direct the user to log in again to obtain another key (code: Some(102))")
+    }
+}
+
 impl FakeZaloClientFactory {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -1112,4 +1121,54 @@ async fn group_history_backfill_reports_unavailable_without_running_session() {
 
     assert_eq!(report.outcome, GroupMessageBackfillOutcome::Unavailable);
     assert!(report.warning.is_some());
+}
+
+#[tokio::test]
+async fn test_code_102_error_transitions_to_expired_and_stops_retries() {
+    let clean_path = std::env::temp_dir().join(format!(
+        "rustsale-supervisor-102-{}.db",
+        rand::random::<u64>()
+    ));
+    let db_path = clean_path.to_string_lossy().to_string();
+    let conn = crate::db::init_db(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, display_name, auth_status)
+         VALUES ('imei-102', 'UA/1.0', '[]', 'vi', '102 Expired Account', 'valid')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let repository = Arc::new(ConversationRepository::new(db_path.clone()));
+    let events = Arc::new(ConversationEventPublisher::new(10));
+    let service = Arc::new(ConversationService::new(
+        repository,
+        events,
+        clean_path.parent().unwrap().join("spool-102"),
+    ));
+    let supervisor =
+        ZaloSessionSupervisor::new(db_path.clone(), service, Arc::new(AuthError102ZaloClientFactory));
+
+    supervisor.start_all().await.unwrap();
+
+    // Give time for supervisor loop to attempt connection, detect code 102 and update DB
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let conn = crate::db::open_db_connection(&db_path).unwrap();
+    let (auth_status, auth_error): (String, Option<String>) = conn
+        .query_row(
+            "SELECT auth_status, auth_error FROM zalo_sessions WHERE imei = 'imei-102'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(auth_status, "expired");
+    assert!(auth_error.unwrap_or_default().contains("102"));
+
+    supervisor.stop_all().await;
+
+    let _ = std::fs::remove_file(&clean_path);
+    let _ = std::fs::remove_file(clean_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(clean_path.with_extension("db-shm"));
 }

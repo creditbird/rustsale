@@ -303,6 +303,16 @@
               {/if}
             </div>
             <div class="flex flex-wrap justify-end gap-2">
+              {#if account.authStatus === 'expired' || account.authStatus === 'error'}
+                <Button
+                  size="sm"
+                  aria-label={`Re-login ${accountName(account)}`}
+                  onclick={beginQrLogin}
+                >
+                  <QrCode class="size-4" data-icon="inline-start" />
+                  Đăng nhập lại
+                </Button>
+              {/if}
               <Button
                 variant="outline"
                 size="sm"

@@ -1617,8 +1617,18 @@ pub fn get_managed_zalo_accounts_internal(
                     COALESCE(ca.connection_status, 'disconnected'),
                     ca.last_connected_at, ca.last_error
              FROM zalo_sessions zs
+             INNER JOIN (
+                 SELECT COALESCE(zalo_uid, imei) as account_id, MAX(rowid) as max_rowid
+                 FROM zalo_sessions
+                 GROUP BY COALESCE(zalo_uid, imei)
+             ) latest ON zs.rowid = latest.max_rowid
              LEFT JOIN channel_accounts ca
-               ON ca.channel = 'zalo' AND (ca.id = zs.channel_account_id OR ca.provider_account_key = zs.imei OR (ca.self_external_id IS NOT NULL AND ca.self_external_id = zs.zalo_uid))
+               ON ca.channel = 'zalo' AND (
+                   ca.id = zs.channel_account_id
+                   OR ca.provider_account_key = zs.imei
+                   OR (zs.zalo_uid IS NOT NULL AND ca.provider_account_key = zs.zalo_uid)
+                   OR (ca.self_external_id IS NOT NULL AND ca.self_external_id = zs.zalo_uid)
+               )
              ORDER BY lower(COALESCE(zs.display_name, ca.display_name, zs.imei)), zs.imei",
         )
         .map_err(|e| format!("Database error: {}", e))?;
