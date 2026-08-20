@@ -185,7 +185,12 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 cookies_json TEXT NOT NULL,
                 language TEXT NOT NULL,
                 display_name TEXT,
-                avatar TEXT
+                avatar TEXT,
+                auth_status TEXT NOT NULL DEFAULT 'unknown',
+                auth_checked_at TEXT,
+                auth_error TEXT,
+                zalo_uid TEXT,
+                channel_account_id INTEGER
             )",
             [],
         )?;
@@ -202,7 +207,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN auth_error TEXT", []);
         let _ = tx.execute("ALTER TABLE zalo_sessions ADD COLUMN zalo_uid TEXT", []);
         let _ = tx.execute(
-            "ALTER TABLE zalo_sessions ADD COLUMN channel_account_id INTEGER REFERENCES channel_accounts(id) ON DELETE SET NULL",
+            "ALTER TABLE zalo_sessions ADD COLUMN channel_account_id INTEGER",
             [],
         );
         let _ = tx.execute(
@@ -610,9 +615,9 @@ pub fn get_all_zalo_sessions(conn: &Connection) -> Result<Vec<crate::models::Zal
         "SELECT zs.imei, zs.user_agent, zs.cookies_json, zs.language, zs.display_name, zs.avatar, zs.zalo_uid, zs.channel_account_id
          FROM zalo_sessions zs
          INNER JOIN (
-             SELECT COALESCE(zalo_uid, imei) as account_key, MAX(rowid) as max_rowid
+             SELECT COALESCE(NULLIF(TRIM(zalo_uid), ''), imei) as account_key, MAX(rowid) as max_rowid
              FROM zalo_sessions
-             GROUP BY COALESCE(zalo_uid, imei)
+             GROUP BY COALESCE(NULLIF(TRIM(zalo_uid), ''), imei)
          ) latest ON zs.rowid = latest.max_rowid
          ORDER BY zs.rowid DESC",
     )?;

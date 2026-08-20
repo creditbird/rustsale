@@ -2577,11 +2577,11 @@ impl ConversationRepository {
             params![imei, zalo_uid, acc_id],
         )?;
 
-        if let Some(uid) = zalo_uid {
+        if let Some(uid) = zalo_uid.filter(|u| !u.trim().is_empty()) {
             tx.execute(
                 "DELETE FROM zalo_sessions
-                 WHERE (zalo_uid = ?1 OR channel_account_id = ?2) AND imei != ?3",
-                params![uid, acc_id, imei],
+                 WHERE zalo_uid = ?1 AND imei != ?2",
+                params![uid.trim(), imei],
             )?;
         }
         tx.commit()?;

@@ -246,11 +246,15 @@ impl ZaloClientFactory for AlwaysFailZaloClientFactory {
     }
 }
 
-struct AuthError102ZaloClientFactory;
+struct AuthError102ZaloClientFactory {
+    attempts: Arc<std::sync::atomic::AtomicUsize>,
+}
 
 #[async_trait]
 impl ZaloClientFactory for AuthError102ZaloClientFactory {
     async fn connect(&self, _session: ZaloSession) -> anyhow::Result<Arc<dyn ZaloClient>> {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         anyhow::bail!("Zalo login failed: Zalo API Error: The session key was improperly submitted or has reached its timeout. Direct the user to log in again to obtain another key (code: Some(102))")
     }
 }
@@ -1139,6 +1143,11 @@ async fn test_code_102_error_transitions_to_expired_and_stops_retries() {
     .unwrap();
     drop(conn);
 
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let factory = Arc::new(AuthError102ZaloClientFactory {
+        attempts: attempts.clone(),
+    });
+
     let repository = Arc::new(ConversationRepository::new(db_path.clone()));
     let events = Arc::new(ConversationEventPublisher::new(10));
     let service = Arc::new(ConversationService::new(
@@ -1146,13 +1155,27 @@ async fn test_code_102_error_transitions_to_expired_and_stops_retries() {
         events,
         clean_path.parent().unwrap().join("spool-102"),
     ));
-    let supervisor =
-        ZaloSessionSupervisor::new(db_path.clone(), service, Arc::new(AuthError102ZaloClientFactory));
+    let supervisor = ZaloSessionSupervisor::new(db_path.clone(), service, factory);
 
     supervisor.start_all().await.unwrap();
 
-    // Give time for supervisor loop to attempt connection, detect code 102 and update DB
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    // Poll until the supervisor detects code 102 and persists the expired status
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let conn = crate::db::open_db_connection(&db_path).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT auth_status FROM zalo_sessions WHERE imei = 'imei-102'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        if status == "expired" || std::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 
     let conn = crate::db::open_db_connection(&db_path).unwrap();
     let (auth_status, auth_error): (String, Option<String>) = conn
@@ -1164,7 +1187,173 @@ async fn test_code_102_error_transitions_to_expired_and_stops_retries() {
         .unwrap();
 
     assert_eq!(auth_status, "expired");
-    assert!(auth_error.unwrap_or_default().contains("102"));
+    assert_eq!(auth_error.as_deref(), Some("auth_expired_102"));
+    // Verify that retries stopped immediately and did not retry in a loop
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    supervisor.stop_all().await;
+
+    let _ = std::fs::remove_file(&clean_path);
+    let _ = std::fs::remove_file(clean_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(clean_path.with_extension("db-shm"));
+}
+
+struct TransientFailClientFactory {
+    attempts: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl ZaloClientFactory for TransientFailClientFactory {
+    async fn connect(&self, _session: ZaloSession) -> anyhow::Result<Arc<dyn ZaloClient>> {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        anyhow::bail!("transient network timeout")
+    }
+}
+
+#[tokio::test]
+async fn test_transient_error_does_not_expire_and_continues_retries() {
+    let clean_path = std::env::temp_dir().join(format!(
+        "rustsale-supervisor-transient-{}.db",
+        rand::random::<u64>()
+    ));
+    let db_path = clean_path.to_string_lossy().to_string();
+    let conn = crate::db::init_db(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, display_name, auth_status)
+         VALUES ('imei-transient', 'UA/1.0', '[]', 'vi', 'Transient Account', 'valid')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let factory = Arc::new(TransientFailClientFactory {
+        attempts: attempts.clone(),
+    });
+
+    let repository = Arc::new(ConversationRepository::new(db_path.clone()));
+    let events = Arc::new(ConversationEventPublisher::new(10));
+    let service = Arc::new(ConversationService::new(
+        repository,
+        events,
+        clean_path.parent().unwrap().join("spool-transient"),
+    ));
+    let supervisor = ZaloSessionSupervisor::new(db_path.clone(), service, factory);
+
+    supervisor.start_all().await.unwrap();
+
+    // Poll until at least 2 attempts are made (confirming retry loop is active)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while attempts.load(std::sync::atomic::Ordering::SeqCst) < 2
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    assert!(
+        attempts.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "Transient errors must be retried by the supervisor loop"
+    );
+
+    let conn = crate::db::open_db_connection(&db_path).unwrap();
+    let auth_status: String = conn
+        .query_row(
+            "SELECT auth_status FROM zalo_sessions WHERE imei = 'imei-transient'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(
+        auth_status, "expired",
+        "Transient error must not mark auth_status as expired"
+    );
+
+    supervisor.stop_all().await;
+
+    let _ = std::fs::remove_file(&clean_path);
+    let _ = std::fs::remove_file(clean_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(clean_path.with_extension("db-shm"));
+}
+
+#[tokio::test]
+async fn test_steady_state_error_102_event_transitions_to_expired() {
+    let clean_path = std::env::temp_dir().join(format!(
+        "rustsale-supervisor-steady102-{}.db",
+        rand::random::<u64>()
+    ));
+    let db_path = clean_path.to_string_lossy().to_string();
+    let conn = crate::db::init_db(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, display_name, auth_status)
+         VALUES ('imei-steady-102', 'UA/1.0', '[]', 'vi', 'Steady 102 Account', 'valid')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let factory = Arc::new(FakeZaloClientFactory::new(10));
+    let repository = Arc::new(ConversationRepository::new(db_path.clone()));
+    let events = Arc::new(ConversationEventPublisher::new(10));
+    let service = Arc::new(ConversationService::new(
+        repository,
+        events,
+        clean_path.parent().unwrap().join("spool-steady-102"),
+    ));
+    let supervisor = ZaloSessionSupervisor::new(db_path.clone(), service, factory.clone());
+
+    supervisor.start_all().await.unwrap();
+
+    // Ensure client is connected and ready
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while supervisor
+        .connected_client("imei-steady-102")
+        .await
+        .is_none()
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(supervisor
+        .connected_client("imei-steady-102")
+        .await
+        .is_some());
+
+    // Emit steady-state 102 error event
+    factory.emit(
+        "imei-steady-102",
+        ListenerEvent::Error("Zalo API Error: The session key was improperly submitted or has reached its timeout (code: Some(102))".to_string()),
+    ).await;
+
+    // Poll until auth_status becomes expired
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let conn = crate::db::open_db_connection(&db_path).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT auth_status FROM zalo_sessions WHERE imei = 'imei-steady-102'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        if status == "expired" || std::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    let conn = crate::db::open_db_connection(&db_path).unwrap();
+    let (auth_status, auth_error): (String, Option<String>) = conn
+        .query_row(
+            "SELECT auth_status, auth_error FROM zalo_sessions WHERE imei = 'imei-steady-102'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(auth_status, "expired");
+    assert_eq!(auth_error.as_deref(), Some("auth_expired_102"));
 
     supervisor.stop_all().await;
 

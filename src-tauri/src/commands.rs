@@ -1610,7 +1610,7 @@ pub fn get_managed_zalo_accounts_internal(
 ) -> Result<Vec<ManagedZaloAccount>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT COALESCE(ca.provider_account_key, zs.zalo_uid, zs.imei),
+            "SELECT COALESCE(NULLIF(TRIM(zs.zalo_uid), ''), ca.provider_account_key, zs.imei),
                     COALESCE(zs.display_name, ca.display_name),
                     COALESCE(zs.avatar, ca.avatar_url),
                     COALESCE(zs.auth_status, 'unknown'), zs.auth_checked_at, zs.auth_error,
@@ -1618,16 +1618,25 @@ pub fn get_managed_zalo_accounts_internal(
                     ca.last_connected_at, ca.last_error
              FROM zalo_sessions zs
              INNER JOIN (
-                 SELECT COALESCE(zalo_uid, imei) as account_id, MAX(rowid) as max_rowid
+                 SELECT COALESCE(NULLIF(TRIM(zalo_uid), ''), imei) as account_id, MAX(rowid) as max_rowid
                  FROM zalo_sessions
-                 GROUP BY COALESCE(zalo_uid, imei)
+                 GROUP BY COALESCE(NULLIF(TRIM(zalo_uid), ''), imei)
              ) latest ON zs.rowid = latest.max_rowid
              LEFT JOIN channel_accounts ca
-               ON ca.channel = 'zalo' AND (
-                   ca.id = zs.channel_account_id
-                   OR ca.provider_account_key = zs.imei
-                   OR (zs.zalo_uid IS NOT NULL AND ca.provider_account_key = zs.zalo_uid)
-                   OR (ca.self_external_id IS NOT NULL AND ca.self_external_id = zs.zalo_uid)
+               ON ca.id = (
+                   SELECT ca_sub.id FROM channel_accounts ca_sub
+                   WHERE ca_sub.channel = 'zalo' AND (
+                       (zs.channel_account_id IS NOT NULL AND ca_sub.id = zs.channel_account_id)
+                       OR (NULLIF(TRIM(zs.zalo_uid), '') IS NOT NULL AND (ca_sub.provider_account_key = zs.zalo_uid OR ca_sub.self_external_id = zs.zalo_uid))
+                       OR (ca_sub.provider_account_key = zs.imei AND NOT EXISTS (
+                           SELECT 1 FROM channel_accounts ca_better
+                           WHERE ca_better.channel = 'zalo'
+                             AND NULLIF(TRIM(zs.zalo_uid), '') IS NOT NULL
+                             AND (ca_better.provider_account_key = zs.zalo_uid OR ca_better.self_external_id = zs.zalo_uid)
+                       ))
+                   )
+                   ORDER BY ca_sub.rowid DESC
+                   LIMIT 1
                )
              ORDER BY lower(COALESCE(zs.display_name, ca.display_name, zs.imei)), zs.imei",
         )

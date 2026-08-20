@@ -141,7 +141,6 @@ impl GridPlanner {
             exceeds_limit,
             estimated_chunks,
         })
-
     }
 }
 
@@ -170,7 +169,8 @@ mod tests {
         assert!(!safe_plan.exceeds_limit);
 
         // Step below min_step_km (e.g. 0.01) is clamped to min_step_km (0.2)
-        let min_clamped = GridPlanner::plan([10.754, 10.798, 106.680, 106.714], 0.01, None).unwrap();
+        let min_clamped =
+            GridPlanner::plan([10.754, 10.798, 106.680, 106.714], 0.01, None).unwrap();
         assert_eq!(min_clamped.requested_step_km, 0.01);
         assert_eq!(min_clamped.effective_step_km, 0.2);
 

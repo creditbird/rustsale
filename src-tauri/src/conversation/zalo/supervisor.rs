@@ -8,7 +8,7 @@ use zca_rs::models::ThreadType;
 
 use crate::conversation::service::ConversationService;
 use crate::conversation::types::{AccountConnectionStatus, ConversationRuntimeStatus};
-use crate::conversation::zalo::client::ZaloClientFactory;
+use crate::conversation::zalo::client::{ZaloClient, ZaloClientFactory};
 use crate::conversation::zalo::{
     DIRECT_MESSAGE_HISTORY_SCOPE, DIRECT_MESSAGE_WATERMARK_SCOPE, DIRECT_REACTION_HISTORY_SCOPE,
     DIRECT_REACTION_WATERMARK_SCOPE, GROUP_MESSAGE_HISTORY_SCOPE, GROUP_MESSAGE_WATERMARK_SCOPE,
@@ -350,6 +350,9 @@ fn history_batch(event: &ListenerEvent) -> Option<HistoryBatch> {
 
 fn is_terminal_auth_error(error_msg: &str) -> bool {
     let lower = error_msg.to_ascii_lowercase();
+    // All needle strings MUST be lowercase.
+    // 401/unauthorized intentionally excluded: transient/proxy auth failures are
+    // retryable and handled by mark_account_degraded. Only Zalo code 102 is terminal.
     lower.contains("code: some(102)")
         || lower.contains("code: 102")
         || lower.contains("error_code: 102")
@@ -358,36 +361,61 @@ fn is_terminal_auth_error(error_msg: &str) -> bool {
         || lower.contains("session key was improperly submitted")
         || lower.contains("has reached its timeout")
         || lower.contains("direct the user to log in again")
-        || lower.contains("code: some(401)")
-        || lower.contains("code: 401")
-        || lower.contains("unauthorized")
 }
 
 fn mark_account_auth_expired(
     service: &ConversationService,
     provider_account_key: &str,
     imei: &str,
-    error: &dyn std::fmt::Display,
+    error_msg: &str,
 ) {
-    let err_str = error.to_string();
     tracing::warn!(
         provider_account_key,
-        error = %err_str,
+        imei,
+        error = %error_msg,
         "Zalo authentication session expired or invalidated by another login"
     );
-    if let Ok(conn) = open_db_connection(service.repository.db_path()) {
-        let _ = crate::db::update_zalo_session_auth_status(
-            &conn,
-            imei,
-            "expired",
-            Some("Phiên đăng nhập đã hết hạn hoặc được mở trên thiết bị khác (Mã lỗi 102)"),
-        );
+    match open_db_connection(service.repository.db_path()) {
+        Ok(conn) => {
+            if let Err(e) = crate::db::update_zalo_session_auth_status(
+                &conn,
+                imei,
+                "expired",
+                Some("auth_expired_102"),
+            ) {
+                tracing::error!(imei, error = %e, "Failed to persist expired auth status");
+            }
+        }
+        Err(e) => {
+            tracing::error!(imei, error = %e, "Failed to open DB to persist expired auth status");
+        }
     }
-    let _ = service.repository.set_account_status(
+    if let Err(e) = service.repository.set_account_status(
         provider_account_key,
         AccountConnectionStatus::Disconnected,
-        Some(&err_str),
-    );
+        Some(error_msg),
+    ) {
+        tracing::error!(provider_account_key, error = %e, "Failed to set account status to Disconnected");
+    }
+}
+
+async fn handle_terminal_auth_error(
+    service: &ConversationService,
+    connected_clients: &ConnectedClients,
+    client: Option<&Arc<dyn ZaloClient>>,
+    profile_sync_handle: &mut Option<tokio::task::JoinHandle<()>>,
+    provider_account_key: &str,
+    imei: &str,
+    error_msg: &str,
+) {
+    mark_account_auth_expired(service, provider_account_key, imei, error_msg);
+    if let Some(h) = profile_sync_handle.take() {
+        h.abort();
+    }
+    if let Some(client) = client {
+        unregister_connected_client(connected_clients, provider_account_key, client).await;
+        client.stop();
+    }
 }
 
 fn mark_account_degraded(
@@ -891,8 +919,16 @@ async fn run_session_loop(
             Err(e) => {
                 let err_msg = e.to_string();
                 if is_terminal_auth_error(&err_msg) {
-                    mark_account_auth_expired(service.as_ref(), &provider_account_key, &imei, &e);
-                    cancellation.cancelled().await;
+                    handle_terminal_auth_error(
+                        service.as_ref(),
+                        &connected_clients,
+                        None,
+                        &mut None,
+                        &provider_account_key,
+                        &imei,
+                        &err_msg,
+                    )
+                    .await;
                     return;
                 }
                 service
@@ -921,9 +957,16 @@ async fn run_session_loop(
         if let Err(error) = client.start() {
             let err_msg = error.to_string();
             if is_terminal_auth_error(&err_msg) {
-                mark_account_auth_expired(service.as_ref(), &provider_account_key, &imei, &error);
-                client.stop();
-                cancellation.cancelled().await;
+                handle_terminal_auth_error(
+                    service.as_ref(),
+                    &connected_clients,
+                    Some(&client),
+                    &mut None,
+                    &provider_account_key,
+                    &imei,
+                    &err_msg,
+                )
+                .await;
                 return;
             }
             mark_account_degraded(service.as_ref(), &provider_account_key, &error);
@@ -968,9 +1011,16 @@ async fn run_session_loop(
         if let Err(error) = ready_result {
             let err_msg = error.to_string();
             if is_terminal_auth_error(&err_msg) {
-                mark_account_auth_expired(service.as_ref(), &provider_account_key, &imei, &error);
-                client.stop();
-                cancellation.cancelled().await;
+                handle_terminal_auth_error(
+                    service.as_ref(),
+                    &connected_clients,
+                    Some(&client),
+                    &mut None,
+                    &provider_account_key,
+                    &imei,
+                    &err_msg,
+                )
+                .await;
                 return;
             }
             mark_account_degraded(service.as_ref(), &provider_account_key, &error);
@@ -1261,6 +1311,20 @@ async fn run_session_loop(
                                         Some(error.to_string()),
                                     );
                                 }
+                                let err_msg = error.to_string();
+                                if is_terminal_auth_error(&err_msg) {
+                                    handle_terminal_auth_error(
+                                        service.as_ref(),
+                                        &connected_clients,
+                                        Some(&client),
+                                        &mut profile_sync_handle,
+                                        &provider_account_key,
+                                        &imei,
+                                        &err_msg,
+                                    )
+                                    .await;
+                                    return;
+                                }
                                 mark_account_degraded(
                                     service.as_ref(),
                                     &provider_account_key,
@@ -1357,26 +1421,19 @@ async fn run_session_loop(
                                     service.as_ref(),
                                     GroupMessageBackfillOutcome::Failed,
                                     Some("session_disconnected".to_string()),
-                                    Some("Zalo session disconnected during history backfill".to_string()),
+                                    Some("Zalo session disconnected".to_string()),
                                 );
                                 if is_terminal_auth_error(&event_err_str) {
-                                    mark_account_auth_expired(
+                                    handle_terminal_auth_error(
                                         service.as_ref(),
+                                        &connected_clients,
+                                        Some(&client),
+                                        &mut profile_sync_handle,
                                         &provider_account_key,
                                         &imei,
                                         &event_err_str,
-                                    );
-                                    if let Some(h) = profile_sync_handle.take() {
-                                        h.abort();
-                                    }
-                                    unregister_connected_client(
-                                        &connected_clients,
-                                        &provider_account_key,
-                                        &client,
                                     )
                                     .await;
-                                    client.stop();
-                                    cancellation.cancelled().await;
                                     return;
                                 }
                                 client.stop();

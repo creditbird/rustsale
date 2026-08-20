@@ -1,18 +1,21 @@
-use std::sync::Arc;
-use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Instant};
 
 use super::repository::AdministrativeCatalogRepository;
 use super::types::{AdministrativeArea, AdministrativeBounds};
 
-static GEOCODER_RATE_LIMITER: std::sync::OnceLock<Arc<Mutex<Option<Instant>>>> = std::sync::OnceLock::new();
+static GEOCODER_RATE_LIMITER: std::sync::OnceLock<Arc<Mutex<Option<Instant>>>> =
+    std::sync::OnceLock::new();
 
 fn get_geocoder_limiter() -> Arc<Mutex<Option<Instant>>> {
-    GEOCODER_RATE_LIMITER.get_or_init(|| Arc::new(Mutex::new(None))).clone()
+    GEOCODER_RATE_LIMITER
+        .get_or_init(|| Arc::new(Mutex::new(None)))
+        .clone()
 }
 
 async fn acquire_geocoder_slot() {
@@ -116,7 +119,8 @@ impl GeoBoundsResolver {
         }
 
         // 4. Fallback to centroid estimation (NOT cached in SQLite so future attempts can retry authoritative fetch)
-        let bbox = compute_centroid_bounds(area.latitude, area.longitude, area.administrative_level);
+        let bbox =
+            compute_centroid_bounds(area.latitude, area.longitude, area.administrative_level);
         Ok(AdministrativeBounds {
             geoname_id: area.geoname_id,
             country_code: area.country_code.clone(),
@@ -129,8 +133,15 @@ impl GeoBoundsResolver {
         })
     }
 
-    async fn send_geocoding_request(&self, query_params: &str) -> Result<Vec<NominatimSearchResult>> {
-        let url = format!("{}/search?{}", self.base_url.trim_end_matches('/'), query_params);
+    async fn send_geocoding_request(
+        &self,
+        query_params: &str,
+    ) -> Result<Vec<NominatimSearchResult>> {
+        let url = format!(
+            "{}/search?{}",
+            self.base_url.trim_end_matches('/'),
+            query_params
+        );
         acquire_geocoder_slot().await;
         let response = self
             .http_client
@@ -140,7 +151,10 @@ impl GeoBoundsResolver {
             .context(format!("failed sending geocoding request to {url}"))?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("geocoding service returned status: {}", response.status()));
+            return Err(anyhow!(
+                "geocoding service returned status: {}",
+                response.status()
+            ));
         }
 
         let results = response
@@ -150,10 +164,13 @@ impl GeoBoundsResolver {
         Ok(results)
     }
 
-    async fn try_structured_geocoding(&self, area: &AdministrativeArea) -> Result<Option<[f64; 4]>> {
+    async fn try_structured_geocoding(
+        &self,
+        area: &AdministrativeArea,
+    ) -> Result<Option<[f64; 4]>> {
         let chain = self.repository.get_area_hierarchy(area.geoname_id).await?;
         let country_code = area.country_code.to_lowercase();
-        
+
         // Build fully disambiguated query from hierarchy (e.g. "Phường Bến Nghé, Quận 1, Thành phố Hồ Chí Minh")
         let query_parts: Vec<&str> = chain
             .iter()
@@ -180,7 +197,7 @@ impl GeoBoundsResolver {
                 let max_lat = first.boundingbox[1].parse::<f64>()?;
                 let min_lng = first.boundingbox[2].parse::<f64>()?;
                 let max_lng = first.boundingbox[3].parse::<f64>()?;
-                
+
                 if min_lat < max_lat && min_lng < max_lng {
                     // Validate that catalog centroid is within or reasonably close to returned bbox
                     let lat_margin = 0.5;
@@ -199,11 +216,18 @@ impl GeoBoundsResolver {
         Ok(None)
     }
 
-    pub async fn geocode_query(&self, query: &str, country_code: Option<&str>) -> Result<Option<[f64; 4]>> {
+    pub async fn geocode_query(
+        &self,
+        query: &str,
+        country_code: Option<&str>,
+    ) -> Result<Option<[f64; 4]>> {
         let mut params = format!("q={}&format=json&limit=1", urlencoding::encode(query));
         if let Some(cc) = country_code {
             if !cc.trim().is_empty() {
-                params.push_str(&format!("&countrycodes={}", urlencoding::encode(&cc.trim().to_lowercase())));
+                params.push_str(&format!(
+                    "&countrycodes={}",
+                    urlencoding::encode(&cc.trim().to_lowercase())
+                ));
             }
         }
 
@@ -224,18 +248,14 @@ impl GeoBoundsResolver {
     }
 }
 
-pub fn compute_centroid_bounds(
-    lat: f64,
-    lng: f64,
-    admin_level: Option<u8>,
-) -> [f64; 4] {
+pub fn compute_centroid_bounds(lat: f64, lng: f64, admin_level: Option<u8>) -> [f64; 4] {
     // Radius deltas in degrees based on administrative level
     let delta_lat = match admin_level {
-        Some(1) => 0.35,  // ~40 km (Province/State)
-        Some(2) => 0.10,  // ~11 km (District/County)
-        Some(3) => 0.04,  // ~4.5 km (Ward/Commune)
+        Some(1) => 0.35,            // ~40 km (Province/State)
+        Some(2) => 0.10,            // ~11 km (District/County)
+        Some(3) => 0.04,            // ~4.5 km (Ward/Commune)
         Some(4) | Some(5) => 0.025, // ~2.8 km (Village/Neighborhood)
-        _ => 0.05,       // ~5.5 km default
+        _ => 0.05,                  // ~5.5 km default
     };
 
     let cos_lat = (lat * std::f64::consts::PI / 180.0).cos().abs().max(0.1);
@@ -291,9 +311,13 @@ mod tests {
             bbox: Some([8.5, 23.4, 102.1, 109.5]),
         };
 
-        repo.replace_country(parsed, "2026-08-19T00:00:00Z".to_string(), "local".to_string())
-            .await
-            .unwrap();
+        repo.replace_country(
+            parsed,
+            "2026-08-19T00:00:00Z".to_string(),
+            "local".to_string(),
+        )
+        .await
+        .unwrap();
 
         // Pre-cache an authoritative bounding box
         let sample_bounds = AdministrativeBounds {
@@ -345,9 +369,13 @@ mod tests {
             bbox: Some([8.5, 23.4, 102.1, 109.5]),
         };
 
-        repo.replace_country(parsed.clone(), "2026-08-19T00:00:00Z".to_string(), "local".to_string())
-            .await
-            .unwrap();
+        repo.replace_country(
+            parsed.clone(),
+            "2026-08-19T00:00:00Z".to_string(),
+            "local".to_string(),
+        )
+        .await
+        .unwrap();
 
         // Pass invalid localhost URL so network request fails immediately offline
         let resolver = GeoBoundsResolver::with_base_url(
@@ -393,9 +421,13 @@ mod tests {
             bbox: Some([8.5, 23.4, 102.1, 109.5]),
         };
 
-        repo.replace_country(parsed.clone(), "2026-08-19T00:00:00Z".to_string(), "local".to_string())
-            .await
-            .unwrap();
+        repo.replace_country(
+            parsed.clone(),
+            "2026-08-19T00:00:00Z".to_string(),
+            "local".to_string(),
+        )
+        .await
+        .unwrap();
 
         repo.save_cached_bounds(&AdministrativeBounds {
             geoname_id: 1566083,
@@ -413,9 +445,13 @@ mod tests {
         assert!(repo.get_cached_bounds(1566083).await.unwrap().is_some());
 
         // Re-replacing the country must invalidate the cached bounds
-        repo.replace_country(parsed, "2026-08-20T00:00:00Z".to_string(), "local".to_string())
-            .await
-            .unwrap();
+        repo.replace_country(
+            parsed,
+            "2026-08-20T00:00:00Z".to_string(),
+            "local".to_string(),
+        )
+        .await
+        .unwrap();
 
         assert!(repo.get_cached_bounds(1566083).await.unwrap().is_none());
     }

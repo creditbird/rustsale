@@ -527,18 +527,48 @@ mod tests {
              VALUES ('imei-2', 'UA2', '[]', 'vi', 'uid-multi', 'Active Name', 'valid')",
             [],
         ).unwrap();
+
+        // Insert TWO channel_accounts rows that both match the session (one keyed by UID, one by IMEI)
         conn.execute(
             "INSERT INTO channel_accounts (channel, provider_account_key, display_name, connection_status, capabilities_json, created_at, updated_at)
              VALUES ('zalo', 'uid-multi', 'Active Name', 'connected', '{}', '2026-08-20T00:00:00Z', '2026-08-20T00:00:00Z')",
             [],
         ).unwrap();
+        conn.execute(
+            "INSERT INTO channel_accounts (channel, provider_account_key, display_name, connection_status, capabilities_json, created_at, updated_at)
+             VALUES ('zalo', 'imei-2', 'Old Keyed Name', 'disconnected', '{}', '2026-08-19T00:00:00Z', '2026-08-19T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Also insert two pending empty-string UID sessions
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name, auth_status)
+             VALUES ('imei-empty-1', 'UA', '[]', 'vi', '', 'Pending 1', 'valid')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO zalo_sessions (imei, user_agent, cookies_json, language, zalo_uid, display_name, auth_status)
+             VALUES ('imei-empty-2', 'UA', '[]', 'vi', '  ', 'Pending 2', 'valid')",
+            [],
+        ).unwrap();
 
         let accounts = commands::get_managed_zalo_accounts_internal(&conn).unwrap();
-        assert_eq!(accounts.len(), 1, "Must return exactly 1 account per uid");
-        assert_eq!(accounts[0].account_key, "uid-multi");
-        assert_eq!(accounts[0].display_name.as_deref(), Some("Active Name"));
-        assert_eq!(accounts[0].auth_status, "valid");
-        assert_eq!(accounts[0].runtime_status, "connected");
+        assert_eq!(
+            accounts.len(),
+            3,
+            "Must return 1 deduped account for uid-multi and 2 distinct accounts for empty UIDs"
+        );
+
+        let multi = accounts
+            .iter()
+            .find(|a| a.account_key == "uid-multi")
+            .unwrap();
+        assert_eq!(multi.display_name.as_deref(), Some("Active Name"));
+        assert_eq!(multi.auth_status, "valid");
+        assert_eq!(multi.runtime_status, "connected");
+
+        assert!(accounts.iter().any(|a| a.account_key == "imei-empty-1"));
+        assert!(accounts.iter().any(|a| a.account_key == "imei-empty-2"));
     }
 
     #[test]

@@ -150,13 +150,16 @@
     beginQrLogin();
   }
 
-  async function beginQrLogin() {
+  async function beginQrLogin(targetAccount?: ManagedZaloAccount) {
+    if (qrStarting) return;
     cleanupQrListeners();
     qrOpen = true;
     qrImage = null;
     qrUser = null;
     qrError = null;
-    qrStatus = 'Connecting to Zalo...';
+    qrStatus = targetAccount
+      ? `Reconnecting ${accountName(targetAccount)}...`
+      : 'Connecting to Zalo...';
     qrStarting = true;
 
     try {
@@ -177,7 +180,7 @@
       );
       qrUnlistens.push(
         await listen<{ imei: string }>('zalo-qr-success', async (event) => {
-          qrStatus = 'Account added. Starting realtime connection...';
+          qrStatus = 'Account updated. Starting realtime connection...';
           await reconnectZaloAccount(event.payload.imei);
           await loadAccounts();
           cleanupQrListeners();
@@ -230,7 +233,7 @@
         <RefreshCw class="size-4 {loading ? 'animate-spin' : ''}" data-icon="inline-start" />
         Refresh
       </Button>
-      <Button size="sm" onclick={beginQrLogin}>
+      <Button size="sm" onclick={() => beginQrLogin()}>
         <QrCode class="size-4" data-icon="inline-start" />
         Add Zalo account
       </Button>
@@ -257,7 +260,7 @@
           <p class="text-sm font-semibold">No Zalo account configured</p>
           <p class="text-xs text-muted-foreground">Add an account here before using Conversations or Zalo Outreach.</p>
         </div>
-        <Button size="sm" onclick={beginQrLogin}>Add Zalo account</Button>
+        <Button size="sm" onclick={() => beginQrLogin()}>Add Zalo account</Button>
       </Card.Content>
     </Card.Root>
   {:else}
@@ -293,7 +296,12 @@
           <Card.Content class="flex flex-col gap-4 pt-4">
             <div class="min-h-9 text-xs text-muted-foreground">
               {#if account.authError}
-                <p class="flex items-start gap-2 text-destructive"><AlertCircle class="mt-0.5 size-3.5 shrink-0" /> {account.authError}</p>
+                <p class="flex items-start gap-2 text-destructive">
+                  <AlertCircle class="mt-0.5 size-3.5 shrink-0" />
+                  {account.authError === 'auth_expired_102'
+                    ? 'Session expired or active on another device (Error 102). Please re-login.'
+                    : account.authError}
+                </p>
               {:else if account.lastError}
                 <p class="flex items-start gap-2"><AlertCircle class="mt-0.5 size-3.5 shrink-0" /> {account.lastError}</p>
               {:else if account.runtimeStatus === 'connected'}
@@ -307,10 +315,11 @@
                 <Button
                   size="sm"
                   aria-label={`Re-login ${accountName(account)}`}
-                  onclick={beginQrLogin}
+                  onclick={() => beginQrLogin(account)}
+                  disabled={qrStarting}
                 >
                   <QrCode class="size-4" data-icon="inline-start" />
-                  Đăng nhập lại
+                  Re-login
                 </Button>
               {/if}
               <Button
@@ -365,7 +374,7 @@
         <div class="flex flex-col items-center gap-3">
           <div class="rounded-full bg-destructive/10 p-3 text-destructive"><AlertCircle class="size-7" /></div>
           <p role="alert" class="max-w-sm text-sm font-medium text-destructive">{qrError}</p>
-          <Button variant="outline" size="sm" onclick={beginQrLogin}>Try again</Button>
+          <Button variant="outline" size="sm" onclick={() => beginQrLogin()}>Try again</Button>
         </div>
       {:else if qrImage}
         <img
