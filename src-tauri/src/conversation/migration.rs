@@ -96,6 +96,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "count",
         "INTEGER NOT NULL DEFAULT 1",
     )?;
+    add_column_if_missing(conn, "facebook_scheduled_posts", "next_retry_at", "TEXT")?;
 
     reconcile_duplicate_zalo_channel_accounts(conn)?;
 

@@ -211,7 +211,7 @@ impl FacebookPublisher {
                  claim_deadline = datetime('now', '+5 minutes'),
                  updated_at = datetime('now')
              WHERE id = ?2 AND status = 'queued'
-               AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
+               AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now'))",
             params![worker_owner, post_id],
         )?;
 
@@ -304,19 +304,17 @@ impl FacebookPublisher {
             }
             PublishApiResult::RateLimited { retry_after_secs, error_message } => {
                 let backoff_secs = std::cmp::max(retry_after_secs, 60);
-                let next_retry = Utc::now() + chrono::Duration::seconds(backoff_secs as i64);
-                let next_retry_rfc3339 = next_retry.to_rfc3339();
                 let rows = conn.execute(
                     "UPDATE facebook_scheduled_posts
                      SET status = 'queued',
                          error_code = 'rate_limited',
                          error_message = ?1,
-                         next_retry_at = ?2,
+                         next_retry_at = datetime('now', '+' || ?2 || ' seconds'),
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
                      WHERE id = ?3 AND owner_id = ?4 AND status = 'publishing'",
-                    params![error_message, next_retry_rfc3339, post_id, worker_owner],
+                    params![error_message, backoff_secs as i64, post_id, worker_owner],
                 )?;
                 if rows != 1 {
                     return Err(anyhow!("Failed to transition rate-limited post {}: lease ownership lost", post_id));
@@ -806,11 +804,16 @@ impl FacebookUploader {
         let direct_url = format!("https://graph.facebook.com/v26.0/{}_{}?fields=id,is_published&access_token={}", page_id, remote_id, page_token);
         if let Ok(resp) = client.get(&direct_url).send().await {
             if resp.status().is_success() {
-                return true;
+                if let Ok(json) = resp.json::<Value>().await {
+                    let is_pub = json.get("is_published").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if is_pub {
+                        return true;
+                    }
+                }
             }
         }
 
-        let mut next_url: Option<String> = Some(format!("https://graph.facebook.com/v26.0/{}/feed?fields=id&limit=50&access_token={}", page_id, page_token));
+        let mut next_url: Option<String> = Some(format!("https://graph.facebook.com/v26.0/{}/feed?fields=id,is_published&limit=50&access_token={}", page_id, page_token));
         let mut page_count = 0;
         while let Some(url) = next_url {
             if page_count >= 5 { break; }
@@ -821,7 +824,8 @@ impl FacebookUploader {
                         if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
                             for item in data {
                                 if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                                    if id == remote_id || id == format!("{}_{}", page_id, remote_id) {
+                                    let is_pub = item.get("is_published").and_then(|v| v.as_bool()).unwrap_or(true);
+                                    if (id == remote_id || id == format!("{}_{}", page_id, remote_id)) && is_pub {
                                         return true;
                                     }
                                 }
@@ -838,13 +842,7 @@ impl FacebookUploader {
     }
 
     async fn verify_scheduled_publication(client: &Client, page_id: &str, page_token: &str, remote_id: &str) -> bool {
-        let direct_url = format!("https://graph.facebook.com/v26.0/{}_{}?fields=id,is_published&access_token={}", page_id, remote_id, page_token);
-        if let Ok(resp) = client.get(&direct_url).send().await {
-            if resp.status().is_success() {
-                return true;
-            }
-        }
-
+        // Direct object lookup does not prove scheduled status; verify strictly against /scheduled_posts endpoint
         let mut next_url: Option<String> = Some(format!("https://graph.facebook.com/v26.0/{}/scheduled_posts?fields=id&limit=50&access_token={}", page_id, page_token));
         let mut page_count = 0;
         while let Some(url) = next_url {
@@ -2215,6 +2213,13 @@ impl FacebookUploader {
       LIMIT 1
   ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status;
   ```
+  - **`init_pending` Reconciler State Machine:**
+    1. Query parent post `facebook_scheduled_posts` by `post_id`.
+    2. Check if parent post has already been published or scheduled on Meta (via `verify_feed_publication` or `verify_scheduled_publication`).
+    3. If parent post is verified live on Meta: update parent post to `published` / `scheduled_on_meta`, link remote ID, and set upload session `status='completed'`.
+    4. If parent post is not published on Meta and the intent lease has expired:
+       - Atomically delete the stale pre-START intent: `DELETE FROM facebook_upload_sessions WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'`.
+       - Reset parent post to `status='queued', claim_deadline=NULL, owner_id=NULL` so the publisher can safely retry with a fresh upload session without leaking remote sessions.
   - For `status == 'in_progress'`:
     Queries Meta Graph API for authoritative `start_offset` (`GET /{upload_session_id}?fields=start_offset,end_offset` for Video; `GET https://rupload.facebook.com/video-reels/{video_id}` for Reels), updates `start_offset` in `facebook_upload_sessions`, resumes uploading remaining 4MB chunks to EOF, and advances session `status = 'finishing'`.
   - For `status == 'finishing'`:

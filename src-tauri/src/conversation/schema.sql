@@ -453,13 +453,13 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     file_hash TEXT NOT NULL,
     file_size_bytes INTEGER NOT NULL,
     start_offset INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'finishing', 'completed', 'failed')),
+    status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
     owner_id TEXT,
     lease_deadline TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(post_id, page_id, upload_type, file_hash, file_size_bytes) WHERE status IN ('in_progress', 'finishing');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(post_id, page_id, upload_type, file_hash, file_size_bytes) WHERE status IN ('init_pending', 'in_progress', 'finishing');
 
 CREATE TABLE IF NOT EXISTS meta_deletion_pending_cleanups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -480,6 +480,7 @@ CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
     media_paths_json TEXT NOT NULL DEFAULT '[]',
     scheduling_mode TEXT NOT NULL DEFAULT 'meta' CHECK (scheduling_mode IN ('meta', 'local_queued')),
     scheduled_publish_time TEXT,
+    next_retry_at TEXT,
     remote_post_id TEXT,
     upload_session_id TEXT,
     idempotency_key TEXT NOT NULL UNIQUE,
@@ -493,7 +494,7 @@ CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
     updated_at TEXT NOT NULL,
     FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_fb_scheduled_posts_status ON facebook_scheduled_posts(status, scheduled_publish_time);
+CREATE INDEX IF NOT EXISTS idx_fb_scheduled_posts_status ON facebook_scheduled_posts(status, scheduled_publish_time, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_fb_scheduled_posts_group ON facebook_scheduled_posts(draft_group_id);
 
 CREATE TABLE IF NOT EXISTS facebook_comment_automations (

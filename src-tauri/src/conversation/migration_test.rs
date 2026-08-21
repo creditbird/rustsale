@@ -1120,3 +1120,83 @@ fn duplicate_zalo_merge_preserves_pending_reactions_and_repair_markers() {
         .unwrap();
     assert_eq!(marker_account_id, 1);
 }
+
+#[test]
+fn facebook_migration_schema_and_next_retry_at_timestamp_comparison() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+    migrate(&conn).unwrap();
+
+    assert!(column_names(&conn, "facebook_scheduled_posts").contains(&"next_retry_at".into()));
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (10, 'messenger', 'page_10', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // 1. Test facebook_upload_sessions accepts 'init_pending' and enforces unique active session
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (1, 'grp1', 10, 'page_10', 'video', 'msg', 'key1', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+         VALUES (1, 'page_10', 'video', 'intent_1', 'pending', '/tmp/vid.mp4', 'hash123', 1000, 0, 'init_pending', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // Enforce unique active session constraint
+    let duplicate_active = conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+         VALUES (1, 'page_10', 'video', 'intent_2', 'pending', '/tmp/vid.mp4', 'hash123', 1000, 0, 'in_progress', datetime('now'), datetime('now'))",
+        [],
+    );
+    assert!(
+        duplicate_active.is_err(),
+        "Duplicate active upload session must be rejected"
+    );
+
+    // 2. Test next_retry_at with datetime(next_retry_at) <= datetime('now')
+    // A post with expired backoff (e.g. 5 seconds ago) MUST match the claim query
+    conn.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'queued',
+             next_retry_at = datetime('now', '-5 seconds')
+         WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    let claimed_expired: i64 = conn.query_row(
+        "SELECT id FROM facebook_scheduled_posts
+         WHERE id = 1 AND status = 'queued' AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now'))",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(claimed_expired, 1, "Expired backoff post must be claimable");
+
+    // A post with future backoff (e.g. +60 seconds) must NOT match the claim query
+    conn.execute(
+        "UPDATE facebook_scheduled_posts
+         SET next_retry_at = datetime('now', '+60 seconds')
+         WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    let claimed_future = conn.query_row(
+        "SELECT id FROM facebook_scheduled_posts
+         WHERE id = 1 AND status = 'queued' AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now'))",
+        [],
+        |row| row.get::<_, i64>(0),
+    );
+    assert!(
+        claimed_future.is_err(),
+        "Future backoff post must not be claimable before retry deadline"
+    );
+}
