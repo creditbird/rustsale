@@ -929,7 +929,7 @@ impl FacebookSyncWorker {
                                 params![account_id, sender_psid],
                             )?;
                             let identity_id: i64 = tx.query_row(
-                                "SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND external_id = ?2",
+                                "SELECT id FROM channel_identities WHERE channel = 'messenger' AND channel_account_id = ?1 AND identity_namespace = 'psid' AND external_id = ?2",
                                 params![account_id, sender_psid],
                                 |r| r.get(0),
                             )?;
@@ -945,6 +945,12 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
+                            tx.execute(
+                                "INSERT OR IGNORE INTO conversation_participants (conversation_id, identity_id, role, joined_at)
+                                 VALUES (?1, ?2, 'customer', datetime('now'))",
+                                params![conv_id, identity_id],
+                            )?;
+
                             let content_type = if has_atts && !has_text {
                                 atts_opt.unwrap().first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file")
                             } else {
@@ -952,9 +958,9 @@ impl FacebookSyncWorker {
                             };
                             let text_content = text_opt.unwrap_or("");
 
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT INTO messages (conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, ?2, 'inbound', ?3, ?4, ?5, CASE WHEN ?6 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%f', ?6 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
+                                 VALUES (?1, ?2, 'inbound', ?3, ?4, ?5, CASE WHEN ?6 IS NOT NULL THEN strftime('%Y-%m-%d %H:%M:%f', ?6 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
                                    provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
                                  WHERE messages.direction = excluded.direction",
@@ -983,10 +989,12 @@ impl FacebookSyncWorker {
                                     }
                                 }
 
-                                tx.execute(
-                                    "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
-                                    params![conv_id],
-                                )?;
+                                if affected > 0 {
+                                    tx.execute(
+                                        "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
+                                        params![conv_id],
+                                    )?;
+                                }
                                 processed = true;
                             }
                         }
@@ -1022,9 +1030,9 @@ impl FacebookSyncWorker {
                             };
                             let text_content = text_opt.unwrap_or("");
 
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'outbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%f', ?5 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
+                                 VALUES (?1, 'outbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN strftime('%Y-%m-%d %H:%M:%f', ?5 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
                                    provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
                                  WHERE messages.direction = excluded.direction",
@@ -1053,10 +1061,12 @@ impl FacebookSyncWorker {
                                     }
                                 }
 
-                                tx.execute(
-                                    "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
-                                    params![conv_id],
-                                )?;
+                                if affected > 0 {
+                                    tx.execute(
+                                        "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
+                                        params![conv_id],
+                                    )?;
+                                }
                                 processed = true;
                             }
                         }
@@ -1105,11 +1115,11 @@ impl FacebookSyncWorker {
                             // Cumulative watermark resolution across all preceding qualifying outbound messages using fractional-second ISO timestamp
                             tx.execute(
                                 "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
-                                 SELECT m.id, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%f', ?4 / 1000.0, 'unixepoch')
+                                 SELECT m.id, ?2, ?3, strftime('%Y-%m-%d %H:%M:%f', ?4 / 1000.0, 'unixepoch')
                                  FROM messages m
                                  JOIN channel_conversations c ON m.conversation_id = c.id
                                  WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
-                                   AND (m.provider_timestamp <= strftime('%Y-%m-%dT%H:%M:%f', ?4 / 1000.0, 'unixepoch') OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
+                                   AND (m.provider_timestamp <= strftime('%Y-%m-%d %H:%M:%f', ?4 / 1000.0, 'unixepoch') OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
                                 params![account_id, recipient_psid, r_type, watermark],
                             )?;
                             processed = true;
