@@ -41,7 +41,7 @@ impl FacebookPublisher {
         link_url: Option<&str>,
         media_paths: &[String],
         scheduled_publish_time: Option<i64>,
-        post_id: Option<i64>,
+        post_id: i64,
     ) -> Result<String> {
         match post_type {
             "status" => {
@@ -715,17 +715,18 @@ impl FacebookUploader {
   Queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels).
   - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel):
     ```rust
-    // Atomic CAS session completion: only succeeds if this worker still holds the valid lease
-    let session_rows = conn.execute(
+    // Execute atomic transaction: session CAS completion + scheduled post propagation
+    let tx = conn.transaction()?;
+    let session_rows = tx.execute(
         "UPDATE facebook_upload_sessions
          SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
          WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
         params![session_id, worker_id],
     )?;
 
-    // Only if this worker won the CAS race (affected exactly 1 row), propagate terminal state to scheduled post
+    // Only if this worker won the CAS race (affected exactly 1 row), propagate terminal state to scheduled post within the same transaction
     if session_rows == 1 {
-        conn.execute(
+        tx.execute(
             "UPDATE facebook_scheduled_posts
              SET status = CASE
                      WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now')
@@ -740,26 +741,29 @@ impl FacebookUploader {
             params![remote_video_id, post_id, upload_session_id],
         )?;
     }
+    tx.commit()?;
     ```
   - On authoritative terminal failure:
     ```rust
-    // Atomic CAS session failure: only succeeds if this worker still holds the valid lease
-    let session_rows = conn.execute(
+    // Execute atomic transaction: session CAS failure + scheduled post failure propagation
+    let tx = conn.transaction()?;
+    let session_rows = tx.execute(
         "UPDATE facebook_upload_sessions
          SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
          WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
         params![session_id, worker_id],
     )?;
 
-    // Only if this worker won the CAS race, propagate failure to scheduled post
+    // Only if this worker won the CAS race, propagate failure to scheduled post within the same transaction
     if session_rows == 1 {
-        conn.execute(
+        tx.execute(
             "UPDATE facebook_scheduled_posts
              SET status = 'failed', error_code = 'upload_failed', error_message = ?1, updated_at = datetime('now')
              WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown')",
             params![err_msg, post_id, upload_session_id],
         )?;
     }
+    tx.commit()?;
     ```
   - On non-terminal processing state:
     ```rust
