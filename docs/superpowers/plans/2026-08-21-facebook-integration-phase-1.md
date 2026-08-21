@@ -916,7 +916,7 @@ impl FacebookSyncWorker {
                         let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
-                        let timestamp_ms = ev.payload.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
+                        let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
                         if !sender_psid.is_empty() {
                             tx.execute(
@@ -931,8 +931,10 @@ impl FacebookSyncWorker {
                             )?;
 
                             tx.execute(
-                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'inbound', ?2, 'text', ?3, ?4, datetime('now'))",
+                                "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
+                                 VALUES (?1, 'inbound', ?2, 'text', ?3, ?4, datetime('now'))
+                                 ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
+                                   provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)",
                                 params![conv_id, mid, text, timestamp_ms],
                             )?;
                             processed = true;
@@ -944,7 +946,7 @@ impl FacebookSyncWorker {
                         let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
-                        let timestamp_ms = ev.payload.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
+                        let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
                         if !recipient_psid.is_empty() {
                             tx.execute(
@@ -959,8 +961,10 @@ impl FacebookSyncWorker {
                             )?;
 
                             tx.execute(
-                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'outbound', ?2, 'text', ?3, ?4, datetime('now'))",
+                                "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
+                                 VALUES (?1, 'outbound', ?2, 'text', ?3, ?4, datetime('now'))
+                                 ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
+                                   provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)",
                                 params![conv_id, mid, text, timestamp_ms],
                             )?;
                             processed = true;
@@ -974,9 +978,10 @@ impl FacebookSyncWorker {
 
                     if !recipient_psid.is_empty() {
                         if let Some(mids) = ev.payload.get("delivery").and_then(|d| d.get("mids")).and_then(|m| m.as_array()) {
+                            let mut all_accounted = !mids.is_empty();
                             for mid_val in mids {
                                 if let Some(m_str) = mid_val.as_str() {
-                                    tx.execute(
+                                    let affected = tx.execute(
                                         "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
                                          SELECT m.id, ?2, 'delivered', datetime('now')
                                          FROM messages m
@@ -984,9 +989,26 @@ impl FacebookSyncWorker {
                                          WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND m.direction = 'outbound'",
                                         params![m_str, recipient_psid, account_id],
                                     )?;
+                                    if affected == 0 {
+                                        let exists: bool = tx.query_row(
+                                            "SELECT 1 FROM message_receipts r
+                                             JOIN messages m ON r.message_id = m.id
+                                             JOIN channel_conversations c ON m.conversation_id = c.id
+                                             WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND r.receipt_type = 'delivered'",
+                                            params![m_str, recipient_psid, account_id],
+                                            |_| Ok(true),
+                                        ).unwrap_or(false);
+                                        if !exists {
+                                            all_accounted = false;
+                                        }
+                                    }
+                                } else {
+                                    all_accounted = false;
                                 }
                             }
-                            processed = true;
+                            if all_accounted {
+                                processed = true;
+                            }
                         } else if watermark > 0 {
                             let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
                             // Cumulative watermark resolution across all preceding qualifying outbound messages using authoritative provider timestamp
