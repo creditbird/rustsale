@@ -50,11 +50,103 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
 );
 ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Tenants read own device deletion tasks" ON meta_device_deletion_tasks
-    FOR SELECT USING (auth.uid() = tenant_id);
+REVOKE ALL ON TABLE meta_device_deletion_tasks FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE meta_device_deletion_tasks TO authenticated;
+GRANT ALL ON TABLE meta_device_deletion_tasks TO service_role;
 
-CREATE POLICY "Tenants update own device deletion tasks" ON meta_device_deletion_tasks
-    FOR UPDATE USING (auth.uid() = tenant_id);
+CREATE POLICY "Tenants read own device deletion tasks" ON meta_device_deletion_tasks
+    FOR SELECT TO authenticated USING (auth.uid() = tenant_id);
+
+CREATE OR REPLACE FUNCTION claim_device_deletion_tasks(
+    p_device_id TEXT,
+    p_lease_seconds INT DEFAULT 300
+)
+RETURNS TABLE (
+    id UUID,
+    request_id UUID,
+    user_id TEXT,
+    created_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+BEGIN
+    RETURN QUERY
+    UPDATE public.meta_device_deletion_tasks
+    SET status = 'acknowledged',
+        acknowledged_at = now(),
+        updated_at = now()
+    WHERE meta_device_deletion_tasks.id IN (
+        SELECT t.id FROM public.meta_device_deletion_tasks t
+        WHERE t.tenant_id = auth.uid()
+          AND t.device_id = p_device_id
+          AND (
+              t.status = 'pending' 
+              OR (t.status = 'acknowledged' AND t.acknowledged_at < now() - (p_lease_seconds || ' seconds')::INTERVAL)
+          )
+        ORDER BY t.created_at ASC
+        LIMIT 10
+        FOR UPDATE SKIP LOCKED
+    )
+    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.user_id, meta_device_deletion_tasks.created_at;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION complete_device_deletion_task(
+    p_task_id UUID,
+    p_device_id TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+DECLARE
+    v_updated INT;
+BEGIN
+    UPDATE public.meta_device_deletion_tasks
+    SET status = 'completed',
+        completed_at = now(),
+        updated_at = now()
+    WHERE id = p_task_id
+      AND tenant_id = auth.uid()
+      AND device_id = p_device_id
+      AND status = 'acknowledged';
+
+    GET DIAGNOSTICS v_updated = ROW_COUNT;
+    RETURN v_updated > 0;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION release_device_deletion_task(
+    p_task_id UUID,
+    p_device_id TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+DECLARE
+    v_updated INT;
+BEGIN
+    UPDATE public.meta_device_deletion_tasks
+    SET status = 'pending',
+        acknowledged_at = NULL,
+        updated_at = now()
+    WHERE id = p_task_id
+      AND tenant_id = auth.uid()
+      AND device_id = p_device_id
+      AND status = 'acknowledged';
+
+    GET DIAGNOSTICS v_updated = ROW_COUNT;
+    RETURN v_updated > 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task TO authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION create_data_deletion_request_and_tasks(
     p_confirmation_code TEXT,
@@ -270,19 +362,23 @@ pub async fn process_pending_device_tasks(
     device_id: &str,
 ) -> Result<usize> {
     let client = Client::new();
-    let lease_timeout_iso = (chrono::Utc::now() - chrono::Duration::minutes(15)).to_rfc3339();
-    let tasks_url = format!("{}/rest/v1/meta_device_deletion_tasks?device_id=eq.{}&or=(status.eq.pending,and(status.eq.acknowledged,acknowledged_at.lt.{}))&select=id,user_id", supabase_url, device_id, lease_timeout_iso);
 
-    let resp = client.get(&tasks_url)
+    // 1. Claim pending deletion tasks via secure RPC
+    let claim_url = format!("{}/rest/v1/rpc/claim_device_deletion_tasks", supabase_url);
+    let claim_resp = client.post(&claim_url)
         .header("apikey", anon_key)
         .header("Authorization", format!("Bearer {}", user_jwt))
+        .json(&serde_json::json!({
+            "p_device_id": device_id,
+            "p_lease_seconds": 300
+        }))
         .send().await?;
 
-    if !resp.status().is_success() {
-        return Err(anyhow!("Failed to query device deletion tasks: {}", resp.status()));
+    if !claim_resp.status().is_success() {
+        return Err(anyhow!("Failed to claim device deletion tasks: {}", claim_resp.status()));
     }
 
-    let tasks: Vec<Value> = resp.json().await?;
+    let tasks: Vec<Value> = claim_resp.json().await?;
     let mut completed_count = 0;
 
     for task in tasks {
@@ -292,27 +388,7 @@ pub async fn process_pending_device_tasks(
             continue;
         }
 
-        // 1. Atomic claim: pending (or expired acknowledged lease) -> acknowledged
-        let claim_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&or=(status.eq.pending,and(status.eq.acknowledged,acknowledged_at.lt.{}))", supabase_url, task_id, lease_timeout_iso);
-        let claim_resp = client.patch(&claim_url)
-            .header("apikey", anon_key)
-            .header("Authorization", format!("Bearer {}", user_jwt))
-            .header("Prefer", "return=representation")
-            .json(&serde_json::json!({
-                "status": "acknowledged",
-                "acknowledged_at": chrono::Utc::now().to_rfc3339()
-            }))
-            .send().await?;
-
-        if !claim_resp.status().is_success() {
-            continue;
-        }
-        let claimed_rows: Vec<Value> = claim_resp.json().await.unwrap_or_default();
-        if claimed_rows.is_empty() {
-            continue;
-        }
-
-        // 2. Transactional local anonymization and spool registration
+        // 2. Transactional local anonymization and task-scoped spool registration
         {
             let tx = conn.transaction()?;
 
@@ -330,8 +406,8 @@ pub async fn process_pending_device_tasks(
 
             for path in &paths {
                 tx.execute(
-                    "INSERT OR IGNORE INTO pending_spool_cleanups (local_path, created_at) VALUES (?1, datetime('now'))",
-                    rusqlite::params![path],
+                    "INSERT OR IGNORE INTO meta_deletion_pending_cleanups (task_id, local_path, created_at) VALUES (?1, ?2, datetime('now'))",
+                    rusqlite::params![task_id, path],
                 )?;
             }
 
@@ -381,41 +457,47 @@ pub async fn process_pending_device_tasks(
             tx.commit()?;
         }
 
-        // 3. Durable spool sweep from disk using pending_spool_cleanups table
+        // 3. Task-scoped spool sweep from disk with active-reference validation
         let pending_cleanups: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT local_path FROM pending_spool_cleanups")?;
-            stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+            let mut stmt = conn.prepare("SELECT local_path FROM meta_deletion_pending_cleanups WHERE task_id = ?1")?;
+            stmt.query_map([task_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
         };
 
         let mut all_cleaned = true;
         for path in &pending_cleanups {
-            if std::path::Path::new(path).exists() {
+            // Verify no other active attachment still references this local path before removing file
+            let active_refs: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM message_attachments WHERE local_path = ?1",
+                [path],
+                |r| r.get(0),
+            ).unwrap_or(0);
+
+            if active_refs == 0 && std::path::Path::new(path).exists() {
                 if std::fs::remove_file(path).is_ok() {
-                    conn.execute("DELETE FROM pending_spool_cleanups WHERE local_path = ?1", rusqlite::params![path])?;
+                    conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
                 } else {
                     all_cleaned = false;
                 }
             } else {
-                conn.execute("DELETE FROM pending_spool_cleanups WHERE local_path = ?1", rusqlite::params![path])?;
+                conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
             }
         }
 
         let remaining_spools: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pending_spool_cleanups",
-            [],
+            "SELECT COUNT(*) FROM meta_deletion_pending_cleanups WHERE task_id = ?1",
+            [task_id],
             |r| r.get(0),
         )?;
 
-        // 4. Update task status on Supabase: completed only when clean and 0 pending spools remain
+        // 4. Update task status on Supabase via secure RPCs
         if all_cleaned && remaining_spools == 0 {
-            let complete_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&status=eq.acknowledged", supabase_url, task_id);
-            let patch_resp = client.patch(&complete_url)
+            let complete_url = format!("{}/rest/v1/rpc/complete_device_deletion_task", supabase_url);
+            let patch_resp = client.post(&complete_url)
                 .header("apikey", anon_key)
                 .header("Authorization", format!("Bearer {}", user_jwt))
-                .header("Prefer", "return=representation")
                 .json(&serde_json::json!({
-                    "status": "completed",
-                    "completed_at": chrono::Utc::now().to_rfc3339()
+                    "p_task_id": task_id,
+                    "p_device_id": device_id
                 }))
                 .send().await?;
 
@@ -423,14 +505,13 @@ pub async fn process_pending_device_tasks(
                 completed_count += 1;
             }
         } else {
-            // Reset task to pending so next cycle retries disk cleanup without losing state
-            let reset_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&status=eq.acknowledged", supabase_url, task_id);
-            let _ = client.patch(&reset_url)
+            let release_url = format!("{}/rest/v1/rpc/release_device_deletion_task", supabase_url);
+            let _ = client.post(&release_url)
                 .header("apikey", anon_key)
                 .header("Authorization", format!("Bearer {}", user_jwt))
                 .json(&serde_json::json!({
-                    "status": "pending",
-                    "acknowledged_at": serde_json::Value::Null
+                    "p_task_id": task_id,
+                    "p_device_id": device_id
                 }))
                 .send().await;
         }

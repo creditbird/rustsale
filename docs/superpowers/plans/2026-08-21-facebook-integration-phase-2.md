@@ -227,20 +227,34 @@ impl FacebookUploader {
         let file_size = file_meta.len();
         let file_hash = Self::compute_file_hash(file_path).await?;
 
-        // 1. Check existing in-progress session in facebook_upload_sessions with content hash verification
-        let existing_session: Option<(String, String, u64)> = match conn.query_row(
-            "SELECT upload_session_id, video_id, start_offset 
+        // 1. Check existing in-progress or finishing session in facebook_upload_sessions with content hash verification
+        let existing_session: Option<(String, String, u64, String)> = match conn.query_row(
+            "SELECT upload_session_id, video_id, start_offset, status 
              FROM facebook_upload_sessions 
-             WHERE page_id = ?1 AND upload_type = 'video' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status = 'in_progress'",
+             WHERE page_id = ?1 AND upload_type = 'video' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status IN ('in_progress', 'finishing')",
             params![page_id, file_path, file_size as i64, file_hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64, r.get(3)?)),
         ) {
             Ok(sess) => Some(sess),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
             Err(err) => return Err(anyhow!("Database query error looking up video upload session: {}", err)),
         };
 
-        let (upload_session_id, video_id, mut offset) = if let Some((sess_id, vid_id, _saved_offset)) = existing_session {
+        let (upload_session_id, video_id, mut offset) = if let Some((sess_id, vid_id, _saved_offset, session_status)) = existing_session {
+            // If in finishing state, reconcile by checking if the video object already published/processed on Graph API
+            if session_status == "finishing" {
+                let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", vid_id, page_token);
+                if let Ok(check_resp) = self.client.get(&check_url).send().await {
+                    if check_resp.status().is_success() {
+                        let _ = conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                            params![sess_id],
+                        );
+                        return Ok(vid_id);
+                    }
+                }
+            }
+
             // Query Graph video upload session for authoritative server offset
             let status_url = format!("https://graph-video.facebook.com/v26.0/{}?fields=start_offset,end_offset&access_token={}", sess_id, page_token);
             let status_resp = self.client.get(&status_url).send().await?;
@@ -392,19 +406,33 @@ impl FacebookUploader {
         let file_size = file_meta.len();
         let file_hash = Self::compute_file_hash(file_path).await?;
 
-        let existing_session: Option<(String, u64)> = match conn.query_row(
-            "SELECT video_id, start_offset 
+        let existing_session: Option<(String, u64, String)> = match conn.query_row(
+            "SELECT video_id, start_offset, status 
              FROM facebook_upload_sessions 
-             WHERE page_id = ?1 AND upload_type = 'reel' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status = 'in_progress'",
+             WHERE page_id = ?1 AND upload_type = 'reel' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status IN ('in_progress', 'finishing')",
             params![page_id, file_path, file_size as i64, file_hash],
-            |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)),
+            |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, r.get(2)?)),
         ) {
             Ok(sess) => Some(sess),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
             Err(err) => return Err(anyhow!("Database query error looking up reel upload session: {}", err)),
         };
 
-        let (video_id, mut offset) = if let Some((vid_id, _saved_offset)) = existing_session {
+        let (video_id, mut offset) = if let Some((vid_id, _saved_offset, session_status)) = existing_session {
+            // If in finishing state, reconcile by checking if the reel object already published on Graph API
+            if session_status == "finishing" {
+                let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", vid_id, page_token);
+                if let Ok(check_resp) = self.client.get(&check_url).send().await {
+                    if check_resp.status().is_success() {
+                        let _ = conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                            params![vid_id],
+                        );
+                        return Ok(vid_id);
+                    }
+                }
+            }
+
             let check_url = format!("https://rupload.facebook.com/video-reels/{}", vid_id);
             let check_resp = self.client.get(&check_url)
                 .header("Authorization", format!("OAuth {}", page_token))

@@ -146,14 +146,14 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     file_hash TEXT NOT NULL,
     file_size_bytes INTEGER NOT NULL,
     start_offset INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed', 'failed')),
+    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'finishing', 'completed', 'failed')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique 
 ON facebook_upload_sessions(page_id, upload_type, file_hash, file_size_bytes) 
-WHERE status = 'in_progress';
+WHERE status IN ('in_progress', 'finishing');
 
 -- Scheduled Posts
 CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (

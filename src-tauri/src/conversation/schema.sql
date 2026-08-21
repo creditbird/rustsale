@@ -452,11 +452,19 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     file_hash TEXT NOT NULL,
     file_size_bytes INTEGER NOT NULL,
     start_offset INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed', 'failed')),
+    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'finishing', 'completed', 'failed')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(page_id, upload_type, file_hash, file_size_bytes) WHERE status = 'in_progress';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(page_id, upload_type, file_hash, file_size_bytes) WHERE status IN ('in_progress', 'finishing');
+
+CREATE TABLE IF NOT EXISTS meta_deletion_pending_cleanups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    local_path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meta_del_cleanups_task ON meta_deletion_pending_cleanups(task_id);
 
 CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
