@@ -314,16 +314,17 @@ mod tests {
             );
             assert!(dup_insert.is_err(), "Duplicate attachment remote_url must violate unique index");
 
-            // 11. Verify provider_attachment_id collision deduplication: exactly 1 attachment record
-            let (p_att_id, p_prov_id, p_file_name): (i64, Option<String>, Option<String>) = conn.query_row(
-                "SELECT id, provider_attachment_id, file_name 
+            // 11. Verify provider_attachment_id collision deduplication: exactly 1 attachment record with merged metadata
+            let (p_att_id, p_prov_id, p_file_name, p_meta): (i64, Option<String>, Option<String>, String) = conn.query_row(
+                "SELECT id, provider_attachment_id, file_name, metadata_json 
                  FROM message_attachments WHERE message_id = 701 AND provider_attachment_id = 'PROVIDER_COLLISION_1'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             ).unwrap();
             assert_eq!(p_att_id, 903);
             assert_eq!(p_prov_id, Some("PROVIDER_COLLISION_1".to_string()));
             assert_eq!(p_file_name, Some("photo_a.jpg".to_string()));
+            assert!(p_meta.contains("\"a\": 1") || p_meta.contains("\"b\": 2"));
 
             // 12. Verify unique index prevents future duplicate provider_attachment_id
             let dup_prov_insert = conn.execute(

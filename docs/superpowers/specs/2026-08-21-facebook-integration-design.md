@@ -3,7 +3,7 @@
 ## 1. Executive Summary & Architectural Invariants
 
 The Facebook Integration module provides enterprise-grade, multi-channel capabilities for RustSale CRM across three operational phases:
-1. **Phase 1:** Zero-Secret PKCE OAuth Token Exchange with encrypted handoff, Local Token Vault (AES-256-GCM + OS Keyring), Durable Webhook Ingestion Buffer (supporting both `entry.messaging` and `entry.changes`) with HMAC-SHA256, Isolated Multi-Stream Messenger 2-Way Sync Engine matching repository schema (`channel_conversations`, `conversation_participants`, `messages`, `message_attachments`, `message_reactions`, `message_receipts`, `pending_message_reactions`), and Svelte 5 Unified Inbox with 24-Hour Policy Gate & Message Tag selector.
+1. **Phase 1:** Zero-Secret PKCE OAuth Token Exchange with atomic session consumption and encrypted payload handoff, Local Token Vault (AES-256-GCM + OS Keyring), Durable Webhook Ingestion Buffer (supporting both `entry.messaging` and `entry.changes`) with HMAC-SHA256, Isolated Multi-Stream Messenger 2-Way Sync Engine matching repository schema (`channel_conversations`, `conversation_participants`, `messages`, `message_attachments`, `message_reactions`, `message_receipts`, `pending_message_reactions`), and Svelte 5 Unified Inbox with 24-Hour Policy Gate & Message Tag selector.
 2. **Phase 2:** Multi-Type Post Scheduler (Status, Link, Photo, Multi-Photo, Resumable Video & Reels) with Dual-Mode scheduling (Meta-side 10m–30d & Local-queued >30d), bounded-memory streaming chunked uploader, restart-resumable upload sessions with server offset verification, multi-page fan-out, expired publishing lease sweeper, and Svelte 5 Live Feed Preview (Desktop & Mobile).
 3. **Phase 3:** Marketing & Comment Automations (Auto-Like, Public Reply, 1-reply Private Send API with active heartbeat loop & fail-closed reconciliation), Facebook Lead Ads ingestion with custom fields & cursor worker, Data Deletion Compliance Callback with Durable Interaction Mapping, Tenant/Page Scoped Device Task Dispatch & Transactional Anonymizer via `pending_spool_cleanups`, and Facebook Hub UI.
 
@@ -14,7 +14,7 @@ The Facebook Integration module provides enterprise-grade, multi-channel capabil
 ### 2.1 Protocol Flow
 1. **Authorization Request:** Client generates cryptographically secure `state`, PKCE `code_verifier`, and `code_challenge = BASE64URL(SHA256(code_verifier))`. Sends `state` and `code_challenge` to `/meta-oauth-start` with user JWT.
 2. **Meta Redirect:** User completes consent on Facebook. Meta redirects to `/meta-oauth-callback?code=...&state=...`.
-3. **Token Exchange:** Backend exchanges authorization code for short-lived token, upgrades to 60-day long-lived token, and fetches managed Pages via `GET /me/accounts`.
+3. **Atomic Session Consumption & Token Exchange:** Backend consumes authorization session atomically in one query. Exchanges authorization code for short-lived token, upgrades to 60-day long-lived token, and fetches managed Pages via `GET /me/accounts`.
 4. **Encrypted Exchange Code:** Server encrypts Page tokens payload using AES-256-GCM and writes to `oauth_exchange_codes` with PKCE challenge and 60-second TTL.
 5. **Desktop Claim:** Client invokes `/meta-oauth-exchange` with user JWT, `code`, and `code_verifier`.
 6. **Secure RPC:** Function `complete_meta_oauth_exchange` derives tenant identity directly from `auth.uid()`, validates PKCE challenge, consumes and deletes payload atomically, and maps Page ownership to `meta_tenant_pages`.
@@ -209,7 +209,7 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 - Promotion claims row: `UPDATE ... SET status = 'publishing', owner_id = ?1, claim_deadline = datetime('now', '+5 minutes') WHERE id = ?2 AND status = 'queued'`.
 - Wraps all media reads and uploads in a publisher block so all errors become `publish_result` and execute the ownership-guarded transition to `delivery_unknown`.
 - Expired publishing sweeper moves timed-out rows (`claim_deadline < datetime('now')`) to `delivery_unknown`.
-- Reconciliation cycle claims `delivery_unknown` rows with atomic lease lock. Searches Meta Feed for matching message hash and timestamp. If found, marks `scheduled_on_meta`. If inconclusive or rate-limited, remains strictly in `delivery_unknown` (fail-closed).
+- Reconciliation cycle claims `delivery_unknown` rows with atomic lease lock. Searches Meta Feed for matching message hash and timestamp within 60s window. If found, marks `scheduled_on_meta`. If inconclusive or rate-limited, remains strictly in `delivery_unknown` (fail-closed).
 
 ---
 
@@ -218,7 +218,7 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 1. **Loop Guard:** Skips if `sender_id == page_id`.
 2. **7-Day Window:** Skips if comment age > 7 days.
 3. **Atomic 1-Reply Claim:** `facebook_comment_logs` uniqueness on `comment_id` with 5-minute lease.
-4. **Active Heartbeat Loop:** Tokio task renews `claim_deadline = datetime('now', '+5 minutes')` every 120s via background channel while HTTP call awaits, cancelling immediately upon completion.
+4. **Active Heartbeat Loop:** Tokio task renews `claim_deadline = datetime('now', '+5 minutes')` every 120s via background channel while HTTP call awaits, cancelling immediately upon completion. If lease renewal fails, sets abort flag and transitions row to `delivery_unknown`.
 5. **Fail-Closed Reconciliation:** On transport timeout or 5xx error, sets `delivery_unknown`. Reconciler calls `GET /<comment_id>?fields=private_reply_status`. Terminal transitions strictly enforce owner ID (`replied` -> `success`, `can_reply` -> `failed`).
 
 ---
@@ -226,9 +226,9 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 ## 8. Data Deletion Compliance Lifecycle & Transactional Anonymizer
 
 1. **Durable Interaction Index:** `meta_user_page_interactions (tenant_id, page_id, user_id, last_interacted_at, PRIMARY KEY(tenant_id, page_id, user_id))` tracks user interactions across all channels and pages.
-2. **Callback Endpoint (`/meta-data-deletion`):** Verifies HMAC `signed_request`, queries interaction index, and transactionally creates `data_deletion_requests` with `required_tasks_count` and `meta_device_deletion_tasks` scoped to `(request_id, tenant_id, page_id, user_id)`.
+2. **Callback Endpoint (`/meta-data-deletion`):** Verifies HMAC `signed_request`, executes PostgreSQL transactional RPC `create_data_deletion_request_and_tasks` (accessible only to service_role) which purges buffered events (both messaging and changes) and creates `meta_device_deletion_tasks` scoped to `(request_id, tenant_id, page_id, device_id)`.
 3. **Transactional Desktop Anonymizer:**
-   - Transactionally updates `leads`, queues attachment paths (both inbound and outbound in the conversation) into `pending_spool_cleanups`, deletes `message_attachments`, updates `messages SET text_content = '[Deleted as per privacy request]', edited_at = datetime('now')`, deletes conversation-scoped receipts and reactions, anonymizes `facebook_comment_logs`, and pseudonymizes `channel_identities`.
+   - Transactionally updates `leads`, queues all attachment paths in the direct conversation into `pending_spool_cleanups`, deletes `message_attachments`, updates `messages SET text_content = '[Deleted as per privacy request]', edited_at = datetime('now')`, deletes conversation-scoped receipts and reactions, anonymizes `facebook_comment_logs`, and pseudonymizes `channel_identities`.
    - Commits transaction, then sweeps `pending_spool_cleanups` physically deleting disk files. Deletes queue row only on successful deletion or `NotFound`.
-   - Acknowledges task completion.
+   - Desktop worker marks task completed on Supabase.
 4. **Status Endpoint (`/deletion-status`):** Reports `completed` only when all required device tasks are completed.

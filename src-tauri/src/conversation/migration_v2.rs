@@ -381,7 +381,17 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                         WHERE d.message_id = message_attachments.message_id 
                           AND d.provider_attachment_id = message_attachments.provider_attachment_id 
                           AND d.thumbnail_url IS NOT NULL LIMIT 1
-                    ))
+                    )),
+                    metadata_json = CASE 
+                        WHEN metadata_json IS NULL OR metadata_json = '{}' OR metadata_json = '' THEN
+                            COALESCE((
+                                SELECT d.metadata_json FROM message_attachments d 
+                                WHERE d.message_id = message_attachments.message_id 
+                                  AND d.provider_attachment_id = message_attachments.provider_attachment_id 
+                                  AND d.metadata_json IS NOT NULL AND d.metadata_json != '{}' AND d.metadata_json != '' LIMIT 1
+                            ), metadata_json)
+                        ELSE metadata_json
+                    END
                 WHERE id IN (
                     SELECT MIN(id) 
                     FROM message_attachments 

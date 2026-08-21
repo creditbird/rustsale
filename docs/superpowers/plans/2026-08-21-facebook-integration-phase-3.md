@@ -13,7 +13,7 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Active Heartbeat & Fail-Closed Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal channel. On timeout, marks `delivery_unknown` and reconciles fail-closed via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. Inconclusive Graph responses do not retry. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Active Heartbeat & Fail-Closed Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal channel. On timeout or lease abort, marks `delivery_unknown` and reconciles fail-closed via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. Inconclusive Graph responses do not retry. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
 | **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursor Worker | `PLANNED` | Task 3 (Step 1) | Webhook triggers worker reading `meta_webhook_buffer` via `meta_webhook_leadgen_cursor`; fetches `GET /<leadgen_id>`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) WHERE leadgen_id IS NOT NULL DO NOTHING`. Quarantines failed lead fetches. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
 | **REQ-FB-15** | Data Deletion Compliance Endpoint & Scoped Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, executes transactional PostgreSQL RPC creating `data_deletion_requests` and `meta_device_deletion_tasks` scoped to Page and tenant, and returns confirmation code with status tracking URL. Local client executes comprehensive anonymization inventory, sweeps `pending_spool_cleanups`, and acknowledges remote task completion. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. Unrelated tenant data is untouched. | Compliance test: Send mock Meta deletion payload; assert 200, scoped task distribution, and schema validity. |
 
@@ -167,12 +167,16 @@ impl CommentEngine {
                     _ = interval.tick() => {
                         let (resp_tx, resp_rx) = oneshot::channel();
                         if heartbeat_req_tx.send((comment_id_str.clone(), worker_id_str.clone(), resp_tx)).await.is_ok() {
-                            if let Ok(success) = resp_rx.await {
-                                if !success {
+                            match tokio::time::timeout(std::time::Duration::from_secs(5), resp_rx).await {
+                                Ok(Ok(true)) => {}
+                                _ => {
                                     lease_aborted_clone.store(true, Ordering::SeqCst);
                                     break;
                                 }
                             }
+                        } else {
+                            lease_aborted_clone.store(true, Ordering::SeqCst);
+                            break;
                         }
                     }
                 }
@@ -212,6 +216,11 @@ impl CommentEngine {
         let _ = heartbeat_handle.await;
 
         if lease_aborted.load(Ordering::SeqCst) {
+            // Fail closed: mark delivery_unknown so reconciler will check Graph API before any retry
+            conn.execute(
+                "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', owner_id = NULL, claim_deadline = NULL, error_message = 'Lease lost during in-flight send', updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
+                params![comment_id, worker_id],
+            )?;
             return Err(anyhow!("Lease lost during in-flight send"));
         }
 
@@ -403,7 +412,10 @@ impl FacebookLeadIngestor {
         for event in events {
             let event_id = event.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
             let payload = event.get("payload");
-            let leadgen_id = payload.and_then(|p| p.get("leadgen_id")).and_then(|l| l.as_str()).unwrap_or("");
+            
+            // Support both direct leadgen_id property and nested value.leadgen_id shape
+            let leadgen_id = payload.and_then(|p| p.get("leadgen_id").or_else(|| p.get("value").and_then(|v| v.get("leadgen_id"))))
+                .and_then(|l| l.as_str()).unwrap_or("");
 
             if leadgen_id.is_empty() {
                 conn.execute(
@@ -517,9 +529,11 @@ BEGIN
     VALUES (p_user_id, p_confirmation_code, 'pending', now())
     RETURNING id INTO v_request_id;
 
-    -- Purge matching user events from webhook buffer
+    -- Purge matching user events from webhook buffer across messaging and changes
     DELETE FROM public.meta_webhook_buffer 
-    WHERE payload->'sender'->>'id' = p_user_id OR payload->'recipient'->>'id' = p_user_id;
+    WHERE (payload->'sender'->>'id' = p_user_id) 
+       OR (payload->'recipient'->>'id' = p_user_id)
+       OR (payload->'value'->'from'->>'id' = p_user_id);
 
     -- Fan out tasks based on durable interaction table
     FOR v_row IN 
@@ -546,6 +560,10 @@ BEGIN
     );
 END;
 $$;
+
+-- Strictly secure deletion RPC from public or unauthorized user invocation
+REVOKE ALL ON FUNCTION create_data_deletion_request_and_tasks FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION create_data_deletion_request_and_tasks TO service_role;
 ```
 
 - [ ] **Step 2: Implement Edge Functions `/meta-data-deletion` and `/deletion-status`**
@@ -750,14 +768,14 @@ impl FacebookDeletionWorker {
             params![channel_account_id, external_user_id],
         )?;
 
-        // 5. Delete receipts and reactions scoped to this conversation and account
+        // 5. Delete receipts and reactions scoped strictly to this conversation and account
         tx.execute(
             "DELETE FROM message_receipts 
              WHERE message_id IN (
                  SELECT id FROM messages WHERE conversation_id IN (
                      SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'direct'
                  )
-             ) OR recipient_external_id = ?2",
+             )",
             params![channel_account_id, external_user_id],
         )?;
 
@@ -767,7 +785,7 @@ impl FacebookDeletionWorker {
                  SELECT id FROM messages WHERE conversation_id IN (
                      SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'direct'
                  )
-             ) OR actor_external_id = ?2",
+             )",
             params![channel_account_id, external_user_id],
         )?;
 
