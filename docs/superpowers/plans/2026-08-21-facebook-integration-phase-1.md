@@ -70,10 +70,10 @@ AS $$
 DECLARE
     v_server_key TEXT;
 BEGIN
-    -- Derive server-held encryption key from PostgreSQL configuration / vault
+    -- Derive server-held encryption key from PostgreSQL configuration / vault (FAIL-CLOSED)
     v_server_key := current_setting('app.settings.meta_encryption_key', true);
     IF v_server_key IS NULL OR v_server_key = '' THEN
-        v_server_key := 'rustsale-default-server-vault-key-prod';
+        RAISE EXCEPTION 'Missing configuration: app.settings.meta_encryption_key is required';
     END IF;
 
     INSERT INTO public.oauth_exchange_codes (code, tenant_id, code_challenge, payload, expires_at)
@@ -92,7 +92,7 @@ GRANT EXECUTE ON FUNCTION create_meta_oauth_exchange_code TO service_role;
 
 CREATE OR REPLACE FUNCTION complete_meta_oauth_exchange(
     p_code TEXT,
-    p_verifier_challenge TEXT
+    p_code_verifier TEXT
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -105,28 +105,36 @@ DECLARE
     v_pages JSONB;
     v_page RECORD;
     v_server_key TEXT;
+    v_expected_challenge TEXT;
 BEGIN
     v_tenant_id := auth.uid();
     IF v_tenant_id IS NULL THEN
         RAISE EXCEPTION 'Unauthorized: user JWT required';
     END IF;
 
+    IF p_code_verifier IS NULL OR length(p_code_verifier) < 43 OR length(p_code_verifier) > 128 THEN
+        RAISE EXCEPTION 'Invalid PKCE code_verifier length';
+    END IF;
+
+    -- Compute S256 challenge from verifier: Base64URL(SHA256(verifier))
+    v_expected_challenge := rtrim(replace(replace(encode(digest(p_code_verifier, 'sha256'), 'base64'), '+', '-'), '/', '_'), '=');
+
     v_server_key := current_setting('app.settings.meta_encryption_key', true);
     IF v_server_key IS NULL OR v_server_key = '' THEN
-        v_server_key := 'rustsale-default-server-vault-key-prod';
+        RAISE EXCEPTION 'Missing configuration: app.settings.meta_encryption_key is required';
     END IF;
 
     SELECT payload INTO v_payload_bytes
     FROM public.oauth_exchange_codes
     WHERE code = p_code
       AND tenant_id = v_tenant_id
-      AND code_challenge = p_verifier_challenge
+      AND code_challenge = v_expected_challenge
       AND consumed = FALSE
       AND expires_at > now()
     FOR UPDATE;
 
     IF v_payload_bytes IS NULL THEN
-        RAISE EXCEPTION 'Invalid or expired exchange code';
+        RAISE EXCEPTION 'Invalid, expired, or unverified exchange code';
     END IF;
 
     -- Atomically delete exchange code after retrieval

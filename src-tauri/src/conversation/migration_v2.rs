@@ -391,8 +391,36 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
                 serde_json::Map::new();
             let mut raw_unparsed_values: Vec<serde_json::Value> = Vec::new();
 
+            let mut all_provider_ids: Vec<String> = Vec::new();
+            let mut all_remote_urls: Vec<String> = Vec::new();
+            let mut merged_raw_rows: Vec<serde_json::Value> = Vec::new();
+
             for &idx in &member_indices {
                 let item = &items[idx];
+                if let Some(pid) = &item.provider_attachment_id {
+                    if !all_provider_ids.contains(pid) {
+                        all_provider_ids.push(pid.clone());
+                    }
+                }
+                if let Some(rurl) = &item.remote_url {
+                    if !all_remote_urls.contains(rurl) {
+                        all_remote_urls.push(rurl.clone());
+                    }
+                }
+
+                merged_raw_rows.push(serde_json::json!({
+                    "id": item.id,
+                    "provider_attachment_id": item.provider_attachment_id,
+                    "attachment_type": item.attachment_type,
+                    "file_name": item.file_name,
+                    "mime_type": item.mime_type,
+                    "size_bytes": item.size_bytes,
+                    "remote_url": item.remote_url,
+                    "local_path": item.local_path,
+                    "thumbnail_url": item.thumbnail_url,
+                    "metadata_json": item.metadata_json
+                }));
+
                 if merged_prov_id.is_none() && item.provider_attachment_id.is_some() {
                     merged_prov_id = item.provider_attachment_id.clone();
                 }
@@ -446,6 +474,35 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
                     }
                 }
             }
+
+            if !all_provider_ids.is_empty() {
+                merged_json_map.insert(
+                    "provider_attachment_id_aliases".to_string(),
+                    serde_json::Value::Array(
+                        all_provider_ids
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+
+            if !all_remote_urls.is_empty() {
+                merged_json_map.insert(
+                    "remote_url_aliases".to_string(),
+                    serde_json::Value::Array(
+                        all_remote_urls
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+
+            merged_json_map.insert(
+                "_merged_attachment_rows".to_string(),
+                serde_json::Value::Array(merged_raw_rows),
+            );
 
             if !raw_unparsed_values.is_empty() {
                 merged_json_map.insert(

@@ -36,7 +36,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
     let mut conn = open_db_connection(db_path)?;
     conn.pragma_update(None, "foreign_keys", "OFF")?;
 
-    {
+    let init_result = (|| -> Result<()> {
         let tx = conn.transaction()?;
 
         // ARCHITECTURAL INVARIANT (MULTI_CURRENCY_v1):
@@ -489,22 +489,48 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
-        tx.commit()?;
-    }
+        // Verify foreign key integrity inside transaction before commit
+        {
+            let mut stmt = tx
+                .prepare("SELECT \"table\", rowid, parent, fkid FROM pragma_foreign_key_check()")?;
+            let violations: Vec<String> = stmt
+                .query_map([], |row| {
+                    let table: String = row.get(0)?;
+                    let rowid: i64 = row.get(1)?;
+                    let parent: String = row.get(2)?;
+                    let fkid: i64 = row.get(3)?;
+                    Ok(format!(
+                        "table='{}', rowid={}, parent='{}', fkid={}",
+                        table, rowid, parent, fkid
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-    // Verify foreign key integrity after schema creation & migrations
-    {
-        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
-        let violations: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        if !violations.is_empty() {
-            return Err(rusqlite::Error::InvalidQuery);
+            if !violations.is_empty() {
+                eprintln!(
+                    "Database initialization failed foreign key check: {:?}",
+                    violations
+                );
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+                    Some(format!(
+                        "Foreign key check failed before commit with {} violations: [{}]",
+                        violations.len(),
+                        violations.join("; ")
+                    )),
+                ));
+            }
         }
-    }
 
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+        tx.commit()?;
+        Ok(())
+    })();
+
+    // Always re-enable foreign keys even on error exit
+    let pragma_restore = conn.pragma_update(None, "foreign_keys", "ON");
+    init_result?;
+    pragma_restore?;
     Ok(conn)
 }
 

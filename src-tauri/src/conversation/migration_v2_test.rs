@@ -457,6 +457,22 @@ mod tests {
                 || meta.contains("\"conflict_key_dup_1002\": \"dup_val\"")
         );
         assert!(meta.contains("invalid json string payload"));
+        assert!(
+            meta.contains("provider_attachment_id_aliases")
+                && meta.contains("P1")
+                && meta.contains("P2"),
+            "All provider attachment ID aliases must be preserved losslessly in metadata_json"
+        );
+        assert!(
+            meta.contains("remote_url_aliases")
+                && meta.contains("https://cdn.example.com/shared.jpg")
+                && meta.contains("https://cdn.example.com/other.jpg"),
+            "All remote URL aliases must be preserved losslessly in metadata_json"
+        );
+        assert!(
+            meta.contains("_merged_attachment_rows"),
+            "All original rows must be recorded in _merged_attachment_rows"
+        );
     }
 
     #[test]
@@ -669,5 +685,85 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn test_init_db_foreign_key_violation_rolls_back_cleanly() {
+        let path = std::env::temp_dir().join(format!(
+            "rustsale-fk-rollback-test-{}.db",
+            rand::random::<u64>()
+        ));
+        {
+            // 1. Create a database with an invalid orphaned foreign key record
+            let conn = open_db_connection(path.to_str().unwrap()).unwrap();
+            conn.execute_batch(r#"
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE leads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    company TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    value REAL NOT NULL DEFAULT 0.0,
+                    last_activity TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE channel_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel TEXT NOT NULL,
+                    provider_account_key TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE channel_conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_account_id INTEGER NOT NULL,
+                    external_thread_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+                );
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id INTEGER NOT NULL,
+                    direction TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE
+                );
+                -- Orphan message row with conversation_id = 99999
+                INSERT INTO messages (id, conversation_id, direction, content_type, ingested_at)
+                VALUES (1, 99999, 'inbound', 'text', '2026-01-01T00:00:00Z');
+                PRAGMA user_version = 1;
+            "#).unwrap();
+        }
+
+        // 3. init_db MUST fail and return SqliteFailure with Foreign Key violation details
+        let init_res = init_db(path.to_str().unwrap());
+        assert!(
+            init_res.is_err(),
+            "init_db must fail when foreign key violations exist"
+        );
+        let err_str = format!("{:?}", init_res.err().unwrap());
+        assert!(
+            err_str.contains("Foreign key check failed") || err_str.contains("foreign key"),
+            "Error must contain foreign key diagnostic details: {}",
+            err_str
+        );
+
+        // 4. Verify that the database was NOT committed to upgraded schema version
+        {
+            let conn = open_db_connection(path.to_str().unwrap()).unwrap();
+            let v: u32 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            // user_version must remain 1 because the migration transaction rolled back
+            assert_eq!(v, 1, "Failed migration must roll back user_version");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
