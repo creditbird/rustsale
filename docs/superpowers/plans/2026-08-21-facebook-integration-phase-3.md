@@ -1,10 +1,10 @@
 # Facebook Integration Phase 3 Implementation Plan: Comment Automations, Lead Ads Ingestion, Page Health & Facebook Hub UI
 
-- **Goal:** Deliver marketing & comment automations (Auto-Like, Public Reply, 1-reply Private Send API with 5-minute atomic claim lease & fail-closed reconciliation), Facebook Lead Ads ingestion with isolated cursor worker, Data Deletion Compliance Callback with Active-Device Filtering, Atomic Task Claim & Transactional Task-Scoped Anonymizer via `pending_spool_cleanups`, and Facebook Hub UI.
+- **Goal:** Deliver marketing & comment automations (Auto-Like, Public Reply, 1-reply Private Send API with 5-minute atomic claim lease & fail-closed reconciliation), Facebook Lead Ads ingestion with isolated cursor worker, Data Deletion Compliance Callback with Active-Device Filtering, Atomic Task Claim & Transactional Task-Scoped Anonymizer via `meta_deletion_pending_cleanups`, and Facebook Hub UI.
 - **Architecture & Invariants:**
   - **Comment Automations:** Loop guard (`sender_id != page_id`), 7-day window. Permanent 4xx errors classified as `failed` with zero retries. Transient 5xx / timeouts mark `delivery_unknown`. Reconciler calls `GET /<comment_id>?fields=private_reply_status`.
   - **Data Deletion Compliance:** HMAC `signed_request` verification. PostgreSQL RPC `create_data_deletion_request_and_tasks` (service_role only) purges buffered events across all shapes and creates tasks for active registered tenant devices (`last_seen_at >= now() - INTERVAL '30 days'`).
-  - **Desktop Deletion Worker:** Claims task atomically (`status='acknowledged'`) sending `anon_key` in `apikey` and `user_jwt` in `Authorization`. Records task-scoped spool paths in `pending_spool_cleanups(task_id, local_path)`. Only sends `completed` PATCH when all task-scoped files are confirmed removed from disk and PATCH returns HTTP 200.
+  - **Desktop Deletion Worker:** Claims task atomically via `claim_device_deletion_tasks` receiving a single-use `lease_token`. Records task-scoped spool paths in `meta_deletion_pending_cleanups(task_id, local_path)`. Only calls `complete_device_deletion_task` when all task-scoped files are confirmed removed from disk and active references verified with fail-closed safety.
 
 ---
 
@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
     device_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed', 'failed')),
+    lease_token UUID,
     acknowledged_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -65,6 +66,7 @@ RETURNS TABLE (
     id UUID,
     request_id UUID,
     user_id TEXT,
+    lease_token UUID,
     created_at TIMESTAMPTZ
 )
 LANGUAGE plpgsql
@@ -75,6 +77,7 @@ BEGIN
     RETURN QUERY
     UPDATE public.meta_device_deletion_tasks
     SET status = 'acknowledged',
+        lease_token = gen_random_uuid(),
         acknowledged_at = now(),
         updated_at = now()
     WHERE meta_device_deletion_tasks.id IN (
@@ -89,13 +92,13 @@ BEGIN
         LIMIT 10
         FOR UPDATE SKIP LOCKED
     )
-    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.user_id, meta_device_deletion_tasks.created_at;
+    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.user_id, meta_device_deletion_tasks.lease_token, meta_device_deletion_tasks.created_at;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION complete_device_deletion_task(
     p_task_id UUID,
-    p_device_id TEXT
+    p_lease_token UUID
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -108,10 +111,11 @@ BEGIN
     UPDATE public.meta_device_deletion_tasks
     SET status = 'completed',
         completed_at = now(),
+        lease_token = NULL,
         updated_at = now()
     WHERE id = p_task_id
       AND tenant_id = auth.uid()
-      AND device_id = p_device_id
+      AND lease_token = p_lease_token
       AND status = 'acknowledged';
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
@@ -121,7 +125,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION release_device_deletion_task(
     p_task_id UUID,
-    p_device_id TEXT
+    p_lease_token UUID
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -133,11 +137,12 @@ DECLARE
 BEGIN
     UPDATE public.meta_device_deletion_tasks
     SET status = 'pending',
+        lease_token = NULL,
         acknowledged_at = NULL,
         updated_at = now()
     WHERE id = p_task_id
       AND tenant_id = auth.uid()
-      AND device_id = p_device_id
+      AND lease_token = p_lease_token
       AND status = 'acknowledged';
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
@@ -360,10 +365,11 @@ pub async fn process_pending_device_tasks(
     anon_key: &str,
     user_jwt: &str,
     device_id: &str,
+    spool_root: &std::path::Path,
 ) -> Result<usize> {
     let client = Client::new();
 
-    // 1. Claim pending deletion tasks via secure RPC
+    // 1. Claim pending deletion tasks via secure RPC (returning unforgeable single-use lease tokens)
     let claim_url = format!("{}/rest/v1/rpc/claim_device_deletion_tasks", supabase_url);
     let claim_resp = client.post(&claim_url)
         .header("apikey", anon_key)
@@ -384,7 +390,8 @@ pub async fn process_pending_device_tasks(
     for task in tasks {
         let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let user_id = task.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
-        if task_id.is_empty() || user_id.is_empty() {
+        let lease_token = task.get("lease_token").and_then(|v| v.as_str()).unwrap_or("");
+        if task_id.is_empty() || user_id.is_empty() || lease_token.is_empty() {
             continue;
         }
 
@@ -457,7 +464,7 @@ pub async fn process_pending_device_tasks(
             tx.commit()?;
         }
 
-        // 3. Task-scoped spool sweep from disk with active-reference validation
+        // 3. Task-scoped spool sweep from disk with canonical path and fail-closed active reference validation
         let pending_cleanups: Vec<String> = {
             let mut stmt = conn.prepare("SELECT local_path FROM meta_deletion_pending_cleanups WHERE task_id = ?1")?;
             stmt.query_map([task_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
@@ -465,21 +472,37 @@ pub async fn process_pending_device_tasks(
 
         let mut all_cleaned = true;
         for path in &pending_cleanups {
-            // Verify no other active attachment still references this local path before removing file
-            let active_refs: i64 = conn.query_row(
+            let p = std::path::Path::new(path);
+            let is_canonical_spool = p.canonicalize().ok()
+                .map(|canon| canon.starts_with(spool_root))
+                .unwrap_or(false);
+
+            let active_refs: Result<i64, _> = conn.query_row(
                 "SELECT COUNT(*) FROM message_attachments WHERE local_path = ?1",
                 [path],
                 |r| r.get(0),
-            ).unwrap_or(0);
+            );
 
-            if active_refs == 0 && std::path::Path::new(path).exists() {
-                if std::fs::remove_file(path).is_ok() {
+            match active_refs {
+                Ok(0) => {
+                    if p.exists() {
+                        if is_canonical_spool && std::fs::remove_file(p).is_ok() {
+                            conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
+                        } else {
+                            all_cleaned = false;
+                        }
+                    } else {
+                        conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
+                    }
+                }
+                Ok(_) => {
+                    // Retain shared file on disk for other active records, clean up task queue entry safely
                     conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
-                } else {
+                }
+                Err(err) => {
+                    tracing::error!("Failed to check active references for path {}: {}", path, err);
                     all_cleaned = false;
                 }
-            } else {
-                conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
             }
         }
 
@@ -489,7 +512,7 @@ pub async fn process_pending_device_tasks(
             |r| r.get(0),
         )?;
 
-        // 4. Update task status on Supabase via secure RPCs
+        // 4. Update task status on Supabase via single-use lease token RPCs
         if all_cleaned && remaining_spools == 0 {
             let complete_url = format!("{}/rest/v1/rpc/complete_device_deletion_task", supabase_url);
             let patch_resp = client.post(&complete_url)
@@ -497,12 +520,15 @@ pub async fn process_pending_device_tasks(
                 .header("Authorization", format!("Bearer {}", user_jwt))
                 .json(&serde_json::json!({
                     "p_task_id": task_id,
-                    "p_device_id": device_id
+                    "p_lease_token": lease_token
                 }))
                 .send().await?;
 
             if patch_resp.status().is_success() {
-                completed_count += 1;
+                let is_completed: bool = patch_resp.json().await.unwrap_or(false);
+                if is_completed {
+                    completed_count += 1;
+                }
             }
         } else {
             let release_url = format!("{}/rest/v1/rpc/release_device_deletion_task", supabase_url);
@@ -511,7 +537,7 @@ pub async fn process_pending_device_tasks(
                 .header("Authorization", format!("Bearer {}", user_jwt))
                 .json(&serde_json::json!({
                     "p_task_id": task_id,
-                    "p_device_id": device_id
+                    "p_lease_token": lease_token
                 }))
                 .send().await;
         }

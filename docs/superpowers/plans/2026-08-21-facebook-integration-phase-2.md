@@ -241,16 +241,31 @@ impl FacebookUploader {
         };
 
         let (upload_session_id, video_id, mut offset) = if let Some((sess_id, vid_id, _saved_offset, session_status)) = existing_session {
-            // If in finishing state, reconcile by checking if the video object already published/processed on Graph API
+            // If in finishing state, reconcile by checking authoritative video status and publishing phase on Graph API
             if session_status == "finishing" {
-                let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", vid_id, page_token);
+                let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", vid_id, page_token);
                 if let Ok(check_resp) = self.client.get(&check_url).send().await {
                     if check_resp.status().is_success() {
-                        let _ = conn.execute(
-                            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                            params![sess_id],
-                        );
-                        return Ok(vid_id);
+                        let check_json: Value = check_resp.json().await.unwrap_or_default();
+                        let video_status = check_json.get("status")
+                            .and_then(|s| s.get("video_status"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                        if video_status == "ready" || is_published {
+                            let _ = conn.execute(
+                                "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                                params![sess_id],
+                            );
+                            return Ok(vid_id);
+                        } else if video_status == "error" {
+                            conn.execute(
+                                "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                                params![sess_id],
+                            )?;
+                            return Err(anyhow!("Meta video processing failed with error state"));
+                        }
                     }
                 }
             }
@@ -419,16 +434,35 @@ impl FacebookUploader {
         };
 
         let (video_id, mut offset) = if let Some((vid_id, _saved_offset, session_status)) = existing_session {
-            // If in finishing state, reconcile by checking if the reel object already published on Graph API
+            // If in finishing state, reconcile by checking authoritative reel status on Graph API
             if session_status == "finishing" {
                 let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", vid_id, page_token);
                 if let Ok(check_resp) = self.client.get(&check_url).send().await {
                     if check_resp.status().is_success() {
-                        let _ = conn.execute(
-                            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                            params![vid_id],
-                        );
-                        return Ok(vid_id);
+                        let check_json: Value = check_resp.json().await.unwrap_or_default();
+                        let video_status = check_json.get("status")
+                            .and_then(|s| s.get("video_status"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let publishing_status = check_json.get("status")
+                            .and_then(|s| s.get("publishing_phase"))
+                            .and_then(|p| p.get("status"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        if video_status == "ready" || publishing_status == "complete" {
+                            let _ = conn.execute(
+                                "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                                params![vid_id],
+                            );
+                            return Ok(vid_id);
+                        } else if video_status == "error" || publishing_status == "error" {
+                            conn.execute(
+                                "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                                params![vid_id],
+                            )?;
+                            return Err(anyhow!("Meta Reel processing failed with error state"));
+                        }
                     }
                 }
             }
