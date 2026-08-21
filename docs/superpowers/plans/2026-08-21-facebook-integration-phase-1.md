@@ -914,21 +914,31 @@ impl FacebookSyncWorker {
                 "messages" => {
                     if let Some(msg) = ev.payload.get("message") {
                         let text_opt = msg.get("text").and_then(|t| t.as_str());
+                        let atts_opt = msg.get("attachments").and_then(|a| a.as_array());
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
-                        let (content_type, text_content) = if let Some(t) = text_opt {
-                            ("text", t.to_string())
-                        } else if let Some(atts) = msg.get("attachments").and_then(|a| a.as_array()) {
-                            let att_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
-                            let att_url = atts.first().and_then(|a| a.get("payload")).and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
-                            (att_type, att_url.to_string())
+                        let payload_info = if let Some(t) = text_opt {
+                            Some(("text", t.to_string()))
+                        } else if let Some(atts) = atts_opt {
+                            if !atts.is_empty() {
+                                let first_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
+                                let content_type = match first_type {
+                                    "image" => "image",
+                                    "video" => "video",
+                                    "audio" => "audio",
+                                    _ => "file",
+                                };
+                                Some((content_type, serde_json::to_string(atts).unwrap_or_default()))
+                            } else {
+                                None
+                            }
                         } else {
-                            ("text", String::new())
+                            None
                         };
 
-                        if !sender_psid.is_empty() {
+                        if let (Some((content_type, text_content)), false) = (payload_info, sender_psid.is_empty()) {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
                                  VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
@@ -940,7 +950,7 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
                                  VALUES (?1, 'inbound', ?2, ?3, ?4, ?5, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
@@ -948,28 +958,50 @@ impl FacebookSyncWorker {
                                  WHERE messages.direction = excluded.direction",
                                 params![conv_id, mid, content_type, text_content, timestamp_ms],
                             )?;
-                            processed = true;
+
+                            if affected > 0 {
+                                processed = true;
+                            } else {
+                                let exists: Option<i64> = tx.query_row(
+                                    "SELECT 1 FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2 AND direction = 'inbound'",
+                                    params![conv_id, mid],
+                                    |r| r.get(0),
+                                ).optional()?;
+                                if exists.is_some() {
+                                    processed = true;
+                                }
+                            }
                         }
                     }
                 }
                 "message_echoes" => {
                     if let Some(msg) = ev.payload.get("message") {
                         let text_opt = msg.get("text").and_then(|t| t.as_str());
+                        let atts_opt = msg.get("attachments").and_then(|a| a.as_array());
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
-                        let (content_type, text_content) = if let Some(t) = text_opt {
-                            ("text", t.to_string())
-                        } else if let Some(atts) = msg.get("attachments").and_then(|a| a.as_array()) {
-                            let att_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
-                            let att_url = atts.first().and_then(|a| a.get("payload")).and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
-                            (att_type, att_url.to_string())
+                        let payload_info = if let Some(t) = text_opt {
+                            Some(("text", t.to_string()))
+                        } else if let Some(atts) = atts_opt {
+                            if !atts.is_empty() {
+                                let first_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
+                                let content_type = match first_type {
+                                    "image" => "image",
+                                    "video" => "video",
+                                    "audio" => "audio",
+                                    _ => "file",
+                                };
+                                Some((content_type, serde_json::to_string(atts).unwrap_or_default()))
+                            } else {
+                                None
+                            }
                         } else {
-                            ("text", String::new())
+                            None
                         };
 
-                        if !recipient_psid.is_empty() {
+                        if let (Some((content_type, text_content)), false) = (payload_info, recipient_psid.is_empty()) {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
                                  VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
@@ -981,7 +1013,7 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
                                  VALUES (?1, 'outbound', ?2, ?3, ?4, ?5, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
@@ -989,7 +1021,19 @@ impl FacebookSyncWorker {
                                  WHERE messages.direction = excluded.direction",
                                 params![conv_id, mid, content_type, text_content, timestamp_ms],
                             )?;
-                            processed = true;
+
+                            if affected > 0 {
+                                processed = true;
+                            } else {
+                                let exists: Option<i64> = tx.query_row(
+                                    "SELECT 1 FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2 AND direction = 'outbound'",
+                                    params![conv_id, mid],
+                                    |r| r.get(0),
+                                ).optional()?;
+                                if exists.is_some() {
+                                    processed = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -1016,7 +1060,7 @@ impl FacebookSyncWorker {
                                             "SELECT 1 FROM message_receipts r
                                              JOIN messages m ON r.message_id = m.id
                                              JOIN channel_conversations c ON m.conversation_id = c.id
-                                             WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND r.receipt_type = 'delivered'",
+                                             WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND r.recipient_external_id = ?2 AND r.receipt_type = 'delivered'",
                                             params![m_str, recipient_psid, account_id],
                                             |r| r.get(0),
                                         ).optional()?;
