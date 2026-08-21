@@ -835,19 +835,20 @@ pub struct FacebookSyncWorker {
 }
 
 impl FacebookSyncWorker {
-    pub fn new<F>(supabase_url: String, supabase_anon_key: String, token_provider: F) -> Self
+    pub fn new<F>(supabase_url: String, supabase_anon_key: String, token_provider: F) -> Result<Self>
     where
         F: Fn() -> String + Send + Sync + 'static,
     {
-        Self {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        Ok(Self {
             supabase_url,
             supabase_anon_key,
             token_provider: Arc::new(token_provider),
-            http: Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
-        }
+            http: client,
+        })
     }
 
     pub async fn fetch_new_events(&self, page_id: &str, last_synced_id: i64) -> Result<Vec<MetaBufferEvent>> {
@@ -861,6 +862,10 @@ impl FacebookSyncWorker {
             .header("apikey", &self.supabase_anon_key)
             .header("Authorization", format!("Bearer {}", jwt))
             .send().await?;
+
+        if resp.status().as_u16() == 401 {
+            return Err(anyhow!("Authentication expired: HTTP 401 Unauthorized"));
+        }
 
         if !resp.status().is_success() {
             return Err(anyhow!("Failed to fetch webhook buffer: HTTP {}", resp.status()));
@@ -895,14 +900,12 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
-                            let affected = tx.execute(
+                            tx.execute(
                                 "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
                                  VALUES (?1, 'inbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
-                            if affected > 0 {
-                                processed = true;
-                            }
+                            processed = true;
                         }
                     }
                 }
@@ -924,14 +927,12 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
-                            let affected = tx.execute(
+                            tx.execute(
                                 "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
                                  VALUES (?1, 'outbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
-                            if affected > 0 {
-                                processed = true;
-                            }
+                            processed = true;
                         }
                     }
                 }
@@ -942,10 +943,9 @@ impl FacebookSyncWorker {
 
                     if !recipient_psid.is_empty() {
                         if let Some(mids) = ev.payload.get("delivery").and_then(|d| d.get("mids")).and_then(|m| m.as_array()) {
-                            let mut any_inserted = false;
                             for mid_val in mids {
                                 if let Some(m_str) = mid_val.as_str() {
-                                    let affected = tx.execute(
+                                    tx.execute(
                                         "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
                                          SELECT m.id, ?2, 'delivered', datetime('now')
                                          FROM messages m
@@ -953,29 +953,22 @@ impl FacebookSyncWorker {
                                          WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND m.direction = 'outbound'",
                                         params![m_str, recipient_psid, account_id],
                                     )?;
-                                    if affected > 0 {
-                                        any_inserted = true;
-                                    }
                                 }
                             }
-                            if any_inserted {
-                                processed = true;
-                            }
+                            processed = true;
                         } else if watermark > 0 {
                             let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
-                            let affected = tx.execute(
+                            // Cumulative watermark resolution across all preceding qualifying outbound messages
+                            tx.execute(
                                 "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
                                  SELECT m.id, ?2, ?3, datetime(?4 / 1000, 'unixepoch')
                                  FROM messages m
                                  JOIN channel_conversations c ON m.conversation_id = c.id
                                  WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
-                                   AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')
-                                 ORDER BY m.id DESC LIMIT 1",
+                                   AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')",
                                 params![account_id, recipient_psid, r_type, watermark],
                             )?;
-                            if affected > 0 {
-                                processed = true;
-                            }
+                            processed = true;
                         }
                     }
                 }
@@ -987,15 +980,13 @@ impl FacebookSyncWorker {
                         let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
 
                         if !mid.is_empty() && !sender_psid.is_empty() {
-                            let affected = tx.execute(
+                            tx.execute(
                                 "INSERT OR REPLACE INTO pending_message_reactions (
                                     channel_account_id, external_thread_id, conversation_kind, provider_message_id, actor_external_id, reaction, removed, occurred_at, created_at, updated_at
                                  ) VALUES (?1, ?2, 'direct', ?3, ?2, ?4, ?5, datetime('now'), datetime('now'), datetime('now'))",
                                 params![account_id, sender_psid, mid, reaction, if action == "unreact" { 1 } else { 0 }],
                             )?;
-                            if affected > 0 {
-                                processed = true;
-                            }
+                            processed = true;
                         }
                     }
                 }
@@ -1004,13 +995,18 @@ impl FacebookSyncWorker {
                 }
             }
 
-            if processed {
-                if ev.id > max_synced_id {
-                    max_synced_id = ev.id;
-                }
-            } else {
-                // Strict contiguous cursor progression: stop at first unhandled/failed event
-                break;
+            if !processed {
+                // Quarantine unhandled / malformed payload in dead-letter table to prevent indefinite queue stalls
+                tx.execute(
+                    "INSERT OR IGNORE INTO channel_sync_checkpoints (channel_account_id, scope, cursor, last_event_at, updated_at)
+                     VALUES (?1, 'messenger_dead_letter', ?2, datetime('now'), datetime('now'))",
+                    params![account_id, ev.id.to_string()],
+                )?;
+                processed = true;
+            }
+
+            if processed && ev.id > max_synced_id {
+                max_synced_id = ev.id;
             }
         }
 
