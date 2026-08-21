@@ -34,19 +34,36 @@ impl FacebookPublisher {
     pub async fn publish_post(
         &self,
         conn: &rusqlite::Connection,
-        page_id: &str,
-        page_token: &str,
-        post_type: &str,
-        message: &str,
-        link_url: Option<&str>,
-        media_paths: &[String],
-        scheduled_publish_time: Option<i64>,
         post_id: i64,
     ) -> Result<String> {
-        match post_type {
+        // 1. Authoritatively fetch and validate scheduled post row from database
+        let (page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time, current_status): (
+            String, String, String, Option<String>, String, Option<i64>, String
+        ) = conn.query_row(
+            "SELECT page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time, status
+             FROM facebook_scheduled_posts
+             WHERE id = ?1",
+            [post_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        ).map_err(|e| anyhow!("Scheduled post {} not found: {}", post_id, e))?;
+
+        if current_status != "queued" && current_status != "publishing" && current_status != "delivery_unknown" {
+            return Err(anyhow!("Cannot publish post {}: invalid status '{}'", post_id, current_status));
+        }
+
+        // 2. Authoritatively fetch active decrypted Page token for this post's exact page_id
+        let page_token: String = conn.query_row(
+            "SELECT access_token_encrypted FROM facebook_page_tokens WHERE page_id = ?1 AND token_status = 'valid'",
+            [&page_id],
+            |r| r.get(0),
+        ).map_err(|e| anyhow!("No valid access token found for page_id {}: {}", page_id, e))?;
+
+        let media_paths: Vec<String> = serde_json::from_str(&media_paths_json).unwrap_or_default();
+
+        match post_type.as_str() {
             "status" => {
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut form = vec![("access_token", page_token), ("message", message)];
+                let mut form = vec![("access_token", page_token.as_str()), ("message", message.as_str())];
                 let sched_str;
                 if let Some(st) = scheduled_publish_time {
                     form.push(("published", "false"));
@@ -65,9 +82,9 @@ impl FacebookPublisher {
                 Ok(post_id_val)
             }
             "link" => {
-                let link = link_url.ok_or_else(|| anyhow!("Link URL required for link post"))?;
+                let link = link_url.as_deref().ok_or_else(|| anyhow!("Link URL required for link post"))?;
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut form = vec![("access_token", page_token), ("message", message), ("link", link)];
+                let mut form = vec![("access_token", page_token.as_str()), ("message", message.as_str()), ("link", link)];
                 let sched_str;
                 if let Some(st) = scheduled_publish_time {
                     form.push(("published", "false"));
@@ -92,8 +109,8 @@ impl FacebookPublisher {
                 let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
 
                 let mut multipart = reqwest::multipart::Form::new()
-                    .text("access_token", page_token.to_string())
-                    .text("caption", message.to_string())
+                    .text("access_token", page_token)
+                    .text("caption", message)
                     .part("source", part);
 
                 if let Some(st) = scheduled_publish_time {
@@ -117,13 +134,13 @@ impl FacebookPublisher {
                     return Err(anyhow!("Multi-photo post requires at least 2 photos"));
                 }
                 let mut media_fbids = Vec::new();
-                for path_str in media_paths {
+                for path_str in &media_paths {
                     let file_bytes = tokio::fs::read(path_str).await?;
                     let file_name = Path::new(path_str).file_name().and_then(|n| n.to_str()).unwrap_or("photo.jpg").to_string();
                     let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
 
                     let multipart = reqwest::multipart::Form::new()
-                        .text("access_token", page_token.to_string())
+                        .text("access_token", page_token.clone())
                         .text("published", "false")
                         .part("source", part);
 
@@ -145,8 +162,8 @@ impl FacebookPublisher {
 
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
                 let mut form = vec![
-                    ("access_token", page_token),
-                    ("message", message),
+                    ("access_token", page_token.as_str()),
+                    ("message", message.as_str()),
                     ("attached_media", &attached_str),
                 ];
                 let sched_str;
@@ -169,13 +186,13 @@ impl FacebookPublisher {
             }
             "video" => {
                 let video_path = media_paths.first().ok_or_else(|| anyhow!("Video path required"))?;
-                self.uploader.upload_video_resumable(conn, page_id, page_token, video_path, message, scheduled_publish_time, post_id).await
+                self.uploader.upload_video_resumable(conn, &page_id, &page_token, video_path, &message, scheduled_publish_time, post_id).await
             }
             "reel" => {
                 let reel_path = media_paths.first().ok_or_else(|| anyhow!("Reel path required"))?;
-                self.uploader.upload_reel_resumable(conn, page_id, page_token, reel_path, message, scheduled_publish_time, post_id).await
+                self.uploader.upload_reel_resumable(conn, &page_id, &page_token, reel_path, &message, scheduled_publish_time, post_id).await
             }
-            _ => Err(anyhow!("Unsupported post type: {}", post_type)),
+            _ => Err(anyhow!("Unsupported post_type '{}' for scheduled post {}", post_type, post_id)),
         }
     }
 }
@@ -726,7 +743,7 @@ impl FacebookUploader {
 
     // Only if this worker won the CAS race (affected exactly 1 row), propagate terminal state to scheduled post within the same transaction
     if session_rows == 1 {
-        tx.execute(
+        let post_rows = tx.execute(
             "UPDATE facebook_scheduled_posts
              SET status = CASE
                      WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now')
@@ -740,6 +757,24 @@ impl FacebookUploader {
              WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown')",
             params![remote_video_id, post_id, upload_session_id],
         )?;
+
+        // Verify post row was updated or is already in an equivalent terminal state; otherwise fail & rollback
+        if post_rows == 0 {
+            let post_status: Option<String> = tx.query_row(
+                "SELECT status FROM facebook_scheduled_posts WHERE id = ?1 OR upload_session_id = ?2",
+                params![post_id, upload_session_id],
+                |r| r.get(0),
+            ).optional()?;
+
+            match post_status.as_deref() {
+                Some("published") | Some("scheduled_on_meta") => {
+                    // Already terminal and consistent
+                }
+                _ => {
+                    return Err(anyhow!("Reconciler invariant violation: scheduled post {} not found in publishing/delivery_unknown state (current: {:?}); rolling back", post_id, post_status));
+                }
+            }
+        }
     }
     tx.commit()?;
     ```
@@ -756,12 +791,24 @@ impl FacebookUploader {
 
     // Only if this worker won the CAS race, propagate failure to scheduled post within the same transaction
     if session_rows == 1 {
-        tx.execute(
+        let post_rows = tx.execute(
             "UPDATE facebook_scheduled_posts
              SET status = 'failed', error_code = 'upload_failed', error_message = ?1, updated_at = datetime('now')
              WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown')",
             params![err_msg, post_id, upload_session_id],
         )?;
+
+        if post_rows == 0 {
+            let post_status: Option<String> = tx.query_row(
+                "SELECT status FROM facebook_scheduled_posts WHERE id = ?1 OR upload_session_id = ?2",
+                params![post_id, upload_session_id],
+                |r| r.get(0),
+            ).optional()?;
+
+            if post_status.as_deref() != Some("failed") {
+                return Err(anyhow!("Reconciler invariant violation: scheduled post {} not found in publishing/delivery_unknown state (current: {:?}); rolling back", post_id, post_status));
+            }
+        }
     }
     tx.commit()?;
     ```

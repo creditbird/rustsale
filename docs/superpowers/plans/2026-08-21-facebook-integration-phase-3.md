@@ -242,7 +242,7 @@ GRANT EXECUTE ON FUNCTION register_or_heartbeat_device, claim_device_deletion_ta
 CREATE OR REPLACE FUNCTION create_data_deletion_request_and_tasks(
     p_confirmation_code TEXT,
     p_user_id TEXT,
-    p_target_user_ids TEXT[] DEFAULT ARRAY[]::TEXT[]
+    p_target_mappings JSONB DEFAULT '[]'::JSONB
 )
 RETURNS UUID
 LANGUAGE plpgsql
@@ -254,31 +254,37 @@ DECLARE
     v_tenant_record RECORD;
     v_device_record RECORD;
     v_has_active_devices BOOLEAN := FALSE;
-    v_all_ids TEXT[];
 BEGIN
     INSERT INTO public.meta_data_deletion_requests (confirmation_code, user_id, status)
     VALUES (p_confirmation_code, p_user_id, 'processing')
     RETURNING id INTO v_request_id;
 
-    -- Combine root ASID with all resolved Page-scoped PSIDs
-    v_all_ids := ARRAY(SELECT DISTINCT unnest(array_append(p_target_user_ids, p_user_id)));
-
-    -- Purge server-side buffered webhooks across all possible shapes and matched IDs
-    DELETE FROM public.meta_webhook_buffer
-    WHERE payload->'sender'->>'id' = ANY(v_all_ids)
-       OR payload->'recipient'->>'id' = ANY(v_all_ids)
-       OR payload->'from'->>'id' = ANY(v_all_ids)
-       OR payload->'value'->'from'->>'id' = ANY(v_all_ids)
-       OR payload->'value'->'sender'->>'id' = ANY(v_all_ids)
-       OR payload->'value'->>'sender_id' = ANY(v_all_ids)
-       OR payload->'value'->>'user_id' = ANY(v_all_ids);
-
-    -- Fan out tasks to all active registered tenant devices (last seen within 30 days) for all matching tenants
+    -- Collect all distinct target (tenant_id, page_id, page_scoped_user_id) tuples matching either root app_user_id or exact (page_id, psid) mapping
     FOR v_tenant_record IN
-        SELECT DISTINCT tenant_id, page_id, page_scoped_user_id
-        FROM public.meta_user_page_interactions
-        WHERE app_user_id = ANY(v_all_ids) OR page_scoped_user_id = ANY(v_all_ids)
+        SELECT DISTINCT mupi.tenant_id, mupi.page_id, mupi.page_scoped_user_id
+        FROM public.meta_user_page_interactions mupi
+        WHERE mupi.app_user_id = p_user_id
+           OR EXISTS (
+               SELECT 1 FROM jsonb_array_elements(p_target_mappings) m
+               WHERE (m->>'page_id' = '' OR mupi.page_id = (m->>'page_id'))
+                 AND mupi.page_scoped_user_id = (m->>'psid')
+           )
     LOOP
+        -- Purge server-side buffered webhooks strictly scoped to this tenant_id and page_id
+        DELETE FROM public.meta_webhook_buffer
+        WHERE tenant_id = v_tenant_record.tenant_id
+          AND (page_id = v_tenant_record.page_id OR page_id IS NULL)
+          AND (
+              payload->'sender'->>'id' = v_tenant_record.page_scoped_user_id
+              OR payload->'recipient'->>'id' = v_tenant_record.page_scoped_user_id
+              OR payload->'from'->>'id' = v_tenant_record.page_scoped_user_id
+              OR payload->'value'->'from'->>'id' = v_tenant_record.page_scoped_user_id
+              OR payload->'value'->'sender'->>'id' = v_tenant_record.page_scoped_user_id
+              OR payload->'value'->>'sender_id' = v_tenant_record.page_scoped_user_id
+              OR payload->'value'->>'user_id' = v_tenant_record.page_scoped_user_id
+          );
+
+        -- Fan out tasks to all active registered tenant devices (last seen within 30 days) for this specific tenant and page
         FOR v_device_record IN
             SELECT device_id FROM public.tenant_registered_devices
             WHERE tenant_id = v_tenant_record.tenant_id AND last_seen_at >= now() - INTERVAL '30 days'
@@ -288,11 +294,16 @@ BEGIN
             INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
             VALUES (v_request_id, v_tenant_record.tenant_id, v_device_record.device_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id, 'pending');
         END LOOP;
+
+        -- Clean up interaction records strictly scoped to this tenant, page, and user
+        DELETE FROM public.meta_user_page_interactions
+        WHERE tenant_id = v_tenant_record.tenant_id
+          AND page_id = v_tenant_record.page_id
+          AND (app_user_id = p_user_id OR page_scoped_user_id = v_tenant_record.page_scoped_user_id);
     END LOOP;
 
-    -- Clean up interaction records
-    DELETE FROM public.meta_user_page_interactions
-    WHERE app_user_id = ANY(v_all_ids) OR page_scoped_user_id = ANY(v_all_ids);
+    -- Clean up any residual global interaction records matching app_user_id
+    DELETE FROM public.meta_user_page_interactions WHERE app_user_id = p_user_id;
 
     -- If no active devices require local anonymization, mark request completed immediately
     IF NOT v_has_active_devices THEN
@@ -319,6 +330,11 @@ const META_APP_ID = Deno.env.get("META_APP_ID")!;
 const META_APP_SECRET = Deno.env.get("META_APP_SECRET")!;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+interface PageScopedMapping {
+  page_id: string;
+  psid: string;
+}
 
 async function parseAndVerifySignedRequest(signedRequest: string, appSecret: string): Promise<any | null> {
   const parts = signedRequest.split(".");
@@ -359,11 +375,11 @@ async function parseAndVerifySignedRequest(signedRequest: string, appSecret: str
   }
 }
 
-async function resolvePsidsForAsid(asid: string): Promise<string[]> {
+async function resolvePsidsForAsid(asid: string): Promise<PageScopedMapping[]> {
   if (!META_APP_ID || !META_APP_SECRET) {
     throw new Error("Missing Meta App credentials (META_APP_ID or META_APP_SECRET)");
   }
-  const psids: string[] = [];
+  const mappings: PageScopedMapping[] = [];
   const appToken = `${META_APP_ID}|${META_APP_SECRET}`;
   let nextUrl: string | null = `https://graph.facebook.com/v26.0/${encodeURIComponent(asid)}/ids_for_pages?access_token=${appToken}&limit=100`;
 
@@ -376,15 +392,17 @@ async function resolvePsidsForAsid(asid: string): Promise<string[]> {
     const body = await res.json();
     if (Array.isArray(body?.data)) {
       for (const item of body.data) {
-        if (item?.id) {
-          psids.push(String(item.id));
+        const psid = item?.id ? String(item.id) : "";
+        const pageId = item?.page?.id ? String(item.page.id) : "";
+        if (psid) {
+          mappings.push({ page_id: pageId, psid });
         }
       }
     }
     nextUrl = body?.paging?.next || null;
   }
 
-  return psids;
+  return mappings;
 }
 
 serve(async (req: Request) => {
@@ -402,10 +420,10 @@ serve(async (req: Request) => {
     const userId = data.user_id;
     const confirmationCode = crypto.randomUUID();
 
-    // Authoritatively resolve all Page-Scoped IDs (PSIDs) associated with this App-Scoped ID (ASID)
-    let resolvedPsids: string[];
+    // Authoritatively resolve all Page-Scoped IDs (PSIDs) and associated page_ids for this App-Scoped ID (ASID)
+    let resolvedMappings: PageScopedMapping[];
     try {
-      resolvedPsids = await resolvePsidsForAsid(userId);
+      resolvedMappings = await resolvePsidsForAsid(userId);
     } catch (err) {
       console.error("Fail-closed: Failed to resolve PSIDs from Meta Graph API for ASID:", userId, err);
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
@@ -414,7 +432,7 @@ serve(async (req: Request) => {
     const { error: deletionRpcError } = await supabaseAdmin.rpc("create_data_deletion_request_and_tasks", {
       p_confirmation_code: confirmationCode,
       p_user_id: userId,
-      p_target_user_ids: resolvedPsids,
+      p_target_mappings: resolvedMappings,
     });
 
     if (deletionRpcError) {
@@ -555,15 +573,22 @@ pub async fn process_pending_device_tasks(
         {
             let tx = conn.transaction()?;
 
-            // Authoritatively resolve local channel_account_id for this Page ID (fail-closed if unknown)
-            let account_id: i64 = tx.query_row(
-                "SELECT channel_account_id FROM facebook_page_tokens WHERE page_id = ?1
-                 UNION
-                 SELECT id FROM channel_accounts WHERE channel = 'messenger' AND provider_account_key = ?1
-                 LIMIT 1",
-                [page_id],
-                |r| r.get(0),
-            ).map_err(|e| anyhow!("Fail-closed: Failed to resolve channel account for page_id {}: {}", page_id, e))?;
+            // Resolve exactly one authoritative Messenger account joined to facebook_page_tokens for this Page ID
+            let matched_accounts: Vec<i64> = {
+                let mut stmt = tx.prepare(
+                    "SELECT ca.id
+                     FROM channel_accounts ca
+                     JOIN facebook_page_tokens fpt ON ca.id = fpt.channel_account_id
+                     WHERE ca.channel = 'messenger' AND fpt.page_id = ?1 AND ca.provider_account_key = ?1"
+                )?;
+                stmt.query_map([page_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+
+            let account_id = match matched_accounts.as_slice() {
+                [single_id] => *single_id,
+                [] => return Err(anyhow!("Fail-closed: No authoritative Messenger channel account found for page_id {}", page_id)),
+                _ => return Err(anyhow!("Fail-closed: Ambiguous mapping: multiple Messenger channel accounts found for page_id {}", page_id)),
+            };
 
             // Find all attachments to delete belonging to Messenger messages sent by target user in this Page account
             let mut att_stmt = tx.prepare(
