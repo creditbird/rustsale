@@ -210,7 +210,8 @@ impl FacebookPublisher {
                  owner_id = ?1,
                  claim_deadline = datetime('now', '+5 minutes'),
                  updated_at = datetime('now')
-             WHERE id = ?2 AND status = 'queued'",
+             WHERE id = ?2 AND status = 'queued'
+               AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
             params![worker_owner, post_id],
         )?;
 
@@ -265,6 +266,7 @@ impl FacebookPublisher {
                     "UPDATE facebook_scheduled_posts
                      SET status = ?1,
                          remote_post_id = ?2,
+                         next_retry_at = NULL,
                          error_code = NULL,
                          error_message = NULL,
                          owner_id = NULL,
@@ -302,17 +304,19 @@ impl FacebookPublisher {
             }
             PublishApiResult::RateLimited { retry_after_secs, error_message } => {
                 let backoff_secs = std::cmp::max(retry_after_secs, 60);
+                let next_retry = Utc::now() + chrono::Duration::seconds(backoff_secs as i64);
+                let next_retry_rfc3339 = next_retry.to_rfc3339();
                 let rows = conn.execute(
                     "UPDATE facebook_scheduled_posts
                      SET status = 'queued',
                          error_code = 'rate_limited',
                          error_message = ?1,
-                         scheduled_publish_time = datetime('now', '+' || ?2 || ' seconds'),
+                         next_retry_at = ?2,
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
                      WHERE id = ?3 AND owner_id = ?4 AND status = 'publishing'",
-                    params![error_message, backoff_secs as i64, post_id, worker_owner],
+                    params![error_message, next_retry_rfc3339, post_id, worker_owner],
                 )?;
                 if rows != 1 {
                     return Err(anyhow!("Failed to transition rate-limited post {}: lease ownership lost", post_id));
@@ -799,41 +803,71 @@ impl FacebookUploader {
     }
 
     async fn verify_feed_publication(client: &Client, page_id: &str, page_token: &str, remote_id: &str) -> bool {
-        let feed_url = format!("https://graph.facebook.com/v26.0/{}/feed?fields=id&limit=25&access_token={}", page_id, page_token);
-        if let Ok(resp) = client.get(&feed_url).send().await {
+        let direct_url = format!("https://graph.facebook.com/v26.0/{}_{}?fields=id,is_published&access_token={}", page_id, remote_id, page_token);
+        if let Ok(resp) = client.get(&direct_url).send().await {
             if resp.status().is_success() {
-                if let Ok(json) = resp.json::<Value>().await {
-                    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-                        for item in data {
-                            if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                                if id == remote_id || id.ends_with(&format!("_{}", remote_id)) || id.contains(remote_id) {
-                                    return true;
+                return true;
+            }
+        }
+
+        let mut next_url: Option<String> = Some(format!("https://graph.facebook.com/v26.0/{}/feed?fields=id&limit=50&access_token={}", page_id, page_token));
+        let mut page_count = 0;
+        while let Some(url) = next_url {
+            if page_count >= 5 { break; }
+            page_count += 1;
+            if let Ok(resp) = client.get(&url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.json::<Value>().await {
+                        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                            for item in data {
+                                if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                    if id == remote_id || id == format!("{}_{}", page_id, remote_id) {
+                                        return true;
+                                    }
                                 }
                             }
                         }
+                        next_url = json.get("paging").and_then(|p| p.get("next")).and_then(|n| n.as_str()).map(|s| s.to_string());
+                        continue;
                     }
                 }
             }
+            break;
         }
         false
     }
 
     async fn verify_scheduled_publication(client: &Client, page_id: &str, page_token: &str, remote_id: &str) -> bool {
-        let scheduled_url = format!("https://graph.facebook.com/v26.0/{}/scheduled_posts?fields=id&limit=25&access_token={}", page_id, page_token);
-        if let Ok(resp) = client.get(&scheduled_url).send().await {
+        let direct_url = format!("https://graph.facebook.com/v26.0/{}_{}?fields=id,is_published&access_token={}", page_id, remote_id, page_token);
+        if let Ok(resp) = client.get(&direct_url).send().await {
             if resp.status().is_success() {
-                if let Ok(json) = resp.json::<Value>().await {
-                    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-                        for item in data {
-                            if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                                if id == remote_id || id.ends_with(&format!("_{}", remote_id)) || id.contains(remote_id) {
-                                    return true;
+                return true;
+            }
+        }
+
+        let mut next_url: Option<String> = Some(format!("https://graph.facebook.com/v26.0/{}/scheduled_posts?fields=id&limit=50&access_token={}", page_id, page_token));
+        let mut page_count = 0;
+        while let Some(url) = next_url {
+            if page_count >= 5 { break; }
+            page_count += 1;
+            if let Ok(resp) = client.get(&url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.json::<Value>().await {
+                        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                            for item in data {
+                                if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                    if id == remote_id || id == format!("{}_{}", page_id, remote_id) {
+                                        return true;
+                                    }
                                 }
                             }
                         }
+                        next_url = json.get("paging").and_then(|p| p.get("next")).and_then(|n| n.as_str()).map(|s| s.to_string());
+                        continue;
                     }
                 }
             }
+            break;
         }
         false
     }
@@ -990,25 +1024,39 @@ impl FacebookUploader {
                     },
                 };
 
-                if let Err(e) = conn.execute(
+                let update_rows = match conn.execute(
                     "UPDATE facebook_upload_sessions
                      SET upload_session_id = ?1, video_id = ?2, status = 'in_progress', updated_at = datetime('now')
-                     WHERE upload_session_id = ?3 AND owner_id = ?4",
+                     WHERE upload_session_id = ?3 AND owner_id = ?4 AND status = 'init_pending'",
                     params![new_sess_id, new_vid_id, intent_id, owner_id],
                 ) {
-                    return PublishApiResult::AmbiguousTransport {
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
                         error_code: "db_update_error".to_string(),
                         error_message: format!("Failed to update upload session in SQLite: {}", e),
+                    },
+                };
+                if update_rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "session_lease_loss".to_string(),
+                        error_message: "Lost lease on pre-START intent row while transitioning to in_progress".to_string(),
                     };
                 }
 
-                if let Err(e) = conn.execute(
-                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3",
+                let assoc_rows = match conn.execute(
+                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
                     params![new_sess_id, post_id, owner_id],
                 ) {
-                    return PublishApiResult::AmbiguousTransport {
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
                         error_code: "db_update_error".to_string(),
                         error_message: format!("Failed to associate upload session with scheduled post: {}", e),
+                    },
+                };
+                if assoc_rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "post_lease_loss".to_string(),
+                        error_message: "Lost lease on scheduled post while associating upload session".to_string(),
                     };
                 }
 
@@ -1213,25 +1261,39 @@ impl FacebookUploader {
                 },
             };
 
-            if let Err(e) = conn.execute(
+            let update_rows = match conn.execute(
                 "UPDATE facebook_upload_sessions
                  SET upload_session_id = ?1, video_id = ?2, status = 'in_progress', updated_at = datetime('now')
-                 WHERE upload_session_id = ?3 AND owner_id = ?4",
+                 WHERE upload_session_id = ?3 AND owner_id = ?4 AND status = 'init_pending'",
                 params![sess_id, vid_id, intent_id, owner_id],
             ) {
-                return PublishApiResult::AmbiguousTransport {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "db_update_error".to_string(),
                     error_message: format!("Failed to update upload session in SQLite: {}", e),
+                },
+            };
+            if update_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "session_lease_loss".to_string(),
+                    error_message: "Lost lease on pre-START intent row while transitioning to in_progress".to_string(),
                 };
             }
 
-            if let Err(e) = conn.execute(
-                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3",
+            let assoc_rows = match conn.execute(
+                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
                 params![sess_id, post_id, owner_id],
             ) {
-                return PublishApiResult::AmbiguousTransport {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "db_update_error".to_string(),
                     error_message: format!("Failed to associate upload session with scheduled post: {}", e),
+                },
+            };
+            if assoc_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "post_lease_loss".to_string(),
+                    error_message: "Lost lease on scheduled post while associating upload session".to_string(),
                 };
             }
 
@@ -1250,11 +1312,29 @@ impl FacebookUploader {
         let chunk_size: usize = 4 * 1024 * 1024; // 4MB
 
         while offset < file_size {
-            // Heartbeat lease renewal before reading and uploading each chunk (fail fast on lease loss)
+            // Heartbeat lease renewal for BOTH post claim AND upload session lease before reading and uploading chunk
             if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
                 return PublishApiResult::DeterministicRejection {
                     error_code: "lease_loss".to_string(),
                     error_message: format!("Aborted video upload due to lease loss: {}", e),
+                };
+            }
+            let sess_lease_rows = match conn.execute(
+                "UPDATE facebook_upload_sessions
+                 SET lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+                 WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                params![upload_session_id, owner_id],
+            ) {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_error".to_string(),
+                    error_message: format!("Failed to heartbeat upload session lease: {}", e),
+                },
+            };
+            if sess_lease_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "session_lease_loss".to_string(),
+                    error_message: "Aborted video upload due to upload session lease loss".to_string(),
                 };
             }
 
@@ -1340,25 +1420,39 @@ impl FacebookUploader {
             }
 
             offset = next_offset;
-            if let Err(e) = conn.execute(
-                "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
-                params![offset as i64, upload_session_id],
+            let offset_rows = match conn.execute(
+                "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2 AND owner_id = ?3 AND status = 'in_progress'",
+                params![offset as i64, upload_session_id, owner_id],
             ) {
-                return PublishApiResult::AmbiguousTransport {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "db_update_error".to_string(),
                     error_message: format!("Failed to update upload session offset in SQLite: {}", e),
+                },
+            };
+            if offset_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "session_lease_loss".to_string(),
+                    error_message: "Lost lease on upload session while updating offset".to_string(),
                 };
             }
         }
 
         // 3. Finish Phase
-        if let Err(e) = conn.execute(
-            "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
-            params![upload_session_id],
+        let finish_rows = match conn.execute(
+            "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+            params![upload_session_id, owner_id],
         ) {
-            return PublishApiResult::AmbiguousTransport {
+            Ok(r) => r,
+            Err(e) => return PublishApiResult::AmbiguousTransport {
                 error_code: "db_update_error".to_string(),
                 error_message: format!("Failed to mark session finishing in SQLite: {}", e),
+            },
+        };
+        if finish_rows != 1 {
+            return PublishApiResult::DeterministicRejection {
+                error_code: "session_lease_loss".to_string(),
+                error_message: "Lost lease on upload session while transitioning to finishing".to_string(),
             };
         }
 
@@ -1586,25 +1680,39 @@ impl FacebookUploader {
                     },
                 };
 
-                if let Err(e) = conn.execute(
+                let update_rows = match conn.execute(
                     "UPDATE facebook_upload_sessions
                      SET upload_session_id = ?1, video_id = ?1, status = 'in_progress', updated_at = datetime('now')
-                     WHERE upload_session_id = ?2 AND owner_id = ?3",
+                     WHERE upload_session_id = ?2 AND owner_id = ?3 AND status = 'init_pending'",
                     params![new_vid_id, intent_id, owner_id],
                 ) {
-                    return PublishApiResult::AmbiguousTransport {
-                        error_code: "db_insert_error".to_string(),
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "db_update_error".to_string(),
                         error_message: format!("Failed to update Reel upload session: {}", e),
+                    },
+                };
+                if update_rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "session_lease_loss".to_string(),
+                        error_message: "Lost lease on pre-START Reel intent while transitioning to in_progress".to_string(),
                     };
                 }
 
-                if let Err(e) = conn.execute(
-                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3",
+                let assoc_rows = match conn.execute(
+                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
                     params![new_vid_id, post_id, owner_id],
                 ) {
-                    return PublishApiResult::AmbiguousTransport {
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
                         error_code: "db_update_error".to_string(),
                         error_message: format!("Failed to associate Reel upload session: {}", e),
+                    },
+                };
+                if assoc_rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "post_lease_loss".to_string(),
+                        error_message: "Lost lease on scheduled post while associating Reel upload session".to_string(),
                     };
                 }
 
@@ -1799,25 +1907,39 @@ impl FacebookUploader {
                 },
             };
 
-            if let Err(e) = conn.execute(
+            let update_rows = match conn.execute(
                 "UPDATE facebook_upload_sessions
                  SET upload_session_id = ?1, video_id = ?1, status = 'in_progress', updated_at = datetime('now')
-                 WHERE upload_session_id = ?2 AND owner_id = ?3",
+                 WHERE upload_session_id = ?2 AND owner_id = ?3 AND status = 'init_pending'",
                 params![vid_id, intent_id, owner_id],
             ) {
-                return PublishApiResult::AmbiguousTransport {
-                    error_code: "db_insert_error".to_string(),
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_update_error".to_string(),
                     error_message: format!("Failed to update Reel upload session: {}", e),
+                },
+            };
+            if update_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "session_lease_loss".to_string(),
+                    error_message: "Lost lease on pre-START Reel intent while transitioning to in_progress".to_string(),
                 };
             }
 
-            if let Err(e) = conn.execute(
-                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3",
+            let assoc_rows = match conn.execute(
+                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
                 params![vid_id, post_id, owner_id],
             ) {
-                return PublishApiResult::AmbiguousTransport {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "db_update_error".to_string(),
                     error_message: format!("Failed to associate Reel upload session: {}", e),
+                },
+            };
+            if assoc_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "post_lease_loss".to_string(),
+                    error_message: "Lost lease on scheduled post while associating Reel upload session".to_string(),
                 };
             }
 
@@ -1835,11 +1957,29 @@ impl FacebookUploader {
         let chunk_size: usize = 4 * 1024 * 1024;
 
         while offset < file_size {
-            // Heartbeat lease renewal before reading and uploading each Reel chunk (fail fast on lease loss)
+            // Heartbeat lease renewal for BOTH post claim AND upload session lease before reading/uploading Reel chunk
             if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
                 return PublishApiResult::DeterministicRejection {
                     error_code: "lease_loss".to_string(),
                     error_message: format!("Aborted Reel upload due to lease loss: {}", e),
+                };
+            }
+            let sess_lease_rows = match conn.execute(
+                "UPDATE facebook_upload_sessions
+                 SET lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+                 WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                params![video_id, owner_id],
+            ) {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_error".to_string(),
+                    error_message: format!("Failed to heartbeat Reel upload session lease: {}", e),
+                },
+            };
+            if sess_lease_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "session_lease_loss".to_string(),
+                    error_message: "Aborted Reel upload due to upload session lease loss".to_string(),
                 };
             }
 
@@ -1922,25 +2062,39 @@ impl FacebookUploader {
             }
 
             offset = confirmed_offset;
-            if let Err(e) = conn.execute(
-                "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
-                params![offset as i64, video_id],
+            let offset_rows = match conn.execute(
+                "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2 AND owner_id = ?3 AND status = 'in_progress'",
+                params![offset as i64, video_id, owner_id],
             ) {
-                return PublishApiResult::AmbiguousTransport {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "db_update_error".to_string(),
                     error_message: format!("Failed to update Reel upload session offset in SQLite: {}", e),
+                },
+            };
+            if offset_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "session_lease_loss".to_string(),
+                    error_message: "Lost lease on Reel session while updating offset".to_string(),
                 };
             }
         }
 
         // 3. Finish Phase
-        if let Err(e) = conn.execute(
-            "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
-            params![video_id],
+        let finish_rows = match conn.execute(
+            "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+            params![video_id, owner_id],
         ) {
-            return PublishApiResult::AmbiguousTransport {
+            Ok(r) => r,
+            Err(e) => return PublishApiResult::AmbiguousTransport {
                 error_code: "db_update_error".to_string(),
                 error_message: format!("Failed to mark Reel session finishing in SQLite: {}", e),
+            },
+        };
+        if finish_rows != 1 {
+            return PublishApiResult::DeterministicRejection {
+                error_code: "session_lease_loss".to_string(),
+                error_message: "Lost lease on Reel session while transitioning to finishing".to_string(),
             };
         }
 
@@ -2048,7 +2202,7 @@ impl FacebookUploader {
 
 - **Promotion Worker:** Claims rows with `status='queued'`, queries `facebook_page_tokens` for the specific claimed row's `channel_account_id` and `page_id`, strictly parses RFC3339 timestamp (failing closed with `error_code='invalid_timestamp'` on parse failure), and sets `delivery_unknown` on transport timeout or 5xx.
 - **Reconciliation Engine:** Periodically claims `delivery_unknown` rows. Queries Graph API `/scheduled_posts` and `/feed` with pagination. Matches post type against Graph `status_type`, computes message SHA-256 hash, and verifies timestamp within 60s window. Sets `status='published'` for `/feed` matches and `status='scheduled_on_meta'` for `/scheduled_posts`.
-- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` in both `in_progress` and `finishing` states via atomic lease token claim:
+- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` in `init_pending`, `in_progress`, and `finishing` states via atomic lease token claim:
   ```sql
   UPDATE facebook_upload_sessions
   SET owner_id = ?1,
@@ -2056,7 +2210,7 @@ impl FacebookUploader {
       updated_at = datetime('now')
   WHERE id = (
       SELECT id FROM facebook_upload_sessions
-      WHERE status IN ('in_progress', 'finishing')
+      WHERE status IN ('init_pending', 'in_progress', 'finishing')
         AND (lease_deadline IS NULL OR lease_deadline < datetime('now'))
       LIMIT 1
   ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status;
