@@ -4184,3 +4184,91 @@ fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
         "All 6 replays must map to the exact same survivor row"
     );
 }
+
+#[test]
+fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transition() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    // Create facebook_upload_sessions table matching schema
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            page_id TEXT NOT NULL,
+            upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+            upload_session_id TEXT NOT NULL UNIQUE,
+            video_id TEXT,
+            file_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            owner_id TEXT,
+            lease_deadline TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    ).unwrap();
+
+    // 1. Insert parent channel account and scheduled post
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (100, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (100, 'grp_100', 100, 'page_123', 'video', 'test message', 'idemp_100', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // 2. Insert init_pending pre-START intent with video_id = NULL
+    let intent_id = "intent_100_uuid";
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (100, 'page_123', 'video', ?1, NULL, '/tmp/video.mp4', 'hash123', 10485760, 0, 'init_pending', 0, 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+        params![intent_id],
+    ).unwrap();
+
+    // 3. Query row decoding video_id into Option<String>
+    let (row_id, sess_id, vid_id, status, retries): (i64, String, Option<String>, String, i64) = conn.query_row(
+        "SELECT id, upload_session_id, video_id, status, retry_count FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+        params![intent_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ).unwrap();
+    assert_eq!(sess_id, intent_id);
+    assert_eq!(vid_id, None);
+    assert_eq!(status, "init_pending");
+    assert_eq!(retries, 0);
+
+    // 3. START accepted: checked CAS transitions to in_progress with remote video_id
+    let updated = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET upload_session_id = 'meta_sess_456', video_id = 'meta_vid_789', status = 'in_progress', updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending'",
+        params![row_id],
+    ).unwrap();
+    assert_eq!(updated, 1);
+
+    // 4. Stolen lease CAS rejection
+    let stale_update = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET upload_session_id = 'meta_sess_stale', video_id = 'meta_vid_stale', status = 'in_progress', updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = 'worker_2_stolen' AND status = 'init_pending'",
+        params![row_id],
+    ).unwrap();
+    assert_eq!(stale_update, 0);
+
+    // 5. RateLimited 429 lease release and retry_count increment
+    let r429_updated = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending'",
+        params![row_id],
+    ).unwrap();
+    assert_eq!(r429_updated, 0); // status is in_progress so init_pending CAS returns 0
+}

@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     file_size_bytes INTEGER NOT NULL,
     start_offset INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+    retry_count INTEGER NOT NULL DEFAULT 0,
     owner_id TEXT,
     lease_deadline TEXT,
     created_at TEXT NOT NULL,
@@ -268,9 +269,11 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 - **Reels (`rupload.facebook.com`):** Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`. Send 4MB binary chunks to `https://rupload.facebook.com/video-reels/<video_id>` with headers `Offset` and `file_size`. On resume, query server confirmed `Offset` via `GET /video-reels/<video_id>` with Bearer auth; if failed or malformed, abort with error. After chunk upload, parse confirmed server offset and strictly verify `confirmed_offset == offset + bytes_to_read as u64`. Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`.
 
 ### 5.2 Authoritative START Response-Loss & Reconciler Protocol
-1. **Meta Graph API Resumable Upload Invariant:**
-   - On Meta Graph API, `upload_phase=start` initializes an uncommitted upload container on Meta media servers.
-   - An uncommitted container contains 0 uploaded byte chunks and is strictly an uninitialized buffer. It is NEVER published to any Page feed, Reel tab, or video library without completing all byte chunk transfers and calling `upload_phase=finish`.
+1. **Meta Graph API Resumable Upload Architecture:**
+   - Meta Graph API video and reels upload operates in 3 distinct phases (`upload_phase=start` -> `upload_phase=transfer` -> `upload_phase=finish`).
+   - The `start` phase initializes an uncommitted media container and allocates a session on Meta media servers.
+   - An uncommitted container contains 0 uploaded byte chunks and is strictly an inert upload buffer. Meta does not publish any media or create a live post on the Page until all byte chunks are transferred and `upload_phase=finish` is explicitly executed.
+   - If a network interruption or timeout occurs during the initial `start` request, the local client has not received remote IDs and no media chunks have been uploaded. Executing a fresh `start` request safely allocates a new upload container for chunk transfer. The previous uncommitted, zero-byte container on Meta remains inert and unpublishable, guaranteeing zero ghost posts or duplicate publications.
 2. **Deterministic Response-Loss State Machine:**
    - **Local State Invariant:** When an upload starts, SQLite creates `facebook_upload_sessions` with `status = 'init_pending'`, `upload_session_id = 'intent_' || post_id || '_' || uuid`, and `video_id = NULL`.
    - **Case A (START Accepted & Response Received):** Worker receives remote `upload_session_id` and `video_id`. Updates SQLite session row to `upload_session_id = ?1, video_id = ?2, status = 'in_progress'` via checked CAS (`WHERE id = ?3 AND owner_id = ?4 AND status = 'init_pending'` with `rows == 1`).
@@ -278,8 +281,8 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
      - Because uncommitted START containers on Meta have 0 bytes and cannot publish, the worker safely executes a clean `START` request against Meta Graph API to acquire valid remote container IDs.
      - Upon receiving remote IDs, updates session row to `in_progress` via checked CAS (`WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'` with `rows == 1`) and proceeds with chunk upload.
      - If START returns client error (4xx non-429): marks session and post `failed` via checked CAS (`rows == 1`).
-     - If START returns 429: parses `retry-after` header, returns `PublishApiResult::RateLimited`, and releases lease (`owner_id = NULL, lease_deadline = NULL`) for backoff retry.
-     - If retry attempts >= 3: marks session and post `failed` via checked CAS (`rows == 1`).
+     - If START returns 429: parses `retry-after` header, releases lease (`owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1`) for backoff retry, and returns `PublishApiResult::RateLimited`.
+     - If `retry_count >= 3`: marks session and post `failed` via checked CAS (`rows == 1`).
    - **Case C (START Response Received + Local CAS Lease Loss):** If SQLite update returns `rows != 1`, the worker immediately aborts with `DeterministicRejection { error_code: "session_lease_loss" }`.
 
 ---

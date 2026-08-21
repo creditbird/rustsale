@@ -912,7 +912,7 @@ impl FacebookUploader {
         };
 
         // 1. Check existing in-progress, finishing, or init_pending session in SQLite scoped to this post
-        let existing_session: Option<(i64, String, String, u64, String)> = match conn.query_row(
+        let existing_session: Option<(i64, String, Option<String>, u64, String)> = match conn.query_row(
             "SELECT id, upload_session_id, video_id, start_offset, status
              FROM facebook_upload_sessions
              WHERE post_id = ?1 AND page_id = ?2 AND upload_type = 'video' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('init_pending', 'in_progress', 'finishing')",
@@ -1227,8 +1227,8 @@ impl FacebookUploader {
             // Pre-START intent persistence
             let intent_id = format!("intent_{}_{}", post_id, uuid::Uuid::new_v4());
             if let Err(e) = conn.execute(
-                "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at)
-                 VALUES (?1, ?2, 'video', ?3, 'pending', ?4, ?5, ?6, 0, 'init_pending', ?7, datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+                "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+                 VALUES (?1, ?2, 'video', ?3, NULL, ?4, ?5, ?6, 0, 'init_pending', 0, ?7, datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
                 params![post_id, page_id, intent_id, file_path, file_hash, file_size as i64, owner_id],
             ) {
                 return PublishApiResult::AmbiguousTransport {
@@ -1654,12 +1654,12 @@ impl FacebookUploader {
             },
         };
 
-        let existing_session: Option<(i64, String, u64, String)> = match conn.query_row(
-            "SELECT id, video_id, start_offset, status
+        let existing_session: Option<(i64, String, Option<String>, u64, String)> = match conn.query_row(
+            "SELECT id, upload_session_id, video_id, start_offset, status
              FROM facebook_upload_sessions
              WHERE post_id = ?1 AND page_id = ?2 AND upload_type = 'reel' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('init_pending', 'in_progress', 'finishing')",
             params![post_id, page_id, file_path, file_size as i64, file_hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? as u64, r.get(4)?)),
         ) {
             Ok(sess) => Some(sess),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -1938,8 +1938,8 @@ impl FacebookUploader {
             // Pre-START intent persistence
             let intent_id = format!("intent_{}_{}", post_id, uuid::Uuid::new_v4());
             if let Err(e) = conn.execute(
-                "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at)
-                 VALUES (?1, ?2, 'reel', ?3, 'pending', ?4, ?5, ?6, 0, 'init_pending', ?7, datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+                "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+                 VALUES (?1, ?2, 'reel', ?3, NULL, ?4, ?5, ?6, 0, 'init_pending', 0, ?7, datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
                 params![post_id, page_id, intent_id, file_path, file_hash, file_size as i64, owner_id],
             ) {
                 return PublishApiResult::AmbiguousTransport {
@@ -2472,10 +2472,10 @@ mod tests {
     #[tokio::test]
     async fn test_video_start_response_lost_recovers_via_fresh_start_cas() {
         let conn = setup_test_sqlite().unwrap();
-        // Insert existing session in init_pending state matching exact SQLite schema (video_id = NULL)
+        // Insert existing session in init_pending state matching exact SQLite schema (video_id = NULL, retry_count = 0)
         conn.execute(
-            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at)
-             VALUES (1, 100, 'page_123', 'video', 'intent_100_uuid', NULL, '/path/video.mp4', 'hash123', 10485760, 0, 'init_pending', NULL, NULL, datetime('now'), datetime('now'))",
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (1, 100, 'page_123', 'video', 'intent_100_uuid', NULL, '/path/video.mp4', 'hash123', 10485760, 0, 'init_pending', 0, NULL, NULL, datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
@@ -2509,8 +2509,8 @@ mod tests {
     async fn test_start_response_received_local_cas_lease_loss_aborts() {
         let conn = setup_test_sqlite().unwrap();
         conn.execute(
-            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at)
-             VALUES (2, 101, 'page_123', 'video', 'intent_101_uuid', NULL, '/path/video.mp4', 'hash123', 10485760, 0, 'init_pending', 'worker_2_stolen', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (2, 101, 'page_123', 'video', 'intent_101_uuid', NULL, '/path/video.mp4', 'hash123', 10485760, 0, 'init_pending', 0, 'worker_2_stolen', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 

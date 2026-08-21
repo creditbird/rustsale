@@ -70,8 +70,11 @@ fn ensure_facebook_upload_sessions_schema_v2(conn: &Connection) -> Result<()> {
         .optional()?;
 
     if let Some(sql) = table_sql {
-        // Inspect the table definition: if 'init_pending' is not in the CHECK constraint, rebuild table
-        if !sql.contains("'init_pending'") {
+        // Inspect the table definition: if 'init_pending' or 'retry_count' is not in the CHECK constraint, or video_id is NOT NULL, rebuild table
+        if !sql.contains("'init_pending'")
+            || !sql.contains("retry_count")
+            || sql.contains("video_id TEXT NOT NULL")
+        {
             conn.execute_batch(
                 "CREATE TABLE facebook_upload_sessions_v2 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,12 +82,13 @@ fn ensure_facebook_upload_sessions_schema_v2(conn: &Connection) -> Result<()> {
                     page_id TEXT NOT NULL,
                     upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
                     upload_session_id TEXT NOT NULL UNIQUE,
-                    video_id TEXT NOT NULL,
+                    video_id TEXT,
                     file_path TEXT NOT NULL,
                     file_hash TEXT NOT NULL,
                     file_size_bytes INTEGER NOT NULL,
                     start_offset INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+                    retry_count INTEGER NOT NULL DEFAULT 0,
                     owner_id TEXT,
                     lease_deadline TEXT,
                     created_at TEXT NOT NULL,
@@ -92,9 +96,9 @@ fn ensure_facebook_upload_sessions_schema_v2(conn: &Connection) -> Result<()> {
                 );
 
                 INSERT INTO facebook_upload_sessions_v2 (
-                    id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at
+                    id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at
                 )
-                SELECT id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at
+                SELECT id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, 0, owner_id, lease_deadline, created_at, updated_at
                 FROM facebook_upload_sessions;
 
                 DROP TABLE facebook_upload_sessions;
