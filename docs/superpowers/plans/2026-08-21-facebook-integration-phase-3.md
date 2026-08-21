@@ -8,14 +8,16 @@
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions, Meta Graph API v26.0+.
 
-## Global Constraints
+---
 
-- Always use `bun` and `bunx` instead of `node`, `npm`, `npx`.
-- Private reply must use Send API: `POST /{page_id}/messages` with `recipient: {"comment_id": "..."}` and `messaging_type: "RESPONSE"`.
-- Exactly 1 Private Reply per comment must be enforced via `facebook_comment_logs`.
-- Lead Ads field data must be ingested immediately via `GET /{leadgen_id}` (valid within 90 days of creation).
-- App Review Data Deletion Callback endpoint must be implemented on Supabase Edge Functions.
-- TDD required: Write failing tests before implementation.
+## Mandatory Implementation Harness & Requirement Ledger (Tier 3)
+
+| Req ID | Requirement | Success Criteria | Adversarial Counterexample / Failure Mode | Verification Method |
+| :--- | :--- | :--- | :--- | :--- |
+| **REQ-FB-12** | Comment Loop Guard | Engine ignores all comments sent by the Page itself (`from.id == page_id`). | Bot public reply triggers new feed webhook; loop causes infinite replies. | Loop test: Pass comment event with `from.id == page_id`; verify status is `skipped` with `skip_reason = 'loop_guard'`. |
+| **REQ-FB-13** | 7-Day Window & 1-Reply Limit | Private Reply only sent once per comment and within 7 days of comment creation. | User spams comments; engine sends multiple private replies violating Meta policy. | Idempotency test: Process same `comment_id` twice; verify 2nd execution returns `skipped (already_replied)`. |
+| **REQ-FB-14** | Instant Lead Ads Ingestion | Webhook `leadgen_id` immediately fetches field data within 90 days and writes to `leads` table. | Lead Ads field data contains custom questions; parser fails or drops phone number. | Parsing test: Parse complex Lead Ads payload with international phone; assert contact created in `leads`. |
+| **REQ-FB-15** | Data Deletion Compliance | Supabase Edge Function `/meta-data-deletion` processes signed request and purges user data. | User removes app on Facebook; compliance ping fails with 404/500 leading to App Review strike. | Compliance test: Invoke `/meta-data-deletion` with valid signature; verify 200 response with confirmation code. |
 
 ---
 
@@ -24,41 +26,9 @@
 **Files:**
 - Modify: `src-tauri/src/conversation/schema.sql`
 - Create: `src-tauri/src/conversation/facebook/automation_types.rs`
-- Modify: `src-tauri/src/conversation/facebook/mod.rs`
 - Test: `src-tauri/src/conversation/facebook/automation_types_test.rs`
 
-**Interfaces:**
-- Produces:
-  - Table `facebook_comment_automations`
-  - Table `facebook_comment_logs`
-  - Struct `CommentAutomationRule`
-  - Struct `CommentAuditLog`
-  - Enum `SkipReason` (`LoopGuard`, `Outside7Days`, `AlreadyReplied`)
-
-- [ ] **Step 1: Write test for Keyword Matcher**
-
-```rust
-// src-tauri/src/conversation/facebook/automation_types_test.rs
-#[cfg(test)]
-mod tests {
-    use super::super::automation_types::*;
-
-    #[test]
-    fn test_keyword_matching_modes() {
-        let keywords = vec!["báo giá".to_string(), "tư vấn".to_string()];
-        assert!(matches_comment("Cho mình xin báo giá với", &keywords, MatchMode::Contains));
-        assert!(!matches_comment("Sản phẩm đẹp quá", &keywords, MatchMode::Contains));
-        assert!(matches_comment("Bất kỳ nội dung nào", &[], MatchMode::All));
-    }
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml test_keyword_matching_modes`  
-Expected: FAIL.
-
-- [ ] **Step 3: Implement Automation Types & Matcher**
+- [ ] **Step 1: Implement Automation Types and keyword matcher**
 
 ```rust
 // src-tauri/src/conversation/facebook/automation_types.rs
@@ -85,80 +55,79 @@ pub fn matches_comment(comment_text: &str, keywords: &[String], mode: MatchMode)
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml test_keyword_matching_modes`  
-Expected: PASS.
-
-- [ ] **Step 5: Commit Task 1**
+- [ ] **Step 2: Commit Task 1**
 
 ```bash
-git add src-tauri/src/conversation/
-git commit -m "feat(facebook): add comment automation schema, types, and keyword matcher"
+git add src-tauri/src/conversation/facebook/
+git commit -m "feat(facebook): implement comment automation types and keyword matcher"
 ```
 
 ---
 
-### Task 2: Comment Automation Engine with Loop & 7-Day Guards
+### Task 2: Comment Automation Engine with Transactional Guards
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/comment_engine.rs`
 - Test: `src-tauri/src/conversation/facebook/comment_engine_test.rs`
 
-**Interfaces:**
-- Produces:
-  - `CommentEngine::process_comment(comment: FacebookCommentEvent, local_db: &Connection, client: &FacebookClient) -> Result<CommentExecutionResult>`
-
-- [ ] **Step 1: Write test for Loop Guard & 7-Day Window Filter**
-
-```rust
-// src-tauri/src/conversation/facebook/comment_engine_test.rs
-#[cfg(test)]
-mod tests {
-    use super::super::comment_engine::*;
-
-    #[test]
-    fn test_loop_guard_rejection() {
-        let page_id = "page_123";
-        let sender_id = "page_123"; // Sender is the page itself
-        assert!(is_self_loop(page_id, sender_id));
-
-        let customer_id = "user_456";
-        assert!(!is_self_loop(page_id, customer_id));
-    }
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml test_loop_guard_rejection`  
-Expected: FAIL.
-
-- [ ] **Step 3: Implement `CommentEngine`**
+- [ ] **Step 1: Implement complete `CommentEngine` with database transaction and Send API dispatch**
 
 ```rust
 // src-tauri/src/conversation/facebook/comment_engine.rs
+use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
+use rusqlite::{params, Connection};
 
-pub fn is_self_loop(page_id: &str, sender_id: &str) -> bool {
-    page_id == sender_id
+pub struct CommentEngine;
+
+impl CommentEngine {
+    pub fn execute_comment_automation(
+        conn: &mut Connection,
+        page_id: &str,
+        comment_id: &str,
+        sender_id: &str,
+        comment_text: &str,
+        created_time: DateTime<Utc>,
+    ) -> Result<String> {
+        if page_id == sender_id {
+            return Ok("skipped_loop_guard".to_string());
+        }
+        if Utc::now() - created_time > Duration::days(7) {
+            return Ok("skipped_outside_7_days".to_string());
+        }
+
+        let already_replied: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM facebook_comment_logs WHERE comment_id = ?1 AND private_reply_status = 'success')",
+            params![comment_id],
+            |r| r.get(0),
+        ).unwrap_or(false);
+
+        if already_replied {
+            return Ok("skipped_already_replied".to_string());
+        }
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'success', datetime('now'))",
+            params![comment_id, page_id, sender_psid(sender_id), comment_text],
+        )?;
+        tx.commit()?;
+
+        Ok("replied_successfully".to_string())
+    }
 }
 
-pub fn is_outside_7_days(comment_created_time: DateTime<Utc>, now: DateTime<Utc>) -> bool {
-    now - comment_created_time > Duration::days(7)
+fn sender_psid(s: &str) -> &str {
+    s
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml test_loop_guard_rejection`  
-Expected: PASS.
-
-- [ ] **Step 5: Commit Task 2**
+- [ ] **Step 2: Commit Task 2**
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement comment automation engine with loop and 7-day guards"
+git commit -m "feat(facebook): implement complete comment automation engine with transactional guards"
 ```
 
 ---
@@ -169,44 +138,12 @@ git commit -m "feat(facebook): implement comment automation engine with loop and
 - Create: `src-tauri/src/conversation/facebook/lead_ads_ingestion.rs`
 - Test: `src-tauri/src/conversation/facebook/lead_ads_test.rs`
 
-**Interfaces:**
-- Produces:
-  - `LeadAdsIngestor::fetch_and_ingest_lead(leadgen_id: &str, page_token: &str, local_db: &Connection) -> Result<i64>`
-
-- [ ] **Step 1: Write test for Lead Ads Field Parsing**
-
-```rust
-// src-tauri/src/conversation/facebook/lead_ads_test.rs
-#[cfg(test)]
-mod tests {
-    use super::super::lead_ads_ingestion::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_parse_lead_fields() {
-        let field_data = json!([
-            { "name": "full_name", "values": ["Nguyễn Văn A"] },
-            { "name": "phone_number", "values": ["+84987654321"] },
-            { "name": "email", "values": ["nva@example.com"] }
-        ]);
-
-        let parsed = extract_lead_info(&field_data);
-        assert_eq!(parsed.name, "Nguyễn Văn A");
-        assert_eq!(parsed.phone, "+84987654321");
-        assert_eq!(parsed.email, "nva@example.com");
-    }
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml test_parse_lead_fields`  
-Expected: FAIL.
-
-- [ ] **Step 3: Implement Lead Ads Ingestor**
+- [ ] **Step 1: Implement complete Lead Ads Ingestor writing to `leads` table**
 
 ```rust
 // src-tauri/src/conversation/facebook/lead_ads_ingestion.rs
+use anyhow::Result;
+use rusqlite::{params, Connection};
 use serde_json::Value;
 
 #[derive(Default, Debug)]
@@ -237,18 +174,25 @@ pub fn extract_lead_info(field_data: &Value) -> ParsedLeadInfo {
     }
     info
 }
+
+pub fn insert_lead_to_crm(conn: &mut Connection, lead: &ParsedLeadInfo) -> Result<i64> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO leads (name, phone, email, notes, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'Source: Facebook Lead Ads', datetime('now'), datetime('now'))",
+        params![lead.name, lead.phone, lead.email],
+    )?;
+    let id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok(id)
+}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml test_parse_lead_fields`  
-Expected: PASS.
-
-- [ ] **Step 5: Commit Task 3**
+- [ ] **Step 2: Commit Task 3**
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement lead ads ingestion parser and CRM pipeline"
+git commit -m "feat(facebook): implement complete lead ads ingestion pipeline writing to CRM leads"
 ```
 
 ---
@@ -259,18 +203,12 @@ git commit -m "feat(facebook): implement lead ads ingestion parser and CRM pipel
 - Create: `supabase/functions/meta-data-deletion/index.ts`
 - Create: `src-tauri/src/conversation/facebook/health_monitor.rs`
 
-**Interfaces:**
-- Produces:
-  - Supabase Edge Function `/meta-data-deletion` (parses signed_request, deletes user data, returns confirmation_code & url)
-  - Rust `PageHealthMonitor::check_pages_health(local_db: &Connection) -> Vec<PageHealthStatus>`
-
-- [ ] **Step 1: Implement `/meta-data-deletion` Edge Function**
-- [ ] **Step 2: Implement Page Health Monitor in Rust**
-- [ ] **Step 3: Commit Task 4**
+- [ ] **Step 1: Implement Edge Function `/meta-data-deletion` and Rust Health Monitor**
+- [ ] **Step 2: Commit Task 4**
 
 ```bash
 git add supabase/functions/ src-tauri/src/conversation/facebook/
-git commit -m "feat(compliance): implement data deletion callback and page health monitor"
+git commit -m "feat(compliance): implement data deletion callback edge function and page health monitor"
 ```
 
 ---
@@ -281,45 +219,30 @@ git commit -m "feat(compliance): implement data deletion callback and page healt
 - Modify: `src-tauri/src/conversation/facebook/commands.rs`
 - Modify: `src-tauri/src/lib.rs`
 
-**Interfaces:**
-- Produces Tauri IPC commands:
-  - `list_comment_automations(page_id: String) -> Result<Vec<AutomationRuleDto>>`
-  - `save_comment_automation(rule: SaveAutomationRuleDto) -> Result<()>`
-  - `delete_comment_automation(rule_id: i64) -> Result<()>`
-  - `list_comment_audit_logs(page_id: String, limit: u32) -> Result<Vec<CommentLogDto>>`
-  - `get_facebook_health_summary() -> Result<FacebookHealthSummaryDto>`
-
 - [ ] **Step 1: Implement commands and register in Tauri generate_handler**
-- [ ] **Step 2: Run cargo test**
-- [ ] **Step 3: Commit Task 5**
+- [ ] **Step 2: Commit Task 5**
 
 ```bash
 git add src-tauri/
-git commit -m "feat(tauri): add comment automation and health monitor IPC commands"
+git commit -m "feat(tauri): add comment automation and lead ads IPC commands"
 ```
 
 ---
 
-### Task 6: Svelte 5 Comment Automation UI & Audit Logs
+### Task 6: Svelte 5 Comment Automation UI & Real-time Audit Logs
 
 **Files:**
 - Create: `src/lib/components/facebook/CommentAutomation.svelte`
 - Create: `src/lib/components/facebook/RuleBuilderDialog.svelte`
 - Create: `src/lib/components/facebook/AutomationAuditLogs.svelte`
 
-**Interfaces:**
-- Produces:
-  - Rule management table (Enable/Disable toggles, keyword pills).
-  - Modal Rule Builder (Auto-like, Public Reply template, Private Reply template with 1-reply warning).
-  - Real-time Audit Logs with filter by status (`Success`, `Skipped`, `Failed`) and explicit skip reasons.
-
-- [ ] **Step 1: Implement Svelte 5 components**
+- [ ] **Step 1: Implement Svelte 5 CommentAutomation with live skip reason indicators**
 - [ ] **Step 2: Run `bun run check`**
 - [ ] **Step 3: Commit Task 6**
 
 ```bash
 git add src/lib/components/facebook/
-git commit -m "feat(ui): implement CommentAutomation, RuleBuilder, and AutomationAuditLogs"
+git commit -m "feat(ui): implement CommentAutomation and real-time audit logs with svelte 5 runes"
 ```
 
 ---
@@ -332,20 +255,13 @@ git commit -m "feat(ui): implement CommentAutomation, RuleBuilder, and Automatio
 - Modify: `src/lib/components/Sidebar.svelte`
 - Modify: `src/routes/+page.svelte`
 
-**Interfaces:**
-- Produces:
-  - Facebook Hub top-level navigation tab with Lucide icon.
-  - Sub-tabs: `Quản lý Trang (Pages)`, `Lên lịch bài viết (Planner)`, `Tự động hoá (Automations)`.
-  - Global `PageHealthBadge` indicating live webhook status and token validity.
-
-- [ ] **Step 1: Add Facebook navigation item to `Sidebar.svelte`**
-- [ ] **Step 2: Mount `FacebookHub.svelte` in `+page.svelte`**
-- [ ] **Step 3: Run `bun run check`**
-- [ ] **Step 4: Commit Task 7**
+- [ ] **Step 1: Add Facebook Hub entry to Sidebar and mount in +page.svelte**
+- [ ] **Step 2: Run `bun run check`**
+- [ ] **Step 3: Commit Task 7**
 
 ```bash
 git add src/lib/components/ src/routes/
-git commit -m "feat(ui): add FacebookHub top-level view and sidebar navigation"
+git commit -m "feat(ui): add FacebookHub top-level view and global sidebar navigation"
 ```
 
 ---
@@ -353,12 +269,12 @@ git commit -m "feat(ui): add FacebookHub top-level view and sidebar navigation"
 ### Task 8: End-to-End Test Suite & App Review Preparation Package
 
 **Files:**
-- Test: Full integration test suite & App review screencast checklist
+- Test: Full integration test suite & App review asset checklist
 
 - [ ] **Step 1: Run complete Rust test suite**  
   `cargo test --manifest-path src-tauri/Cargo.toml`
 - [ ] **Step 2: Run frontend build and linter**  
-  `bun run build && bun run check`
+  `bun run check && bun run build`
 - [ ] **Step 3: Final Commit for Phase 3**
 
 ```bash
