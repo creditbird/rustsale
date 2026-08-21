@@ -509,19 +509,19 @@ serve(async (req: Request) => {
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
     }
 
-    // Durable ASID-to-PSID mapping check: If Graph API /ids_for_pages returned empty, check local durable mapping in meta_user_page_identities
+    // Durable ASID-to-PSID mapping check: If Graph API /ids_for_pages returned empty, check local durable mapping in meta_user_page_interactions
     // to guarantee retained PSID records are never orphaned or falsely marked completed.
     let identityResolutionError = false;
     if (resolvedMappings.length === 0) {
-      const { data: durableIdentities, error: queryErr } = await supabaseAdmin
-        .from("meta_user_page_identities")
+      const { data: durableInteractions, error: queryErr } = await supabaseAdmin
+        .from("meta_user_page_interactions")
         .select("page_id, page_scoped_user_id")
         .eq("app_user_id", userId);
 
       if (queryErr) {
         identityResolutionError = true;
-      } else if (durableIdentities && durableIdentities.length > 0) {
-        for (const item of durableIdentities) {
+      } else if (durableInteractions && durableInteractions.length > 0) {
+        for (const item of durableInteractions) {
           if (item.page_id && item.page_scoped_user_id) {
             resolvedMappings.push({ page_id: item.page_id, psid: item.page_scoped_user_id });
           }

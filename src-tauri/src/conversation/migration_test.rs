@@ -1200,3 +1200,120 @@ fn facebook_migration_schema_and_next_retry_at_timestamp_comparison() {
         "Future backoff post must not be claimable before retry deadline"
     );
 }
+
+#[test]
+fn facebook_upload_sessions_legacy_upgrade_preserves_data_and_enables_init_pending() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+
+    // 1. Setup legacy database with old schema (status without 'init_pending', no next_retry_at)
+    migrate(&conn).unwrap();
+
+    // Manually simulate legacy table with old CHECK constraint
+    conn.execute_batch(
+        "CREATE TABLE facebook_upload_sessions_old (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL REFERENCES facebook_scheduled_posts(id) ON DELETE CASCADE,
+            page_id TEXT NOT NULL,
+            upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+            upload_session_id TEXT NOT NULL UNIQUE,
+            video_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'finishing', 'completed', 'failed')),
+            owner_id TEXT,
+            lease_deadline TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        INSERT INTO facebook_upload_sessions_old (
+            id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at
+        )
+        SELECT id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at
+        FROM facebook_upload_sessions;
+
+        DROP TABLE facebook_upload_sessions;
+        ALTER TABLE facebook_upload_sessions_old RENAME TO facebook_upload_sessions;
+
+        DROP INDEX IF EXISTS idx_fb_upload_active_unique;
+        CREATE UNIQUE INDEX idx_fb_upload_active_unique ON facebook_upload_sessions(post_id, page_id, upload_type, file_hash, file_size_bytes) WHERE status IN ('in_progress', 'finishing');",
+    ).unwrap();
+
+    // Insert an existing channel account, post, and in_progress upload session in the legacy database
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (20, 'messenger', 'page_20', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (20, 'grp20', 20, 'page_20', 'video', 'msg20', 'key20', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+         VALUES (100, 20, 'page_20', 'video', 'meta_sess_100', 'vid_100', '/path/legacy.mp4', 'hash_legacy', 5000000, 1048576, 'in_progress', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // Verify that legacy table rejects 'init_pending' before migration
+    let probe_before = conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+         VALUES (20, 'page_20', 'video', 'intent_test', 'pending', '/path/legacy.mp4', 'hash_legacy', 5000000, 0, 'init_pending', datetime('now'), datetime('now'))",
+        [],
+    );
+    assert!(
+        probe_before.is_err(),
+        "Legacy schema must reject init_pending"
+    );
+
+    // 2. Run migration to upgrade legacy database
+    migrate(&conn).unwrap();
+
+    // 3. Verify existing data was preserved intact
+    let (saved_vid_id, saved_offset, saved_status): (String, i64, String) = conn
+        .query_row(
+            "SELECT video_id, start_offset, status FROM facebook_upload_sessions WHERE id = 100",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(saved_vid_id, "vid_100");
+    assert_eq!(saved_offset, 1048576);
+    assert_eq!(saved_status, "in_progress");
+
+    // 4. Verify 'init_pending' can now be inserted into the upgraded table
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (21, 'grp21', 20, 'page_20', 'reel', 'msg21', 'key21', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    let insert_init_pending = conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+         VALUES (21, 'page_20', 'reel', 'intent_new_21', 'pending', '/path/reel.mp4', 'hash_reel', 2000000, 0, 'init_pending', datetime('now'), datetime('now'))",
+        [],
+    );
+    assert!(
+        insert_init_pending.is_ok(),
+        "Upgraded schema must accept init_pending"
+    );
+
+    // 5. Verify upgraded active unique index covers init_pending
+    let duplicate_init_pending = conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+         VALUES (21, 'page_20', 'reel', 'intent_new_22', 'pending', '/path/reel.mp4', 'hash_reel', 2000000, 0, 'init_pending', datetime('now'), datetime('now'))",
+        [],
+    );
+    assert!(
+        duplicate_init_pending.is_err(),
+        "Upgraded active-session unique index must enforce uniqueness for init_pending"
+    );
+}

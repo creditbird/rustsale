@@ -60,6 +60,76 @@ fn ensure_zalo_session_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_facebook_upload_sessions_schema_v2(conn: &Connection) -> Result<()> {
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='facebook_upload_sessions'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if table_exists {
+        // Test if inserting 'init_pending' works under existing schema.
+        // If not (due to old CHECK constraint on legacy database), perform table rebuild migration.
+        let test_insert = conn.execute(
+            "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+             VALUES (0, '__probe__', 'video', '__probe_sess__', 'pending', '__probe__', '__probe__', 0, 0, 'init_pending', datetime('now'), datetime('now'))",
+            [],
+        );
+
+        match test_insert {
+            Ok(_) => {
+                let _ = conn.execute("DELETE FROM facebook_upload_sessions WHERE upload_session_id = '__probe_sess__'", []);
+            }
+            Err(_) => {
+                conn.execute_batch(
+                    "CREATE TABLE facebook_upload_sessions_v2 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        post_id INTEGER NOT NULL REFERENCES facebook_scheduled_posts(id) ON DELETE CASCADE,
+                        page_id TEXT NOT NULL,
+                        upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+                        upload_session_id TEXT NOT NULL UNIQUE,
+                        video_id TEXT NOT NULL,
+                        file_path TEXT NOT NULL,
+                        file_hash TEXT NOT NULL,
+                        file_size_bytes INTEGER NOT NULL,
+                        start_offset INTEGER NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+                        owner_id TEXT,
+                        lease_deadline TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    INSERT INTO facebook_upload_sessions_v2 (
+                        id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at
+                    )
+                    SELECT id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at
+                    FROM facebook_upload_sessions;
+
+                    DROP TABLE facebook_upload_sessions;
+
+                    ALTER TABLE facebook_upload_sessions_v2 RENAME TO facebook_upload_sessions;",
+                )?;
+            }
+        }
+    }
+
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_fb_upload_active_unique;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique
+         ON facebook_upload_sessions(post_id, page_id, upload_type, file_hash, file_size_bytes)
+         WHERE status IN ('init_pending', 'in_progress', 'finishing');
+
+         DROP INDEX IF EXISTS idx_fb_scheduled_posts_status;
+         CREATE INDEX IF NOT EXISTS idx_fb_scheduled_posts_status
+         ON facebook_scheduled_posts(status, scheduled_publish_time, next_retry_at);",
+    )?;
+
+    Ok(())
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     super::migration_v2::apply_migration_v4(conn)?;
 
@@ -97,6 +167,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "INTEGER NOT NULL DEFAULT 1",
     )?;
     add_column_if_missing(conn, "facebook_scheduled_posts", "next_retry_at", "TEXT")?;
+    ensure_facebook_upload_sessions_schema_v2(conn)?;
 
     reconcile_duplicate_zalo_channel_accounts(conn)?;
 
