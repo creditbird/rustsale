@@ -795,19 +795,20 @@ impl ChannelSender for FacebookMessengerSender {
             None => None,
         };
 
-        match client.send_text_message(
+        let res = client.send_text_message(
             provider_account_key,
             &request.external_thread_id,
             &request.text,
             validated_tag.as_deref(),
-        ).await {
-            Ok(res) => Ok(ProviderSendResult {
-                provider_message_id: res.message_id,
-            }),
-            Err(MetaSendError::Transient(err)) => Err(anyhow!("TRANSIENT_ERROR: {:?}", err)),
-            Err(MetaSendError::Permanent(err)) => Err(anyhow!("PERMANENT_DEAD_LETTER: {:?}", err)),
-            Err(MetaSendError::Transport(e)) => Err(anyhow!("NETWORK_TRANSPORT_ERROR: {}", e)),
-        }
+        ).await.map_err(|e| match e {
+            MetaSendError::Transient(err) => anyhow!("TRANSIENT_ERROR: {:?}", err),
+            MetaSendError::Permanent(err) => anyhow!("PERMANENT_DEAD_LETTER: {:?}", err),
+            MetaSendError::Transport(err) => anyhow!("NETWORK_TRANSPORT_ERROR: {}", err),
+        })?;
+
+        Ok(ProviderSendResult {
+            provider_message_id: res.message_id,
+        })
     }
 }
 ```
