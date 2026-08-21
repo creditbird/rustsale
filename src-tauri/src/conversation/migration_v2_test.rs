@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::db::{init_db, open_db_connection};
-    use super::super::migration_v2::{apply_migration_v2, apply_migration_v3};
+    use super::super::migration_v2::{apply_migration_v2, apply_migration_v3, apply_migration_v4};
     use rusqlite::Connection;
 
     #[test]
@@ -13,7 +13,7 @@ mod tests {
         {
             let conn = init_db(path.to_str().unwrap()).unwrap();
             let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-            assert_eq!(v, 3);
+            assert_eq!(v, 4);
 
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='channel_sync_dead_letters'",
@@ -256,9 +256,9 @@ mod tests {
             }
             conn.pragma_update(None, "foreign_keys", "ON").unwrap();
 
-            // 4. Verify user_version is 3
+            // 4. Verify user_version is 4
             let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-            assert_eq!(v, 3);
+            assert_eq!(v, 4);
 
             // 5. Verify 0 foreign key violations
             let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
@@ -294,17 +294,19 @@ mod tests {
             assert_eq!(sender_id, Some(501));
 
             // 9. Verify lossless attachment deduplication: exactly 1 attachment record with merged metadata
-            let (att_id, provider_att_id, file_name, local_path, thumb_url): (i64, Option<String>, Option<String>, Option<String>, Option<String>) = conn.query_row(
-                "SELECT id, provider_attachment_id, file_name, local_path, thumbnail_url 
+            let (att_id, provider_att_id, file_name, local_path, thumb_url, meta_json): (i64, Option<String>, Option<String>, Option<String>, Option<String>, String) = conn.query_row(
+                "SELECT id, provider_attachment_id, file_name, local_path, thumbnail_url, metadata_json 
                  FROM message_attachments WHERE message_id = 701 AND remote_url = 'https://cdn.example.com/pic1.jpg'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             ).unwrap();
             assert_eq!(att_id, 901);
             assert_eq!(provider_att_id, Some("META_ATT_1".to_string()));
             assert_eq!(file_name, Some("photo.jpg".to_string()));
             assert_eq!(local_path, Some("/spool/local.jpg".to_string()));
             assert_eq!(thumb_url, Some("https://cdn.example.com/thumb.jpg".to_string()));
+            assert!(meta_json.contains("\"width\":800") || meta_json.contains("\"width\": 800"));
+            assert!(meta_json.contains("\"height\":600") || meta_json.contains("\"height\": 600"));
 
             // 10. Verify unique index prevents future duplicate remote_url
             let dup_insert = conn.execute(
@@ -336,6 +338,126 @@ mod tests {
             assert!(dup_prov_insert.is_err(), "Duplicate provider_attachment_id must violate unique index");
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_v4_migration_overlapping_groups_conflicts_and_invalid_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            CREATE TABLE channel_accounts (id INTEGER PRIMARY KEY);
+            INSERT INTO channel_accounts (id) VALUES (1);
+
+            CREATE TABLE channel_conversations (
+                id INTEGER PRIMARY KEY,
+                channel_account_id INTEGER,
+                external_thread_id TEXT,
+                kind TEXT
+            );
+            INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind) VALUES (10, 1, 'T1', 'direct');
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                conversation_id INTEGER,
+                provider_message_id TEXT
+            );
+            INSERT INTO messages (id, conversation_id, provider_message_id) VALUES (100, 10, 'MID_100');
+
+            CREATE TABLE message_attachments (
+                id INTEGER PRIMARY KEY,
+                message_id INTEGER,
+                provider_attachment_id TEXT,
+                attachment_type TEXT,
+                file_name TEXT,
+                mime_type TEXT,
+                size_bytes INTEGER,
+                remote_url TEXT,
+                local_path TEXT,
+                thumbnail_url TEXT,
+                metadata_json TEXT,
+                created_at TEXT
+            );
+
+            -- Connected component: Row 1001 shares remote_url with 1002, Row 1002 shares provider_id with 1003
+            INSERT INTO message_attachments (id, message_id, provider_attachment_id, remote_url, metadata_json, created_at)
+            VALUES (1001, 100, 'P1', 'https://cdn.example.com/shared.jpg', '{"key1": "val_a", "conflict_key": "survivor_val"}', '2026-01-01');
+
+            INSERT INTO message_attachments (id, message_id, provider_attachment_id, remote_url, metadata_json, created_at)
+            VALUES (1002, 100, 'P2', 'https://cdn.example.com/shared.jpg', '{"key2": "val_b", "conflict_key": "dup_val"}', '2026-01-01');
+
+            INSERT INTO message_attachments (id, message_id, provider_attachment_id, remote_url, metadata_json, created_at)
+            VALUES (1003, 100, 'P2', 'https://cdn.example.com/other.jpg', 'invalid json string payload', '2026-01-01');
+        "#).unwrap();
+
+        apply_migration_v4(&conn).unwrap();
+
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 4);
+
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM message_attachments WHERE message_id = 100", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "All overlapping connected rows must be merged into exactly 1 record");
+
+        let (survivor_id, prov_id, remote, meta): (i64, Option<String>, Option<String>, String) = conn.query_row(
+            "SELECT id, provider_attachment_id, remote_url, metadata_json FROM message_attachments WHERE message_id = 100",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+
+        assert_eq!(survivor_id, 1001);
+        assert_eq!(prov_id, Some("P1".to_string()));
+        assert_eq!(remote, Some("https://cdn.example.com/shared.jpg".to_string()));
+        assert!(meta.contains("\"key1\":\"val_a\"") || meta.contains("\"key1\": \"val_a\""));
+        assert!(meta.contains("\"key2\":\"val_b\"") || meta.contains("\"key2\": \"val_b\""));
+        assert!(meta.contains("\"conflict_key\":\"survivor_val\"") || meta.contains("\"conflict_key\": \"survivor_val\""));
+        assert!(meta.contains("\"conflict_key_dup_1002\":\"dup_val\"") || meta.contains("\"conflict_key_dup_1002\": \"dup_val\""));
+        assert!(meta.contains("invalid json string payload"));
+    }
+
+    #[test]
+    fn test_old_v3_database_repaired_to_v4() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 3;
+            CREATE TABLE channel_accounts (id INTEGER PRIMARY KEY);
+            INSERT INTO channel_accounts (id) VALUES (1);
+
+            CREATE TABLE message_attachments (
+                id INTEGER PRIMARY KEY,
+                message_id INTEGER,
+                provider_attachment_id TEXT,
+                attachment_type TEXT,
+                file_name TEXT,
+                mime_type TEXT,
+                size_bytes INTEGER,
+                remote_url TEXT,
+                local_path TEXT,
+                thumbnail_url TEXT,
+                metadata_json TEXT,
+                created_at TEXT
+            );
+
+            INSERT INTO message_attachments (id, message_id, remote_url, metadata_json, created_at)
+            VALUES (2001, 50, 'https://cdn.example.com/dup.jpg', '{"x": 10}', '2026-01-01');
+
+            INSERT INTO message_attachments (id, message_id, remote_url, metadata_json, created_at)
+            VALUES (2002, 50, 'https://cdn.example.com/dup.jpg', '{"y": 20}', '2026-01-01');
+        "#).unwrap();
+
+        apply_migration_v4(&conn).unwrap();
+
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 4);
+
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM message_attachments WHERE message_id = 50", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+
+        let (survivor_id, meta): (i64, String) = conn.query_row(
+            "SELECT id, metadata_json FROM message_attachments WHERE message_id = 50",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(survivor_id, 2001);
+        assert!(meta.contains("\"x\":10") || meta.contains("\"x\": 10"));
+        assert!(meta.contains("\"y\":20") || meta.contains("\"y\": 20"));
     }
 
     #[test]

@@ -203,161 +203,249 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
 }
 
 fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
-    // 1. Merge duplicates by remote_url
-    let mut stmt = conn.prepare(
-        "SELECT message_id, remote_url FROM message_attachments 
-         WHERE remote_url IS NOT NULL 
-         GROUP BY message_id, remote_url HAVING COUNT(*) > 1"
+    let mut msg_stmt = conn.prepare(
+        "SELECT DISTINCT message_id FROM message_attachments 
+         WHERE remote_url IS NOT NULL OR provider_attachment_id IS NOT NULL"
     )?;
-    let dup_remote_groups: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .flatten().collect();
+    let msg_rows = msg_stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    let message_ids: Vec<i64> = msg_rows.collect::<Result<Vec<_>, _>>()?;
 
-    for (msg_id, remote_url) in dup_remote_groups {
-        let mut att_stmt = conn.prepare(
-            "SELECT id, provider_attachment_id, attachment_type, file_name, mime_type, size_bytes, local_path, thumbnail_url, metadata_json 
-             FROM message_attachments 
-             WHERE message_id = ?1 AND remote_url = ?2 
-             ORDER BY id ASC"
-        )?;
-        let rows = att_stmt.query_map(rusqlite::params![msg_id, remote_url], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<i64>>(5)?,
-                r.get::<_, Option<String>>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<String>>(8)?,
-            ))
-        })?;
-        let items: Vec<_> = rows.flatten().collect();
-        if items.len() <= 1 {
-            continue;
-        }
-
-        let survivor_id = items[0].0;
-        let mut merged_prov_id = items[0].1.clone();
-        let mut merged_type = items[0].2.clone();
-        let mut merged_file_name = items[0].3.clone();
-        let mut merged_mime = items[0].4.clone();
-        let mut merged_size = items[0].5;
-        let mut merged_local = items[0].6.clone();
-        let mut merged_thumb = items[0].7.clone();
-        let mut merged_json_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-
-        for item in &items {
-            if merged_prov_id.is_none() && item.1.is_some() { merged_prov_id = item.1.clone(); }
-            if merged_type.is_none() && item.2.is_some() { merged_type = item.2.clone(); }
-            if merged_file_name.is_none() && item.3.is_some() { merged_file_name = item.3.clone(); }
-            if merged_mime.is_none() && item.4.is_some() { merged_mime = item.4.clone(); }
-            if merged_size.is_none() && item.5.is_some() { merged_size = item.5; }
-            if merged_local.is_none() && item.6.is_some() { merged_local = item.6.clone(); }
-            if merged_thumb.is_none() && item.7.is_some() { merged_thumb = item.7.clone(); }
-
-            if let Some(json_str) = &item.8 {
-                if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    for (k, v) in map {
-                        merged_json_map.insert(k, v);
-                    }
-                }
-            }
-        }
-
-        let merged_metadata_str = serde_json::Value::Object(merged_json_map).to_string();
-
-        conn.execute(
-            "UPDATE message_attachments 
-             SET provider_attachment_id = ?1, attachment_type = COALESCE(?2, attachment_type), file_name = ?3, mime_type = ?4, size_bytes = ?5, local_path = ?6, thumbnail_url = ?7, metadata_json = ?8 
-             WHERE id = ?9",
-            rusqlite::params![merged_prov_id, merged_type, merged_file_name, merged_mime, merged_size, merged_local, merged_thumb, merged_metadata_str, survivor_id],
-        )?;
-
-        conn.execute(
-            "DELETE FROM message_attachments WHERE message_id = ?1 AND remote_url = ?2 AND id != ?3",
-            rusqlite::params![msg_id, remote_url, survivor_id],
-        )?;
+    #[derive(Debug, Clone)]
+    struct AttachmentRow {
+        id: i64,
+        provider_attachment_id: Option<String>,
+        attachment_type: Option<String>,
+        file_name: Option<String>,
+        mime_type: Option<String>,
+        size_bytes: Option<i64>,
+        remote_url: Option<String>,
+        local_path: Option<String>,
+        thumbnail_url: Option<String>,
+        metadata_json: Option<String>,
     }
 
-    // 2. Merge duplicates by provider_attachment_id
-    let mut stmt = conn.prepare(
-        "SELECT message_id, provider_attachment_id FROM message_attachments 
-         WHERE provider_attachment_id IS NOT NULL 
-         GROUP BY message_id, provider_attachment_id HAVING COUNT(*) > 1"
-    )?;
-    let dup_prov_groups: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .flatten().collect();
-
-    for (msg_id, prov_id) in dup_prov_groups {
+    for msg_id in message_ids {
         let mut att_stmt = conn.prepare(
-            "SELECT id, remote_url, attachment_type, file_name, mime_type, size_bytes, local_path, thumbnail_url, metadata_json 
+            "SELECT id, provider_attachment_id, attachment_type, file_name, mime_type, size_bytes, remote_url, local_path, thumbnail_url, metadata_json 
              FROM message_attachments 
-             WHERE message_id = ?1 AND provider_attachment_id = ?2 
+             WHERE message_id = ?1 
              ORDER BY id ASC"
         )?;
-        let rows = att_stmt.query_map(rusqlite::params![msg_id, prov_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<i64>>(5)?,
-                r.get::<_, Option<String>>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<String>>(8)?,
-            ))
+        let rows = att_stmt.query_map(rusqlite::params![msg_id], |r| {
+            Ok(AttachmentRow {
+                id: r.get(0)?,
+                provider_attachment_id: r.get(1)?,
+                attachment_type: r.get(2)?,
+                file_name: r.get(3)?,
+                mime_type: r.get(4)?,
+                size_bytes: r.get(5)?,
+                remote_url: r.get(6)?,
+                local_path: r.get(7)?,
+                thumbnail_url: r.get(8)?,
+                metadata_json: r.get(9)?,
+            })
         })?;
-        let items: Vec<_> = rows.flatten().collect();
+        let items: Vec<AttachmentRow> = rows.collect::<Result<Vec<_>, _>>()?;
         if items.len() <= 1 {
             continue;
         }
 
-        let survivor_id = items[0].0;
-        let mut merged_remote = items[0].1.clone();
-        let mut merged_type = items[0].2.clone();
-        let mut merged_file_name = items[0].3.clone();
-        let mut merged_mime = items[0].4.clone();
-        let mut merged_size = items[0].5;
-        let mut merged_local = items[0].6.clone();
-        let mut merged_thumb = items[0].7.clone();
-        let mut merged_json_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        // Build connected components using Disjoint Set Union (DSU)
+        let n = items.len();
+        let mut parent: Vec<usize> = (0..n).collect();
 
-        for item in &items {
-            if merged_remote.is_none() && item.1.is_some() { merged_remote = item.1.clone(); }
-            if merged_type.is_none() && item.2.is_some() { merged_type = item.2.clone(); }
-            if merged_file_name.is_none() && item.3.is_some() { merged_file_name = item.3.clone(); }
-            if merged_mime.is_none() && item.4.is_some() { merged_mime = item.4.clone(); }
-            if merged_size.is_none() && item.5.is_some() { merged_size = item.5; }
-            if merged_local.is_none() && item.6.is_some() { merged_local = item.6.clone(); }
-            if merged_thumb.is_none() && item.7.is_some() { merged_thumb = item.7.clone(); }
+        fn find(parent: &mut [usize], i: usize) -> usize {
+            if parent[i] == i {
+                i
+            } else {
+                let p = parent[i];
+                parent[i] = find(parent, p);
+                parent[i]
+            }
+        }
 
-            if let Some(json_str) = &item.8 {
-                if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    for (k, v) in map {
-                        merged_json_map.insert(k, v);
-                    }
+        fn union(parent: &mut [usize], i: usize, j: usize) {
+            let root_i = find(parent, i);
+            let root_j = find(parent, j);
+            if root_i != root_j {
+                parent[root_i] = root_j;
+            }
+        }
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let shares_remote = match (&items[i].remote_url, &items[j].remote_url) {
+                    (Some(r1), Some(r2)) => r1 == r2,
+                    _ => false,
+                };
+                let shares_provider = match (&items[i].provider_attachment_id, &items[j].provider_attachment_id) {
+                    (Some(p1), Some(p2)) => p1 == p2,
+                    _ => false,
+                };
+                if shares_remote || shares_provider {
+                    union(&mut parent, i, j);
                 }
             }
         }
 
-        let merged_metadata_str = serde_json::Value::Object(merged_json_map).to_string();
+        let mut groups: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        for i in 0..n {
+            let root = find(&mut parent, i);
+            groups.entry(root).or_default().push(i);
+        }
 
-        conn.execute(
-            "UPDATE message_attachments 
-             SET remote_url = ?1, attachment_type = COALESCE(?2, attachment_type), file_name = ?3, mime_type = ?4, size_bytes = ?5, local_path = ?6, thumbnail_url = ?7, metadata_json = ?8 
-             WHERE id = ?9",
-            rusqlite::params![merged_remote, merged_type, merged_file_name, merged_mime, merged_size, merged_local, merged_thumb, merged_metadata_str, survivor_id],
-        )?;
+        for (_, member_indices) in groups {
+            if member_indices.len() <= 1 {
+                continue;
+            }
 
-        conn.execute(
-            "DELETE FROM message_attachments WHERE message_id = ?1 AND provider_attachment_id = ?2 AND id != ?3",
-            rusqlite::params![msg_id, prov_id, survivor_id],
-        )?;
+            let survivor_idx = member_indices[0];
+            let survivor_id = items[survivor_idx].id;
+
+            let mut merged_prov_id = items[survivor_idx].provider_attachment_id.clone();
+            let mut merged_remote = items[survivor_idx].remote_url.clone();
+            let mut merged_type = items[survivor_idx].attachment_type.clone();
+            let mut merged_file_name = items[survivor_idx].file_name.clone();
+            let mut merged_mime = items[survivor_idx].mime_type.clone();
+            let mut merged_size = items[survivor_idx].size_bytes;
+            let mut merged_local = items[survivor_idx].local_path.clone();
+            let mut merged_thumb = items[survivor_idx].thumbnail_url.clone();
+
+            let mut merged_json_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+            let mut raw_unparsed_values: Vec<serde_json::Value> = Vec::new();
+
+            for &idx in &member_indices {
+                let item = &items[idx];
+                if merged_prov_id.is_none() && item.provider_attachment_id.is_some() {
+                    merged_prov_id = item.provider_attachment_id.clone();
+                }
+                if merged_remote.is_none() && item.remote_url.is_some() {
+                    merged_remote = item.remote_url.clone();
+                }
+                if merged_type.is_none() && item.attachment_type.is_some() {
+                    merged_type = item.attachment_type.clone();
+                }
+                if merged_file_name.is_none() && item.file_name.is_some() {
+                    merged_file_name = item.file_name.clone();
+                }
+                if merged_mime.is_none() && item.mime_type.is_some() {
+                    merged_mime = item.mime_type.clone();
+                }
+                if merged_size.is_none() && item.size_bytes.is_some() {
+                    merged_size = item.size_bytes;
+                }
+                if merged_local.is_none() && item.local_path.is_some() {
+                    merged_local = item.local_path.clone();
+                }
+                if merged_thumb.is_none() && item.thumbnail_url.is_some() {
+                    merged_thumb = item.thumbnail_url.clone();
+                }
+
+                if let Some(json_str) = &item.metadata_json {
+                    let trimmed = json_str.trim();
+                    if !trimmed.is_empty() && trimmed != "{}" {
+                        match serde_json::from_str::<serde_json::Value>(trimmed) {
+                            Ok(serde_json::Value::Object(map)) => {
+                                for (k, v) in map {
+                                    if let Some(existing_val) = merged_json_map.get(&k) {
+                                        if existing_val != &v {
+                                            // Preserve conflicting key from duplicate without overwriting survivor's key
+                                            let conflict_key = format!("{}_dup_{}", k, item.id);
+                                            merged_json_map.insert(conflict_key, v);
+                                        }
+                                    } else {
+                                        merged_json_map.insert(k, v);
+                                    }
+                                }
+                            }
+                            Ok(other) => {
+                                raw_unparsed_values.push(other);
+                            }
+                            Err(_) => {
+                                raw_unparsed_values.push(serde_json::Value::String(json_str.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !raw_unparsed_values.is_empty() {
+                merged_json_map.insert("_legacy_unparsed_values".to_string(), serde_json::Value::Array(raw_unparsed_values));
+            }
+
+            let merged_metadata_str = serde_json::Value::Object(merged_json_map).to_string();
+
+            conn.execute(
+                "UPDATE message_attachments 
+                 SET provider_attachment_id = ?1, remote_url = ?2, attachment_type = COALESCE(?3, attachment_type), file_name = ?4, mime_type = ?5, size_bytes = ?6, local_path = ?7, thumbnail_url = ?8, metadata_json = ?9 
+                 WHERE id = ?10",
+                rusqlite::params![merged_prov_id, merged_remote, merged_type, merged_file_name, merged_mime, merged_size, merged_local, merged_thumb, merged_metadata_str, survivor_id],
+            )?;
+
+            for &idx in &member_indices {
+                if items[idx].id != survivor_id {
+                    conn.execute("DELETE FROM message_attachments WHERE id = ?1", [items[idx].id])?;
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+pub fn apply_migration_v4(conn: &Connection) -> Result<()> {
+    apply_migration_v3(conn)?;
+
+    let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    if current_version >= 4 {
+        return Ok(());
+    }
+
+    let guard = PragmaGuard::new(conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+
+    let migration_result = (|| -> Result<()> {
+        conn.execute_batch("SAVEPOINT migration_v4;")?;
+
+        let has_attachments: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='message_attachments'",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(false);
+
+        if has_attachments {
+            merge_duplicate_attachments(conn)?;
+
+            conn.execute_batch(r#"
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote 
+                ON message_attachments(message_id, remote_url) 
+                WHERE remote_url IS NOT NULL;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_provider
+                ON message_attachments(message_id, provider_attachment_id)
+                WHERE provider_attachment_id IS NOT NULL;
+            "#)?;
+        }
+
+        let fk_violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))?;
+        if fk_violations > 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+                Some(format!("Foreign key check failed with {} violations", fk_violations)),
+            ));
+        }
+
+        conn.execute_batch("PRAGMA user_version = 4;")?;
+        conn.execute_batch("RELEASE SAVEPOINT migration_v4;")?;
+        Ok(())
+    })();
+
+    if migration_result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v4; RELEASE SAVEPOINT migration_v4;");
+    }
+
+    guard.restore()?;
+    migration_result
 }
 
 pub fn apply_migration_v3(conn: &Connection) -> Result<()> {

@@ -61,7 +61,7 @@ fn ensure_zalo_session_schema(conn: &Connection) -> Result<()> {
 }
 
 pub fn migrate(conn: &Connection) -> Result<()> {
-    super::migration_v2::apply_migration_v3(conn)?;
+    super::migration_v2::apply_migration_v4(conn)?;
 
     conn.execute_batch(include_str!("schema.sql"))?;
 

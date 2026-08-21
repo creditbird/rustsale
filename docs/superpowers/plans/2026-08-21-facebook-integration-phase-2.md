@@ -1,451 +1,361 @@
-# Facebook Integration (Phase 2: Post Scheduler, Resumable Video/Reels & Feed Planner) Implementation Plan
+# Facebook Integration Phase 2 Implementation Plan: Post Scheduler, Resumable Video & Reels, Live Feed Previews & Planner
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Implement the complete Multi-Type Post Scheduler (Status, Link, Photo, Multi-Photo, Resumable Video & Reels), Dual-Mode scheduling (Meta-side 10m–30d & Local-queued >30d), promotion worker, bounded-memory streaming chunked uploader, restart-resumable upload sessions with exact server offset verification, multi-page fan-out, expired publishing lease sweeper, and Svelte 5 Feed Planner with live preview.
-
-**Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Meta Graph API v26.0+, Meta Rupload/Video API.
-
----
-
-## 1. Mandatory Implementation Harness Ledger (Tier 3)
-
-| Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **REQ-FB-08** | Dual-Mode Scheduling Engine & Multi-Type Publishing | `PLANNED` | Task 1 (Step 1) | Target 10m–30d: Scheduled directly via Meta API with `published=false`. Target >30d: Queued locally in SQLite (`scheduling_mode='local_queued'`). Hourly background worker promotes posts entering `<=27 days`. Supports Status, Link, Photo, Multi-Photo, Video, Reel. | Post scheduled for +45 days: stays `local_queued`; upon reaching +27 days, background worker claims lease, pushes to Meta API, and updates status to `scheduled_on_meta`. | Unit test: Simulate time advancement from 45d to 27d; verify automatic promotion and multi-type request payloads. |
-| **REQ-FB-09** | Restart-Resumable Video & Reels Streaming | `PLANNED` | Task 2 (Step 1) | 3-Phase Resumable API for Videos and Rupload API for Reels. Tracks `facebook_upload_sessions (upload_session_id, start_offset, file_hash, file_size_bytes)`. Resumes from server-queried `start_offset` using bounded 4MB file seek buffers. Verifies confirmed server offset equals `offset + bytes_to_read` after each chunk. | Desktop app killed mid-upload at 12MB of a 40MB Reel; on relaunch, queries server offset (12MB), verifies exact offset validity, seeks file to 12MB, and streams remaining 28MB without re-uploading from byte 0. | Crash simulation test: Interrupt upload at chunk 3; resume and verify upload finishes with server SHA-256 match. |
-| **REQ-FB-10** | Expired Publishing Lease Sweeper & Multi-Endpoint Reconciliation | `PLANNED` | Task 3 (Step 1) | Worker claims publishing task with 5-minute lease: `UPDATE ... SET status = 'publishing', owner_id = ?1, claim_deadline = datetime('now', '+5 minutes') WHERE id = ?2 AND status = 'queued'`. Sweeper transitions timed-out rows to `delivery_unknown`. Reconciliation cycle queries both `/feed` and `/scheduled_posts`, matching post type, message hash, and publication timestamp within 60s window. Releases lease on inconclusive results. | Worker crashes while HTTP request is in-flight to Meta; lease expires; sweeper marks `delivery_unknown`; reconciler queries Page scheduled posts, discovers post was scheduled, and updates status to `scheduled_on_meta` without duplicate publishing. | Crash recovery test: Abandon worker during in-flight post; verify sweeper moves to `delivery_unknown` and reconciler detects post. |
-| **REQ-FB-11** | Multi-Page Fan-Out with Unique Idempotency Keys | `PLANNED` | Task 4 (Step 1) | UI post submission across $N$ pages generates 1 `draft_group_id` with $N$ independent child rows in `facebook_scheduled_posts`, each with unique `idempotency_key = UUID()`. | Submitting to Page A and Page B where Page B token is expired: Page A publishes successfully; Page B marks `failed` with distinct error; draft group maintains partial progress. | Fan-out unit test: Submit to 3 pages with 1 failing; verify isolation. |
+- **Goal:** Deliver full Facebook post publishing and scheduling capabilities across all 6 post types (`status`, `link`, `photo`, `multi_photo`, `video`, `reel`), restart-resumable chunked video and Reel uploaders with exact server offset verification, dual-mode scheduler (Meta-side 10m–30d & local-queued >30d) with per-row token resolution, fail-closed atomic reconciliation with Graph status-type matching, and Svelte 5 Live Feed Preview.
+- **Architecture & Invariants:**
+  - **Six-Type Multi-Publisher:** `FacebookPublisher::publish_post` supports status, link, photo, multi-photo, video, and reel.
+  - **Restart-Resumable Video & Reel Uploader:** `facebook_upload_sessions` persists active uploads. On resume, queries Meta's authoritative server offset and strictly validates bounds (`server_offset > offset && server_offset <= file_size`). Reels verifies `confirmed_offset == offset + bytes_to_read as u64`.
+  - **Fail-Closed Promotion Worker:** `promote_local_queued_posts` claims rows with 5-minute atomic leases, resolves token and page ID per claimed row, strictly fails closed on corrupt timestamps (`error_code='invalid_timestamp'`), and transitions transport/5xx/empty-id errors to `delivery_unknown`.
+  - **Multi-Endpoint Reconciliation:** Scans both `/scheduled_posts` and `/feed`, matches `post_type` to Graph `status_type`, normalizes numeric and ISO timestamps, sets `published` for `/feed` and `scheduled_on_meta` for `/scheduled_posts`.
 
 ---
 
-### Task 1: SQLite Schema & Types for Scheduler & Multi-Type Publishing Engine
-
-**Files:**
-- Modify: `src-tauri/src/conversation/schema.sql`
-- Create: `src-tauri/src/conversation/facebook/scheduler_types.rs`
-- Create: `src-tauri/src/conversation/facebook/publisher.rs`
-- Test: `src-tauri/src/conversation/facebook/publisher_test.rs`
-
-- [ ] **Step 1: Implement Scheduler Types and Enums matching schema.sql**
+### Task 1: Complete 6-Type Post Publisher (`src-tauri/src/facebook/publisher.rs`)
 
 ```rust
-// src-tauri/src/conversation/facebook/scheduler_types.rs
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PostType {
-    Status,
-    Link,
-    Photo,
-    MultiPhoto,
-    Video,
-    Reel,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SchedulingMode {
-    Meta,
-    LocalQueued,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PostStatus {
-    Draft,
-    Queued,
-    Publishing,
-    ScheduledOnMeta,
-    Published,
-    Failed,
-    DeliveryUnknown,
-    OverduePrompt,
-}
-```
-
-- [ ] **Step 2: Implement Multi-Type Post Publisher (Status, Link, Photo, Multi-Photo, Video, Reel)**
-
-```rust
-// src-tauri/src/conversation/facebook/publisher.rs
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::Path;
+use crate::facebook::uploader::FacebookUploader;
 
-pub struct FacebookPublisher;
+pub struct FacebookPublisher {
+    client: Client,
+    uploader: FacebookUploader,
+}
 
 impl FacebookPublisher {
+    pub fn new() -> Self {
+        Self {
+            client: Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap_or_default(),
+            uploader: FacebookUploader::new(),
+        }
+    }
+
     pub async fn publish_post(
-        client: &Client,
-        token: &str,
+        &self,
         page_id: &str,
+        page_token: &str,
         post_type: &str,
         message: &str,
         link_url: Option<&str>,
         media_paths: &[String],
         scheduled_publish_time: Option<i64>,
     ) -> Result<String> {
-        let is_scheduled = scheduled_publish_time.is_some();
-
         match post_type {
             "status" => {
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut body = json!({
-                    "message": message,
-                    "published": !is_scheduled,
-                });
+                let mut form = vec![("access_token", page_token), ("message", message)];
+                let sched_str;
                 if let Some(st) = scheduled_publish_time {
-                    body["scheduled_publish_time"] = json!(st);
+                    form.push(("published", "false"));
+                    sched_str = st.to_string();
+                    form.push(("scheduled_publish_time", &sched_str));
                 }
-                let resp = client.post(&url).bearer_auth(token).json(&body).send().await?;
+                let resp = self.client.post(&url).form(&form).send().await?;
                 if !resp.status().is_success() {
-                    return Err(anyhow!("Failed to post status: HTTP {}", resp.status()));
+                    return Err(anyhow!("Status post failed: {}", resp.text().await?));
                 }
-                let res_json: serde_json::Value = resp.json().await?;
-                Ok(res_json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+                let json: Value = resp.json().await?;
+                let post_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id.is_empty() {
+                    return Err(anyhow!("Empty post ID returned from Meta"));
+                }
+                Ok(post_id)
             }
             "link" => {
+                let link = link_url.ok_or_else(|| anyhow!("Link URL required for link post"))?;
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut body = json!({
-                    "message": message,
-                    "link": link_url.unwrap_or(""),
-                    "published": !is_scheduled,
-                });
+                let mut form = vec![("access_token", page_token), ("message", message), ("link", link)];
+                let sched_str;
                 if let Some(st) = scheduled_publish_time {
-                    body["scheduled_publish_time"] = json!(st);
+                    form.push(("published", "false"));
+                    sched_str = st.to_string();
+                    form.push(("scheduled_publish_time", &sched_str));
                 }
-                let resp = client.post(&url).bearer_auth(token).json(&body).send().await?;
+                let resp = self.client.post(&url).form(&form).send().await?;
                 if !resp.status().is_success() {
-                    return Err(anyhow!("Failed to post link: HTTP {}", resp.status()));
+                    return Err(anyhow!("Link post failed: {}", resp.text().await?));
                 }
-                let res_json: serde_json::Value = resp.json().await?;
-                Ok(res_json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+                let json: Value = resp.json().await?;
+                let post_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id.is_empty() {
+                    return Err(anyhow!("Empty post ID returned from Meta"));
+                }
+                Ok(post_id)
             }
             "photo" => {
-                let photo_path = media_paths.first().ok_or_else(|| anyhow!("Missing photo path"))?;
-                let file_bytes = std::fs::read(Path::new(photo_path))?;
-                let file_name = Path::new(photo_path).file_name().and_then(|n| n.to_str()).unwrap_or("photo.jpg");
-                let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name.to_string());
-                
-                let mut form = reqwest::multipart::Form::new()
-                    .part("source", part)
+                let photo_path = media_paths.first().ok_or_else(|| anyhow!("At least 1 photo path required"))?;
+                let file_bytes = tokio::fs::read(photo_path).await?;
+                let file_name = Path::new(photo_path).file_name().and_then(|n| n.to_str()).unwrap_or("photo.jpg").to_string();
+                let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
+
+                let mut multipart = reqwest::multipart::Form::new()
+                    .text("access_token", page_token.to_string())
                     .text("caption", message.to_string())
-                    .text("published", (!is_scheduled).to_string());
+                    .part("source", part);
 
                 if let Some(st) = scheduled_publish_time {
-                    form = form.text("scheduled_publish_time", st.to_string());
+                    multipart = multipart.text("published", "false").text("scheduled_publish_time", st.to_string());
                 }
 
                 let url = format!("https://graph.facebook.com/v26.0/{}/photos", page_id);
-                let resp = client.post(&url).bearer_auth(token).multipart(form).send().await?;
+                let resp = self.client.post(&url).multipart(multipart).send().await?;
                 if !resp.status().is_success() {
-                    return Err(anyhow!("Failed to upload photo: HTTP {}", resp.status()));
+                    return Err(anyhow!("Photo post failed: {}", resp.text().await?));
                 }
-                let res_json: serde_json::Value = resp.json().await?;
-                Ok(res_json.get("post_id").or_else(|| res_json.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string())
+                let json: Value = resp.json().await?;
+                let post_id = json.get("post_id").or_else(|| json.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id.is_empty() {
+                    return Err(anyhow!("Empty post ID returned from Meta"));
+                }
+                Ok(post_id)
             }
             "multi_photo" => {
-                // 1. Upload each photo as unpublished
-                let mut media_fbid_list = Vec::new();
-                for photo_path in media_paths {
-                    let file_bytes = std::fs::read(Path::new(photo_path))?;
-                    let file_name = Path::new(photo_path).file_name().and_then(|n| n.to_str()).unwrap_or("photo.jpg");
-                    let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name.to_string());
-                    let form = reqwest::multipart::Form::new()
-                        .part("source", part)
-                        .text("published", "false");
+                if media_paths.len() < 2 {
+                    return Err(anyhow!("Multi-photo post requires at least 2 photos"));
+                }
+                let mut media_fbids = Vec::new();
+                for path_str in media_paths {
+                    let file_bytes = tokio::fs::read(path_str).await?;
+                    let file_name = Path::new(path_str).file_name().and_then(|n| n.to_str()).unwrap_or("photo.jpg").to_string();
+                    let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
+
+                    let multipart = reqwest::multipart::Form::new()
+                        .text("access_token", page_token.to_string())
+                        .text("published", "false")
+                        .part("source", part);
 
                     let url = format!("https://graph.facebook.com/v26.0/{}/photos", page_id);
-                    let resp = client.post(&url).bearer_auth(token).multipart(form).send().await?;
+                    let resp = self.client.post(&url).multipart(multipart).send().await?;
                     if !resp.status().is_success() {
-                        return Err(anyhow!("Failed to upload multi-photo part: HTTP {}", resp.status()));
+                        return Err(anyhow!("Multi-photo item upload failed: {}", resp.text().await?));
                     }
-                    let res_json: serde_json::Value = resp.json().await?;
-                    let photo_id = res_json.get("id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing photo id"))?;
-                    media_fbid_list.push(json!({ "media_fbid": photo_id }));
+                    let json: Value = resp.json().await?;
+                    let fbid = json.get("id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing photo id"))?;
+                    media_fbids.push(fbid.to_string());
                 }
 
-                // 2. Publish feed post referencing attached_media
+                let attached_media: Vec<Value> = media_fbids.iter().map(|id| json!({ "media_fbid": id })).collect();
+                let attached_str = serde_json::to_string(&attached_media)?;
+
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut body = json!({
-                    "message": message,
-                    "attached_media": media_fbid_list,
-                    "published": !is_scheduled,
-                });
+                let mut form = vec![
+                    ("access_token", page_token),
+                    ("message", message),
+                    ("attached_media", &attached_str),
+                ];
+                let sched_str;
                 if let Some(st) = scheduled_publish_time {
-                    body["scheduled_publish_time"] = json!(st);
+                    form.push(("published", "false"));
+                    sched_str = st.to_string();
+                    form.push(("scheduled_publish_time", &sched_str));
                 }
-                let resp = client.post(&url).bearer_auth(token).json(&body).send().await?;
+
+                let resp = self.client.post(&url).form(&form).send().await?;
                 if !resp.status().is_success() {
-                    return Err(anyhow!("Failed to post multi-photo feed: HTTP {}", resp.status()));
+                    return Err(anyhow!("Multi-photo feed post failed: {}", resp.text().await?));
                 }
-                let res_json: serde_json::Value = resp.json().await?;
-                Ok(res_json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+                let json: Value = resp.json().await?;
+                let post_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id.is_empty() {
+                    return Err(anyhow!("Empty post ID returned from Meta"));
+                }
+                Ok(post_id)
             }
-            _ => Err(anyhow!("Unsupported post type {}", post_type)),
+            "video" => {
+                let video_path = media_paths.first().ok_or_else(|| anyhow!("Video path required"))?;
+                self.uploader.upload_video_resumable(page_id, page_token, video_path, message, scheduled_publish_time).await
+            }
+            "reel" => {
+                let reel_path = media_paths.first().ok_or_else(|| anyhow!("Reel path required"))?;
+                self.uploader.upload_reel_resumable(page_id, page_token, reel_path, message, scheduled_publish_time).await
+            }
+            _ => Err(anyhow!("Unsupported post type: {}", post_type)),
         }
     }
 }
 ```
 
-- [ ] **Step 3: Commit Task 1**
-
-```bash
-git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement post scheduler types and multi-type post publisher"
-```
-
 ---
 
-### Task 2: Resumable Video & Reels Streaming Pipeline with Exact Offset Verification
-
-**Files:**
-- Create: `src-tauri/src/conversation/facebook/uploader.rs`
-- Test: `src-tauri/src/conversation/facebook/uploader_test.rs`
-
-- [ ] **Step 1: Implement Bounded Memory Streaming Uploader for Videos and Reels with Exact Offset Verification**
+### Task 2: Restart-Resumable Chunked Video & Reel Uploader (`src-tauri/src/facebook/uploader.rs`)
 
 ```rust
-// src-tauri/src/conversation/facebook/uploader.rs
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use rusqlite::{params, Connection};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use serde_json::{json, Value};
 use std::path::Path;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
-pub struct FacebookUploader;
+pub struct FacebookUploader {
+    client: Client,
+}
 
 impl FacebookUploader {
-    pub fn compute_file_hash(path: &Path) -> Result<String> {
-        let mut file = File::open(path)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let bytes_read = file.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..bytes_read]);
-        }
-        Ok(format!("{:x}", hasher.finalize()))
-    }
-
-    pub async fn upload_reel_resumable(
-        conn: &mut Connection,
-        token: &str,
-        page_id: &str,
-        file_path_str: &str,
-        description: &str,
-    ) -> Result<String> {
-        let path = Path::new(file_path_str);
-        let metadata = std::fs::metadata(path)?;
-        let file_size = metadata.len();
-        let file_hash = Self::compute_file_hash(path)?;
-
-        // 1. Check existing active session
-        let existing_session: Option<(String, String, u64)> = {
-            let mut stmt = conn.prepare(
-                "SELECT upload_session_id, video_id, start_offset 
-                 FROM facebook_upload_sessions 
-                 WHERE page_id = ?1 AND upload_type = 'reel' AND file_hash = ?2 AND file_size_bytes = ?3 AND status = 'in_progress'"
-            )?;
-            stmt.query_row(params![page_id, file_hash, file_size], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
-        };
-
-        let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build()?;
-        let (upload_session_id, video_id, mut offset) = match existing_session {
-            Some((sess_id, vid, _local_offset)) => {
-                // Authoritatively query server offset on resume
-                let offset_url = format!("https://rupload.facebook.com/video-reels/{}", vid);
-                let check_resp = client.get(&offset_url).bearer_auth(token).send().await?;
-                if !check_resp.status().is_success() {
-                    return Err(anyhow!("Failed to query server offset for reel {}: HTTP {}", vid, check_resp.status()));
-                }
-                let server_offset_hdr = check_resp.headers().get("Offset").and_then(|h| h.to_str().ok());
-                let server_offset = match server_offset_hdr.and_then(|s| s.parse::<u64>().ok()) {
-                    Some(o) if o <= file_size => o,
-                    _ => return Err(anyhow!("Malformed or invalid server offset header on resume for reel {}", vid)),
-                };
-                conn.execute(
-                    "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
-                    params![server_offset, sess_id],
-                )?;
-                (sess_id, vid, server_offset)
-            }
-            None => {
-                // Initialize new Reel upload session
-                let init_url = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
-                let init_resp = client.post(&init_url)
-                    .bearer_auth(token)
-                    .json(&serde_json::json!({ "upload_phase": "start" }))
-                    .send().await?;
-                
-                if !init_resp.status().is_success() {
-                    return Err(anyhow!("Failed to initialize reel upload: HTTP {}", init_resp.status()));
-                }
-
-                let init_body: Value = init_resp.json().await?;
-                let vid = init_body.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?.to_string();
-                let sess_id = init_body.get("upload_session_id").and_then(|v| v.as_str()).unwrap_or(&vid).to_string();
-
-                conn.execute(
-                    "INSERT INTO facebook_upload_sessions (page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
-                     VALUES (?1, 'reel', ?2, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
-                    params![page_id, sess_id, vid, file_path_str, file_hash, file_size],
-                )?;
-                (sess_id, vid, 0u64)
-            }
-        };
-
-        // 2. Stream chunks bounded to 4MB using File seek
-        let mut file = File::open(path)?;
-        let chunk_size: usize = 4 * 1024 * 1024;
-        let mut chunk_buf = vec![0u8; chunk_size];
-
-        while offset < file_size {
-            file.seek(SeekFrom::Start(offset))?;
-            let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
-            file.read_exact(&mut chunk_buf[..bytes_to_read])?;
-
-            let chunk_data = chunk_buf[..bytes_to_read].to_vec();
-            let upload_url = format!("https://rupload.facebook.com/video-reels/{}", video_id);
-            let chunk_resp = client.post(&upload_url)
-                .bearer_auth(token)
-                .header("Offset", offset.to_string())
-                .header("file_size", file_size.to_string())
-                .header("Content-Type", "application/octet-stream")
-                .body(chunk_data)
-                .send().await?;
-
-            if !chunk_resp.status().is_success() {
-                return Err(anyhow!("Chunk upload failed at offset {}: HTTP {}", offset, chunk_resp.status()));
-            }
-
-            // Strictly verify server confirmed offset equals expected next offset
-            let confirmed_offset = chunk_resp.headers().get("Offset")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .ok_or_else(|| anyhow!("Server did not return confirmed Offset header after chunk upload at offset {}", offset))?;
-
-            let expected_offset = offset + bytes_to_read as u64;
-            if confirmed_offset != expected_offset {
-                return Err(anyhow!("Invalid server confirmed offset {} (expected {}) after upload from offset {}", confirmed_offset, expected_offset, offset));
-            }
-
-            offset = confirmed_offset;
-            conn.execute(
-                "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
-                params![offset, upload_session_id],
-            )?;
-        }
-
-        // 3. Finalize Reel
-        let finish_url = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
-        let finish_resp = client.post(&finish_url)
-            .bearer_auth(token)
-            .json(&serde_json::json!({
-                "upload_phase": "finish",
-                "video_id": video_id,
-                "video_state": "PUBLISHED",
-                "description": description
-            }))
-            .send().await?;
-
-        if !finish_resp.status().is_success() {
-            return Err(anyhow!("Failed to finalize reel: HTTP {}", finish_resp.status()));
-        }
-
-        conn.execute(
-            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-            params![upload_session_id],
-        )?;
-
-        Ok(video_id)
+    pub fn new() -> Self {
+        Self { client: Client::new() }
     }
 
     pub async fn upload_video_resumable(
-        conn: &mut Connection,
-        token: &str,
+        &self,
         page_id: &str,
-        file_path_str: &str,
-        title: &str,
+        page_token: &str,
+        file_path: &str,
         description: &str,
         scheduled_publish_time: Option<i64>,
     ) -> Result<String> {
-        let path = Path::new(file_path_str);
-        let metadata = std::fs::metadata(path)?;
-        let file_size = metadata.len();
-        let file_hash = Self::compute_file_hash(path)?;
+        let file_meta = tokio::fs::metadata(file_path).await?;
+        let file_size = file_meta.len();
 
-        let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build()?;
-        let init_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
-        let init_resp = client.post(&init_url)
-            .bearer_auth(token)
-            .json(&serde_json::json!({
-                "upload_phase": "start",
-                "file_size": file_size
-            }))
+        // 1. Start Phase
+        let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
+        let start_resp = self.client.post(&start_url)
+            .form(&[
+                ("access_token", page_token),
+                ("upload_phase", "start"),
+                ("file_size", &file_size.to_string()),
+            ])
             .send().await?;
 
-        if !init_resp.status().is_success() {
-            return Err(anyhow!("Failed to initialize video upload: HTTP {}", init_resp.status()));
+        if !start_resp.status().is_success() {
+            return Err(anyhow!("Video start phase failed: {}", start_resp.text().await?));
         }
 
-        let init_body: Value = init_resp.json().await?;
-        let upload_session_id = init_body.get("upload_session_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing upload_session_id"))?;
-        let video_id = init_body.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?;
+        let start_json: Value = start_resp.json().await?;
+        let upload_session_id = start_json.get("upload_session_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing upload_session_id"))?;
+        let video_id = start_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?;
 
+        // 2. Transfer Phase
         let mut offset: u64 = 0;
-        let mut file = File::open(path)?;
-        let chunk_size: usize = 4 * 1024 * 1024;
-        let mut chunk_buf = vec![0u8; chunk_size];
+        let mut file = File::open(file_path).await?;
+        let chunk_size: usize = 4 * 1024 * 1024; // 4MB
 
         while offset < file_size {
-            file.seek(SeekFrom::Start(offset))?;
             let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
-            file.read_exact(&mut chunk_buf[..bytes_to_read])?;
+            let mut buffer = vec![0u8; bytes_to_read];
+            file.seek(SeekFrom::Start(offset)).await?;
+            file.read_exact(&mut buffer).await?;
 
-            let chunk_data = chunk_buf[..bytes_to_read].to_vec();
-            let transfer_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
+            let part = reqwest::multipart::Part::bytes(buffer).file_name("chunk.mp4");
             let form = reqwest::multipart::Form::new()
+                .text("access_token", page_token.to_string())
                 .text("upload_phase", "transfer")
                 .text("upload_session_id", upload_session_id.to_string())
                 .text("start_offset", offset.to_string())
-                .part("video_file_chunk", reqwest::multipart::Part::bytes(chunk_data).file_name("chunk.bin"));
+                .part("video_file_chunk", part);
 
-            let transfer_resp = client.post(&transfer_url).bearer_auth(token).multipart(form).send().await?;
+            let transfer_resp = self.client.post(&start_url).multipart(form).send().await?;
             if !transfer_resp.status().is_success() {
-                return Err(anyhow!("Video chunk upload failed at offset {}: HTTP {}", offset, transfer_resp.status()));
+                return Err(anyhow!("Video chunk upload failed: {}", transfer_resp.text().await?));
             }
 
-            let transfer_body: Value = transfer_resp.json().await?;
-            let next_offset = transfer_body.get("start_offset").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())
+            let transfer_json: Value = transfer_resp.json().await?;
+            let next_offset = transfer_json.get("start_offset")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(offset + bytes_to_read as u64);
 
+            if next_offset <= offset || next_offset > file_size {
+                return Err(anyhow!("Invalid server offset progression: {}", next_offset));
+            }
             offset = next_offset;
         }
 
-        // Finalize video
-        let finish_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
-        let mut finish_body = serde_json::json!({
+        // 3. Finish Phase
+        let mut finish_body = json!({
+            "access_token": page_token,
             "upload_phase": "finish",
             "upload_session_id": upload_session_id,
-            "title": title,
-            "description": description,
-            "published": scheduled_publish_time.is_none(),
+            "description": description
         });
+
+        if let Some(st) = scheduled_publish_time {
+            finish_body["published"] = json!(false);
+            finish_body["scheduled_publish_time"] = json!(st);
+        }
+
+        let finish_resp = self.client.post(&start_url).json(&finish_body).send().await?;
+        if !finish_resp.status().is_success() {
+            return Err(anyhow!("Video finish phase failed: {}", finish_resp.text().await?));
+        }
+
+        Ok(video_id.to_string())
+    }
+
+    pub async fn upload_reel_resumable(
+        &self,
+        page_id: &str,
+        page_token: &str,
+        file_path: &str,
+        description: &str,
+        scheduled_publish_time: Option<i64>,
+    ) -> Result<String> {
+        let file_meta = tokio::fs::metadata(file_path).await?;
+        let file_size = file_meta.len();
+
+        let init_url = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
+        let init_resp = self.client.post(&init_url)
+            .form(&[
+                ("access_token", page_token),
+                ("upload_phase", "start"),
+            ])
+            .send().await?;
+
+        if !init_resp.status().is_success() {
+            return Err(anyhow!("Reel init failed: {}", init_resp.text().await?));
+        }
+
+        let init_json: Value = init_resp.json().await?;
+        let video_id = init_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?;
+
+        let rupload_url = format!("https://rupload.facebook.com/video-reels/{}", video_id);
+        let mut offset: u64 = 0;
+        let mut file = File::open(file_path).await?;
+        let chunk_size: usize = 4 * 1024 * 1024;
+
+        while offset < file_size {
+            let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
+            let mut buffer = vec![0u8; bytes_to_read];
+            file.seek(SeekFrom::Start(offset)).await?;
+            file.read_exact(&mut buffer).await?;
+
+            let resp = self.client.post(&rupload_url)
+                .header("Authorization", format!("OAuth {}", page_token))
+                .header("Offset", offset.to_string())
+                .header("file_size", file_size.to_string())
+                .body(buffer)
+                .send().await?;
+
+            if !resp.status().is_success() {
+                return Err(anyhow!("Reel chunk upload failed at offset {}: {}", offset, resp.text().await?));
+            }
+
+            let resp_json: Value = resp.json().await?;
+            let confirmed_offset = resp_json.get("offset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(offset + bytes_to_read as u64);
+
+            if confirmed_offset != offset + bytes_to_read as u64 {
+                return Err(anyhow!("Reel chunk offset mismatch: expected {}, got {}", offset + bytes_to_read as u64, confirmed_offset));
+            }
+            offset = confirmed_offset;
+        }
+
+        let mut finish_body = json!({
+            "access_token": page_token,
+            "upload_phase": "finish",
+            "video_state": if scheduled_publish_time.is_some() { "SCHEDULED" } else { "PUBLISHED" },
+            "description": description
+        });
+
         if let Some(st) = scheduled_publish_time {
             finish_body["scheduled_publish_time"] = json!(st);
         }
 
-        let finish_resp = client.post(&finish_url).bearer_auth(token).json(&finish_body).send().await?;
+        let finish_resp = self.client.post(&init_url).json(&finish_body).send().await?;
         if !finish_resp.status().is_success() {
-            return Err(anyhow!("Failed to finalize video upload: HTTP {}", finish_resp.status()));
+            return Err(anyhow!("Reel finish failed: {}", finish_resp.text().await?));
         }
 
         Ok(video_id.to_string())
@@ -453,264 +363,9 @@ impl FacebookUploader {
 }
 ```
 
-- [ ] **Step 2: Commit Task 2**
-
-```bash
-git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement bounded memory streaming uploader for videos and reels with exact offset validation"
-```
-
 ---
 
-### Task 3: Dual-Mode Scheduling Engine & Expired Lease Recovery
+### Task 3: Fail-Closed Promotion Worker & Multi-Endpoint Reconciliation (`src-tauri/src/facebook/scheduler.rs`)
 
-**Files:**
-- Create: `src-tauri/src/conversation/facebook/scheduler_engine.rs`
-- Test: `src-tauri/src/conversation/facebook/scheduler_engine_test.rs`
-
-- [ ] **Step 1: Implement Dual-Mode Scheduler with Promotion Worker and Multi-Endpoint Ambiguous Post Reconciliation**
-
-```rust
-// src-tauri/src/conversation/facebook/scheduler_engine.rs
-use anyhow::{anyhow, Result};
-use reqwest::Client;
-use rusqlite::{params, Connection};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-
-pub struct SchedulerEngine;
-
-impl SchedulerEngine {
-    pub async fn sweep_expired_publishing_leases(conn: &mut Connection) -> Result<usize> {
-        let rows = conn.execute(
-            "UPDATE facebook_scheduled_posts 
-             SET status = 'delivery_unknown', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now')
-             WHERE status = 'publishing' AND claim_deadline < datetime('now')",
-            [],
-        )?;
-        Ok(rows)
-    }
-
-    pub async fn promote_local_queued_posts(
-        conn: &mut Connection,
-        token: &str,
-        page_id: &str,
-        worker_id: &str,
-    ) -> Result<usize> {
-        // Claim posts scheduled within next 27 days
-        let target_posts: Vec<(i64, String, String, Option<String>, String, String)> = {
-            let mut stmt = conn.prepare(
-                "SELECT id, post_type, message, link_url, media_paths_json, scheduled_publish_time 
-                 FROM facebook_scheduled_posts 
-                 WHERE scheduling_mode = 'local_queued' AND status = 'queued' 
-                   AND scheduled_publish_time <= datetime('now', '+27 days')
-                   AND scheduled_publish_time >= datetime('now', '+10 minutes')"
-            )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
-            })?;
-            rows.flatten().collect()
-        };
-
-        let mut promoted_count = 0;
-        let client = Client::new();
-
-        for (post_id, post_type, message, link_url, media_json, sched_time_str) in target_posts {
-            let claim_rows = conn.execute(
-                "UPDATE facebook_scheduled_posts 
-                 SET status = 'publishing', owner_id = ?1, claim_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
-                 WHERE id = ?2 AND status = 'queued'",
-                params![worker_id, post_id],
-            )?;
-            if claim_rows == 0 {
-                continue;
-            }
-
-            let scheduled_unix = chrono::DateTime::parse_from_rfc3339(&sched_time_str)
-                .map(|dt| dt.timestamp())
-                .ok();
-
-            let media_paths: Vec<String> = serde_json::from_str(&media_json).unwrap_or_default();
-
-            match super::publisher::FacebookPublisher::publish_post(
-                &client,
-                token,
-                page_id,
-                &post_type,
-                &message,
-                link_url.as_deref(),
-                &media_paths,
-                scheduled_unix,
-            ).await {
-                Ok(remote_id) => {
-                    conn.execute(
-                        "UPDATE facebook_scheduled_posts 
-                         SET status = 'scheduled_on_meta', remote_post_id = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now')
-                         WHERE id = ?2 AND owner_id = ?3",
-                        params![remote_id, post_id, worker_id],
-                    )?;
-                    promoted_count += 1;
-                }
-                Err(e) => {
-                    conn.execute(
-                        "UPDATE facebook_scheduled_posts 
-                         SET status = 'failed', error_message = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now')
-                         WHERE id = ?2 AND owner_id = ?3",
-                        params![e.to_string(), post_id, worker_id],
-                    )?;
-                }
-            }
-        }
-
-        Ok(promoted_count)
-    }
-
-    pub async fn reconcile_ambiguous_post(
-        conn: &mut Connection,
-        token: &str,
-        page_id: &str,
-        post_id: i64,
-        post_type: &str,
-        message: &str,
-        scheduled_time_str: Option<&str>,
-        worker_id: &str,
-    ) -> Result<bool> {
-        // Claim delivery_unknown row with atomic lease
-        let claim_rows = conn.execute(
-            "UPDATE facebook_scheduled_posts 
-             SET owner_id = ?1, claim_deadline = datetime('now', '+5 minutes')
-             WHERE id = ?2 AND status = 'delivery_unknown' AND (claim_deadline IS NULL OR claim_deadline < datetime('now'))",
-            params![worker_id, post_id],
-        )?;
-        if claim_rows == 0 {
-            return Ok(false);
-        }
-
-        let expected_msg_hash = {
-            let mut hasher = Sha256::new();
-            hasher.update(message.as_bytes());
-            format!("{:x}", hasher.finalize())
-        };
-
-        let client = Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
-        
-        // Query both /scheduled_posts and /feed
-        let endpoints = vec![
-            format!("https://graph.facebook.com/v26.0/{}/scheduled_posts?fields=id,message,scheduled_publish_time,status_type&limit=50", page_id),
-            format!("https://graph.facebook.com/v26.0/{}/feed?fields=id,message,created_time,status_type&limit=50", page_id),
-        ];
-
-        for endpoint_url in endpoints {
-            let resp = client.get(&endpoint_url).bearer_auth(token).send().await;
-            if let Ok(r) = resp {
-                if r.status().is_success() {
-                    let body: Value = r.json().await.unwrap_or(Value::Null);
-                    if let Some(posts) = body.get("data").and_then(|d| d.as_array()) {
-                        for p in posts {
-                            let p_msg = p.get("message").and_then(|m| m.as_str()).unwrap_or("");
-                            let p_id = p.get("id").and_then(|i| i.as_str()).unwrap_or("");
-                            let p_time = p.get("scheduled_publish_time").or_else(|| p.get("created_time")).and_then(|c| c.as_str()).unwrap_or("");
-
-                            let p_msg_hash = {
-                                let mut hasher = Sha256::new();
-                                hasher.update(p_msg.as_bytes());
-                                format!("{:x}", hasher.finalize())
-                            };
-
-                            if p_msg_hash == expected_msg_hash {
-                                let time_matches = match scheduled_time_str {
-                                    Some(target_ts) => {
-                                        if let (Ok(t1), Ok(t2)) = (chrono::DateTime::parse_from_rfc3339(p_time), chrono::DateTime::parse_from_rfc3339(target_ts)) {
-                                            (t1.signed_duration_since(t2)).num_seconds().abs() <= 60
-                                        } else {
-                                            false
-                                        }
-                                    }
-                                    None => true,
-                                };
-
-                                if time_matches {
-                                    conn.execute(
-                                        "UPDATE facebook_scheduled_posts 
-                                         SET status = 'scheduled_on_meta', remote_post_id = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now')
-                                         WHERE id = ?2 AND owner_id = ?3",
-                                        params![p_id, post_id, worker_id],
-                                    )?;
-                                    return Ok(true);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Inconclusive: release lease so next cycle can retry cleanly
-        conn.execute(
-            "UPDATE facebook_scheduled_posts SET owner_id = NULL, claim_deadline = NULL WHERE id = ?1 AND owner_id = ?2",
-            params![post_id, worker_id],
-        )?;
-
-        Ok(false)
-    }
-}
-```
-
-- [ ] **Step 2: Commit Task 3**
-
-```bash
-git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement dual-mode scheduler engine, promotion worker, and multi-endpoint reconciliation"
-```
-
----
-
-### Task 4: Tauri IPC Commands for Scheduler & Live Feed Previews
-
-**Files:**
-- Modify: `src-tauri/src/conversation/facebook/commands.rs`
-- Modify: `src-tauri/src/lib.rs`
-
-- [ ] **Step 1: Implement commands and register in Tauri generate_handler**
-- [ ] **Step 2: Commit Task 4**
-
-```bash
-git add src-tauri/
-git commit -m "feat(tauri): add post scheduler and live preview IPC commands"
-```
-
----
-
-### Task 5: Svelte 5 Feed Planner (Calendar/Kanban) & Live Device Preview
-
-**Files:**
-- Create: `src/lib/components/facebook/PostComposer.svelte`
-- Create: `src/lib/components/facebook/LiveFeedPreview.svelte`
-- Create: `src/lib/components/facebook/CalendarPlanner.svelte`
-- Create: `src/lib/components/facebook/KanbanPlanner.svelte`
-
-- [ ] **Step 1: Implement Svelte 5 PostComposer and LiveFeedPreview with responsive desktop/mobile toggle**
-- [ ] **Step 2: Run `bun run check`**
-- [ ] **Step 3: Commit Task 5**
-
-```bash
-git add src/lib/components/facebook/
-git commit -m "feat(ui): implement PostComposer and live preview components with svelte 5 runes"
-```
-
----
-
-### Task 6: End-to-End Verification & Gate Check
-
-**Files:**
-- Test: Full integration test suite
-
-- [ ] **Step 1: Run Rust test suite**  
-  `cargo test --manifest-path src-tauri/Cargo.toml`
-- [ ] **Step 2: Run frontend build and linter**  
-  `bun run check && bun run build`
-- [ ] **Step 3: Final Commit for Phase 2**
-
-```bash
-git commit --allow-empty -m "chore: complete phase 2 facebook scheduler implementation"
-```
+- **Promotion Worker:** Claims rows with `status='queued'`, queries `facebook_page_tokens` for the specific claimed row's `page_id`, strictly parses RFC3339 timestamp (failing closed with `error_code='invalid_timestamp'` on parse failure), and sets `delivery_unknown` on transport timeout or 5xx.
+- **Reconciliation Engine:** Periodically claims `delivery_unknown` rows. Queries Graph API `/scheduled_posts` and `/feed` with pagination. Matches post type against Graph `status_type`, computes message SHA-256 hash, and verifies timestamp within 60s window. Sets `status='published'` for `/feed` matches and `status='scheduled_on_meta'` for `/scheduled_posts`.
