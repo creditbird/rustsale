@@ -255,10 +255,13 @@ serve(async (req: Request) => {
       const longData = await longResp.json();
       const longLivedUserToken = longData.access_token;
 
+      // Fail-closed ASID resolution from /me
       const meUrl = `https://graph.facebook.com/v26.0/me?access_token=${encodeURIComponent(longLivedUserToken)}`;
       const meResp = await fetch(meUrl);
-      const meData = meResp.ok ? await meResp.json() : null;
-      const appUserId = meData?.id;
+      if (!meResp.ok) throw new Error(`Failed to resolve user identity from Meta Graph API: ${meResp.status}`);
+      const meData = await meResp.json();
+      const appUserId = meData.id;
+      if (!appUserId) throw new Error("Meta user identity ID missing from /me response");
 
       const accountsUrl = `https://graph.facebook.com/v26.0/me/accounts?access_token=${encodeURIComponent(longLivedUserToken)}`;
       const accResp = await fetch(accountsUrl);
@@ -271,16 +274,24 @@ serve(async (req: Request) => {
         category: p.category,
       }));
 
-      // Durable ASID-to-Page mapping persistence for compliance & data deletion
-      if (appUserId) {
-        for (const p of pages) {
-          await supabaseAdmin.from("meta_user_page_interactions").upsert({
+      // Fail-closed PSID resolution for each managed page via ids_for_pages
+      const idsUrl = `https://graph.facebook.com/v26.0/${appUserId}/ids_for_pages?access_token=${encodeURIComponent(longLivedUserToken)}`;
+      const idsResp = await fetch(idsUrl);
+      if (!idsResp.ok) throw new Error(`Failed to resolve page-scoped identities from Meta Graph API: ${idsResp.status}`);
+      const idsData = await idsResp.json();
+
+      // Persist authoritative ASID-to-PSID mapping in meta_user_page_interactions
+      for (const item of idsData.data || []) {
+        if (item.page?.id && item.id) {
+          const { error: upsertErr } = await supabaseAdmin.from("meta_user_page_interactions").upsert({
             tenant_id: claimedSession.tenant_id,
-            page_id: p.id,
+            page_id: item.page.id,
             app_user_id: appUserId,
-            page_scoped_user_id: appUserId,
+            page_scoped_user_id: item.id,
             last_interaction_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           }, { onConflict: "tenant_id,page_id,page_scoped_user_id" });
+          if (upsertErr) throw new Error(`Failed to persist durable user page interaction mapping: ${upsertErr.message}`);
         }
       }
 
@@ -518,7 +529,7 @@ serve(async (req: Request) => {
           const senderId = msg.sender?.id;
           const timestamp = msg.timestamp ? new Date(msg.timestamp).toISOString() : new Date().toISOString();
           if (senderId && senderId !== pageId) {
-            interactions.push({ user_id: senderId, timestamp });
+            interactions.push({ user_id: senderId, app_user_id: null, timestamp });
           }
 
           let eventKey = "";

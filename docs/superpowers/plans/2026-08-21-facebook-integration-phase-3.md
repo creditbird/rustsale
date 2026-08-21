@@ -509,7 +509,7 @@ serve(async (req: Request) => {
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
     }
 
-    // Durable ASID-to-PSID mapping check: If Graph API /ids_for_pages returned empty, check local durable mapping in meta_user_page_interactions
+    // Durable ASID-to-PSID mapping check: If Graph API /ids_for_pages returned empty or error, check local durable mapping in meta_user_page_interactions
     // to guarantee retained PSID records are never orphaned or falsely marked completed.
     let identityResolutionError = false;
     if (resolvedMappings.length === 0) {

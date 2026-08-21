@@ -301,7 +301,7 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 ## 8. Data Deletion Compliance Lifecycle & Transactional Anonymizer
 
 1. **Registered Devices Inventory & Durable Tombstones:** `tenant_registered_devices (tenant_id, device_id, device_name, last_seen_at)` and `meta_tenant_deletion_tombstones (tenant_id, request_id, page_id, user_id)`. Tasks are fanned out to all registered tenant devices; durable tombstones ensure reconnect scrubbing for offline or newly registered devices.
-2. **Durable Interaction Index:** `meta_user_page_interactions` and `meta_lead_page_interactions` track interactions across pages and Lead Ads.
+2. **Durable Interaction Index & Identity Resolution:** `meta_user_page_interactions (tenant_id, page_id, app_user_id, page_scoped_user_id, last_interaction_at)` and `meta_lead_page_interactions` track interactions across pages and Lead Ads. On OAuth connection, queries `/me` and `/{user_id}/ids_for_pages` with fail-closed error handling to map ASID to PSID for each connected page. On data deletion callback, resolves ASID to PSIDs via `ids_for_pages` and fallback local `meta_user_page_interactions` index.
 3. **Callback Endpoint (`/meta-data-deletion`):** Verifies HMAC `signed_request`, executes PostgreSQL transactional RPC `create_data_deletion_request_and_tasks` (accessible only to service_role) which purges buffered events across all shapes, persists durable tenant tombstones, and creates `meta_device_deletion_tasks` for all registered tenant devices (with reconnect scrub backfill).
 4. **Desktop Worker Lifecycle:**
    - Desktop worker claims task: `PATCH ... status = 'acknowledged'` sending `anon_key` as `apikey` and `user_jwt` in `Authorization`.
