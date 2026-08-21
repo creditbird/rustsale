@@ -280,13 +280,51 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wi
 ```typescript
 // supabase/functions/meta-data-deletion/index.ts
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const META_APP_SECRET = Deno.env.get("META_APP_SECRET") || "";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
-function parseSignedRequest(signedRequest: string): any {
-  const [encodedSig, payload] = signedRequest.split(".");
-  const data = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0))));
-  return data;
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+function base64UrlDecode(input: string): Uint8Array {
+  let base64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  while (base64.length % 4) base64 += "=";
+  const binStr = atob(base64);
+  const len = binStr.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binStr.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function verifySignedRequest(signedRequest: string): Promise<any | null> {
+  const parts = signedRequest.split(".");
+  if (parts.length !== 2) return null;
+
+  const [encodedSig, encodedPayload] = parts;
+  const sigBytes = base64UrlDecode(encodedSig);
+  const payloadBytes = base64UrlDecode(encodedPayload);
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(META_APP_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+
+  const isValid = await crypto.subtle.verify(
+    "HMAC",
+    key,
+    sigBytes,
+    new TextEncoder().encode(encodedPayload)
+  );
+
+  if (!isValid) return null;
+  return JSON.parse(new TextDecoder().decode(payloadBytes));
 }
 
 serve(async (req: Request) => {
@@ -296,9 +334,20 @@ serve(async (req: Request) => {
   const signedRequest = formData.get("signed_request") as string;
   if (!signedRequest) return new Response("Missing signed_request", { status: 400 });
 
-  const data = parseSignedRequest(signedRequest);
+  const data = await verifySignedRequest(signedRequest);
+  if (!data || !data.user_id) {
+    return new Response("Invalid signature or payload", { status: 403 });
+  }
+
   const userId = data.user_id;
   const confirmationCode = crypto.randomUUID();
+
+  // Persist deletion request in Supabase
+  await supabaseAdmin.from("data_deletion_requests").insert({
+    user_id: userId,
+    confirmation_code: confirmationCode,
+    status: "pending",
+  });
 
   return new Response(JSON.stringify({
     url: `https://rustsale.trantrongtri.com/deletion-status?id=${confirmationCode}`,

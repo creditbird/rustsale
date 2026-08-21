@@ -301,12 +301,12 @@ git commit -m "feat(supabase): add secure meta webhook relay and atomic 60s oaut
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
+pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
 
-    let run_migration = || -> Result<()> {
-        conn.execute_batch(r#"
-            BEGIN TRANSACTION;
+    let tx = conn.transaction()?;
+
+    tx.execute_batch(r#"
 
             -- 1. Create v2 table with channel_account_id
             CREATE TABLE IF NOT EXISTS channel_identities_v2 (
@@ -625,19 +625,37 @@ use anyhow::{anyhow, Result};
 pub struct StrongholdKeyring;
 
 impl StrongholdKeyring {
-    pub fn decrypt_page_token(encrypted_token: &str) -> Result<String> {
-        if encrypted_token.is_empty() {
-            return Err(anyhow!("Empty ciphertext"));
+    pub fn decrypt_page_token(key_bytes: &[u8; 32], ciphertext_b64: &str) -> Result<String> {
+        use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+        let raw = BASE64.decode(ciphertext_b64.trim())
+            .map_err(|e| anyhow!("Base64 decode failure: {}", e))?;
+        if raw.len() < 12 {
+            return Err(anyhow!("Ciphertext too short for nonce"));
         }
-        // Decrypts via Tauri Stronghold vault / OS Secret Service
-        Ok(encrypted_token.trim().to_string())
+        let nonce = Nonce::from_slice(&raw[0..12]);
+        let cipher = Aes256Gcm::new(key_bytes.into());
+        let decrypted = cipher
+            .decrypt(nonce, &raw[12..])
+            .map_err(|_| anyhow!("Decryption authentication failed: wrong key or corrupted ciphertext"))?;
+        String::from_utf8(decrypted).map_err(|e| anyhow!("Invalid UTF-8 token: {}", e))
     }
 
-    pub fn encrypt_page_token(plain_token: &str) -> Result<String> {
+    pub fn encrypt_page_token(key_bytes: &[u8; 32], plain_token: &str) -> Result<String> {
+        use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         if plain_token.is_empty() {
             return Err(anyhow!("Cannot encrypt empty token"));
         }
-        Ok(plain_token.trim().to_string())
+        let cipher = Aes256Gcm::new(key_bytes.into());
+        let nonce_bytes = [7u8; 12];
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let mut encrypted = cipher
+            .encrypt(nonce, plain_token.as_bytes())
+            .map_err(|_| anyhow!("Encryption failure"))?;
+        let mut out = nonce_bytes.to_vec();
+        out.append(&mut encrypted);
+        Ok(BASE64.encode(out))
     }
 }
 ```
@@ -815,23 +833,40 @@ impl FacebookSyncWorker {
                     }
                 }
                 "message_deliveries" | "message_reads" => {
-                    // Update read/delivery watermarks in channel_conversations
                     let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
-                    if !recipient_psid.is_empty() {
-                        let _ = tx.execute(
-                            "UPDATE channel_conversations SET updated_at = datetime('now') WHERE channel_account_id = ?1 AND external_thread_id = ?2",
-                            params![account_id, recipient_psid],
-                        );
+                    let watermark = ev.payload.get("delivery").or_else(|| ev.payload.get("read"))
+                        .and_then(|d| d.get("watermark")).and_then(|w| w.as_i64()).unwrap_or(0);
+
+                    if !recipient_psid.is_empty() && watermark > 0 {
+                        let r_type = if ev.event_type == "message_deliveries" { "delivery" } else { "read" };
+                        tx.execute(
+                            "INSERT OR IGNORE INTO message_receipts (channel_account_id, recipient_psid, receipt_type, watermark, created_at)
+                             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+                            params![account_id, recipient_psid, r_type, watermark],
+                        )?;
                     }
                 }
                 "message_reactions" => {
-                    // Record reaction audit event
+                    if let Some(r) = ev.payload.get("reaction") {
+                        let mid = r.get("mid").and_then(|m| m.as_str()).unwrap_or("");
+                        let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+                        let reaction = r.get("reaction").and_then(|re| re.as_str()).unwrap_or("");
+                        let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
+
+                        if !mid.is_empty() && !sender_psid.is_empty() {
+                            tx.execute(
+                                "INSERT OR REPLACE INTO message_reactions (channel_account_id, mid, sender_psid, reaction, action, created_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                                params![account_id, mid, sender_psid, reaction, action],
+                            )?;
+                        }
+                    }
                 }
                 "feed" => {
-                    // Route to facebook_comment_logs
+                    // Ingested by CommentAutomation engine in Phase 3
                 }
                 "leadgen" => {
-                    // Route to leads ingestion
+                    // Ingested by LeadAds pipeline in Phase 3
                 }
                 _ => {}
             }

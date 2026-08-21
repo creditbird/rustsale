@@ -234,6 +234,76 @@ impl FacebookMediaUploader {
         Ok(session_id.to_string())
     }
 
+    pub async fn upload_full_resumable_video(
+        &self,
+        page_id: &str,
+        video_bytes: &[u8],
+        title: &str,
+        description: &str,
+        scheduled_publish_time: Option<i64>,
+    ) -> Result<String> {
+        let file_size = video_bytes.len() as u64;
+        let (session_id, _) = self.start_resumable_video_session(page_id, file_size).await?;
+        let chunk_size = 4 * 1024 * 1024;
+        let mut offset = 0u64;
+
+        while offset < file_size {
+            let end = std::cmp::min(offset + chunk_size, file_size);
+            let chunk = &video_bytes[offset as usize..end as usize];
+            let next = self.transfer_video_chunk(page_id, &session_id, offset, chunk.to_vec()).await?;
+            if next <= offset {
+                anyhow::bail!("Non-monotonic offset returned during resumable upload: {} -> {}", offset, next);
+            }
+            offset = next;
+        }
+
+        self.finish_resumable_video_session(page_id, &session_id, title, description, scheduled_publish_time).await
+    }
+
+    pub async fn publish_reel(
+        &self,
+        page_id: &str,
+        video_bytes: &[u8],
+        description: &str,
+        scheduled_publish_time: Option<i64>,
+    ) -> Result<String> {
+        let url_init = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
+        let resp = self.http.post(&url_init)
+            .bearer_auth(&self.token)
+            .form(&[("upload_phase", "start")])
+            .send().await?;
+
+        let body: Value = resp.json().await?;
+        let video_id = body.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Reels init failed: {:?}", body))?;
+
+        let url_upload = format!("https://rupload.facebook.com/video-reels/{}", video_id);
+        let resp_up = self.http.post(&url_upload)
+            .bearer_auth(&self.token)
+            .header("Offset", "0")
+            .header("file_size", video_bytes.len().to_string())
+            .body(video_bytes.to_vec())
+            .send().await?;
+
+        if !resp_up.status().is_success() {
+            return Err(anyhow!("Reel binary upload failed: HTTP {}", resp_up.status()));
+        }
+
+        let mut finish_params = vec![
+            ("upload_phase", "finish".to_string()),
+            ("video_id", video_id.to_string()),
+            ("video_state", "PUBLISHED".to_string()),
+            ("description", description.to_string()),
+        ];
+        if let Some(t) = scheduled_publish_time {
+            finish_params.push(("video_state", "SCHEDULED".to_string()));
+            finish_params.push(("scheduled_publish_time", t.to_string()));
+        }
+
+        let resp_fin = self.http.post(&url_init).bearer_auth(&self.token).form(&finish_params).send().await?;
+        let fin_body: Value = resp_fin.json().await?;
+        fin_body.get("success").and_then(|v| v.as_bool()).filter(|b| *b).map(|_| video_id.to_string()).ok_or_else(|| anyhow!("Reel finish failed: {:?}", fin_body))
+    }
+
     pub async fn publish_reel(
         &self,
         page_id: &str,
