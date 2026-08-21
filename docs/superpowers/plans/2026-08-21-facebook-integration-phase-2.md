@@ -232,12 +232,12 @@ impl FacebookUploader {
         let file_size = file_meta.len();
         let file_hash = Self::compute_file_hash(file_path).await?;
 
-        // 1. Check existing in-progress or finishing session in facebook_upload_sessions with content hash verification
+        // 1. Check existing in-progress or finishing session in facebook_upload_sessions with content hash verification scoped to this post
         let existing_session: Option<(String, String, u64, String)> = match conn.query_row(
             "SELECT upload_session_id, video_id, start_offset, status
              FROM facebook_upload_sessions
-             WHERE page_id = ?1 AND upload_type = 'video' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status IN ('in_progress', 'finishing')",
-            params![page_id, file_path, file_size as i64, file_hash],
+             WHERE post_id IS ?1 AND page_id = ?2 AND upload_type = 'video' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('in_progress', 'finishing')",
+            params![post_id, page_id, file_path, file_size as i64, file_hash],
             |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64, r.get(3)?)),
         ) {
             Ok(sess) => Some(sess),
@@ -472,8 +472,8 @@ impl FacebookUploader {
         let existing_session: Option<(String, u64, String)> = match conn.query_row(
             "SELECT video_id, start_offset, status
              FROM facebook_upload_sessions
-             WHERE page_id = ?1 AND upload_type = 'reel' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status IN ('in_progress', 'finishing')",
-            params![page_id, file_path, file_size as i64, file_hash],
+             WHERE post_id IS ?1 AND page_id = ?2 AND upload_type = 'reel' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('in_progress', 'finishing')",
+            params![post_id, page_id, file_path, file_size as i64, file_hash],
             |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, r.get(2)?)),
         ) {
             Ok(sess) => Some(sess),
@@ -719,27 +719,40 @@ impl FacebookUploader {
   Queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels).
   - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel):
     ```sql
+    -- Atomic CAS session completion: only succeeds if this worker still holds the lease
     UPDATE facebook_upload_sessions
     SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-    WHERE id = ?1;
+    WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing';
 
+    -- If CAS session update succeeded, propagate terminal state to scheduled post
     UPDATE facebook_scheduled_posts
-    SET status = 'published', remote_post_id = ?2, error_code = NULL, error_message = NULL, updated_at = datetime('now')
-    WHERE id = ?3 OR upload_session_id = ?4;
+    SET status = CASE
+            WHEN scheduled_publish_time IS NOT NULL AND scheduled_publish_time > strftime('%s', 'now')
+            THEN 'scheduled_on_meta'
+            ELSE 'published'
+        END,
+        remote_post_id = ?1,
+        error_code = NULL,
+        error_message = NULL,
+        updated_at = datetime('now')
+    WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown');
     ```
   - On authoritative terminal failure:
     ```sql
+    -- Atomic CAS session failure: only succeeds if this worker still holds the lease
     UPDATE facebook_upload_sessions
     SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-    WHERE id = ?1;
+    WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing';
 
+    -- If CAS session update succeeded, propagate failure to scheduled post
     UPDATE facebook_scheduled_posts
-    SET status = 'failed', error_code = 'upload_failed', error_message = ?2, updated_at = datetime('now')
-    WHERE id = ?3 OR upload_session_id = ?4;
+    SET status = 'failed', error_code = 'upload_failed', error_message = ?1, updated_at = datetime('now')
+    WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown');
     ```
   - On non-terminal processing state:
     ```sql
+    -- Atomic CAS lease release: clears lease if still held by this worker
     UPDATE facebook_upload_sessions
     SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-    WHERE id = ?1;
+    WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing';
     ```

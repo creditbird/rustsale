@@ -459,7 +459,7 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(page_id, upload_type, file_hash, file_size_bytes) WHERE status IN ('in_progress', 'finishing');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(post_id, page_id, upload_type, file_hash, file_size_bytes) WHERE status IN ('in_progress', 'finishing');
 
 CREATE TABLE IF NOT EXISTS meta_deletion_pending_cleanups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

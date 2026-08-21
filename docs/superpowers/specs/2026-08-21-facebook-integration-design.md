@@ -138,6 +138,7 @@ GRANT EXECUTE ON FUNCTION complete_meta_oauth_exchange TO authenticated, service
 -- Upload Sessions for Resumable Video and Reels
 CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER REFERENCES facebook_scheduled_posts(id) ON DELETE SET NULL,
     page_id TEXT NOT NULL,
     upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
     upload_session_id TEXT NOT NULL UNIQUE,
@@ -147,12 +148,14 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     file_size_bytes INTEGER NOT NULL,
     start_offset INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'finishing', 'completed', 'failed')),
+    owner_id TEXT,
+    lease_deadline TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique 
-ON facebook_upload_sessions(page_id, upload_type, file_hash, file_size_bytes) 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique
+ON facebook_upload_sessions(post_id, page_id, upload_type, file_hash, file_size_bytes)
 WHERE status IN ('in_progress', 'finishing');
 
 -- Scheduled Posts

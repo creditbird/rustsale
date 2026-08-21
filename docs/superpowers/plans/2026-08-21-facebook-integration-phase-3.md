@@ -358,23 +358,30 @@ async function parseAndVerifySignedRequest(signedRequest: string, appSecret: str
 }
 
 async function resolvePsidsForAsid(asid: string): Promise<string[]> {
+  if (!META_APP_ID || !META_APP_SECRET) {
+    throw new Error("Missing Meta App credentials (META_APP_ID or META_APP_SECRET)");
+  }
   const psids: string[] = [];
-  if (!META_APP_ID || !META_APP_SECRET) return psids;
+  const appToken = `${META_APP_ID}|${META_APP_SECRET}`;
+  let nextUrl: string | null = `https://graph.facebook.com/v26.0/${encodeURIComponent(asid)}/ids_for_pages?access_token=${appToken}&limit=100`;
 
-  try {
-    const appToken = `${META_APP_ID}|${META_APP_SECRET}`;
-    const res = await fetch(`https://graph.facebook.com/v26.0/${asid}/ids_for_pages?access_token=${appToken}`);
-    if (res.ok) {
-      const body = await res.json();
-      if (Array.isArray(body?.data)) {
-        for (const item of body.data) {
-          if (item?.id) psids.push(String(item.id));
+  while (nextUrl) {
+    const res = await fetch(nextUrl);
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`Meta Graph API ids_for_pages returned HTTP ${res.status}: ${errBody}`);
+    }
+    const body = await res.json();
+    if (Array.isArray(body?.data)) {
+      for (const item of body.data) {
+        if (item?.id) {
+          psids.push(String(item.id));
         }
       }
     }
-  } catch (err) {
-    console.warn("Failed to query Meta ids_for_pages for ASID:", err);
+    nextUrl = body?.paging?.next || null;
   }
+
   return psids;
 }
 
@@ -394,7 +401,13 @@ serve(async (req: Request) => {
     const confirmationCode = crypto.randomUUID();
 
     // Authoritatively resolve all Page-Scoped IDs (PSIDs) associated with this App-Scoped ID (ASID)
-    const resolvedPsids = await resolvePsidsForAsid(userId);
+    let resolvedPsids: string[];
+    try {
+      resolvedPsids = await resolvePsidsForAsid(userId);
+    } catch (err) {
+      console.error("Fail-closed: Failed to resolve PSIDs from Meta Graph API for ASID:", userId, err);
+      return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
+    }
 
     const { error: deletionRpcError } = await supabaseAdmin.rpc("create_data_deletion_request_and_tasks", {
       p_confirmation_code: confirmationCode,
