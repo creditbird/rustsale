@@ -202,6 +202,164 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
     migration_result
 }
 
+fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
+    // 1. Merge duplicates by remote_url
+    let mut stmt = conn.prepare(
+        "SELECT message_id, remote_url FROM message_attachments 
+         WHERE remote_url IS NOT NULL 
+         GROUP BY message_id, remote_url HAVING COUNT(*) > 1"
+    )?;
+    let dup_remote_groups: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .flatten().collect();
+
+    for (msg_id, remote_url) in dup_remote_groups {
+        let mut att_stmt = conn.prepare(
+            "SELECT id, provider_attachment_id, attachment_type, file_name, mime_type, size_bytes, local_path, thumbnail_url, metadata_json 
+             FROM message_attachments 
+             WHERE message_id = ?1 AND remote_url = ?2 
+             ORDER BY id ASC"
+        )?;
+        let rows = att_stmt.query_map(rusqlite::params![msg_id, remote_url], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        })?;
+        let items: Vec<_> = rows.flatten().collect();
+        if items.len() <= 1 {
+            continue;
+        }
+
+        let survivor_id = items[0].0;
+        let mut merged_prov_id = items[0].1.clone();
+        let mut merged_type = items[0].2.clone();
+        let mut merged_file_name = items[0].3.clone();
+        let mut merged_mime = items[0].4.clone();
+        let mut merged_size = items[0].5;
+        let mut merged_local = items[0].6.clone();
+        let mut merged_thumb = items[0].7.clone();
+        let mut merged_json_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+        for item in &items {
+            if merged_prov_id.is_none() && item.1.is_some() { merged_prov_id = item.1.clone(); }
+            if merged_type.is_none() && item.2.is_some() { merged_type = item.2.clone(); }
+            if merged_file_name.is_none() && item.3.is_some() { merged_file_name = item.3.clone(); }
+            if merged_mime.is_none() && item.4.is_some() { merged_mime = item.4.clone(); }
+            if merged_size.is_none() && item.5.is_some() { merged_size = item.5; }
+            if merged_local.is_none() && item.6.is_some() { merged_local = item.6.clone(); }
+            if merged_thumb.is_none() && item.7.is_some() { merged_thumb = item.7.clone(); }
+
+            if let Some(json_str) = &item.8 {
+                if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    for (k, v) in map {
+                        merged_json_map.insert(k, v);
+                    }
+                }
+            }
+        }
+
+        let merged_metadata_str = serde_json::Value::Object(merged_json_map).to_string();
+
+        conn.execute(
+            "UPDATE message_attachments 
+             SET provider_attachment_id = ?1, attachment_type = COALESCE(?2, attachment_type), file_name = ?3, mime_type = ?4, size_bytes = ?5, local_path = ?6, thumbnail_url = ?7, metadata_json = ?8 
+             WHERE id = ?9",
+            rusqlite::params![merged_prov_id, merged_type, merged_file_name, merged_mime, merged_size, merged_local, merged_thumb, merged_metadata_str, survivor_id],
+        )?;
+
+        conn.execute(
+            "DELETE FROM message_attachments WHERE message_id = ?1 AND remote_url = ?2 AND id != ?3",
+            rusqlite::params![msg_id, remote_url, survivor_id],
+        )?;
+    }
+
+    // 2. Merge duplicates by provider_attachment_id
+    let mut stmt = conn.prepare(
+        "SELECT message_id, provider_attachment_id FROM message_attachments 
+         WHERE provider_attachment_id IS NOT NULL 
+         GROUP BY message_id, provider_attachment_id HAVING COUNT(*) > 1"
+    )?;
+    let dup_prov_groups: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .flatten().collect();
+
+    for (msg_id, prov_id) in dup_prov_groups {
+        let mut att_stmt = conn.prepare(
+            "SELECT id, remote_url, attachment_type, file_name, mime_type, size_bytes, local_path, thumbnail_url, metadata_json 
+             FROM message_attachments 
+             WHERE message_id = ?1 AND provider_attachment_id = ?2 
+             ORDER BY id ASC"
+        )?;
+        let rows = att_stmt.query_map(rusqlite::params![msg_id, prov_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        })?;
+        let items: Vec<_> = rows.flatten().collect();
+        if items.len() <= 1 {
+            continue;
+        }
+
+        let survivor_id = items[0].0;
+        let mut merged_remote = items[0].1.clone();
+        let mut merged_type = items[0].2.clone();
+        let mut merged_file_name = items[0].3.clone();
+        let mut merged_mime = items[0].4.clone();
+        let mut merged_size = items[0].5;
+        let mut merged_local = items[0].6.clone();
+        let mut merged_thumb = items[0].7.clone();
+        let mut merged_json_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+        for item in &items {
+            if merged_remote.is_none() && item.1.is_some() { merged_remote = item.1.clone(); }
+            if merged_type.is_none() && item.2.is_some() { merged_type = item.2.clone(); }
+            if merged_file_name.is_none() && item.3.is_some() { merged_file_name = item.3.clone(); }
+            if merged_mime.is_none() && item.4.is_some() { merged_mime = item.4.clone(); }
+            if merged_size.is_none() && item.5.is_some() { merged_size = item.5; }
+            if merged_local.is_none() && item.6.is_some() { merged_local = item.6.clone(); }
+            if merged_thumb.is_none() && item.7.is_some() { merged_thumb = item.7.clone(); }
+
+            if let Some(json_str) = &item.8 {
+                if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    for (k, v) in map {
+                        merged_json_map.insert(k, v);
+                    }
+                }
+            }
+        }
+
+        let merged_metadata_str = serde_json::Value::Object(merged_json_map).to_string();
+
+        conn.execute(
+            "UPDATE message_attachments 
+             SET remote_url = ?1, attachment_type = COALESCE(?2, attachment_type), file_name = ?3, mime_type = ?4, size_bytes = ?5, local_path = ?6, thumbnail_url = ?7, metadata_json = ?8 
+             WHERE id = ?9",
+            rusqlite::params![merged_remote, merged_type, merged_file_name, merged_mime, merged_size, merged_local, merged_thumb, merged_metadata_str, survivor_id],
+        )?;
+
+        conn.execute(
+            "DELETE FROM message_attachments WHERE message_id = ?1 AND provider_attachment_id = ?2 AND id != ?3",
+            rusqlite::params![msg_id, prov_id, survivor_id],
+        )?;
+    }
+
+    Ok(())
+}
+
 pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
     apply_migration_v2(conn)?;
 
@@ -283,133 +441,10 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                 conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';")?;
             }
 
-            // Lossless metadata merge from duplicates into the surviving MIN(id) record before deletion
+            // Lossless deduplication and unique index creation for message_attachments
+            merge_duplicate_attachments(conn)?;
+
             conn.execute_batch(r#"
-                UPDATE message_attachments AS target
-                SET 
-                    provider_attachment_id = COALESCE(target.provider_attachment_id, (
-                        SELECT provider_attachment_id FROM message_attachments 
-                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND provider_attachment_id IS NOT NULL 
-                        LIMIT 1
-                    )),
-                    file_name = COALESCE(target.file_name, (
-                        SELECT file_name FROM message_attachments 
-                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND file_name IS NOT NULL 
-                        LIMIT 1
-                    )),
-                    mime_type = COALESCE(target.mime_type, (
-                        SELECT mime_type FROM message_attachments 
-                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND mime_type IS NOT NULL 
-                        LIMIT 1
-                    )),
-                    size_bytes = COALESCE(target.size_bytes, (
-                        SELECT size_bytes FROM message_attachments 
-                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND size_bytes IS NOT NULL 
-                        LIMIT 1
-                    )),
-                    local_path = COALESCE(target.local_path, (
-                        SELECT local_path FROM message_attachments 
-                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND local_path IS NOT NULL 
-                        LIMIT 1
-                    )),
-                    thumbnail_url = COALESCE(target.thumbnail_url, (
-                        SELECT thumbnail_url FROM message_attachments 
-                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND thumbnail_url IS NOT NULL 
-                        LIMIT 1
-                    )),
-                    metadata_json = CASE 
-                        WHEN target.metadata_json IS NOT NULL AND target.metadata_json != '{}' THEN target.metadata_json
-                        ELSE COALESCE((
-                            SELECT metadata_json FROM message_attachments 
-                            WHERE message_id = target.message_id AND remote_url = target.remote_url AND metadata_json IS NOT NULL AND metadata_json != '{}' 
-                            LIMIT 1
-                        ), '{}')
-                    END
-                WHERE target.id IN (
-                    SELECT MIN(id) 
-                    FROM message_attachments 
-                    WHERE remote_url IS NOT NULL 
-                    GROUP BY message_id, remote_url 
-                    HAVING COUNT(*) > 1
-                );
-
-                -- Delete redundant duplicate records
-                DELETE FROM message_attachments 
-                WHERE remote_url IS NOT NULL 
-                  AND id NOT IN (
-                    SELECT MIN(id) 
-                    FROM message_attachments 
-                    WHERE remote_url IS NOT NULL
-                    GROUP BY message_id, remote_url
-                  );
-
-                -- Merge non-null fields into the survivor row (MIN(id)) for provider_attachment_id duplicates
-                UPDATE message_attachments
-                SET 
-                    file_name = COALESCE(file_name, (
-                        SELECT d.file_name FROM message_attachments d 
-                        WHERE d.message_id = message_attachments.message_id 
-                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
-                          AND d.file_name IS NOT NULL LIMIT 1
-                    )),
-                    mime_type = COALESCE(mime_type, (
-                        SELECT d.mime_type FROM message_attachments d 
-                        WHERE d.message_id = message_attachments.message_id 
-                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
-                          AND d.mime_type IS NOT NULL LIMIT 1
-                    )),
-                    size_bytes = COALESCE(size_bytes, (
-                        SELECT d.size_bytes FROM message_attachments d 
-                        WHERE d.message_id = message_attachments.message_id 
-                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
-                          AND d.size_bytes IS NOT NULL LIMIT 1
-                    )),
-                    remote_url = COALESCE(remote_url, (
-                        SELECT d.remote_url FROM message_attachments d 
-                        WHERE d.message_id = message_attachments.message_id 
-                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
-                          AND d.remote_url IS NOT NULL LIMIT 1
-                    )),
-                    local_path = COALESCE(local_path, (
-                        SELECT d.local_path FROM message_attachments d 
-                        WHERE d.message_id = message_attachments.message_id 
-                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
-                          AND d.local_path IS NOT NULL LIMIT 1
-                    )),
-                    thumbnail_url = COALESCE(thumbnail_url, (
-                        SELECT d.thumbnail_url FROM message_attachments d 
-                        WHERE d.message_id = message_attachments.message_id 
-                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
-                          AND d.thumbnail_url IS NOT NULL LIMIT 1
-                    )),
-                    metadata_json = CASE 
-                        WHEN metadata_json IS NULL OR metadata_json = '{}' OR metadata_json = '' THEN
-                            COALESCE((
-                                SELECT d.metadata_json FROM message_attachments d 
-                                WHERE d.message_id = message_attachments.message_id 
-                                  AND d.provider_attachment_id = message_attachments.provider_attachment_id 
-                                  AND d.metadata_json IS NOT NULL AND d.metadata_json != '{}' AND d.metadata_json != '' LIMIT 1
-                            ), metadata_json)
-                        ELSE metadata_json
-                    END
-                WHERE id IN (
-                    SELECT MIN(id) 
-                    FROM message_attachments 
-                    WHERE provider_attachment_id IS NOT NULL 
-                    GROUP BY message_id, provider_attachment_id 
-                    HAVING COUNT(*) > 1
-                );
-
-                -- Delete redundant duplicate records
-                DELETE FROM message_attachments 
-                WHERE provider_attachment_id IS NOT NULL 
-                  AND id NOT IN (
-                    SELECT MIN(id) 
-                    FROM message_attachments 
-                    WHERE provider_attachment_id IS NOT NULL
-                    GROUP BY message_id, provider_attachment_id
-                  );
-
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote 
                 ON message_attachments(message_id, remote_url) 
                 WHERE remote_url IS NOT NULL;

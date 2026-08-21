@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Establish the production foundation for Facebook Integration: zero-secret PKCE OAuth token exchange with atomic session consumption and encrypted payload handoff, encrypted local credential store, durable Supabase webhook relay buffer supporting messaging and changes (`feed`, `comments`, `leadgen`), isolated multi-stream sync engine for Messenger 2-way conversation matching repository schema (`channel_conversations`, `conversation_participants`, `messages`, `message_attachments`, `message_reactions`, `message_receipts`, `pending_message_reactions`), and Svelte 5 chat UI with 24-hour Message Tag policy enforcement.
+**Goal:** Establish the production foundation for Facebook Integration: zero-secret PKCE OAuth token exchange with atomic session state machine and `pgp_sym_encrypt` payload handoff, encrypted local credential store, durable Supabase webhook relay buffer supporting messaging and changes (`feed`, `comments`, `leadgen`) with atomic server-side persistence RPC, isolated multi-stream sync engine for Messenger 2-way conversation matching repository schema (`channel_conversations`, `conversation_participants`, `messages`, `message_attachments`, `message_reactions`, `message_receipts`, `pending_message_reactions`), and Svelte 5 chat UI with 24-hour Message Tag policy enforcement.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions (Deno / TypeScript), Meta Graph API v26.0+, Tailwind CSS.
 
@@ -12,11 +12,11 @@
 
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **REQ-FB-01** | Zero-Secret OAuth & Encrypted PKCE Exchange | `PLANNED` | Task 1 (Step 1) | Desktop binary contains 0 secrets. Edge Function performs token exchange, consumes session atomically, encrypts payload, issues single-use PKCE exchange code (60s TTL). User client invokes RPC deriving tenant exclusively via `auth.uid()`. Payload is deleted atomically upon retrieval. | Attacker attempts to claim exchange code without user JWT or with wrong PKCE verifier; RPC raises exception and returns 403. Reading Postgres WAL yields only ciphertext. | Unit test: Call `/meta-oauth-exchange` with invalid verifier or forged user JWT; assert 403. |
+| **REQ-FB-01** | Zero-Secret OAuth & Encrypted PKCE Exchange | `PLANNED` | Task 1 (Step 1) | Desktop binary contains 0 secrets. Edge Function performs token exchange, transitions session state atomically (`pending` -> `processing` -> `consumed`), encrypts payload with `pgp_sym_encrypt`, issues single-use PKCE exchange code (60s TTL). User client invokes RPC deriving tenant exclusively via `auth.uid()`. Payload is decrypted with `pgp_sym_decrypt` and deleted atomically upon retrieval. | Attacker attempts to claim exchange code without user JWT or with wrong PKCE verifier; RPC raises exception and returns 403. Reading Postgres WAL yields only ciphertext. | Unit test: Call `/meta-oauth-exchange` with invalid verifier or forged user JWT; assert 403. |
 | **REQ-FB-02** | Local Token Encryption at Rest | `PLANNED` | Task 3 (Step 1) | Page tokens encrypted with AES-256-GCM using OS Keyring master key before writing to SQLite `facebook_page_tokens`. | Reading `facebook_page_tokens.access_token_encrypted` directly yields ciphertext; decrypting without keyring key fails. | Cryptographic unit test: Verify ciphertext format and tamper resistance. |
-| **REQ-FB-03** | Durable Webhook Ingestion & Raw HMAC Validation | `PLANNED` | Task 4 (Step 1) | Raw body verified against `META_APP_SECRET` using HMAC-SHA256. Ingests both `entry.messaging` and `entry.changes` (feed, comments, leadgen). Generates collision-free event keys. Unpacked events inserted atomically. Durable interaction tracking in `meta_user_page_interactions`. | Ingestion failure returns HTTP 500 so Meta automatically retries; duplicate webhooks are silently ignored. | Integration test: Simulate duplicate webhook payload; assert exactly 1 row in `meta_webhook_buffer`. |
-| **REQ-FB-04** | Contiguous Checkpointing, Out-of-Order Reactions & Receipts | `PLANNED` | Task 5 (Step 1) | Messenger sync worker processes events contiguously. Quarantines invalid events and unresolved dependencies to `channel_sync_dead_letters`. Scopes receipts and lookups to exact conversation and non-page customer PSID. Stores out-of-order reactions in `pending_message_reactions` with provider occurrence time. Reconciles pending reactions ordered by `datetime(occurred_at) ASC, id ASC`. Populates `message_receipts` on delivery/read. Advances cursor monotonically per processed/quarantined event via conditional update `WHERE CAST(excluded.cursor AS INTEGER) > CAST(COALESCE(cursor, '0') AS INTEGER)`. | Malformed event followed by valid event: worker quarantines malformed event to dead-letters and advances cursor without skipping or halting. Duplicate reaction does not inflate count. | Integration test: Ingest malformed event, duplicate reaction, and out-of-order reaction; verify dead-letter logging, idempotency, and monotonic cursor advancement. |
-| **REQ-FB-05** | Production SQLite Migration (V1 -> V3) | `PLANNED` | Task 2 (Step 1) | `apply_migration_v3` handles schema transition with `SAVEPOINT`, exact state-restoring RAII `PragmaGuard`, foreign key validation, lossless duplicate provider attachment field and metadata merging, dynamic column backfills, and lossless metadata merge. | Migrate legacy DB with existing `channel_identities` and duplicate `message_attachments`; assert 0 data loss and foreign key integrity. | Unit test: `test_populated_production_v1_to_v3_migration_preserves_foreign_keys_and_dependents`. |
+| **REQ-FB-03** | Durable Webhook Ingestion & Raw HMAC Validation | `PLANNED` | Task 4 (Step 1) | Raw body verified against `META_APP_SECRET` using HMAC-SHA256. Ingests both `entry.messaging` and `entry.changes` (feed, comments, leadgen). Generates stable deterministic event keys. Buffer and interaction index updated atomically via PostgreSQL RPC `ingest_meta_webhook_batch`. | Ingestion failure returns HTTP 500 so Meta automatically retries; duplicate webhooks are silently ignored. | Integration test: Simulate duplicate webhook payload; assert exactly 1 row in `meta_webhook_buffer`. |
+| **REQ-FB-04** | Contiguous Checkpointing, Forward-Only State Machine & Receipts | `PLANNED` | Task 5 (Step 1) | Messenger sync worker processes events contiguously. Quarantines invalid events and unresolved dependencies to `channel_sync_dead_letters` with per-item index `item_index = idx as i64`. Scopes receipts and lookups to exact conversation and non-page customer PSID. Forward-only updates `messages.status = 'delivered'` without downgrading `read`. Marks only outbound messages read. Reconciles pending reactions ordered by `datetime(occurred_at) ASC, id ASC`. Advances cursor monotonically per processed/quarantined event via conditional update `WHERE CAST(excluded.cursor AS INTEGER) > CAST(COALESCE(cursor, '0') AS INTEGER)`. | Delayed delivery event arrives after read event: message remains `read`. Unresolved delivery MIDs each get distinct dead-letter rows. | Integration test: Ingest out-of-order delivery after read, duplicate reaction, and out-of-order reaction; verify state monotonicity, dead-letter logging, and monotonic cursor advancement. |
+| **REQ-FB-05** | Production SQLite Migration (V1 -> V3) | `PLANNED` | Task 2 (Step 1) | `apply_migration_v3` handles schema transition with `SAVEPOINT`, exact state-restoring RAII `PragmaGuard`, foreign key validation, truly lossless Rust-level duplicate provider attachment and remote_url field and metadata merging (`json_patch`/map merge), and dynamic column backfills. | Migrate legacy DB with duplicate attachments containing distinct JSON keys; assert union of both keys is preserved. | Unit test: `test_populated_production_v1_to_v3_migration_preserves_foreign_keys_and_dependents`. |
 | **REQ-FB-06** | 24-Hour Interactive Countdown & Policy Gate | `PLANNED` | Task 6 (Step 1) | Outbound messages past 24h of customer's last message require valid `messaging_type=MESSAGE_TAG` and approved tag. | Attempting to send text message >24h without tag triggers modal blocking send until tag is selected. | UI test: Mock conversation >24h; verify message input disables free send and shows Tag selector. |
 | **REQ-FB-07** | Outbox Sender with Typed Error Classifier | `PLANNED` | Task 6 (Step 1) | Outbox classifies errors into Transient (retry) and Permanent (dead-letter + UI prompt). | Error `2018278` (Outside 24h window) marks message `dead_letter` without wasteful retries. | Outbox unit test: Mock Meta API error responses; verify status transitions. |
 
@@ -30,10 +30,12 @@
 - Create: `supabase/functions/meta-oauth-exchange/index.ts`
 - Create: `supabase/migrations/20260821000001_meta_oauth_tables.sql`
 
-- [ ] **Step 1: Write Supabase Migration for OAuth Sessions and Single-Use PKCE Codes**
+- [ ] **Step 1: Write Supabase Migration for OAuth Sessions, Single-Use PKCE Codes, and Decryption RPC**
 
 ```sql
 -- supabase/migrations/20260821000001_meta_oauth_tables.sql
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS meta_tenant_pages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -51,8 +53,10 @@ CREATE TABLE IF NOT EXISTS oauth_authorization_sessions (
     state TEXT PRIMARY KEY,
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     code_challenge TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'consumed', 'failed')),
     expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE oauth_authorization_sessions ENABLE ROW LEVEL SECURITY;
 
@@ -60,14 +64,42 @@ CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
     code TEXT PRIMARY KEY,
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     code_challenge TEXT NOT NULL,
-    payload TEXT NOT NULL,
+    payload BYTEA NOT NULL,
     consumed BOOLEAN NOT NULL DEFAULT FALSE,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE oauth_exchange_codes ENABLE ROW LEVEL SECURITY;
 
--- PostgreSQL Function for Atomic Consumption, Tenant Derivation and Deletion
+-- Helper RPC to create encrypted exchange code
+CREATE OR REPLACE FUNCTION create_meta_oauth_exchange_code(
+    p_code TEXT,
+    p_tenant_id UUID,
+    p_code_challenge TEXT,
+    p_pages_json TEXT,
+    p_encryption_key TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+BEGIN
+    INSERT INTO public.oauth_exchange_codes (code, tenant_id, code_challenge, payload, expires_at)
+    VALUES (
+        p_code,
+        p_tenant_id,
+        p_code_challenge,
+        pgp_sym_encrypt(p_pages_json, p_encryption_key),
+        now() + INTERVAL '60 seconds'
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION create_meta_oauth_exchange_code FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION create_meta_oauth_exchange_code TO service_role;
+
+-- PostgreSQL Function for Atomic Consumption, Tenant Derivation and Decryption
 CREATE OR REPLACE FUNCTION complete_meta_oauth_exchange(
     p_code TEXT,
     p_verifier_challenge TEXT
@@ -79,7 +111,7 @@ SET search_path = public, auth, pg_temp
 AS $$
 DECLARE
     v_tenant_id UUID;
-    v_payload TEXT;
+    v_payload_bytes BYTEA;
     v_pages JSONB;
     v_page RECORD;
 BEGIN
@@ -88,7 +120,7 @@ BEGIN
         RAISE EXCEPTION 'Unauthorized: user JWT required';
     END IF;
 
-    SELECT payload INTO v_payload
+    SELECT payload INTO v_payload_bytes
     FROM public.oauth_exchange_codes
     WHERE code = p_code
       AND tenant_id = v_tenant_id
@@ -97,14 +129,15 @@ BEGIN
       AND expires_at > now()
     FOR UPDATE;
 
-    IF v_payload IS NULL THEN
+    IF v_payload_bytes IS NULL THEN
         RAISE EXCEPTION 'Invalid or expired exchange code';
     END IF;
 
-    -- Atomically consume and erase payload
+    -- Atomically consume and delete payload
     DELETE FROM public.oauth_exchange_codes WHERE code = p_code;
 
-    v_pages := v_payload::JSONB;
+    -- Decrypt ciphertext using client PKCE challenge
+    v_pages := pgp_sym_decrypt(v_payload_bytes, p_verifier_challenge)::JSONB;
 
     FOR v_page IN SELECT * FROM jsonb_to_recordset(v_pages) AS (id TEXT, name TEXT)
     LOOP
@@ -150,6 +183,7 @@ serve(async (req: Request) => {
     state,
     tenant_id: user.id,
     code_challenge,
+    status: "pending",
     expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
 
@@ -180,11 +214,12 @@ serve(async (req: Request) => {
     return new Response("Missing code or state", { status: 400 });
   }
 
-  // 1. Atomically consume authorization session
+  // 1. Atomically claim authorization session with state transition to 'processing'
   const { data: session, error: sessErr } = await supabaseAdmin
     .from("oauth_authorization_sessions")
-    .delete()
+    .update({ status: "processing", updated_at: new Date().toISOString() })
     .eq("state", state)
+    .eq("status", "pending")
     .gt("expires_at", new Date().toISOString())
     .select("tenant_id, code_challenge")
     .single();
@@ -199,6 +234,7 @@ serve(async (req: Request) => {
   const tokenResp = await fetch(tokenUrl);
   const tokenJson = await tokenResp.json();
   if (!tokenJson.access_token) {
+    await supabaseAdmin.from("oauth_authorization_sessions").update({ status: "failed" }).eq("state", state);
     return new Response(`Token exchange failed: ${JSON.stringify(tokenJson)}`, { status: 502 });
   }
 
@@ -214,19 +250,23 @@ serve(async (req: Request) => {
   const accJson = await accResp.json();
   const pages = accJson.data || [];
 
-  // 5. Store exchange code bound to tenant and PKCE challenge
+  // 5. Store exchange code encrypted with pgp_sym_encrypt using code_challenge as key
   const exchangeCode = crypto.randomUUID();
-  const { error: insErr } = await supabaseAdmin.from("oauth_exchange_codes").insert({
-    code: exchangeCode,
-    tenant_id: session.tenant_id,
-    code_challenge: session.code_challenge,
-    payload: JSON.stringify(pages),
-    expires_at: new Date(Date.now() + 60 * 1000).toISOString(),
+  const { error: insErr } = await supabaseAdmin.rpc("create_meta_oauth_exchange_code", {
+    p_code: exchangeCode,
+    p_tenant_id: session.tenant_id,
+    p_code_challenge: session.code_challenge,
+    p_pages_json: JSON.stringify(pages),
+    p_encryption_key: session.code_challenge,
   });
 
   if (insErr) {
+    await supabaseAdmin.from("oauth_authorization_sessions").update({ status: "failed" }).eq("state", state);
     return new Response("Database error saving exchange code", { status: 500 });
   }
+
+  // Mark authorization session consumed
+  await supabaseAdmin.from("oauth_authorization_sessions").update({ status: "consumed" }).eq("state", state);
 
   return Response.redirect(`rustsale://oauth/facebook/callback?code=${exchangeCode}&state=${state}`, 302);
 });
@@ -283,7 +323,7 @@ serve(async (req: Request) => {
 
 ```bash
 git add supabase/
-git commit -m "feat(supabase): implement zero-secret PKCE OAuth exchange with atomic session consumption and user JWT RPC invocation"
+git commit -m "feat(supabase): implement zero-secret PKCE OAuth exchange with atomic session state machine and pgp_sym_encrypt handoff"
 ```
 
 ---
@@ -296,7 +336,7 @@ git commit -m "feat(supabase): implement zero-secret PKCE OAuth exchange with at
 - Modify: `src-tauri/src/conversation/migration.rs`
 - Test: `src-tauri/src/conversation/migration_v2_test.rs`
 
-- [ ] **Step 1: Implement RAII PragmaGuard, Foreign Key Check, and Lossless Field Merging in `migration_v2.rs`**
+- [ ] **Step 1: Implement RAII PragmaGuard, Foreign Key Check, and Truly Lossless Rust Duplicate Merging in `migration_v2.rs`**
 - [ ] **Step 2: Run Unit Tests for Migration**
 
 ```bash
@@ -307,7 +347,7 @@ cargo test --manifest-path src-tauri/Cargo.toml migration_v2_test
 
 ```bash
 git add src-tauri/src/conversation/
-git commit -m "feat(db): implement migration v2 and v3 with exact RAII PragmaGuard, lossless field and metadata merge, and foreign key check"
+git commit -m "feat(db): implement migration v2 and v3 with exact RAII PragmaGuard, lossless Rust field and metadata merger, and foreign key check"
 ```
 
 ---
@@ -335,7 +375,7 @@ git commit -m "feat(security): implement AES-256-GCM vault with OS keyring integ
 - Create: `supabase/functions/meta-webhook/index.ts`
 - Create: `supabase/migrations/20260821000002_meta_webhook_buffer.sql`
 
-- [ ] **Step 1: Write Webhook Buffer DDL, RLS Policies, and Interaction Index**
+- [ ] **Step 1: Write Webhook Buffer DDL, RLS Policies, and Atomic Persistence RPC**
 
 ```sql
 -- supabase/migrations/20260821000002_meta_webhook_buffer.sql
@@ -358,9 +398,45 @@ CREATE TABLE IF NOT EXISTS meta_user_page_interactions (
     PRIMARY KEY(tenant_id, page_id, user_id)
 );
 ALTER TABLE meta_user_page_interactions ENABLE ROW LEVEL SECURITY;
+
+-- Atomic batch ingestion and interaction tracking RPC
+CREATE OR REPLACE FUNCTION ingest_meta_webhook_batch(
+    p_page_id TEXT,
+    p_events JSONB
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+DECLARE
+    v_evt RECORD;
+    v_owner RECORD;
+    v_user_id TEXT;
+BEGIN
+    FOR v_evt IN SELECT * FROM jsonb_to_recordset(p_events) AS (event_type TEXT, event_key TEXT, payload JSONB, customer_id TEXT)
+    LOOP
+        INSERT INTO public.meta_webhook_buffer (page_id, event_type, event_key, payload)
+        VALUES (p_page_id, v_evt.event_type, v_evt.event_key, v_evt.payload)
+        ON CONFLICT (page_id, event_key) DO NOTHING;
+
+        IF v_evt.customer_id IS NOT NULL AND v_evt.customer_id != '' AND v_evt.customer_id != p_page_id THEN
+            FOR v_owner IN SELECT tenant_id FROM public.meta_tenant_pages WHERE page_id = p_page_id
+            LOOP
+                INSERT INTO public.meta_user_page_interactions (tenant_id, page_id, user_id, last_interacted_at)
+                VALUES (v_owner.tenant_id, p_page_id, v_evt.customer_id, now())
+                ON CONFLICT (tenant_id, page_id, user_id) DO UPDATE SET last_interacted_at = now();
+            END LOOP;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION ingest_meta_webhook_batch FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION ingest_meta_webhook_batch TO service_role;
 ```
 
-- [ ] **Step 2: Implement `/meta-webhook` with HMAC validation, Changes Ingestion and Interaction Upsert**
+- [ ] **Step 2: Implement `/meta-webhook` with HMAC validation, Stable Event Keys and Atomic RPC Ingestion**
 
 ```typescript
 // supabase/functions/meta-webhook/index.ts
@@ -371,6 +447,12 @@ const META_APP_SECRET = Deno.env.get("META_APP_SECRET") || "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+async function sha256Hex(str: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  const bytes = new Uint8Array(buf);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+}
 
 serve(async (req: Request) => {
   const url = new URL(req.url);
@@ -426,16 +508,7 @@ serve(async (req: Request) => {
   if (body.object === "page") {
     for (const entry of body.entry || []) {
       const pageId = entry.id;
-
-      // Find tenant owners
-      const { data: pageOwners, error: ownerErr } = await supabaseAdmin
-        .from("meta_tenant_pages")
-        .select("tenant_id")
-        .eq("page_id", pageId);
-
-      if (ownerErr) {
-        return new Response("Database error resolving page owner", { status: 500 });
-      }
+      const batchEvents: any[] = [];
 
       // 1. Ingest messaging events
       for (const messaging of entry.messaging || []) {
@@ -451,33 +524,14 @@ serve(async (req: Request) => {
           : messaging.reaction ? "message_reactions" : "messaging_other";
 
         const eventKey = `${pageId}_${eventType}_${mid || watermark || reactionKey || messaging.timestamp}_${senderId}_${recipientId}_${messaging.timestamp}`;
+        const customerId = (messaging.sender?.id === pageId) ? messaging.recipient?.id : messaging.sender?.id;
 
-        const { error: insErr } = await supabaseAdmin.from("meta_webhook_buffer").insert({
-          page_id: pageId,
+        batchEvents.push({
           event_type: eventType,
           event_key: eventKey,
           payload: messaging,
+          customer_id: customerId,
         });
-
-        if (insErr && insErr.code !== "23505") {
-          return new Response("Database error buffering messaging event", { status: 500 });
-        }
-
-        // Upsert customer interaction mapping (distinguishing Page from customer)
-        const customerId = (messaging.sender?.id === pageId) ? messaging.recipient?.id : messaging.sender?.id;
-        if (customerId && pageOwners) {
-          for (const owner of pageOwners) {
-            const { error: upErr } = await supabaseAdmin.from("meta_user_page_interactions").upsert({
-              tenant_id: owner.tenant_id,
-              page_id: pageId,
-              user_id: customerId,
-              last_interacted_at: new Date().toISOString(),
-            });
-            if (upErr) {
-              return new Response("Database error updating interactions", { status: 500 });
-            }
-          }
-        }
       }
 
       // 2. Ingest changes events (feed, comments, leadgen)
@@ -486,10 +540,10 @@ serve(async (req: Request) => {
         const val = change.value || {};
         const verb = val.verb || "add";
         const targetId = val.comment_id || val.post_id || val.leadgen_id || "";
-        const changeKey = `${pageId}_${field}_${verb}_${targetId}_${val.created_time || entry.time || Date.now()}`;
+        const payloadHash = (await sha256Hex(JSON.stringify(val))).slice(0, 12);
+        const changeKey = `${pageId}_${field}_${verb}_${targetId}_${val.created_time || entry.time || payloadHash}`;
         const eventType = field === "leadgen" ? "leadgen" : (field === "feed" || field === "comments" ? "feed" : "change_other");
 
-        // Format leadgen payload consistently for lead worker
         const bufferedPayload = field === "leadgen" ? {
           leadgen_id: val.leadgen_id,
           page_id: pageId,
@@ -498,31 +552,25 @@ serve(async (req: Request) => {
           raw_change: change,
         } : change;
 
-        const { error: chgErr } = await supabaseAdmin.from("meta_webhook_buffer").insert({
-          page_id: pageId,
+        const customerId = val.from?.id;
+
+        batchEvents.push({
           event_type: eventType,
           event_key: changeKey,
           payload: bufferedPayload,
+          customer_id: customerId,
+        });
+      }
+
+      // Atomically persist buffer events and interaction index via Postgres RPC
+      if (batchEvents.length > 0) {
+        const { error: rpcErr } = await supabaseAdmin.rpc("ingest_meta_webhook_batch", {
+          p_page_id: pageId,
+          p_events: batchEvents,
         });
 
-        if (chgErr && chgErr.code !== "23505") {
-          return new Response("Database error buffering change event", { status: 500 });
-        }
-
-        // Upsert interaction for feed comments / changes if sender is present
-        const changeUserId = val.from?.id;
-        if (changeUserId && changeUserId !== pageId && pageOwners) {
-          for (const owner of pageOwners) {
-            const { error: upErr } = await supabaseAdmin.from("meta_user_page_interactions").upsert({
-              tenant_id: owner.tenant_id,
-              page_id: pageId,
-              user_id: changeUserId,
-              last_interacted_at: new Date().toISOString(),
-            });
-            if (upErr) {
-              return new Response("Database error updating interactions", { status: 500 });
-            }
-          }
+        if (rpcErr) {
+          return new Response("Database error buffering events atomically", { status: 500 });
         }
       }
     }
@@ -536,7 +584,7 @@ serve(async (req: Request) => {
 
 ```bash
 git add supabase/
-git commit -m "feat(webhook): implement complete webhook relay for messaging and changes with atomic interaction tracking"
+git commit -m "feat(webhook): implement atomic server-side webhook ingestion RPC and stable change keys"
 ```
 
 ---
@@ -549,7 +597,7 @@ git commit -m "feat(webhook): implement complete webhook relay for messaging and
 - Create: `src-tauri/src/conversation/facebook/dead_letter_replay.rs`
 - Test: `src-tauri/src/conversation/facebook/sync_test.rs`
 
-- [ ] **Step 1: Implement Inbound Sync Worker with Contiguous Checkpointing, Scoped Lookups, Out-of-Order Reactions & Receipts**
+- [ ] **Step 1: Implement Inbound Sync Worker with Contiguous Checkpointing, Forward-Only Status Updates, and Scoped Lookups**
 
 ```rust
 // src-tauri/src/conversation/facebook/sync.rs
@@ -733,10 +781,11 @@ impl FacebookSyncWorker {
 
                         match conversation_id_res {
                             Ok(conv_id) => {
-                                for mid_val in mids.unwrap() {
+                                for (idx, mid_val) in mids.unwrap().iter().enumerate() {
                                     if let Some(m_str) = mid_val.as_str() {
+                                        // Forward-only transition: update delivered only if current status is sent, queued, or pending
                                         let updated_rows = tx.execute(
-                                            "UPDATE messages SET status = 'delivered' WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                                            "UPDATE messages SET status = 'delivered' WHERE conversation_id = ?1 AND provider_message_id = ?2 AND status IN ('sent', 'queued', 'pending')",
                                             params![conv_id, m_str],
                                         )?;
                                         if updated_rows > 0 {
@@ -753,12 +802,12 @@ impl FacebookSyncWorker {
                                                 )?;
                                             }
                                         } else {
-                                            // Message not yet ingested under existing conversation: record pending dead-letter for replay
+                                            // Message not yet ingested under existing conversation: record pending dead-letter with exact array index
                                             tx.execute(
                                                 "INSERT INTO channel_sync_dead_letters (channel_account_id, scope, event_id, item_index, event_type, event_key, payload_json, error_reason, status, created_at)
-                                                 VALUES (?1, 'meta_webhook_messenger_cursor', ?2, 0, ?3, ?4, ?5, 'unresolved_message', 'pending', datetime('now'))
+                                                 VALUES (?1, 'meta_webhook_messenger_cursor', ?2, ?3, ?4, ?5, ?6, 'unresolved_message', 'pending', datetime('now'))
                                                  ON CONFLICT(channel_account_id, scope, event_id, item_index) DO NOTHING",
-                                                params![channel_account_id, event_id, event_type, m_str, serde_json::to_string(&payload)?],
+                                                params![channel_account_id, event_id, idx as i64, event_type, m_str, serde_json::to_string(&payload)?],
                                             )?;
                                         }
                                     }
@@ -791,7 +840,7 @@ impl FacebookSyncWorker {
                             params![channel_account_id, event_id, event_type, event_key, serde_json::to_string(&payload)?],
                         )?;
                     } else {
-                        // Scope read receipts strictly to the specific direct conversation
+                        // Scope read receipts strictly to outbound messages in the direct conversation
                         let conversation_id_res: Result<i64, _> = tx.query_row(
                             "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'direct'",
                             params![channel_account_id, psid],
@@ -803,7 +852,7 @@ impl FacebookSyncWorker {
                                 let read_messages: Vec<i64> = {
                                     let mut stmt = tx.prepare(
                                         "SELECT id FROM messages 
-                                         WHERE conversation_id = ?1 AND provider_timestamp <= ?2"
+                                         WHERE conversation_id = ?1 AND provider_timestamp <= ?2 AND direction = 'outbound'"
                                     )?;
                                     let rows = stmt.query_map(params![conv_id, watermark.to_string()], |r| r.get(0))?;
                                     rows.flatten().collect()
@@ -839,10 +888,10 @@ impl FacebookSyncWorker {
                     let psid = if actor_id == page_id { recipient_id } else { actor_id };
                     let timestamp = payload.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
 
-                    if mid.is_empty() || actor_id.is_empty() || (action == "react" && emoji.is_empty()) {
+                    if mid.is_empty() || actor_id.is_empty() || (action == "react" && emoji.is_empty()) || timestamp == 0 {
                         tx.execute(
                             "INSERT INTO channel_sync_dead_letters (channel_account_id, scope, event_id, item_index, event_type, event_key, payload_json, error_reason, status, created_at)
-                             VALUES (?1, 'meta_webhook_messenger_cursor', ?2, 0, ?3, ?4, ?5, 'malformed_reaction_event', 'failed', datetime('now'))
+                             VALUES (?1, 'meta_webhook_messenger_cursor', ?2, 0, ?3, ?4, ?5, 'invalid_reaction_timestamp', 'failed', datetime('now'))
                              ON CONFLICT(channel_account_id, scope, event_id, item_index) DO NOTHING",
                             params![channel_account_id, event_id, event_type, event_key, serde_json::to_string(&payload)?],
                         )?;
@@ -880,13 +929,9 @@ impl FacebookSyncWorker {
                             }
                             Err(_) => {
                                 // Out-of-order reaction: save in pending_message_reactions with provider occurrence timestamp string
-                                let occurred_at_str = if timestamp > 0 {
-                                    chrono::DateTime::from_timestamp_millis(timestamp)
-                                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                                        .unwrap_or_else(|| chrono::Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string())
-                                } else {
-                                    chrono::Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()
-                                };
+                                let occurred_at_str = chrono::DateTime::from_timestamp_millis(timestamp)
+                                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                    .unwrap_or_else(|| "".to_string());
 
                                 tx.execute(
                                     "INSERT INTO pending_message_reactions (
@@ -936,7 +981,7 @@ impl FacebookSyncWorker {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(sync): implement contiguous messenger sync worker with scoped receipts, monotonic cursor update, and reaction idempotency"
+git commit -m "feat(sync): implement contiguous messenger sync worker with forward-only state transitions, array-indexed dead letters, and scoped receipts"
 ```
 
 ---

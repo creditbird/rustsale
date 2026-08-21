@@ -97,16 +97,6 @@ use tokio::sync::{mpsc, oneshot};
 pub struct CommentEngine;
 
 impl CommentEngine {
-    pub fn renew_heartbeat(conn: &Connection, comment_id: &str, worker_id: &str) -> Result<bool> {
-        let rows = conn.execute(
-            "UPDATE facebook_comment_logs 
-             SET claim_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
-             WHERE comment_id = ?1 AND owner_id = ?2 AND private_reply_status = 'processing'",
-            params![comment_id, worker_id],
-        )?;
-        Ok(rows > 0)
-    }
-
     pub async fn execute_private_reply(
         conn: &mut Connection,
         token: &str,
@@ -127,7 +117,7 @@ impl CommentEngine {
             return Ok("skipped_outside_7_days".to_string());
         }
 
-        // 3. Atomic claim lock with lease deadline
+        // 3. Atomic claim lock with 5-minute lease deadline
         let tx = conn.transaction()?;
         let rows_affected = tx.execute(
             "INSERT INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, owner_id, claim_deadline, created_at, updated_at)
@@ -147,43 +137,7 @@ impl CommentEngine {
         }
         tx.commit()?;
 
-        // 4. Cancellable in-flight heartbeat renewal loop
-        let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        let (heartbeat_req_tx, mut heartbeat_req_rx) = mpsc::channel::<(String, String, oneshot::Sender<bool>)>(1);
-        let lease_aborted = Arc::new(AtomicBool::new(false));
-        let lease_aborted_clone = lease_aborted.clone();
-
-        let comment_id_str = comment_id.to_string();
-        let worker_id_str = worker_id.to_string();
-
-        let heartbeat_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
-            interval.tick().await; // Initial tick
-            loop {
-                tokio::select! {
-                    _ = &mut cancel_rx => {
-                        break;
-                    }
-                    _ = interval.tick() => {
-                        let (resp_tx, resp_rx) = oneshot::channel();
-                        if heartbeat_req_tx.send((comment_id_str.clone(), worker_id_str.clone(), resp_tx)).await.is_ok() {
-                            match tokio::time::timeout(std::time::Duration::from_secs(5), resp_rx).await {
-                                Ok(Ok(true)) => {}
-                                _ => {
-                                    lease_aborted_clone.store(true, Ordering::SeqCst);
-                                    break;
-                                }
-                            }
-                        } else {
-                            lease_aborted_clone.store(true, Ordering::SeqCst);
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        // 5. Call Meta Send API
+        // 4. Call Meta Send API with 15s timeout
         let client = Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
         let url = format!("https://graph.facebook.com/v26.0/{}/messages", page_id);
         let body = json!({
@@ -192,37 +146,10 @@ impl CommentEngine {
             "messaging_type": "RESPONSE"
         });
 
-        let send_future = client.post(&url)
+        let resp = client.post(&url)
             .bearer_auth(token)
             .json(&body)
-            .send();
-
-        // Handle potential heartbeat requests while waiting for HTTP response
-        tokio::pin!(send_future);
-        let resp = loop {
-            tokio::select! {
-                res = &mut send_future => {
-                    break res;
-                }
-                Some((cid, wid, resp_chan)) = heartbeat_req_rx.recv() => {
-                    let success = Self::renew_heartbeat(conn, &cid, &wid).unwrap_or(false);
-                    let _ = resp_chan.send(success);
-                }
-            }
-        };
-
-        // Cancel heartbeat loop immediately
-        let _ = cancel_tx.send(());
-        let _ = heartbeat_handle.await;
-
-        if lease_aborted.load(Ordering::SeqCst) {
-            // Fail closed: mark delivery_unknown so reconciler will check Graph API before any retry
-            conn.execute(
-                "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', owner_id = NULL, claim_deadline = NULL, error_message = 'Lease lost during in-flight send', updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
-                params![comment_id, worker_id],
-            )?;
-            return Err(anyhow!("Lease lost during in-flight send"));
-        }
+            .send().await;
 
         match resp {
             Ok(r) if r.status().is_success() => {
@@ -481,6 +408,18 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wi
 
 ```sql
 -- supabase/migrations/20260821000003_data_deletion_tables.sql
+CREATE TABLE IF NOT EXISTS tenant_registered_devices (
+    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    device_name TEXT NOT NULL DEFAULT 'desktop',
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY(tenant_id, device_id)
+);
+ALTER TABLE tenant_registered_devices ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Tenants manage own registered devices" ON tenant_registered_devices
+    FOR ALL USING (auth.uid() = tenant_id);
+
 CREATE TABLE IF NOT EXISTS data_deletion_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
@@ -498,7 +437,7 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     page_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
-    device_id TEXT NOT NULL DEFAULT 'primary',
+    device_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed')),
     acknowledged_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
@@ -510,7 +449,7 @@ ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Tenants sync own deletion tasks" ON meta_device_deletion_tasks
     FOR ALL USING (auth.uid() = tenant_id);
 
--- Transactional RPC for atomic deletion request creation and task dispatch
+-- Transactional RPC for atomic deletion request creation and multi-device task dispatch
 CREATE OR REPLACE FUNCTION create_data_deletion_request_and_tasks(
     p_user_id TEXT,
     p_confirmation_code TEXT
@@ -529,20 +468,22 @@ BEGIN
     VALUES (p_user_id, p_confirmation_code, 'pending', now())
     RETURNING id INTO v_request_id;
 
-    -- Purge matching user events from webhook buffer across messaging and changes
+    -- Purge matching user events from webhook buffer across all canonical payload shapes
     DELETE FROM public.meta_webhook_buffer 
     WHERE (payload->'sender'->>'id' = p_user_id) 
        OR (payload->'recipient'->>'id' = p_user_id)
-       OR (payload->'value'->'from'->>'id' = p_user_id);
+       OR (payload->'value'->'from'->>'id' = p_user_id)
+       OR (payload->'raw_change'->'value'->'from'->>'id' = p_user_id);
 
-    -- Fan out tasks based on durable interaction table
+    -- Fan out tasks across all registered tenant devices that interacted with this user
     FOR v_row IN 
-        SELECT DISTINCT tenant_id, page_id 
-        FROM public.meta_user_page_interactions 
-        WHERE user_id = p_user_id
+        SELECT DISTINCT p.tenant_id, p.page_id, COALESCE(d.device_id, 'primary') AS device_id
+        FROM public.meta_user_page_interactions p
+        LEFT JOIN public.tenant_registered_devices d ON d.tenant_id = p.tenant_id
+        WHERE p.user_id = p_user_id
     LOOP
-        INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, page_id, user_id, status)
-        VALUES (v_request_id, v_row.tenant_id, v_row.page_id, p_user_id, 'pending')
+        INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, page_id, user_id, device_id, status)
+        VALUES (v_request_id, v_row.tenant_id, v_row.page_id, p_user_id, v_row.device_id, 'pending')
         ON CONFLICT (request_id, tenant_id, page_id, device_id) DO NOTHING;
         v_tasks_count := v_tasks_count + 1;
     END LOOP;
@@ -834,6 +775,55 @@ impl FacebookDeletionWorker {
         }
 
         Ok(rows)
+    }
+
+    pub async fn process_pending_device_tasks(
+        conn: &mut Connection,
+        supabase_url: &str,
+        user_jwt: &str,
+        device_id: &str,
+    ) -> Result<usize> {
+        let client = reqwest::Client::new();
+        let get_url = format!("{}/rest/v1/meta_device_deletion_tasks?device_id=eq.{}&status=eq.pending", supabase_url, device_id);
+        
+        let resp = client.get(&get_url)
+            .bearer_auth(user_jwt)
+            .header("apikey", user_jwt)
+            .send().await?;
+
+        if !resp.status().is_success() {
+            return Ok(0);
+        }
+
+        let tasks: Vec<serde_json::Value> = resp.json().await?;
+        let mut completed_count = 0;
+
+        for task in tasks {
+            let task_id = task.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let page_id = task.get("page_id").and_then(|p| p.as_str()).unwrap_or("");
+            let user_id = task.get("user_id").and_then(|u| u.as_str()).unwrap_or("");
+
+            if let Ok(channel_account_id) = conn.query_row(
+                "SELECT channel_account_id FROM facebook_page_tokens WHERE page_id = ?1",
+                params![page_id],
+                |r| r.get::<_, i64>(0),
+            ) {
+                if let Ok(_) = Self::anonymize_user_data_local(conn, channel_account_id, user_id) {
+                    let patch_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}", supabase_url, task_id);
+                    let _ = client.patch(&patch_url)
+                        .bearer_auth(user_jwt)
+                        .header("apikey", user_jwt)
+                        .json(&serde_json::json!({
+                            "status": "completed",
+                            "completed_at": chrono::Utc::now().to_rfc3339()
+                        }))
+                        .send().await;
+                    completed_count += 1;
+                }
+            }
+        }
+
+        Ok(completed_count)
     }
 }
 ```

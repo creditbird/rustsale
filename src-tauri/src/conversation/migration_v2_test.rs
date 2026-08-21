@@ -324,7 +324,8 @@ mod tests {
             assert_eq!(p_att_id, 903);
             assert_eq!(p_prov_id, Some("PROVIDER_COLLISION_1".to_string()));
             assert_eq!(p_file_name, Some("photo_a.jpg".to_string()));
-            assert!(p_meta.contains("\"a\": 1") || p_meta.contains("\"b\": 2"));
+            assert!(p_meta.contains("\"a\":1") || p_meta.contains("\"a\": 1"));
+            assert!(p_meta.contains("\"b\":2") || p_meta.contains("\"b\": 2"));
 
             // 12. Verify unique index prevents future duplicate provider_attachment_id
             let dup_prov_insert = conn.execute(
