@@ -4353,20 +4353,48 @@ fn test_facebook_upload_session_reel_flow_and_polling_429() {
     ).unwrap();
 
     conn.execute(
-        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
-         VALUES (200, 'grp_200', 200, 'page_123', 'reel', 'test reel message', 'idemp_200', 'publishing', datetime('now'), datetime('now'))",
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, owner_id, claim_deadline, created_at, updated_at)
+         VALUES (200, 'grp_200', 200, 'page_123', 'reel', 'test reel message', 'idemp_200', 'publishing', 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
         [],
     ).unwrap();
 
-    // 1. Insert Reel in_progress session after START
+    // 1. Test canonical column association for Reel START & START-retry on facebook_scheduled_posts
     let reel_vid_id = "meta_reel_12345";
+    let assoc_rows = conn.execute(
+        "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
+        params![reel_vid_id, 200i64, "worker_1"],
+    ).unwrap();
+    assert_eq!(
+        assoc_rows, 1,
+        "Canonical columns upload_session_id and owner_id must successfully update scheduled post"
+    );
+
+    let post_upload_session: Option<String> = conn
+        .query_row(
+            "SELECT upload_session_id FROM facebook_scheduled_posts WHERE id = 200",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(post_upload_session, Some(reel_vid_id.to_string()));
+
+    // 2. Insert Reel in_progress session after START
     conn.execute(
         "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
          VALUES (200, 'page_123', 'reel', ?1, ?1, '/tmp/reel.mp4', 'reel_hash_1', 5242880, 0, 'in_progress', 0, 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
         params![reel_vid_id],
     ).unwrap();
 
-    // 2. Strict fail-closed parsing of Reel binary upload responses
+    // 3. Test lease contention when another worker tries to claim an actively leased session
+    let contender_rows = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_contender', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE upload_session_id = ?1 AND (owner_id = 'worker_contender' OR owner_id IS NULL OR lease_deadline < datetime('now'))",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(contender_rows, 0, "Contending worker must fail to claim active lease without failing parent post (returns StillProcessing)");
+
+    // 4. Strict fail-closed parsing of Reel binary upload responses
     let valid_success = serde_json::json!({ "success": true });
     let is_valid = valid_success.get("success").and_then(|v| v.as_bool()) == Some(true);
     assert!(is_valid, "Documented {{\\\"success\\\": true}} must pass");
@@ -4395,7 +4423,7 @@ fn test_facebook_upload_session_reel_flow_and_polling_429() {
     ).unwrap();
     assert_eq!(offset_updated, 1);
 
-    // 3. Test authoritative uploading_phase.status detection on resume even when video_status == "processing"
+    // 5. Test authoritative uploading_phase.status detection on resume even when video_status == "processing"
     let resume_status_json = serde_json::json!({
         "status": {
             "video_status": "processing",
@@ -4422,14 +4450,25 @@ fn test_facebook_upload_session_reel_flow_and_polling_429() {
         "uploading_phase.status == 'complete' proves binary upload completed"
     );
 
-    // 4. Transition to finishing before calling FINISH endpoint
+    // 6. Transition to finishing before calling FINISH endpoint
     let finishing_updated = conn.execute(
         "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'in_progress'",
         params![reel_vid_id],
     ).unwrap();
     assert_eq!(finishing_updated, 1);
 
-    // 5. Test terminal status polling receiving HTTP 429: releases lease and increments retry count via checked CAS
+    // 7. Test finishing session re-entry while Meta is still processing (neither complete nor error)
+    // When session_status == "finishing" and publishing_phase is in_progress, worker returns StillProcessing without failing CAS
+    let finishing_reentry_status: String = conn
+        .query_row(
+            "SELECT status FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+            params![reel_vid_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(finishing_reentry_status, "finishing", "Finishing session must remain in finishing status without regressing to in_progress CAS failure");
+
+    // 8. Test terminal status polling receiving HTTP 429: releases lease and increments retry count via checked CAS
     let poll_429_updated = conn.execute(
         "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'finishing'",
         params![reel_vid_id],
@@ -4445,7 +4484,7 @@ fn test_facebook_upload_session_reel_flow_and_polling_429() {
     assert_eq!(retries, 1);
     assert_eq!(status, "finishing");
 
-    // 6. Test still-processing polling release via checked CAS
+    // 9. Test still-processing polling release via checked CAS
     let reclaims_for_poll = conn.execute(
         "UPDATE facebook_upload_sessions SET owner_id = 'worker_poll', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now') WHERE upload_session_id = ?1 AND status = 'finishing' AND owner_id IS NULL",
         params![reel_vid_id],
@@ -4458,7 +4497,7 @@ fn test_facebook_upload_session_reel_flow_and_polling_429() {
     ).unwrap();
     assert_eq!(poll_timeout_release, 1);
 
-    // 7. Subsequent polling worker reclaims lease and verifies complete publishing status
+    // 10. Subsequent polling worker reclaims lease and verifies complete publishing status
     let reclaims = conn.execute(
         "UPDATE facebook_upload_sessions SET owner_id = 'worker_2', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now') WHERE upload_session_id = ?1 AND status = 'finishing' AND owner_id IS NULL",
         params![reel_vid_id],
