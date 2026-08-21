@@ -461,11 +461,16 @@ serve(async (req: Request) => {
 
     for (const entry of payload.entry || []) {
       const pageId = entry.id;
-      const { data: pageMapping } = await supabaseAdmin
+      const { data: pageMapping, error: pageMappingError } = await supabaseAdmin
         .from("meta_tenant_pages")
         .select("tenant_id")
         .eq("page_id", pageId)
-        .single();
+        .maybeSingle();
+
+      if (pageMappingError) {
+        console.error("Failed to query meta_tenant_pages mapping:", pageMappingError);
+        return new Response("Internal Server Error: Page mapping query failed", { status: 500 });
+      }
 
       if (!pageMapping) continue;
 

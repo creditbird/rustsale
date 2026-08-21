@@ -177,10 +177,15 @@ serve(async (req: Request) => {
     const userId = data.user_id;
     const confirmationCode = crypto.randomUUID();
 
-    await supabaseAdmin.rpc("create_data_deletion_request_and_tasks", {
+    const { error: deletionRpcError } = await supabaseAdmin.rpc("create_data_deletion_request_and_tasks", {
       p_confirmation_code: confirmationCode,
       p_user_id: userId,
     });
+
+    if (deletionRpcError) {
+      console.error("Failed to create data deletion request:", deletionRpcError);
+      return new Response("Internal Server Error: Failed to record deletion request", { status: 500 });
+    }
 
     const statusUrl = `https://rustsale.trantrongtri.com/deletion-status?code=${confirmationCode}`;
     return new Response(JSON.stringify({ url: statusUrl, confirmation_code: confirmationCode }), {
