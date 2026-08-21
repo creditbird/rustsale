@@ -669,6 +669,10 @@ pub struct StrongholdKeyring;
 
 impl StrongholdKeyring {
     fn get_or_create_master_key() -> Result<[u8; 32]> {
+        use std::sync::Mutex;
+        static INIT_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = INIT_LOCK.lock().map_err(|_| anyhow!("Keyring mutex poisoned"))?;
+
         let entry = Entry::new("rustsale", "facebook_token_master_key")
             .map_err(|e| anyhow!("Failed to access OS Keyring service: {}", e))?;
 

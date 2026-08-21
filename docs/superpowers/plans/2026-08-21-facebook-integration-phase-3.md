@@ -228,7 +228,8 @@ impl FacebookLeadIngestor {
         if let Some(fields) = field_data {
             for f in fields {
                 let fname = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let fval = f.get("values").and_then(|v| v.as_array()).and_then(|v| v.first()).and_then(|v| v.as_str()).unwrap_or("");
+                let fvals = f.get("values").and_then(|v| v.as_array());
+                let fval = fvals.and_then(|v| v.first()).and_then(|v| v.as_str()).unwrap_or("");
 
                 match fname {
                     "full_name" | "name" => name = fval.to_string(),
