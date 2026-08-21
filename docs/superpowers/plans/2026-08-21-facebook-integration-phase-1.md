@@ -383,45 +383,7 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
             );
-
-            -- 6. Create channel_sync_dead_letters table
-            CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_account_id INTEGER NOT NULL,
-                scope TEXT NOT NULL,
-                event_id INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                event_key TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                error_reason TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
-                UNIQUE(channel_account_id, scope, event_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
-
-            -- Deduplicate any existing duplicate attachments before creating unique index
-            DELETE FROM message_attachments 
-            WHERE id NOT IN (
-                SELECT MIN(id) 
-                FROM message_attachments 
-                GROUP BY message_id, COALESCE(remote_url, id)
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote ON message_attachments(message_id, remote_url) WHERE remote_url IS NOT NULL;
         "#)?;
-
-        // Conditionally add provider_timestamp to messages table
-        let mut has_provider_timestamp = false;
-        {
-            let mut stmt = tx.prepare("PRAGMA table_info(messages)")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            for col in rows.flatten() {
-                if col == "provider_timestamp" { has_provider_timestamp = true; }
-            }
-        }
-        if !has_provider_timestamp {
-            tx.execute_batch("ALTER TABLE messages ADD COLUMN provider_timestamp TEXT;")?;
-        }
 
         // Conditionally add leadgen columns to leads table
         let mut has_leadgen = false;
@@ -456,6 +418,74 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
         }
 
         tx.execute_batch("PRAGMA user_version = 2;")?;
+        tx.commit()?;
+        Ok(())
+    })();
+
+    let pragma_res = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    match migration_result {
+        Ok(_) => pragma_res.map_err(|e| anyhow!("Failed to restore foreign keys: {}", e)),
+        Err(e) => {
+            let _ = pragma_res;
+            Err(e)
+        }
+    }
+}
+
+pub fn apply_migration_v3(conn: &mut Connection) -> Result<()> {
+    apply_migration_v2(conn)?;
+
+    let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    if current_version >= 3 {
+        return Ok(());
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+
+    let migration_result = (|| -> Result<()> {
+        let tx = conn.transaction()?;
+
+        tx.execute_batch(r#"
+            -- 1. Create channel_sync_dead_letters table
+            CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_account_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                event_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                event_key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                error_reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
+                UNIQUE(channel_account_id, scope, event_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
+
+            -- 2. Deduplicate any existing duplicate attachments before creating unique index
+            DELETE FROM message_attachments 
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM message_attachments 
+                GROUP BY message_id, COALESCE(remote_url, id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote ON message_attachments(message_id, remote_url) WHERE remote_url IS NOT NULL;
+        "#)?;
+
+        // Conditionally add provider_timestamp to messages table
+        let mut has_provider_timestamp = false;
+        {
+            let mut stmt = tx.prepare("PRAGMA table_info(messages)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for col in rows.flatten() {
+                if col == "provider_timestamp" { has_provider_timestamp = true; }
+            }
+        }
+        if !has_provider_timestamp {
+            tx.execute_batch("ALTER TABLE messages ADD COLUMN provider_timestamp TEXT;")?;
+        }
+
+        tx.execute_batch("PRAGMA user_version = 3;")?;
         tx.commit()?;
         Ok(())
     })();
@@ -507,13 +537,27 @@ mod tests {
                 updated_at TEXT NOT NULL,
                 UNIQUE(channel, identity_namespace, external_id)
             );
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                text_content TEXT,
+                ingested_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                remote_url TEXT,
+                created_at TEXT NOT NULL
+            );
             INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (1, 'messenger', 'PAGE_A');
             INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (2, 'messenger', 'PAGE_B');
             INSERT INTO channel_identities (channel, identity_namespace, external_id, created_at, updated_at)
             VALUES ('zalo', 'phone', '0912345678', '2026-01-01', '2026-01-01');
         "#).unwrap();
 
-        apply_migration_v2(&mut conn).unwrap();
+        super::super::migration_v2::apply_migration_v3(&mut conn).unwrap();
 
         conn.execute(
             "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
