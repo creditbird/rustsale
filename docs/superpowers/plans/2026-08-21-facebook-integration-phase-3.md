@@ -272,8 +272,15 @@ BEGIN
         VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now());
     END IF;
 
-    -- Serialize against concurrent deletion completion by locking active deletion requests for this tenant
-    PERFORM 1 FROM public.meta_data_deletion_requests WHERE status = 'processing' FOR UPDATE;
+    -- Serialize against concurrent deletion completion by locking active deletion requests relevant to this tenant
+    PERFORM 1
+    FROM public.meta_data_deletion_requests r
+    WHERE r.status = 'processing'
+      AND EXISTS (
+          SELECT 1 FROM public.meta_tenant_deletion_tombstones t
+          WHERE t.request_id = r.id AND t.tenant_id = auth.uid()
+      )
+    FOR UPDATE;
 
     -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones where this device does not already have an active/completed task for that specific request
     INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
@@ -502,17 +509,9 @@ serve(async (req: Request) => {
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
     }
 
-    // Fail-closed check on empty resolution: verify whether any retained interaction exists strictly for authoritative app_user_id
-    if (resolvedMappings.length === 0) {
-      const { count, error: countErr } = await supabaseAdmin
-        .from("meta_user_page_interactions")
-        .select("*", { count: "exact", head: true })
-        .eq("app_user_id", userId);
-      if (countErr || !count || count === 0) {
-        return new Response("Bad Request: No associated Page identities or retained records found for user identifier", { status: 400 });
-      }
-    }
-
+    // Call deletion RPC with resolved page mappings (or empty array if no active page identities resolved)
+    // If no retained records exist on the platform, create_data_deletion_request_and_tasks records the request as completed immediately
+    // and returns the tracking confirmation code to fulfill Meta's Data Deletion Callback requirement without failing open or leaking data.
     const { error: deletionRpcError } = await supabaseAdmin.rpc("create_data_deletion_request_and_tasks", {
       p_confirmation_code: confirmationCode,
       p_user_id: userId,

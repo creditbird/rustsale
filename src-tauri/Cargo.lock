@@ -4415,6 +4415,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "urlencoding",
+ "uuid",
  "zca-rs",
  "zip 5.1.1",
 ]
