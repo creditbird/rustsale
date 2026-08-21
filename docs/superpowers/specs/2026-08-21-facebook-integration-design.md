@@ -267,6 +267,20 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 - **Videos (`graph-video.facebook.com`):** 3-Phase resumable upload (`upload_phase=start` -> `upload_phase=transfer` -> `upload_phase=finish`). Tracks `facebook_upload_sessions`. On resume, queries Graph API video upload session for authoritative start offset. Verifies `server_offset > offset && server_offset <= file_size`. Chunked streaming via file seek avoids high memory spikes.
 - **Reels (`rupload.facebook.com`):** Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`. Send 4MB binary chunks to `https://rupload.facebook.com/video-reels/<video_id>` with headers `Offset` and `file_size`. On resume, query server confirmed `Offset` via `GET /video-reels/<video_id>` with Bearer auth; if failed or malformed, abort with error. After chunk upload, parse confirmed server offset and strictly verify `confirmed_offset == offset + bytes_to_read as u64`. Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`.
 
+### 5.2 Authoritative START Response-Loss & Reconciler Protocol
+1. **Meta Infrastructure Invariant:**
+   - An uncommitted `START` container on Meta (`upload_phase=start`) contains 0 transferred chunks and is strictly an uninitialized buffer. It is NEVER published to any Page feed, Reel tab, or video library without completing all chunk transfers and executing `upload_phase=finish`.
+2. **Deterministic Response-Loss State Machine:**
+   - **Local State Invariant:** When an upload starts, SQLite creates `facebook_upload_sessions` with `status = 'init_pending'`, `upload_session_id = 'intent_' || post_id || '_' || uuid`, and `video_id = NULL`.
+   - **Case A (START Accepted & Response Received):** Worker receives remote `upload_session_id` and `video_id`. Updates SQLite session row to `upload_session_id = ?1, video_id = ?2, status = 'in_progress'` via checked CAS (`WHERE id = ?3 AND owner_id = ?4 AND status = 'init_pending'` with `rows == 1`).
+   - **Case B (START Accepted on Meta & Response Lost):** Local state has `video_id = NULL` and remains in `status = 'init_pending'`. When claimed by worker or background reconciler:
+     - Because uncommitted START containers on Meta have 0 bytes and cannot be published, the worker safely executes a clean `START` request against Meta Graph API to acquire valid remote container IDs.
+     - Upon receiving remote IDs, updates session row to `in_progress` via checked CAS (`WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'` with `rows == 1`) and proceeds with chunk upload.
+     - If START returns client error (4xx non-429): marks session and post `failed` via checked CAS (`rows == 1`).
+     - If START returns 429: parses `retry-after` header, updates `next_retry_at`, and leaves in `init_pending` for backoff.
+     - If retry attempts >= 3: marks session and post `failed` via checked CAS (`rows == 1`).
+   - **Case C (START Response Received + Local CAS Lease Loss):** If SQLite update returns `rows != 1`, the worker immediately aborts with `DeterministicRejection { error_code: "session_lease_loss" }`.
+
 ---
 
 ## 6. Post Scheduler, Dual-Mode Engine & Expired Lease Recovery

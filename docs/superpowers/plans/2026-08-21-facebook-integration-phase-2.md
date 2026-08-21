@@ -2459,3 +2459,69 @@ impl FacebookUploader {
           params![session_id, worker_id],
       )?;
       ```
+
+
+### 2.6 Verification Tests for START Response-Loss & Reconciler Invariants
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_video_start_response_lost_recovers_via_fresh_start_cas() {
+        let conn = setup_test_sqlite().unwrap();
+        // Insert existing session in init_pending state (representing lost response on initial attempt)
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_session_id, video_id, file_size, start_offset, end_offset, status, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (1, 100, 'page_123', 'intent_100_uuid', NULL, 10485760, 0, 0, 'init_pending', NULL, NULL, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Worker claims lease
+        let worker_id = "worker_1";
+        let claimed = conn.execute(
+            "UPDATE facebook_upload_sessions SET owner_id = ?1, lease_deadline = datetime('now', '+5 minutes') WHERE id = 1 AND status = 'init_pending'",
+            params![worker_id],
+        ).unwrap();
+        assert_eq!(claimed, 1);
+
+        // Execute START mock (returns remote upload_session_id="meta_sess_456", video_id="meta_vid_789")
+        let updated = conn.execute(
+            "UPDATE facebook_upload_sessions SET upload_session_id = 'meta_sess_456', video_id = 'meta_vid_789', status = 'in_progress', updated_at = datetime('now') WHERE id = 1 AND owner_id = ?1 AND status = 'init_pending'",
+            params![worker_id],
+        ).unwrap();
+        assert_eq!(updated, 1);
+
+        // Verify session successfully transitioned to in_progress with authoritative Meta remote IDs
+        let (status, sess_id, vid_id): (String, String, String) = conn.query_row(
+            "SELECT status, upload_session_id, video_id FROM facebook_upload_sessions WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(status, "in_progress");
+        assert_eq!(sess_id, "meta_sess_456");
+        assert_eq!(vid_id, "meta_vid_789");
+    }
+
+    #[tokio::test]
+    async fn test_start_response_received_local_cas_lease_loss_aborts() {
+        let conn = setup_test_sqlite().unwrap();
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_session_id, video_id, file_size, start_offset, end_offset, status, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (2, 101, 'page_123', 'intent_101_uuid', NULL, 10485760, 0, 0, 'init_pending', 'worker_2_stolen', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Worker 1 attempts CAS with old owner_id
+        let worker_1 = "worker_1";
+        let updated = conn.execute(
+            "UPDATE facebook_upload_sessions SET upload_session_id = 'meta_sess_new', video_id = 'meta_vid_new', status = 'in_progress', updated_at = datetime('now') WHERE id = 2 AND owner_id = ?1 AND status = 'init_pending'",
+            params![worker_1],
+        ).unwrap();
+
+        // Must reject transition because lease was stolen
+        assert_eq!(updated, 0);
+    }
+}
+```
