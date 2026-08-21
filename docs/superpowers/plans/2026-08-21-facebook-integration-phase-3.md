@@ -123,11 +123,43 @@ const META_APP_SECRET = Deno.env.get("META_APP_SECRET")!;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-function parseSignedRequest(signedRequest: string): any {
-  const [encodedSig, payload] = signedRequest.split(".");
-  const sig = atob(encodedSig.replace(/-/g, "+").replace(/_/g, "/"));
-  const data = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
-  return data;
+async function parseAndVerifySignedRequest(signedRequest: string, appSecret: string): Promise<any | null> {
+  const parts = signedRequest.split(".");
+  if (parts.length !== 2) return null;
+  const [encodedSig, payloadStr] = parts;
+
+  try {
+    // Base64URL decode signature bytes
+    const sigBinaryStr = atob(encodedSig.replace(/-/g, "+").replace(/_/g, "/"));
+    const sigBytes = new Uint8Array(sigBinaryStr.length);
+    for (let i = 0; i < sigBinaryStr.length; i++) {
+      sigBytes[i] = sigBinaryStr.charCodeAt(i);
+    }
+
+    // Compute HMAC-SHA256 of payloadStr using appSecret
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(appSecret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    const isValid = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      sigBytes,
+      encoder.encode(payloadStr)
+    );
+
+    if (!isValid) return null;
+
+    const data = JSON.parse(atob(payloadStr.replace(/-/g, "+").replace(/_/g, "/")));
+    if (data.algorithm !== "HMAC-SHA256") return null;
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 serve(async (req: Request) => {
@@ -138,7 +170,10 @@ serve(async (req: Request) => {
     const signedRequest = formData.get("signed_request") as string;
     if (!signedRequest) return new Response("Missing signed_request", { status: 400 });
 
-    const data = parseSignedRequest(signedRequest);
+    const data = await parseAndVerifySignedRequest(signedRequest, META_APP_SECRET);
+    if (!data || !data.user_id) {
+      return new Response("Invalid or untrusted signed_request signature", { status: 400 });
+    }
     const userId = data.user_id;
     const confirmationCode = crypto.randomUUID();
 
@@ -252,19 +287,58 @@ pub async fn process_pending_device_tasks(
         {
             let tx = conn.transaction()?;
 
+            // Ensure spool cleanups staging table exists
+            tx.execute(
+                "CREATE TABLE IF NOT EXISTS pending_spool_cleanups (
+                    task_id TEXT NOT NULL,
+                    local_path TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY(task_id, local_path)
+                )",
+                [],
+            )?;
+
             // Find all attachments to delete and register under task_id
-            let mut att_stmt = tx.prepare("SELECT local_path FROM message_attachments ma JOIN messages m ON ma.message_id = m.id JOIN channel_conversations cc ON m.conversation_id = cc.id JOIN channel_identities ci ON cc.id = ci.channel_conversation_id WHERE ci.provider_identity_id = ?1 AND ma.local_path IS NOT NULL")?;
-            let local_paths: Vec<String> = att_stmt.query_map([user_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut att_stmt = tx.prepare(
+                "SELECT ma.local_path 
+                 FROM message_attachments ma 
+                 JOIN messages m ON ma.message_id = m.id 
+                 JOIN channel_identities ci ON m.sender_identity_id = ci.id 
+                 WHERE ci.channel = 'meta' AND ci.external_id = ?1 AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
+            )?;
+            let local_paths: Vec<String> = att_stmt
+                .query_map([user_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
 
             for path in &local_paths {
-                tx.execute("INSERT OR IGNORE INTO pending_spool_cleanups (task_id, local_path) VALUES (?1, ?2)", rusqlite::params![task_id, path])?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_spool_cleanups (task_id, local_path) VALUES (?1, ?2)",
+                    rusqlite::params![task_id, path],
+                )?;
             }
 
             // Redact messages
-            tx.execute("UPDATE messages SET content = '[Deleted for Compliance]' WHERE id IN (SELECT m.id FROM messages m JOIN channel_conversations cc ON m.conversation_id = cc.id JOIN channel_identities ci ON cc.id = ci.channel_conversation_id WHERE ci.provider_identity_id = ?1)", [user_id])?;
+            tx.execute(
+                "UPDATE messages 
+                 SET text_content = '[Deleted for Compliance]',
+                     content_json = '{\"type\":\"text\",\"text\":\"[Deleted for Compliance]\"}',
+                     raw_payload_json = NULL
+                 WHERE sender_identity_id IN (
+                     SELECT id FROM channel_identities WHERE channel = 'meta' AND external_id = ?1
+                 )",
+                [user_id],
+            )?;
 
             // Anonymize identity
-            tx.execute("UPDATE channel_identities SET display_name = 'Deleted User', avatar = NULL, profile_synced_at = datetime('now') WHERE provider_identity_id = ?1", [user_id])?;
+            tx.execute(
+                "UPDATE channel_identities 
+                 SET display_name = 'Deleted User', 
+                     avatar_url = NULL, 
+                     metadata_json = NULL, 
+                     updated_at = datetime('now') 
+                 WHERE channel = 'meta' AND external_id = ?1",
+                [user_id],
+            )?;
 
             tx.commit()?;
         }

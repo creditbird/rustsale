@@ -523,13 +523,18 @@ serve(async (req: Request) => {
       }
 
       if (events.length > 0) {
-        await supabaseAdmin.rpc("ingest_meta_webhook_batch", {
+        const { error: rpcError } = await supabaseAdmin.rpc("ingest_meta_webhook_batch", {
           p_tenant_id: pageMapping.tenant_id,
           p_page_id: pageId,
           p_events: events,
           p_interactions: interactions,
           p_lead_interactions: leadInteractions,
         });
+
+        if (rpcError) {
+          console.error("Failed to ingest webhook batch:", rpcError);
+          return new Response("Internal Server Error: Database ingestion failed", { status: 500 });
+        }
       }
     }
 

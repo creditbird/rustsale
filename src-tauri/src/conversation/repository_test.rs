@@ -3954,3 +3954,114 @@ fn list_inbox_unlinked_title_ignores_other_senders_in_shared_group() {
 
     assert_eq!(user_a_item.title, "Nguyễn Mạnh Toàn");
 }
+
+#[test]
+fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    // 1. Setup account, identity, conversation and message
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (1, 'messenger', 'fb_page_1', 'Facebook Page', 'connected', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel_account_id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (10, 1, 'messenger', 'user', 'fb_user_1', 'FB User', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, last_message_at, created_at, updated_at)
+         VALUES (100, 1, 'direct', 'fb_thread_1', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, provider_message_id, content_type, raw_payload_json, provider_timestamp, ingested_at, status)
+         VALUES (1001, 100, 10, 'inbound', 'mid_fb_1', 'image', '{}', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', 'received')",
+        [],
+    ).unwrap();
+
+    // Insert survivor attachment with aliases in metadata_json
+    let metadata = serde_json::json!({
+        "provider_attachment_id_aliases": ["att_alias_1", "att_alias_2"],
+        "remote_url_aliases": ["https://cdn.example.com/alias_url_1.png", "https://cdn.example.com/alias_url_2.png"]
+    });
+    conn.execute(
+        "INSERT INTO message_attachments (id, message_id, provider_attachment_id, attachment_type, mime_type, file_name, remote_url, metadata_json, created_at)
+         VALUES (500, 1001, 'att_canonical_1', 'image', 'image/png', 'photo.png', 'https://cdn.example.com/canonical.png', ?1, '2026-08-01T00:00:00Z')",
+        rusqlite::params![metadata.to_string()],
+    ).unwrap();
+
+    // 2. Now replay message with an attachment whose provider_attachment_id matches one of the aliases ("att_alias_2")
+    let replay_msg = NormalizedMessage {
+        channel: Channel::Messenger,
+        provider_account_key: "fb_page_1".to_string(),
+        account_display_name: Some("Facebook Page".to_string()),
+        participant: Some(NormalizedIdentity {
+            identity_namespace: "user".to_string(),
+            external_id: "fb_user_1".to_string(),
+            display_name: Some("FB User".to_string()),
+            avatar_url: None,
+            lead_id: None,
+        }),
+        sender_is_participant: true,
+        external_thread_id: "fb_thread_1".to_string(),
+        conversation_kind: ConversationKind::Direct,
+        conversation_title: Some("FB User".to_string()),
+        direction: MessageDirection::Inbound,
+        provider_message_id: Some("mid_fb_1".to_string()),
+        provider_client_message_id: None,
+        local_request_id: None,
+        content_type: "image".to_string(),
+        text_content: None,
+        content: serde_json::json!({"type": "image"}),
+        attachments: vec![crate::conversation::repository::NormalizedAttachment {
+            provider_attachment_id: Some("att_alias_2".to_string()),
+            media_type: "image".to_string(),
+            mime_type: "image/png".to_string(),
+            file_name: Some("updated_photo.png".to_string()),
+            size_bytes: Some(1024),
+            remote_url: Some("https://cdn.example.com/alias_url_2.png".to_string()),
+            thumbnail_url: None,
+            metadata_json: None,
+        }],
+        reply: None,
+        mentions: Vec::new(),
+        raw_payload: None,
+        provider_timestamp: Some("2026-08-01T00:00:00Z".to_string()),
+        ingested_at: "2026-08-01T00:00:00Z".to_string(),
+        status: MessageStatus::Received,
+    };
+
+    let applied = harness
+        .repository
+        .apply_normalized_message(&replay_msg)
+        .unwrap();
+    assert!(applied.duplicate, "Message must be identified as duplicate");
+
+    // Verify attachment count remains 1 and survivor was updated without unique violation
+    let att_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_attachments WHERE message_id = 1001",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        att_count, 1,
+        "Duplicate attachment should update survivor, not insert duplicate row"
+    );
+
+    let file_name: String = conn
+        .query_row(
+            "SELECT file_name FROM message_attachments WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(file_name, "updated_photo.png");
+}

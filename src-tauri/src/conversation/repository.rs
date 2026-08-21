@@ -1046,8 +1046,15 @@ impl ConversationRepository {
                          metadata_json = COALESCE(?9, metadata_json)
                      WHERE message_id = ?1
                        AND (
-                           provider_attachment_id = ?2
-                           OR (provider_attachment_id IS NULL AND attachment_type = ?3)
+                           (?2 IS NOT NULL AND provider_attachment_id = ?2)
+                           OR (?7 IS NOT NULL AND remote_url = ?7)
+                           OR (?2 IS NOT NULL AND json_valid(metadata_json) AND EXISTS (
+                               SELECT 1 FROM json_each(metadata_json, '$.provider_attachment_id_aliases') WHERE value = ?2
+                           ))
+                           OR (?7 IS NOT NULL AND json_valid(metadata_json) AND EXISTS (
+                               SELECT 1 FROM json_each(metadata_json, '$.remote_url_aliases') WHERE value = ?7
+                           ))
+                           OR (provider_attachment_id IS NULL AND remote_url IS NULL AND attachment_type = ?3)
                        )",
                     params![
                         message_id,
