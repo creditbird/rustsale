@@ -1043,7 +1043,12 @@ impl ConversationRepository {
                          size_bytes = COALESCE(?6, size_bytes),
                          remote_url = COALESCE(?7, remote_url),
                          thumbnail_url = COALESCE(?8, thumbnail_url),
-                         metadata_json = COALESCE(?9, metadata_json)
+                         metadata_json = CASE
+                             WHEN ?9 IS NULL THEN metadata_json
+                             WHEN metadata_json IS NULL THEN ?9
+                             WHEN json_valid(metadata_json) AND json_valid(?9) THEN json_patch(metadata_json, ?9)
+                             ELSE COALESCE(?9, metadata_json)
+                         END
                      WHERE message_id = ?1
                        AND (
                            (?2 IS NOT NULL AND provider_attachment_id = ?2)

@@ -4027,7 +4027,7 @@ fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
             size_bytes: Some(1024),
             remote_url: Some("https://cdn.example.com/alias_url_2.png".to_string()),
             thumbnail_url: None,
-            metadata_json: None,
+            metadata_json: Some(serde_json::json!({"custom_tag": "tag1"})),
         }],
         reply: None,
         mentions: Vec::new(),
@@ -4056,12 +4056,38 @@ fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
         "Duplicate attachment should update survivor, not insert duplicate row"
     );
 
-    let file_name: String = conn
+    let (file_name, meta_str): (String, String) = conn
         .query_row(
-            "SELECT file_name FROM message_attachments WHERE id = 500",
+            "SELECT file_name, metadata_json FROM message_attachments WHERE id = 500",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(file_name, "updated_photo.png");
+    let meta_json: serde_json::Value = serde_json::from_str(&meta_str).unwrap();
+    assert_eq!(meta_json["custom_tag"], "tag1");
+    assert!(meta_json["provider_attachment_id_aliases"].is_array());
+
+    // 3. Replay again with second alias "att_alias_1" and another metadata field
+    let mut replay_msg_2 = replay_msg.clone();
+    replay_msg_2.attachments[0].provider_attachment_id = Some("att_alias_1".to_string());
+    replay_msg_2.attachments[0].metadata_json = Some(serde_json::json!({"second_tag": "tag2"}));
+
+    let applied_2 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_2)
+        .unwrap();
+    assert!(applied_2.duplicate);
+
+    let meta_str_2: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = 500",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(file_name, "updated_photo.png");
+    let meta_json_2: serde_json::Value = serde_json::from_str(&meta_str_2).unwrap();
+    assert_eq!(meta_json_2["custom_tag"], "tag1");
+    assert_eq!(meta_json_2["second_tag"], "tag2");
+    assert!(meta_json_2["provider_attachment_id_aliases"].is_array());
 }
