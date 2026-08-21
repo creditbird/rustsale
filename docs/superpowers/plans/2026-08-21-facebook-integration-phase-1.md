@@ -892,11 +892,15 @@ impl FacebookSyncWorker {
 
                     if !recipient_psid.is_empty() && watermark > 0 {
                         let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
-                        let _ = tx.execute(
+                        tx.execute(
                             "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
-                             SELECT id, ?2, ?3, datetime('now') FROM messages WHERE channel_account_id = ?1 ORDER BY id DESC LIMIT 1",
+                             SELECT m.id, ?2, ?3, datetime('now')
+                             FROM messages m
+                             JOIN channel_conversations c ON m.conversation_id = c.id
+                             WHERE c.channel_account_id = ?1
+                             ORDER BY m.id DESC LIMIT 1",
                             params![account_id, recipient_psid, r_type],
-                        );
+                        )?;
                     }
                     if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
@@ -908,12 +912,12 @@ impl FacebookSyncWorker {
                         let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
 
                         if !mid.is_empty() && !sender_psid.is_empty() {
-                            let _ = tx.execute(
+                            tx.execute(
                                 "INSERT OR REPLACE INTO pending_message_reactions (
                                     channel_account_id, external_thread_id, conversation_kind, provider_message_id, actor_external_id, reaction, removed, occurred_at, created_at, updated_at
                                  ) VALUES (?1, ?2, 'direct', ?3, ?2, ?4, ?5, datetime('now'), datetime('now'), datetime('now'))",
                                 params![account_id, sender_psid, mid, reaction, if action == "unreact" { 1 } else { 0 }],
-                            );
+                            )?;
                         }
                     }
                     if ev.id > max_synced_id { max_synced_id = ev.id; }
