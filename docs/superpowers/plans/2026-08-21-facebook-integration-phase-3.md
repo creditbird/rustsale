@@ -500,39 +500,36 @@ serve(async (req: Request) => {
     const userId = data.user_id;
     const confirmationCode = crypto.randomUUID();
 
-    // Authoritatively resolve all Page-Scoped IDs (PSIDs) and associated page_ids for this App-Scoped ID (ASID)
-    let resolvedMappings: PageScopedMapping[];
+    // Authoritatively resolve all Page-Scoped IDs (PSIDs) and associated page_ids for this App-Scoped ID (ASID) from Meta Graph API
+    let graphMappings: PageScopedMapping[] = [];
     try {
-      resolvedMappings = await resolvePsidsForAsid(userId);
+      graphMappings = await resolvePsidsForAsid(userId);
     } catch (err) {
       console.error("Fail-closed: Failed to resolve PSIDs from Meta Graph API for ASID:", userId, err);
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
     }
 
-    // Durable ASID-to-PSID mapping check: If Graph API /ids_for_pages returned empty or error, check local durable mapping in meta_user_page_interactions
-    // to guarantee retained PSID records are never orphaned or falsely marked completed.
-    let identityResolutionError = false;
-    if (resolvedMappings.length === 0) {
-      const { data: durableInteractions, error: queryErr } = await supabaseAdmin
-        .from("meta_user_page_interactions")
-        .select("page_id, page_scoped_user_id")
-        .eq("app_user_id", userId);
+    // Always query local durable mapping in meta_user_page_interactions and union with Graph mappings to ensure 100% full coverage across all connected pages (even if Graph returns empty or partial set)
+    const { data: durableInteractions, error: queryErr } = await supabaseAdmin
+      .from("meta_user_page_interactions")
+      .select("page_id, page_scoped_user_id")
+      .eq("app_user_id", userId);
 
-      if (queryErr) {
-        identityResolutionError = true;
-      } else if (durableInteractions && durableInteractions.length > 0) {
-        for (const item of durableInteractions) {
-          if (item.page_id && item.page_scoped_user_id) {
-            resolvedMappings.push({ page_id: item.page_id, psid: item.page_scoped_user_id });
-          }
-        }
+    if (queryErr) {
+      console.error("Fail-closed: Failed to query local meta_user_page_interactions:", queryErr);
+      return new Response("Service Unavailable: Failed to resolve local user page identities. Retry later.", { status: 503 });
+    }
+
+    const mappingMap = new Map<string, PageScopedMapping>();
+    for (const m of graphMappings) {
+      mappingMap.set(`${m.page_id}:${m.psid}`, m);
+    }
+    for (const item of durableInteractions || []) {
+      if (item.page_id && item.page_scoped_user_id) {
+        mappingMap.set(`${item.page_id}:${item.page_scoped_user_id}`, { page_id: item.page_id, psid: item.page_scoped_user_id });
       }
     }
-
-    // If identity resolution failed with an error, fail-closed and return 503 to signal Meta to retry callback later
-    if (identityResolutionError) {
-      return new Response("Service Unavailable: Failed to resolve user page identities. Retry later.", { status: 503 });
-    }
+    const resolvedMappings: PageScopedMapping[] = Array.from(mappingMap.values());
 
     // Call deletion RPC with resolved page mappings (or empty array if no active page identities or retained records exist)
     // If no retained records exist on the platform, create_data_deletion_request_and_tasks records the request as completed immediately
