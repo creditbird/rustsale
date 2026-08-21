@@ -407,13 +407,34 @@ impl FacebookUploader {
             return Err(anyhow!("Video finish phase failed: {}", finish_resp.text().await?));
         }
 
-        if let Err(e) = conn.execute(
-            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-            params![upload_session_id],
-        ) {
-            tracing::warn!("Remote video finish succeeded but failed to update local session status to completed: {}", e);
+        // Authoritative terminal status verification
+        let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", video_id, page_token);
+        if let Ok(check_resp) = self.client.get(&check_url).send().await {
+            if check_resp.status().is_success() {
+                let check_json: Value = check_resp.json().await.unwrap_or_default();
+                let video_status = check_json.get("status")
+                    .and_then(|s| s.get("video_status"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                if video_status == "ready" || is_published {
+                    conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![upload_session_id],
+                    )?;
+                    return Ok(video_id);
+                } else if video_status == "error" {
+                    conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![upload_session_id],
+                    )?;
+                    return Err(anyhow!("Meta video processing failed with error state"));
+                }
+            }
         }
 
+        // Media accepted by Meta finish and currently processing; remains in finishing state for background reconciliation
         Ok(video_id)
     }
 
@@ -608,13 +629,38 @@ impl FacebookUploader {
             return Err(anyhow!("Reel finish failed: {}", finish_resp.text().await?));
         }
 
-        if let Err(e) = conn.execute(
-            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-            params![video_id],
-        ) {
-            tracing::warn!("Remote reel finish succeeded but failed to update local session status to completed: {}", e);
+        // Authoritative terminal status verification
+        let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", video_id, page_token);
+        if let Ok(check_resp) = self.client.get(&check_url).send().await {
+            if check_resp.status().is_success() {
+                let check_json: Value = check_resp.json().await.unwrap_or_default();
+                let video_status = check_json.get("status")
+                    .and_then(|s| s.get("video_status"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let publishing_status = check_json.get("status")
+                    .and_then(|s| s.get("publishing_phase"))
+                    .and_then(|p| p.get("status"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if publishing_status == "complete" {
+                    conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![video_id],
+                    )?;
+                    return Ok(video_id);
+                } else if video_status == "error" || publishing_status == "error" {
+                    conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![video_id],
+                    )?;
+                    return Err(anyhow!("Meta Reel processing failed with error state"));
+                }
+            }
         }
 
+        // Reel accepted by Meta finish and publishing in progress; remains in finishing state for background reconciliation
         Ok(video_id)
     }
 }

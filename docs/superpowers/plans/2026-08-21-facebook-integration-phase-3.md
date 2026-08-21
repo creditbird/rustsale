@@ -193,8 +193,45 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task TO authenticated, service_role;
+CREATE OR REPLACE FUNCTION register_or_heartbeat_device(
+    p_device_id TEXT,
+    p_device_secret TEXT,
+    p_device_name TEXT DEFAULT NULL
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions, pg_temp
+AS $$
+DECLARE
+    v_secret_hash TEXT;
+    v_existing_hash TEXT;
+BEGIN
+    v_secret_hash := encode(digest(p_device_secret, 'sha256'), 'hex');
+
+    SELECT device_secret_hash INTO v_existing_hash
+    FROM public.tenant_registered_devices
+    WHERE tenant_id = auth.uid() AND device_id = p_device_id;
+
+    IF v_existing_hash IS NOT NULL THEN
+        IF v_existing_hash != v_secret_hash THEN
+            RAISE EXCEPTION 'Unauthorized: Device credential mismatch';
+        END IF;
+        UPDATE public.tenant_registered_devices
+        SET last_seen_at = now(),
+            device_name = COALESCE(p_device_name, device_name)
+        WHERE tenant_id = auth.uid() AND device_id = p_device_id;
+    ELSE
+        INSERT INTO public.tenant_registered_devices (tenant_id, device_id, device_secret_hash, device_name, last_seen_at)
+        VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now());
+    END IF;
+
+    RETURN TRUE;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION register_or_heartbeat_device, claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION register_or_heartbeat_device, claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task TO authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION create_data_deletion_request_and_tasks(
     p_confirmation_code TEXT,
@@ -480,17 +517,43 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
 
-            // Scrub residual user identifiers across reactions, receipts, and mentions
+            // Scrub residual user identifiers across Messenger reactions, receipts, pending reactions, and mentions
             tx.execute(
-                "DELETE FROM message_reactions WHERE actor_external_id = ?1",
+                "DELETE FROM message_reactions 
+                 WHERE actor_external_id = ?1 
+                   AND message_id IN (
+                       SELECT m.id FROM messages m
+                       JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                       WHERE ci.channel = 'messenger'
+                   )",
                 [user_id],
             )?;
             tx.execute(
-                "DELETE FROM message_receipts WHERE recipient_external_id = ?1",
+                "DELETE FROM message_receipts 
+                 WHERE recipient_external_id = ?1 
+                   AND message_id IN (
+                       SELECT m.id FROM messages m
+                       JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                       WHERE ci.channel = 'messenger'
+                   )",
                 [user_id],
             )?;
             tx.execute(
-                "DELETE FROM message_mentions WHERE mentioned_identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1)",
+                "DELETE FROM pending_message_reactions 
+                 WHERE actor_external_id = ?1 
+                   AND channel_account_id IN (
+                       SELECT id FROM channel_accounts WHERE channel = 'messenger'
+                   )",
+                [user_id],
+            )?;
+            tx.execute(
+                "DELETE FROM message_mentions 
+                 WHERE (external_id = ?1 OR identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1))
+                   AND message_id IN (
+                       SELECT m.id FROM messages m
+                       JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                       WHERE ci.channel = 'messenger'
+                   )",
                 [user_id],
             )?;
 
