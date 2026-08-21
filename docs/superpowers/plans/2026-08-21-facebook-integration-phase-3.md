@@ -16,14 +16,19 @@
 CREATE TABLE IF NOT EXISTS tenant_registered_devices (
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     device_id TEXT NOT NULL,
+    device_secret_hash TEXT NOT NULL,
     device_name TEXT,
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY(tenant_id, device_id)
 );
 ALTER TABLE tenant_registered_devices ENABLE ROW LEVEL SECURITY;
 
+REVOKE ALL ON TABLE tenant_registered_devices FROM PUBLIC, anon, authenticated;
+GRANT SELECT (tenant_id, device_id, device_name, last_seen_at) ON TABLE tenant_registered_devices TO authenticated;
+GRANT ALL ON TABLE tenant_registered_devices TO service_role;
+
 CREATE POLICY "Tenants manage own devices" ON tenant_registered_devices
-    FOR ALL USING (auth.uid() = tenant_id);
+    FOR SELECT TO authenticated USING (auth.uid() = tenant_id);
 
 CREATE TABLE IF NOT EXISTS meta_data_deletion_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -43,7 +48,7 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
     device_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed', 'failed')),
-    lease_token UUID,
+    lease_token_hash TEXT,
     acknowledged_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -52,7 +57,7 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
 ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE meta_device_deletion_tasks FROM PUBLIC, anon, authenticated;
-GRANT SELECT ON TABLE meta_device_deletion_tasks TO authenticated;
+GRANT SELECT (id, request_id, tenant_id, device_id, user_id, status, acknowledged_at, completed_at, created_at, updated_at) ON TABLE meta_device_deletion_tasks TO authenticated;
 GRANT ALL ON TABLE meta_device_deletion_tasks TO service_role;
 
 CREATE POLICY "Tenants read own device deletion tasks" ON meta_device_deletion_tasks
@@ -60,24 +65,38 @@ CREATE POLICY "Tenants read own device deletion tasks" ON meta_device_deletion_t
 
 CREATE OR REPLACE FUNCTION claim_device_deletion_tasks(
     p_device_id TEXT,
+    p_device_secret TEXT,
     p_lease_seconds INT DEFAULT 300
 )
 RETURNS TABLE (
     id UUID,
     request_id UUID,
     user_id TEXT,
-    lease_token UUID,
+    lease_token TEXT,
     created_at TIMESTAMPTZ
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp
+SET search_path = public, auth, extensions, pg_temp
 AS $$
+DECLARE
+    v_raw_token TEXT;
 BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM public.tenant_registered_devices
+        WHERE tenant_id = auth.uid()
+          AND device_id = p_device_id
+          AND device_secret_hash = encode(digest(p_device_secret, 'sha256'), 'hex')
+    ) THEN
+        RAISE EXCEPTION 'Unauthorized: Invalid device credentials';
+    END IF;
+
+    v_raw_token := encode(gen_random_bytes(32), 'hex');
+
     RETURN QUERY
     UPDATE public.meta_device_deletion_tasks
     SET status = 'acknowledged',
-        lease_token = gen_random_uuid(),
+        lease_token_hash = encode(digest(v_raw_token, 'sha256'), 'hex'),
         acknowledged_at = now(),
         updated_at = now()
     WHERE meta_device_deletion_tasks.id IN (
@@ -92,30 +111,42 @@ BEGIN
         LIMIT 10
         FOR UPDATE SKIP LOCKED
     )
-    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.user_id, meta_device_deletion_tasks.lease_token, meta_device_deletion_tasks.created_at;
+    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.user_id, v_raw_token AS lease_token, meta_device_deletion_tasks.created_at;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION complete_device_deletion_task(
     p_task_id UUID,
-    p_lease_token UUID
+    p_device_id TEXT,
+    p_device_secret TEXT,
+    p_lease_token TEXT
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp
+SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
     v_updated INT;
 BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM public.tenant_registered_devices
+        WHERE tenant_id = auth.uid()
+          AND device_id = p_device_id
+          AND device_secret_hash = encode(digest(p_device_secret, 'sha256'), 'hex')
+    ) THEN
+        RAISE EXCEPTION 'Unauthorized: Invalid device credentials';
+    END IF;
+
     UPDATE public.meta_device_deletion_tasks
     SET status = 'completed',
         completed_at = now(),
-        lease_token = NULL,
+        lease_token_hash = NULL,
         updated_at = now()
     WHERE id = p_task_id
       AND tenant_id = auth.uid()
-      AND lease_token = p_lease_token
+      AND device_id = p_device_id
+      AND lease_token_hash = encode(digest(p_lease_token, 'sha256'), 'hex')
       AND status = 'acknowledged';
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
@@ -125,24 +156,36 @@ $$;
 
 CREATE OR REPLACE FUNCTION release_device_deletion_task(
     p_task_id UUID,
-    p_lease_token UUID
+    p_device_id TEXT,
+    p_device_secret TEXT,
+    p_lease_token TEXT
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp
+SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
     v_updated INT;
 BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM public.tenant_registered_devices
+        WHERE tenant_id = auth.uid()
+          AND device_id = p_device_id
+          AND device_secret_hash = encode(digest(p_device_secret, 'sha256'), 'hex')
+    ) THEN
+        RAISE EXCEPTION 'Unauthorized: Invalid device credentials';
+    END IF;
+
     UPDATE public.meta_device_deletion_tasks
     SET status = 'pending',
-        lease_token = NULL,
+        lease_token_hash = NULL,
         acknowledged_at = NULL,
         updated_at = now()
     WHERE id = p_task_id
       AND tenant_id = auth.uid()
-      AND lease_token = p_lease_token
+      AND device_id = p_device_id
+      AND lease_token_hash = encode(digest(p_lease_token, 'sha256'), 'hex')
       AND status = 'acknowledged';
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
@@ -365,17 +408,19 @@ pub async fn process_pending_device_tasks(
     anon_key: &str,
     user_jwt: &str,
     device_id: &str,
+    device_secret: &str,
     spool_root: &std::path::Path,
 ) -> Result<usize> {
     let client = Client::new();
 
-    // 1. Claim pending deletion tasks via secure RPC (returning unforgeable single-use lease tokens)
+    // 1. Claim pending deletion tasks via secure RPC (bound to authenticated device_secret and returning unforgeable single-use lease tokens)
     let claim_url = format!("{}/rest/v1/rpc/claim_device_deletion_tasks", supabase_url);
     let claim_resp = client.post(&claim_url)
         .header("apikey", anon_key)
         .header("Authorization", format!("Bearer {}", user_jwt))
         .json(&serde_json::json!({
             "p_device_id": device_id,
+            "p_device_secret": device_secret,
             "p_lease_seconds": 300
         }))
         .send().await?;
@@ -435,6 +480,20 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
 
+            // Scrub residual user identifiers across reactions, receipts, and mentions
+            tx.execute(
+                "DELETE FROM message_reactions WHERE actor_external_id = ?1",
+                [user_id],
+            )?;
+            tx.execute(
+                "DELETE FROM message_receipts WHERE recipient_external_id = ?1",
+                [user_id],
+            )?;
+            tx.execute(
+                "DELETE FROM message_mentions WHERE mentioned_identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1)",
+                [user_id],
+            )?;
+
             // Redact messages
             tx.execute(
                 "UPDATE messages 
@@ -464,7 +523,7 @@ pub async fn process_pending_device_tasks(
             tx.commit()?;
         }
 
-        // 3. Task-scoped spool sweep from disk with canonical path and fail-closed active reference validation
+        // 3. Task-scoped spool sweep from disk with canonical path, try_exists error preservation, and fail-closed active reference validation
         let pending_cleanups: Vec<String> = {
             let mut stmt = conn.prepare("SELECT local_path FROM meta_deletion_pending_cleanups WHERE task_id = ?1")?;
             stmt.query_map([task_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
@@ -485,14 +544,23 @@ pub async fn process_pending_device_tasks(
 
             match active_refs {
                 Ok(0) => {
-                    if p.exists() {
-                        if is_canonical_spool && std::fs::remove_file(p).is_ok() {
+                    match p.try_exists() {
+                        Ok(true) => {
+                            if is_canonical_spool && std::fs::remove_file(p).is_ok() {
+                                conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
+                            } else {
+                                all_cleaned = false;
+                            }
+                        }
+                        Ok(false) => {
+                            // File strictly absent from disk, safely purge queue entry
                             conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
-                        } else {
+                        }
+                        Err(err) => {
+                            // Permission denied or I/O error accessing metadata: FAIL CLOSED
+                            tracing::error!("Filesystem try_exists error for path {}: {}", path, err);
                             all_cleaned = false;
                         }
-                    } else {
-                        conn.execute("DELETE FROM meta_deletion_pending_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
                     }
                 }
                 Ok(_) => {
@@ -512,7 +580,7 @@ pub async fn process_pending_device_tasks(
             |r| r.get(0),
         )?;
 
-        // 4. Update task status on Supabase via single-use lease token RPCs
+        // 4. Update task status on Supabase via single-use lease token & device-secret RPCs
         if all_cleaned && remaining_spools == 0 {
             let complete_url = format!("{}/rest/v1/rpc/complete_device_deletion_task", supabase_url);
             let patch_resp = client.post(&complete_url)
@@ -520,6 +588,8 @@ pub async fn process_pending_device_tasks(
                 .header("Authorization", format!("Bearer {}", user_jwt))
                 .json(&serde_json::json!({
                     "p_task_id": task_id,
+                    "p_device_id": device_id,
+                    "p_device_secret": device_secret,
                     "p_lease_token": lease_token
                 }))
                 .send().await?;
@@ -537,6 +607,8 @@ pub async fn process_pending_device_tasks(
                 .header("Authorization", format!("Bearer {}", user_jwt))
                 .json(&serde_json::json!({
                     "p_task_id": task_id,
+                    "p_device_id": device_id,
+                    "p_device_secret": device_secret,
                     "p_lease_token": lease_token
                 }))
                 .send().await;
