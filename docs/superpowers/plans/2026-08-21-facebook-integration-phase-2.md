@@ -1148,10 +1148,16 @@ impl FacebookUploader {
                         };
                     }
                     if status_code.is_client_error() {
-                        let _ = conn.execute(
+                        let rows = conn.execute(
                             "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                             params![sess_row_id, owner_id],
-                        );
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while marking video resume failed".to_string(),
+                            };
+                        }
                         return PublishApiResult::DeterministicRejection {
                             error_code: format!("http_{}", status_code.as_u16()),
                             error_message: format!("Meta rejected video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1801,11 +1807,27 @@ impl FacebookUploader {
                 let status_code = check_resp.status();
                 if !status_code.is_success() {
                     let err_text = check_resp.text().await.unwrap_or_default();
+                    if status_code.as_u16() == 429 {
+                        let retry_after = check_resp.headers().get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(60);
+                        return PublishApiResult::RateLimited {
+                            retry_after_secs: retry_after,
+                            error_message: format!("HTTP 429 Rate limited on Reel resume query: {}", err_text),
+                        };
+                    }
                     if status_code.is_client_error() {
-                        let _ = conn.execute(
-                            "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                            params![vid_id],
-                        );
+                        let rows = conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                            params![sess_row_id, owner_id],
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while marking Reel resume failed".to_string(),
+                            };
+                        }
                         return PublishApiResult::DeterministicRejection {
                             error_code: format!("http_{}", status_code.as_u16()),
                             error_message: format!("Meta rejected Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1833,10 +1855,16 @@ impl FacebookUploader {
                 };
 
                 if server_offset > file_size {
-                    let _ = conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                        params![vid_id],
-                    );
+                    let rows = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        params![sess_row_id, owner_id],
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while handling out of bounds Reel server offset".to_string(),
+                        };
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: "server_offset_out_of_bounds".to_string(),
                         error_message: format!("Reel server offset {} exceeds file size {}", server_offset, file_size),

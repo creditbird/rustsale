@@ -280,8 +280,7 @@ serve(async (req: Request) => {
       if (!idsResp.ok) throw new Error(`Failed to resolve page-scoped identities from Meta Graph API: ${idsResp.status}`);
       const idsData = await idsResp.json();
 
-      // Persist authoritative ASID-to-PSID mapping in meta_user_page_interactions (no updated_at column)
-      const mappedPageIds = new Set<string>();
+      // Persist authoritative ASID-to-PSID mapping from Meta ids_for_pages
       for (const item of idsData.data || []) {
         if (item.page?.id && item.id) {
           const { error: upsertErr } = await supabaseAdmin.from("meta_user_page_interactions").upsert({
@@ -292,29 +291,6 @@ serve(async (req: Request) => {
             last_interaction_at: new Date().toISOString(),
           }, { onConflict: "tenant_id,page_id,page_scoped_user_id" });
           if (upsertErr) throw new Error(`Failed to persist durable user page interaction mapping: ${upsertErr.message}`);
-          mappedPageIds.add(item.page.id);
-        }
-      }
-
-      // Verify full coverage of connected pages; if any page is unmapped, query page token to resolve PSID
-      for (const p of pages) {
-        if (!mappedPageIds.has(p.id)) {
-          const pageMeUrl = `https://graph.facebook.com/v26.0/${p.id}?fields=id,name&access_token=${encodeURIComponent(p.access_token)}`;
-          const pageMeResp = await fetch(pageMeUrl);
-          if (!pageMeResp.ok) throw new Error(`Failed to verify page identity for connected page ${p.id}: ${pageMeResp.status}`);
-          const pageMeData = await pageMeResp.json();
-          const pageScopedId = pageMeData.id;
-          if (!pageScopedId) throw new Error(`Missing page-scoped ID for connected page ${p.id}`);
-
-          const { error: upsertErr } = await supabaseAdmin.from("meta_user_page_interactions").upsert({
-            tenant_id: claimedSession.tenant_id,
-            page_id: p.id,
-            app_user_id: appUserId,
-            page_scoped_user_id: pageScopedId,
-            last_interaction_at: new Date().toISOString(),
-          }, { onConflict: "tenant_id,page_id,page_scoped_user_id" });
-          if (upsertErr) throw new Error(`Failed to persist fallback user page interaction mapping: ${upsertErr.message}`);
-          mappedPageIds.add(p.id);
         }
       }
 
