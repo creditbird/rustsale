@@ -571,14 +571,135 @@ serve(async (req: Request) => {
 
 ### Task 3: Local SQLite Schema, V4 Migration & Rust Messenger Sync Engine
 
-#### 1. Schema & Migration Invariants (`src-tauri/src/conversation/migration_v2.rs`)
+#### 1. Facebook Token Vault (`src-tauri/src/facebook/vault.rs`)
+- Implements secure local credential storage backed by OS Keyring and AES-256-GCM authenticated encryption.
+- Direct write path: After receiving OAuth exchange code via `rustsale://meta-oauth?code=...`, desktop calls `complete_meta_oauth_exchange` and iterates the returned pages, invoking `FacebookTokenVault::encrypt_and_upsert_page_token` to persist encrypted Page tokens.
+
+```rust
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use base64::prelude::*;
+use keyring::Entry;
+use rusqlite::{params, Connection, OptionalExtension};
+use anyhow::{anyhow, Result};
+
+pub struct FacebookTokenVault;
+
+impl FacebookTokenVault {
+    fn get_master_key() -> Result<[u8; 32]> {
+        let entry = Entry::new("rustsale", "facebook_vault_key")
+            .map_err(|e| anyhow!("Failed to access OS keyring: {}", e))?;
+        match entry.get_password() {
+            Ok(secret) => {
+                let mut key = [0u8; 32];
+                let decoded = BASE64_STANDARD.decode(secret.trim())
+                    .map_err(|e| anyhow!("Invalid base64 in keyring secret: {}", e))?;
+                if decoded.len() != 32 {
+                    return Err(anyhow!("Keyring master key length is not 32 bytes"));
+                }
+                key.copy_from_slice(&decoded);
+                Ok(key)
+            }
+            Err(keyring::Error::NoEntry) => {
+                let mut key = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
+                let encoded = BASE64_STANDARD.encode(key);
+                entry.set_password(&encoded)
+                    .map_err(|e| anyhow!("Failed to persist master key to OS keyring: {}", e))?;
+                Ok(key)
+            }
+            Err(e) => Err(anyhow!("Keyring access failed: {}", e)),
+        }
+    }
+
+    pub fn encrypt_token(plain_token: &str) -> Result<String> {
+        let key = Self::get_master_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|e| anyhow!("AES-256-GCM init error: {}", e))?;
+        let mut nonce_bytes = [0u8; 12];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, plain_token.as_bytes())
+            .map_err(|e| anyhow!("Token encryption error: {}", e))?;
+        let mut combined = Vec::with_capacity(12 + ciphertext.len());
+        combined.extend_from_slice(&nonce_bytes);
+        combined.extend_from_slice(&ciphertext);
+        Ok(BASE64_STANDARD.encode(combined))
+    }
+
+    pub fn decrypt_token(ciphertext_b64: &str) -> Result<String> {
+        let raw = BASE64_STANDARD.decode(ciphertext_b64.trim())
+            .map_err(|e| anyhow!("Base64 decode failed: {}", e))?;
+        if raw.len() < 12 {
+            return Err(anyhow!("Ciphertext payload too short for nonce"));
+        }
+        let (nonce_bytes, encrypted_payload) = raw.split_at(12);
+        let key = Self::get_master_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|e| anyhow!("AES-256-GCM cipher init error: {}", e))?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let decrypted_bytes = cipher.decrypt(nonce, encrypted_payload)
+            .map_err(|e| anyhow!("AES-256-GCM decryption failed: {}", e))?;
+        String::from_utf8(decrypted_bytes)
+            .map_err(|e| anyhow!("Decrypted token is not valid UTF-8: {}", e))
+    }
+
+    pub fn encrypt_and_upsert_page_token(
+        conn: &Connection,
+        channel_account_id: &str,
+        page_id: &str,
+        page_name: &str,
+        plain_token: &str,
+        token_expires_at: Option<&str>,
+    ) -> Result<()> {
+        let encrypted_ciphertext = Self::encrypt_token(plain_token)?;
+        conn.execute(
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, page_name, access_token_encrypted, token_status, token_expires_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'valid', ?5, datetime('now'))
+             ON CONFLICT(page_id) DO UPDATE SET
+                 channel_account_id = EXCLUDED.channel_account_id,
+                 page_name = EXCLUDED.page_name,
+                 access_token_encrypted = EXCLUDED.access_token_encrypted,
+                 token_status = 'valid',
+                 token_expires_at = EXCLUDED.token_expires_at,
+                 updated_at = datetime('now')",
+            params![channel_account_id, page_id, page_name, encrypted_ciphertext, token_expires_at],
+        ).map_err(|e| anyhow!("Failed to upsert page token in vault: {}", e))?;
+        Ok(())
+    }
+
+    pub fn get_valid_page_token(
+        conn: &Connection,
+        channel_account_id: &str,
+        page_id: &str,
+    ) -> Result<String> {
+        let encrypted_token: Option<String> = conn.query_row(
+            "SELECT access_token_encrypted FROM facebook_page_tokens
+             WHERE channel_account_id = ?1 AND page_id = ?2 AND token_status = 'valid'",
+            params![channel_account_id, page_id],
+            |row| row.get(0),
+        ).optional().map_err(|e| anyhow!("DB query failed for channel_account_id {} page_id {}: {}", channel_account_id, page_id, e))?;
+
+        let ciphertext = match encrypted_token {
+            Some(t) if !t.is_empty() => t,
+            _ => return Err(anyhow!("No valid active token found for channel_account_id: {} page_id: {}", channel_account_id, page_id)),
+        };
+
+        Self::decrypt_token(&ciphertext)
+    }
+}
+```
+
+#### 2. Schema & Migration Invariants (`src-tauri/src/conversation/migration_v2.rs`)
 - Connected-component merger joins attachment records across `remote_url` and `provider_attachment_id`.
 - Survivor row is `MIN(id)` with explicit survivor precedence for scalar fields.
 - Conflicting JSON metadata keys preserved as `conflict_key_dup_<id>`.
 - Non-object / malformed JSON preserved in `_legacy_unparsed_values`.
 - Upgrades databases to V4 idempotently.
 
-#### 2. Forward-Only Monotonic Messenger Synchronization (`src-tauri/src/conversation/facebook_sync.rs`)
+#### 3. Forward-Only Monotonic Messenger Synchronization (`src-tauri/src/conversation/facebook_sync.rs`)
 - Processes events strictly in ascending order.
 - Delivery events forward-only update `messages SET status = 'delivered' WHERE conversation_id = ?1 AND provider_message_id = ?2 AND status IN ('sent', 'queued', 'pending')`.
 - Read receipts scoped to `direction = 'outbound'` with `provider_timestamp <= watermark`.

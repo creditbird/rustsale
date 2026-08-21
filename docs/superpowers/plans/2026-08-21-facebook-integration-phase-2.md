@@ -8,7 +8,6 @@
   - **Multi-Endpoint Reconciliation:** Scans both `/scheduled_posts` and `/feed`, matches `post_type` to Graph `status_type`, normalizes numeric and ISO timestamps, sets `published` for `/feed` and `scheduled_on_meta` for `/scheduled_posts`.
 
 ---
-
 ### Task 1: Complete 6-Type Post Publisher (`src-tauri/src/facebook/publisher.rs`)
 
 ```rust
@@ -18,27 +17,126 @@ use reqwest::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use base64::prelude::*;
+use keyring::Entry;
 use crate::facebook::uploader::FacebookUploader;
 
 pub struct FacebookTokenVault;
 
 impl FacebookTokenVault {
-    pub fn get_valid_page_token(conn: &Connection, page_id: &str) -> Result<String> {
+    fn get_master_key() -> Result<[u8; 32]> {
+        let entry = Entry::new("rustsale", "facebook_vault_key")
+            .map_err(|e| anyhow!("Failed to access OS keyring: {}", e))?;
+        match entry.get_password() {
+            Ok(secret) => {
+                let mut key = [0u8; 32];
+                let decoded = BASE64_STANDARD.decode(secret.trim())
+                    .map_err(|e| anyhow!("Invalid base64 in keyring secret: {}", e))?;
+                if decoded.len() != 32 {
+                    return Err(anyhow!("Keyring master key length is not 32 bytes"));
+                }
+                key.copy_from_slice(&decoded);
+                Ok(key)
+            }
+            Err(keyring::Error::NoEntry) => {
+                let mut key = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
+                let encoded = BASE64_STANDARD.encode(key);
+                entry.set_password(&encoded)
+                    .map_err(|e| anyhow!("Failed to persist master key to OS keyring: {}", e))?;
+                Ok(key)
+            }
+            Err(e) => Err(anyhow!("Keyring access failed: {}", e)),
+        }
+    }
+
+    pub fn encrypt_token(plain_token: &str) -> Result<String> {
+        let key = Self::get_master_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|e| anyhow!("AES-256-GCM init error: {}", e))?;
+        let mut nonce_bytes = [0u8; 12];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, plain_token.as_bytes())
+            .map_err(|e| anyhow!("Token encryption error: {}", e))?;
+        let mut combined = Vec::with_capacity(12 + ciphertext.len());
+        combined.extend_from_slice(&nonce_bytes);
+        combined.extend_from_slice(&ciphertext);
+        Ok(BASE64_STANDARD.encode(combined))
+    }
+
+    pub fn decrypt_token(ciphertext_b64: &str) -> Result<String> {
+        let raw = BASE64_STANDARD.decode(ciphertext_b64.trim())
+            .map_err(|e| anyhow!("Base64 decode failed: {}", e))?;
+        if raw.len() < 12 {
+            return Err(anyhow!("Ciphertext payload too short for nonce"));
+        }
+        let (nonce_bytes, encrypted_payload) = raw.split_at(12);
+        let key = Self::get_master_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|e| anyhow!("AES-256-GCM cipher init error: {}", e))?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let decrypted_bytes = cipher.decrypt(nonce, encrypted_payload)
+            .map_err(|e| anyhow!("AES-256-GCM decryption failed: {}", e))?;
+        String::from_utf8(decrypted_bytes)
+            .map_err(|e| anyhow!("Decrypted token is not valid UTF-8: {}", e))
+    }
+
+    pub fn encrypt_and_upsert_page_token(
+        conn: &Connection,
+        channel_account_id: &str,
+        page_id: &str,
+        page_name: &str,
+        plain_token: &str,
+        token_expires_at: Option<&str>,
+    ) -> Result<()> {
+        let encrypted_ciphertext = Self::encrypt_token(plain_token)?;
+        conn.execute(
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, page_name, access_token_encrypted, token_status, token_expires_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'valid', ?5, datetime('now'))
+             ON CONFLICT(page_id) DO UPDATE SET
+                 channel_account_id = EXCLUDED.channel_account_id,
+                 page_name = EXCLUDED.page_name,
+                 access_token_encrypted = EXCLUDED.access_token_encrypted,
+                 token_status = 'valid',
+                 token_expires_at = EXCLUDED.token_expires_at,
+                 updated_at = datetime('now')",
+            params![channel_account_id, page_id, page_name, encrypted_ciphertext, token_expires_at],
+        ).map_err(|e| anyhow!("Failed to upsert page token in vault: {}", e))?;
+        Ok(())
+    }
+
+    pub fn get_valid_page_token(
+        conn: &Connection,
+        channel_account_id: &str,
+        page_id: &str,
+    ) -> Result<String> {
         let encrypted_token: Option<String> = conn.query_row(
-            "SELECT access_token_encrypted FROM facebook_page_tokens WHERE page_id = ?1",
-            params![page_id],
+            "SELECT access_token_encrypted FROM facebook_page_tokens
+             WHERE channel_account_id = ?1 AND page_id = ?2 AND token_status = 'valid'",
+            params![channel_account_id, page_id],
             |row| row.get(0),
-        ).optional().map_err(|e| anyhow!("DB query failed for page_id {}: {}", page_id, e))?;
+        ).optional().map_err(|e| anyhow!("DB query failed for channel_account_id {} page_id {}: {}", channel_account_id, page_id, e))?;
 
         let ciphertext = match encrypted_token {
             Some(t) if !t.is_empty() => t,
-            _ => return Err(anyhow!("No encrypted token found for page_id: {}", page_id)),
+            _ => return Err(anyhow!("No valid active token found for channel_account_id: {} page_id: {}", channel_account_id, page_id)),
         };
 
-        // Decrypt ciphertext using local AES-256-GCM + OS-Keyring master key
-        crate::conversation::encryption::decrypt_field(&ciphertext)
-            .map_err(|e| anyhow!("Decryption failed for page_id {}: {}", page_id, e))
+        Self::decrypt_token(&ciphertext)
     }
+}
+
+#[derive(Debug)]
+pub enum PublishApiResult {
+    Success { remote_post_id: String },
+    StillProcessing { upload_session_id: String },
+    DeterministicRejection { error_code: String, error_message: String },
+    AmbiguousTransport { error_code: String, error_message: String },
 }
 
 pub struct FacebookPublisher {
@@ -54,20 +152,30 @@ impl FacebookPublisher {
         }
     }
 
+    pub fn renew_post_claim(conn: &Connection, post_id: i64, owner_id: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE facebook_scheduled_posts
+             SET claim_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+             WHERE id = ?1 AND owner_id = ?2 AND status = 'publishing'",
+            params![post_id, owner_id],
+        )?;
+        Ok(())
+    }
+
     pub async fn publish_post(
         &self,
         conn: &rusqlite::Connection,
         post_id: i64,
     ) -> Result<String> {
         // 1. Authoritatively fetch and validate scheduled post row from database
-        let (page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time_str, current_status): (
-            String, String, String, Option<String>, String, Option<String>, String
+        let (channel_account_id, page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time_str, current_status): (
+            String, String, String, String, Option<String>, String, Option<String>, String
         ) = conn.query_row(
-            "SELECT page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time, status
+            "SELECT channel_account_id, page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time, status
              FROM facebook_scheduled_posts
              WHERE id = ?1",
             [post_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
         ).map_err(|e| anyhow!("Scheduled post {} not found: {}", post_id, e))?;
 
         // Validate RFC3339 timestamp and convert to unix epoch seconds for Meta Graph API
@@ -111,11 +219,33 @@ impl FacebookPublisher {
             }
         }
 
-        // Helper macro/closure to ensure post state transitions cleanly on any error or success exit
-        let publish_result = self.execute_publish_network_flow(conn, post_id, &page_id, &post_type, &message, link_url.as_deref(), &media_paths_json, scheduled_publish_time_epoch).await;
+        // Authoritatively fetch and decrypt active Page token via local AES-256-GCM TokenVault helper joining account + page + valid
+        let page_token = match FacebookTokenVault::get_valid_page_token(conn, &channel_account_id, &page_id) {
+            Ok(t) => t,
+            Err(e) => {
+                let err_msg = format!("Failed to resolve valid token for post {}: {}", post_id, e);
+                conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET status = 'failed',
+                         error_code = 'token_vault_error',
+                         error_message = ?1,
+                         owner_id = NULL,
+                         claim_deadline = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?2 AND status = 'publishing'",
+                    params![err_msg, post_id],
+                )?;
+                return Err(anyhow!(err_msg));
+            }
+        };
 
-        match &publish_result {
-            Ok(remote_post_id) => {
+        let publish_result = self.execute_publish_network_flow(
+            conn, post_id, &worker_owner, &page_id, &page_token, &post_type, &message,
+            link_url.as_deref(), &media_paths_json, scheduled_publish_time_epoch
+        ).await;
+
+        match publish_result {
+            PublishApiResult::Success { remote_post_id } => {
                 conn.execute(
                     "UPDATE facebook_scheduled_posts
                      SET status = CASE
@@ -132,97 +262,191 @@ impl FacebookPublisher {
                      WHERE id = ?2 AND status = 'publishing'",
                     params![remote_post_id, post_id],
                 )?;
+                Ok(remote_post_id)
             }
-            Err(e) => {
-                let err_str = e.to_string();
-                let is_ambiguous = err_str.contains("timeout") || err_str.contains("502") || err_str.contains("503") || err_str.contains("504") || err_str.contains("connection reset");
-                let target_status = if is_ambiguous { "delivery_unknown" } else { "failed" };
-                let error_code = if is_ambiguous { "ambiguous_network_failure" } else { "publish_failed" };
-
+            PublishApiResult::StillProcessing { upload_session_id } => {
                 conn.execute(
                     "UPDATE facebook_scheduled_posts
-                     SET status = ?1,
-                         error_code = ?2,
-                         error_message = ?3,
+                     SET status = 'publishing',
+                         upload_session_id = ?1,
+                         error_code = NULL,
+                         error_message = NULL,
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
-                     WHERE id = ?4 AND status = 'publishing'",
-                    params![target_status, error_code, err_str, post_id],
+                     WHERE id = ?2 AND status = 'publishing'",
+                    params![upload_session_id, post_id],
                 )?;
+                Ok(upload_session_id)
+            }
+            PublishApiResult::AmbiguousTransport { error_code, error_message } => {
+                conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET status = 'delivery_unknown',
+                         error_code = ?1,
+                         error_message = ?2,
+                         owner_id = NULL,
+                         claim_deadline = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?3 AND status = 'publishing'",
+                    params![error_code, error_message, post_id],
+                )?;
+                Err(anyhow!("Ambiguous transport outcome: {}", error_message))
+            }
+            PublishApiResult::DeterministicRejection { error_code, error_message } => {
+                conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET status = 'failed',
+                         error_code = ?1,
+                         error_message = ?2,
+                         owner_id = NULL,
+                         claim_deadline = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?3 AND status = 'publishing'",
+                    params![error_code, error_message, post_id],
+                )?;
+                Err(anyhow!("Meta deterministic rejection: {}", error_message))
             }
         }
-
-        publish_result
     }
 
     async fn execute_publish_network_flow(
         &self,
         conn: &rusqlite::Connection,
         post_id: i64,
+        owner_id: &str,
         page_id: &str,
+        page_token: &str,
         post_type: &str,
         message: &str,
         link_url: Option<&str>,
         media_paths_json: &str,
         scheduled_publish_time_epoch: Option<i64>,
-    ) -> Result<String> {
-        // 3. Authoritatively fetch and decrypt active Page token via local AES-256-GCM TokenVault helper
-        let page_token = FacebookTokenVault::get_valid_page_token(conn, page_id)
-            .map_err(|e| anyhow!("Failed to decrypt valid access token for page_id {}: {}", page_id, e))?;
-
+    ) -> PublishApiResult {
         let media_paths: Vec<String> = serde_json::from_str(media_paths_json).unwrap_or_default();
 
         match post_type {
             "status" => {
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut form = vec![("access_token", page_token.as_str()), ("message", message)];
+                let mut form = vec![("access_token", page_token), ("message", message)];
                 let sched_str;
                 if let Some(st) = scheduled_publish_time_epoch {
                     form.push(("published", "false"));
                     sched_str = st.to_string();
                     form.push(("scheduled_publish_time", &sched_str));
                 }
-                let resp = self.client.post(&url).form(&form).send().await?;
-                if !resp.status().is_success() {
-                    return Err(anyhow!("Status post failed: {}", resp.text().await?));
+                let resp = match self.client.post(&url).form(&form).send().await {
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "network_transport_error".to_string(),
+                        error_message: format!("Transport error sending status post: {}", e),
+                    },
+                };
+                let status_code = resp.status();
+                if status_code.is_client_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected status post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
                 }
-                let json: Value = resp.json().await?;
+                if status_code.is_server_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta server error on status post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
+                }
+                let json: Value = match resp.json().await {
+                    Ok(j) => j,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "malformed_json_response".to_string(),
+                        error_message: format!("2xx response with invalid JSON body: {}", e),
+                    },
+                };
                 let post_id_val = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if post_id_val.is_empty() {
-                    return Err(anyhow!("Empty post ID returned from Meta"));
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: "empty_remote_id".to_string(),
+                        error_message: "2xx response missing id field".to_string(),
+                    };
                 }
-                Ok(post_id_val)
+                PublishApiResult::Success { remote_post_id: post_id_val }
             }
             "link" => {
-                let link = link_url.ok_or_else(|| anyhow!("Link URL required for link post"))?;
+                let link = match link_url {
+                    Some(l) => l,
+                    None => return PublishApiResult::DeterministicRejection {
+                        error_code: "missing_link_url".to_string(),
+                        error_message: "Link URL required for link post".to_string(),
+                    },
+                };
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut form = vec![("access_token", page_token.as_str()), ("message", message), ("link", link)];
+                let mut form = vec![("access_token", page_token), ("message", message), ("link", link)];
                 let sched_str;
                 if let Some(st) = scheduled_publish_time_epoch {
                     form.push(("published", "false"));
                     sched_str = st.to_string();
                     form.push(("scheduled_publish_time", &sched_str));
                 }
-                let resp = self.client.post(&url).form(&form).send().await?;
-                if !resp.status().is_success() {
-                    return Err(anyhow!("Link post failed: {}", resp.text().await?));
+                let resp = match self.client.post(&url).form(&form).send().await {
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "network_transport_error".to_string(),
+                        error_message: format!("Transport error sending link post: {}", e),
+                    },
+                };
+                let status_code = resp.status();
+                if status_code.is_client_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected link post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
                 }
-                let json: Value = resp.json().await?;
+                if status_code.is_server_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta server error on link post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
+                }
+                let json: Value = match resp.json().await {
+                    Ok(j) => j,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "malformed_json_response".to_string(),
+                        error_message: format!("2xx response with invalid JSON body: {}", e),
+                    },
+                };
                 let post_id_val = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if post_id_val.is_empty() {
-                    return Err(anyhow!("Empty post ID returned from Meta"));
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: "empty_remote_id".to_string(),
+                        error_message: "2xx response missing id field".to_string(),
+                    };
                 }
-                Ok(post_id_val)
+                PublishApiResult::Success { remote_post_id: post_id_val }
             }
             "photo" => {
-                let photo_path = media_paths.first().ok_or_else(|| anyhow!("At least 1 photo path required"))?;
-                let file_bytes = tokio::fs::read(photo_path).await?;
+                let photo_path = match media_paths.first() {
+                    Some(p) => p,
+                    None => return PublishApiResult::DeterministicRejection {
+                        error_code: "missing_photo_path".to_string(),
+                        error_message: "At least 1 photo path required".to_string(),
+                    },
+                };
+                let file_bytes = match tokio::fs::read(photo_path).await {
+                    Ok(b) => b,
+                    Err(e) => return PublishApiResult::DeterministicRejection {
+                        error_code: "file_read_error".to_string(),
+                        error_message: format!("Failed to read photo file '{}': {}", photo_path, e),
+                    },
+                };
                 let file_name = Path::new(photo_path).file_name().and_then(|n| n.to_str()).unwrap_or("photo.jpg").to_string();
                 let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
 
                 let mut multipart = reqwest::multipart::Form::new()
-                    .text("access_token", page_token)
+                    .text("access_token", page_token.to_string())
                     .text("caption", message.to_string())
                     .part("source", part);
 
@@ -231,51 +455,117 @@ impl FacebookPublisher {
                 }
 
                 let url = format!("https://graph.facebook.com/v26.0/{}/photos", page_id);
-                let resp = self.client.post(&url).multipart(multipart).send().await?;
-                if !resp.status().is_success() {
-                    return Err(anyhow!("Photo post failed: {}", resp.text().await?));
+                let resp = match self.client.post(&url).multipart(multipart).send().await {
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "network_transport_error".to_string(),
+                        error_message: format!("Transport error uploading photo: {}", e),
+                    },
+                };
+                let status_code = resp.status();
+                if status_code.is_client_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected photo post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
                 }
-                let json: Value = resp.json().await?;
+                if status_code.is_server_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta server error on photo post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
+                }
+                let json: Value = match resp.json().await {
+                    Ok(j) => j,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "malformed_json_response".to_string(),
+                        error_message: format!("2xx response with invalid JSON body: {}", e),
+                    },
+                };
                 let post_id_val = json.get("post_id").or_else(|| json.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if post_id_val.is_empty() {
-                    return Err(anyhow!("Empty post ID returned from Meta"));
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: "empty_remote_id".to_string(),
+                        error_message: "2xx response missing id field".to_string(),
+                    };
                 }
-                Ok(post_id_val)
+                PublishApiResult::Success { remote_post_id: post_id_val }
             }
             "multi_photo" => {
                 if media_paths.len() < 2 {
-                    return Err(anyhow!("Multi-photo post requires at least 2 photos"));
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "insufficient_photos".to_string(),
+                        error_message: "Multi-photo post requires at least 2 photos".to_string(),
+                    };
                 }
                 let mut media_fbids = Vec::new();
                 for path_str in &media_paths {
-                    let file_bytes = tokio::fs::read(path_str).await?;
+                    let file_bytes = match tokio::fs::read(path_str).await {
+                        Ok(b) => b,
+                        Err(e) => return PublishApiResult::DeterministicRejection {
+                            error_code: "file_read_error".to_string(),
+                            error_message: format!("Failed to read photo file '{}': {}", path_str, e),
+                        },
+                    };
                     let file_name = Path::new(path_str).file_name().and_then(|n| n.to_str()).unwrap_or("photo.jpg").to_string();
                     let part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
 
                     let multipart = reqwest::multipart::Form::new()
-                        .text("access_token", page_token.clone())
+                        .text("access_token", page_token.to_string())
                         .text("published", "false")
                         .part("source", part);
 
                     let url = format!("https://graph.facebook.com/v26.0/{}/photos", page_id);
-                    let resp = self.client.post(&url).multipart(multipart).send().await?;
-                    if !resp.status().is_success() {
-                        return Err(anyhow!("Multi-photo stage upload failed: {}", resp.text().await?));
+                    let resp = match self.client.post(&url).multipart(multipart).send().await {
+                        Ok(r) => r,
+                        Err(e) => return PublishApiResult::AmbiguousTransport {
+                            error_code: "network_transport_error".to_string(),
+                            error_message: format!("Transport error staging photo for multi-photo: {}", e),
+                        },
+                    };
+                    let status_code = resp.status();
+                    if status_code.is_client_error() {
+                        let err_body = resp.text().await.unwrap_or_default();
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: format!("http_{}", status_code.as_u16()),
+                            error_message: format!("Meta rejected multi-photo stage upload (HTTP {}): {}", status_code.as_u16(), err_body),
+                        };
                     }
-                    let json: Value = resp.json().await?;
-                    let fbid = json.get("id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing media id"))?;
-                    media_fbids.push(fbid.to_string());
+                    if status_code.is_server_error() {
+                        let err_body = resp.text().await.unwrap_or_default();
+                        return PublishApiResult::AmbiguousTransport {
+                            error_code: format!("http_{}", status_code.as_u16()),
+                            error_message: format!("Meta server error on multi-photo stage upload (HTTP {}): {}", status_code.as_u16(), err_body),
+                        };
+                    }
+                    let json: Value = match resp.json().await {
+                        Ok(j) => j,
+                        Err(e) => return PublishApiResult::AmbiguousTransport {
+                            error_code: "malformed_json_response".to_string(),
+                            error_message: format!("2xx stage upload response with invalid JSON: {}", e),
+                        },
+                    };
+                    let fbid = match json.get("id").and_then(|v| v.as_str()) {
+                        Some(id) => id.to_string(),
+                        None => return PublishApiResult::AmbiguousTransport {
+                            error_code: "missing_media_id".to_string(),
+                            error_message: "Missing media ID in staged photo response".to_string(),
+                        },
+                    };
+                    media_fbids.push(fbid);
                 }
 
                 let attached_media: Vec<Value> = media_fbids
                     .into_iter()
                     .map(|id| json!({ "media_fbid": id }))
                     .collect();
-                let attached_str = serde_json::to_string(&attached_media)?;
+                let attached_str = serde_json::to_string(&attached_media).unwrap_or_default();
 
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
                 let mut form = vec![
-                    ("access_token", page_token.as_str()),
+                    ("access_token", page_token),
                     ("message", message),
                     ("attached_media", &attached_str),
                 ];
@@ -286,26 +576,68 @@ impl FacebookPublisher {
                     form.push(("scheduled_publish_time", &sched_str));
                 }
 
-                let resp = self.client.post(&url).form(&form).send().await?;
-                if !resp.status().is_success() {
-                    return Err(anyhow!("Multi-photo feed post failed: {}", resp.text().await?));
+                let resp = match self.client.post(&url).form(&form).send().await {
+                    Ok(r) => r,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "network_transport_error".to_string(),
+                        error_message: format!("Transport error sending multi-photo feed post: {}", e),
+                    },
+                };
+                let status_code = resp.status();
+                if status_code.is_client_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected multi-photo post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
                 }
-                let json: Value = resp.json().await?;
+                if status_code.is_server_error() {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta server error on multi-photo post (HTTP {}): {}", status_code.as_u16(), err_body),
+                    };
+                }
+                let json: Value = match resp.json().await {
+                    Ok(j) => j,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "malformed_json_response".to_string(),
+                        error_message: format!("2xx response with invalid JSON body: {}", e),
+                    },
+                };
                 let post_id_val = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if post_id_val.is_empty() {
-                    return Err(anyhow!("Empty post ID returned from Meta"));
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: "empty_remote_id".to_string(),
+                        error_message: "2xx response missing id field".to_string(),
+                    };
                 }
-                Ok(post_id_val)
+                PublishApiResult::Success { remote_post_id: post_id_val }
             }
             "video" => {
-                let video_path = media_paths.first().ok_or_else(|| anyhow!("Video path required"))?;
-                self.uploader.upload_video_resumable(conn, page_id, &page_token, video_path, message, scheduled_publish_time_epoch, post_id).await
+                let video_path = match media_paths.first() {
+                    Some(p) => p,
+                    None => return PublishApiResult::DeterministicRejection {
+                        error_code: "missing_video_path".to_string(),
+                        error_message: "Video path required".to_string(),
+                    },
+                };
+                self.uploader.upload_video_resumable(conn, page_id, page_token, video_path, message, scheduled_publish_time_epoch, post_id, owner_id).await
             }
             "reel" => {
-                let reel_path = media_paths.first().ok_or_else(|| anyhow!("Reel path required"))?;
-                self.uploader.upload_reel_resumable(conn, page_id, &page_token, reel_path, message, scheduled_publish_time_epoch, post_id).await
+                let reel_path = match media_paths.first() {
+                    Some(p) => p,
+                    None => return PublishApiResult::DeterministicRejection {
+                        error_code: "missing_reel_path".to_string(),
+                        error_message: "Reel path required".to_string(),
+                    },
+                };
+                self.uploader.upload_reel_resumable(conn, page_id, page_token, reel_path, message, scheduled_publish_time_epoch, post_id, owner_id).await
             }
-            _ => Err(anyhow!("Unsupported post_type '{}' for scheduled post {}", post_type, post_id)),
+            _ => PublishApiResult::DeterministicRejection {
+                error_code: "unsupported_post_type".to_string(),
+                error_message: format!("Unsupported post_type '{}' for scheduled post {}", post_type, post_id),
+            },
         }
     }
 }
@@ -324,6 +656,7 @@ use sha2::Digest;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use crate::facebook::publisher::{FacebookPublisher, PublishApiResult};
 
 pub struct FacebookUploader {
     client: Client,
@@ -357,10 +690,23 @@ impl FacebookUploader {
         description: &str,
         scheduled_publish_time: Option<i64>,
         post_id: i64,
-    ) -> Result<String> {
-        let file_meta = tokio::fs::metadata(file_path).await?;
+        owner_id: &str,
+    ) -> PublishApiResult {
+        let file_meta = match tokio::fs::metadata(file_path).await {
+            Ok(m) => m,
+            Err(e) => return PublishApiResult::DeterministicRejection {
+                error_code: "file_metadata_error".to_string(),
+                error_message: format!("Failed to read file metadata for '{}': {}", file_path, e),
+            },
+        };
         let file_size = file_meta.len();
-        let file_hash = Self::compute_file_hash(file_path).await?;
+        let file_hash = match Self::compute_file_hash(file_path).await {
+            Ok(h) => h,
+            Err(e) => return PublishApiResult::DeterministicRejection {
+                error_code: "file_hash_error".to_string(),
+                error_message: format!("Failed to compute file hash for '{}': {}", file_path, e),
+            },
+        };
 
         // 1. Check existing in-progress or finishing session in facebook_upload_sessions with content hash verification scoped to this exact post
         let existing_session: Option<(String, String, u64, String)> = match conn.query_row(
@@ -372,7 +718,10 @@ impl FacebookUploader {
         ) {
             Ok(sess) => Some(sess),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(err) => return Err(anyhow!("Database query error looking up video upload session: {}", err)),
+            Err(err) => return PublishApiResult::AmbiguousTransport {
+                error_code: "db_error".to_string(),
+                error_message: format!("Database query error looking up video upload session: {}", err),
+            },
         };
 
         let (upload_session_id, video_id, mut offset) = if let Some((sess_id, vid_id, _saved_offset, session_status)) = existing_session {
@@ -389,98 +738,198 @@ impl FacebookUploader {
                         let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
 
                         if video_status == "ready" || is_published {
-                            conn.execute(
+                            let _ = conn.execute(
                                 "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                                 params![sess_id],
-                            )?;
-                            return Ok(vid_id);
+                            );
+                            return PublishApiResult::Success { remote_post_id: vid_id };
                         } else if video_status == "error" {
-                            conn.execute(
+                            let _ = conn.execute(
                                 "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                                 params![sess_id],
-                            )?;
-                            return Err(anyhow!("Meta video processing failed with error state"));
+                            );
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "meta_video_error".to_string(),
+                                error_message: "Meta video processing failed with error state".to_string(),
+                            };
                         } else {
-                            // Video is still processing on Meta (e.g. video_status is 'processing' or pending); remain in finishing reconciliation state
-                            return Err(anyhow!("Video upload is finishing but still processing on Meta; retry reconciliation later"));
+                            // Video is still processing on Meta; return non-terminal StillProcessing so upload reconciler continues
+                            return PublishApiResult::StillProcessing { upload_session_id: sess_id };
                         }
                     }
                     Ok(check_resp) => {
-                        return Err(anyhow!("Meta API returned HTTP {} while reconciling finishing video session: {}", check_resp.status(), check_resp.text().await?));
+                        let status_code = check_resp.status();
+                        let err_text = check_resp.text().await.unwrap_or_default();
+                        if status_code.is_client_error() {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: format!("http_{}", status_code.as_u16()),
+                                error_message: format!("Meta rejected video status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                            };
+                        }
+                        return PublishApiResult::AmbiguousTransport {
+                            error_code: format!("http_{}", status_code.as_u16()),
+                            error_message: format!("Meta server error on video status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                        };
                     }
                     Err(err) => {
-                        return Err(anyhow!("Network error while reconciling finishing video session: {}", err));
+                        return PublishApiResult::AmbiguousTransport {
+                            error_code: "network_transport_error".to_string(),
+                            error_message: format!("Network error checking finishing video session: {}", err),
+                        };
                     }
                 }
             }
 
             // Query Graph video upload session for authoritative server offset
             let status_url = format!("https://graph-video.facebook.com/v26.0/{}?fields=start_offset,end_offset&access_token={}", sess_id, page_token);
-            let status_resp = self.client.get(&status_url).send().await?;
-            if !status_resp.status().is_success() {
-                conn.execute(
+            let status_resp = match self.client.get(&status_url).send().await {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "network_transport_error".to_string(),
+                    error_message: format!("Network error querying video upload session offset: {}", e),
+                },
+            };
+            let status_code = status_resp.status();
+            if !status_code.is_success() {
+                let err_text = status_resp.text().await.unwrap_or_default();
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![sess_id],
-                )?;
-                return Err(anyhow!("Failed to query authoritative server offset on video resume: {}", status_resp.text().await?));
+                );
+                if status_code.is_client_error() {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
+                    };
+                }
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta server error on video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
+                };
             }
-            let status_json: Value = status_resp.json().await?;
-            let server_offset = status_json.get("start_offset")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<u64>().ok())
-                .ok_or_else(|| anyhow!("Missing start_offset in Meta status response on video resume"))?;
+            let status_json: Value = match status_resp.json().await {
+                Ok(j) => j,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "malformed_json_response".to_string(),
+                    error_message: format!("Invalid JSON in video resume query response: {}", e),
+                },
+            };
+            let server_offset = match status_json.get("start_offset").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()) {
+                Some(o) => o,
+                None => return PublishApiResult::AmbiguousTransport {
+                    error_code: "missing_start_offset".to_string(),
+                    error_message: "Missing start_offset in Meta status response on video resume".to_string(),
+                },
+            };
 
             if server_offset > file_size {
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![sess_id],
-                )?;
-                return Err(anyhow!("Server offset {} exceeds file size {}", server_offset, file_size));
+                );
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "server_offset_out_of_bounds".to_string(),
+                    error_message: format!("Server offset {} exceeds file size {}", server_offset, file_size),
+                };
             }
             (sess_id, vid_id, server_offset)
         } else {
             // Start Phase
             let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
-            let start_resp = self.client.post(&start_url)
+            let start_resp = match self.client.post(&start_url)
                 .form(&[
                     ("access_token", page_token),
                     ("upload_phase", "start"),
                     ("file_size", &file_size.to_string()),
                 ])
-                .send().await?;
+                .send().await {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "network_transport_error".to_string(),
+                    error_message: format!("Network error starting video upload session: {}", e),
+                },
+            };
 
-            if !start_resp.status().is_success() {
-                return Err(anyhow!("Video start phase failed: {}", start_resp.text().await?));
+            let status_code = start_resp.status();
+            if !status_code.is_success() {
+                let err_text = start_resp.text().await.unwrap_or_default();
+                if status_code.is_client_error() {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected video start phase (HTTP {}): {}", status_code.as_u16(), err_text),
+                    };
+                }
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta server error on video start phase (HTTP {}): {}", status_code.as_u16(), err_text),
+                };
             }
 
-            let start_json: Value = start_resp.json().await?;
-            let sess_id = start_json.get("upload_session_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing upload_session_id"))?.to_string();
-            let vid_id = start_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?.to_string();
+            let start_json: Value = match start_resp.json().await {
+                Ok(j) => j,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "malformed_json_response".to_string(),
+                    error_message: format!("Invalid JSON in video start phase response: {}", e),
+                },
+            };
+            let sess_id = match start_json.get("upload_session_id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => return PublishApiResult::AmbiguousTransport {
+                    error_code: "missing_upload_session_id".to_string(),
+                    error_message: "Missing upload_session_id in Meta video start response".to_string(),
+                },
+            };
+            let vid_id = match start_json.get("video_id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => return PublishApiResult::AmbiguousTransport {
+                    error_code: "missing_video_id".to_string(),
+                    error_message: "Missing video_id in Meta video start response".to_string(),
+                },
+            };
 
-            conn.execute(
+            let _ = conn.execute(
                 "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
                  VALUES (?1, ?2, 'video', ?3, ?4, ?5, ?6, ?7, 0, 'in_progress', datetime('now'), datetime('now'))",
                 params![post_id, page_id, sess_id, vid_id, file_path, file_hash, file_size as i64],
-            )?;
+            );
 
-            conn.execute(
+            let _ = conn.execute(
                 "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
                 params![sess_id, post_id],
-            )?;
+            );
 
             (sess_id, vid_id, 0u64)
         };
 
         // 2. Transfer Phase
         let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
-        let mut file = File::open(file_path).await?;
+        let mut file = match File::open(file_path).await {
+            Ok(f) => f,
+            Err(e) => return PublishApiResult::DeterministicRejection {
+                error_code: "file_open_error".to_string(),
+                error_message: format!("Failed to open video file '{}': {}", file_path, e),
+            },
+        };
         let chunk_size: usize = 4 * 1024 * 1024; // 4MB
 
         while offset < file_size {
+            // Heartbeat lease renewal before reading and uploading each chunk
+            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
+
             let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
             let mut buffer = vec![0u8; bytes_to_read];
-            file.seek(SeekFrom::Start(offset)).await?;
-            file.read_exact(&mut buffer).await?;
+            if let Err(e) = file.seek(SeekFrom::Start(offset)).await {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "file_seek_error".to_string(),
+                    error_message: format!("Failed to seek video file: {}", e),
+                };
+            }
+            if let Err(e) = file.read_exact(&mut buffer).await {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "file_read_error".to_string(),
+                    error_message: format!("Failed to read video chunk: {}", e),
+                };
+            }
 
             let part = reqwest::multipart::Part::bytes(buffer).file_name("chunk.mp4");
             let form = reqwest::multipart::Form::new()
@@ -490,41 +939,70 @@ impl FacebookUploader {
                 .text("start_offset", offset.to_string())
                 .part("video_file_chunk", part);
 
-            let transfer_resp = self.client.post(&start_url).multipart(form).send().await?;
-            if !transfer_resp.status().is_success() {
-                conn.execute(
+            let transfer_resp = match self.client.post(&start_url).multipart(form).send().await {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "network_transport_error".to_string(),
+                    error_message: format!("Transport error uploading video chunk at offset {}: {}", offset, e),
+                },
+            };
+            let status_code = transfer_resp.status();
+            if !status_code.is_success() {
+                let err_text = transfer_resp.text().await.unwrap_or_default();
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![upload_session_id],
-                )?;
-                return Err(anyhow!("Video chunk upload failed: {}", transfer_resp.text().await?));
+                );
+                if status_code.is_client_error() {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected video chunk at offset {} (HTTP {}): {}", offset, status_code.as_u16(), err_text),
+                    };
+                }
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta server error on video chunk at offset {} (HTTP {}): {}", offset, status_code.as_u16(), err_text),
+                };
             }
 
-            let transfer_json: Value = transfer_resp.json().await?;
-            let next_offset = transfer_json.get("start_offset")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<u64>().ok())
-                .ok_or_else(|| anyhow!("Missing start_offset in Meta video transfer response"))?;
+            let transfer_json: Value = match transfer_resp.json().await {
+                Ok(j) => j,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "malformed_json_response".to_string(),
+                    error_message: format!("Invalid JSON in video chunk response: {}", e),
+                },
+            };
+            let next_offset = match transfer_json.get("start_offset").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()) {
+                Some(o) => o,
+                None => return PublishApiResult::AmbiguousTransport {
+                    error_code: "missing_start_offset".to_string(),
+                    error_message: "Missing start_offset in Meta video transfer response".to_string(),
+                },
+            };
 
             if next_offset <= offset || next_offset > file_size {
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![upload_session_id],
-                )?;
-                return Err(anyhow!("Invalid server offset progression: prev={}, next={}, file_size={}", offset, next_offset, file_size));
+                );
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "invalid_offset_progression".to_string(),
+                    error_message: format!("Invalid server offset progression: prev={}, next={}, file_size={}", offset, next_offset, file_size),
+                };
             }
 
             offset = next_offset;
-            conn.execute(
+            let _ = conn.execute(
                 "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
                 params![offset as i64, upload_session_id],
-            )?;
+            );
         }
 
         // 3. Finish Phase
-        conn.execute(
+        let _ = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
             params![upload_session_id],
-        )?;
+        );
 
         let mut finish_body = json!({
             "access_token": page_token,
@@ -538,18 +1016,36 @@ impl FacebookUploader {
             finish_body["scheduled_publish_time"] = json!(st);
         }
 
-        let finish_resp = self.client.post(&start_url).json(&finish_body).send().await?;
-        if !finish_resp.status().is_success() {
-            conn.execute(
+        let finish_resp = match self.client.post(&start_url).json(&finish_body).send().await {
+            Ok(r) => r,
+            Err(e) => return PublishApiResult::AmbiguousTransport {
+                error_code: "network_transport_error".to_string(),
+                error_message: format!("Transport error finishing video upload: {}", e),
+            },
+        };
+        let status_code = finish_resp.status();
+        if !status_code.is_success() {
+            let err_text = finish_resp.text().await.unwrap_or_default();
+            let _ = conn.execute(
                 "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                 params![upload_session_id],
-            )?;
-            return Err(anyhow!("Video finish phase failed: {}", finish_resp.text().await?));
+            );
+            if status_code.is_client_error() {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta rejected video finish phase (HTTP {}): {}", status_code.as_u16(), err_text),
+                };
+            }
+            return PublishApiResult::AmbiguousTransport {
+                error_code: format!("http_{}", status_code.as_u16()),
+                error_message: format!("Meta server error on video finish phase (HTTP {}): {}", status_code.as_u16(), err_text),
+            };
         }
 
         // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", video_id, page_token);
         for attempt in 0..5 {
+            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(1000 * attempt as u64)).await;
             }
@@ -563,24 +1059,27 @@ impl FacebookUploader {
                     let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
 
                     if video_status == "ready" || is_published {
-                        conn.execute(
+                        let _ = conn.execute(
                             "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                             params![upload_session_id],
-                        )?;
-                        return Ok(video_id);
+                        );
+                        return PublishApiResult::Success { remote_post_id: video_id };
                     } else if video_status == "error" {
-                        conn.execute(
+                        let _ = conn.execute(
                             "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                             params![upload_session_id],
-                        )?;
-                        return Err(anyhow!("Meta video processing failed with error state"));
+                        );
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "meta_video_error".to_string(),
+                            error_message: "Meta video processing failed with error state".to_string(),
+                        };
                     }
                 }
             }
         }
 
         // Processing pending; session remains in finishing state for background reconciliation
-        Err(anyhow!("Video processing pending at Meta: session {} remains in finishing state for reconciliation", upload_session_id))
+        PublishApiResult::StillProcessing { upload_session_id }
     }
 
     pub async fn upload_reel_resumable(
@@ -592,10 +1091,23 @@ impl FacebookUploader {
         description: &str,
         scheduled_publish_time: Option<i64>,
         post_id: i64,
-    ) -> Result<String> {
-        let file_meta = tokio::fs::metadata(file_path).await?;
+        owner_id: &str,
+    ) -> PublishApiResult {
+        let file_meta = match tokio::fs::metadata(file_path).await {
+            Ok(m) => m,
+            Err(e) => return PublishApiResult::DeterministicRejection {
+                error_code: "file_metadata_error".to_string(),
+                error_message: format!("Failed to read file metadata for '{}': {}", file_path, e),
+            },
+        };
         let file_size = file_meta.len();
-        let file_hash = Self::compute_file_hash(file_path).await?;
+        let file_hash = match Self::compute_file_hash(file_path).await {
+            Ok(h) => h,
+            Err(e) => return PublishApiResult::DeterministicRejection {
+                error_code: "file_hash_error".to_string(),
+                error_message: format!("Failed to compute file hash for '{}': {}", file_path, e),
+            },
+        };
 
         let existing_session: Option<(String, u64, String)> = match conn.query_row(
             "SELECT video_id, start_offset, status
@@ -606,7 +1118,10 @@ impl FacebookUploader {
         ) {
             Ok(sess) => Some(sess),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(err) => return Err(anyhow!("Database query error looking up reel upload session: {}", err)),
+            Err(err) => return PublishApiResult::AmbiguousTransport {
+                error_code: "db_error".to_string(),
+                error_message: format!("Database query error looking up reel upload session: {}", err),
+            },
         };
 
         let (video_id, mut offset) = if let Some((vid_id, _saved_offset, session_status)) = existing_session {
@@ -626,139 +1141,260 @@ impl FacebookUploader {
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
 
-                        // Authoritative terminal published/scheduled state requires publishing_phase == 'complete'
                         if publishing_status == "complete" {
-                            conn.execute(
+                            let _ = conn.execute(
                                 "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                                 params![vid_id],
-                            )?;
-                            return Ok(vid_id);
+                            );
+                            return PublishApiResult::Success { remote_post_id: vid_id };
                         } else if video_status == "error" || publishing_status == "error" {
-                            conn.execute(
+                            let _ = conn.execute(
                                 "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                                 params![vid_id],
-                            )?;
-                            return Err(anyhow!("Meta Reel processing failed with error state"));
+                            );
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "meta_reel_error".to_string(),
+                                error_message: "Meta Reel processing failed with error state".to_string(),
+                            };
                         } else {
-                            // Reel publishing is still in progress (e.g. publishing_phase is 'in_progress' or 'not_started'); remain in finishing reconciliation state
-                            return Err(anyhow!("Reel is finishing but publishing is still in progress on Meta; retry reconciliation later"));
+                            // Reel publishing is still in progress; return StillProcessing so upload reconciler continues
+                            return PublishApiResult::StillProcessing { upload_session_id: vid_id };
                         }
                     }
                     Ok(check_resp) => {
-                        return Err(anyhow!("Meta API returned HTTP {} while reconciling finishing reel session: {}", check_resp.status(), check_resp.text().await?));
+                        let status_code = check_resp.status();
+                        let err_text = check_resp.text().await.unwrap_or_default();
+                        if status_code.is_client_error() {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: format!("http_{}", status_code.as_u16()),
+                                error_message: format!("Meta rejected reel status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                            };
+                        }
+                        return PublishApiResult::AmbiguousTransport {
+                            error_code: format!("http_{}", status_code.as_u16()),
+                            error_message: format!("Meta server error on reel status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                        };
                     }
                     Err(err) => {
-                        return Err(anyhow!("Network error while reconciling finishing reel session: {}", err));
+                        return PublishApiResult::AmbiguousTransport {
+                            error_code: "network_transport_error".to_string(),
+                            error_message: format!("Network error checking finishing reel session: {}", err),
+                        };
                     }
                 }
             }
 
             let check_url = format!("https://rupload.facebook.com/video-reels/{}", vid_id);
-            let check_resp = self.client.get(&check_url)
+            let check_resp = match self.client.get(&check_url)
                 .header("Authorization", format!("OAuth {}", page_token))
-                .send().await?;
-
-            if !check_resp.status().is_success() {
-                conn.execute(
+                .send().await {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "network_transport_error".to_string(),
+                    error_message: format!("Network error querying Reel offset on resume: {}", e),
+                },
+            };
+            let status_code = check_resp.status();
+            if !status_code.is_success() {
+                let err_text = check_resp.text().await.unwrap_or_default();
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![vid_id],
-                )?;
-                return Err(anyhow!("Failed to query Reel upload offset on resume: {}", check_resp.text().await?));
+                );
+                if status_code.is_client_error() {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
+                    };
+                }
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta server error on Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
+                };
             }
 
-            let check_json: Value = check_resp.json().await?;
-            let server_offset = check_json.get("offset")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow!("Missing offset in Reel status response on resume"))?;
+            let check_json: Value = match check_resp.json().await {
+                Ok(j) => j,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "malformed_json_response".to_string(),
+                    error_message: format!("Invalid JSON in Reel resume query response: {}", e),
+                },
+            };
+            let server_offset = match check_json.get("offset").and_then(|v| v.as_u64()) {
+                Some(o) => o,
+                None => return PublishApiResult::AmbiguousTransport {
+                    error_code: "missing_offset".to_string(),
+                    error_message: "Missing offset in Reel status response on resume".to_string(),
+                },
+            };
 
             if server_offset > file_size {
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![vid_id],
-                )?;
-                return Err(anyhow!("Reel server offset {} exceeds file size {}", server_offset, file_size));
+                );
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "server_offset_out_of_bounds".to_string(),
+                    error_message: format!("Reel server offset {} exceeds file size {}", server_offset, file_size),
+                };
             }
             (vid_id, server_offset)
         } else {
             let init_url = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
-            let init_resp = self.client.post(&init_url)
+            let init_resp = match self.client.post(&init_url)
                 .form(&[
                     ("access_token", page_token),
                     ("upload_phase", "start"),
                 ])
-                .send().await?;
-
-            if !init_resp.status().is_success() {
-                return Err(anyhow!("Reel init failed: {}", init_resp.text().await?));
+                .send().await {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "network_transport_error".to_string(),
+                    error_message: format!("Network error initializing Reel upload: {}", e),
+                },
+            };
+            let status_code = init_resp.status();
+            if !status_code.is_success() {
+                let err_text = init_resp.text().await.unwrap_or_default();
+                if status_code.is_client_error() {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected Reel init (HTTP {}): {}", status_code.as_u16(), err_text),
+                    };
+                }
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta server error on Reel init (HTTP {}): {}", status_code.as_u16(), err_text),
+                };
             }
 
-            let init_json: Value = init_resp.json().await?;
-            let vid_id = init_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?.to_string();
+            let init_json: Value = match init_resp.json().await {
+                Ok(j) => j,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "malformed_json_response".to_string(),
+                    error_message: format!("Invalid JSON in Reel init response: {}", e),
+                },
+            };
+            let vid_id = match init_json.get("video_id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => return PublishApiResult::AmbiguousTransport {
+                    error_code: "missing_video_id".to_string(),
+                    error_message: "Missing video_id in Reel init response".to_string(),
+                },
+            };
 
-            conn.execute(
+            let _ = conn.execute(
                 "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
                  VALUES (?1, ?2, 'reel', ?3, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
                 params![post_id, page_id, vid_id, file_path, file_hash, file_size as i64],
-            )?;
+            );
 
-            conn.execute(
+            let _ = conn.execute(
                 "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
                 params![vid_id, post_id],
-            )?;
+            );
 
             (vid_id, 0u64)
         };
 
         let rupload_url = format!("https://rupload.facebook.com/video-reels/{}", video_id);
-        let mut file = File::open(file_path).await?;
+        let mut file = match File::open(file_path).await {
+            Ok(f) => f,
+            Err(e) => return PublishApiResult::DeterministicRejection {
+                error_code: "file_open_error".to_string(),
+                error_message: format!("Failed to open Reel file '{}': {}", file_path, e),
+            },
+        };
         let chunk_size: usize = 4 * 1024 * 1024;
 
         while offset < file_size {
+            // Heartbeat lease renewal before reading and uploading each Reel chunk
+            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
+
             let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
             let mut buffer = vec![0u8; bytes_to_read];
-            file.seek(SeekFrom::Start(offset)).await?;
-            file.read_exact(&mut buffer).await?;
+            if let Err(e) = file.seek(SeekFrom::Start(offset)).await {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "file_seek_error".to_string(),
+                    error_message: format!("Failed to seek Reel file: {}", e),
+                };
+            }
+            if let Err(e) = file.read_exact(&mut buffer).await {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "file_read_error".to_string(),
+                    error_message: format!("Failed to read Reel chunk: {}", e),
+                };
+            }
 
-            let resp = self.client.post(&rupload_url)
+            let resp = match self.client.post(&rupload_url)
                 .header("Authorization", format!("OAuth {}", page_token))
                 .header("Offset", offset.to_string())
                 .header("file_size", file_size.to_string())
                 .body(buffer)
-                .send().await?;
-
-            if !resp.status().is_success() {
-                conn.execute(
+                .send().await {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "network_transport_error".to_string(),
+                    error_message: format!("Transport error uploading Reel chunk at offset {}: {}", offset, e),
+                },
+            };
+            let status_code = resp.status();
+            if !status_code.is_success() {
+                let err_text = resp.text().await.unwrap_or_default();
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![video_id],
-                )?;
-                return Err(anyhow!("Reel chunk upload failed at offset {}: {}", offset, resp.text().await?));
+                );
+                if status_code.is_client_error() {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: format!("http_{}", status_code.as_u16()),
+                        error_message: format!("Meta rejected Reel chunk at offset {} (HTTP {}): {}", offset, status_code.as_u16(), err_text),
+                    };
+                }
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta server error on Reel chunk at offset {} (HTTP {}): {}", offset, status_code.as_u16(), err_text),
+                };
             }
 
-            let resp_json: Value = resp.json().await?;
-            let confirmed_offset = resp_json.get("offset")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow!("Missing offset in Meta Reel chunk response"))?;
+            let resp_json: Value = match resp.json().await {
+                Ok(j) => j,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "malformed_json_response".to_string(),
+                    error_message: format!("Invalid JSON in Reel chunk response: {}", e),
+                },
+            };
+            let confirmed_offset = match resp_json.get("offset").and_then(|v| v.as_u64()) {
+                Some(o) => o,
+                None => return PublishApiResult::AmbiguousTransport {
+                    error_code: "missing_offset".to_string(),
+                    error_message: "Missing offset in Meta Reel chunk response".to_string(),
+                },
+            };
 
             if confirmed_offset != offset + bytes_to_read as u64 {
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                     params![video_id],
-                )?;
-                return Err(anyhow!("Reel chunk offset mismatch: expected {}, got {}", offset + bytes_to_read as u64, confirmed_offset));
+                );
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "offset_mismatch".to_string(),
+                    error_message: format!("Reel chunk offset mismatch: expected {}, got {}", offset + bytes_to_read as u64, confirmed_offset),
+                };
             }
 
             offset = confirmed_offset;
-            conn.execute(
+            let _ = conn.execute(
                 "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
                 params![offset as i64, video_id],
-            )?;
+            );
         }
 
         // 3. Finish Phase
-        conn.execute(
+        let _ = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
             params![video_id],
-        )?;
+        );
 
         let mut finish_body = json!({
             "access_token": page_token,
@@ -772,18 +1408,36 @@ impl FacebookUploader {
         }
 
         let finish_url = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
-        let finish_resp = self.client.post(&finish_url).json(&finish_body).send().await?;
-        if !finish_resp.status().is_success() {
-            conn.execute(
+        let finish_resp = match self.client.post(&finish_url).json(&finish_body).send().await {
+            Ok(r) => r,
+            Err(e) => return PublishApiResult::AmbiguousTransport {
+                error_code: "network_transport_error".to_string(),
+                error_message: format!("Transport error finishing Reel upload: {}", e),
+            },
+        };
+        let status_code = finish_resp.status();
+        if !status_code.is_success() {
+            let err_text = finish_resp.text().await.unwrap_or_default();
+            let _ = conn.execute(
                 "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                 params![video_id],
-            )?;
-            return Err(anyhow!("Reel finish failed: {}", finish_resp.text().await?));
+            );
+            if status_code.is_client_error() {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: format!("http_{}", status_code.as_u16()),
+                    error_message: format!("Meta rejected Reel finish phase (HTTP {}): {}", status_code.as_u16(), err_text),
+                };
+            }
+            return PublishApiResult::AmbiguousTransport {
+                error_code: format!("http_{}", status_code.as_u16()),
+                error_message: format!("Meta server error on Reel finish phase (HTTP {}): {}", status_code.as_u16(), err_text),
+            };
         }
 
         // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", video_id, page_token);
         for attempt in 0..5 {
+            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(1000 * attempt as u64)).await;
             }
@@ -801,24 +1455,27 @@ impl FacebookUploader {
                         .unwrap_or("");
 
                     if publishing_status == "complete" {
-                        conn.execute(
+                        let _ = conn.execute(
                             "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                             params![video_id],
-                        )?;
-                        return Ok(video_id);
+                        );
+                        return PublishApiResult::Success { remote_post_id: video_id };
                     } else if video_status == "error" || publishing_status == "error" {
-                        conn.execute(
+                        let _ = conn.execute(
                             "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
                             params![video_id],
-                        )?;
-                        return Err(anyhow!("Meta Reel processing failed with error state"));
+                        );
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "meta_reel_error".to_string(),
+                            error_message: "Meta Reel processing failed with error state".to_string(),
+                        };
                     }
                 }
             }
         }
 
         // Publishing pending; session remains in finishing state for background reconciliation
-        Err(anyhow!("Reel publishing pending at Meta: session {} remains in finishing state for reconciliation", video_id))
+        PublishApiResult::StillProcessing { upload_session_id: video_id }
     }
 }
 ```

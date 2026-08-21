@@ -148,6 +148,7 @@ SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
     v_updated INT;
+    v_request_id UUID;
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.tenant_registered_devices
@@ -167,9 +168,23 @@ BEGIN
       AND tenant_id = auth.uid()
       AND device_id = p_device_id
       AND lease_token_hash = encode(digest(p_lease_token, 'sha256'), 'hex')
-      AND status = 'acknowledged';
+      AND status = 'acknowledged'
+    RETURNING request_id INTO v_request_id;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
+
+    -- If all deletion tasks for this request_id across all tenants/devices are completed, update request status to completed
+    IF v_updated > 0 AND v_request_id IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM public.meta_device_deletion_tasks
+            WHERE request_id = v_request_id AND status != 'completed'
+        ) THEN
+            UPDATE public.meta_data_deletion_requests
+            SET status = 'completed', completed_at = now(), updated_at = now()
+            WHERE id = v_request_id;
+        END IF;
+    END IF;
+
     RETURN v_updated > 0;
 END;
 $$;
@@ -250,19 +265,31 @@ BEGIN
         VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now());
     END IF;
 
-    -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones where this device does not already have an active/completed task
+    -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones where this device does not already have an active/completed task for that specific request
     INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
     SELECT t.request_id, t.tenant_id, p_device_id, t.page_id, t.user_id, 'pending'
     FROM public.meta_tenant_deletion_tombstones t
     WHERE t.tenant_id = auth.uid()
       AND NOT EXISTS (
           SELECT 1 FROM public.meta_device_deletion_tasks dt
-          WHERE dt.tenant_id = auth.uid()
+          WHERE dt.request_id = t.request_id
+            AND dt.tenant_id = auth.uid()
             AND dt.device_id = p_device_id
             AND dt.page_id = t.page_id
             AND dt.user_id = t.user_id
             AND dt.status IN ('pending', 'acknowledged', 'completed')
       );
+
+    -- Reopen request if new pending tasks were created for a request that was previously marked completed
+    UPDATE public.meta_data_deletion_requests r
+    SET status = 'processing', completed_at = NULL, updated_at = now()
+    WHERE r.id IN (
+        SELECT dt.request_id
+        FROM public.meta_device_deletion_tasks dt
+        WHERE dt.tenant_id = auth.uid()
+          AND dt.device_id = p_device_id
+          AND dt.status = 'pending'
+    ) AND r.status = 'completed';
 
     RETURN TRUE;
 END;
@@ -291,11 +318,12 @@ BEGIN
     VALUES (p_confirmation_code, p_user_id, 'processing')
     RETURNING id INTO v_request_id;
 
-    -- Collect all distinct target (tenant_id, page_id, page_scoped_user_id) tuples matching either root app_user_id or exact (page_id, psid) mapping
+    -- Collect all distinct target (tenant_id, page_id, page_scoped_user_id) tuples matching either root app_user_id, direct psid, or exact (page_id, psid) mapping
     FOR v_tenant_record IN
         SELECT DISTINCT mupi.tenant_id, mupi.page_id, mupi.page_scoped_user_id
         FROM public.meta_user_page_interactions mupi
         WHERE mupi.app_user_id = p_user_id
+           OR mupi.page_scoped_user_id = p_user_id
            OR EXISTS (
                SELECT 1 FROM jsonb_array_elements(p_target_mappings) m
                WHERE (m->>'page_id' IS NOT NULL AND m->>'page_id' <> '')
@@ -341,11 +369,12 @@ BEGIN
           AND (app_user_id = p_user_id OR page_scoped_user_id = v_tenant_record.page_scoped_user_id);
     END LOOP;
 
-    -- Clean up any residual global interaction records matching app_user_id
-    DELETE FROM public.meta_user_page_interactions WHERE app_user_id = p_user_id;
+    -- Clean up any residual global interaction records matching app_user_id or page_scoped_user_id
+    DELETE FROM public.meta_user_page_interactions
+    WHERE app_user_id = p_user_id OR page_scoped_user_id = p_user_id;
 
-    -- If no registered devices exist for target tenants, mark request completed immediately
-    IF NOT v_has_active_devices THEN
+    -- If no registered devices exist for target tenants and no tombstones were created, mark request completed immediately
+    IF NOT v_has_active_devices AND NOT EXISTS (SELECT 1 FROM public.meta_tenant_deletion_tombstones WHERE request_id = v_request_id) THEN
         UPDATE public.meta_data_deletion_requests SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = v_request_id;
     END IF;
 
@@ -471,14 +500,14 @@ serve(async (req: Request) => {
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
     }
 
-    // Fail-closed check on empty resolution: verify whether any retained interaction exists for app_user_id
+    // Fail-closed check on empty resolution: verify whether any retained interaction exists for app_user_id or page_scoped_user_id
     if (resolvedMappings.length === 0) {
       const { count, error: countErr } = await supabaseAdmin
         .from("meta_user_page_interactions")
         .select("*", { count: "exact", head: true })
-        .eq("app_user_id", userId);
+        .or(`app_user_id.eq.${userId},page_scoped_user_id.eq.${userId}`);
       if (countErr || !count || count === 0) {
-        return new Response("Bad Request: No associated Page identities or retained records found for ASID", { status: 400 });
+        return new Response("Bad Request: No associated Page identities or retained records found for user identifier", { status: 400 });
       }
     }
 
