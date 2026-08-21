@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     page_id TEXT NOT NULL,
     upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
     upload_session_id TEXT NOT NULL UNIQUE,
-    video_id TEXT NOT NULL,
+    video_id TEXT,
     file_path TEXT NOT NULL,
     file_hash TEXT NOT NULL,
     file_size_bytes INTEGER NOT NULL,
@@ -268,16 +268,17 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 - **Reels (`rupload.facebook.com`):** Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`. Send 4MB binary chunks to `https://rupload.facebook.com/video-reels/<video_id>` with headers `Offset` and `file_size`. On resume, query server confirmed `Offset` via `GET /video-reels/<video_id>` with Bearer auth; if failed or malformed, abort with error. After chunk upload, parse confirmed server offset and strictly verify `confirmed_offset == offset + bytes_to_read as u64`. Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`.
 
 ### 5.2 Authoritative START Response-Loss & Reconciler Protocol
-1. **Meta Infrastructure Invariant:**
-   - An uncommitted `START` container on Meta (`upload_phase=start`) contains 0 transferred chunks and is strictly an uninitialized buffer. It is NEVER published to any Page feed, Reel tab, or video library without completing all chunk transfers and executing `upload_phase=finish`.
+1. **Meta Graph API Resumable Upload Invariant:**
+   - On Meta Graph API, `upload_phase=start` initializes an uncommitted upload container on Meta media servers.
+   - An uncommitted container contains 0 uploaded byte chunks and is strictly an uninitialized buffer. It is NEVER published to any Page feed, Reel tab, or video library without completing all byte chunk transfers and calling `upload_phase=finish`.
 2. **Deterministic Response-Loss State Machine:**
    - **Local State Invariant:** When an upload starts, SQLite creates `facebook_upload_sessions` with `status = 'init_pending'`, `upload_session_id = 'intent_' || post_id || '_' || uuid`, and `video_id = NULL`.
    - **Case A (START Accepted & Response Received):** Worker receives remote `upload_session_id` and `video_id`. Updates SQLite session row to `upload_session_id = ?1, video_id = ?2, status = 'in_progress'` via checked CAS (`WHERE id = ?3 AND owner_id = ?4 AND status = 'init_pending'` with `rows == 1`).
-   - **Case B (START Accepted on Meta & Response Lost):** Local state has `video_id = NULL` and remains in `status = 'init_pending'`. When claimed by worker or background reconciler:
-     - Because uncommitted START containers on Meta have 0 bytes and cannot be published, the worker safely executes a clean `START` request against Meta Graph API to acquire valid remote container IDs.
+   - **Case B (START Accepted on Meta & Response Lost):** Local state has `video_id = NULL` and remains in `status = 'init_pending'`. When claimed by foreground worker or background reconciler:
+     - Because uncommitted START containers on Meta have 0 bytes and cannot publish, the worker safely executes a clean `START` request against Meta Graph API to acquire valid remote container IDs.
      - Upon receiving remote IDs, updates session row to `in_progress` via checked CAS (`WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'` with `rows == 1`) and proceeds with chunk upload.
      - If START returns client error (4xx non-429): marks session and post `failed` via checked CAS (`rows == 1`).
-     - If START returns 429: parses `retry-after` header, updates `next_retry_at`, and leaves in `init_pending` for backoff.
+     - If START returns 429: parses `retry-after` header, returns `PublishApiResult::RateLimited`, and releases lease (`owner_id = NULL, lease_deadline = NULL`) for backoff retry.
      - If retry attempts >= 3: marks session and post `failed` via checked CAS (`rows == 1`).
    - **Case C (START Response Received + Local CAS Lease Loss):** If SQLite update returns `rows != 1`, the worker immediately aborts with `DeterministicRejection { error_code: "session_lease_loss" }`.
 

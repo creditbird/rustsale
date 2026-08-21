@@ -2339,14 +2339,15 @@ impl FacebookUploader {
       LIMIT 1
   ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status;
   ```
-  - **`init_pending` Reconciler State Machine (START Response-Loss & Authoritative Recovery):**
+  - **`init_pending` Reconciler State Machine (Authoritative START Response-Loss Recovery):**
     1. Query parent post `facebook_scheduled_posts` by `post_id`.
-    2. Check if parent post has already been published or scheduled on Meta (via `verify_feed_publication` or `verify_scheduled_publication`).
-    3. If parent post is verified live on Meta: update parent post to `published` / `scheduled_on_meta`, link remote ID, and set upload session `status='completed'`.
-    4. If parent post is not published on Meta and the intent lease has expired:
-       - Since Meta Video/Reels START API returns `video_id` and `upload_session_id` upon creation but does not commit any feed post or quota until chunks are transferred and the FINISH/publish phase succeeds, any uncommitted remote session on Meta automatically garbage-collects and expires within 24 hours.
-       - The reconciler safely and atomically deletes the uncommitted pre-START intent: `DELETE FROM facebook_upload_sessions WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'`.
-       - Resets parent post to `status='queued', claim_deadline=NULL, owner_id=NULL` (incrementing retry count) to allow the publisher worker to cleanly execute a fresh START and upload sequence without duplicate publications, ghost posts, or database locks.
+    2. An uncommitted `START` upload container on Meta media servers contains 0 uploaded byte chunks and is strictly an uninitialized buffer that is NEVER published to Page feed or Reel tab without completing chunk transfer and calling `upload_phase=finish`.
+    3. When the reconciler claims an expired `init_pending` session:
+       - It directly executes a clean `START` request against Meta Graph API (`POST /{page_id}/videos` or `POST /{page_id}/video_reels`) using the page access token to establish an authoritative upload container.
+       - Upon receiving remote `{ upload_session_id, video_id }`, it atomically updates the existing session row to `in_progress` via checked CAS (`UPDATE facebook_upload_sessions SET upload_session_id = ?1, video_id = ?2, status = 'in_progress', updated_at = datetime('now') WHERE id = ?3 AND owner_id = ?4 AND status = 'init_pending'` with `rows == 1`), and proceeds to upload chunks.
+       - If Meta returns client error (HTTP 4xx non-429): transitions session and post to `status = 'failed'` via checked CAS (`rows == 1`).
+       - If Meta returns HTTP 429: parses `retry-after` header and releases lease (`owner_id = NULL, lease_deadline = NULL`) for backoff retry.
+       - If retry attempts reach `max_retries` (>= 3): transitions session and post to `status = 'failed'` via checked CAS (`rows == 1`).
   - For `status == 'in_progress'`:
     Queries Meta Graph API for authoritative `start_offset` (`GET /{upload_session_id}?fields=start_offset,end_offset` for Video; `GET https://rupload.facebook.com/video-reels/{video_id}` for Reels), updates `start_offset` in `facebook_upload_sessions`, resumes uploading remaining 4MB chunks to EOF, and advances session `status = 'finishing'`.
   - For `status == 'finishing'`:
@@ -2471,22 +2472,22 @@ mod tests {
     #[tokio::test]
     async fn test_video_start_response_lost_recovers_via_fresh_start_cas() {
         let conn = setup_test_sqlite().unwrap();
-        // Insert existing session in init_pending state (representing lost response on initial attempt)
+        // Insert existing session in init_pending state matching exact SQLite schema (video_id = NULL)
         conn.execute(
-            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_session_id, video_id, file_size, start_offset, end_offset, status, owner_id, lease_deadline, created_at, updated_at)
-             VALUES (1, 100, 'page_123', 'intent_100_uuid', NULL, 10485760, 0, 0, 'init_pending', NULL, NULL, datetime('now'), datetime('now'))",
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (1, 100, 'page_123', 'video', 'intent_100_uuid', NULL, '/path/video.mp4', 'hash123', 10485760, 0, 'init_pending', NULL, NULL, datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
         // Worker claims lease
         let worker_id = "worker_1";
         let claimed = conn.execute(
-            "UPDATE facebook_upload_sessions SET owner_id = ?1, lease_deadline = datetime('now', '+5 minutes') WHERE id = 1 AND status = 'init_pending'",
+            "UPDATE facebook_upload_sessions SET owner_id = ?1, lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now') WHERE id = 1 AND status = 'init_pending'",
             params![worker_id],
         ).unwrap();
         assert_eq!(claimed, 1);
 
-        // Execute START mock (returns remote upload_session_id="meta_sess_456", video_id="meta_vid_789")
+        // Execute START (returns remote upload_session_id="meta_sess_456", video_id="meta_vid_789")
         let updated = conn.execute(
             "UPDATE facebook_upload_sessions SET upload_session_id = 'meta_sess_456', video_id = 'meta_vid_789', status = 'in_progress', updated_at = datetime('now') WHERE id = 1 AND owner_id = ?1 AND status = 'init_pending'",
             params![worker_id],
@@ -2494,22 +2495,22 @@ mod tests {
         assert_eq!(updated, 1);
 
         // Verify session successfully transitioned to in_progress with authoritative Meta remote IDs
-        let (status, sess_id, vid_id): (String, String, String) = conn.query_row(
+        let (status, sess_id, vid_id): (String, String, Option<String>) = conn.query_row(
             "SELECT status, upload_session_id, video_id FROM facebook_upload_sessions WHERE id = 1",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ).unwrap();
         assert_eq!(status, "in_progress");
         assert_eq!(sess_id, "meta_sess_456");
-        assert_eq!(vid_id, "meta_vid_789");
+        assert_eq!(vid_id, Some("meta_vid_789".to_string()));
     }
 
     #[tokio::test]
     async fn test_start_response_received_local_cas_lease_loss_aborts() {
         let conn = setup_test_sqlite().unwrap();
         conn.execute(
-            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_session_id, video_id, file_size, start_offset, end_offset, status, owner_id, lease_deadline, created_at, updated_at)
-             VALUES (2, 101, 'page_123', 'intent_101_uuid', NULL, 10485760, 0, 0, 'init_pending', 'worker_2_stolen', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (2, 101, 'page_123', 'video', 'intent_101_uuid', NULL, '/path/video.mp4', 'hash123', 10485760, 0, 'init_pending', 'worker_2_stolen', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
