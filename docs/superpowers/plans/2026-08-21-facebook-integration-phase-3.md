@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS meta_data_deletion_requests (
     confirmation_code TEXT NOT NULL UNIQUE,
     user_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -334,6 +335,23 @@ pub async fn process_pending_device_tasks(
                 )?;
             }
 
+            // Wipe all attachment identifiers, remote URLs, and metadata
+            tx.execute(
+                "UPDATE message_attachments 
+                 SET provider_attachment_id = NULL,
+                     remote_url = NULL,
+                     thumbnail_url = NULL,
+                     file_name = '[Deleted]',
+                     local_path = NULL,
+                     metadata_json = '{}'
+                 WHERE message_id IN (
+                     SELECT m.id FROM messages m
+                     JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                     WHERE ci.channel = 'messenger' AND ci.external_id = ?1
+                 )",
+                [user_id],
+            )?;
+
             // Redact messages
             tx.execute(
                 "UPDATE messages 
@@ -346,11 +364,13 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
 
-            // Anonymize identity
+            // Anonymize identity including external_id tombstone
             tx.execute(
                 "UPDATE channel_identities 
                  SET display_name = 'Deleted User', 
                      avatar_url = NULL, 
+                     metadata_json = '{}',
+                     external_id = 'deleted_' || id || '_' || hex(randomblob(4)),
                      profile_synced_at = datetime('now'),
                      updated_at = datetime('now') 
                  WHERE channel = 'messenger' AND external_id = ?1",

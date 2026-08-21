@@ -318,9 +318,18 @@ CREATE TABLE IF NOT EXISTS meta_webhook_buffer (
 );
 ALTER TABLE meta_webhook_buffer ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Tenants read and ack own buffered events" ON meta_webhook_buffer
-    FOR ALL USING (auth.uid() = tenant_id)
-    WITH CHECK (auth.uid() = tenant_id);
+REVOKE ALL ON TABLE meta_webhook_buffer FROM PUBLIC, anon;
+GRANT SELECT, UPDATE(status) ON TABLE meta_webhook_buffer TO authenticated;
+GRANT ALL ON TABLE meta_webhook_buffer TO service_role;
+
+CREATE POLICY "Tenants select own buffered events" ON meta_webhook_buffer
+    FOR SELECT TO authenticated
+    USING (auth.uid() = tenant_id);
+
+CREATE POLICY "Tenants ack own buffered events" ON meta_webhook_buffer
+    FOR UPDATE TO authenticated
+    USING (auth.uid() = tenant_id)
+    WITH CHECK (auth.uid() = tenant_id AND status IN ('processing', 'completed', 'failed'));
 
 CREATE TABLE IF NOT EXISTS meta_user_page_interactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
