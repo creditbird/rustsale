@@ -933,7 +933,25 @@ impl FacebookSyncWorker {
                         let has_text = text_opt.is_some();
                         let has_atts = atts_opt.map_or(false, |a| !a.is_empty());
 
-                        if (has_text || has_atts) && !sender_psid.is_empty() {
+                        let mut valid_attachments = Vec::new();
+                        if let Some(atts) = atts_opt {
+                            for att in atts {
+                                let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                if !att_url.is_empty() {
+                                    valid_attachments.push(att);
+                                }
+                            }
+                        }
+
+                        if has_atts && !has_text && valid_attachments.is_empty() {
+                            // Quarantine malformed attachment-only event missing all URLs
+                            tx.execute(
+                                "INSERT OR IGNORE INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
+                                 VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                                params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "malformed_attachments_missing_url"],
+                            )?;
+                            processed = true;
+                        } else if (has_text || !valid_attachments.is_empty()) && !sender_psid.is_empty() {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
                                  VALUES ('messenger', ?1, 'psid', ?2, datetime('now'), datetime('now'))",
@@ -962,8 +980,8 @@ impl FacebookSyncWorker {
                                 params![conv_id, identity_id],
                             )?;
 
-                            let content_type = if has_atts && !has_text {
-                                atts_opt.unwrap().first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file")
+                            let content_type = if !valid_attachments.is_empty() && !has_text {
+                                valid_attachments.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file")
                             } else {
                                 "text"
                             };
@@ -991,18 +1009,16 @@ impl FacebookSyncWorker {
                             ).optional()?;
 
                             if let Some(msg_id) = msg_id_opt {
-                                if let Some(atts) = atts_opt {
-                                    for att in atts {
-                                        let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
-                                        let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
-                                        let att_title = att.get("title").and_then(|t| t.as_str());
-                                        if !att_url.is_empty() {
-                                            tx.execute(
-                                                "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
-                                                 VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                                params![msg_id, att_type, att_title, att_url],
-                                            )?;
-                                        }
+                                for att in &valid_attachments {
+                                    let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
+                                    let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                    let att_title = att.get("title").and_then(|t| t.as_str());
+                                    if !att_url.is_empty() {
+                                        tx.execute(
+                                            "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
+                                            params![msg_id, att_type, att_title, att_url],
+                                        )?;
                                     }
                                 }
 
@@ -1032,7 +1048,25 @@ impl FacebookSyncWorker {
                         let has_text = text_opt.is_some();
                         let has_atts = atts_opt.map_or(false, |a| !a.is_empty());
 
-                        if (has_text || has_atts) && !recipient_psid.is_empty() {
+                        let mut valid_attachments = Vec::new();
+                        if let Some(atts) = atts_opt {
+                            for att in atts {
+                                let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                if !att_url.is_empty() {
+                                    valid_attachments.push(att);
+                                }
+                            }
+                        }
+
+                        if has_atts && !has_text && valid_attachments.is_empty() {
+                            // Quarantine malformed attachment-only echo missing all URLs
+                            tx.execute(
+                                "INSERT OR IGNORE INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
+                                 VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                                params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "malformed_attachments_missing_url"],
+                            )?;
+                            processed = true;
+                        } else if (has_text || !valid_attachments.is_empty()) && !recipient_psid.is_empty() {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
                                  VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
@@ -1044,8 +1078,8 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
-                            let content_type = if has_atts && !has_text {
-                                atts_opt.unwrap().first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file")
+                            let content_type = if !valid_attachments.is_empty() && !has_text {
+                                valid_attachments.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file")
                             } else {
                                 "text"
                             };
@@ -1073,18 +1107,16 @@ impl FacebookSyncWorker {
                             ).optional()?;
 
                             if let Some(msg_id) = msg_id_opt {
-                                if let Some(atts) = atts_opt {
-                                    for att in atts {
-                                        let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
-                                        let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
-                                        let att_title = att.get("title").and_then(|t| t.as_str());
-                                        if !att_url.is_empty() {
-                                            tx.execute(
-                                                "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
-                                                 VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                                params![msg_id, att_type, att_title, att_url],
-                                            )?;
-                                        }
+                                for att in &valid_attachments {
+                                    let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
+                                    let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                    let att_title = att.get("title").and_then(|t| t.as_str());
+                                    if !att_url.is_empty() {
+                                        tx.execute(
+                                            "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
+                                            params![msg_id, att_type, att_title, att_url],
+                                        )?;
                                     }
                                 }
 
