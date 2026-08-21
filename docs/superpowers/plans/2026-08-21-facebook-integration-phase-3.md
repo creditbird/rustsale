@@ -43,6 +43,7 @@ ALTER TABLE meta_data_deletion_requests ENABLE ROW LEVEL SECURITY;
 
 CREATE TABLE IF NOT EXISTS meta_tenant_deletion_tombstones (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    request_id UUID NOT NULL REFERENCES meta_data_deletion_requests(id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     page_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -249,15 +250,18 @@ BEGIN
         VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now());
     END IF;
 
-    -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones not yet completed by this device
+    -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones where this device does not already have an active/completed task
     INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
-    SELECT COALESCE((SELECT r.id FROM public.meta_data_deletion_requests r WHERE r.status = 'processing' LIMIT 1), gen_random_uuid()),
-           t.tenant_id, p_device_id, t.page_id, t.user_id, 'pending'
+    SELECT t.request_id, t.tenant_id, p_device_id, t.page_id, t.user_id, 'pending'
     FROM public.meta_tenant_deletion_tombstones t
     WHERE t.tenant_id = auth.uid()
       AND NOT EXISTS (
           SELECT 1 FROM public.meta_device_deletion_tasks dt
-          WHERE dt.tenant_id = auth.uid() AND dt.device_id = p_device_id AND dt.page_id = t.page_id AND dt.user_id = t.user_id AND dt.status = 'completed'
+          WHERE dt.tenant_id = auth.uid()
+            AND dt.device_id = p_device_id
+            AND dt.page_id = t.page_id
+            AND dt.user_id = t.user_id
+            AND dt.status IN ('pending', 'acknowledged', 'completed')
       );
 
     RETURN TRUE;
@@ -299,10 +303,11 @@ BEGIN
                  AND mupi.page_scoped_user_id = (m->>'psid')
            )
     LOOP
-        -- Persist durable tenant-scoped deletion tombstone for scrub-on-reconnect
-        INSERT INTO public.meta_tenant_deletion_tombstones (tenant_id, page_id, user_id)
-        VALUES (v_tenant_record.tenant_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id)
-        ON CONFLICT (tenant_id, page_id, user_id) DO NOTHING;
+        -- Persist durable tenant-scoped deletion tombstone with authoritative request_id
+        INSERT INTO public.meta_tenant_deletion_tombstones (request_id, tenant_id, page_id, user_id)
+        VALUES (v_request_id, v_tenant_record.tenant_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id)
+        ON CONFLICT (tenant_id, page_id, user_id)
+        DO UPDATE SET request_id = EXCLUDED.request_id, created_at = now();
 
         -- Purge server-side buffered webhooks strictly scoped to this tenant_id and page_id
         DELETE FROM public.meta_webhook_buffer
@@ -424,15 +429,17 @@ async function resolvePsidsForAsid(asid: string): Promise<PageScopedMapping[]> {
       throw new Error(`Meta Graph API ids_for_pages returned HTTP ${res.status}: ${errBody}`);
     }
     const body = await res.json();
-    if (Array.isArray(body?.data)) {
-      for (const item of body.data) {
-        const psid = item?.id ? String(item.id).trim() : "";
-        const pageId = item?.page?.id ? String(item.page.id).trim() : "";
-        // Strict fail-closed validation: Reject mappings missing page_id or psid
-        if (psid && pageId) {
-          mappings.push({ page_id: pageId, psid });
-        }
+    if (!Array.isArray(body?.data)) {
+      throw new Error("Meta Graph API ids_for_pages response is missing data array");
+    }
+    for (const item of body.data) {
+      const psid = item?.id ? String(item.id).trim() : "";
+      const pageId = item?.page?.id ? String(item.page.id).trim() : "";
+      // Strict fail-closed validation: Reject any malformed item
+      if (!psid || !pageId) {
+        throw new Error(`Meta Graph API ids_for_pages returned malformed item without valid id and page.id: ${JSON.stringify(item)}`);
       }
+      mappings.push({ page_id: pageId, psid });
     }
     nextUrl = body?.paging?.next || null;
   }

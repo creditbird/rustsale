@@ -13,10 +13,33 @@
 
 ```rust
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use reqwest::Client;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::facebook::uploader::FacebookUploader;
+
+pub struct FacebookTokenVault;
+
+impl FacebookTokenVault {
+    pub fn get_valid_page_token(conn: &Connection, page_id: &str) -> Result<String> {
+        let encrypted_token: Option<String> = conn.query_row(
+            "SELECT access_token_encrypted FROM facebook_page_tokens WHERE page_id = ?1",
+            params![page_id],
+            |row| row.get(0),
+        ).optional().map_err(|e| anyhow!("DB query failed for page_id {}: {}", page_id, e))?;
+
+        let ciphertext = match encrypted_token {
+            Some(t) if !t.is_empty() => t,
+            _ => return Err(anyhow!("No encrypted token found for page_id: {}", page_id)),
+        };
+
+        // Decrypt ciphertext using local AES-256-GCM + OS-Keyring master key
+        crate::conversation::encryption::decrypt_field(&ciphertext)
+            .map_err(|e| anyhow!("Decryption failed for page_id {}: {}", page_id, e))
+    }
+}
 
 pub struct FacebookPublisher {
     client: Client,
@@ -57,16 +80,20 @@ impl FacebookPublisher {
             None => None,
         };
 
-        // 2. Atomic single-writer claim: Transition strictly from 'queued' to 'publishing'
+        // 2. Atomic single-writer claim: Transition strictly from 'queued' to 'publishing' with lease deadline
         if current_status == "delivery_unknown" {
             return Err(anyhow!("Cannot publish post {}: status is 'delivery_unknown' and must be resolved by reconciler only", post_id));
         }
 
+        let worker_owner = format!("worker_{}", std::process::id());
         let rows_claimed = conn.execute(
             "UPDATE facebook_scheduled_posts
-             SET status = 'publishing', updated_at = datetime('now')
-             WHERE id = ?1 AND status = 'queued'",
-            params![post_id],
+             SET status = 'publishing',
+                 owner_id = ?1,
+                 claim_deadline = datetime('now', '+5 minutes'),
+                 updated_at = datetime('now')
+             WHERE id = ?2 AND status = 'queued'",
+            params![worker_owner, post_id],
         )?;
 
         if rows_claimed != 1 {
@@ -84,16 +111,72 @@ impl FacebookPublisher {
             }
         }
 
+        // Helper macro/closure to ensure post state transitions cleanly on any error or success exit
+        let publish_result = self.execute_publish_network_flow(conn, post_id, &page_id, &post_type, &message, link_url.as_deref(), &media_paths_json, scheduled_publish_time_epoch).await;
+
+        match &publish_result {
+            Ok(remote_post_id) => {
+                conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET status = CASE
+                             WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now')
+                             THEN 'scheduled_on_meta'
+                             ELSE 'published'
+                         END,
+                         remote_post_id = ?1,
+                         error_code = NULL,
+                         error_message = NULL,
+                         owner_id = NULL,
+                         claim_deadline = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?2 AND status = 'publishing'",
+                    params![remote_post_id, post_id],
+                )?;
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                let is_ambiguous = err_str.contains("timeout") || err_str.contains("502") || err_str.contains("503") || err_str.contains("504") || err_str.contains("connection reset");
+                let target_status = if is_ambiguous { "delivery_unknown" } else { "failed" };
+                let error_code = if is_ambiguous { "ambiguous_network_failure" } else { "publish_failed" };
+
+                conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET status = ?1,
+                         error_code = ?2,
+                         error_message = ?3,
+                         owner_id = NULL,
+                         claim_deadline = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?4 AND status = 'publishing'",
+                    params![target_status, error_code, err_str, post_id],
+                )?;
+            }
+        }
+
+        publish_result
+    }
+
+    async fn execute_publish_network_flow(
+        &self,
+        conn: &rusqlite::Connection,
+        post_id: i64,
+        page_id: &str,
+        post_type: &str,
+        message: &str,
+        link_url: Option<&str>,
+        media_paths_json: &str,
+        scheduled_publish_time_epoch: Option<i64>,
+    ) -> Result<String> {
         // 3. Authoritatively fetch and decrypt active Page token via local AES-256-GCM TokenVault helper
-        let page_token = FacebookTokenVault::get_valid_page_token(conn, &page_id)
+        let page_token = FacebookTokenVault::get_valid_page_token(conn, page_id)
             .map_err(|e| anyhow!("Failed to decrypt valid access token for page_id {}: {}", page_id, e))?;
 
-        let media_paths: Vec<String> = serde_json::from_str(&media_paths_json).unwrap_or_default();
+        let media_paths: Vec<String> = serde_json::from_str(media_paths_json).unwrap_or_default();
 
-        let res = match post_type.as_str() {
+        match post_type {
             "status" => {
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut form = vec![("access_token", page_token.as_str()), ("message", message.as_str())];
+                let mut form = vec![("access_token", page_token.as_str()), ("message", message)];
                 let sched_str;
                 if let Some(st) = scheduled_publish_time_epoch {
                     form.push(("published", "false"));
@@ -112,9 +195,9 @@ impl FacebookPublisher {
                 Ok(post_id_val)
             }
             "link" => {
-                let link = link_url.as_deref().ok_or_else(|| anyhow!("Link URL required for link post"))?;
+                let link = link_url.ok_or_else(|| anyhow!("Link URL required for link post"))?;
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
-                let mut form = vec![("access_token", page_token.as_str()), ("message", message.as_str()), ("link", link)];
+                let mut form = vec![("access_token", page_token.as_str()), ("message", message), ("link", link)];
                 let sched_str;
                 if let Some(st) = scheduled_publish_time_epoch {
                     form.push(("published", "false"));
@@ -140,7 +223,7 @@ impl FacebookPublisher {
 
                 let mut multipart = reqwest::multipart::Form::new()
                     .text("access_token", page_token)
-                    .text("caption", message)
+                    .text("caption", message.to_string())
                     .part("source", part);
 
                 if let Some(st) = scheduled_publish_time_epoch {
@@ -193,7 +276,7 @@ impl FacebookPublisher {
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
                 let mut form = vec![
                     ("access_token", page_token.as_str()),
-                    ("message", message.as_str()),
+                    ("message", message),
                     ("attached_media", &attached_str),
                 ];
                 let sched_str;
@@ -216,51 +299,14 @@ impl FacebookPublisher {
             }
             "video" => {
                 let video_path = media_paths.first().ok_or_else(|| anyhow!("Video path required"))?;
-                self.uploader.upload_video_resumable(conn, &page_id, &page_token, video_path, &message, scheduled_publish_time_epoch, post_id).await
+                self.uploader.upload_video_resumable(conn, page_id, &page_token, video_path, message, scheduled_publish_time_epoch, post_id).await
             }
             "reel" => {
                 let reel_path = media_paths.first().ok_or_else(|| anyhow!("Reel path required"))?;
-                self.uploader.upload_reel_resumable(conn, &page_id, &page_token, reel_path, &message, scheduled_publish_time_epoch, post_id).await
+                self.uploader.upload_reel_resumable(conn, page_id, &page_token, reel_path, message, scheduled_publish_time_epoch, post_id).await
             }
             _ => Err(anyhow!("Unsupported post_type '{}' for scheduled post {}", post_type, post_id)),
-        };
-
-        // Post-execution state propagation for direct feeds/photos
-        match &res {
-            Ok(remote_post_id) => {
-                if post_type != "video" && post_type != "reel" {
-                    conn.execute(
-                        "UPDATE facebook_scheduled_posts
-                         SET status = CASE
-                                 WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now')
-                                 THEN 'scheduled_on_meta'
-                                 ELSE 'published'
-                             END,
-                             remote_post_id = ?1,
-                             error_code = NULL,
-                             error_message = NULL,
-                             updated_at = datetime('now')
-                         WHERE id = ?2 AND status = 'publishing'",
-                        params![remote_post_id, post_id],
-                    )?;
-                }
-            }
-            Err(e) => {
-                if post_type != "video" && post_type != "reel" {
-                    conn.execute(
-                        "UPDATE facebook_scheduled_posts
-                         SET status = 'failed',
-                             error_code = 'publish_failed',
-                             error_message = ?1,
-                             updated_at = datetime('now')
-                         WHERE id = ?2 AND status = 'publishing'",
-                        params![e.to_string(), post_id],
-                    )?;
-                }
-            }
         }
-
-        res
     }
 }
 ```
