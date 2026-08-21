@@ -101,15 +101,16 @@ impl CommentEngine {
             return Ok("skipped_outside_7_days".to_string());
         }
 
-        // 3. Atomic claim lock (recoverable lease if failed or expired)
+        // 3. Atomic claim lock with lease deadline
         let tx = conn.transaction()?;
         let rows_affected = tx.execute(
-            "INSERT INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, owner_id, claim_deadline, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'processing', ?5, datetime('now', '+5 minutes'), datetime('now'))
+            "INSERT INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, owner_id, claim_deadline, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'processing', ?5, datetime('now', '+5 minutes'), datetime('now'), datetime('now'))
              ON CONFLICT(comment_id) DO UPDATE SET 
                  private_reply_status = 'processing',
                  owner_id = ?5,
-                 claim_deadline = datetime('now', '+5 minutes')
+                 claim_deadline = datetime('now', '+5 minutes'),
+                 updated_at = datetime('now')
              WHERE private_reply_status = 'failed' 
                 OR (private_reply_status = 'processing' AND claim_deadline < datetime('now'))",
             params![comment_id, page_id, sender_id, comment_text, worker_id],
@@ -120,8 +121,8 @@ impl CommentEngine {
         }
         tx.commit()?;
 
-        // 4. Call Meta Send API with recipient.comment_id
-        let client = Client::new();
+        // 4. Call Meta Send API
+        let client = Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
         let url = format!("https://graph.facebook.com/v26.0/{}/messages", page_id);
         let body = json!({
             "recipient": { "comment_id": comment_id },
@@ -138,23 +139,23 @@ impl CommentEngine {
         match resp {
             Ok(r) if r.status().is_success() => {
                 conn.execute(
-                    "UPDATE facebook_comment_logs SET private_reply_status = 'success' WHERE comment_id = ?1",
-                    params![comment_id],
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'success', updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
+                    params![comment_id, worker_id],
                 )?;
                 Ok("replied_successfully".to_string())
             }
             Ok(r) => {
                 let err_text = r.text().await.unwrap_or_default();
                 conn.execute(
-                    "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2 WHERE comment_id = ?1",
-                    params![comment_id, err_text],
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
+                    params![comment_id, err_text, worker_id],
                 )?;
                 Err(anyhow!("Send API failed: {}", err_text))
             }
             Err(e) => {
                 conn.execute(
-                    "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', error_message = ?2 WHERE comment_id = ?1",
-                    params![comment_id, e.to_string()],
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
+                    params![comment_id, e.to_string(), worker_id],
                 )?;
                 Err(anyhow!("Network timeout / transport failure: {}", e))
             }
@@ -282,7 +283,7 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wi
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const META_APP_SECRET = Deno.env.get("META_APP_SECRET") || "";
+const META_APP_SECRET = Deno.env.get("META_APP_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
@@ -301,34 +302,40 @@ function base64UrlDecode(input: string): Uint8Array {
 }
 
 async function verifySignedRequest(signedRequest: string): Promise<any | null> {
+  if (!META_APP_SECRET) return null;
   const parts = signedRequest.split(".");
   if (parts.length !== 2) return null;
 
   const [encodedSig, encodedPayload] = parts;
-  const sigBytes = base64UrlDecode(encodedSig);
-  const payloadBytes = base64UrlDecode(encodedPayload);
+  try {
+    const sigBytes = base64UrlDecode(encodedSig);
+    const payloadBytes = base64UrlDecode(encodedPayload);
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(META_APP_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"]
-  );
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(META_APP_SECRET),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
 
-  const isValid = await crypto.subtle.verify(
-    "HMAC",
-    key,
-    sigBytes,
-    new TextEncoder().encode(encodedPayload)
-  );
+    const isValid = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      sigBytes,
+      new TextEncoder().encode(encodedPayload)
+    );
 
-  if (!isValid) return null;
-  return JSON.parse(new TextDecoder().decode(payloadBytes));
+    if (!isValid) return null;
+    return JSON.parse(new TextDecoder().decode(payloadBytes));
+  } catch {
+    return null;
+  }
 }
 
 serve(async (req: Request) => {
   if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  if (!META_APP_SECRET) return new Response("Configuration Error: META_APP_SECRET not set", { status: 500 });
 
   const formData = await req.formData();
   const signedRequest = formData.get("signed_request") as string;
@@ -342,12 +349,16 @@ serve(async (req: Request) => {
   const userId = data.user_id;
   const confirmationCode = crypto.randomUUID();
 
-  // Persist deletion request in Supabase
-  await supabaseAdmin.from("data_deletion_requests").insert({
+  const { error } = await supabaseAdmin.from("data_deletion_requests").insert({
     user_id: userId,
     confirmation_code: confirmationCode,
     status: "pending",
   });
+
+  if (error) {
+    console.error("Database persistence error for deletion request:", error);
+    return new Response("Database error", { status: 500 });
+  }
 
   return new Response(JSON.stringify({
     url: `https://rustsale.trantrongtri.com/deletion-status?id=${confirmationCode}`,

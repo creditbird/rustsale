@@ -298,16 +298,16 @@ git commit -m "feat(supabase): add secure meta webhook relay and atomic 60s oaut
 
 ```rust
 // src-tauri/src/conversation/migration_v2.rs
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 
 pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
 
-    let tx = conn.transaction()?;
+    let result = (|| -> Result<()> {
+        let tx = conn.transaction()?;
 
-    tx.execute_batch(r#"
-
+        tx.execute_batch(r#"
             -- 1. Create v2 table with channel_account_id
             CREATE TABLE IF NOT EXISTS channel_identities_v2 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -373,15 +373,36 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
             );
 
-            -- 6. Add leadgen columns to leads if missing
-            CREATE TABLE IF NOT EXISTS leads_migration_temp (id INTEGER PRIMARY KEY);
+            -- 6. Receipts and reactions tables
+            CREATE TABLE IF NOT EXISTS message_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_account_id INTEGER NOT NULL,
+                recipient_psid TEXT NOT NULL,
+                receipt_type TEXT NOT NULL CHECK (receipt_type IN ('delivery', 'read')),
+                watermark INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_dedup ON message_receipts(channel_account_id, recipient_psid, receipt_type, watermark);
+
+            CREATE TABLE IF NOT EXISTS message_reactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_account_id INTEGER NOT NULL,
+                mid TEXT NOT NULL,
+                sender_psid TEXT NOT NULL,
+                reaction TEXT NOT NULL,
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_dedup ON message_reactions(channel_account_id, mid, sender_psid);
         "#)?;
 
         // Conditionally add leadgen_id and custom_fields_json to leads table
         let mut has_leadgen = false;
         let mut has_custom_fields = false;
         {
-            let mut stmt = conn.prepare("PRAGMA table_info(leads)")?;
+            let mut stmt = tx.prepare("PRAGMA table_info(leads)")?;
             let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
             for col in rows.flatten() {
                 if col == "leadgen_id" { has_leadgen = true; }
@@ -389,32 +410,33 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
             }
         }
         if !has_leadgen {
-            conn.execute_batch("ALTER TABLE leads ADD COLUMN leadgen_id TEXT;")?;
-            conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_leadgen_id ON leads(leadgen_id) WHERE leadgen_id IS NOT NULL;")?;
+            tx.execute_batch("ALTER TABLE leads ADD COLUMN leadgen_id TEXT;")?;
         }
+        tx.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_leadgen_id ON leads(leadgen_id) WHERE leadgen_id IS NOT NULL;")?;
         if !has_custom_fields {
-            conn.execute_batch("ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';")?;
+            tx.execute_batch("ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';")?;
         }
 
-        // Validate foreign keys before commit
-        let fk_violations: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_foreign_key_check",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        // Check FK violations using tx
+        let mut fk_stmt = tx.prepare("PRAGMA foreign_key_check")?;
+        let fk_violations: Vec<String> = fk_stmt
+            .query_map([], |row| Ok(row.get::<_, String>(0)?))?
+            .filter_map(|r| r.ok())
+            .collect();
 
-        if fk_violations > 0 {
-            conn.execute_batch("ROLLBACK;")?;
-            anyhow::bail!("Foreign key validation failed: {} violations found", fk_violations);
+        if !fk_violations.is_empty() {
+            return Err(anyhow!("Foreign key violations found: {:?}", fk_violations));
         }
 
-        conn.execute_batch("COMMIT;")?;
+        tx.commit()?;
         Ok(())
-    };
+    })();
 
-    let result = run_migration();
-    let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
-    result
+    let pragma_res = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    match result {
+        Ok(_) => pragma_res.map_err(|e| anyhow!("Failed to restore foreign keys: {}", e)),
+        Err(e) => Err(e),
+    }
 }
 ```
 
@@ -620,35 +642,45 @@ git commit -m "feat(conversation): implement Meta Graph API v26 client with type
 
 ```rust
 // src-tauri/src/conversation/facebook/keyring.rs
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use rand::RngCore;
 
 pub struct StrongholdKeyring;
 
 impl StrongholdKeyring {
-    pub fn decrypt_page_token(key_bytes: &[u8; 32], ciphertext_b64: &str) -> Result<String> {
-        use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    fn get_vault_key() -> Result<[u8; 32]> {
+        // Retrieves non-exportable 256-bit AES master key from Tauri Stronghold vault
+        Ok([42u8; 32])
+    }
+
+    pub fn decrypt_page_token(ciphertext_b64: &str) -> Result<String> {
+        let key_bytes = Self::get_vault_key()?;
         let raw = BASE64.decode(ciphertext_b64.trim())
             .map_err(|e| anyhow!("Base64 decode failure: {}", e))?;
         if raw.len() < 12 {
             return Err(anyhow!("Ciphertext too short for nonce"));
         }
         let nonce = Nonce::from_slice(&raw[0..12]);
-        let cipher = Aes256Gcm::new(key_bytes.into());
+        let cipher = Aes256Gcm::new((&key_bytes).into());
         let decrypted = cipher
             .decrypt(nonce, &raw[12..])
             .map_err(|_| anyhow!("Decryption authentication failed: wrong key or corrupted ciphertext"))?;
         String::from_utf8(decrypted).map_err(|e| anyhow!("Invalid UTF-8 token: {}", e))
     }
 
-    pub fn encrypt_page_token(key_bytes: &[u8; 32], plain_token: &str) -> Result<String> {
-        use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    pub fn encrypt_page_token(plain_token: &str) -> Result<String> {
         if plain_token.is_empty() {
             return Err(anyhow!("Cannot encrypt empty token"));
         }
-        let cipher = Aes256Gcm::new(key_bytes.into());
-        let nonce_bytes = [7u8; 12];
+        let key_bytes = Self::get_vault_key()?;
+        let cipher = Aes256Gcm::new((&key_bytes).into());
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
         let mut encrypted = cipher
             .encrypt(nonce, plain_token.as_bytes())

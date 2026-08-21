@@ -251,10 +251,14 @@ impl FacebookMediaUploader {
             let end = std::cmp::min(offset + chunk_size, file_size);
             let chunk = &video_bytes[offset as usize..end as usize];
             let next = self.transfer_video_chunk(page_id, &session_id, offset, chunk.to_vec()).await?;
-            if next <= offset {
-                anyhow::bail!("Non-monotonic offset returned during resumable upload: {} -> {}", offset, next);
+            if next <= offset || next > file_size {
+                anyhow::bail!("Invalid offset progression during upload: {} -> {}", offset, next);
             }
             offset = next;
+        }
+
+        if offset != file_size {
+            anyhow::bail!("Upload did not reach full file size: {} != {}", offset, file_size);
         }
 
         self.finish_resumable_video_session(page_id, &session_id, title, description, scheduled_publish_time).await
@@ -302,18 +306,6 @@ impl FacebookMediaUploader {
         let resp_fin = self.http.post(&url_init).bearer_auth(&self.token).form(&finish_params).send().await?;
         let fin_body: Value = resp_fin.json().await?;
         fin_body.get("success").and_then(|v| v.as_bool()).filter(|b| *b).map(|_| video_id.to_string()).ok_or_else(|| anyhow!("Reel finish failed: {:?}", fin_body))
-    }
-
-    pub async fn publish_reel(
-        &self,
-        page_id: &str,
-        video_bytes: Vec<u8>,
-        description: &str,
-        scheduled_publish_time: Option<i64>,
-    ) -> Result<String> {
-        let (session_id, _) = self.start_resumable_video_session(page_id, video_bytes.len() as u64).await?;
-        let _ = self.transfer_video_chunk(page_id, &session_id, 0, video_bytes).await?;
-        self.finish_resumable_video_session(page_id, &session_id, "Reel", description, scheduled_publish_time).await
     }
 }
 ```
