@@ -38,11 +38,11 @@ CREATE TABLE IF NOT EXISTS channel_identities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique 
-ON channel_identities(channel, identity_namespace, external_id) 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique
+ON channel_identities(channel, identity_namespace, external_id)
 WHERE channel_account_id IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique 
-ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique
+ON channel_identities(channel, channel_account_id, identity_namespace, external_id)
 WHERE channel_account_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS channel_conversations (
@@ -444,6 +444,7 @@ CREATE INDEX IF NOT EXISTS idx_dead_letters_status ON channel_sync_dead_letters(
 -- Facebook Phase 2 & 3 Tables
 CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER REFERENCES facebook_scheduled_posts(id) ON DELETE SET NULL,
     page_id TEXT NOT NULL,
     upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
     upload_session_id TEXT NOT NULL UNIQUE,
@@ -453,6 +454,8 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     file_size_bytes INTEGER NOT NULL,
     start_offset INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'finishing', 'completed', 'failed')),
+    owner_id TEXT,
+    lease_deadline TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

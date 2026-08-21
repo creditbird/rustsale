@@ -104,7 +104,7 @@ BEGIN
         WHERE t.tenant_id = auth.uid()
           AND t.device_id = p_device_id
           AND (
-              t.status = 'pending' 
+              t.status = 'pending'
               OR (t.status = 'acknowledged' AND t.acknowledged_at < now() - (p_lease_seconds || ' seconds')::INTERVAL)
           )
         ORDER BY t.created_at ASC
@@ -239,7 +239,8 @@ GRANT EXECUTE ON FUNCTION register_or_heartbeat_device, claim_device_deletion_ta
 
 CREATE OR REPLACE FUNCTION create_data_deletion_request_and_tasks(
     p_confirmation_code TEXT,
-    p_user_id TEXT
+    p_user_id TEXT,
+    p_target_user_ids TEXT[] DEFAULT ARRAY[]::TEXT[]
 )
 RETURNS UUID
 LANGUAGE plpgsql
@@ -248,37 +249,48 @@ SET search_path = public, auth, pg_temp
 AS $$
 DECLARE
     v_request_id UUID;
-    v_tenant_id UUID;
+    v_tenant_record RECORD;
     v_device_record RECORD;
     v_has_active_devices BOOLEAN := FALSE;
+    v_all_ids TEXT[];
 BEGIN
     INSERT INTO public.meta_data_deletion_requests (confirmation_code, user_id, status)
     VALUES (p_confirmation_code, p_user_id, 'processing')
     RETURNING id INTO v_request_id;
 
-    -- Purge server-side buffered webhooks across all possible shapes
-    DELETE FROM public.meta_webhook_buffer
-    WHERE payload->'sender'->>'id' = p_user_id
-       OR payload->'recipient'->>'id' = p_user_id
-       OR payload->'from'->>'id' = p_user_id
-       OR payload->'value'->'from'->>'id' = p_user_id
-       OR payload->'value'->'sender'->>'id' = p_user_id;
+    -- Combine root ASID with all resolved Page-scoped PSIDs
+    v_all_ids := ARRAY(SELECT DISTINCT unnest(array_append(p_target_user_ids, p_user_id)));
 
-    -- Fan out tasks to all active registered tenant devices (last seen within 30 days)
-    FOR v_tenant_id IN 
-        SELECT DISTINCT tenant_id FROM public.meta_user_page_interactions WHERE user_id = p_user_id
+    -- Purge server-side buffered webhooks across all possible shapes and matched IDs
+    DELETE FROM public.meta_webhook_buffer
+    WHERE payload->'sender'->>'id' = ANY(v_all_ids)
+       OR payload->'recipient'->>'id' = ANY(v_all_ids)
+       OR payload->'from'->>'id' = ANY(v_all_ids)
+       OR payload->'value'->'from'->>'id' = ANY(v_all_ids)
+       OR payload->'value'->'sender'->>'id' = ANY(v_all_ids)
+       OR payload->'value'->>'sender_id' = ANY(v_all_ids)
+       OR payload->'value'->>'user_id' = ANY(v_all_ids);
+
+    -- Fan out tasks to all active registered tenant devices (last seen within 30 days) for all matching tenants
+    FOR v_tenant_record IN
+        SELECT DISTINCT tenant_id, page_scoped_user_id
+        FROM public.meta_user_page_interactions
+        WHERE app_user_id = ANY(v_all_ids) OR page_scoped_user_id = ANY(v_all_ids)
     LOOP
-        FOR v_device_record IN 
-            SELECT device_id FROM public.tenant_registered_devices 
-            WHERE tenant_id = v_tenant_id AND last_seen_at >= now() - INTERVAL '30 days'
+        FOR v_device_record IN
+            SELECT device_id FROM public.tenant_registered_devices
+            WHERE tenant_id = v_tenant_record.tenant_id AND last_seen_at >= now() - INTERVAL '30 days'
         LOOP
             v_has_active_devices := TRUE;
+            -- Fan out deletion task for the specific PSID to be scrubbed on desktop SQLite
             INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, user_id, status)
-            VALUES (v_request_id, v_tenant_id, v_device_record.device_id, p_user_id, 'pending');
+            VALUES (v_request_id, v_tenant_record.tenant_id, v_device_record.device_id, v_tenant_record.page_scoped_user_id, 'pending');
         END LOOP;
-
-        DELETE FROM public.meta_user_page_interactions WHERE tenant_id = v_tenant_id AND user_id = p_user_id;
     END LOOP;
+
+    -- Clean up interaction records
+    DELETE FROM public.meta_user_page_interactions
+    WHERE app_user_id = ANY(v_all_ids) OR page_scoped_user_id = ANY(v_all_ids);
 
     -- If no active devices require local anonymization, mark request completed immediately
     IF NOT v_has_active_devices THEN
@@ -301,6 +313,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const META_APP_ID = Deno.env.get("META_APP_ID")!;
 const META_APP_SECRET = Deno.env.get("META_APP_SECRET")!;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -344,6 +357,27 @@ async function parseAndVerifySignedRequest(signedRequest: string, appSecret: str
   }
 }
 
+async function resolvePsidsForAsid(asid: string): Promise<string[]> {
+  const psids: string[] = [];
+  if (!META_APP_ID || !META_APP_SECRET) return psids;
+
+  try {
+    const appToken = `${META_APP_ID}|${META_APP_SECRET}`;
+    const res = await fetch(`https://graph.facebook.com/v26.0/${asid}/ids_for_pages?access_token=${appToken}`);
+    if (res.ok) {
+      const body = await res.json();
+      if (Array.isArray(body?.data)) {
+        for (const item of body.data) {
+          if (item?.id) psids.push(String(item.id));
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to query Meta ids_for_pages for ASID:", err);
+  }
+  return psids;
+}
+
 serve(async (req: Request) => {
   const url = new URL(req.url);
 
@@ -359,9 +393,13 @@ serve(async (req: Request) => {
     const userId = data.user_id;
     const confirmationCode = crypto.randomUUID();
 
+    // Authoritatively resolve all Page-Scoped IDs (PSIDs) associated with this App-Scoped ID (ASID)
+    const resolvedPsids = await resolvePsidsForAsid(userId);
+
     const { error: deletionRpcError } = await supabaseAdmin.rpc("create_data_deletion_request_and_tasks", {
       p_confirmation_code: confirmationCode,
       p_user_id: userId,
+      p_target_user_ids: resolvedPsids,
     });
 
     if (deletionRpcError) {
@@ -527,7 +565,7 @@ pub async fn process_pending_device_tasks(
 
             // Wipe all attachment identifiers, remote URLs, and metadata
             tx.execute(
-                "UPDATE message_attachments 
+                "UPDATE message_attachments
                  SET provider_attachment_id = NULL,
                      remote_url = NULL,
                      thumbnail_url = NULL,
@@ -548,8 +586,8 @@ pub async fn process_pending_device_tasks(
 
             // Scrub residual user identifiers across Messenger reactions, receipts, pending reactions, and mentions
             tx.execute(
-                "DELETE FROM message_reactions 
-                 WHERE actor_external_id = ?1 
+                "DELETE FROM message_reactions
+                 WHERE actor_external_id = ?1
                    AND message_id IN (
                        SELECT m.id FROM messages m
                        JOIN channel_conversations cc ON m.conversation_id = cc.id
@@ -559,8 +597,8 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
             tx.execute(
-                "DELETE FROM message_receipts 
-                 WHERE recipient_external_id = ?1 
+                "DELETE FROM message_receipts
+                 WHERE recipient_external_id = ?1
                    AND message_id IN (
                        SELECT m.id FROM messages m
                        JOIN channel_conversations cc ON m.conversation_id = cc.id
@@ -570,15 +608,15 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
             tx.execute(
-                "DELETE FROM pending_message_reactions 
-                 WHERE actor_external_id = ?1 
+                "DELETE FROM pending_message_reactions
+                 WHERE actor_external_id = ?1
                    AND channel_account_id IN (
                        SELECT id FROM channel_accounts WHERE channel = 'messenger'
                    )",
                 [user_id],
             )?;
             tx.execute(
-                "DELETE FROM message_mentions 
+                "DELETE FROM message_mentions
                  WHERE (external_id = ?1 OR identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1))
                    AND message_id IN (
                        SELECT m.id FROM messages m
@@ -595,7 +633,7 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
 
-            // Scrub channel sync dead letters for this Messenger user
+            // Scrub channel sync dead letters for this Messenger user across all structured payload shapes
             tx.execute(
                 "DELETE FROM channel_sync_dead_letters
                  WHERE channel_account_id IN (
@@ -604,15 +642,25 @@ pub async fn process_pending_device_tasks(
                      event_key = ?1
                      OR json_extract(payload_json, '$.sender.id') = ?1
                      OR json_extract(payload_json, '$.recipient.id') = ?1
+                     OR json_extract(payload_json, '$.from.id') = ?1
+                     OR json_extract(payload_json, '$.sender_id') = ?1
+                     OR json_extract(payload_json, '$.user_id') = ?1
+                     OR json_extract(payload_json, '$.value.from.id') = ?1
+                     OR json_extract(payload_json, '$.value.sender_id') = ?1
+                     OR json_extract(payload_json, '$.value.user_id') = ?1
+                     OR json_extract(payload_json, '$.value.sender.id') = ?1
                      OR json_extract(payload_json, '$.entry[0].messaging[0].sender.id') = ?1
                      OR json_extract(payload_json, '$.entry[0].messaging[0].recipient.id') = ?1
+                     OR json_extract(payload_json, '$.entry[0].changes[0].value.from.id') = ?1
+                     OR json_extract(payload_json, '$.entry[0].changes[0].value.sender_id') = ?1
+                     OR json_extract(payload_json, '$.entry[0].changes[0].value.user_id') = ?1
                  )",
                 [user_id],
             )?;
 
             // Redact messages
             tx.execute(
-                "UPDATE messages 
+                "UPDATE messages
                  SET text_content = '[Deleted for Compliance]',
                      content_json = '{\"type\":\"text\",\"text\":\"[Deleted for Compliance]\"}',
                      raw_payload_json = NULL
@@ -628,14 +676,14 @@ pub async fn process_pending_device_tasks(
 
             // Anonymize identity including external_id tombstone (without nonexistent metadata_json column)
             tx.execute(
-                "UPDATE channel_identities 
-                 SET display_name = 'Deleted User', 
-                     avatar_url = NULL, 
+                "UPDATE channel_identities
+                 SET display_name = 'Deleted User',
+                     avatar_url = NULL,
                      normalized_address = NULL,
                      external_id = 'deleted_' || id || '_' || hex(randomblob(4)),
                      profile_synced_at = datetime('now'),
                      profile_sync_error = NULL,
-                     updated_at = datetime('now') 
+                     updated_at = datetime('now')
                  WHERE channel = 'messenger' AND external_id = ?1",
                 [user_id],
             )?;

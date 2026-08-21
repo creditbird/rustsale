@@ -41,6 +41,7 @@ impl FacebookPublisher {
         link_url: Option<&str>,
         media_paths: &[String],
         scheduled_publish_time: Option<i64>,
+        post_id: Option<i64>,
     ) -> Result<String> {
         match post_type {
             "status" => {
@@ -57,11 +58,11 @@ impl FacebookPublisher {
                     return Err(anyhow!("Status post failed: {}", resp.text().await?));
                 }
                 let json: Value = resp.json().await?;
-                let post_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if post_id.is_empty() {
+                let post_id_val = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id_val.is_empty() {
                     return Err(anyhow!("Empty post ID returned from Meta"));
                 }
-                Ok(post_id)
+                Ok(post_id_val)
             }
             "link" => {
                 let link = link_url.ok_or_else(|| anyhow!("Link URL required for link post"))?;
@@ -78,11 +79,11 @@ impl FacebookPublisher {
                     return Err(anyhow!("Link post failed: {}", resp.text().await?));
                 }
                 let json: Value = resp.json().await?;
-                let post_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if post_id.is_empty() {
+                let post_id_val = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id_val.is_empty() {
                     return Err(anyhow!("Empty post ID returned from Meta"));
                 }
-                Ok(post_id)
+                Ok(post_id_val)
             }
             "photo" => {
                 let photo_path = media_paths.first().ok_or_else(|| anyhow!("At least 1 photo path required"))?;
@@ -105,11 +106,11 @@ impl FacebookPublisher {
                     return Err(anyhow!("Photo post failed: {}", resp.text().await?));
                 }
                 let json: Value = resp.json().await?;
-                let post_id = json.get("post_id").or_else(|| json.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if post_id.is_empty() {
+                let post_id_val = json.get("post_id").or_else(|| json.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id_val.is_empty() {
                     return Err(anyhow!("Empty post ID returned from Meta"));
                 }
-                Ok(post_id)
+                Ok(post_id_val)
             }
             "multi_photo" => {
                 if media_paths.len() < 2 {
@@ -129,14 +130,17 @@ impl FacebookPublisher {
                     let url = format!("https://graph.facebook.com/v26.0/{}/photos", page_id);
                     let resp = self.client.post(&url).multipart(multipart).send().await?;
                     if !resp.status().is_success() {
-                        return Err(anyhow!("Multi-photo item upload failed: {}", resp.text().await?));
+                        return Err(anyhow!("Multi-photo stage upload failed: {}", resp.text().await?));
                     }
                     let json: Value = resp.json().await?;
-                    let fbid = json.get("id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing photo id"))?;
+                    let fbid = json.get("id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing media id"))?;
                     media_fbids.push(fbid.to_string());
                 }
 
-                let attached_media: Vec<Value> = media_fbids.iter().map(|id| json!({ "media_fbid": id })).collect();
+                let attached_media: Vec<Value> = media_fbids
+                    .into_iter()
+                    .map(|id| json!({ "media_fbid": id }))
+                    .collect();
                 let attached_str = serde_json::to_string(&attached_media)?;
 
                 let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
@@ -157,19 +161,19 @@ impl FacebookPublisher {
                     return Err(anyhow!("Multi-photo feed post failed: {}", resp.text().await?));
                 }
                 let json: Value = resp.json().await?;
-                let post_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if post_id.is_empty() {
+                let post_id_val = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if post_id_val.is_empty() {
                     return Err(anyhow!("Empty post ID returned from Meta"));
                 }
-                Ok(post_id)
+                Ok(post_id_val)
             }
             "video" => {
                 let video_path = media_paths.first().ok_or_else(|| anyhow!("Video path required"))?;
-                self.uploader.upload_video_resumable(conn, page_id, page_token, video_path, message, scheduled_publish_time).await
+                self.uploader.upload_video_resumable(conn, page_id, page_token, video_path, message, scheduled_publish_time, post_id).await
             }
             "reel" => {
                 let reel_path = media_paths.first().ok_or_else(|| anyhow!("Reel path required"))?;
-                self.uploader.upload_reel_resumable(conn, page_id, page_token, reel_path, message, scheduled_publish_time).await
+                self.uploader.upload_reel_resumable(conn, page_id, page_token, reel_path, message, scheduled_publish_time, post_id).await
             }
             _ => Err(anyhow!("Unsupported post type: {}", post_type)),
         }
@@ -222,6 +226,7 @@ impl FacebookUploader {
         file_path: &str,
         description: &str,
         scheduled_publish_time: Option<i64>,
+        post_id: Option<i64>,
     ) -> Result<String> {
         let file_meta = tokio::fs::metadata(file_path).await?;
         let file_size = file_meta.len();
@@ -229,8 +234,8 @@ impl FacebookUploader {
 
         // 1. Check existing in-progress or finishing session in facebook_upload_sessions with content hash verification
         let existing_session: Option<(String, String, u64, String)> = match conn.query_row(
-            "SELECT upload_session_id, video_id, start_offset, status 
-             FROM facebook_upload_sessions 
+            "SELECT upload_session_id, video_id, start_offset, status
+             FROM facebook_upload_sessions
              WHERE page_id = ?1 AND upload_type = 'video' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status IN ('in_progress', 'finishing')",
             params![page_id, file_path, file_size as i64, file_hash],
             |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64, r.get(3)?)),
@@ -323,10 +328,17 @@ impl FacebookUploader {
             let vid_id = start_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?.to_string();
 
             conn.execute(
-                "INSERT INTO facebook_upload_sessions (page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
-                 VALUES (?1, 'video', ?2, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
-                params![page_id, sess_id, vid_id, file_path, file_hash, file_size as i64],
+                "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'video', ?3, ?4, ?5, ?6, ?7, 0, 'in_progress', datetime('now'), datetime('now'))",
+                params![post_id, page_id, sess_id, vid_id, file_path, file_hash, file_size as i64],
             )?;
+
+            if let Some(pid) = post_id {
+                conn.execute(
+                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
+                    params![sess_id, pid],
+                )?;
+            }
 
             (sess_id, vid_id, 0u64)
         };
@@ -451,14 +463,15 @@ impl FacebookUploader {
         file_path: &str,
         description: &str,
         scheduled_publish_time: Option<i64>,
+        post_id: Option<i64>,
     ) -> Result<String> {
         let file_meta = tokio::fs::metadata(file_path).await?;
         let file_size = file_meta.len();
         let file_hash = Self::compute_file_hash(file_path).await?;
 
         let existing_session: Option<(String, u64, String)> = match conn.query_row(
-            "SELECT video_id, start_offset, status 
-             FROM facebook_upload_sessions 
+            "SELECT video_id, start_offset, status
+             FROM facebook_upload_sessions
              WHERE page_id = ?1 AND upload_type = 'reel' AND file_path = ?2 AND file_size_bytes = ?3 AND file_hash = ?4 AND status IN ('in_progress', 'finishing')",
             params![page_id, file_path, file_size as i64, file_hash],
             |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, r.get(2)?)),
@@ -555,10 +568,18 @@ impl FacebookUploader {
             let vid_id = init_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?.to_string();
 
             conn.execute(
-                "INSERT INTO facebook_upload_sessions (page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
-                 VALUES (?1, 'reel', ?2, ?2, ?3, ?4, ?5, 0, 'in_progress', datetime('now'), datetime('now'))",
-                params![page_id, vid_id, file_path, file_hash, file_size as i64],
+                "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'reel', ?3, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
+                params![post_id, page_id, vid_id, file_path, file_hash, file_size as i64],
             )?;
+
+            if let Some(pid) = post_id {
+                conn.execute(
+                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
+                    params![vid_id, pid],
+                )?;
+            }
+
             (vid_id, 0u64)
         };
 
@@ -682,9 +703,43 @@ impl FacebookUploader {
 
 - **Promotion Worker:** Claims rows with `status='queued'`, queries `facebook_page_tokens` for the specific claimed row's `page_id`, strictly parses RFC3339 timestamp (failing closed with `error_code='invalid_timestamp'` on parse failure), and sets `delivery_unknown` on transport timeout or 5xx.
 - **Reconciliation Engine:** Periodically claims `delivery_unknown` rows. Queries Graph API `/scheduled_posts` and `/feed` with pagination. Matches post type against Graph `status_type`, computes message SHA-256 hash, and verifies timestamp within 60s window. Sets `status='published'` for `/feed` matches and `status='scheduled_on_meta'` for `/scheduled_posts`.
-- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` via atomic state transition:
-  `UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE id = (SELECT id FROM facebook_upload_sessions WHERE status = 'finishing' AND updated_at < datetime('now', '-30 seconds') LIMIT 1) RETURNING upload_session_id, upload_type, page_id, video_id;`
+- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` via atomic lease token claim:
+  ```sql
+  UPDATE facebook_upload_sessions
+  SET owner_id = ?1,
+      lease_deadline = datetime('now', '+60 seconds'),
+      updated_at = datetime('now')
+  WHERE id = (
+      SELECT id FROM facebook_upload_sessions
+      WHERE status = 'finishing'
+        AND (lease_deadline IS NULL OR lease_deadline < datetime('now'))
+      LIMIT 1
+  ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id;
+  ```
   Queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels).
-  - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel): transitions upload session to `status = 'completed'` and atomically updates associated `facebook_scheduled_posts` to `status = 'published'` (or `scheduled_on_meta`).
-  - On authoritative terminal failure: transitions upload session to `status = 'failed'` and associated post to `status = 'failed'`.
-  - On non-terminal processing state: leaves session in `finishing` with refreshed `updated_at`.
+  - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel):
+    ```sql
+    UPDATE facebook_upload_sessions
+    SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+    WHERE id = ?1;
+
+    UPDATE facebook_scheduled_posts
+    SET status = 'published', remote_post_id = ?2, error_code = NULL, error_message = NULL, updated_at = datetime('now')
+    WHERE id = ?3 OR upload_session_id = ?4;
+    ```
+  - On authoritative terminal failure:
+    ```sql
+    UPDATE facebook_upload_sessions
+    SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+    WHERE id = ?1;
+
+    UPDATE facebook_scheduled_posts
+    SET status = 'failed', error_code = 'upload_failed', error_message = ?2, updated_at = datetime('now')
+    WHERE id = ?3 OR upload_session_id = ?4;
+    ```
+  - On non-terminal processing state:
+    ```sql
+    UPDATE facebook_upload_sessions
+    SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+    WHERE id = ?1;
+    ```

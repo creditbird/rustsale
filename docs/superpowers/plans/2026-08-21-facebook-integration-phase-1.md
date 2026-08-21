@@ -335,10 +335,13 @@ CREATE TABLE IF NOT EXISTS meta_user_page_interactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     page_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
+    app_user_id TEXT,
+    page_scoped_user_id TEXT NOT NULL,
     last_interaction_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE(tenant_id, page_id, user_id)
+    UNIQUE(tenant_id, page_id, page_scoped_user_id)
 );
+CREATE INDEX IF NOT EXISTS idx_meta_interactions_asid ON meta_user_page_interactions(tenant_id, app_user_id);
+CREATE INDEX IF NOT EXISTS idx_meta_interactions_psid ON meta_user_page_interactions(tenant_id, page_scoped_user_id);
 ALTER TABLE meta_user_page_interactions ENABLE ROW LEVEL SECURITY;
 
 CREATE TABLE IF NOT EXISTS meta_lead_page_interactions (
@@ -382,9 +385,9 @@ BEGIN
 
     FOR v_inter IN SELECT * FROM jsonb_to_recordset(p_interactions) AS (user_id TEXT, timestamp TIMESTAMPTZ)
     LOOP
-        INSERT INTO public.meta_user_page_interactions (tenant_id, page_id, user_id, last_interaction_at)
+        INSERT INTO public.meta_user_page_interactions (tenant_id, page_id, page_scoped_user_id, last_interaction_at)
         VALUES (p_tenant_id, p_page_id, v_inter.user_id, v_inter.timestamp)
-        ON CONFLICT (tenant_id, page_id, user_id) 
+        ON CONFLICT (tenant_id, page_id, page_scoped_user_id)
         DO UPDATE SET last_interaction_at = GREATEST(meta_user_page_interactions.last_interaction_at, EXCLUDED.last_interaction_at);
     END LOOP;
 
