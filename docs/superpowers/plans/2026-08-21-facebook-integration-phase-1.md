@@ -318,6 +318,10 @@ CREATE TABLE IF NOT EXISTS meta_webhook_buffer (
 );
 ALTER TABLE meta_webhook_buffer ENABLE ROW LEVEL SECURITY;
 
+CREATE POLICY "Tenants read and ack own buffered events" ON meta_webhook_buffer
+    FOR ALL USING (auth.uid() = tenant_id)
+    WITH CHECK (auth.uid() = tenant_id);
+
 CREATE TABLE IF NOT EXISTS meta_user_page_interactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -461,18 +465,17 @@ serve(async (req: Request) => {
 
     for (const entry of payload.entry || []) {
       const pageId = entry.id;
-      const { data: pageMapping, error: pageMappingError } = await supabaseAdmin
+      const { data: pageMappings, error: pageMappingError } = await supabaseAdmin
         .from("meta_tenant_pages")
         .select("tenant_id")
-        .eq("page_id", pageId)
-        .maybeSingle();
+        .eq("page_id", pageId);
 
       if (pageMappingError) {
         console.error("Failed to query meta_tenant_pages mapping:", pageMappingError);
         return new Response("Internal Server Error: Page mapping query failed", { status: 500 });
       }
 
-      if (!pageMapping) continue;
+      if (!pageMappings || pageMappings.length === 0) continue;
 
       const events: any[] = [];
       const interactions: any[] = [];
@@ -528,17 +531,19 @@ serve(async (req: Request) => {
       }
 
       if (events.length > 0) {
-        const { error: rpcError } = await supabaseAdmin.rpc("ingest_meta_webhook_batch", {
-          p_tenant_id: pageMapping.tenant_id,
-          p_page_id: pageId,
-          p_events: events,
-          p_interactions: interactions,
-          p_lead_interactions: leadInteractions,
-        });
+        for (const mapping of pageMappings) {
+          const { error: rpcError } = await supabaseAdmin.rpc("ingest_meta_webhook_batch", {
+            p_tenant_id: mapping.tenant_id,
+            p_page_id: pageId,
+            p_events: events,
+            p_interactions: interactions,
+            p_lead_interactions: leadInteractions,
+          });
 
-        if (rpcError) {
-          console.error("Failed to ingest webhook batch:", rpcError);
-          return new Response("Internal Server Error: Database ingestion failed", { status: 500 });
+          if (rpcError) {
+            console.error("Failed to ingest webhook batch for tenant:", mapping.tenant_id, rpcError);
+            return new Response("Internal Server Error: Database ingestion failed", { status: 500 });
+          }
         }
       }
     }

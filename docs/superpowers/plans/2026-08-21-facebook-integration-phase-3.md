@@ -197,30 +197,52 @@ serve(async (req: Request) => {
     const code = url.searchParams.get("code");
     if (!code) return new Response("Missing code", { status: 400 });
 
-    const { data: reqData, error } = await supabaseAdmin
+    const { data: reqData, error: reqError } = await supabaseAdmin
       .from("meta_data_deletion_requests")
-      .select("id, status, created_at")
+      .select("id, status, created_at, completed_at")
       .eq("confirmation_code", code)
-      .single();
+      .maybeSingle();
 
-    if (error || !reqData) return new Response("Not found", { status: 404 });
+    if (reqError) {
+      console.error("Failed to query deletion request:", reqError);
+      return new Response("Internal Server Error: Status query failed", { status: 500 });
+    }
 
-    const { data: pendingTasks } = await supabaseAdmin
+    if (!reqData) {
+      return new Response("Deletion request not found", { status: 404 });
+    }
+
+    const { data: pendingTasks, error: taskError } = await supabaseAdmin
       .from("meta_device_deletion_tasks")
       .select("id")
       .eq("request_id", reqData.id)
       .neq("status", "completed");
 
+    if (taskError) {
+      console.error("Failed to query device deletion task status:", taskError);
+      return new Response("Internal Server Error: Device task check failed", { status: 500 });
+    }
+
     let currentStatus = reqData.status;
     if (reqData.status === "processing" && (!pendingTasks || pendingTasks.length === 0)) {
       currentStatus = "completed";
-      await supabaseAdmin
+      const { error: updateError } = await supabaseAdmin
         .from("meta_data_deletion_requests")
-        .update({ status: "completed", updated_at: new Date().toISOString() })
+        .update({ status: "completed", completed_at: new Date().toISOString() })
         .eq("id", reqData.id);
+
+      if (updateError) {
+        console.error("Failed to update deletion request completion:", updateError);
+        return new Response("Internal Server Error: Failed to record completion", { status: 500 });
+      }
     }
 
-    return new Response(JSON.stringify({ status: currentStatus, confirmation_code: code }), {
+    return new Response(JSON.stringify({
+      status: currentStatus,
+      confirmation_code: code,
+      created_at: reqData.created_at,
+      completed_at: currentStatus === "completed" ? (reqData.completed_at || new Date().toISOString()) : null,
+    }), {
       headers: { "Content-Type": "application/json" },
     });
   }

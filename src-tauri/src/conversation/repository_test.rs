@@ -4102,4 +4102,85 @@ fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
         meta_json_2["provider_attachment_id_aliases"],
         serde_json::json!(["att_alias_1", "att_alias_2"])
     );
+
+    // 4. Adversarial test: replay attempting to overwrite provider_attachment_id_aliases with a fake array
+    let mut replay_msg_3 = replay_msg.clone();
+    replay_msg_3.attachments[0].provider_attachment_id = Some("att_alias_2".to_string());
+    replay_msg_3.attachments[0].metadata_json = Some(serde_json::json!({
+        "provider_attachment_id_aliases": ["fake_hacked_alias"],
+        "remote_url_aliases": ["fake_url"],
+        "_merged_attachment_rows": null,
+        "third_tag": "tag3"
+    }));
+
+    let applied_3 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_3)
+        .unwrap();
+    assert!(applied_3.duplicate);
+
+    let meta_str_3: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let meta_json_3: serde_json::Value = serde_json::from_str(&meta_str_3).unwrap();
+    assert_eq!(meta_json_3["third_tag"], "tag3");
+    assert_eq!(
+        meta_json_3["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"]),
+        "Alias arrays must be immutable against hostile incoming array replacements"
+    );
+
+    // 5. Adversarial test: replay with non-object metadata (e.g. JSON string)
+    let mut replay_msg_4 = replay_msg.clone();
+    replay_msg_4.attachments[0].provider_attachment_id = Some("att_alias_1".to_string());
+    replay_msg_4.attachments[0].metadata_json = Some(serde_json::json!("a raw string payload"));
+
+    let applied_4 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_4)
+        .unwrap();
+    assert!(applied_4.duplicate);
+
+    let meta_str_4: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let meta_json_4: serde_json::Value = serde_json::from_str(&meta_str_4).unwrap();
+    assert_eq!(
+        meta_json_4["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"]),
+        "Non-object metadata must not corrupt or erase preserved aliases"
+    );
+
+    // 6. Replay using remote_url alias without provider_attachment_id
+    let mut replay_msg_5 = replay_msg.clone();
+    replay_msg_5.attachments[0].provider_attachment_id = None;
+    replay_msg_5.attachments[0].remote_url =
+        Some("https://cdn.example.com/alias_url_1.png".to_string());
+    replay_msg_5.attachments[0].metadata_json = Some(serde_json::json!({"url_replayed": true}));
+
+    let applied_5 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_5)
+        .unwrap();
+    assert!(applied_5.duplicate);
+
+    let att_count_final: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_attachments WHERE message_id = 1001",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        att_count_final, 1,
+        "All 6 replays must map to the exact same survivor row"
+    );
 }
