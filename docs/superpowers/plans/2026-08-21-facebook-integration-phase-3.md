@@ -207,6 +207,10 @@ DECLARE
     v_secret_hash TEXT;
     v_existing_hash TEXT;
 BEGIN
+    IF p_device_secret IS NULL OR length(p_device_secret) < 32 THEN
+        RAISE EXCEPTION 'Invalid device secret: minimum 32 characters required';
+    END IF;
+
     v_secret_hash := encode(digest(p_device_secret, 'sha256'), 'hex');
 
     SELECT device_secret_hash INTO v_existing_hash
@@ -450,6 +454,22 @@ pub async fn process_pending_device_tasks(
 ) -> Result<usize> {
     let client = Client::new();
 
+    // 0. Ensure device is enrolled and active via register_or_heartbeat_device RPC
+    let heartbeat_url = format!("{}/rest/v1/rpc/register_or_heartbeat_device", supabase_url);
+    let heartbeat_resp = client.post(&heartbeat_url)
+        .header("apikey", anon_key)
+        .header("Authorization", format!("Bearer {}", user_jwt))
+        .json(&serde_json::json!({
+            "p_device_id": device_id,
+            "p_device_secret": device_secret,
+            "p_device_name": "RustSale Desktop"
+        }))
+        .send().await?;
+
+    if !heartbeat_resp.status().is_success() {
+        return Err(anyhow!("Failed to register/heartbeat device before claiming tasks: {}", heartbeat_resp.text().await?));
+    }
+
     // 1. Claim pending deletion tasks via secure RPC (bound to authenticated device_secret and returning unforgeable single-use lease tokens)
     let claim_url = format!("{}/rest/v1/rpc/claim_device_deletion_tasks", supabase_url);
     let claim_resp = client.post(&claim_url)
@@ -481,13 +501,17 @@ pub async fn process_pending_device_tasks(
         {
             let tx = conn.transaction()?;
 
-            // Find all attachments to delete belonging to messages sent by this messenger identity
+            // Find all attachments to delete belonging to Messenger conversations
             let mut att_stmt = tx.prepare(
-                "SELECT ma.local_path 
-                 FROM message_attachments ma 
-                 JOIN messages m ON ma.message_id = m.id 
-                 JOIN channel_identities ci ON m.sender_identity_id = ci.id 
-                 WHERE ci.channel = 'messenger' AND ci.external_id = ?1 AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
+                "SELECT ma.local_path
+                 FROM message_attachments ma
+                 JOIN messages m ON ma.message_id = m.id
+                 JOIN conversations c ON m.conversation_id = c.id
+                 JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                 LEFT JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                 WHERE ca.channel = 'messenger'
+                   AND (ci.external_id = ?1 OR ma.metadata_json LIKE '%' || ?1 || '%')
+                   AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
             )?;
             let paths: Vec<String> = att_stmt
                 .query_map([user_id], |r| r.get(0))?
@@ -511,8 +535,10 @@ pub async fn process_pending_device_tasks(
                      metadata_json = '{}'
                  WHERE message_id IN (
                      SELECT m.id FROM messages m
-                     JOIN channel_identities ci ON m.sender_identity_id = ci.id
-                     WHERE ci.channel = 'messenger' AND ci.external_id = ?1
+                     JOIN conversations c ON m.conversation_id = c.id
+                     JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                     LEFT JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                     WHERE ca.channel = 'messenger' AND (ci.external_id = ?1 OR m.content_json LIKE '%' || ?1 || '%')
                  )",
                 [user_id],
             )?;
@@ -523,8 +549,9 @@ pub async fn process_pending_device_tasks(
                  WHERE actor_external_id = ?1 
                    AND message_id IN (
                        SELECT m.id FROM messages m
-                       JOIN channel_identities ci ON m.sender_identity_id = ci.id
-                       WHERE ci.channel = 'messenger'
+                       JOIN conversations c ON m.conversation_id = c.id
+                       JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                       WHERE ca.channel = 'messenger'
                    )",
                 [user_id],
             )?;
@@ -533,8 +560,9 @@ pub async fn process_pending_device_tasks(
                  WHERE recipient_external_id = ?1 
                    AND message_id IN (
                        SELECT m.id FROM messages m
-                       JOIN channel_identities ci ON m.sender_identity_id = ci.id
-                       WHERE ci.channel = 'messenger'
+                       JOIN conversations c ON m.conversation_id = c.id
+                       JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                       WHERE ca.channel = 'messenger'
                    )",
                 [user_id],
             )?;
@@ -551,9 +579,16 @@ pub async fn process_pending_device_tasks(
                  WHERE (external_id = ?1 OR identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1))
                    AND message_id IN (
                        SELECT m.id FROM messages m
-                       JOIN channel_identities ci ON m.sender_identity_id = ci.id
-                       WHERE ci.channel = 'messenger'
+                       JOIN conversations c ON m.conversation_id = c.id
+                       JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                       WHERE ca.channel = 'messenger'
                    )",
+                [user_id],
+            )?;
+
+            // Scrub Facebook comment logs
+            tx.execute(
+                "DELETE FROM facebook_comment_logs WHERE sender_psid = ?1",
                 [user_id],
             )?;
 
@@ -563,8 +598,13 @@ pub async fn process_pending_device_tasks(
                  SET text_content = '[Deleted for Compliance]',
                      content_json = '{\"type\":\"text\",\"text\":\"[Deleted for Compliance]\"}',
                      raw_payload_json = NULL
-                 WHERE sender_identity_id IN (
-                     SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
+                 WHERE conversation_id IN (
+                     SELECT c.id FROM conversations c
+                     JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                     WHERE ca.channel = 'messenger'
+                 ) AND (
+                     sender_identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1)
+                     OR raw_payload_json LIKE '%' || ?1 || '%'
                  )",
                 [user_id],
             )?;

@@ -407,35 +407,40 @@ impl FacebookUploader {
             return Err(anyhow!("Video finish phase failed: {}", finish_resp.text().await?));
         }
 
-        // Authoritative terminal status verification
+        // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", video_id, page_token);
-        if let Ok(check_resp) = self.client.get(&check_url).send().await {
-            if check_resp.status().is_success() {
-                let check_json: Value = check_resp.json().await.unwrap_or_default();
-                let video_status = check_json.get("status")
-                    .and_then(|s| s.get("video_status"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
+        for attempt in 0..5 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1000 * attempt as u64)).await;
+            }
+            if let Ok(check_resp) = self.client.get(&check_url).send().await {
+                if check_resp.status().is_success() {
+                    let check_json: Value = check_resp.json().await.unwrap_or_default();
+                    let video_status = check_json.get("status")
+                        .and_then(|s| s.get("video_status"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                if video_status == "ready" || is_published {
-                    conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                        params![upload_session_id],
-                    )?;
-                    return Ok(video_id);
-                } else if video_status == "error" {
-                    conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                        params![upload_session_id],
-                    )?;
-                    return Err(anyhow!("Meta video processing failed with error state"));
+                    if video_status == "ready" || is_published {
+                        conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                            params![upload_session_id],
+                        )?;
+                        return Ok(video_id);
+                    } else if video_status == "error" {
+                        conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                            params![upload_session_id],
+                        )?;
+                        return Err(anyhow!("Meta video processing failed with error state"));
+                    }
                 }
             }
         }
 
-        // Media accepted by Meta finish and currently processing; remains in finishing state for background reconciliation
-        Ok(video_id)
+        // Processing pending; session remains in finishing state for background reconciliation
+        Err(anyhow!("Video processing pending at Meta: session {} remains in finishing state for reconciliation", upload_session_id))
     }
 
     pub async fn upload_reel_resumable(
@@ -629,39 +634,44 @@ impl FacebookUploader {
             return Err(anyhow!("Reel finish failed: {}", finish_resp.text().await?));
         }
 
-        // Authoritative terminal status verification
+        // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", video_id, page_token);
-        if let Ok(check_resp) = self.client.get(&check_url).send().await {
-            if check_resp.status().is_success() {
-                let check_json: Value = check_resp.json().await.unwrap_or_default();
-                let video_status = check_json.get("status")
-                    .and_then(|s| s.get("video_status"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let publishing_status = check_json.get("status")
-                    .and_then(|s| s.get("publishing_phase"))
-                    .and_then(|p| p.get("status"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+        for attempt in 0..5 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1000 * attempt as u64)).await;
+            }
+            if let Ok(check_resp) = self.client.get(&check_url).send().await {
+                if check_resp.status().is_success() {
+                    let check_json: Value = check_resp.json().await.unwrap_or_default();
+                    let video_status = check_json.get("status")
+                        .and_then(|s| s.get("video_status"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let publishing_status = check_json.get("status")
+                        .and_then(|s| s.get("publishing_phase"))
+                        .and_then(|p| p.get("status"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
 
-                if publishing_status == "complete" {
-                    conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                        params![video_id],
-                    )?;
-                    return Ok(video_id);
-                } else if video_status == "error" || publishing_status == "error" {
-                    conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                        params![video_id],
-                    )?;
-                    return Err(anyhow!("Meta Reel processing failed with error state"));
+                    if publishing_status == "complete" {
+                        conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                            params![video_id],
+                        )?;
+                        return Ok(video_id);
+                    } else if video_status == "error" || publishing_status == "error" {
+                        conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                            params![video_id],
+                        )?;
+                        return Err(anyhow!("Meta Reel processing failed with error state"));
+                    }
                 }
             }
         }
 
-        // Reel accepted by Meta finish and publishing in progress; remains in finishing state for background reconciliation
-        Ok(video_id)
+        // Publishing pending; session remains in finishing state for background reconciliation
+        Err(anyhow!("Reel publishing pending at Meta: session {} remains in finishing state for reconciliation", video_id))
     }
 }
 ```
@@ -672,3 +682,4 @@ impl FacebookUploader {
 
 - **Promotion Worker:** Claims rows with `status='queued'`, queries `facebook_page_tokens` for the specific claimed row's `page_id`, strictly parses RFC3339 timestamp (failing closed with `error_code='invalid_timestamp'` on parse failure), and sets `delivery_unknown` on transport timeout or 5xx.
 - **Reconciliation Engine:** Periodically claims `delivery_unknown` rows. Queries Graph API `/scheduled_posts` and `/feed` with pagination. Matches post type against Graph `status_type`, computes message SHA-256 hash, and verifies timestamp within 60s window. Sets `status='published'` for `/feed` matches and `status='scheduled_on_meta'` for `/scheduled_posts`.
+- **Upload Session Background Reconciler:** Periodically claims `facebook_upload_sessions` where `status = 'finishing' AND updated_at < datetime('now', '-30 seconds')`, queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels), transitions to `completed` on authoritative terminal success, transitions to `failed` on error, and keeps in `finishing` if still processing.
