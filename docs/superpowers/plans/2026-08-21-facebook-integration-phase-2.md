@@ -89,7 +89,7 @@ git commit -m "feat(facebook): implement post scheduler types and mode decision 
 
 ---
 
-### Task 2: Multi-Type Media Pipeline & Restart-Resumable Video Uploader
+### Task 2: Multi-Type Media Pipeline & Restart-Resumable Video/Reels Uploader
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/media_uploader.rs`
@@ -178,6 +178,9 @@ impl FacebookMediaUploader {
         let body: Value = resp.json().await?;
         let session_id = body.get("upload_session_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("No session ID"))?.to_string();
         let video_id = body.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("No video ID"))?.to_string();
+        if video_id.is_empty() {
+            anyhow::bail!("Meta returned empty video_id during upload start phase");
+        }
         Ok((session_id, video_id))
     }
 
@@ -272,7 +275,7 @@ impl FacebookMediaUploader {
         let file_size = video_bytes.len() as u64;
 
         // Check existing upload session in SQLite with complete composite key
-        let existing_session: Result<Option<(String, Option<String>, u64)>, rusqlite::Error> = {
+        let existing_session: Result<Option<(String, String, u64)>, rusqlite::Error> = {
             let mut stmt = conn.prepare(
                 "SELECT upload_session_id, video_id, start_offset FROM facebook_upload_sessions 
                  WHERE page_id = ?1 AND file_hash = ?2 AND file_size_bytes = ?3 AND status = 'in_progress'"
@@ -286,15 +289,15 @@ impl FacebookMediaUploader {
         };
 
         let (session_id, canonical_vid, mut offset) = match existing_session? {
-            Some((sess_id, vid_opt, saved_offset)) => {
+            Some((sess_id, vid, saved_offset)) => {
                 let confirmed_offset = self.query_resumable_video_offset(&sess_id).await?;
-                (sess_id, vid_opt.unwrap_or_default(), confirmed_offset)
+                (sess_id, vid, confirmed_offset)
             }
             None => {
                 let (sess_id, initial_vid) = self.start_resumable_video_session(page_id, file_size).await?;
                 conn.execute(
-                    "INSERT INTO facebook_upload_sessions (page_id, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
+                    "INSERT INTO facebook_upload_sessions (page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+                     VALUES (?1, 'video', ?2, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
                     (page_id, &sess_id, &initial_vid, file_path, &file_hash, file_size as i64),
                 )?;
                 (sess_id, initial_vid, 0u64)
@@ -325,34 +328,67 @@ impl FacebookMediaUploader {
         Ok(video_id)
     }
 
-    pub async fn publish_reel(
+    pub async fn upload_full_resumable_reel_with_state(
         &self,
+        conn: &Connection,
         page_id: &str,
+        file_path: &str,
         video_bytes: &[u8],
         description: &str,
         scheduled_publish_time: Option<i64>,
     ) -> Result<String> {
-        let url_init = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
-        let resp = self.http.post(&url_init)
-            .bearer_auth(&self.token)
-            .form(&[("upload_phase", "start")])
-            .send().await?;
+        let mut hasher = Sha256::new();
+        hasher.update(video_bytes);
+        let file_hash = format!("{:x}", hasher.finalize());
+        let file_size = video_bytes.len() as u64;
 
-        let body: Value = resp.json().await?;
-        let video_id = body.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Reels init failed: {:?}", body))?;
+        let existing_session: Result<Option<(String, String, u64)>, rusqlite::Error> = {
+            let mut stmt = conn.prepare(
+                "SELECT upload_session_id, video_id, start_offset FROM facebook_upload_sessions 
+                 WHERE page_id = ?1 AND file_hash = ?2 AND file_size_bytes = ?3 AND upload_type = 'reel' AND status = 'in_progress'"
+            )?;
+            let mut rows = stmt.query(rusqlite::params![page_id, &file_hash, file_size as i64])?;
+            if let Some(r) = rows.next()? {
+                Ok(Some((r.get(0)?, r.get(1)?, r.get(2)?)))
+            } else {
+                Ok(None)
+            }
+        };
+
+        let (video_id, mut offset) = match existing_session? {
+            Some((sess_id, vid, saved_offset)) => (vid, saved_offset),
+            None => {
+                let url_init = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
+                let resp = self.http.post(&url_init)
+                    .bearer_auth(&self.token)
+                    .form(&[("upload_phase", "start")])
+                    .send().await?;
+
+                let body: Value = resp.json().await?;
+                let vid = body.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Reels init failed: {:?}", body))?.to_string();
+
+                conn.execute(
+                    "INSERT INTO facebook_upload_sessions (page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+                     VALUES (?1, 'reel', ?2, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
+                    (page_id, &vid, &vid, file_path, &file_hash, file_size as i64),
+                )?;
+                (vid, 0u64)
+            }
+        };
 
         let url_upload = format!("https://rupload.facebook.com/video-reels/{}", video_id);
         let resp_up = self.http.post(&url_upload)
             .bearer_auth(&self.token)
-            .header("Offset", "0")
-            .header("file_size", video_bytes.len().to_string())
-            .body(video_bytes.to_vec())
+            .header("Offset", offset.to_string())
+            .header("file_size", file_size.to_string())
+            .body(video_bytes[offset as usize..].to_vec())
             .send().await?;
 
         if !resp_up.status().is_success() {
             return Err(anyhow!("Reel binary upload failed: HTTP {}", resp_up.status()));
         }
 
+        let url_init = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
         let mut finish_params = vec![
             ("upload_phase", "finish".to_string()),
             ("video_id", video_id.to_string()),
@@ -366,7 +402,16 @@ impl FacebookMediaUploader {
 
         let resp_fin = self.http.post(&url_init).bearer_auth(&self.token).form(&finish_params).send().await?;
         let fin_body: Value = resp_fin.json().await?;
-        fin_body.get("success").and_then(|v| v.as_bool()).filter(|b| *b).map(|_| video_id.to_string()).ok_or_else(|| anyhow!("Reel finish failed: {:?}", fin_body))
+        let is_ok = fin_body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        if is_ok {
+            conn.execute(
+                "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE video_id = ?1",
+                [&video_id],
+            )?;
+            Ok(video_id)
+        } else {
+            Err(anyhow!("Reel finish failed: {:?}", fin_body))
+        }
     }
 }
 ```
@@ -375,12 +420,12 @@ impl FacebookMediaUploader {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete 3-phase resumable video uploader with session persistence and bearer auth"
+git commit -m "feat(facebook): implement complete 3-phase resumable video and reels uploader with session persistence and bearer auth"
 ```
 
 ---
 
-### Task 3: Dual-Mode Scheduling Engine with Multi-Attribute Reconciliation
+### Task 3: Dual-Mode Scheduling Engine with Queue-to-Publishing Lease & Fingerprint Reconciliation
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/post_scheduler.rs`
@@ -437,7 +482,7 @@ impl FacebookPostScheduler {
         Ok(())
     }
 
-    pub async fn promote_local_queued_posts(conn: &mut Connection, token: &str) -> Result<usize> {
+    pub async fn promote_local_queued_posts(conn: &mut Connection, token: &str, worker_id: &str) -> Result<usize> {
         let mut promoted_count = 0;
         let eligible_posts: Vec<(i64, String, String, i64)> = {
             let mut stmt = conn.prepare(
@@ -451,19 +496,31 @@ impl FacebookPostScheduler {
         };
 
         for (post_id, page_id, message, target_time) in eligible_posts {
+            // Atomic lease claim from queued to publishing
+            let claimed = conn.execute(
+                "UPDATE facebook_scheduled_posts 
+                 SET status = 'publishing', owner_id = ?1, claim_deadline = datetime('now', '+5 minutes'), retry_count = retry_count + 1, updated_at = datetime('now')
+                 WHERE id = ?2 AND status = 'queued'",
+                params![worker_id, post_id],
+            )?;
+
+            if claimed == 0 {
+                continue;
+            }
+
             let client = FacebookPostScheduler::new(token.to_string());
             match client.publish_status_post(&page_id, &message, Some(target_time)).await {
                 Ok(remote_id) => {
                     conn.execute(
-                        "UPDATE facebook_scheduled_posts SET status = 'scheduled_on_meta', remote_post_id = ?1, updated_at = datetime('now') WHERE id = ?2",
-                        rusqlite::params![&remote_id, post_id],
+                        "UPDATE facebook_scheduled_posts SET status = 'scheduled_on_meta', remote_post_id = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3",
+                        params![&remote_id, post_id, worker_id],
                     )?;
                     promoted_count += 1;
                 }
                 Err(e) => {
                     conn.execute(
-                        "UPDATE facebook_scheduled_posts SET status = 'failed', error_message = ?1, updated_at = datetime('now') WHERE id = ?2",
-                        rusqlite::params![e.to_string(), post_id],
+                        "UPDATE facebook_scheduled_posts SET status = 'delivery_unknown', error_message = ?1, updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3",
+                        params![e.to_string(), post_id, worker_id],
                     )?;
                 }
             }

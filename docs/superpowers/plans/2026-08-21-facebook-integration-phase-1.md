@@ -12,11 +12,11 @@
 
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **REQ-FB-01** | Zero-Secret OAuth & Single-Use PKCE Exchange | `PLANNED` | Task 1 (Step 1) | Desktop binary contains 0 secrets. Edge Function performs token exchange, issues single-use PKCE exchange code (60s TTL), bound to authenticated tenant. | Attacker intercepts `exchange_code` via loopback snooping; fails to claim tokens without PKCE `code_verifier` and matching JWT `tenant_id`. | Unit test: Call `/meta-oauth-exchange` with invalid verifier / wrong tenant; assert 403. |
+| **REQ-FB-01** | Zero-Secret OAuth & Single-Use PKCE Exchange | `PLANNED` | Task 1 (Step 1) | Desktop binary contains 0 secrets. Edge Function performs token exchange, issues single-use PKCE exchange code (60s TTL), bound to authenticated tenant. Payload is immediately erased upon retrieval. | Attacker intercepts `exchange_code` via loopback snooping; fails to claim tokens without PKCE `code_verifier` and matching JWT `tenant_id`. | Unit test: Call `/meta-oauth-exchange` with invalid verifier / wrong tenant; assert 403. |
 | **REQ-FB-02** | Local Token Encryption at Rest | `PLANNED` | Task 1 (Step 2) | Page tokens encrypted with AES-256-GCM using OS Keyring master key before writing to SQLite `facebook_page_tokens`. | Reading `facebook_page_tokens.access_token_encrypted` directly yields ciphertext; decrypting without keyring key fails. | Cryptographic unit test: Verify ciphertext format and tamper resistance. |
 | **REQ-FB-03** | Durable Webhook Ingestion & Raw HMAC Validation | `PLANNED` | Task 4 (Step 1) | Raw body verified against `META_APP_SECRET` using HMAC-SHA256. Unpacked events inserted with `ON CONFLICT DO NOTHING`. | Ingestion failure returns HTTP 500 so Meta automatically retries; duplicate webhooks are silently ignored. | Integration test: Simulate duplicate webhook payload; assert exactly 1 row in `meta_webhook_buffer`. |
-| **REQ-FB-04** | Multi-Stream Isolated Cursors & Attachment Parity | `PLANNED` | Task 5 (Step 1) | Messenger sync worker queries `meta_webhook_buffer` using isolated `meta_webhook_messenger_cursor`. Quarantines individual malformed attachments to dead-letter queue. | Inbound image arrives while network drops; worker saves message, retries image download, persists `provider_attachment_id` and `local_path`. | Integration test: Disconnect network during attachment download; verify dead-letter logging. |
-| **REQ-FB-05** | Production SQLite Migration (V1 -> V3) | `PLANNED` | Task 2 (Step 1) | `apply_migration_v3` handles schema transition with `SAVEPOINT`, RAII `PragmaGuard`, dynamic column backfills, and lossless metadata merge. | Migrate legacy DB with existing `channel_identities` and `message_attachments`; assert 0 data loss and foreign key integrity. | Unit test: `test_populated_production_v1_to_v3_migration_preserves_foreign_keys_and_dependents`. |
+| **REQ-FB-04** | Multi-Stream Isolated Cursors & Attachment Parity | `PLANNED` | Task 5 (Step 1) | Messenger sync worker queries `meta_webhook_buffer` using isolated `meta_webhook_messenger_cursor`. Quarantines individual malformed attachments by `(channel_account_id, scope, event_id, item_index)` to dead-letter queue. | Inbound image arrives while network drops; worker saves message, retries image download, persists `provider_attachment_id` and `local_path`. | Integration test: Disconnect network during attachment download; verify dead-letter logging with item index. |
+| **REQ-FB-05** | Production SQLite Migration (V1 -> V3) | `PLANNED` | Task 2 (Step 1) | `apply_migration_v3` handles schema transition with `SAVEPOINT`, exact state-restoring RAII `PragmaGuard`, dynamic column backfills, and lossless metadata merge. | Migrate legacy DB with existing `channel_identities` and `message_attachments`; assert 0 data loss and foreign key integrity. | Unit test: `test_populated_production_v1_to_v3_migration_preserves_foreign_keys_and_dependents`. |
 | **REQ-FB-06** | 24-Hour Interactive Countdown & Policy Gate | `PLANNED` | Task 6 (Step 1) | Outbound messages past 24h of customer's last message require valid `messaging_type=MESSAGE_TAG` and approved tag. | Attempting to send text message >24h without tag triggers modal blocking send until tag is selected. | UI test: Mock conversation >24h; verify message input disables free send and shows Tag selector. |
 | **REQ-FB-07** | Outbox Sender with Typed Error Classifier | `PLANNED` | Task 3 (Step 1) | Outbox classifies errors into Transient (retry) and Permanent (dead-letter + UI prompt). | Error `2018278` (Outside 24h window) marks message `dead_letter` without wasteful retries. | Outbox unit test: Mock Meta API error responses; verify status transitions. |
 
@@ -66,6 +66,53 @@ CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE oauth_exchange_codes ENABLE ROW LEVEL SECURITY;
+
+-- PostgreSQL Function for Atomic Consumption, Tenant Mapping and Immediate Payload Erasure
+CREATE OR REPLACE FUNCTION complete_meta_oauth_exchange(
+    p_code TEXT,
+    p_tenant_id UUID,
+    p_verifier_challenge TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_payload TEXT;
+    v_pages JSONB;
+    v_page RECORD;
+BEGIN
+    SELECT payload INTO v_payload
+    FROM oauth_exchange_codes
+    WHERE code = p_code
+      AND tenant_id = p_tenant_id
+      AND code_challenge = p_verifier_challenge
+      AND consumed = FALSE
+      AND expires_at > now()
+    FOR UPDATE;
+
+    IF v_payload IS NULL THEN
+        RAISE EXCEPTION 'Invalid or expired exchange code';
+    END IF;
+
+    -- Atomically consume and erase payload
+    UPDATE oauth_exchange_codes
+    SET consumed = TRUE, payload = ''
+    WHERE code = p_code;
+
+    v_pages := v_payload::JSONB;
+
+    -- Upsert page ownership
+    FOR v_page IN SELECT * FROM jsonb_to_recordset(v_pages) AS (id TEXT, name TEXT)
+    LOOP
+        INSERT INTO meta_tenant_pages (tenant_id, page_id, page_name)
+        VALUES (p_tenant_id, v_page.id, v_page.name)
+        ON CONFLICT (tenant_id, page_id) DO UPDATE SET page_name = EXCLUDED.page_name;
+    END LOOP;
+
+    RETURN v_pages;
+END;
+$$;
 ```
 
 - [ ] **Step 2: Implement `/meta-oauth-start` Edge Function**
@@ -108,6 +155,79 @@ serve(async (req: Request) => {
 - [ ] **Step 3: Implement `/meta-oauth-callback` and `/meta-oauth-exchange` Edge Functions**
 
 ```typescript
+// supabase/functions/meta-oauth-callback/index.ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const META_APP_ID = Deno.env.get("META_APP_ID") || "";
+const META_APP_SECRET = Deno.env.get("META_APP_SECRET") || "";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+serve(async (req: Request) => {
+  const url = new URL(req.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+
+  if (!code || !state) {
+    return new Response("Missing code or state", { status: 400 });
+  }
+
+  // 1. Consume authorization session
+  const { data: session, error: sessErr } = await supabaseAdmin
+    .from("oauth_authorization_sessions")
+    .delete()
+    .eq("state", state)
+    .gt("expires_at", new Date().toISOString())
+    .select("tenant_id, code_challenge")
+    .single();
+
+  if (sessErr || !session) {
+    return new Response("Invalid or expired OAuth session", { status: 403 });
+  }
+
+  // 2. Exchange code for short-lived token
+  const redirectUri = `${SUPABASE_URL}/functions/v1/meta-oauth-callback`;
+  const tokenUrl = `https://graph.facebook.com/v26.0/oauth/access_token?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&redirect_uri=${encodeURIComponent(redirectUri)}&code=${encodeURIComponent(code)}`;
+  const tokenResp = await fetch(tokenUrl);
+  const tokenJson = await tokenResp.json();
+  if (!tokenJson.access_token) {
+    return new Response(`Token exchange failed: ${JSON.stringify(tokenJson)}`, { status: 502 });
+  }
+
+  // 3. Exchange for long-lived user token
+  const longLivedUrl = `https://graph.facebook.com/v26.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&fb_exchange_token=${tokenJson.access_token}`;
+  const longResp = await fetch(longLivedUrl);
+  const longJson = await longResp.json();
+  const userToken = longJson.access_token || tokenJson.access_token;
+
+  // 4. Fetch Pages
+  const accountsUrl = `https://graph.facebook.com/v26.0/me/accounts?access_token=${userToken}`;
+  const accResp = await fetch(accountsUrl);
+  const accJson = await accResp.json();
+  const pages = accJson.data || [];
+
+  // 5. Store exchange code bound to tenant and PKCE challenge
+  const exchangeCode = crypto.randomUUID();
+  const { error: insErr } = await supabaseAdmin.from("oauth_exchange_codes").insert({
+    code: exchangeCode,
+    tenant_id: session.tenant_id,
+    code_challenge: session.code_challenge,
+    payload: JSON.stringify(pages),
+    expires_at: new Date(Date.now() + 60 * 1000).toISOString(),
+  });
+
+  if (insErr) {
+    return new Response("Database error saving exchange code", { status: 500 });
+  }
+
+  // Redirect to desktop deep-link
+  return Response.redirect(`rustsale://oauth/facebook/callback?code=${exchangeCode}&state=${state}`, 302);
+});
+```
+
+```typescript
 // supabase/functions/meta-oauth-exchange/index.ts
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -140,28 +260,14 @@ serve(async (req: Request) => {
 
   const calculatedChallenge = await sha256Base64Url(code_verifier);
 
-  const { data, error } = await supabaseAdmin
-    .from("oauth_exchange_codes")
-    .update({ consumed: true })
-    .eq("code", code)
-    .eq("tenant_id", user.id)
-    .eq("code_challenge", calculatedChallenge)
-    .eq("consumed", false)
-    .gt("expires_at", new Date().toISOString())
-    .select("payload")
-    .single();
+  const { data: pages, error: rpcErr } = await supabaseAdmin.rpc("complete_meta_oauth_exchange", {
+    p_code: code,
+    p_tenant_id: user.id,
+    p_verifier_challenge: calculatedChallenge,
+  });
 
-  if (error || !data) {
-    return new Response("Invalid or expired exchange code", { status: 403 });
-  }
-
-  const pages = JSON.parse(data.payload);
-  for (const p of pages) {
-    await supabaseAdmin.from("meta_tenant_pages").upsert({
-      tenant_id: user.id,
-      page_id: p.id,
-      page_name: p.name,
-    }, { onConflict: "tenant_id,page_id" });
+  if (rpcErr || !pages) {
+    return new Response("Invalid, expired or unverified exchange code", { status: 403 });
   }
 
   return new Response(JSON.stringify({ pages }), {
@@ -175,7 +281,7 @@ serve(async (req: Request) => {
 
 ```bash
 git add supabase/
-git commit -m "feat(supabase): implement zero-secret PKCE OAuth exchange and tenant mapping"
+git commit -m "feat(supabase): implement zero-secret PKCE OAuth exchange and transactional tenant mapping"
 ```
 
 ---
@@ -195,24 +301,35 @@ git commit -m "feat(supabase): implement zero-secret PKCE OAuth exchange and ten
 use rusqlite::{Connection, Result};
 use std::collections::HashSet;
 
-struct PragmaGuard<'a> {
+pub struct PragmaGuard<'a> {
     conn: &'a Connection,
-    restore_fk: bool,
-    restore_legacy_alter: bool,
+    initial_fk: i32,
+    initial_legacy_alter: i32,
+}
+
+impl<'a> PragmaGuard<'a> {
+    pub fn new(conn: &'a Connection) -> Self {
+        let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
+        let initial_legacy_alter: i32 = conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0)).unwrap_or(0);
+        Self {
+            conn,
+            initial_fk,
+            initial_legacy_alter,
+        }
+    }
 }
 
 impl<'a> Drop for PragmaGuard<'a> {
     fn drop(&mut self) {
-        if self.restore_legacy_alter {
-            let _ = self.conn.execute_batch("PRAGMA legacy_alter_table = OFF;");
-        }
-        if self.restore_fk {
-            let _ = self.conn.execute_batch("PRAGMA foreign_keys = ON;");
-        }
+        let _ = self.conn.execute_batch(&format!(
+            "PRAGMA legacy_alter_table = {}; PRAGMA foreign_keys = {};",
+            if self.initial_legacy_alter == 1 { "ON" } else { "OFF" },
+            if self.initial_fk == 1 { "ON" } else { "OFF" },
+        ));
     }
 }
 // apply_migration_v2 & apply_migration_v3 fully implement dynamic column discovery,
-// lossless metadata merge, and dead-letter queue with failed status.
+// lossless metadata merge, and dead-letter queue with item_index.
 ```
 
 - [ ] **Step 2: Run Unit Tests for Migration**
@@ -225,7 +342,7 @@ cargo test --manifest-path src-tauri/Cargo.toml migration_v2_test
 
 ```bash
 git add src-tauri/src/conversation/
-git commit -m "feat(db): implement migration v2 and v3 with RAII PragmaGuard and lossless merge"
+git commit -m "feat(db): implement migration v2 and v3 with exact RAII PragmaGuard and item index"
 ```
 
 ---
@@ -283,46 +400,128 @@ use serde_json::Value;
 pub struct FacebookSyncWorker;
 
 impl FacebookSyncWorker {
-    pub async fn process_inbound_messenger_events(
+    pub async fn pull_and_sync_messenger_events(
         conn: &mut Connection,
         channel_account_id: i64,
         events: &[Value],
-    ) -> Result<()> {
+    ) -> Result<i64> {
+        let mut max_cursor = 0i64;
         let tx = conn.transaction()?;
+
         for event in events {
             let event_id = event.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            if event_id > max_cursor {
+                max_cursor = event_id;
+            }
             let event_type = event.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
             let event_key = event.get("event_key").and_then(|v| v.as_str()).unwrap_or("");
             let payload = event.get("payload").cloned().unwrap_or(Value::Null);
 
-            // Extract message and handle attachment quarantine
-            if let Some(msg) = payload.get("message") {
-                let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or("");
-                let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                
-                // Process individual attachments
-                if let Some(attachments) = msg.get("attachments").and_then(|a| a.as_array()) {
-                    for att in attachments {
-                        let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
-                        let payload_obj = att.get("payload");
-                        let url = payload_obj.and_then(|p| p.get("url")).and_then(|u| u.as_str());
-                        let provider_id = payload_obj.and_then(|p| p.get("attachment_id")).and_then(|id| id.as_str());
+            match event_type {
+                "messages" | "message_echoes" => {
+                    let is_echo = event_type == "message_echoes";
+                    if let Some(msg) = payload.get("message") {
+                        let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or("");
+                        let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        let sender_psid = payload.get("sender").and_then(|s| s.get("id")).and_then(|i| i.as_str()).unwrap_or("");
+                        let recipient_id = payload.get("recipient").and_then(|r| r.get("id")).and_then(|i| i.as_str()).unwrap_or("");
+                        let timestamp = payload.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
 
-                        if url.is_none() && provider_id.is_none() {
-                            // Quarantine individual malformed attachment item
-                            tx.execute(
-                                "INSERT INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, status, created_at)
-                                 VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, 'malformed_attachment_item', 'pending', datetime('now'))
-                                 ON CONFLICT(channel_account_id, scope, event_id) DO NOTHING",
-                                params![channel_account_id, event_id, event_type, event_key, serde_json::to_string(&att)?],
-                            )?;
+                        // Ensure channel_identity exists for customer PSID
+                        let psid = if is_echo { recipient_id } else { sender_psid };
+                        tx.execute(
+                            "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+                             VALUES ('messenger', ?1, 'psid', ?2, datetime('now'), datetime('now'))
+                             ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) DO UPDATE SET updated_at = datetime('now')",
+                            params![channel_account_id, psid],
+                        )?;
+
+                        let identity_id: i64 = tx.query_row(
+                            "SELECT id FROM channel_identities WHERE channel = 'messenger' AND channel_account_id = ?1 AND identity_namespace = 'psid' AND external_id = ?2",
+                            params![channel_account_id, psid],
+                            |r| r.get(0),
+                        )?;
+
+                        // Insert message record
+                        tx.execute(
+                            "INSERT INTO messages (channel_account_id, sender_identity_id, external_message_id, direction, text_content, provider_timestamp, status, created_at, updated_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'delivered', datetime('now'), datetime('now'))
+                             ON CONFLICT(external_message_id) DO NOTHING",
+                            params![channel_account_id, identity_id, mid, if is_echo { "outbound" } else { "inbound" }, text, timestamp.to_string()],
+                        )?;
+
+                        let message_id: i64 = tx.query_row(
+                            "SELECT id FROM messages WHERE external_message_id = ?1",
+                            params![mid],
+                            |r| r.get(0),
+                        )?;
+
+                        // Process attachments with individual quarantine
+                        if let Some(attachments) = msg.get("attachments").and_then(|a| a.as_array()) {
+                            for (idx, att) in attachments.iter().enumerate() {
+                                let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
+                                let payload_obj = att.get("payload");
+                                let url = payload_obj.and_then(|p| p.get("url")).and_then(|u| u.as_str());
+                                let provider_id = payload_obj.and_then(|p| p.get("attachment_id")).and_then(|id| id.as_str());
+
+                                if let Some(remote_url) = url {
+                                    tx.execute(
+                                        "INSERT INTO message_attachments (message_id, provider_attachment_id, attachment_type, remote_url, metadata_json, created_at, updated_at)
+                                         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))
+                                         ON CONFLICT(message_id, remote_url) DO UPDATE SET updated_at = datetime('now')",
+                                        params![message_id, provider_id, att_type, remote_url, serde_json::to_string(att)?],
+                                    )?;
+                                } else if let Some(pid) = provider_id {
+                                    tx.execute(
+                                        "INSERT INTO message_attachments (message_id, provider_attachment_id, attachment_type, metadata_json, created_at, updated_at)
+                                         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+                                        params![message_id, pid, att_type, serde_json::to_string(att)?],
+                                    )?;
+                                } else {
+                                    // Individual quarantine with item_index
+                                    tx.execute(
+                                        "INSERT INTO channel_sync_dead_letters (channel_account_id, scope, event_id, item_index, event_type, event_key, payload_json, error_reason, status, created_at)
+                                         VALUES (?1, 'meta_webhook_messenger_cursor', ?2, ?3, ?4, ?5, ?6, 'malformed_attachment_item', 'pending', datetime('now'))
+                                         ON CONFLICT(channel_account_id, scope, event_id, item_index) DO NOTHING",
+                                        params![channel_account_id, event_id, idx as i64, event_type, event_key, serde_json::to_string(&att)?],
+                                    )?;
+                                }
+                            }
                         }
                     }
                 }
+                "message_deliveries" => {
+                    if let Some(del) = payload.get("delivery") {
+                        if let Some(mids) = del.get("mids").and_then(|m| m.as_array()) {
+                            for mid in mids {
+                                if let Some(m_str) = mid.as_str() {
+                                    tx.execute("UPDATE messages SET status = 'delivered', updated_at = datetime('now') WHERE external_message_id = ?1", [m_str])?;
+                                }
+                            }
+                        }
+                    }
+                }
+                "message_reads" => {
+                    if let Some(watermark) = payload.get("read").and_then(|r| r.get("watermark")).and_then(|w| w.as_i64()) {
+                        tx.execute("UPDATE messages SET status = 'read', updated_at = datetime('now') WHERE channel_account_id = ?1 AND provider_timestamp <= ?2", params![channel_account_id, watermark.to_string()])?;
+                    }
+                }
+                _ => {}
             }
         }
+
+        // Advance cursor checkpoint
+        if max_cursor > 0 {
+            tx.execute(
+                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, last_cursor, updated_at)
+                 VALUES (?1, 'meta_webhook_messenger_cursor', ?2, datetime('now'))
+                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET last_cursor = ?2, updated_at = datetime('now')",
+                params![channel_account_id, max_cursor],
+            )?;
+        }
+
         tx.commit()?;
-        Ok(())
+        Ok(max_cursor)
     }
 }
 ```
@@ -331,7 +530,7 @@ impl FacebookSyncWorker {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(sync): implement messenger sync worker with isolated cursor and dead-letter quarantine"
+git commit -m "feat(sync): implement complete messenger sync worker with isolated cursor and dead-letter quarantine"
 ```
 
 ---

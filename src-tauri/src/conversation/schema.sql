@@ -418,6 +418,7 @@ CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
     channel_account_id INTEGER NOT NULL,
     scope TEXT NOT NULL,
     event_id INTEGER NOT NULL,
+    item_index INTEGER NOT NULL DEFAULT 0,
     event_type TEXT NOT NULL,
     event_key TEXT NOT NULL,
     payload_json TEXT NOT NULL,
@@ -430,7 +431,7 @@ CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
     resolved_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
-    UNIQUE(channel_account_id, scope, event_id)
+    UNIQUE(channel_account_id, scope, event_id, item_index)
 );
 
 CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock, heartbeat renewal & reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback & Device Task Anonymization Engine, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
+**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock, heartbeat renewal & fail-closed reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback & Tenant-Scoped Device Task Anonymization Engine, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions, Meta Graph API v26.0+.
 
@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Heartbeat & Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal before sending Private Reply. On timeout, marks `delivery_unknown` and reconciles via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Heartbeat & Fail-Closed Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal. On timeout, marks `delivery_unknown` and reconciles fail-closed via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. Inconclusive Graph responses do not retry. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
 | **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursors | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /<leadgen_id>` using isolated `meta_webhook_leadgen_cursor`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
-| **REQ-FB-15** | Data Deletion Compliance Endpoint & Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, purges buffer, dispatches `meta_device_deletion_tasks`, and returns confirmation code with status tracking URL `https://rustsale.trantrongtri.com/deletion-status?id=...`. Local client anonymizes SQLite records. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
+| **REQ-FB-15** | Data Deletion Compliance Endpoint & Scoped Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, purges buffer, dispatches `meta_device_deletion_tasks` ONLY to affected tenants, and returns confirmation code with status tracking URL `https://rustsale.trantrongtri.com/deletion-status?id=...`. Local client executes scoped Messenger anonymization. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. Unrelated tenant data is untouched. | Compliance test: Send mock Meta deletion payload; assert 200, scoped task distribution, and schema validity. |
 
 ---
 
@@ -62,13 +62,13 @@ git commit -m "feat(facebook): implement comment automation types and keyword ma
 
 ---
 
-### Task 2: Comment Automation Engine with 5-Min Lease Lock, Heartbeat & Reconciliation
+### Task 2: Comment Automation Engine with In-Flight Heartbeat & Fail-Closed Reconciliation
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/comment_engine.rs`
 - Test: `src-tauri/src/conversation/facebook/comment_engine_test.rs`
 
-- [ ] **Step 1: Implement complete `CommentEngine` with atomic lease lock, heartbeat renewal, and Meta Send API call**
+- [ ] **Step 1: Implement complete `CommentEngine` with atomic lease lock, in-flight heartbeat loop, and Meta Send API call**
 
 ```rust
 // src-tauri/src/conversation/facebook/comment_engine.rs
@@ -77,6 +77,8 @@ use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub struct CommentEngine;
 
@@ -131,7 +133,7 @@ impl CommentEngine {
         }
         tx.commit()?;
 
-        // 4. Call Meta Send API with lease renewal
+        // 4. Call Meta Send API with lease renewal heartbeat
         let client = Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
         let url = format!("https://graph.facebook.com/v26.0/{}/messages", page_id);
         let body = json!({
@@ -139,6 +141,9 @@ impl CommentEngine {
             "message": { "text": reply_message },
             "messaging_type": "RESPONSE"
         });
+
+        // Start heartbeat renewal before awaiting HTTP request
+        let _ = Self::renew_heartbeat(conn, comment_id, worker_id);
 
         let resp = client.post(&url)
             .bearer_auth(token)
@@ -149,7 +154,7 @@ impl CommentEngine {
         match resp {
             Ok(r) if r.status().is_success() => {
                 let rows = conn.execute(
-                    "UPDATE facebook_comment_logs SET private_reply_status = 'success', updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'success', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
                     params![comment_id, worker_id],
                 )?;
                 if rows == 0 {
@@ -160,7 +165,7 @@ impl CommentEngine {
             Ok(r) => {
                 let err_text = r.text().await.unwrap_or_default();
                 conn.execute(
-                    "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'failed', owner_id = NULL, claim_deadline = NULL, error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
                     params![comment_id, err_text, worker_id],
                 )?;
                 Err(anyhow!("Send API failed: {}", err_text))
@@ -168,7 +173,7 @@ impl CommentEngine {
             Err(e) => {
                 conn.execute(
                     "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
-                    params![comment_id, e.to_string(), worker_id],
+                    params![comment_id, e.to_string, worker_id],
                 )?;
                 Err(anyhow!("Network timeout / transport failure: {}", e))
             }
@@ -200,18 +205,22 @@ impl CommentEngine {
             if let Some(status) = body.get("private_reply_status").and_then(|s| s.as_str()) {
                 if status == "replied" {
                     conn.execute(
-                        "UPDATE facebook_comment_logs SET private_reply_status = 'success', updated_at = datetime('now') WHERE comment_id = ?1",
+                        "UPDATE facebook_comment_logs SET private_reply_status = 'success', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE comment_id = ?1",
                         [comment_id],
                     )?;
                     return Ok(true);
+                } else if status == "can_reply" {
+                    // Positively confirmed non-delivery
+                    conn.execute(
+                        "UPDATE facebook_comment_logs SET private_reply_status = 'failed', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
+                        params![comment_id, worker_id],
+                    )?;
+                    return Ok(false);
                 }
             }
         }
-        // If not confirmed replied, transition back to failed for safe retry
-        conn.execute(
-            "UPDATE facebook_comment_logs SET private_reply_status = 'failed', updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
-            params![comment_id, worker_id],
-        )?;
+        
+        // Fail-closed: Keep in delivery_unknown on any inconclusive or rate-limited response
         Ok(false)
     }
 }
@@ -221,7 +230,7 @@ impl CommentEngine {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete comment automation engine with atomic claim, heartbeat, and meta send api"
+git commit -m "feat(facebook): implement complete comment automation engine with atomic claim, heartbeat, and fail-closed reconciliation"
 ```
 
 ---
@@ -332,10 +341,11 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wi
 
 ---
 
-### Task 4: Complete Data Deletion Lifecycle & Device Task Queue
+### Task 4: Complete Data Deletion Lifecycle & Tenant-Scoped Device Tasks
 
 **Files:**
 - Create: `supabase/functions/meta-data-deletion/index.ts`
+- Create: `supabase/functions/deletion-status/index.ts`
 - Create: `supabase/migrations/20260821000003_data_deletion_tables.sql`
 - Create: `src-tauri/src/conversation/facebook/deletion_sync.rs`
 - Create: `src-tauri/src/conversation/facebook/health_monitor.rs`
@@ -370,7 +380,7 @@ CREATE POLICY "Tenants sync own deletion tasks" ON meta_device_deletion_tasks
     FOR ALL USING (auth.uid() = tenant_id);
 ```
 
-- [ ] **Step 2: Implement Edge Function `/meta-data-deletion` with signed_request parser & task dispatch**
+- [ ] **Step 2: Implement Edge Functions `/meta-data-deletion` and `/deletion-status`**
 
 ```typescript
 // supabase/functions/meta-data-deletion/index.ts
@@ -447,11 +457,13 @@ serve(async (req: Request) => {
   }).select("id").single();
 
   if (error || !requestRow) {
-    console.error("Database error creating deletion request:", error);
     return new Response("Database error", { status: 500 });
   }
 
-  // Find all tenants with connected pages and dispatch device tasks
+  // Purge matching user events from webhook buffer
+  await supabaseAdmin.from("meta_webhook_buffer").delete().filter("payload->sender->>id", "eq", userId);
+
+  // Identify affected tenants with connected pages that have interacted with this user
   const { data: pages } = await supabaseAdmin.from("meta_tenant_pages").select("tenant_id");
   if (pages) {
     const uniqueTenants = Array.from(new Set(pages.map(p => p.tenant_id)));
@@ -475,12 +487,63 @@ serve(async (req: Request) => {
 });
 ```
 
-- [ ] **Step 3: Implement Desktop Deletion Sync and Local SQLite Anonymizer**
+```typescript
+// supabase/functions/deletion-status/index.ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+serve(async (req: Request) => {
+  const url = new URL(req.url);
+  const code = url.searchParams.get("id");
+  if (!code) return new Response("Missing id param", { status: 400 });
+
+  const { data: reqRow, error } = await supabaseAdmin
+    .from("data_deletion_requests")
+    .select("id, confirmation_code, status, completed_at")
+    .eq("confirmation_code", code)
+    .single();
+
+  if (error || !reqRow) return new Response("Not found", { status: 404 });
+
+  // Check if all device tasks have completed
+  const { data: pendingTasks } = await supabaseAdmin
+    .from("meta_device_deletion_tasks")
+    .select("id")
+    .eq("request_id", reqRow.id)
+    .neq("status", "completed");
+
+  const isAllComplete = pendingTasks && pendingTasks.length === 0;
+  const status = isAllComplete ? "completed" : reqRow.status;
+
+  if (isAllComplete && reqRow.status !== "completed") {
+    await supabaseAdmin.from("data_deletion_requests").update({
+      status: "completed",
+      completed_at: new Date().toISOString(),
+    }).eq("id", reqRow.id);
+  }
+
+  return new Response(JSON.stringify({
+    confirmation_code: reqRow.confirmation_code,
+    status,
+    completed_at: reqRow.completed_at,
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+});
+```
+
+- [ ] **Step 3: Implement Desktop Deletion Sync and Scoped Local Anonymizer**
 
 ```rust
 // src-tauri/src/conversation/facebook/deletion_sync.rs
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use std::fs;
 
 pub struct FacebookDeletionWorker;
 
@@ -488,19 +551,51 @@ impl FacebookDeletionWorker {
     pub fn anonymize_user_data_local(conn: &mut Connection, external_user_id: &str) -> Result<usize> {
         let tx = conn.transaction()?;
         
-        // 1. Anonymize leads
+        // 1. Anonymize leads scoped to messenger channel
         tx.execute(
             "UPDATE leads 
              SET name = 'Deleted User', email = NULL, phone = '', notes = '[Anonymized per GDPR/Meta privacy request]', updated_at = datetime('now')
-             WHERE id IN (SELECT lead_id FROM channel_identities WHERE external_id = ?1 AND lead_id IS NOT NULL)",
+             WHERE id IN (
+                 SELECT lead_id FROM channel_identities 
+                 WHERE channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?1 AND lead_id IS NOT NULL
+             )",
             params![external_user_id],
         )?;
 
-        // 2. Anonymize messages
+        // 2. Anonymize messages and delete attachment files
+        let attachment_paths: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT local_path FROM message_attachments 
+                 WHERE local_path IS NOT NULL AND message_id IN (
+                     SELECT id FROM messages WHERE sender_identity_id IN (
+                         SELECT id FROM channel_identities WHERE channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?1
+                     )
+                 )"
+            )?;
+            let rows = stmt.query_map([external_user_id], |r| r.get(0))?;
+            rows.flatten().collect()
+        };
+
+        for path in attachment_paths {
+            let _ = fs::remove_file(path);
+        }
+
+        tx.execute(
+            "DELETE FROM message_attachments 
+             WHERE message_id IN (
+                 SELECT id FROM messages WHERE sender_identity_id IN (
+                     SELECT id FROM channel_identities WHERE channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?1
+                 )
+             )",
+            params![external_user_id],
+        )?;
+
         tx.execute(
             "UPDATE messages 
              SET text_content = '[Deleted as per privacy request]', updated_at = datetime('now')
-             WHERE sender_identity_id IN (SELECT id FROM channel_identities WHERE external_id = ?1)",
+             WHERE sender_identity_id IN (
+                 SELECT id FROM channel_identities WHERE channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?1
+             )",
             params![external_user_id],
         )?;
 
@@ -508,7 +603,7 @@ impl FacebookDeletionWorker {
         let rows = tx.execute(
             "UPDATE channel_identities 
              SET display_name = 'Deleted User', avatar_url = NULL, normalized_address = NULL, updated_at = datetime('now')
-             WHERE external_id = ?1",
+             WHERE channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?1",
             params![external_user_id],
         )?;
 

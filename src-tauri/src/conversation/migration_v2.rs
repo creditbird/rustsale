@@ -1,20 +1,31 @@
 use rusqlite::{Connection, Result};
 use std::collections::HashSet;
 
-struct PragmaGuard<'a> {
+pub struct PragmaGuard<'a> {
     conn: &'a Connection,
-    restore_fk: bool,
-    restore_legacy_alter: bool,
+    initial_fk: i32,
+    initial_legacy_alter: i32,
+}
+
+impl<'a> PragmaGuard<'a> {
+    pub fn new(conn: &'a Connection) -> Self {
+        let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
+        let initial_legacy_alter: i32 = conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0)).unwrap_or(0);
+        Self {
+            conn,
+            initial_fk,
+            initial_legacy_alter,
+        }
+    }
 }
 
 impl<'a> Drop for PragmaGuard<'a> {
     fn drop(&mut self) {
-        if self.restore_legacy_alter {
-            let _ = self.conn.execute_batch("PRAGMA legacy_alter_table = OFF;");
-        }
-        if self.restore_fk {
-            let _ = self.conn.execute_batch("PRAGMA foreign_keys = ON;");
-        }
+        let _ = self.conn.execute_batch(&format!(
+            "PRAGMA legacy_alter_table = {}; PRAGMA foreign_keys = {};",
+            if self.initial_legacy_alter == 1 { "ON" } else { "OFF" },
+            if self.initial_fk == 1 { "ON" } else { "OFF" },
+        ));
     }
 }
 
@@ -24,14 +35,8 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
-    let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
+    let _guard = PragmaGuard::new(conn);
     let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
-
-    let mut guard = PragmaGuard {
-        conn,
-        restore_fk: initial_fk == 1,
-        restore_legacy_alter: false,
-    };
 
     let migration_result = (|| -> Result<()> {
         conn.execute_batch("SAVEPOINT migration_v2;")?;
@@ -91,7 +96,6 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
             let link_conf_expr = if existing_cols.contains("link_confidence") { "link_confidence" } else { "NULL" };
             let verif_at_expr = if existing_cols.contains("verified_at") { "verified_at" } else { "NULL" };
 
-            guard.restore_legacy_alter = true;
             conn.execute_batch("PRAGMA legacy_alter_table = ON;")?;
 
             let copy_sql = format!(
@@ -114,9 +118,7 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
                 "#
             );
             conn.execute_batch(&copy_sql)?;
-
             conn.execute_batch("PRAGMA legacy_alter_table = OFF;")?;
-            guard.restore_legacy_alter = false;
         } else {
             conn.execute_batch("ALTER TABLE channel_identities_v2 RENAME TO channel_identities;")?;
         }
@@ -193,25 +195,20 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
-    let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
+    let _guard = PragmaGuard::new(conn);
     let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
-
-    let _guard = PragmaGuard {
-        conn,
-        restore_fk: initial_fk == 1,
-        restore_legacy_alter: false,
-    };
 
     let migration_result = (|| -> Result<()> {
         conn.execute_batch("SAVEPOINT migration_v3;")?;
 
         conn.execute_batch(r#"
-            -- 1. Create channel_sync_dead_letters table with complete lifecycle and failed status
+            -- 1. Create channel_sync_dead_letters table with item_index, owner_id, and claim_deadline
             CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_account_id INTEGER NOT NULL,
                 scope TEXT NOT NULL,
                 event_id INTEGER NOT NULL,
+                item_index INTEGER NOT NULL DEFAULT 0,
                 event_type TEXT NOT NULL,
                 event_key TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
@@ -224,7 +221,7 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                 resolved_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
-                UNIQUE(channel_account_id, scope, event_id)
+                UNIQUE(channel_account_id, scope, event_id, item_index)
             );
             CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
             CREATE INDEX IF NOT EXISTS idx_dead_letters_status ON channel_sync_dead_letters(status, next_retry_at);
