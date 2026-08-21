@@ -284,36 +284,25 @@ pub async fn process_pending_device_tasks(
         }
 
         // 2. Transactional local anonymization and spool registration
-        {
+        let local_paths: Vec<String> = {
             let tx = conn.transaction()?;
 
-            // Ensure spool cleanups staging table exists
-            tx.execute(
-                "CREATE TABLE IF NOT EXISTS pending_spool_cleanups (
-                    task_id TEXT NOT NULL,
-                    local_path TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY(task_id, local_path)
-                )",
-                [],
-            )?;
-
-            // Find all attachments to delete and register under task_id
+            // Find all attachments to delete belonging to messages sent by this messenger identity
             let mut att_stmt = tx.prepare(
                 "SELECT ma.local_path 
                  FROM message_attachments ma 
                  JOIN messages m ON ma.message_id = m.id 
                  JOIN channel_identities ci ON m.sender_identity_id = ci.id 
-                 WHERE ci.channel = 'meta' AND ci.external_id = ?1 AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
+                 WHERE ci.channel = 'messenger' AND ci.external_id = ?1 AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
             )?;
-            let local_paths: Vec<String> = att_stmt
+            let paths: Vec<String> = att_stmt
                 .query_map([user_id], |r| r.get(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
 
-            for path in &local_paths {
+            for path in &paths {
                 tx.execute(
-                    "INSERT OR IGNORE INTO pending_spool_cleanups (task_id, local_path) VALUES (?1, ?2)",
-                    rusqlite::params![task_id, path],
+                    "INSERT OR IGNORE INTO pending_spool_cleanups (local_path, created_at) VALUES (?1, datetime('now'))",
+                    rusqlite::params![path],
                 )?;
             }
 
@@ -324,7 +313,7 @@ pub async fn process_pending_device_tasks(
                      content_json = '{\"type\":\"text\",\"text\":\"[Deleted for Compliance]\"}',
                      raw_payload_json = NULL
                  WHERE sender_identity_id IN (
-                     SELECT id FROM channel_identities WHERE channel = 'meta' AND external_id = ?1
+                     SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
                  )",
                 [user_id],
             )?;
@@ -334,29 +323,27 @@ pub async fn process_pending_device_tasks(
                 "UPDATE channel_identities 
                  SET display_name = 'Deleted User', 
                      avatar_url = NULL, 
-                     metadata_json = NULL, 
+                     profile_synced_at = datetime('now'),
                      updated_at = datetime('now') 
-                 WHERE channel = 'meta' AND external_id = ?1",
+                 WHERE channel = 'messenger' AND external_id = ?1",
                 [user_id],
             )?;
 
             tx.commit()?;
-        }
+            paths
+        };
 
-        // 3. Sweep task-scoped spool files from disk
-        let mut clean_stmt = conn.prepare("SELECT local_path FROM pending_spool_cleanups WHERE task_id = ?1")?;
-        let clean_paths: Vec<String> = clean_stmt.query_map([task_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-
+        // 3. Sweep spool files from disk and remove from pending_spool_cleanups
         let mut all_cleaned = true;
-        for path in clean_paths {
-            if std::path::Path::new(&path).exists() {
-                if std::fs::remove_file(&path).is_ok() {
-                    conn.execute("DELETE FROM pending_spool_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
+        for path in &local_paths {
+            if std::path::Path::new(path).exists() {
+                if std::fs::remove_file(path).is_ok() {
+                    conn.execute("DELETE FROM pending_spool_cleanups WHERE local_path = ?1", rusqlite::params![path])?;
                 } else {
                     all_cleaned = false;
                 }
             } else {
-                conn.execute("DELETE FROM pending_spool_cleanups WHERE task_id = ?1 AND local_path = ?2", rusqlite::params![task_id, path])?;
+                conn.execute("DELETE FROM pending_spool_cleanups WHERE local_path = ?1", rusqlite::params![path])?;
             }
         }
 
