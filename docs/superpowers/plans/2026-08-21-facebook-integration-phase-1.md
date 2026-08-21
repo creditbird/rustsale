@@ -930,14 +930,14 @@ impl FacebookSyncWorker {
                         let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
-                        let has_text = text_opt.is_some();
+                        let has_text = text_opt.map_or(false, |t| !t.trim().is_empty());
                         let has_atts = atts_opt.map_or(false, |a| !a.is_empty());
 
                         let mut valid_attachments = Vec::new();
                         if let Some(atts) = atts_opt {
                             for att in atts {
                                 let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
-                                if !att_url.is_empty() {
+                                if !att_url.trim().is_empty() {
                                     valid_attachments.push(att);
                                 }
                             }
@@ -947,7 +947,7 @@ impl FacebookSyncWorker {
                             // Quarantine malformed attachment-only event missing all URLs
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
-                                 VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                                 VALUES (?1, 'meta_webhook_cursor', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
                                 params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "malformed_attachments_missing_url"],
                             )?;
                             processed = true;
@@ -1013,7 +1013,7 @@ impl FacebookSyncWorker {
                                     let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
                                     let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
                                     let att_title = att.get("title").and_then(|t| t.as_str());
-                                    if !att_url.is_empty() {
+                                    if !att_url.trim().is_empty() {
                                         tx.execute(
                                             "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
                                              VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
@@ -1045,14 +1045,14 @@ impl FacebookSyncWorker {
                         let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
-                        let has_text = text_opt.is_some();
+                        let has_text = text_opt.map_or(false, |t| !t.trim().is_empty());
                         let has_atts = atts_opt.map_or(false, |a| !a.is_empty());
 
                         let mut valid_attachments = Vec::new();
                         if let Some(atts) = atts_opt {
                             for att in atts {
                                 let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
-                                if !att_url.is_empty() {
+                                if !att_url.trim().is_empty() {
                                     valid_attachments.push(att);
                                 }
                             }
@@ -1062,7 +1062,7 @@ impl FacebookSyncWorker {
                             // Quarantine malformed attachment-only echo missing all URLs
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
-                                 VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                                 VALUES (?1, 'meta_webhook_cursor', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
                                 params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "malformed_attachments_missing_url"],
                             )?;
                             processed = true;
@@ -1111,7 +1111,7 @@ impl FacebookSyncWorker {
                                     let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
                                     let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
                                     let att_title = att.get("title").and_then(|t| t.as_str());
-                                    if !att_url.is_empty() {
+                                    if !att_url.trim().is_empty() {
                                         tx.execute(
                                             "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
                                              VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
@@ -1182,7 +1182,7 @@ impl FacebookSyncWorker {
                                  FROM messages m
                                  JOIN channel_conversations c ON m.conversation_id = c.id
                                  WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
-                                   AND (m.provider_timestamp <= strftime('%Y-%m-%d %H:%M:%f', ?4 / 1000.0, 'unixepoch') OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
+                                   AND (m.provider_timestamp <= strftime('%Y-%m-%d %H:%M:%f', ?4 / 1000.0, 'unixepoch') OR (m.provider_timestamp IS NULL AND datetime(m.ingested_at) <= datetime(?4 / 1000, 'unixepoch')))",
                                 params![account_id, recipient_psid, r_type, watermark],
                             )?;
                             processed = true;
@@ -1216,7 +1216,7 @@ impl FacebookSyncWorker {
                 // Route unhandled / malformed payload to dedicated durable dead-letter table with full diagnostic metadata
                 tx.execute(
                     "INSERT OR IGNORE INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
-                     VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                     VALUES (?1, 'meta_webhook_cursor', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
                     params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "unhandled_or_malformed_payload"],
                 )?;
                 processed = true;
@@ -1230,7 +1230,7 @@ impl FacebookSyncWorker {
         if max_synced_id > 0 {
             tx.execute(
                 "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, last_event_at, updated_at)
-                 VALUES (?1, 'messenger', ?2, datetime('now'), datetime('now'))
+                 VALUES (?1, 'meta_webhook_cursor', ?2, datetime('now'), datetime('now'))
                  ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, last_event_at = datetime('now'), updated_at = datetime('now')",
                 params![account_id, max_synced_id.to_string()],
             )?;
