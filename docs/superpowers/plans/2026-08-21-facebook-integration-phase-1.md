@@ -295,12 +295,14 @@ git commit -m "feat(supabase): add secure meta webhook relay and atomic 60s oaut
 **Files:**
 - Create: `src-tauri/src/conversation/migration_v2.rs`
 - Modify: `src-tauri/src/conversation/schema.sql`
+- Modify: `src-tauri/src/conversation/migration.rs`
+- Modify: `src-tauri/src/conversation/mod.rs`
 - Create: `src-tauri/src/conversation/facebook/types.rs`
 - Create: `src-tauri/src/conversation/facebook/mod.rs`
 - Test: `src-tauri/src/conversation/facebook/types_test.rs`
 - Test: `src-tauri/src/conversation/migration_v2_test.rs`
 
-- [ ] **Step 1: Implement Full Copy-Table Migration V2 with RAII FK Guard, Foreign Key Check, and Partial Unique Indexes**
+- [ ] **Step 1: Implement Full Copy-Table Migration V2 and Incremental V3 with RAII FK Guard, Hooked into `migration.rs::migrate`**
 
 ```rust
 // src-tauri/src/conversation/migration_v2.rs
