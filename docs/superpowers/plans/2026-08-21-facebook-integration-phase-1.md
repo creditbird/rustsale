@@ -1012,12 +1012,13 @@ impl FacebookSyncWorker {
                                 for att in &valid_attachments {
                                     let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
                                     let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                    let trimmed_url = att_url.trim();
                                     let att_title = att.get("title").and_then(|t| t.as_str());
-                                    if !att_url.trim().is_empty() {
+                                    if !trimmed_url.is_empty() {
                                         tx.execute(
                                             "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
                                              VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                            params![msg_id, att_type, att_title, att_url],
+                                            params![msg_id, att_type, att_title, trimmed_url],
                                         )?;
                                     }
                                 }
@@ -1110,12 +1111,13 @@ impl FacebookSyncWorker {
                                 for att in &valid_attachments {
                                     let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
                                     let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                    let trimmed_url = att_url.trim();
                                     let att_title = att.get("title").and_then(|t| t.as_str());
-                                    if !att_url.trim().is_empty() {
+                                    if !trimmed_url.is_empty() {
                                         tx.execute(
                                             "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
                                              VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                            params![msg_id, att_type, att_title, att_url],
+                                            params![msg_id, att_type, att_title, trimmed_url],
                                         )?;
                                     }
                                 }

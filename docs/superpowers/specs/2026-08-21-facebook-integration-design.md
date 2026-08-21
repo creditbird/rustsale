@@ -223,6 +223,7 @@ CREATE TABLE IF NOT EXISTS facebook_comment_logs (
     skip_reason TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(automation_id) REFERENCES facebook_comment_automations(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fb_comment_logs_page_date ON facebook_comment_logs(page_id, created_at);
