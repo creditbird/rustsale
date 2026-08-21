@@ -102,6 +102,20 @@ All SQLite database migrations enforce `PRAGMA foreign_keys = ON;`.
 
 ```sql
 -- 1. Bảng quản lý Token và cấu hình riêng cho từng Fanpage
+
+CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL REFERENCES channel_accounts(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    error_reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
+
 CREATE TABLE IF NOT EXISTS facebook_page_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_account_id INTEGER NOT NULL UNIQUE,

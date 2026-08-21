@@ -887,6 +887,7 @@ impl FacebookSyncWorker {
                         let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+                        let timestamp_ms = ev.payload.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
 
                         if !sender_psid.is_empty() {
                             tx.execute(
@@ -914,6 +915,7 @@ impl FacebookSyncWorker {
                         let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+                        let timestamp_ms = ev.payload.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
 
                         if !recipient_psid.is_empty() {
                             tx.execute(
@@ -996,11 +998,11 @@ impl FacebookSyncWorker {
             }
 
             if !processed {
-                // Quarantine unhandled / malformed payload in dead-letter table to prevent indefinite queue stalls
+                // Route unhandled / malformed payload to dedicated durable dead-letter table with full diagnostic metadata
                 tx.execute(
-                    "INSERT OR IGNORE INTO channel_sync_checkpoints (channel_account_id, scope, cursor, last_event_at, updated_at)
-                     VALUES (?1, 'messenger_dead_letter', ?2, datetime('now'), datetime('now'))",
-                    params![account_id, ev.id.to_string()],
+                    "INSERT INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
+                     VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                    params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "unhandled_or_malformed_payload"],
                 )?;
                 processed = true;
             }
