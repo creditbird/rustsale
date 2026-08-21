@@ -924,6 +924,17 @@ impl FacebookSyncWorker {
 
                         if (has_text || has_atts) && !sender_psid.is_empty() {
                             tx.execute(
+                                "INSERT OR IGNORE INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+                                 VALUES ('messenger', ?1, 'psid', ?2, datetime('now'), datetime('now'))",
+                                params![account_id, sender_psid],
+                            )?;
+                            let identity_id: i64 = tx.query_row(
+                                "SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND external_id = ?2",
+                                params![account_id, sender_psid],
+                                |r| r.get(0),
+                            )?;
+
+                            tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
                                  VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
                                 params![account_id, sender_psid],
@@ -941,13 +952,13 @@ impl FacebookSyncWorker {
                             };
                             let text_content = text_opt.unwrap_or("");
 
-                            let affected = tx.execute(
-                                "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'inbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN datetime(?5 / 1000, 'unixepoch') ELSE NULL END, datetime('now'))
+                            tx.execute(
+                                "INSERT INTO messages (conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
+                                 VALUES (?1, ?2, 'inbound', ?3, ?4, ?5, CASE WHEN ?6 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%f', ?6 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
                                    provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
                                  WHERE messages.direction = excluded.direction",
-                                params![conv_id, mid, content_type, text_content, timestamp_ms],
+                                params![conv_id, identity_id, mid, content_type, text_content, timestamp_ms],
                             )?;
 
                             let msg_id_opt: Option<i64> = tx.query_row(
@@ -962,13 +973,20 @@ impl FacebookSyncWorker {
                                         let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
                                         let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
                                         let att_title = att.get("title").and_then(|t| t.as_str());
-                                        tx.execute(
-                                            "INSERT INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
-                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                            params![msg_id, att_type, att_title, att_url],
-                                        )?;
+                                        if !att_url.is_empty() {
+                                            tx.execute(
+                                                "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                                 VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
+                                                params![msg_id, att_type, att_title, att_url],
+                                            )?;
+                                        }
                                     }
                                 }
+
+                                tx.execute(
+                                    "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
+                                    params![conv_id],
+                                )?;
                                 processed = true;
                             }
                         }
@@ -1004,9 +1022,9 @@ impl FacebookSyncWorker {
                             };
                             let text_content = text_opt.unwrap_or("");
 
-                            let affected = tx.execute(
+                            tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'outbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN datetime(?5 / 1000, 'unixepoch') ELSE NULL END, datetime('now'))
+                                 VALUES (?1, 'outbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%f', ?5 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
                                    provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
                                  WHERE messages.direction = excluded.direction",
@@ -1025,13 +1043,20 @@ impl FacebookSyncWorker {
                                         let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
                                         let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
                                         let att_title = att.get("title").and_then(|t| t.as_str());
-                                        tx.execute(
-                                            "INSERT INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
-                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                            params![msg_id, att_type, att_title, att_url],
-                                        )?;
+                                        if !att_url.is_empty() {
+                                            tx.execute(
+                                                "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                                 VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
+                                                params![msg_id, att_type, att_title, att_url],
+                                            )?;
+                                        }
                                     }
                                 }
+
+                                tx.execute(
+                                    "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
+                                    params![conv_id],
+                                )?;
                                 processed = true;
                             }
                         }
@@ -1077,14 +1102,14 @@ impl FacebookSyncWorker {
                             }
                         } else if watermark > 0 {
                             let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
-                            // Cumulative watermark resolution across all preceding qualifying outbound messages using authoritative provider timestamp
+                            // Cumulative watermark resolution across all preceding qualifying outbound messages using fractional-second ISO timestamp
                             tx.execute(
                                 "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
-                                 SELECT m.id, ?2, ?3, datetime(?4 / 1000, 'unixepoch')
+                                 SELECT m.id, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%f', ?4 / 1000.0, 'unixepoch')
                                  FROM messages m
                                  JOIN channel_conversations c ON m.conversation_id = c.id
                                  WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
-                                   AND (m.provider_timestamp <= datetime(?4 / 1000, 'unixepoch') OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
+                                   AND (m.provider_timestamp <= strftime('%Y-%m-%dT%H:%M:%f', ?4 / 1000.0, 'unixepoch') OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
                                 params![account_id, recipient_psid, r_type, watermark],
                             )?;
                             processed = true;
