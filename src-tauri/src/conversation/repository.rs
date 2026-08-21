@@ -1046,8 +1046,17 @@ impl ConversationRepository {
                          metadata_json = CASE
                              WHEN ?9 IS NULL THEN metadata_json
                              WHEN metadata_json IS NULL THEN ?9
-                             WHEN json_valid(metadata_json) AND json_valid(?9) THEN json_patch(metadata_json, ?9)
-                             ELSE COALESCE(?9, metadata_json)
+                             WHEN json_valid(metadata_json) AND json_valid(?9) AND json_type(?9) = 'object' THEN (
+                                 SELECT json_patch(
+                                     json_patch(metadata_json, ?9),
+                                     json_object(
+                                         'provider_attachment_id_aliases', json(COALESCE(json_extract(metadata_json, '$.provider_attachment_id_aliases'), 'null')),
+                                         'remote_url_aliases', json(COALESCE(json_extract(metadata_json, '$.remote_url_aliases'), 'null')),
+                                         '_merged_attachment_rows', json(COALESCE(json_extract(metadata_json, '$._merged_attachment_rows'), 'null'))
+                                     )
+                                 )
+                             )
+                             ELSE metadata_json
                          END
                      WHERE message_id = ?1
                        AND (

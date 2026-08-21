@@ -4027,7 +4027,12 @@ fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
             size_bytes: Some(1024),
             remote_url: Some("https://cdn.example.com/alias_url_2.png".to_string()),
             thumbnail_url: None,
-            metadata_json: Some(serde_json::json!({"custom_tag": "tag1"})),
+            metadata_json: Some(serde_json::json!({
+                "provider_attachment_id_aliases": null,
+                "remote_url_aliases": null,
+                "_merged_attachment_rows": null,
+                "custom_tag": "tag1"
+            })),
         }],
         reply: None,
         mentions: Vec::new(),
@@ -4066,7 +4071,11 @@ fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
     assert_eq!(file_name, "updated_photo.png");
     let meta_json: serde_json::Value = serde_json::from_str(&meta_str).unwrap();
     assert_eq!(meta_json["custom_tag"], "tag1");
-    assert!(meta_json["provider_attachment_id_aliases"].is_array());
+    assert_eq!(
+        meta_json["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"]),
+        "Preserved alias array must NOT be removed by incoming null"
+    );
 
     // 3. Replay again with second alias "att_alias_1" and another metadata field
     let mut replay_msg_2 = replay_msg.clone();
@@ -4089,5 +4098,8 @@ fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
     let meta_json_2: serde_json::Value = serde_json::from_str(&meta_str_2).unwrap();
     assert_eq!(meta_json_2["custom_tag"], "tag1");
     assert_eq!(meta_json_2["second_tag"], "tag2");
-    assert!(meta_json_2["provider_attachment_id_aliases"].is_array());
+    assert_eq!(
+        meta_json_2["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"])
+    );
 }
