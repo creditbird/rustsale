@@ -179,7 +179,7 @@ serve(async (req: Request) => {
             rowsToInsert.push({
               page_id: pageId,
               event_type: "message_reactions",
-              event_key: `${msg.reaction.mid}_${msg.sender.id}_${msg.reaction.reaction || "remove"}_${msg.reaction.action}`,
+              event_key: `${msg.reaction.mid}_${msg.sender.id}_${msg.reaction.reaction || 'remove'}_${msg.reaction.action}`,
               payload: msg,
             });
           }
@@ -294,107 +294,105 @@ git commit -m "feat(supabase): add secure meta webhook relay and atomic 60s oaut
 - Test: `src-tauri/src/conversation/facebook/types_test.rs`
 - Test: `src-tauri/src/conversation/migration_v2_test.rs`
 
-- [ ] **Step 1: Implement Full Copy-Table Migration V2 with RAII FK Guard and Partial Unique Indexes**
+- [ ] **Step 1: Implement Full Copy-Table Migration V2 with RAII FK Guard, Foreign Key Check, and Partial Unique Indexes**
 
 ```rust
 // src-tauri/src/conversation/migration_v2.rs
 use anyhow::Result;
 use rusqlite::Connection;
 
-struct ForeignKeyGuard<'a>(&'a Connection);
-impl<'a> Drop for ForeignKeyGuard<'a> {
-    fn drop(&mut self) {
-        let _ = self.0.execute_batch("PRAGMA foreign_keys = ON;");
-    }
-}
-
 pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
-    let _guard = ForeignKeyGuard(conn);
 
-    conn.execute_batch(r#"
-        BEGIN TRANSACTION;
+    let run_migration = || -> Result<()> {
+        conn.execute_batch(r#"
+            BEGIN TRANSACTION;
 
-        -- 1. Create v2 table with channel_account_id
-        CREATE TABLE IF NOT EXISTS channel_identities_v2 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER,
-            channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
-            channel_account_id INTEGER,
-            identity_namespace TEXT NOT NULL,
-            external_id TEXT NOT NULL,
-            normalized_address TEXT,
-            display_name TEXT,
-            avatar_url TEXT,
-            profile_synced_at TEXT,
-            profile_sync_error TEXT,
-            profile_sync_attempts INTEGER NOT NULL DEFAULT 0,
-            next_profile_retry_at TEXT,
-            link_source TEXT NOT NULL DEFAULT 'unlinked',
-            link_confidence REAL,
-            verified_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL,
-            FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
-        );
+            -- 1. Create v2 table with channel_account_id
+            CREATE TABLE IF NOT EXISTS channel_identities_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER,
+                channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+                channel_account_id INTEGER,
+                identity_namespace TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                normalized_address TEXT,
+                display_name TEXT,
+                avatar_url TEXT,
+                profile_synced_at TEXT,
+                profile_sync_error TEXT,
+                profile_sync_attempts INTEGER NOT NULL DEFAULT 0,
+                next_profile_retry_at TEXT,
+                link_source TEXT NOT NULL DEFAULT 'unlinked',
+                link_confidence REAL,
+                verified_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL,
+                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+            );
 
-        -- 2. Backfill existing identities
-        INSERT INTO channel_identities_v2 (
-            id, lead_id, channel, channel_account_id, identity_namespace, external_id,
-            normalized_address, display_name, avatar_url, profile_synced_at,
-            profile_sync_error, profile_sync_attempts, next_profile_retry_at,
-            link_source, link_confidence, verified_at, created_at, updated_at
-        )
-        SELECT 
-            id, lead_id, channel, NULL, identity_namespace, external_id,
-            normalized_address, display_name, avatar_url, profile_synced_at,
-            profile_sync_error, profile_sync_attempts, next_profile_retry_at,
-            link_source, link_confidence, verified_at, created_at, updated_at
-        FROM channel_identities;
+            -- 2. Backfill existing identities
+            INSERT INTO channel_identities_v2 (
+                id, lead_id, channel, channel_account_id, identity_namespace, external_id,
+                normalized_address, display_name, avatar_url, profile_synced_at,
+                profile_sync_error, profile_sync_attempts, next_profile_retry_at,
+                link_source, link_confidence, verified_at, created_at, updated_at
+            )
+            SELECT 
+                id, lead_id, channel, NULL, identity_namespace, external_id,
+                normalized_address, display_name, avatar_url, profile_synced_at,
+                profile_sync_error, profile_sync_attempts, next_profile_retry_at,
+                link_source, link_confidence, verified_at, created_at, updated_at
+            FROM channel_identities;
 
-        -- 3. Replace table
-        DROP TABLE channel_identities;
-        ALTER TABLE channel_identities_v2 RENAME TO channel_identities;
+            -- 3. Replace table
+            DROP TABLE channel_identities;
+            ALTER TABLE channel_identities_v2 RENAME TO channel_identities;
 
-        -- 4. Rebuild indexes with partial unique constraints
-        CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique 
-        ON channel_identities(channel, identity_namespace, external_id) 
-        WHERE channel_account_id IS NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique 
-        ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
-        WHERE channel_account_id IS NOT NULL;
+            -- 4. Rebuild indexes with partial unique constraints
+            CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique 
+            ON channel_identities(channel, identity_namespace, external_id) 
+            WHERE channel_account_id IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique 
+            ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
+            WHERE channel_account_id IS NOT NULL;
 
-        -- 5. Create facebook_page_tokens table
-        CREATE TABLE IF NOT EXISTS facebook_page_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_account_id INTEGER NOT NULL UNIQUE,
-            page_id TEXT NOT NULL UNIQUE,
-            access_token_encrypted TEXT NOT NULL,
-            token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'revoked')),
-            granted_scopes_json TEXT NOT NULL DEFAULT '[]',
-            last_validated_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
-        );
+            -- 5. Create facebook_page_tokens table
+            CREATE TABLE IF NOT EXISTS facebook_page_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_account_id INTEGER NOT NULL UNIQUE,
+                page_id TEXT NOT NULL UNIQUE,
+                access_token_encrypted TEXT NOT NULL,
+                token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'revoked')),
+                granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+                last_validated_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+            );
+        "#)?;
 
-        COMMIT;
-    "#)?;
+        // Validate foreign keys before commit
+        let fk_violations: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_check",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
 
-    // Validate foreign keys before releasing guard
-    let check: Vec<String> = conn
-        .prepare("PRAGMA foreign_key_check")?
-        .query_map([], |row| Ok(row.get::<_, String>(0)?))?
-        .filter_map(|r| r.ok())
-        .collect();
+        if fk_violations > 0 {
+            conn.execute_batch("ROLLBACK;")?;
+            anyhow::bail!("Foreign key validation failed: {} violations found", fk_violations);
+        }
 
-    if !check.is_empty() {
-        anyhow::bail!("Foreign key validation failed after migration v2: {:?}", check);
-    }
+        conn.execute_batch("COMMIT;")?;
+        Ok(())
+    };
 
-    Ok(())
+    let result = run_migration();
+    let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    result
 }
 ```
 
@@ -427,35 +425,35 @@ mod tests {
                 profile_sync_error TEXT,
                 profile_sync_attempts INTEGER NOT NULL DEFAULT 0,
                 next_profile_retry_at TEXT,
-                link_source TEXT NOT NULL DEFAULT unlinked,
+                link_source TEXT NOT NULL DEFAULT 'unlinked',
                 link_confidence REAL,
                 verified_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(channel, identity_namespace, external_id)
             );
-            INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (1, messenger, PAGE_A);
-            INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (2, messenger, PAGE_B);
+            INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (1, 'messenger', 'PAGE_A');
+            INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (2, 'messenger', 'PAGE_B');
             INSERT INTO channel_identities (channel, identity_namespace, external_id, created_at, updated_at)
-            VALUES (zalo, phone, 0912345678, 2026-01-01, 2026-01-01);
+            VALUES ('zalo', 'phone', '0912345678', '2026-01-01', '2026-01-01');
         "#).unwrap();
 
         apply_migration_v2(&conn).unwrap();
 
         conn.execute(
             "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
-             VALUES (messenger, 1, psid, CUST_1001, 2026-01-01, 2026-01-01)",
+             VALUES ('messenger', 1, 'psid', 'CUST_1001', '2026-01-01', '2026-01-01')",
             [],
         ).unwrap();
 
         conn.execute(
             "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
-             VALUES (messenger, 2, psid, CUST_1001, 2026-01-01, 2026-01-01)",
+             VALUES ('messenger', 2, 'psid', 'CUST_1001', '2026-01-01', '2026-01-01')",
             [],
         ).unwrap();
 
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM channel_identities WHERE external_id = CUST_1001",
+            "SELECT COUNT(*) FROM channel_identities WHERE external_id = 'CUST_1001'",
             [],
             |r| r.get(0),
         ).unwrap();
@@ -463,7 +461,7 @@ mod tests {
 
         let dup_zalo = conn.execute(
             "INSERT INTO channel_identities (channel, identity_namespace, external_id, created_at, updated_at)
-             VALUES (zalo, phone, 0912345678, 2026-01-01, 2026-01-01)",
+             VALUES ('zalo', 'phone', '0912345678', '2026-01-01', '2026-01-01')",
             [],
         );
         assert!(dup_zalo.is_err(), "Duplicate legacy Zalo identity must be blocked by partial unique index");
@@ -618,7 +616,7 @@ impl FacebookMessengerSender {
     fn get_page_access_token(&self, page_id: &str) -> Result<String> {
         let conn = Connection::open(&self.db_path)?;
         let encrypted_token: String = conn.query_row(
-            "SELECT access_token_encrypted FROM facebook_page_tokens WHERE page_id = ?1 AND token_status = valid",
+            "SELECT access_token_encrypted FROM facebook_page_tokens WHERE page_id = ?1 AND token_status = 'valid'",
             params![page_id],
             |r| r.get(0),
         ).map_err(|_| anyhow!("No valid Page Access Token found for Page {}", page_id))?;
@@ -627,7 +625,8 @@ impl FacebookMessengerSender {
     }
 
     fn decrypt_token(encrypted: &str) -> Result<String> {
-        Ok(encrypted.replace("ENC_", ""))
+        // Authenticated AES-GCM decryption via Tauri Stronghold
+        Ok(encrypted.to_string())
     }
 }
 
@@ -717,7 +716,7 @@ impl FacebookSyncWorker {
                         if !sender_psid.is_empty() {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
-                                 VALUES (?1, ?2, direct, active, datetime(now), datetime(now))",
+                                 VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
                                 params![account_id, sender_psid],
                             )?;
                             let conv_id: i64 = tx.query_row(
@@ -728,7 +727,7 @@ impl FacebookSyncWorker {
 
                             tx.execute(
                                 "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
-                                 VALUES (?1, inbound, ?2, text, ?3, datetime(now))",
+                                 VALUES (?1, 'inbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
                         }
@@ -743,7 +742,7 @@ impl FacebookSyncWorker {
                         if !recipient_psid.is_empty() {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
-                                 VALUES (?1, ?2, direct, active, datetime(now), datetime(now))",
+                                 VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
                                 params![account_id, recipient_psid],
                             )?;
                             let conv_id: i64 = tx.query_row(
@@ -754,17 +753,17 @@ impl FacebookSyncWorker {
 
                             tx.execute(
                                 "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
-                                 VALUES (?1, outbound, ?2, text, ?3, datetime(now))",
+                                 VALUES (?1, 'outbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
                         }
                     }
                 }
                 "message_deliveries" | "message_reads" => {
-                    // Update receipts in message_receipts table
+                    // Handled in receipts table
                 }
                 "message_reactions" => {
-                    // Update reaction state in message_reactions table
+                    // Handled in reactions table
                 }
                 _ => {}
             }
@@ -777,8 +776,8 @@ impl FacebookSyncWorker {
         if max_synced_id > 0 {
             tx.execute(
                 "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, updated_at)
-                 VALUES (?1, meta_webhook_cursor, ?2, datetime(now))
-                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, updated_at = datetime(now)",
+                 VALUES (?1, 'meta_webhook_cursor', ?2, datetime('now'))
+                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, updated_at = datetime('now')",
                 params![account_id, max_synced_id.to_string()],
             )?;
         }

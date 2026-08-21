@@ -13,8 +13,8 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, status) VALUES (?, 'processing')`) before sending Private Reply via Meta Send API. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
-| **REQ-FB-14** | Idempotent Lead Ads Ingestion | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /{leadgen_id}`; parses both standard contact fields and arbitrary custom form questions into `leads` table with `UNIQUE(leadgen_id)`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT OR IGNORE INTO facebook_comment_logs (comment_id, private_reply_status) VALUES (?, 'processing')`) before sending Private Reply via Meta Send API. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-14** | Idempotent Lead Ads Ingestion | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /{leadgen_id}`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
 | **REQ-FB-15** | Data Deletion Compliance Endpoint | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta signed_request and returns confirmation code with status tracking URL. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
 
 ---
@@ -100,16 +100,17 @@ impl CommentEngine {
             return Ok("skipped_outside_7_days".to_string());
         }
 
-        // 3. Atomic claim lock
+        // 3. Atomic claim lock (recoverable lease if failed or expired)
         let tx = conn.transaction()?;
         let rows_affected = tx.execute(
-            "INSERT OR IGNORE INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'processing', datetime('now'))",
+            "INSERT INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'processing', datetime('now'))
+             ON CONFLICT(comment_id) DO UPDATE SET private_reply_status = 'processing'
+             WHERE private_reply_status = 'failed' OR (private_reply_status = 'processing' AND created_at < datetime('now', '-5 minutes'))",
             params![comment_id, page_id, sender_id, comment_text],
         )?;
 
         if rows_affected == 0 {
-            // Already claimed or replied
             return Ok("skipped_already_claimed".to_string());
         }
         tx.commit()?;
@@ -147,10 +148,10 @@ impl CommentEngine {
             }
             Err(e) => {
                 conn.execute(
-                    "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2 WHERE comment_id = ?1",
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', error_message = ?2 WHERE comment_id = ?1",
                     params![comment_id, e.to_string()],
                 )?;
-                Err(anyhow!("Network failure: {}", e))
+                Err(anyhow!("Network timeout / transport failure: {}", e))
             }
         }
     }
@@ -166,7 +167,7 @@ git commit -m "feat(facebook): implement complete comment automation engine with
 
 ---
 
-### Task 3: Facebook Lead Ads Ingestion Pipeline with Custom Question Retention
+### Task 3: Facebook Lead Ads Ingestion Pipeline with Dedicated Column & ON CONFLICT
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/lead_ads_ingestion.rs`
@@ -197,18 +198,7 @@ impl FacebookLeadIngestor {
         conn: &mut Connection,
         token: &str,
         leadgen_id: &str,
-    ) -> Result<i64> {
-        // Idempotency check: if already ingested, return existing ID
-        let existing: Option<i64> = conn.query_row(
-            "SELECT id FROM leads WHERE notes LIKE ?1",
-            params![format!("%Facebook Leadgen ID: {}%", leadgen_id)],
-            |r| r.get(0),
-        ).ok();
-
-        if let Some(id) = existing {
-            return Ok(id);
-        }
-
+    ) -> Result<Option<i64>> {
         // Fetch lead payload from Graph API
         let client = Client::new();
         let url = format!("https://graph.facebook.com/v26.0/{}", leadgen_id);
@@ -242,18 +232,25 @@ impl FacebookLeadIngestor {
             }
         }
 
-        let notes = format!("Source: Facebook Lead Ads\nFacebook Leadgen ID: {}\nCustom: {}", leadgen_id, Value::Object(custom_map));
+        let custom_fields_json = Value::Object(custom_map).to_string();
+        let notes = format!("Source: Facebook Lead Ads (Form ID: {})", leadgen_id);
 
         let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO leads (name, phone, email, notes, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
-            params![name, phone, email, notes],
+        let rows = tx.execute(
+            "INSERT INTO leads (leadgen_id, name, phone, email, custom_fields_json, notes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))
+             ON CONFLICT(leadgen_id) DO NOTHING",
+            params![leadgen_id, name, phone, email, custom_fields_json, notes],
         )?;
-        let id = tx.last_insert_rowid();
-        tx.commit()?;
 
-        Ok(id)
+        let inserted_id = if rows > 0 {
+            Some(tx.last_insert_rowid())
+        } else {
+            None
+        };
+
+        tx.commit()?;
+        Ok(inserted_id)
     }
 }
 ```

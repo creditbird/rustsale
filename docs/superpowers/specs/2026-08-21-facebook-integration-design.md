@@ -1,7 +1,7 @@
 # Facebook Integration Design Specification — RustSale v2
 
 **Date:** 2026-08-21  
-**Status:** Approved Architecture (Fable 5 / GPT-5.6 Sol Review Round 3 Remediated)  
+**Status:** Approved Architecture (Fable 5 / GPT-5.6 Sol Review Round 4 Remediated)  
 **Author / Reviewer:** Antigravity Team & Lead Architect  
 **Target Platform:** Tauri 2.0 (Rust) + Svelte 5 (Runes) + SQLite Local + Supabase (Auth, RLS, Edge Functions)
 
@@ -36,7 +36,7 @@ flowchart TD
 
     subgraph Desktop_App ["RustSale Desktop App (Local-First Native)"]
         DeepLink["tauri-plugin-deep-link (rustsale://auth/facebook?exchange_code=...)"]
-        Stronghold["Tauri Stronghold / OS Keyring (Encrypted Local Storage)"]
+        Stronghold["Tauri Stronghold / OS Keyring (AES-256 Authenticated Local Storage)"]
         RustSyncWorker["Rust Inbound Sync Worker (Multi-Event Catch-up + Cursor)"]
         RustOutbox["Rust Outbox Sender (Exponential Backoff + Typed Error Classifier)"]
         SQLite[("Local SQLite DB (channel_accounts, messages, posts, leads)")]
@@ -212,11 +212,6 @@ CREATE TABLE IF NOT EXISTS facebook_comment_logs (
     FOREIGN KEY(automation_id) REFERENCES facebook_comment_automations(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fb_comment_logs_page_date ON facebook_comment_logs(page_id, created_at);
-
--- 6. Leads table với dedicated column leadgen_id
-ALTER TABLE leads ADD COLUMN leadgen_id TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_leadgen_id ON leads(leadgen_id) WHERE leadgen_id IS NOT NULL;
-ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';
 ```
 
 ### 3.2 Supabase Cloud Relay Schema & Multi-Tenant RLS
