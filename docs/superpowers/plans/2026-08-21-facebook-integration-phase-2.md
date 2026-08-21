@@ -94,7 +94,7 @@ git commit -m "feat(facebook): implement post scheduler types and mode decision 
 - Create: `src-tauri/src/conversation/facebook/media_uploader.rs`
 - Test: `src-tauri/src/conversation/facebook/media_uploader_test.rs`
 
-- [ ] **Step 1: Implement 3-Phase Resumable Video Uploader on `graph-video.facebook.com`**
+- [ ] **Step 1: Implement 3-Phase Resumable Video & Reels Uploader on `graph-video.facebook.com`**
 
 ```rust
 // src-tauri/src/conversation/facebook/media_uploader.rs
@@ -132,6 +132,34 @@ impl FacebookMediaUploader {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("Photo upload failed: {:?}", body))
+    }
+
+    pub async fn upload_multi_photo_post(
+        &self,
+        page_id: &str,
+        message: &str,
+        photos_bytes: Vec<Vec<u8>>,
+        scheduled_publish_time: Option<i64>,
+    ) -> Result<String> {
+        let mut attached_media = Vec::new();
+        for photo in photos_bytes {
+            let fbid = self.upload_photo_unpublished(page_id, photo).await?;
+            attached_media.push(serde_json::json!({ "media_fbid": fbid }));
+        }
+
+        let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
+        let mut params = vec![
+            ("message", message.to_string()),
+            ("attached_media", serde_json::to_string(&attached_media)?),
+        ];
+        if let Some(t) = scheduled_publish_time {
+            params.push(("published", "false".to_string()));
+            params.push(("scheduled_publish_time", t.to_string()));
+        }
+
+        let resp = self.http.post(&url).bearer_auth(&self.token).form(&params).send().await?;
+        let body: Value = resp.json().await?;
+        body.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).ok_or_else(|| anyhow!("Multi photo post failed: {:?}", body))
     }
 
     pub async fn start_resumable_video_session(&self, page_id: &str, file_size_bytes: u64) -> Result<(String, String)> {
@@ -204,6 +232,18 @@ impl FacebookMediaUploader {
             return Err(anyhow!("Finish video upload failed: {:?}", body));
         }
         Ok(session_id.to_string())
+    }
+
+    pub async fn publish_reel(
+        &self,
+        page_id: &str,
+        video_bytes: Vec<u8>,
+        description: &str,
+        scheduled_publish_time: Option<i64>,
+    ) -> Result<String> {
+        let (session_id, _) = self.start_resumable_video_session(page_id, video_bytes.len() as u64).await?;
+        let _ = self.transfer_video_chunk(page_id, &session_id, 0, video_bytes).await?;
+        self.finish_resumable_video_session(page_id, &session_id, "Reel", description, scheduled_publish_time).await
     }
 }
 ```

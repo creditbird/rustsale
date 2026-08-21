@@ -13,7 +13,7 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT OR IGNORE INTO facebook_comment_logs (comment_id, private_reply_status) VALUES (?, 'processing')`) before sending Private Reply via Meta Send API. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) before sending Private Reply via Meta Send API. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
 | **REQ-FB-14** | Idempotent Lead Ads Ingestion | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /{leadgen_id}`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
 | **REQ-FB-15** | Data Deletion Compliance Endpoint | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta signed_request and returns confirmation code with status tracking URL. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
 
@@ -89,6 +89,7 @@ impl CommentEngine {
         sender_id: &str,
         comment_text: &str,
         reply_message: &str,
+        worker_id: &str,
         created_time: DateTime<Utc>,
     ) -> Result<String> {
         // 1. Loop guard
@@ -103,11 +104,15 @@ impl CommentEngine {
         // 3. Atomic claim lock (recoverable lease if failed or expired)
         let tx = conn.transaction()?;
         let rows_affected = tx.execute(
-            "INSERT INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'processing', datetime('now'))
-             ON CONFLICT(comment_id) DO UPDATE SET private_reply_status = 'processing'
-             WHERE private_reply_status = 'failed' OR (private_reply_status = 'processing' AND created_at < datetime('now', '-5 minutes'))",
-            params![comment_id, page_id, sender_id, comment_text],
+            "INSERT INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, owner_id, claim_deadline, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'processing', ?5, datetime('now', '+5 minutes'), datetime('now'))
+             ON CONFLICT(comment_id) DO UPDATE SET 
+                 private_reply_status = 'processing',
+                 owner_id = ?5,
+                 claim_deadline = datetime('now', '+5 minutes')
+             WHERE private_reply_status = 'failed' 
+                OR (private_reply_status = 'processing' AND claim_deadline < datetime('now'))",
+            params![comment_id, page_id, sender_id, comment_text, worker_id],
         )?;
 
         if rows_affected == 0 {
@@ -271,6 +276,40 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wi
 - Create: `src-tauri/src/conversation/facebook/health_monitor.rs`
 
 - [ ] **Step 1: Implement Edge Function `/meta-data-deletion` with signed_request parser**
+
+```typescript
+// supabase/functions/meta-data-deletion/index.ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+const META_APP_SECRET = Deno.env.get("META_APP_SECRET") || "";
+
+function parseSignedRequest(signedRequest: string): any {
+  const [encodedSig, payload] = signedRequest.split(".");
+  const data = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0))));
+  return data;
+}
+
+serve(async (req: Request) => {
+  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const formData = await req.formData();
+  const signedRequest = formData.get("signed_request") as string;
+  if (!signedRequest) return new Response("Missing signed_request", { status: 400 });
+
+  const data = parseSignedRequest(signedRequest);
+  const userId = data.user_id;
+  const confirmationCode = crypto.randomUUID();
+
+  return new Response(JSON.stringify({
+    url: `https://rustsale.trantrongtri.com/deletion-status?id=${confirmationCode}`,
+    confirmation_code: confirmationCode,
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+});
+```
+
 - [ ] **Step 2: Commit Task 4**
 
 ```bash

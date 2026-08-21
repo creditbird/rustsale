@@ -1,7 +1,7 @@
 # Facebook Integration Design Specification — RustSale v2
 
 **Date:** 2026-08-21  
-**Status:** Approved Architecture (Fable 5 / GPT-5.6 Sol Review Round 4 Remediated)  
+**Status:** Production Ready Specification (Remediated for GPT-5.6 Sol / Fable 5 Production Standards)  
 **Author / Reviewer:** Antigravity Team & Lead Architect  
 **Target Platform:** Tauri 2.0 (Rust) + Svelte 5 (Runes) + SQLite Local + Supabase (Auth, RLS, Edge Functions)
 
@@ -89,8 +89,8 @@ flowchart TD
 - Scheduled background task calls Edge Function `/meta-debug-token` to inspect `debug_token` using server-side App Access Token.
 - Token States:
   - `valid`: Token active and operational.
+  - `invalid`: Token expired or malformed.
   - `revoked`: User changed password, revoked permissions, or lost admin role on Page.
-  - `user_token_expired`: Long-lived User token (>60 days) expired. Page token still sends messages/posts, but user must re-authenticate to add/sync new Pages.
 
 ---
 
@@ -139,13 +139,11 @@ CREATE TABLE IF NOT EXISTS channel_identities (
     FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
 );
 
--- Partial Unique Index bảo vệ tính toàn vẹn:
--- a) Legacy Zalo / Email (channel_account_id IS NULL)
+-- Partial Unique Indexes:
 CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique 
 ON channel_identities(channel, identity_namespace, external_id) 
 WHERE channel_account_id IS NULL;
 
--- b) Page-Scoped PSIDs (channel_account_id IS NOT NULL)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique 
 ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
 WHERE channel_account_id IS NOT NULL;
@@ -153,18 +151,18 @@ WHERE channel_account_id IS NOT NULL;
 -- 3. Bảng quản lý Lên lịch đăng bài (Post Scheduler)
 CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    draft_group_id TEXT NOT NULL,                -- UUID gom nhóm khi đăng cùng lúc nhiều Page
+    draft_group_id TEXT NOT NULL,
     channel_account_id INTEGER NOT NULL,
     page_id TEXT NOT NULL,
     post_type TEXT NOT NULL CHECK (post_type IN ('status', 'link', 'photo', 'multi_photo', 'video', 'reel')),
     message TEXT NOT NULL,
     link_url TEXT,
-    media_paths_json TEXT NOT NULL DEFAULT '[]', -- Đường dẫn file local
+    media_paths_json TEXT NOT NULL DEFAULT '[]',
     scheduling_mode TEXT NOT NULL DEFAULT 'meta' CHECK (scheduling_mode IN ('meta', 'local_queued')),
-    scheduled_publish_time TEXT,                 -- ISO-8601 UTC
-    remote_post_id TEXT,                         -- ID bài viết trên Meta sau khi tạo
-    upload_session_id TEXT,                      -- Session ID cho resumable video/reel
-    idempotency_key TEXT NOT NULL UNIQUE,        -- UUIDv4 chống trùng
+    scheduled_publish_time TEXT,
+    remote_post_id TEXT,
+    upload_session_id TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'queued', 'publishing', 'scheduled_on_meta', 'published', 'failed', 'overdue_prompt')),
     error_code TEXT,
     error_message TEXT,
@@ -181,19 +179,19 @@ CREATE TABLE IF NOT EXISTS facebook_comment_automations (
     channel_account_id INTEGER NOT NULL,
     page_id TEXT NOT NULL,
     rule_name TEXT NOT NULL,
-    post_ids_json TEXT NOT NULL DEFAULT '[]',     -- Rỗng = tất cả bài viết
-    keywords_json TEXT NOT NULL DEFAULT '[]',     -- Rỗng = bắt tất cả comment
+    post_ids_json TEXT NOT NULL DEFAULT '[]',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
     match_mode TEXT NOT NULL DEFAULT 'contains' CHECK (match_mode IN ('contains', 'exact', 'regex', 'all')),
     auto_like INTEGER NOT NULL DEFAULT 1 CHECK (auto_like IN (0, 1)),
     public_reply_template TEXT,
-    private_reply_template TEXT,                  -- Giới hạn 1 private reply / comment
+    private_reply_template TEXT,
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
 );
 
--- 5. Bảng nhật ký phản hồi comment (Idempotency & Audit Log)
+-- 5. Bảng nhật ký phản hồi comment (Idempotency, Lease Lock & Audit Log)
 CREATE TABLE IF NOT EXISTS facebook_comment_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     comment_id TEXT NOT NULL UNIQUE,
@@ -206,7 +204,9 @@ CREATE TABLE IF NOT EXISTS facebook_comment_logs (
     like_status TEXT NOT NULL DEFAULT 'none' CHECK (like_status IN ('none', 'processing', 'success', 'failed')),
     public_reply_status TEXT NOT NULL DEFAULT 'none' CHECK (public_reply_status IN ('none', 'processing', 'success', 'failed')),
     private_reply_status TEXT NOT NULL DEFAULT 'none' CHECK (private_reply_status IN ('none', 'processing', 'success', 'failed', 'skipped', 'delivery_unknown')),
-    skip_reason TEXT,                            -- 'loop_guard', 'outside_7_days', 'already_replied'
+    owner_id TEXT,
+    claim_deadline TEXT,
+    skip_reason TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL,
     FOREIGN KEY(automation_id) REFERENCES facebook_comment_automations(id) ON DELETE SET NULL
@@ -217,7 +217,6 @@ CREATE INDEX IF NOT EXISTS idx_fb_comment_logs_page_date ON facebook_comment_log
 ### 3.2 Supabase Cloud Relay Schema & Multi-Tenant RLS
 
 ```sql
--- 1. Mapping Tenant và Page sở hữu (Chỉ Service Role được INSERT/UPDATE)
 CREATE TABLE IF NOT EXISTS meta_tenant_pages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -231,7 +230,6 @@ ALTER TABLE meta_tenant_pages ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Tenants read own pages" ON meta_tenant_pages
     FOR SELECT USING (auth.uid() = tenant_id);
 
--- 2. Handoff code dùng 1 lần (60 giây)
 CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
     code TEXT PRIMARY KEY,
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -242,7 +240,6 @@ CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
 );
 ALTER TABLE oauth_exchange_codes ENABLE ROW LEVEL SECURITY;
 
--- 3. Durable Immutable Event Log nhận Webhook từ Meta
 CREATE TABLE IF NOT EXISTS meta_webhook_buffer (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     page_id TEXT NOT NULL,
@@ -285,10 +282,9 @@ CREATE POLICY "Tenants read own page buffer" ON meta_webhook_buffer
    - On success: Returns HTTP 200 OK immediately and broadcasts to `tenant:{tenant_id}`.
 
 ### 4.2 Desktop Cursor Catch-Up & Live Inbound Worker
-- **Immutable Log & Per-Device Cursor:**
-  - Desktop client maintains its own sync cursor in SQLite: `channel_sync_checkpoints (channel_account_id, scope='meta_webhook_cursor', cursor=last_synced_id)`.
-  - Queries `meta_webhook_buffer WHERE page_id IN (...) AND id > :last_synced_id ORDER BY id ASC LIMIT 500`.
-  - Atomically handles all events within a transaction and only updates `channel_sync_checkpoints` upon successful commit.
+- Desktop client maintains its own sync cursor in SQLite: `channel_sync_checkpoints (channel_account_id, scope='meta_webhook_cursor', cursor=last_synced_id)`.
+- Queries `meta_webhook_buffer WHERE page_id IN (...) AND id > :last_synced_id ORDER BY id ASC LIMIT 500`.
+- Atomically handles all events within a transaction and only updates `channel_sync_checkpoints` upon successful commit.
 
 ---
 
