@@ -858,6 +858,7 @@ impl FacebookSyncWorker {
                             )?;
                         }
                     }
+                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
                 "message_echoes" => {
                     if let Some(msg) = ev.payload.get("message") {
@@ -884,6 +885,7 @@ impl FacebookSyncWorker {
                             )?;
                         }
                     }
+                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
                 "message_deliveries" | "message_reads" => {
                     let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
@@ -897,7 +899,7 @@ impl FacebookSyncWorker {
                              SELECT m.id, ?2, ?3, datetime('now')
                              FROM messages m
                              JOIN channel_conversations c ON m.conversation_id = c.id
-                             WHERE c.channel_account_id = ?1
+                             WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2
                              ORDER BY m.id DESC LIMIT 1",
                             params![account_id, recipient_psid, r_type],
                         )?;
