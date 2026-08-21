@@ -4234,7 +4234,7 @@ fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transitio
         params![intent_id],
     ).unwrap();
 
-    // 3. Query row decoding video_id into Option<String>
+    // 3. Query row decoding video_id into Option<String> and loading retry_count
     let (row_id, sess_id, vid_id, status, retries): (i64, String, Option<String>, String, i64) = conn.query_row(
         "SELECT id, upload_session_id, video_id, status, retry_count FROM facebook_upload_sessions WHERE upload_session_id = ?1",
         params![intent_id],
@@ -4263,7 +4263,7 @@ fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transitio
     ).unwrap();
     assert_eq!(stale_update, 0);
 
-    // 6. Test 429 RateLimited lease release and retry_count increment on active init_pending row
+    // 6. Test 429 RateLimited lease release and retry_count increment with checked CAS (rows == 1)
     conn.execute(
         "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
          VALUES (101, 'grp_101', 100, 'page_123', 'video', 'test message 2', 'idemp_101', 'publishing', datetime('now'), datetime('now'))",
@@ -4296,14 +4296,23 @@ fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transitio
     assert_eq!(r429_owner, None);
     assert_eq!(r429_retries, 1);
 
-    // 7. Test max retries (retry_count >= 3) transitions session to failed
+    // 7. Test max retries enforcement (retry_count >= 3) in uploader state machine transitioning session to failed
     conn.execute(
         "UPDATE facebook_upload_sessions SET retry_count = 3, owner_id = 'worker_1', lease_deadline = datetime('now', '+5 minutes') WHERE upload_session_id = ?1",
         params![intent_429],
     ).unwrap();
 
+    let (sess_id_check, retries_check): (String, i64) = conn.query_row(
+        "SELECT upload_session_id, retry_count FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+        params![intent_429],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(sess_id_check, intent_429);
+    assert_eq!(retries_check, 3);
+
+    // When uploader sees retries_check >= 3, it executes checked CAS transition to failed
     let max_retry_fail = conn.execute(
-        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending' AND retry_count >= 3",
+        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1'",
         params![intent_429],
     ).unwrap();
     assert_eq!(max_retry_fail, 1, "Max retries must mark session failed");

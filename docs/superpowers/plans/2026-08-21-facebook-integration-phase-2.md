@@ -912,12 +912,12 @@ impl FacebookUploader {
         };
 
         // 1. Check existing in-progress, finishing, or init_pending session in SQLite scoped to this post
-        let existing_session: Option<(i64, String, Option<String>, u64, String)> = match conn.query_row(
-            "SELECT id, upload_session_id, video_id, start_offset, status
+        let existing_session: Option<(i64, String, Option<String>, u64, String, i64)> = match conn.query_row(
+            "SELECT id, upload_session_id, video_id, start_offset, status, retry_count
              FROM facebook_upload_sessions
              WHERE post_id = ?1 AND page_id = ?2 AND upload_type = 'video' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('init_pending', 'in_progress', 'finishing')",
             params![post_id, page_id, file_path, file_size as i64, file_hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? as u64, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? as u64, r.get(4)?, r.get(5)?)),
         ) {
             Ok(sess) => Some(sess),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -927,7 +927,7 @@ impl FacebookUploader {
             },
         };
 
-        let (upload_session_id, video_id, mut offset) = if let Some((sess_row_id, sess_id, vid_id_opt, _saved_offset, session_status)) = existing_session {
+        let (upload_session_id, video_id, mut offset) = if let Some((sess_row_id, sess_id, vid_id_opt, _saved_offset, session_status, retry_count)) = existing_session {
             // Atomically claim single-writer session lease
             let rows_claimed = match conn.execute(
                 "UPDATE facebook_upload_sessions
@@ -943,6 +943,24 @@ impl FacebookUploader {
             };
             if rows_claimed != 1 {
                 return PublishApiResult::StillProcessing { upload_session_id: sess_id };
+            }
+
+            // Enforce max retry attempts fail-closed
+            if retry_count >= 3 {
+                let fail_rows = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",
+                    params![sess_row_id, owner_id],
+                ).unwrap_or(0);
+                if fail_rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "session_lease_loss".to_string(),
+                        error_message: "Lost lease while marking upload session failed after exceeding max retries".to_string(),
+                    };
+                }
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "max_retries_exceeded".to_string(),
+                    error_message: format!("Video upload session {} exceeded maximum retry limit ({})", sess_id, retry_count),
+                };
             }
 
             if session_status == "init_pending" {
@@ -970,10 +988,16 @@ impl FacebookUploader {
                         .unwrap_or(60);
                     let err_text = start_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
-                        let _ = conn.execute(
+                        let rows = conn.execute(
                             "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                             params![sess_row_id, owner_id],
-                        );
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while recording 429 backoff for video START".to_string(),
+                            };
+                        }
                         return PublishApiResult::RateLimited {
                             retry_after_secs: retry_after,
                             error_message: format!("HTTP 429 Rate limited on video start: {}", err_text),
@@ -1134,6 +1158,16 @@ impl FacebookUploader {
                             let status_code = check_resp.status();
                             let err_text = check_resp.text().await.unwrap_or_default();
                             if status_code.as_u16() == 429 {
+                                let rows = conn.execute(
+                                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                    params![sess_row_id, owner_id],
+                                ).unwrap_or(0);
+                                if rows != 1 {
+                                    return PublishApiResult::DeterministicRejection {
+                                        error_code: "session_lease_loss".to_string(),
+                                        error_message: "Lost lease while recording 429 backoff for video status check".to_string(),
+                                    };
+                                }
                                 return PublishApiResult::RateLimited {
                                     retry_after_secs: retry_after,
                                     error_message: format!("HTTP 429 Rate limited during video check: {}", err_text),
@@ -1175,6 +1209,16 @@ impl FacebookUploader {
                             .unwrap_or(60);
                         let err_text = status_resp.text().await.unwrap_or_default();
                         if status_code.as_u16() == 429 {
+                            let rows = conn.execute(
+                                "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                                params![sess_row_id, owner_id],
+                            ).unwrap_or(0);
+                            if rows != 1 {
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: "session_lease_loss".to_string(),
+                                    error_message: "Lost lease while recording 429 backoff for video resume query".to_string(),
+                                };
+                            }
                             return PublishApiResult::RateLimited {
                                 retry_after_secs: retry_after,
                                 error_message: format!("HTTP 429 Rate limited on video resume query: {}", err_text),
@@ -1272,10 +1316,16 @@ impl FacebookUploader {
                     .unwrap_or(60);
                 let err_text = start_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
-                    let _ = conn.execute(
+                    let rows = conn.execute(
                         "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                         params![intent_id, owner_id],
-                    );
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while recording 429 backoff on initial video start".to_string(),
+                        };
+                    }
                     return PublishApiResult::RateLimited {
                         retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited on video start: {}", err_text),
@@ -1440,6 +1490,16 @@ impl FacebookUploader {
                     .unwrap_or(60);
                 let err_text = transfer_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
+                    let rows = conn.execute(
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        params![upload_session_id, owner_id],
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while recording 429 backoff on video transfer".to_string(),
+                        };
+                    }
                     return PublishApiResult::RateLimited {
                         retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited during video transfer at offset {}: {}", offset, err_text),
@@ -1557,7 +1617,27 @@ impl FacebookUploader {
         };
         let status_code = finish_resp.status();
         if !status_code.is_success() {
+            let retry_after = finish_resp.headers().get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(60);
             let err_text = finish_resp.text().await.unwrap_or_default();
+            if status_code.as_u16() == 429 {
+                let rows = conn.execute(
+                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                    params![upload_session_id, owner_id],
+                ).unwrap_or(0);
+                if rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "session_lease_loss".to_string(),
+                        error_message: "Lost lease while recording 429 backoff finishing video upload".to_string(),
+                    };
+                }
+                return PublishApiResult::RateLimited {
+                    retry_after_secs: retry_after,
+                    error_message: format!("HTTP 429 Rate limited finishing video upload: {}", err_text),
+                };
+            }
             if status_code.is_client_error() {
                 let rows = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
@@ -1580,7 +1660,6 @@ impl FacebookUploader {
             };
         }
 
-        // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", video_id, page_token);
         for attempt in 0..5 {
             if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
@@ -1684,12 +1763,12 @@ impl FacebookUploader {
             },
         };
 
-        let existing_session: Option<(i64, String, Option<String>, u64, String)> = match conn.query_row(
-            "SELECT id, upload_session_id, video_id, start_offset, status
+        let existing_session: Option<(i64, String, Option<String>, u64, String, i64)> = match conn.query_row(
+            "SELECT id, upload_session_id, video_id, start_offset, status, retry_count
              FROM facebook_upload_sessions
              WHERE post_id = ?1 AND page_id = ?2 AND upload_type = 'reel' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('init_pending', 'in_progress', 'finishing')",
             params![post_id, page_id, file_path, file_size as i64, file_hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? as u64, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? as u64, r.get(4)?, r.get(5)?)),
         ) {
             Ok(sess) => Some(sess),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -1699,7 +1778,7 @@ impl FacebookUploader {
             },
         };
 
-        let (video_id, mut offset) = if let Some((sess_row_id, sess_id, vid_id_opt, _saved_offset, session_status)) = existing_session {
+        let (video_id, mut offset) = if let Some((sess_row_id, sess_id, vid_id_opt, _saved_offset, session_status, retry_count)) = existing_session {
             // Atomically claim single-writer session lease
             let rows_claimed = match conn.execute(
                 "UPDATE facebook_upload_sessions
@@ -1715,6 +1794,24 @@ impl FacebookUploader {
             };
             if rows_claimed != 1 {
                 return PublishApiResult::StillProcessing { upload_session_id: sess_id };
+            }
+
+            // Enforce max retry attempts fail-closed
+            if retry_count >= 3 {
+                let fail_rows = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",
+                    params![sess_row_id, owner_id],
+                ).unwrap_or(0);
+                if fail_rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "session_lease_loss".to_string(),
+                        error_message: "Lost lease while marking Reel session failed after exceeding max retries".to_string(),
+                    };
+                }
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "max_retries_exceeded".to_string(),
+                    error_message: format!("Reel upload session {} exceeded maximum retry limit ({})", sess_id, retry_count),
+                };
             }
 
             if session_status == "init_pending" {
@@ -1740,10 +1837,16 @@ impl FacebookUploader {
                         .unwrap_or(60);
                     let err_text = init_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
-                        let _ = conn.execute(
+                        let rows = conn.execute(
                             "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                             params![sess_row_id, owner_id],
-                        );
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while recording 429 backoff for Reel START".to_string(),
+                            };
+                        }
                         return PublishApiResult::RateLimited {
                             retry_after_secs: retry_after,
                             error_message: format!("HTTP 429 Rate limited on Reel start: {}", err_text),
@@ -1891,6 +1994,16 @@ impl FacebookUploader {
                             let status_code = check_resp.status();
                             let err_text = check_resp.text().await.unwrap_or_default();
                             if status_code.as_u16() == 429 {
+                                let rows = conn.execute(
+                                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                    params![sess_row_id, owner_id],
+                                ).unwrap_or(0);
+                                if rows != 1 {
+                                    return PublishApiResult::DeterministicRejection {
+                                        error_code: "session_lease_loss".to_string(),
+                                        error_message: "Lost lease while recording 429 backoff during Reel status check".to_string(),
+                                    };
+                                }
                                 return PublishApiResult::RateLimited {
                                     retry_after_secs: retry_after,
                                     error_message: format!("HTTP 429 Rate limited during Reel check: {}", err_text),
@@ -1916,7 +2029,7 @@ impl FacebookUploader {
                     }
                 } else {
                     // in_progress: query authoritative offset
-                    let check_url = format!("https://rupload.facebook.com/video-reels/{}", vid_id);
+                    let check_url = format!("https://rupload.facebook.com/video-upload/v26.0/{}", vid_id);
                     let check_resp = match self.client.get(&check_url)
                         .header("Authorization", format!("OAuth {}", page_token))
                         .send().await {
@@ -1934,6 +2047,16 @@ impl FacebookUploader {
                             .unwrap_or(60);
                         let err_text = check_resp.text().await.unwrap_or_default();
                         if status_code.as_u16() == 429 {
+                            let rows = conn.execute(
+                                "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                                params![sess_row_id, owner_id],
+                            ).unwrap_or(0);
+                            if rows != 1 {
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: "session_lease_loss".to_string(),
+                                    error_message: "Lost lease while recording 429 backoff for Reel resume query".to_string(),
+                                };
+                            }
                             return PublishApiResult::RateLimited {
                                 retry_after_secs: retry_after,
                                 error_message: format!("HTTP 429 Rate limited on Reel resume query: {}", err_text),
@@ -2030,10 +2153,16 @@ impl FacebookUploader {
                     .unwrap_or(60);
                 let err_text = init_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
-                    let _ = conn.execute(
+                    let rows = conn.execute(
                         "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                         params![intent_id, owner_id],
-                    );
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while recording 429 backoff for initial Reel start".to_string(),
+                        };
+                    }
                     return PublishApiResult::RateLimited {
                         retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited on Reel start: {}", err_text),
@@ -2115,7 +2244,7 @@ impl FacebookUploader {
             (vid_id, 0u64)
         };
 
-        let rupload_url = format!("https://rupload.facebook.com/video-reels/{}", video_id);
+        let rupload_url = format!("https://rupload.facebook.com/video-upload/v26.0/{}", video_id);
         let mut file = match File::open(file_path).await {
             Ok(f) => f,
             Err(e) => return PublishApiResult::DeterministicRejection {
@@ -2148,7 +2277,7 @@ impl FacebookUploader {
             if sess_lease_rows != 1 {
                 return PublishApiResult::DeterministicRejection {
                     error_code: "session_lease_loss".to_string(),
-                    error_message: "Aborted Reel upload due to upload session lease loss".to_string(),
+                    error_message: "Aborted Reel upload due to Reel upload session lease loss".to_string(),
                 };
             }
 
@@ -2169,16 +2298,18 @@ impl FacebookUploader {
 
             let resp = match self.client.post(&rupload_url)
                 .header("Authorization", format!("OAuth {}", page_token))
-                .header("Offset", offset.to_string())
+                .header("offset", offset.to_string())
                 .header("file_size", file_size.to_string())
+                .header("Content-Type", "application/octet-stream")
                 .body(buffer)
                 .send().await {
                 Ok(r) => r,
                 Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "network_transport_error".to_string(),
-                    error_message: format!("Transport error uploading Reel chunk at offset {}: {}", offset, e),
+                    error_message: format!("Network error uploading Reel chunk at offset {}: {}", offset, e),
                 },
             };
+
             let status_code = resp.status();
             if !status_code.is_success() {
                 let retry_after = resp.headers().get("retry-after")
@@ -2187,9 +2318,19 @@ impl FacebookUploader {
                     .unwrap_or(60);
                 let err_text = resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
+                    let rows = conn.execute(
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        params![video_id, owner_id],
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while recording 429 backoff for Reel chunk upload".to_string(),
+                        };
+                    }
                     return PublishApiResult::RateLimited {
                         retry_after_secs: retry_after,
-                        error_message: format!("HTTP 429 Rate limited during Reel chunk upload at offset {}: {}", offset, err_text),
+                        error_message: format!("HTTP 429 Rate limited uploading Reel chunk at offset {}: {}", offset, err_text),
                     };
                 }
                 if status_code.is_client_error() {
@@ -2286,6 +2427,7 @@ impl FacebookUploader {
         let mut finish_body = json!({
             "access_token": page_token,
             "upload_phase": "finish",
+            "video_id": video_id,
             "video_state": if scheduled_publish_time.is_some() { "SCHEDULED" } else { "PUBLISHED" },
             "description": description
         });
@@ -2304,7 +2446,27 @@ impl FacebookUploader {
         };
         let status_code = finish_resp.status();
         if !status_code.is_success() {
+            let retry_after = finish_resp.headers().get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(60);
             let err_text = finish_resp.text().await.unwrap_or_default();
+            if status_code.as_u16() == 429 {
+                let rows = conn.execute(
+                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                    params![video_id, owner_id],
+                ).unwrap_or(0);
+                if rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "session_lease_loss".to_string(),
+                        error_message: "Lost lease while recording 429 backoff finishing Reel upload".to_string(),
+                    };
+                }
+                return PublishApiResult::RateLimited {
+                    retry_after_secs: retry_after,
+                    error_message: format!("HTTP 429 Rate limited finishing Reel upload: {}", err_text),
+                };
+            }
             if status_code.is_client_error() {
                 let rows = conn.execute(
                     "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
@@ -2327,7 +2489,6 @@ impl FacebookUploader {
             };
         }
 
-        // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", video_id, page_token);
         for attempt in 0..5 {
             if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
