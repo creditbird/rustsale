@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
     request_id UUID NOT NULL REFERENCES meta_data_deletion_requests(id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     device_id TEXT NOT NULL,
+    page_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed', 'failed')),
     lease_token_hash TEXT,
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
 ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE meta_device_deletion_tasks FROM PUBLIC, anon, authenticated;
-GRANT SELECT (id, request_id, tenant_id, device_id, user_id, status, acknowledged_at, completed_at, created_at, updated_at) ON TABLE meta_device_deletion_tasks TO authenticated;
+GRANT SELECT (id, request_id, tenant_id, device_id, page_id, user_id, status, acknowledged_at, completed_at, created_at, updated_at) ON TABLE meta_device_deletion_tasks TO authenticated;
 GRANT ALL ON TABLE meta_device_deletion_tasks TO service_role;
 
 CREATE POLICY "Tenants read own device deletion tasks" ON meta_device_deletion_tasks
@@ -71,6 +72,7 @@ CREATE OR REPLACE FUNCTION claim_device_deletion_tasks(
 RETURNS TABLE (
     id UUID,
     request_id UUID,
+    page_id TEXT,
     user_id TEXT,
     lease_token TEXT,
     created_at TIMESTAMPTZ
@@ -111,7 +113,7 @@ BEGIN
         LIMIT 10
         FOR UPDATE SKIP LOCKED
     )
-    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.user_id, v_raw_token AS lease_token, meta_device_deletion_tasks.created_at;
+    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.page_id, meta_device_deletion_tasks.user_id, v_raw_token AS lease_token, meta_device_deletion_tasks.created_at;
 END;
 $$;
 
@@ -273,7 +275,7 @@ BEGIN
 
     -- Fan out tasks to all active registered tenant devices (last seen within 30 days) for all matching tenants
     FOR v_tenant_record IN
-        SELECT DISTINCT tenant_id, page_scoped_user_id
+        SELECT DISTINCT tenant_id, page_id, page_scoped_user_id
         FROM public.meta_user_page_interactions
         WHERE app_user_id = ANY(v_all_ids) OR page_scoped_user_id = ANY(v_all_ids)
     LOOP
@@ -282,9 +284,9 @@ BEGIN
             WHERE tenant_id = v_tenant_record.tenant_id AND last_seen_at >= now() - INTERVAL '30 days'
         LOOP
             v_has_active_devices := TRUE;
-            -- Fan out deletion task for the specific PSID to be scrubbed on desktop SQLite
-            INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, user_id, status)
-            VALUES (v_request_id, v_tenant_record.tenant_id, v_device_record.device_id, v_tenant_record.page_scoped_user_id, 'pending');
+            -- Fan out deletion task strictly carrying page_id and page-scoped user_id to be scrubbed on desktop SQLite
+            INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
+            VALUES (v_request_id, v_tenant_record.tenant_id, v_device_record.device_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id, 'pending');
         END LOOP;
     END LOOP;
 
@@ -542,163 +544,162 @@ pub async fn process_pending_device_tasks(
 
     for task in tasks {
         let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let page_id = task.get("page_id").and_then(|v| v.as_str()).unwrap_or("");
         let user_id = task.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
         let lease_token = task.get("lease_token").and_then(|v| v.as_str()).unwrap_or("");
         if task_id.is_empty() || user_id.is_empty() || lease_token.is_empty() {
             continue;
         }
 
-        // 2. Transactional local anonymization and task-scoped spool registration
+        // 2. Transactional local anonymization and task-scoped spool registration strictly scoped to page_id / channel_account_id
         {
             let tx = conn.transaction()?;
 
-            // Find all attachments to delete belonging to Messenger messages sent by target user
-            let mut att_stmt = tx.prepare(
-                "SELECT ma.local_path
-                 FROM message_attachments ma
-                 JOIN messages m ON ma.message_id = m.id
-                 JOIN channel_conversations cc ON m.conversation_id = cc.id
-                 JOIN channel_accounts ca ON cc.channel_account_id = ca.id
-                 WHERE ca.channel = 'messenger'
-                   AND m.sender_identity_id IN (
-                       SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
-                   )
-                   AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
-            )?;
-            let paths: Vec<String> = att_stmt
-                .query_map([user_id], |r| r.get(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // Authoritatively resolve local channel_account_id for this Page ID
+            let account_id: Option<i64> = tx.query_row(
+                "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND account_identifier = ?1",
+                [page_id],
+                |r| r.get(0),
+            ).optional()?;
 
-            for path in &paths {
+            if let Some(acc_id) = account_id {
+                // Find all attachments to delete belonging to Messenger messages sent by target user in this Page account
+                let mut att_stmt = tx.prepare(
+                    "SELECT ma.local_path
+                     FROM message_attachments ma
+                     JOIN messages m ON ma.message_id = m.id
+                     JOIN channel_conversations cc ON m.conversation_id = cc.id
+                     WHERE cc.channel_account_id = ?1
+                       AND m.sender_identity_id IN (
+                           SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND external_id = ?2
+                       )
+                       AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
+                )?;
+                let paths: Vec<String> = att_stmt
+                    .query_map(rusqlite::params![acc_id, user_id], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+
+                for path in &paths {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO meta_deletion_pending_cleanups (task_id, local_path, created_at) VALUES (?1, ?2, datetime('now'))",
+                        rusqlite::params![task_id, path],
+                    )?;
+                }
+
+                // Wipe all attachment identifiers, remote URLs, and metadata
                 tx.execute(
-                    "INSERT OR IGNORE INTO meta_deletion_pending_cleanups (task_id, local_path, created_at) VALUES (?1, ?2, datetime('now'))",
-                    rusqlite::params![task_id, path],
+                    "UPDATE message_attachments
+                     SET provider_attachment_id = NULL,
+                         remote_url = NULL,
+                         thumbnail_url = NULL,
+                         file_name = '[Deleted]',
+                         local_path = NULL,
+                         metadata_json = '{}'
+                     WHERE message_id IN (
+                         SELECT m.id FROM messages m
+                         JOIN channel_conversations cc ON m.conversation_id = cc.id
+                         WHERE cc.channel_account_id = ?1
+                           AND m.sender_identity_id IN (
+                               SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND external_id = ?2
+                           )
+                     )",
+                    rusqlite::params![acc_id, user_id],
+                )?;
+
+                // Scrub residual user identifiers across Messenger reactions, receipts, pending reactions, and mentions for this account
+                tx.execute(
+                    "DELETE FROM message_reactions
+                     WHERE actor_external_id = ?2
+                       AND message_id IN (
+                           SELECT m.id FROM messages m
+                           JOIN channel_conversations cc ON m.conversation_id = cc.id
+                           WHERE cc.channel_account_id = ?1
+                       )",
+                    rusqlite::params![acc_id, user_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM message_receipts
+                     WHERE recipient_external_id = ?2
+                       AND message_id IN (
+                           SELECT m.id FROM messages m
+                           JOIN channel_conversations cc ON m.conversation_id = cc.id
+                           WHERE cc.channel_account_id = ?1
+                       )",
+                    rusqlite::params![acc_id, user_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM pending_message_reactions
+                     WHERE channel_account_id = ?1 AND actor_external_id = ?2",
+                    rusqlite::params![acc_id, user_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM message_mentions
+                     WHERE (external_id = ?2 OR identity_id IN (SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND external_id = ?2))
+                       AND message_id IN (
+                           SELECT m.id FROM messages m
+                           JOIN channel_conversations cc ON m.conversation_id = cc.id
+                           WHERE cc.channel_account_id = ?1
+                       )",
+                    rusqlite::params![acc_id, user_id],
+                )?;
+
+                // Scrub channel sync dead letters for this Messenger user and account across all structured payload shapes
+                tx.execute(
+                    "DELETE FROM channel_sync_dead_letters
+                     WHERE channel_account_id = ?1 AND (
+                         event_key = ?2
+                         OR json_extract(payload_json, '$.sender.id') = ?2
+                         OR json_extract(payload_json, '$.recipient.id') = ?2
+                         OR json_extract(payload_json, '$.from.id') = ?2
+                         OR json_extract(payload_json, '$.sender_id') = ?2
+                         OR json_extract(payload_json, '$.user_id') = ?2
+                         OR json_extract(payload_json, '$.value.from.id') = ?2
+                         OR json_extract(payload_json, '$.value.sender_id') = ?2
+                         OR json_extract(payload_json, '$.value.user_id') = ?2
+                         OR json_extract(payload_json, '$.value.sender.id') = ?2
+                         OR json_extract(payload_json, '$.entry[0].messaging[0].sender.id') = ?2
+                         OR json_extract(payload_json, '$.entry[0].messaging[0].recipient.id') = ?2
+                         OR json_extract(payload_json, '$.entry[0].changes[0].value.from.id') = ?2
+                         OR json_extract(payload_json, '$.entry[0].changes[0].value.sender_id') = ?2
+                         OR json_extract(payload_json, '$.entry[0].changes[0].value.user_id') = ?2
+                     )",
+                    rusqlite::params![acc_id, user_id],
+                )?;
+
+                // Redact messages
+                tx.execute(
+                    "UPDATE messages
+                     SET text_content = '[Deleted for Compliance]',
+                         content_json = '{\"type\":\"text\",\"text\":\"[Deleted for Compliance]\"}',
+                         raw_payload_json = NULL
+                     WHERE conversation_id IN (
+                         SELECT cc.id FROM channel_conversations cc
+                         WHERE cc.channel_account_id = ?1
+                     ) AND sender_identity_id IN (
+                         SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND external_id = ?2
+                     )",
+                    rusqlite::params![acc_id, user_id],
+                )?;
+
+                // Anonymize identity including external_id tombstone scoped to this channel account
+                tx.execute(
+                    "UPDATE channel_identities
+                     SET display_name = 'Deleted User',
+                         avatar_url = NULL,
+                         normalized_address = NULL,
+                         external_id = 'deleted_' || id || '_' || hex(randomblob(4)),
+                         profile_synced_at = datetime('now'),
+                         profile_sync_error = NULL,
+                         updated_at = datetime('now')
+                     WHERE channel_account_id = ?1 AND channel = 'messenger' AND external_id = ?2",
+                    rusqlite::params![acc_id, user_id],
                 )?;
             }
 
-            // Wipe all attachment identifiers, remote URLs, and metadata
+            // Scrub Facebook comment logs matching page_id and sender_psid
             tx.execute(
-                "UPDATE message_attachments
-                 SET provider_attachment_id = NULL,
-                     remote_url = NULL,
-                     thumbnail_url = NULL,
-                     file_name = '[Deleted]',
-                     local_path = NULL,
-                     metadata_json = '{}'
-                 WHERE message_id IN (
-                     SELECT m.id FROM messages m
-                     JOIN channel_conversations cc ON m.conversation_id = cc.id
-                     JOIN channel_accounts ca ON cc.channel_account_id = ca.id
-                     WHERE ca.channel = 'messenger'
-                       AND m.sender_identity_id IN (
-                           SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
-                       )
-                 )",
-                [user_id],
-            )?;
-
-            // Scrub residual user identifiers across Messenger reactions, receipts, pending reactions, and mentions
-            tx.execute(
-                "DELETE FROM message_reactions
-                 WHERE actor_external_id = ?1
-                   AND message_id IN (
-                       SELECT m.id FROM messages m
-                       JOIN channel_conversations cc ON m.conversation_id = cc.id
-                       JOIN channel_accounts ca ON cc.channel_account_id = ca.id
-                       WHERE ca.channel = 'messenger'
-                   )",
-                [user_id],
-            )?;
-            tx.execute(
-                "DELETE FROM message_receipts
-                 WHERE recipient_external_id = ?1
-                   AND message_id IN (
-                       SELECT m.id FROM messages m
-                       JOIN channel_conversations cc ON m.conversation_id = cc.id
-                       JOIN channel_accounts ca ON cc.channel_account_id = ca.id
-                       WHERE ca.channel = 'messenger'
-                   )",
-                [user_id],
-            )?;
-            tx.execute(
-                "DELETE FROM pending_message_reactions
-                 WHERE actor_external_id = ?1
-                   AND channel_account_id IN (
-                       SELECT id FROM channel_accounts WHERE channel = 'messenger'
-                   )",
-                [user_id],
-            )?;
-            tx.execute(
-                "DELETE FROM message_mentions
-                 WHERE (external_id = ?1 OR identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1))
-                   AND message_id IN (
-                       SELECT m.id FROM messages m
-                       JOIN channel_conversations cc ON m.conversation_id = cc.id
-                       JOIN channel_accounts ca ON cc.channel_account_id = ca.id
-                       WHERE ca.channel = 'messenger'
-                   )",
-                [user_id],
-            )?;
-
-            // Scrub Facebook comment logs
-            tx.execute(
-                "DELETE FROM facebook_comment_logs WHERE sender_psid = ?1",
-                [user_id],
-            )?;
-
-            // Scrub channel sync dead letters for this Messenger user across all structured payload shapes
-            tx.execute(
-                "DELETE FROM channel_sync_dead_letters
-                 WHERE channel_account_id IN (
-                     SELECT id FROM channel_accounts WHERE channel = 'messenger'
-                 ) AND (
-                     event_key = ?1
-                     OR json_extract(payload_json, '$.sender.id') = ?1
-                     OR json_extract(payload_json, '$.recipient.id') = ?1
-                     OR json_extract(payload_json, '$.from.id') = ?1
-                     OR json_extract(payload_json, '$.sender_id') = ?1
-                     OR json_extract(payload_json, '$.user_id') = ?1
-                     OR json_extract(payload_json, '$.value.from.id') = ?1
-                     OR json_extract(payload_json, '$.value.sender_id') = ?1
-                     OR json_extract(payload_json, '$.value.user_id') = ?1
-                     OR json_extract(payload_json, '$.value.sender.id') = ?1
-                     OR json_extract(payload_json, '$.entry[0].messaging[0].sender.id') = ?1
-                     OR json_extract(payload_json, '$.entry[0].messaging[0].recipient.id') = ?1
-                     OR json_extract(payload_json, '$.entry[0].changes[0].value.from.id') = ?1
-                     OR json_extract(payload_json, '$.entry[0].changes[0].value.sender_id') = ?1
-                     OR json_extract(payload_json, '$.entry[0].changes[0].value.user_id') = ?1
-                 )",
-                [user_id],
-            )?;
-
-            // Redact messages
-            tx.execute(
-                "UPDATE messages
-                 SET text_content = '[Deleted for Compliance]',
-                     content_json = '{\"type\":\"text\",\"text\":\"[Deleted for Compliance]\"}',
-                     raw_payload_json = NULL
-                 WHERE conversation_id IN (
-                     SELECT cc.id FROM channel_conversations cc
-                     JOIN channel_accounts ca ON cc.channel_account_id = ca.id
-                     WHERE ca.channel = 'messenger'
-                 ) AND sender_identity_id IN (
-                     SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
-                 )",
-                [user_id],
-            )?;
-
-            // Anonymize identity including external_id tombstone (without nonexistent metadata_json column)
-            tx.execute(
-                "UPDATE channel_identities
-                 SET display_name = 'Deleted User',
-                     avatar_url = NULL,
-                     normalized_address = NULL,
-                     external_id = 'deleted_' || id || '_' || hex(randomblob(4)),
-                     profile_synced_at = datetime('now'),
-                     profile_sync_error = NULL,
-                     updated_at = datetime('now')
-                 WHERE channel = 'messenger' AND external_id = ?1",
-                [user_id],
+                "DELETE FROM facebook_comment_logs WHERE page_id = ?1 AND sender_psid = ?2",
+                rusqlite::params![page_id, user_id],
             )?;
 
             tx.commit()?;

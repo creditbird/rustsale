@@ -226,17 +226,17 @@ impl FacebookUploader {
         file_path: &str,
         description: &str,
         scheduled_publish_time: Option<i64>,
-        post_id: Option<i64>,
+        post_id: i64,
     ) -> Result<String> {
         let file_meta = tokio::fs::metadata(file_path).await?;
         let file_size = file_meta.len();
         let file_hash = Self::compute_file_hash(file_path).await?;
 
-        // 1. Check existing in-progress or finishing session in facebook_upload_sessions with content hash verification scoped to this post
+        // 1. Check existing in-progress or finishing session in facebook_upload_sessions with content hash verification scoped to this exact post
         let existing_session: Option<(String, String, u64, String)> = match conn.query_row(
             "SELECT upload_session_id, video_id, start_offset, status
              FROM facebook_upload_sessions
-             WHERE post_id IS ?1 AND page_id = ?2 AND upload_type = 'video' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('in_progress', 'finishing')",
+             WHERE post_id = ?1 AND page_id = ?2 AND upload_type = 'video' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('in_progress', 'finishing')",
             params![post_id, page_id, file_path, file_size as i64, file_hash],
             |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64, r.get(3)?)),
         ) {
@@ -333,12 +333,10 @@ impl FacebookUploader {
                 params![post_id, page_id, sess_id, vid_id, file_path, file_hash, file_size as i64],
             )?;
 
-            if let Some(pid) = post_id {
-                conn.execute(
-                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
-                    params![sess_id, pid],
-                )?;
-            }
+            conn.execute(
+                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
+                params![sess_id, post_id],
+            )?;
 
             (sess_id, vid_id, 0u64)
         };
@@ -463,7 +461,7 @@ impl FacebookUploader {
         file_path: &str,
         description: &str,
         scheduled_publish_time: Option<i64>,
-        post_id: Option<i64>,
+        post_id: i64,
     ) -> Result<String> {
         let file_meta = tokio::fs::metadata(file_path).await?;
         let file_size = file_meta.len();
@@ -472,7 +470,7 @@ impl FacebookUploader {
         let existing_session: Option<(String, u64, String)> = match conn.query_row(
             "SELECT video_id, start_offset, status
              FROM facebook_upload_sessions
-             WHERE post_id IS ?1 AND page_id = ?2 AND upload_type = 'reel' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('in_progress', 'finishing')",
+             WHERE post_id = ?1 AND page_id = ?2 AND upload_type = 'reel' AND file_path = ?3 AND file_size_bytes = ?4 AND file_hash = ?5 AND status IN ('in_progress', 'finishing')",
             params![post_id, page_id, file_path, file_size as i64, file_hash],
             |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, r.get(2)?)),
         ) {
@@ -573,12 +571,10 @@ impl FacebookUploader {
                 params![post_id, page_id, vid_id, file_path, file_hash, file_size as i64],
             )?;
 
-            if let Some(pid) = post_id {
-                conn.execute(
-                    "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
-                    params![vid_id, pid],
-                )?;
-            }
+            conn.execute(
+                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
+                params![vid_id, post_id],
+            )?;
 
             (vid_id, 0u64)
         };
@@ -718,41 +714,60 @@ impl FacebookUploader {
   ```
   Queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels).
   - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel):
-    ```sql
-    -- Atomic CAS session completion: only succeeds if this worker still holds the lease
-    UPDATE facebook_upload_sessions
-    SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-    WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing';
+    ```rust
+    // Atomic CAS session completion: only succeeds if this worker still holds the valid lease
+    let session_rows = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+        params![session_id, worker_id],
+    )?;
 
-    -- If CAS session update succeeded, propagate terminal state to scheduled post
-    UPDATE facebook_scheduled_posts
-    SET status = CASE
-            WHEN scheduled_publish_time IS NOT NULL AND scheduled_publish_time > strftime('%s', 'now')
-            THEN 'scheduled_on_meta'
-            ELSE 'published'
-        END,
-        remote_post_id = ?1,
-        error_code = NULL,
-        error_message = NULL,
-        updated_at = datetime('now')
-    WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown');
+    // Only if this worker won the CAS race (affected exactly 1 row), propagate terminal state to scheduled post
+    if session_rows == 1 {
+        conn.execute(
+            "UPDATE facebook_scheduled_posts
+             SET status = CASE
+                     WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now')
+                     THEN 'scheduled_on_meta'
+                     ELSE 'published'
+                 END,
+                 remote_post_id = ?1,
+                 error_code = NULL,
+                 error_message = NULL,
+                 updated_at = datetime('now')
+             WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown')",
+            params![remote_video_id, post_id, upload_session_id],
+        )?;
+    }
     ```
   - On authoritative terminal failure:
-    ```sql
-    -- Atomic CAS session failure: only succeeds if this worker still holds the lease
-    UPDATE facebook_upload_sessions
-    SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-    WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing';
+    ```rust
+    // Atomic CAS session failure: only succeeds if this worker still holds the valid lease
+    let session_rows = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+        params![session_id, worker_id],
+    )?;
 
-    -- If CAS session update succeeded, propagate failure to scheduled post
-    UPDATE facebook_scheduled_posts
-    SET status = 'failed', error_code = 'upload_failed', error_message = ?1, updated_at = datetime('now')
-    WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown');
+    // Only if this worker won the CAS race, propagate failure to scheduled post
+    if session_rows == 1 {
+        conn.execute(
+            "UPDATE facebook_scheduled_posts
+             SET status = 'failed', error_code = 'upload_failed', error_message = ?1, updated_at = datetime('now')
+             WHERE (id = ?2 OR upload_session_id = ?3) AND status IN ('publishing', 'delivery_unknown')",
+            params![err_msg, post_id, upload_session_id],
+        )?;
+    }
     ```
   - On non-terminal processing state:
-    ```sql
-    -- Atomic CAS lease release: clears lease if still held by this worker
-    UPDATE facebook_upload_sessions
-    SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-    WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing';
+    ```rust
+    // Atomic CAS lease release: clears lease if still held by this worker
+    conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+        params![session_id, worker_id],
+    )?;
     ```

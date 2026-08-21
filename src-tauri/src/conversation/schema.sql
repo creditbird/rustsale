@@ -444,7 +444,7 @@ CREATE INDEX IF NOT EXISTS idx_dead_letters_status ON channel_sync_dead_letters(
 -- Facebook Phase 2 & 3 Tables
 CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    post_id INTEGER REFERENCES facebook_scheduled_posts(id) ON DELETE SET NULL,
+    post_id INTEGER NOT NULL REFERENCES facebook_scheduled_posts(id) ON DELETE CASCADE,
     page_id TEXT NOT NULL,
     upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
     upload_session_id TEXT NOT NULL UNIQUE,
