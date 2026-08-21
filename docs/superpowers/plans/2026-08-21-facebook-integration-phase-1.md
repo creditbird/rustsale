@@ -134,7 +134,10 @@ serve(async (req: Request) => {
   }
 
   if (req.method === "POST") {
-    const signature = req.headers.get("X-Hub-Signature-256");
+    if (!META_APP_SECRET) {
+      return new Response("Configuration error: META_APP_SECRET not set", { status: 500 });
+    }
+    const signature = req.headers.getconst signature = req.headers.get("X-Hub-Signature-256");
     const rawBody = new Uint8Array(await req.arrayBuffer());
 
     const isValid = await verifyHmacSha256(signature, rawBody);
