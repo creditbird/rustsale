@@ -318,7 +318,7 @@ CREATE TABLE IF NOT EXISTS meta_webhook_buffer (
 );
 ALTER TABLE meta_webhook_buffer ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON TABLE meta_webhook_buffer FROM PUBLIC, anon;
+REVOKE ALL ON TABLE meta_webhook_buffer FROM PUBLIC, anon, authenticated;
 GRANT SELECT, UPDATE(status) ON TABLE meta_webhook_buffer TO authenticated;
 GRANT ALL ON TABLE meta_webhook_buffer TO service_role;
 

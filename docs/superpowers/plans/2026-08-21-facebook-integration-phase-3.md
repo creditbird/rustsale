@@ -101,7 +101,7 @@ BEGIN
 
     -- If no active devices require local anonymization, mark request completed immediately
     IF NOT v_has_active_devices THEN
-        UPDATE public.meta_data_deletion_requests SET status = 'completed', updated_at = now() WHERE id = v_request_id;
+        UPDATE public.meta_data_deletion_requests SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = v_request_id;
     END IF;
 
     RETURN v_request_id;
@@ -313,7 +313,7 @@ pub async fn process_pending_device_tasks(
         }
 
         // 2. Transactional local anonymization and spool registration
-        let local_paths: Vec<String> = {
+        {
             let tx = conn.transaction()?;
 
             // Find all attachments to delete belonging to messages sent by this messenger identity
@@ -364,26 +364,31 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
 
-            // Anonymize identity including external_id tombstone
+            // Anonymize identity including external_id tombstone (without nonexistent metadata_json column)
             tx.execute(
                 "UPDATE channel_identities 
                  SET display_name = 'Deleted User', 
                      avatar_url = NULL, 
-                     metadata_json = '{}',
+                     normalized_address = NULL,
                      external_id = 'deleted_' || id || '_' || hex(randomblob(4)),
                      profile_synced_at = datetime('now'),
+                     profile_sync_error = NULL,
                      updated_at = datetime('now') 
                  WHERE channel = 'messenger' AND external_id = ?1",
                 [user_id],
             )?;
 
             tx.commit()?;
-            paths
+        }
+
+        // 3. Durable spool sweep from disk using pending_spool_cleanups table
+        let pending_cleanups: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT local_path FROM pending_spool_cleanups")?;
+            stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
         };
 
-        // 3. Sweep spool files from disk and remove from pending_spool_cleanups
         let mut all_cleaned = true;
-        for path in &local_paths {
+        for path in &pending_cleanups {
             if std::path::Path::new(path).exists() {
                 if std::fs::remove_file(path).is_ok() {
                     conn.execute("DELETE FROM pending_spool_cleanups WHERE local_path = ?1", rusqlite::params![path])?;
@@ -395,8 +400,14 @@ pub async fn process_pending_device_tasks(
             }
         }
 
-        // 4. Update task status on Supabase: completed when clean, or reset to pending for retry on next run
-        if all_cleaned {
+        let remaining_spools: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pending_spool_cleanups",
+            [],
+            |r| r.get(0),
+        )?;
+
+        // 4. Update task status on Supabase: completed only when clean and 0 pending spools remain
+        if all_cleaned && remaining_spools == 0 {
             let complete_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&status=eq.acknowledged", supabase_url, task_id);
             let patch_resp = client.patch(&complete_url)
                 .header("apikey", anon_key)
@@ -412,13 +423,14 @@ pub async fn process_pending_device_tasks(
                 completed_count += 1;
             }
         } else {
-            // Reset task to pending with backoff so next sweep retries file cleanup
+            // Reset task to pending so next cycle retries disk cleanup without losing state
             let reset_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&status=eq.acknowledged", supabase_url, task_id);
             let _ = client.patch(&reset_url)
                 .header("apikey", anon_key)
                 .header("Authorization", format!("Bearer {}", user_jwt))
                 .json(&serde_json::json!({
-                    "status": "pending"
+                    "status": "pending",
+                    "acknowledged_at": serde_json::Value::Null
                 }))
                 .send().await;
         }

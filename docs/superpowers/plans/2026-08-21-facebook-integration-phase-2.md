@@ -343,6 +343,11 @@ impl FacebookUploader {
         }
 
         // 3. Finish Phase
+        conn.execute(
+            "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
+            params![upload_session_id],
+        )?;
+
         let mut finish_body = json!({
             "access_token": page_token,
             "upload_phase": "finish",
@@ -364,10 +369,12 @@ impl FacebookUploader {
             return Err(anyhow!("Video finish phase failed: {}", finish_resp.text().await?));
         }
 
-        conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
             params![upload_session_id],
-        )?;
+        ) {
+            tracing::warn!("Remote video finish succeeded but failed to update local session status to completed: {}", e);
+        }
 
         Ok(video_id)
     }
@@ -493,6 +500,12 @@ impl FacebookUploader {
             )?;
         }
 
+        // 3. Finish Phase
+        conn.execute(
+            "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
+            params![video_id],
+        )?;
+
         let mut finish_body = json!({
             "access_token": page_token,
             "upload_phase": "finish",
@@ -514,10 +527,12 @@ impl FacebookUploader {
             return Err(anyhow!("Reel finish failed: {}", finish_resp.text().await?));
         }
 
-        conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
             params![video_id],
-        )?;
+        ) {
+            tracing::warn!("Remote reel finish succeeded but failed to update local session status to completed: {}", e);
+        }
 
         Ok(video_id)
     }
