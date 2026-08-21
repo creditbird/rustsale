@@ -816,6 +816,7 @@ use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaBufferEvent {
@@ -829,21 +830,28 @@ pub struct MetaBufferEvent {
 pub struct FacebookSyncWorker {
     supabase_url: String,
     supabase_anon_key: String,
-    jwt_session_token: String,
+    token_provider: Arc<dyn Fn() -> String + Send + Sync>,
     http: Client,
 }
 
 impl FacebookSyncWorker {
-    pub fn new(supabase_url: String, supabase_anon_key: String, jwt_session_token: String) -> Self {
+    pub fn new<F>(supabase_url: String, supabase_anon_key: String, token_provider: F) -> Self
+    where
+        F: Fn() -> String + Send + Sync + 'static,
+    {
         Self {
             supabase_url,
             supabase_anon_key,
-            jwt_session_token,
-            http: Client::new(),
+            token_provider: Arc::new(token_provider),
+            http: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 
     pub async fn fetch_new_events(&self, page_id: &str, last_synced_id: i64) -> Result<Vec<MetaBufferEvent>> {
+        let jwt = (self.token_provider)();
         let url = format!(
             "{}/rest/v1/meta_webhook_buffer?page_id=eq.{}&id=gt.{}&event_type=in.(messages,message_echoes,message_deliveries,message_reads,message_reactions)&order=id.asc&limit=100",
             self.supabase_url, page_id, last_synced_id
@@ -851,7 +859,7 @@ impl FacebookSyncWorker {
 
         let resp = self.http.get(&url)
             .header("apikey", &self.supabase_anon_key)
-            .header("Authorization", format!("Bearer {}", self.jwt_session_token))
+            .header("Authorization", format!("Bearer {}", jwt))
             .send().await?;
 
         if !resp.status().is_success() {
@@ -887,12 +895,14 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
                                  VALUES (?1, 'inbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
-                            processed = true;
+                            if affected > 0 {
+                                processed = true;
+                            }
                         }
                     }
                 }
@@ -914,12 +924,14 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
                                  VALUES (?1, 'outbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
-                            processed = true;
+                            if affected > 0 {
+                                processed = true;
+                            }
                         }
                     }
                 }
@@ -930,9 +942,10 @@ impl FacebookSyncWorker {
 
                     if !recipient_psid.is_empty() {
                         if let Some(mids) = ev.payload.get("delivery").and_then(|d| d.get("mids")).and_then(|m| m.as_array()) {
+                            let mut any_inserted = false;
                             for mid_val in mids {
                                 if let Some(m_str) = mid_val.as_str() {
-                                    tx.execute(
+                                    let affected = tx.execute(
                                         "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
                                          SELECT m.id, ?2, 'delivered', datetime('now')
                                          FROM messages m
@@ -940,21 +953,29 @@ impl FacebookSyncWorker {
                                          WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND m.direction = 'outbound'",
                                         params![m_str, recipient_psid, account_id],
                                     )?;
+                                    if affected > 0 {
+                                        any_inserted = true;
+                                    }
                                 }
                             }
-                            processed = true;
+                            if any_inserted {
+                                processed = true;
+                            }
                         } else if watermark > 0 {
                             let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
-                                 SELECT m.id, ?2, ?3, datetime('now')
+                                 SELECT m.id, ?2, ?3, datetime(?4 / 1000, 'unixepoch')
                                  FROM messages m
                                  JOIN channel_conversations c ON m.conversation_id = c.id
                                  WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
+                                   AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')
                                  ORDER BY m.id DESC LIMIT 1",
-                                params![account_id, recipient_psid, r_type],
+                                params![account_id, recipient_psid, r_type, watermark],
                             )?;
-                            processed = true;
+                            if affected > 0 {
+                                processed = true;
+                            }
                         }
                     }
                 }
@@ -966,23 +987,30 @@ impl FacebookSyncWorker {
                         let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
 
                         if !mid.is_empty() && !sender_psid.is_empty() {
-                            tx.execute(
+                            let affected = tx.execute(
                                 "INSERT OR REPLACE INTO pending_message_reactions (
                                     channel_account_id, external_thread_id, conversation_kind, provider_message_id, actor_external_id, reaction, removed, occurred_at, created_at, updated_at
                                  ) VALUES (?1, ?2, 'direct', ?3, ?2, ?4, ?5, datetime('now'), datetime('now'), datetime('now'))",
                                 params![account_id, sender_psid, mid, reaction, if action == "unreact" { 1 } else { 0 }],
                             )?;
-                            processed = true;
+                            if affected > 0 {
+                                processed = true;
+                            }
                         }
                     }
                 }
                 _ => {
-                    // Feed and Leadgen events leave messenger cursor unchanged; processed by dedicated feature workers
+                    // Feed and Leadgen events are handled by dedicated Phase 3 workers
                 }
             }
 
-            if processed && ev.id > max_synced_id {
-                max_synced_id = ev.id;
+            if processed {
+                if ev.id > max_synced_id {
+                    max_synced_id = ev.id;
+                }
+            } else {
+                // Strict contiguous cursor progression: stop at first unhandled/failed event
+                break;
             }
         }
 
