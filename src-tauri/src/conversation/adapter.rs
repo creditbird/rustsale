@@ -6,6 +6,7 @@ pub struct ProviderSendRequest {
     pub external_thread_id: String,
     pub is_group: bool,
     pub text: String,
+    pub message_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

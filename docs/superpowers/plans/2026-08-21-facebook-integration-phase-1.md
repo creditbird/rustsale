@@ -399,6 +399,15 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
                 UNIQUE(channel_account_id, scope, event_id)
             );
             CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
+
+            -- Deduplicate any existing duplicate attachments before creating unique index
+            DELETE FROM message_attachments 
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM message_attachments 
+                GROUP BY message_id, COALESCE(remote_url, id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote ON message_attachments(message_id, remote_url) WHERE remote_url IS NOT NULL;
         "#)?;
 
         // Conditionally add provider_timestamp to messages table
@@ -411,7 +420,7 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
             }
         }
         if !has_provider_timestamp {
-            tx.execute_batch("ALTER TABLE messages ADD COLUMN provider_timestamp INTEGER;")?;
+            tx.execute_batch("ALTER TABLE messages ADD COLUMN provider_timestamp TEXT;")?;
         }
 
         // Conditionally add leadgen columns to leads table
@@ -795,11 +804,21 @@ impl ChannelSender for FacebookMessengerSender {
         let token = self.get_page_access_token(provider_account_key)?;
         let client = FacebookClient::new(token);
 
+        let validated_tag = match request.message_tag.as_deref() {
+            Some(tag) => {
+                match tag {
+                    "CONFIRMED_EVENT_UPDATE" | "POST_PURCHASE_UPDATE" | "ACCOUNT_UPDATE" | "HUMAN_AGENT" => Some(tag),
+                    _ => return Err(anyhow!("Invalid or unsupported Meta message tag: {}", tag)),
+                }
+            }
+            None => None,
+        };
+
         let res = client.send_text_message(
             provider_account_key,
             &request.external_thread_id,
             &request.text,
-            None,
+            validated_tag,
         ).await.map_err(|e| match e {
             MetaSendError::Transient(err) => anyhow!("TRANSIENT_ERROR: {:?}", err),
             MetaSendError::Permanent(err) => anyhow!("PERMANENT_DEAD_LETTER: {:?}", err),
