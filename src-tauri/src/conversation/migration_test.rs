@@ -1317,3 +1317,46 @@ fn facebook_upload_sessions_legacy_upgrade_preserves_data_and_enables_init_pendi
         "Upgraded active-session unique index must enforce uniqueness for init_pending"
     );
 }
+
+#[test]
+fn facebook_upload_sessions_schema_v2_idempotence_with_foreign_keys_on() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+
+    // 1. First migration run on clean DB
+    migrate(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (30, 'messenger', 'page_30', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (30, 'grp30', 30, 'page_30', 'video', 'msg30', 'key30', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+         VALUES (300, 30, 'page_30', 'video', 'sess_300', 'vid_300', '/path/v2.mp4', 'hash_v2', 10000, 0, 'init_pending', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // 2. Second migration run with PRAGMA foreign_keys = ON; must be a clean no-op for table rebuild
+    migrate(&conn).unwrap();
+
+    // 3. Verify session data remains intact and unchanged
+    let (saved_status, saved_session_id): (String, String) = conn
+        .query_row(
+            "SELECT status, upload_session_id FROM facebook_upload_sessions WHERE id = 300",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved_status, "init_pending");
+    assert_eq!(saved_session_id, "sess_300");
+}

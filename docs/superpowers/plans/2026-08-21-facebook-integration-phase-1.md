@@ -255,6 +255,11 @@ serve(async (req: Request) => {
       const longData = await longResp.json();
       const longLivedUserToken = longData.access_token;
 
+      const meUrl = `https://graph.facebook.com/v26.0/me?access_token=${encodeURIComponent(longLivedUserToken)}`;
+      const meResp = await fetch(meUrl);
+      const meData = meResp.ok ? await meResp.json() : null;
+      const appUserId = meData?.id;
+
       const accountsUrl = `https://graph.facebook.com/v26.0/me/accounts?access_token=${encodeURIComponent(longLivedUserToken)}`;
       const accResp = await fetch(accountsUrl);
       if (!accResp.ok) throw new Error(`Accounts retrieval failed: ${accResp.status}`);
@@ -265,6 +270,19 @@ serve(async (req: Request) => {
         access_token: p.access_token,
         category: p.category,
       }));
+
+      // Durable ASID-to-Page mapping persistence for compliance & data deletion
+      if (appUserId) {
+        for (const p of pages) {
+          await supabaseAdmin.from("meta_user_page_interactions").upsert({
+            tenant_id: claimedSession.tenant_id,
+            page_id: p.id,
+            app_user_id: appUserId,
+            page_scoped_user_id: appUserId,
+            last_interaction_at: new Date().toISOString(),
+          }, { onConflict: "tenant_id,page_id,page_scoped_user_id" });
+        }
+      }
 
       const exchangeCode = crypto.randomUUID();
       const { error: rpcError } = await supabaseAdmin.rpc("create_meta_oauth_exchange_code", {
@@ -383,12 +401,14 @@ BEGIN
         END IF;
     END LOOP;
 
-    FOR v_inter IN SELECT * FROM jsonb_to_recordset(p_interactions) AS (user_id TEXT, timestamp TIMESTAMPTZ)
+    FOR v_inter IN SELECT * FROM jsonb_to_recordset(p_interactions) AS (user_id TEXT, app_user_id TEXT, timestamp TIMESTAMPTZ)
     LOOP
-        INSERT INTO public.meta_user_page_interactions (tenant_id, page_id, page_scoped_user_id, last_interaction_at)
-        VALUES (p_tenant_id, p_page_id, v_inter.user_id, v_inter.timestamp)
+        INSERT INTO public.meta_user_page_interactions (tenant_id, page_id, app_user_id, page_scoped_user_id, last_interaction_at)
+        VALUES (p_tenant_id, p_page_id, v_inter.app_user_id, v_inter.user_id, v_inter.timestamp)
         ON CONFLICT (tenant_id, page_id, page_scoped_user_id)
-        DO UPDATE SET last_interaction_at = GREATEST(meta_user_page_interactions.last_interaction_at, EXCLUDED.last_interaction_at);
+        DO UPDATE SET
+            app_user_id = COALESCE(EXCLUDED.app_user_id, meta_user_page_interactions.app_user_id),
+            last_interaction_at = GREATEST(meta_user_page_interactions.last_interaction_at, EXCLUDED.last_interaction_at);
     END LOOP;
 
     FOR v_lead IN SELECT * FROM jsonb_to_recordset(p_lead_interactions) AS (leadgen_id TEXT, form_id TEXT, created_at TIMESTAMPTZ)

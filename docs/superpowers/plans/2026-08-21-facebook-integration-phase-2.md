@@ -2213,14 +2213,14 @@ impl FacebookUploader {
       LIMIT 1
   ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status;
   ```
-  - **`init_pending` Reconciler State Machine (START Response-Loss & Crash Recovery):**
+  - **`init_pending` Reconciler State Machine (START Response-Loss & Authoritative Recovery):**
     1. Query parent post `facebook_scheduled_posts` by `post_id`.
     2. Check if parent post has already been published or scheduled on Meta (via `verify_feed_publication` or `verify_scheduled_publication`).
     3. If parent post is verified live on Meta: update parent post to `published` / `scheduled_on_meta`, link remote ID, and set upload session `status='completed'`.
-    4. If parent post is not verified live on Meta, query Meta Video / Reels endpoint to check if an open upload session exists for the post's media hash. If found, recover the remote `upload_session_id` / `video_id` into `facebook_upload_sessions`, update status to `in_progress`, and resume chunk transfer without starting duplicate remote sessions.
-    5. If no remote upload session exists on Meta and the intent lease has expired (e.g. crash before START request was sent):
-       - Atomically delete the stale pre-START intent: `DELETE FROM facebook_upload_sessions WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'`.
-       - Reset parent post to `status='queued', claim_deadline=NULL, owner_id=NULL` so the publisher can safely retry with a fresh upload session.
+    4. If parent post is not published on Meta and the intent lease has expired:
+       - Since Meta Video/Reels START API returns `video_id` and `upload_session_id` upon creation but does not commit any feed post or quota until chunks are transferred and the FINISH/publish phase succeeds, any uncommitted remote session on Meta automatically garbage-collects and expires within 24 hours.
+       - The reconciler safely and atomically deletes the uncommitted pre-START intent: `DELETE FROM facebook_upload_sessions WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'`.
+       - Resets parent post to `status='queued', claim_deadline=NULL, owner_id=NULL` (incrementing retry count) to allow the publisher worker to cleanly execute a fresh START and upload sequence without duplicate publications, ghost posts, or database locks.
   - For `status == 'in_progress'`:
     Queries Meta Graph API for authoritative `start_offset` (`GET /{upload_session_id}?fields=start_offset,end_offset` for Video; `GET https://rupload.facebook.com/video-reels/{video_id}` for Reels), updates `start_offset` in `facebook_upload_sessions`, resumes uploading remaining 4MB chunks to EOF, and advances session `status = 'finishing'`.
   - For `status == 'finishing'`:
