@@ -306,21 +306,22 @@ git commit -m "feat(supabase): add secure meta webhook relay and atomic 60s oaut
 
 ```rust
 // src-tauri/src/conversation/migration_v2.rs
-use anyhow::{anyhow, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, Result};
+use std::collections::HashSet;
 
-pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
+pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
     let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
     if current_version >= 2 {
         return Ok(());
     }
 
-    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
+    let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
 
     let migration_result = (|| -> Result<()> {
-        let tx = conn.transaction()?;
+        conn.execute_batch("SAVEPOINT migration_v2;")?;
 
-        tx.execute_batch(r#"
+        conn.execute_batch(r#"
             -- 1. Create v2 table for channel_identities with channel_account_id
             CREATE TABLE IF NOT EXISTS channel_identities_v2 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -344,26 +345,67 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
                 FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL,
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
             );
+        "#)?;
 
-            -- 2. Backfill existing identities
-            INSERT INTO channel_identities_v2 (
-                id, lead_id, channel, channel_account_id, identity_namespace, external_id,
-                normalized_address, display_name, avatar_url, profile_synced_at,
-                profile_sync_error, profile_sync_attempts, next_profile_retry_at,
-                link_source, link_confidence, verified_at, created_at, updated_at
-            )
-            SELECT 
-                id, lead_id, channel, NULL, identity_namespace, external_id,
-                normalized_address, display_name, avatar_url, profile_synced_at,
-                profile_sync_error, profile_sync_attempts, next_profile_retry_at,
-                link_source, link_confidence, verified_at, created_at, updated_at
-            FROM channel_identities;
+        let has_channel_identities: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='channel_identities'",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(false);
 
-            -- 3. Replace table
-            DROP TABLE channel_identities;
-            ALTER TABLE channel_identities_v2 RENAME TO channel_identities;
+        if has_channel_identities {
+            let mut existing_cols = HashSet::new();
+            {
+                let mut stmt = conn.prepare("PRAGMA table_info(channel_identities)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                for col in rows.flatten() {
+                    existing_cols.insert(col.to_lowercase());
+                }
+            }
 
-            -- 4. Rebuild indexes with partial unique constraints
+            let lead_id_expr = if existing_cols.contains("lead_id") { "lead_id" } else { "NULL" };
+            let channel_account_id_expr = if existing_cols.contains("channel_account_id") { "channel_account_id" } else { "NULL" };
+            let norm_addr_expr = if existing_cols.contains("normalized_address") { "normalized_address" } else { "NULL" };
+            let disp_name_expr = if existing_cols.contains("display_name") { "display_name" } else { "NULL" };
+            let avatar_url_expr = if existing_cols.contains("avatar_url") { "avatar_url" } else { "NULL" };
+            let sync_at_expr = if existing_cols.contains("profile_synced_at") { "profile_synced_at" } else { "NULL" };
+            let sync_err_expr = if existing_cols.contains("profile_sync_error") { "profile_sync_error" } else { "NULL" };
+            let sync_att_expr = if existing_cols.contains("profile_sync_attempts") { "profile_sync_attempts" } else { "0" };
+            let retry_at_expr = if existing_cols.contains("next_profile_retry_at") { "next_profile_retry_at" } else { "NULL" };
+            let link_src_expr = if existing_cols.contains("link_source") { "link_source" } else { "'unlinked'" };
+            let link_conf_expr = if existing_cols.contains("link_confidence") { "link_confidence" } else { "NULL" };
+            let verif_at_expr = if existing_cols.contains("verified_at") { "verified_at" } else { "NULL" };
+
+            let copy_sql = format!(
+                r#"
+                PRAGMA legacy_alter_table = ON;
+
+                INSERT INTO channel_identities_v2 (
+                    id, lead_id, channel, channel_account_id, identity_namespace, external_id,
+                    normalized_address, display_name, avatar_url, profile_synced_at,
+                    profile_sync_error, profile_sync_attempts, next_profile_retry_at,
+                    link_source, link_confidence, verified_at, created_at, updated_at
+                )
+                SELECT 
+                    id, {lead_id_expr}, channel, {channel_account_id_expr}, identity_namespace, external_id,
+                    {norm_addr_expr}, {disp_name_expr}, {avatar_url_expr}, {sync_at_expr},
+                    {sync_err_expr}, {sync_att_expr}, {retry_at_expr},
+                    {link_src_expr}, {link_conf_expr}, {verif_at_expr}, created_at, updated_at
+                FROM channel_identities;
+
+                DROP TABLE IF EXISTS channel_identities;
+                ALTER TABLE channel_identities_v2 RENAME TO channel_identities;
+
+                PRAGMA legacy_alter_table = OFF;
+                "#
+            );
+            conn.execute_batch(&copy_sql)?;
+        } else {
+            conn.execute_batch("ALTER TABLE channel_identities_v2 RENAME TO channel_identities;")?;
+        }
+
+        conn.execute_batch(r#"
+            -- 2. Rebuild partial unique constraints and indexes
             CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique 
             ON channel_identities(channel, identity_namespace, external_id) 
@@ -372,7 +414,7 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
             ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
             WHERE channel_account_id IS NOT NULL;
 
-            -- 5. Create facebook_page_tokens table
+            -- 3. Create facebook_page_tokens table
             CREATE TABLE IF NOT EXISTS facebook_page_tokens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_account_id INTEGER NOT NULL UNIQUE,
@@ -387,54 +429,50 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
             );
         "#)?;
 
-        // Conditionally add leadgen columns to leads table
-        let mut has_leadgen = false;
-        let mut has_custom_fields = false;
-        {
-            let mut stmt = tx.prepare("PRAGMA table_info(leads)")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            for col in rows.flatten() {
-                if col == "leadgen_id" { has_leadgen = true; }
-                if col == "custom_fields_json" { has_custom_fields = true; }
+        // Conditionally add leadgen columns to leads table if leads table exists
+        let has_leads: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='leads'",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(false);
+
+        if has_leads {
+            let mut has_leadgen = false;
+            let mut has_custom_fields = false;
+            {
+                let mut stmt = conn.prepare("PRAGMA table_info(leads)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                for col in rows.flatten() {
+                    if col == "leadgen_id" { has_leadgen = true; }
+                    if col == "custom_fields_json" { has_custom_fields = true; }
+                }
             }
-        }
-        if !has_leadgen {
-            tx.execute_batch("ALTER TABLE leads ADD COLUMN leadgen_id TEXT;")?;
-        }
-        tx.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_leadgen_id ON leads(leadgen_id) WHERE leadgen_id IS NOT NULL;")?;
-        if !has_custom_fields {
-            tx.execute_batch("ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';")?;
-        }
-
-        // Check FK violations using a scoped statement
-        {
-            let mut fk_stmt = tx.prepare("PRAGMA foreign_key_check")?;
-            let fk_violations: Vec<String> = fk_stmt
-                .query_map([], |row| Ok(row.get::<_, String>(0)?))?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            if !fk_violations.is_empty() {
-                return Err(anyhow!("Foreign key violations found: {:?}", fk_violations));
+            if !has_leadgen {
+                conn.execute_batch("ALTER TABLE leads ADD COLUMN leadgen_id TEXT;")?;
+            }
+            conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_leadgen_id ON leads(leadgen_id) WHERE leadgen_id IS NOT NULL;")?;
+            if !has_custom_fields {
+                conn.execute_batch("ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';")?;
             }
         }
 
-        tx.execute_batch("PRAGMA user_version = 2;")?;
-        tx.commit()?;
+        conn.execute_batch("PRAGMA user_version = 2;")?;
+        conn.execute_batch("RELEASE SAVEPOINT migration_v2;")?;
         Ok(())
     })();
 
-    let pragma_res = conn.execute_batch("PRAGMA foreign_keys = ON;");
-    match migration_result {
-        Ok(_) => pragma_res.map_err(|e| anyhow!("Failed to restore foreign keys: {}", e)),
-        Err(e) => {
-            let _ = pragma_res;
-            Err(e)
-        }
+    if migration_result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v2; RELEASE SAVEPOINT migration_v2;");
     }
+
+    if initial_fk == 1 {
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    }
+
+    migration_result
 }
 
-pub fn apply_migration_v3(conn: &mut Connection) -> Result<()> {
+pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
     apply_migration_v2(conn)?;
 
     let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
@@ -442,13 +480,14 @@ pub fn apply_migration_v3(conn: &mut Connection) -> Result<()> {
         return Ok(());
     }
 
-    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
+    let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
 
     let migration_result = (|| -> Result<()> {
-        let tx = conn.transaction()?;
+        conn.execute_batch("SAVEPOINT migration_v3;")?;
 
-        tx.execute_batch(r#"
-            -- 1. Create channel_sync_dead_letters table
+        conn.execute_batch(r#"
+            -- 1. Create channel_sync_dead_letters table with complete lifecycle
             CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_account_id INTEGER NOT NULL,
@@ -458,48 +497,157 @@ pub fn apply_migration_v3(conn: &mut Connection) -> Result<()> {
                 event_key TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 error_reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'retrying', 'resolved', 'ignored')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT,
+                resolved_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
                 UNIQUE(channel_account_id, scope, event_id)
             );
             CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
-
-            -- 2. Deduplicate any existing duplicate attachments before creating unique index
-            DELETE FROM message_attachments 
-            WHERE id NOT IN (
-                SELECT MIN(id) 
-                FROM message_attachments 
-                GROUP BY message_id, COALESCE(remote_url, id)
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote ON message_attachments(message_id, remote_url) WHERE remote_url IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_dead_letters_status ON channel_sync_dead_letters(status, next_retry_at);
         "#)?;
 
-        // Conditionally add provider_timestamp to messages table
-        let mut has_provider_timestamp = false;
-        {
-            let mut stmt = tx.prepare("PRAGMA table_info(messages)")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            for col in rows.flatten() {
-                if col == "provider_timestamp" { has_provider_timestamp = true; }
+        let has_attachments: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='message_attachments'",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(false);
+
+        if has_attachments {
+            let mut existing_att_cols = HashSet::new();
+            {
+                let mut stmt = conn.prepare("PRAGMA table_info(message_attachments)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                for col in rows.flatten() {
+                    existing_att_cols.insert(col.to_lowercase());
+                }
             }
-        }
-        if !has_provider_timestamp {
-            tx.execute_batch("ALTER TABLE messages ADD COLUMN provider_timestamp TEXT;")?;
+
+            if !existing_att_cols.contains("provider_attachment_id") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN provider_attachment_id TEXT;")?;
+            }
+            if !existing_att_cols.contains("attachment_type") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN attachment_type TEXT NOT NULL DEFAULT 'file';")?;
+            }
+            if !existing_att_cols.contains("file_name") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN file_name TEXT;")?;
+            }
+            if !existing_att_cols.contains("mime_type") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN mime_type TEXT;")?;
+            }
+            if !existing_att_cols.contains("size_bytes") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN size_bytes INTEGER;")?;
+            }
+            if !existing_att_cols.contains("local_path") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN local_path TEXT;")?;
+            }
+            if !existing_att_cols.contains("thumbnail_url") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN thumbnail_url TEXT;")?;
+            }
+            if !existing_att_cols.contains("metadata_json") {
+                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';")?;
+            }
+
+            // Lossless metadata merge from duplicates into the surviving MIN(id) record before deletion
+            conn.execute_batch(r#"
+                UPDATE message_attachments AS target
+                SET 
+                    provider_attachment_id = COALESCE(target.provider_attachment_id, (
+                        SELECT provider_attachment_id FROM message_attachments 
+                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND provider_attachment_id IS NOT NULL 
+                        LIMIT 1
+                    )),
+                    file_name = COALESCE(target.file_name, (
+                        SELECT file_name FROM message_attachments 
+                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND file_name IS NOT NULL 
+                        LIMIT 1
+                    )),
+                    mime_type = COALESCE(target.mime_type, (
+                        SELECT mime_type FROM message_attachments 
+                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND mime_type IS NOT NULL 
+                        LIMIT 1
+                    )),
+                    size_bytes = COALESCE(target.size_bytes, (
+                        SELECT size_bytes FROM message_attachments 
+                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND size_bytes IS NOT NULL 
+                        LIMIT 1
+                    )),
+                    local_path = COALESCE(target.local_path, (
+                        SELECT local_path FROM message_attachments 
+                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND local_path IS NOT NULL 
+                        LIMIT 1
+                    )),
+                    thumbnail_url = COALESCE(target.thumbnail_url, (
+                        SELECT thumbnail_url FROM message_attachments 
+                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND thumbnail_url IS NOT NULL 
+                        LIMIT 1
+                    )),
+                    metadata_json = COALESCE(target.metadata_json, (
+                        SELECT metadata_json FROM message_attachments 
+                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND metadata_json IS NOT NULL AND metadata_json != '{}' 
+                        LIMIT 1
+                    ))
+                WHERE target.id IN (
+                    SELECT MIN(id) 
+                    FROM message_attachments 
+                    WHERE remote_url IS NOT NULL 
+                    GROUP BY message_id, remote_url 
+                    HAVING COUNT(*) > 1
+                );
+
+                -- Delete redundant duplicate records
+                DELETE FROM message_attachments 
+                WHERE remote_url IS NOT NULL 
+                  AND id NOT IN (
+                    SELECT MIN(id) 
+                    FROM message_attachments 
+                    WHERE remote_url IS NOT NULL
+                    GROUP BY message_id, remote_url
+                  );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote 
+                ON message_attachments(message_id, remote_url) 
+                WHERE remote_url IS NOT NULL;
+            "#)?;
         }
 
-        tx.execute_batch("PRAGMA user_version = 3;")?;
-        tx.commit()?;
+        // Conditionally add provider_timestamp to messages table if messages table exists
+        let has_messages: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='messages'",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(false);
+
+        if has_messages {
+            let mut has_provider_timestamp = false;
+            {
+                let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                for col in rows.flatten() {
+                    if col == "provider_timestamp" { has_provider_timestamp = true; }
+                }
+            }
+            if !has_provider_timestamp {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN provider_timestamp TEXT;")?;
+            }
+        }
+
+        conn.execute_batch("PRAGMA user_version = 3;")?;
+        conn.execute_batch("RELEASE SAVEPOINT migration_v3;")?;
         Ok(())
     })();
 
-    let pragma_res = conn.execute_batch("PRAGMA foreign_keys = ON;");
-    match migration_result {
-        Ok(_) => pragma_res.map_err(|e| anyhow!("Failed to restore foreign keys: {}", e)),
-        Err(e) => {
-            let _ = pragma_res;
-            Err(e)
-        }
+    if migration_result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v3; RELEASE SAVEPOINT migration_v3;");
     }
+
+    if initial_fk == 1 {
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    }
+
+    migration_result
 }
 ```
 
@@ -1160,11 +1308,12 @@ impl FacebookSyncWorker {
                                     let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
                                     let trimmed_url = att_url.trim();
                                     let att_title = att.get("title").and_then(|t| t.as_str());
+                                    let provider_att_id = att.get("payload").and_then(|p| p.get("id").or_else(|| p.get("attachment_id"))).and_then(|i| i.as_str());
                                     if !trimmed_url.is_empty() {
                                         tx.execute(
-                                            "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
-                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                            params![msg_id, att_type, att_title, trimmed_url],
+                                            "INSERT OR IGNORE INTO message_attachments (message_id, provider_attachment_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                             VALUES (?1, ?2, ?3, ?4, ?5, '{}', datetime('now'))",
+                                            params![msg_id, provider_att_id, att_type, att_title, trimmed_url],
                                         )?;
                                     }
                                 }
@@ -1265,7 +1414,7 @@ impl FacebookSyncWorker {
                 // Route unhandled / malformed payload to dedicated durable dead-letter table with full diagnostic metadata
                 tx.execute(
                     "INSERT OR IGNORE INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
-                     VALUES (?1, 'meta_webhook_cursor', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                     VALUES (?1, 'meta_webhook_messenger_cursor', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
                     params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "unhandled_or_malformed_payload"],
                 )?;
                 processed = true;
@@ -1279,7 +1428,7 @@ impl FacebookSyncWorker {
         if max_synced_id > 0 {
             tx.execute(
                 "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, last_event_at, updated_at)
-                 VALUES (?1, 'meta_webhook_cursor', ?2, datetime('now'), datetime('now'))
+                 VALUES (?1, 'meta_webhook_messenger_cursor', ?2, datetime('now'), datetime('now'))
                  ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, last_event_at = datetime('now'), updated_at = datetime('now')",
                 params![account_id, max_synced_id.to_string()],
             )?;

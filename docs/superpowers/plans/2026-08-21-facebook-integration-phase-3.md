@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
+**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock & reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback & Anonymization Engine, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions, Meta Graph API v26.0+.
 
@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) before sending Private Reply via Meta Send API. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
-| **REQ-FB-14** | Idempotent Lead Ads Ingestion | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /{leadgen_id}`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
-| **REQ-FB-15** | Data Deletion Compliance Endpoint | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta signed_request and returns confirmation code with status tracking URL. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Ambiguous Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and heartbeat renewal before sending Private Reply. On timeout, marks `delivery_unknown` and reconciles via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursors | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /{leadgen_id}` using isolated `meta_webhook_leadgen_cursor`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
+| **REQ-FB-15** | Data Deletion Compliance Endpoint & Local/Cloud Anonymizer | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, purges buffer, anonymizes local SQLite records, and returns confirmation code with status tracking URL `https://rustsale.trantrongtri.com/deletion-status?id=...`. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
 
 ---
 
@@ -62,13 +62,13 @@ git commit -m "feat(facebook): implement comment automation types and keyword ma
 
 ---
 
-### Task 2: Comment Automation Engine with Atomic Claim & Real Send API
+### Task 2: Comment Automation Engine with 5-Min Lease Lock & Reconciliation
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/comment_engine.rs`
 - Test: `src-tauri/src/conversation/facebook/comment_engine_test.rs`
 
-- [ ] **Step 1: Implement complete `CommentEngine` with atomic lock and Meta Send API call**
+- [ ] **Step 1: Implement complete `CommentEngine` with atomic lease lock, heartbeat renewal, and Meta Send API call**
 
 ```rust
 // src-tauri/src/conversation/facebook/comment_engine.rs
@@ -76,7 +76,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use rusqlite::{params, Connection};
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub struct CommentEngine;
 
@@ -163,6 +163,30 @@ impl CommentEngine {
                 Err(anyhow!("Network timeout / transport failure: {}", e))
             }
         }
+    }
+
+    pub async fn reconcile_delivery_unknown(
+        conn: &mut Connection,
+        token: &str,
+        page_id: &str,
+        comment_id: &str,
+    ) -> Result<bool> {
+        let client = Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
+        let url = format!("https://graph.facebook.com/v26.0/{}?fields=private_reply_status", comment_id);
+        let resp = client.get(&url).bearer_auth(token).send().await?;
+        if resp.status().is_success() {
+            let body: Value = resp.json().await?;
+            if let Some(status) = body.get("private_reply_status").and_then(|s| s.as_str()) {
+                if status == "replied" {
+                    conn.execute(
+                        "UPDATE facebook_comment_logs SET private_reply_status = 'success', updated_at = datetime('now') WHERE comment_id = ?1",
+                        [comment_id],
+                    )?;
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 }
 ```
@@ -458,3 +482,4 @@ git commit -m "feat(ui): add FacebookHub top-level view and global sidebar navig
 ```bash
 git commit --allow-empty -m "chore: complete phase 3 facebook automations and compliance implementation"
 ```
+
