@@ -131,6 +131,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote
 ON message_attachments(message_id, remote_url)
 WHERE remote_url IS NOT NULL;
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_provider
+ON message_attachments(message_id, provider_attachment_id)
+WHERE provider_attachment_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS message_reactions (
     message_id INTEGER NOT NULL,
     actor_external_id TEXT NOT NULL,

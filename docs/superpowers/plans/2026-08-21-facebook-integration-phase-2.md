@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a robust, multi-type Facebook Post Scheduler supporting Status, Link, Photos, Albums, Resumable Videos, and Reels with dual-mode scheduling (Meta-side 10m–30d & Local-queued >30d), multi-page fan-out, persistent restart-resumable upload sessions, expired publishing lease sweepers, and Svelte 5 Live Desktop/Mobile Feed Previews.
+**Goal:** Build a robust, multi-type Facebook Post Scheduler supporting Status, Link, Photos, Albums, Resumable Videos, and Reels with dual-mode scheduling (Meta-side 10m–30d & Local-queued >30d), multi-page fan-out, persistent restart-resumable upload sessions with server offset verification, expired publishing lease sweepers, and Svelte 5 Live Desktop/Mobile Feed Previews.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), `reqwest`, `graph-video.facebook.com` API, Tailwind CSS.
 
@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-08** | JIT Media Upload & Zero Query Leakage | `PLANNED` | Task 2 (Step 1) | Media is uploaded unpublished at push time with `Authorization: Bearer <token>` header (never query string). | Inspect HTTP logs during media upload; verify 0 tokens appear in URL query strings. | Integration test: Mock server inspects headers and query params. |
-| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` and `rupload.facebook.com` (`start` -> `transfer` in 4MB chunks with offset validation -> `finish`). Persistent state in `facebook_upload_sessions` keyed by `(page_id, upload_type, file_hash, file_size_bytes, status)`. Fail-closed on server offset lookup failure. | Network drops or app restarts at byte offset 8,388,608 (chunk 2); restart confirms server offset and resumes without restarting file. | Resumable upload unit test with mocked chunk interruption and session recovery. |
+| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` and `rupload.facebook.com`. Persistent state in `facebook_upload_sessions` keyed by `(page_id, upload_type, file_hash, file_size_bytes, status)`. Resumed session verifies confirmed offset with Meta server before sending chunks. | Network drops or app restarts at byte offset 8,388,608; restart queries server offset and resumes without data corruption. | Resumable upload unit test with mocked chunk interruption and session recovery. |
 | **REQ-FB-10** | Dual-Mode Scheduling & Overdue Safety | `PLANNED` | Task 3 (Step 1) | Posts 10m–30d pushed to Meta with `published=false`; posts >30d held locally in SQLite. Overdue posts trigger safety prompt. Hourly cron promotes posts entering `<=27 days`. Multi-attribute reconciliation matches exact timestamp and SHA-256 message hash. | User's laptop closed for 35 days; opening app triggers "Đăng ngay / Dời lịch / Huỷ" prompt instead of unexpected auto-post. | Scheduler test: Pass overdue post to engine; assert status is `overdue_prompt`. |
-| **REQ-FB-11** | Idempotent Multi-Page Fan-Out | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = format!("{}:{}:{}", draft_group_id, account_id, page_id)`. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
+| **REQ-FB-11** | Idempotent Multi-Page Fan-Out & Lease Safety | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = format!("{}:{}:{}", draft_group_id, account_id, page_id)`. Promotion verifies ownership on update. Ambiguous reconciliation is fail-closed. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. Inconclusive reconciliation remains in `delivery_unknown`. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
 
 ---
 
@@ -95,7 +95,7 @@ git commit -m "feat(facebook): implement post scheduler types and mode decision 
 - Create: `src-tauri/src/conversation/facebook/media_uploader.rs`
 - Test: `src-tauri/src/conversation/facebook/media_uploader_test.rs`
 
-- [ ] **Step 1: Implement 3-Phase Resumable Video & Reels Uploader with SQLite Session Persistence**
+- [ ] **Step 1: Implement 3-Phase Resumable Video & Reels Uploader with Server Offset Verification**
 
 ```rust
 // src-tauri/src/conversation/facebook/media_uploader.rs
@@ -355,7 +355,17 @@ impl FacebookMediaUploader {
         };
 
         let (video_id, mut offset) = match existing_session? {
-            Some((sess_id, vid, saved_offset)) => (vid, saved_offset),
+            Some((_sess_id, vid, _saved_offset)) => {
+                // Query server for confirmed offset
+                let url_query = format!("https://rupload.facebook.com/video-reels/{}", vid);
+                let resp_q = self.http.get(&url_query).bearer_auth(&self.token).send().await?;
+                let confirmed_offset = if resp_q.status().is_success() {
+                    resp_q.headers().get("Offset").and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0)
+                } else {
+                    0
+                };
+                (vid, confirmed_offset)
+            }
             None => {
                 let url_init = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
                 let resp = self.http.post(&url_init)
@@ -431,7 +441,7 @@ impl FacebookMediaUploader {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete 3-phase resumable video and reels uploader with session persistence and bearer auth"
+git commit -m "feat(facebook): implement complete 3-phase resumable video and reels uploader with server offset verification"
 ```
 
 ---
@@ -442,7 +452,7 @@ git commit -m "feat(facebook): implement complete 3-phase resumable video and re
 - Create: `src-tauri/src/conversation/facebook/post_scheduler.rs`
 - Test: `src-tauri/src/conversation/facebook/post_scheduler_test.rs`
 
-- [ ] **Step 1: Implement Post Scheduler with Multi-Page Fan-Out, Multi-Type Promotion & Ambiguous Response Reconciliation**
+- [ ] **Step 1: Implement Post Scheduler with All 6 Post Types, Expired Sweeper & Fail-Closed Reconciliation**
 
 ```rust
 // src-tauri/src/conversation/facebook/post_scheduler.rs
@@ -452,6 +462,7 @@ use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::fs;
 
 pub struct FacebookPostScheduler {
     token: String,
@@ -469,7 +480,7 @@ impl FacebookPostScheduler {
     pub fn schedule_multipage_fanout(
         conn: &mut Connection,
         draft_group_id: &str,
-        pages: &[(i64, String)], // (channel_account_id, page_id)
+        pages: &[(i64, String)],
         post_type: &str,
         message: &str,
         link_url: Option<&str>,
@@ -506,8 +517,8 @@ impl FacebookPostScheduler {
             rows.flatten().collect()
         };
 
-        for (post_id, page_id, post_type, message, link_url, media_paths, target_time) in eligible_posts {
-            // Atomic lease claim from queued to publishing
+        for (post_id, page_id, post_type, message, link_url, media_paths_str, target_time) in eligible_posts {
+            // Atomic lease claim
             let claimed = conn.execute(
                 "UPDATE facebook_scheduled_posts 
                  SET status = 'publishing', owner_id = ?1, claim_deadline = datetime('now', '+5 minutes'), retry_count = retry_count + 1, updated_at = datetime('now')
@@ -520,6 +531,9 @@ impl FacebookPostScheduler {
             }
 
             let client = FacebookPostScheduler::new(token.to_string());
+            let media_paths: Vec<String> = serde_json::from_str(&media_paths_str).unwrap_or_default();
+
+            // Dispatch all 6 post types
             let publish_result = match post_type.as_str() {
                 "link" => {
                     let mut form = vec![("message", message.clone())];
@@ -528,20 +542,63 @@ impl FacebookPostScheduler {
                     }
                     client.publish_custom_feed(&page_id, form, Some(target_time)).await
                 }
+                "photo" => {
+                    if let Some(first_path) = media_paths.first() {
+                        let bytes = fs::read(first_path).map_err(|e| anyhow!("Failed to read photo: {}", e))?;
+                        let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                        let photo_id = uploader.upload_photo_unpublished(&page_id, bytes).await?;
+                        let form = vec![
+                            ("message", message.clone()),
+                            ("attached_media", serde_json::json!([{ "media_fbid": photo_id }]).to_string()),
+                        ];
+                        client.publish_custom_feed(&page_id, form, Some(target_time)).await
+                    } else {
+                        Err(anyhow!("Missing photo file path"))
+                    }
+                }
+                "multi_photo" => {
+                    let mut photos_bytes = Vec::new();
+                    for path in &media_paths {
+                        let bytes = fs::read(path).map_err(|e| anyhow!("Failed to read photo {}: {}", path, e))?;
+                        photos_bytes.push(bytes);
+                    }
+                    let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                    uploader.upload_multi_photo_post(&page_id, &message, photos_bytes, Some(target_time)).await
+                }
+                "video" => {
+                    if let Some(vid_path) = media_paths.first() {
+                        let bytes = fs::read(vid_path).map_err(|e| anyhow!("Failed to read video: {}", e))?;
+                        let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                        uploader.upload_full_resumable_video_with_state(conn, &page_id, vid_path, &bytes, "Video Post", &message, Some(target_time)).await
+                    } else {
+                        Err(anyhow!("Missing video file path"))
+                    }
+                }
+                "reel" => {
+                    if let Some(reel_path) = media_paths.first() {
+                        let bytes = fs::read(reel_path).map_err(|e| anyhow!("Failed to read reel: {}", e))?;
+                        let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                        uploader.upload_full_resumable_reel_with_state(conn, &page_id, reel_path, &bytes, &message, Some(target_time)).await
+                    } else {
+                        Err(anyhow!("Missing reel file path"))
+                    }
+                }
                 _ => client.publish_status_post(&page_id, &message, Some(target_time)).await,
             };
 
             match publish_result {
                 Ok(remote_id) => {
-                    conn.execute(
-                        "UPDATE facebook_scheduled_posts SET status = 'scheduled_on_meta', remote_post_id = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3",
+                    let rows_updated = conn.execute(
+                        "UPDATE facebook_scheduled_posts SET status = 'scheduled_on_meta', remote_post_id = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
                         params![&remote_id, post_id, worker_id],
                     )?;
-                    promoted_count += 1;
+                    if rows_updated > 0 {
+                        promoted_count += 1;
+                    }
                 }
                 Err(e) => {
                     conn.execute(
-                        "UPDATE facebook_scheduled_posts SET status = 'delivery_unknown', error_message = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3",
+                        "UPDATE facebook_scheduled_posts SET status = 'delivery_unknown', error_message = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
                         params![e.to_string(), post_id, worker_id],
                     )?;
                 }
@@ -560,12 +617,12 @@ impl FacebookPostScheduler {
         Ok(rows)
     }
 
-    pub async fn run_reconciliation_cycle(conn: &mut Connection, token: &str) -> Result<usize> {
+    pub async fn run_reconciliation_cycle(conn: &mut Connection, token: &str, worker_id: &str) -> Result<usize> {
         let unknown_posts: Vec<(i64, String, String, Option<i64>, i64)> = {
             let mut stmt = conn.prepare(
                 "SELECT id, page_id, message, strftime('%s', scheduled_publish_time), retry_count 
                  FROM facebook_scheduled_posts 
-                 WHERE status = 'delivery_unknown'"
+                 WHERE status = 'delivery_unknown' AND (claim_deadline IS NULL OR claim_deadline < datetime('now'))"
             )?;
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
             rows.flatten().collect()
@@ -575,22 +632,41 @@ impl FacebookPostScheduler {
         let client = FacebookPostScheduler::new(token.to_string());
 
         for (post_id, page_id, message, target_time, retries) in unknown_posts {
-            if let Ok(Some(remote_id)) = client.reconcile_ambiguous_post(&page_id, &message, target_time).await {
-                conn.execute(
-                    "UPDATE facebook_scheduled_posts SET status = 'scheduled_on_meta', remote_post_id = ?1, updated_at = datetime('now') WHERE id = ?2",
-                    params![&remote_id, post_id],
-                )?;
-                reconciled += 1;
-            } else if retries >= 3 {
-                conn.execute(
-                    "UPDATE facebook_scheduled_posts SET status = 'failed', updated_at = datetime('now') WHERE id = ?1",
-                    params![post_id],
-                )?;
-            } else {
-                conn.execute(
-                    "UPDATE facebook_scheduled_posts SET status = 'queued', updated_at = datetime('now') WHERE id = ?1",
-                    params![post_id],
-                )?;
+            let claimed = conn.execute(
+                "UPDATE facebook_scheduled_posts SET owner_id = ?1, claim_deadline = datetime('now', '+5 minutes') WHERE id = ?2 AND status = 'delivery_unknown'",
+                params![worker_id, post_id],
+            )?;
+            if claimed == 0 {
+                continue;
+            }
+
+            match client.reconcile_ambiguous_post(&page_id, &message, target_time).await {
+                Ok(Some(remote_id)) => {
+                    conn.execute(
+                        "UPDATE facebook_scheduled_posts SET status = 'scheduled_on_meta', remote_post_id = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3",
+                        params![&remote_id, post_id, worker_id],
+                    )?;
+                    reconciled += 1;
+                }
+                Ok(None) if retries >= 3 => {
+                    conn.execute(
+                        "UPDATE facebook_scheduled_posts SET status = 'failed', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",
+                        params![post_id, worker_id],
+                    )?;
+                }
+                Ok(None) => {
+                    conn.execute(
+                        "UPDATE facebook_scheduled_posts SET status = 'queued', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",
+                        params![post_id, worker_id],
+                    )?;
+                }
+                Err(_) => {
+                    // Fail-closed: release lease but keep in delivery_unknown
+                    conn.execute(
+                        "UPDATE facebook_scheduled_posts SET owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",
+                        params![post_id, worker_id],
+                    )?;
+                }
             }
         }
         Ok(reconciled)
@@ -643,7 +719,7 @@ impl FacebookPostScheduler {
         let url = format!("https://graph.facebook.com/v26.0/{}/feed?fields=id,message,scheduled_publish_time,is_published&limit=25", page_id);
         let resp = self.http.get(&url).bearer_auth(&self.token).send().await?;
         if !resp.status().is_success() {
-            return Ok(None);
+            anyhow::bail!("Meta feed query failed: HTTP {}", resp.status());
         }
         let body: Value = resp.json().await?;
         let expected_hash = {
@@ -668,19 +744,6 @@ impl FacebookPostScheduler {
         }
         Ok(None)
     }
-
-    pub async fn verify_meta_scheduled_post(&self, remote_post_id: &str) -> Result<bool> {
-        let url = format!("https://graph.facebook.com/v26.0/{}?fields=is_published,scheduled_publish_time", remote_post_id);
-        let resp = self.http.get(&url)
-            .bearer_auth(&self.token)
-            .send().await?;
-
-        if !resp.status().is_success() {
-            return Err(anyhow!("Read-after-write verification failed for post {}", remote_post_id));
-        }
-        let body: Value = resp.json().await?;
-        Ok(body.get("scheduled_publish_time").is_some())
-    }
 }
 ```
 
@@ -688,7 +751,7 @@ impl FacebookPostScheduler {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete post scheduler engine with multi-type dispatcher, lease recovery, and ambiguous reconciliation"
+git commit -m "feat(facebook): implement complete post scheduler engine with multi-type dispatcher, lease recovery, and fail-closed reconciliation"
 ```
 
 ---

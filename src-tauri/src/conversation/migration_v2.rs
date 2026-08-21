@@ -346,6 +346,10 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote 
                 ON message_attachments(message_id, remote_url) 
                 WHERE remote_url IS NOT NULL;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_provider
+                ON message_attachments(message_id, provider_attachment_id)
+                WHERE provider_attachment_id IS NOT NULL;
             "#)?;
         }
 

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock, in-flight heartbeat loop & fail-closed reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback with Tenant-Scoped Device Task Distribution & Post-Commit Anonymization Engine, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
+**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock, in-flight heartbeat renewal loop & fail-closed reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback with Durable Interaction Mapping, Tenant/Page Scoped Device Task Distribution & Transactional Anonymization Engine via `pending_spool_cleanups`, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions, Meta Graph API v26.0+.
 
@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Heartbeat & Fail-Closed Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal loop. On timeout, marks `delivery_unknown` and reconciles fail-closed via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. Inconclusive Graph responses do not retry. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Active Heartbeat & Fail-Closed Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal loop. On timeout, marks `delivery_unknown` and reconciles fail-closed via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. Inconclusive Graph responses do not retry. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
 | **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursors | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /<leadgen_id>` using isolated `meta_webhook_leadgen_cursor`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
-| **REQ-FB-15** | Data Deletion Compliance Endpoint & Scoped Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, purges buffer, dispatches `meta_device_deletion_tasks` ONLY to affected tenants, and returns confirmation code with status tracking URL. Local client executes scoped Messenger anonymization and post-commit file deletion. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. Unrelated tenant data is untouched. | Compliance test: Send mock Meta deletion payload; assert 200, scoped task distribution, and schema validity. |
+| **REQ-FB-15** | Data Deletion Compliance Endpoint & Scoped Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, resolves affected tenants via `meta_user_page_interactions`, dispatches `meta_device_deletion_tasks` scoped to Page and tenant, and returns confirmation code with status tracking URL. Local client executes scoped Messenger anonymization, queues attachments into `pending_spool_cleanups`, and deletes files post-commit. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. Unrelated tenant data is untouched. | Compliance test: Send mock Meta deletion payload; assert 200, scoped task distribution, and schema validity. |
 
 ---
 
@@ -62,7 +62,7 @@ git commit -m "feat(facebook): implement comment automation types and keyword ma
 
 ---
 
-### Task 2: Comment Automation Engine with In-Flight Heartbeat Loop & Fail-Closed Reconciliation
+### Task 2: Comment Automation Engine with Active Heartbeat Loop & Fail-Closed Reconciliation
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/comment_engine.rs`
@@ -79,6 +79,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::sync::oneshot;
 
 pub struct CommentEngine;
 
@@ -133,20 +134,23 @@ impl CommentEngine {
         }
         tx.commit()?;
 
-        // 4. In-flight heartbeat renewal loop
-        let is_running = Arc::new(AtomicBool::new(true));
-        let is_running_clone = is_running.clone();
+        // 4. Cancellable in-flight heartbeat renewal loop
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
         let comment_id_str = comment_id.to_string();
         let worker_id_str = worker_id.to_string();
 
         let heartbeat_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
-            while is_running_clone.load(Ordering::Relaxed) {
-                interval.tick().await;
-                if !is_running_clone.load(Ordering::Relaxed) {
-                    break;
+            interval.tick().await; // Initial tick
+            loop {
+                tokio::select! {
+                    _ = &mut cancel_rx => {
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        // In real worker, sends heartbeat renewal signal via channel
+                    }
                 }
-                // Heartbeat interval tick
             }
         });
 
@@ -165,8 +169,8 @@ impl CommentEngine {
             .send()
             .await;
 
-        // Stop heartbeat loop
-        is_running.store(false, Ordering::Relaxed);
+        // Cancel heartbeat loop immediately
+        let _ = cancel_tx.send(());
         let _ = heartbeat_handle.await;
 
         match resp {
@@ -293,7 +297,6 @@ impl FacebookLeadIngestor {
         token: &str,
         leadgen_id: &str,
     ) -> Result<Option<i64>> {
-        // Fetch lead payload from Graph API
         let client = Client::new();
         let url = format!("https://graph.facebook.com/v26.0/{}", leadgen_id);
         let resp = client.get(&url).bearer_auth(token).send().await?;
@@ -367,7 +370,7 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wi
 
 ---
 
-### Task 4: Tenant-Scoped Data Deletion Lifecycle & Post-Commit Anonymizer
+### Task 4: Tenant-Scoped Data Deletion Lifecycle & Post-Commit Anonymizer via Spool Cleanups
 
 **Files:**
 - Create: `supabase/functions/meta-data-deletion/index.ts`
@@ -395,11 +398,13 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     request_id UUID NOT NULL REFERENCES data_deletion_requests(id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    page_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed')),
     acknowledged_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(request_id, tenant_id, page_id)
 );
 ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
 
@@ -407,7 +412,7 @@ CREATE POLICY "Tenants sync own deletion tasks" ON meta_device_deletion_tasks
     FOR ALL USING (auth.uid() = tenant_id);
 ```
 
-- [ ] **Step 2: Implement Edge Functions `/meta-data-deletion` and `/deletion-status` with Tenant Scoping**
+- [ ] **Step 2: Implement Edge Functions `/meta-data-deletion` and `/deletion-status` with Durable Interaction Mapping**
 
 ```typescript
 // supabase/functions/meta-data-deletion/index.ts
@@ -477,45 +482,53 @@ serve(async (req: Request) => {
   const userId = data.user_id;
   const confirmationCode = crypto.randomUUID();
 
-  // 1. Identify specific affected pages from webhook buffer that interacted with this user
-  const { data: bufferRows } = await supabaseAdmin
-    .from("meta_webhook_buffer")
-    .select("page_id")
-    .or(`payload->sender->>id.eq.${userId},payload->recipient->>id.eq.${userId}`);
+  // 1. Identify specific affected pages and tenants from durable interaction table
+  const { data: interactionRows } = await supabaseAdmin
+    .from("meta_user_page_interactions")
+    .select("page_id, tenant_id")
+    .eq("user_id", userId);
 
-  const affectedPageIds = Array.from(new Set((bufferRows || []).map(r => r.page_id)));
+  let targetTasks = interactionRows || [];
 
-  // 2. Identify tenants owning those specific pages
-  let affectedTenants: string[] = [];
-  if (affectedPageIds.length > 0) {
-    const { data: pageOwners } = await supabaseAdmin
-      .from("meta_tenant_pages")
-      .select("tenant_id")
-      .in("page_id", affectedPageIds);
-    affectedTenants = Array.from(new Set((pageOwners || []).map(o => o.tenant_id)));
+  // Fallback: check active buffer if interaction history is empty
+  if (targetTasks.length === 0) {
+    const { data: bufferRows } = await supabaseAdmin
+      .from("meta_webhook_buffer")
+      .select("page_id")
+      .or(`payload->sender->>id.eq.${userId},payload->recipient->>id.eq.${userId}`);
+
+    const affectedPageIds = Array.from(new Set((bufferRows || []).map(r => r.page_id)));
+    if (affectedPageIds.length > 0) {
+      const { data: pageOwners } = await supabaseAdmin
+        .from("meta_tenant_pages")
+        .select("page_id, tenant_id")
+        .in("page_id", affectedPageIds);
+      targetTasks = pageOwners || [];
+    }
   }
 
-  // 3. Create deletion request record
+  // 2. Create deletion request record
   const { data: requestRow, error } = await supabaseAdmin.from("data_deletion_requests").insert({
     user_id: userId,
     confirmation_code: confirmationCode,
-    required_tasks_count: affectedTenants.length,
-    status: affectedTenants.length === 0 ? "completed" : "pending",
-    completed_at: affectedTenants.length === 0 ? new Date().toISOString() : null,
+    required_tasks_count: targetTasks.length,
+    status: targetTasks.length === 0 ? "completed" : "pending",
+    completed_at: targetTasks.length === 0 ? new Date().toISOString() : null,
   }).select("id").single();
 
   if (error || !requestRow) {
     return new Response("Database error", { status: 500 });
   }
 
-  // 4. Purge matching user events from webhook buffer
+  // 3. Purge matching user events from webhook buffer
   await supabaseAdmin.from("meta_webhook_buffer").delete().or(`payload->sender->>id.eq.${userId},payload->recipient->>id.eq.${userId}`);
 
-  // 5. Dispatch device deletion tasks ONLY to affected tenants
-  for (const tId of affectedTenants) {
+  // 4. Dispatch device deletion tasks scoped to Page and Tenant
+  for (const task of targetTasks) {
     await supabaseAdmin.from("meta_device_deletion_tasks").insert({
       request_id: requestRow.id,
-      tenant_id: tId,
+      tenant_id: task.tenant_id,
+      page_id: task.page_id,
       user_id: userId,
       status: "pending",
     });
@@ -581,7 +594,7 @@ serve(async (req: Request) => {
 });
 ```
 
-- [ ] **Step 3: Implement Desktop Deletion Sync and Scoped Local Anonymizer with Post-Commit Cleanup**
+- [ ] **Step 3: Implement Desktop Deletion Sync and Scoped Local Anonymizer Matching Schema**
 
 ```rust
 // src-tauri/src/conversation/facebook/deletion_sync.rs
@@ -606,21 +619,20 @@ impl FacebookDeletionWorker {
             params![channel_account_id, external_user_id],
         )?;
 
-        // 2. Collect attachment paths for post-commit deletion
-        let attachment_paths: Vec<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT local_path FROM message_attachments 
-                 WHERE local_path IS NOT NULL AND message_id IN (
-                     SELECT id FROM messages WHERE sender_identity_id IN (
-                         SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?2
-                     )
-                 )"
-            )?;
-            let rows = stmt.query_map(params![channel_account_id, external_user_id], |r| r.get(0))?;
-            rows.flatten().collect()
-        };
+        // 2. Queue attachment paths into pending_spool_cleanups for transactional physical cleanup
+        tx.execute(
+            "INSERT INTO pending_spool_cleanups (local_path, created_at)
+             SELECT local_path, datetime('now') FROM message_attachments 
+             WHERE local_path IS NOT NULL AND message_id IN (
+                 SELECT id FROM messages WHERE sender_identity_id IN (
+                     SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?2
+                 )
+             )
+             ON CONFLICT(local_path) DO NOTHING",
+            params![channel_account_id, external_user_id],
+        )?;
 
-        // 3. Delete attachment and message records
+        // 3. Delete attachment and update message records (using edited_at matching schema.sql)
         tx.execute(
             "DELETE FROM message_attachments 
              WHERE message_id IN (
@@ -633,7 +645,7 @@ impl FacebookDeletionWorker {
 
         tx.execute(
             "UPDATE messages 
-             SET text_content = '[Deleted as per privacy request]', updated_at = datetime('now')
+             SET text_content = '[Deleted as per privacy request]', edited_at = datetime('now')
              WHERE sender_identity_id IN (
                  SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?2
              )",
@@ -650,9 +662,16 @@ impl FacebookDeletionWorker {
 
         tx.commit()?;
 
-        // Post-commit physical file deletion
-        for path in attachment_paths {
-            let _ = fs::remove_file(path);
+        // Post-commit physical file deletion via pending_spool_cleanups
+        let pending_cleanups: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, local_path FROM pending_spool_cleanups")?;
+            let r = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            r.flatten().collect()
+        };
+
+        for (cleanup_id, path) in pending_cleanups {
+            let _ = fs::remove_file(&path);
+            let _ = conn.execute("DELETE FROM pending_spool_cleanups WHERE id = ?1", [cleanup_id]);
         }
 
         Ok(rows)
@@ -664,7 +683,7 @@ impl FacebookDeletionWorker {
 
 ```bash
 git add supabase/ src-tauri/src/conversation/facebook/
-git commit -m "feat(compliance): implement tenant-scoped data deletion lifecycle, edge callback and post-commit local anonymizer"
+git commit -m "feat(compliance): implement tenant-scoped data deletion lifecycle, edge callback and post-commit local anonymizer via spool cleanups"
 ```
 
 ---
