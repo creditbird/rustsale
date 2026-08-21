@@ -4245,7 +4245,7 @@ fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transitio
     assert_eq!(status, "init_pending");
     assert_eq!(retries, 0);
 
-    // 3. START accepted: checked CAS transitions to in_progress with remote video_id
+    // 4. START accepted: checked CAS transitions to in_progress with remote video_id
     let updated = conn.execute(
         "UPDATE facebook_upload_sessions
          SET upload_session_id = 'meta_sess_456', video_id = 'meta_vid_789', status = 'in_progress', updated_at = datetime('now')
@@ -4254,7 +4254,7 @@ fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transitio
     ).unwrap();
     assert_eq!(updated, 1);
 
-    // 4. Stolen lease CAS rejection
+    // 5. Stolen lease CAS rejection
     let stale_update = conn.execute(
         "UPDATE facebook_upload_sessions
          SET upload_session_id = 'meta_sess_stale', video_id = 'meta_vid_stale', status = 'in_progress', updated_at = datetime('now')
@@ -4263,12 +4263,48 @@ fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transitio
     ).unwrap();
     assert_eq!(stale_update, 0);
 
-    // 5. RateLimited 429 lease release and retry_count increment
+    // 6. Test 429 RateLimited lease release and retry_count increment on active init_pending row
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (101, 'grp_101', 100, 'page_123', 'video', 'test message 2', 'idemp_101', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    let intent_429 = "intent_429_uuid";
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (101, 'page_123', 'video', ?1, NULL, '/tmp/video2.mp4', 'hash429', 10485760, 0, 'init_pending', 0, 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+        params![intent_429],
+    ).unwrap();
+
     let r429_updated = conn.execute(
         "UPDATE facebook_upload_sessions
          SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now')
-         WHERE id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending'",
-        params![row_id],
+         WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending'",
+        params![intent_429],
     ).unwrap();
-    assert_eq!(r429_updated, 0); // status is in_progress so init_pending CAS returns 0
+    assert_eq!(
+        r429_updated, 1,
+        "429 backoff must release lease and increment retry count"
+    );
+
+    let (r429_owner, r429_retries): (Option<String>, i64) = conn.query_row(
+        "SELECT owner_id, retry_count FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+        params![intent_429],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(r429_owner, None);
+    assert_eq!(r429_retries, 1);
+
+    // 7. Test max retries (retry_count >= 3) transitions session to failed
+    conn.execute(
+        "UPDATE facebook_upload_sessions SET retry_count = 3, owner_id = 'worker_1', lease_deadline = datetime('now', '+5 minutes') WHERE upload_session_id = ?1",
+        params![intent_429],
+    ).unwrap();
+
+    let max_retry_fail = conn.execute(
+        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending' AND retry_count >= 3",
+        params![intent_429],
+    ).unwrap();
+    assert_eq!(max_retry_fail, 1, "Max retries must mark session failed");
 }

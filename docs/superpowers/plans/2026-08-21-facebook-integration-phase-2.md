@@ -927,7 +927,7 @@ impl FacebookUploader {
             },
         };
 
-        let (upload_session_id, video_id, mut offset) = if let Some((sess_row_id, sess_id, vid_id, _saved_offset, session_status)) = existing_session {
+        let (upload_session_id, video_id, mut offset) = if let Some((sess_row_id, sess_id, vid_id_opt, _saved_offset, session_status)) = existing_session {
             // Atomically claim single-writer session lease
             let rows_claimed = match conn.execute(
                 "UPDATE facebook_upload_sessions
@@ -946,27 +946,7 @@ impl FacebookUploader {
             }
 
             if session_status == "init_pending" {
-                // Re-use existing claimed init_pending row
-                // 1. Verify if the post is already published or scheduled on Meta
-                let is_future = scheduled_publish_time.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
-                let is_live = if is_future {
-                    Self::verify_scheduled_publication(&self.client, page_id, page_token, &sess_id).await
-                } else {
-                    Self::verify_feed_publication(&self.client, page_id, page_token, &sess_id).await
-                };
-                if is_live {
-                    let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
-                        params![sess_row_id, owner_id],
-                    ).unwrap_or(0);
-                    if rows == 1 {
-                        return PublishApiResult::Success { remote_post_id: sess_id };
-                    }
-                }
-
-                // 2. Execute Meta START phase for uncommitted inert container
-                let intent_id = sess_id;
-
+                // Execute Meta START phase for uncommitted inert container
                 let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
                 let start_resp = match self.client.post(&start_url)
                     .form(&[
@@ -984,14 +964,32 @@ impl FacebookUploader {
 
                 let status_code = start_resp.status();
                 if !status_code.is_success() {
+                    let retry_after = start_resp.headers().get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(60);
                     let err_text = start_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
+                        let _ = conn.execute(
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            params![sess_row_id, owner_id],
+                        );
                         return PublishApiResult::RateLimited {
-                            retry_after_secs: 60,
+                            retry_after_secs: retry_after,
                             error_message: format!("HTTP 429 Rate limited on video start: {}", err_text),
                         };
                     }
                     if status_code.is_client_error() {
+                        let rows = conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            params![sess_row_id, owner_id],
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while marking video start failed".to_string(),
+                            };
+                        }
                         return PublishApiResult::DeterministicRejection {
                             error_code: format!("http_{}", status_code.as_u16()),
                             error_message: format!("Meta rejected video start phase (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1062,35 +1060,28 @@ impl FacebookUploader {
                 }
 
                 (new_sess_id, new_vid_id, 0u64)
-            } else if session_status == "finishing" {
-                // Check authoritative video status and feed/scheduled publication proof on Graph API
-                let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", vid_id, page_token);
-                match self.client.get(&check_url).send().await {
-                    Ok(check_resp) if check_resp.status().is_success() => {
-                        let check_json: Value = check_resp.json().await.unwrap_or_default();
-                        let video_status = check_json.get("status")
-                            .and_then(|s| s.get("video_status"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
+            } else {
+                let vid_id = match vid_id_opt {
+                    Some(v) => v,
+                    None => return PublishApiResult::DeterministicRejection {
+                        error_code: "corrupted_session".to_string(),
+                        error_message: "Upload session in progress/finishing state is missing authoritative video_id".to_string(),
+                    },
+                };
 
-                        if is_published {
-                            let rows = conn.execute(
-                                "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-                                params![sess_row_id, owner_id],
-                            ).unwrap_or(0);
-                            if rows == 1 {
-                                return PublishApiResult::Success { remote_post_id: vid_id };
-                            }
-                            return PublishApiResult::StillProcessing { upload_session_id: sess_id };
-                        } else if video_status == "ready" {
-                            let is_future = scheduled_publish_time.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
-                            let is_live = if is_future {
-                                Self::verify_scheduled_publication(&self.client, page_id, page_token, &vid_id).await
-                            } else {
-                                Self::verify_feed_publication(&self.client, page_id, page_token, &vid_id).await
-                            };
-                            if is_live {
+                if session_status == "finishing" {
+                    // Check authoritative video status and feed/scheduled publication proof on Graph API
+                    let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", vid_id, page_token);
+                    match self.client.get(&check_url).send().await {
+                        Ok(check_resp) if check_resp.status().is_success() => {
+                            let check_json: Value = check_resp.json().await.unwrap_or_default();
+                            let video_status = check_json.get("status")
+                                .and_then(|s| s.get("video_status"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let is_published = check_json.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                            if is_published {
                                 let rows = conn.execute(
                                     "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                                     params![sess_row_id, owner_id],
@@ -1098,78 +1089,134 @@ impl FacebookUploader {
                                 if rows == 1 {
                                     return PublishApiResult::Success { remote_post_id: vid_id };
                                 }
+                                return PublishApiResult::StillProcessing { upload_session_id: sess_id };
+                            } else if video_status == "ready" {
+                                let is_future = scheduled_publish_time.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
+                                let is_live = if is_future {
+                                    Self::verify_scheduled_publication(&self.client, page_id, page_token, &vid_id).await
+                                } else {
+                                    Self::verify_feed_publication(&self.client, page_id, page_token, &vid_id).await
+                                };
+                                if is_live {
+                                    let rows = conn.execute(
+                                        "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                        params![sess_row_id, owner_id],
+                                    ).unwrap_or(0);
+                                    if rows == 1 {
+                                        return PublishApiResult::Success { remote_post_id: vid_id };
+                                    }
+                                }
+                                return PublishApiResult::StillProcessing { upload_session_id: sess_id };
+                            } else if video_status == "error" {
+                                let rows = conn.execute(
+                                    "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                    params![sess_row_id, owner_id],
+                                ).unwrap_or(0);
+                                if rows != 1 {
+                                    return PublishApiResult::DeterministicRejection {
+                                        error_code: "session_lease_loss".to_string(),
+                                        error_message: "Lost lease while marking video session failed".to_string(),
+                                    };
+                                }
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: "meta_video_error".to_string(),
+                                    error_message: "Meta video processing failed with error state".to_string(),
+                                };
+                            } else {
+                                return PublishApiResult::StillProcessing { upload_session_id: sess_id };
                             }
-                            return PublishApiResult::StillProcessing { upload_session_id: sess_id };
-                        } else if video_status == "error" {
+                        }
+                        Ok(check_resp) => {
+                            let retry_after = check_resp.headers().get("retry-after")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(60);
+                            let status_code = check_resp.status();
+                            let err_text = check_resp.text().await.unwrap_or_default();
+                            if status_code.as_u16() == 429 {
+                                return PublishApiResult::RateLimited {
+                                    retry_after_secs: retry_after,
+                                    error_message: format!("HTTP 429 Rate limited during video check: {}", err_text),
+                                };
+                            }
+                            if status_code.is_client_error() {
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: format!("http_{}", status_code.as_u16()),
+                                    error_message: format!("Meta rejected video status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                                };
+                            }
+                            return PublishApiResult::AmbiguousTransport {
+                                error_code: format!("http_{}", status_code.as_u16()),
+                                error_message: format!("Meta server error on video status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                            };
+                        }
+                        Err(err) => {
+                            return PublishApiResult::AmbiguousTransport {
+                                error_code: "network_transport_error".to_string(),
+                                error_message: format!("Network error checking finishing video session: {}", err),
+                            };
+                        }
+                    }
+                } else {
+                    // in_progress: query authoritative server offset
+                    let status_url = format!("https://graph-video.facebook.com/v26.0/{}?fields=start_offset,end_offset&access_token={}", sess_id, page_token);
+                    let status_resp = match self.client.get(&status_url).send().await {
+                        Ok(r) => r,
+                        Err(e) => return PublishApiResult::AmbiguousTransport {
+                            error_code: "network_transport_error".to_string(),
+                            error_message: format!("Network error querying video upload session offset: {}", e),
+                        },
+                    };
+                    let status_code = status_resp.status();
+                    if !status_code.is_success() {
+                        let retry_after = status_resp.headers().get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(60);
+                        let err_text = status_resp.text().await.unwrap_or_default();
+                        if status_code.as_u16() == 429 {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: retry_after,
+                                error_message: format!("HTTP 429 Rate limited on video resume query: {}", err_text),
+                            };
+                        }
+                        if status_code.is_client_error() {
                             let rows = conn.execute(
-                                "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                                 params![sess_row_id, owner_id],
                             ).unwrap_or(0);
                             if rows != 1 {
                                 return PublishApiResult::DeterministicRejection {
                                     error_code: "session_lease_loss".to_string(),
-                                    error_message: "Lost lease while marking video session failed".to_string(),
+                                    error_message: "Lost lease while marking video resume failed".to_string(),
                                 };
                             }
                             return PublishApiResult::DeterministicRejection {
-                                error_code: "meta_video_error".to_string(),
-                                error_message: "Meta video processing failed with error state".to_string(),
-                            };
-                        } else {
-                            return PublishApiResult::StillProcessing { upload_session_id: sess_id };
-                        }
-                    }
-                    Ok(check_resp) => {
-                        let status_code = check_resp.status();
-                        let err_text = check_resp.text().await.unwrap_or_default();
-                        if status_code.as_u16() == 429 {
-                            return PublishApiResult::RateLimited {
-                                retry_after_secs: 60,
-                                error_message: format!("HTTP 429 Rate limited during video check: {}", err_text),
-                            };
-                        }
-                        if status_code.is_client_error() {
-                            return PublishApiResult::DeterministicRejection {
                                 error_code: format!("http_{}", status_code.as_u16()),
-                                error_message: format!("Meta rejected video status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                                error_message: format!("Meta rejected video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
                             };
                         }
                         return PublishApiResult::AmbiguousTransport {
                             error_code: format!("http_{}", status_code.as_u16()),
-                            error_message: format!("Meta server error on video status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                            error_message: format!("Meta server error on video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
                         };
                     }
-                    Err(err) => {
-                        return PublishApiResult::AmbiguousTransport {
-                            error_code: "network_transport_error".to_string(),
-                            error_message: format!("Network error checking finishing video session: {}", err),
-                        };
-                    }
-                }
-            } else {
-                // Query Graph video upload session for authoritative server offset
-                let status_url = format!("https://graph-video.facebook.com/v26.0/{}?fields=start_offset,end_offset&access_token={}", sess_id, page_token);
-                let status_resp = match self.client.get(&status_url).send().await {
-                    Ok(r) => r,
-                    Err(e) => return PublishApiResult::AmbiguousTransport {
-                        error_code: "network_transport_error".to_string(),
-                        error_message: format!("Network error querying video upload session offset: {}", e),
-                    },
-                };
-                let status_code = status_resp.status();
-                if !status_code.is_success() {
-                    let retry_after = status_resp.headers().get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(60);
-                    let err_text = status_resp.text().await.unwrap_or_default();
-                    if status_code.as_u16() == 429 {
-                        return PublishApiResult::RateLimited {
-                            retry_after_secs: retry_after,
-                            error_message: format!("HTTP 429 Rate limited on video resume query: {}", err_text),
-                        };
-                    }
-                    if status_code.is_client_error() {
+                    let status_json: Value = match status_resp.json().await {
+                        Ok(j) => j,
+                        Err(e) => return PublishApiResult::AmbiguousTransport {
+                            error_code: "malformed_json_response".to_string(),
+                            error_message: format!("Invalid JSON in video resume query response: {}", e),
+                        },
+                    };
+                    let server_offset = match status_json.get("start_offset").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()) {
+                        Some(o) => o,
+                        None => return PublishApiResult::AmbiguousTransport {
+                            error_code: "missing_start_offset".to_string(),
+                            error_message: "Missing start_offset in Meta status response on video resume".to_string(),
+                        },
+                    };
+
+                    if server_offset > file_size {
                         let rows = conn.execute(
                             "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                             params![sess_row_id, owner_id],
@@ -1177,51 +1224,16 @@ impl FacebookUploader {
                         if rows != 1 {
                             return PublishApiResult::DeterministicRejection {
                                 error_code: "session_lease_loss".to_string(),
-                                error_message: "Lost lease while marking video resume failed".to_string(),
+                                error_message: "Lost lease while handling out of bounds server offset".to_string(),
                             };
                         }
                         return PublishApiResult::DeterministicRejection {
-                            error_code: format!("http_{}", status_code.as_u16()),
-                            error_message: format!("Meta rejected video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
+                            error_code: "server_offset_out_of_bounds".to_string(),
+                            error_message: format!("Server offset {} exceeds file size {}", server_offset, file_size),
                         };
                     }
-                    return PublishApiResult::AmbiguousTransport {
-                        error_code: format!("http_{}", status_code.as_u16()),
-                        error_message: format!("Meta server error on video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
-                    };
+                    (sess_id, vid_id, server_offset)
                 }
-                let status_json: Value = match status_resp.json().await {
-                    Ok(j) => j,
-                    Err(e) => return PublishApiResult::AmbiguousTransport {
-                        error_code: "malformed_json_response".to_string(),
-                        error_message: format!("Invalid JSON in video resume query response: {}", e),
-                    },
-                };
-                let server_offset = match status_json.get("start_offset").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()) {
-                    Some(o) => o,
-                    None => return PublishApiResult::AmbiguousTransport {
-                        error_code: "missing_start_offset".to_string(),
-                        error_message: "Missing start_offset in Meta status response on video resume".to_string(),
-                    },
-                };
-
-                if server_offset > file_size {
-                    let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
-                        params![sess_row_id, owner_id],
-                    ).unwrap_or(0);
-                    if rows != 1 {
-                        return PublishApiResult::DeterministicRejection {
-                            error_code: "session_lease_loss".to_string(),
-                            error_message: "Lost lease while handling out of bounds server offset".to_string(),
-                        };
-                    }
-                    return PublishApiResult::DeterministicRejection {
-                        error_code: "server_offset_out_of_bounds".to_string(),
-                        error_message: format!("Server offset {} exceeds file size {}", server_offset, file_size),
-                    };
-                }
-                (sess_id, vid_id, server_offset)
             }
         } else {
             // Pre-START intent persistence
@@ -1254,14 +1266,32 @@ impl FacebookUploader {
 
             let status_code = start_resp.status();
             if !status_code.is_success() {
+                let retry_after = start_resp.headers().get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(60);
                 let err_text = start_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
+                    let _ = conn.execute(
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        params![intent_id, owner_id],
+                    );
                     return PublishApiResult::RateLimited {
-                        retry_after_secs: 60,
+                        retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited on video start: {}", err_text),
                     };
                 }
                 if status_code.is_client_error() {
+                    let rows = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        params![intent_id, owner_id],
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while marking video start failed".to_string(),
+                        };
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected video start phase (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1304,7 +1334,7 @@ impl FacebookUploader {
                 Ok(r) => r,
                 Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "db_update_error".to_string(),
-                    error_message: format!("Failed to update upload session in SQLite: {}", e),
+                    error_message: format!("Failed to update upload session with START IDs: {}", e),
                 },
             };
             if update_rows != 1 {
@@ -1669,7 +1699,7 @@ impl FacebookUploader {
             },
         };
 
-        let (video_id, mut offset) = if let Some((sess_row_id, vid_id, _saved_offset, session_status)) = existing_session {
+        let (video_id, mut offset) = if let Some((sess_row_id, sess_id, vid_id_opt, _saved_offset, session_status)) = existing_session {
             // Atomically claim single-writer session lease
             let rows_claimed = match conn.execute(
                 "UPDATE facebook_upload_sessions
@@ -1684,13 +1714,11 @@ impl FacebookUploader {
                 },
             };
             if rows_claimed != 1 {
-                return PublishApiResult::StillProcessing { upload_session_id: vid_id };
+                return PublishApiResult::StillProcessing { upload_session_id: sess_id };
             }
 
             if session_status == "init_pending" {
-                // Re-use existing claimed init_pending row and execute Meta START phase
-                let intent_id = vid_id;
-
+                // Execute Meta Reel START phase for uncommitted inert container
                 let init_url = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
                 let init_resp = match self.client.post(&init_url)
                     .form(&[
@@ -1706,14 +1734,32 @@ impl FacebookUploader {
                 };
                 let status_code = init_resp.status();
                 if !status_code.is_success() {
+                    let retry_after = init_resp.headers().get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(60);
                     let err_text = init_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
+                        let _ = conn.execute(
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            params![sess_row_id, owner_id],
+                        );
                         return PublishApiResult::RateLimited {
-                            retry_after_secs: 60,
+                            retry_after_secs: retry_after,
                             error_message: format!("HTTP 429 Rate limited on Reel start: {}", err_text),
                         };
                     }
                     if status_code.is_client_error() {
+                        let rows = conn.execute(
+                            "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            params![sess_row_id, owner_id],
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while marking Reel start failed".to_string(),
+                            };
+                        }
                         return PublishApiResult::DeterministicRejection {
                             error_code: format!("http_{}", status_code.as_u16()),
                             error_message: format!("Meta rejected Reel init (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1777,109 +1823,160 @@ impl FacebookUploader {
                 }
 
                 (new_vid_id, 0u64)
-            } else if session_status == "finishing" {
-                let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", vid_id, page_token);
-                match self.client.get(&check_url).send().await {
-                    Ok(check_resp) if check_resp.status().is_success() => {
-                        let check_json: Value = check_resp.json().await.unwrap_or_default();
-                        let video_status = check_json.get("status")
-                            .and_then(|s| s.get("video_status"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let publishing_status = check_json.get("status")
-                            .and_then(|s| s.get("publishing_phase"))
-                            .and_then(|p| p.get("status"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+            } else {
+                let vid_id = match vid_id_opt {
+                    Some(v) => v,
+                    None => return PublishApiResult::DeterministicRejection {
+                        error_code: "corrupted_session".to_string(),
+                        error_message: "Reel upload session in progress/finishing state is missing authoritative video_id".to_string(),
+                    },
+                };
 
-                        if publishing_status == "complete" {
-                            let is_future = scheduled_publish_time.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
-                            let is_live = if is_future {
-                                Self::verify_scheduled_publication(&self.client, page_id, page_token, &vid_id).await
-                            } else {
-                                Self::verify_feed_publication(&self.client, page_id, page_token, &vid_id).await
-                            };
-                            if is_live {
+                if session_status == "finishing" {
+                    let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", vid_id, page_token);
+                    match self.client.get(&check_url).send().await {
+                        Ok(check_resp) if check_resp.status().is_success() => {
+                            let check_json: Value = check_resp.json().await.unwrap_or_default();
+                            let video_status = check_json.get("status")
+                                .and_then(|s| s.get("video_status"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let publishing_status = check_json.get("status")
+                                .and_then(|s| s.get("publishing_phase"))
+                                .and_then(|p| p.get("status"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            if publishing_status == "complete" {
+                                let is_future = scheduled_publish_time.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
+                                let is_live = if is_future {
+                                    Self::verify_scheduled_publication(&self.client, page_id, page_token, &vid_id).await
+                                } else {
+                                    Self::verify_feed_publication(&self.client, page_id, page_token, &vid_id).await
+                                };
+                                if is_live {
+                                    let rows = conn.execute(
+                                        "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                        params![sess_row_id, owner_id],
+                                    ).unwrap_or(0);
+                                    if rows == 1 {
+                                        return PublishApiResult::Success { remote_post_id: vid_id };
+                                    }
+                                }
+                                return PublishApiResult::StillProcessing { upload_session_id: sess_id };
+                            } else if video_status == "error" || publishing_status == "error" {
                                 let rows = conn.execute(
-                                    "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                    "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                                     params![sess_row_id, owner_id],
                                 ).unwrap_or(0);
-                                if rows == 1 {
-                                    return PublishApiResult::Success { remote_post_id: vid_id };
+                                if rows != 1 {
+                                    return PublishApiResult::DeterministicRejection {
+                                        error_code: "session_lease_loss".to_string(),
+                                        error_message: "Lost lease while marking Reel session failed".to_string(),
+                                    };
                                 }
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: "meta_reel_error".to_string(),
+                                    error_message: "Meta Reel processing failed with error state".to_string(),
+                                };
+                            } else {
+                                return PublishApiResult::StillProcessing { upload_session_id: sess_id };
                             }
-                            return PublishApiResult::StillProcessing { upload_session_id: vid_id };
-                        } else if video_status == "error" || publishing_status == "error" {
+                        }
+                        Ok(check_resp) => {
+                            let retry_after = check_resp.headers().get("retry-after")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(60);
+                            let status_code = check_resp.status();
+                            let err_text = check_resp.text().await.unwrap_or_default();
+                            if status_code.as_u16() == 429 {
+                                return PublishApiResult::RateLimited {
+                                    retry_after_secs: retry_after,
+                                    error_message: format!("HTTP 429 Rate limited during Reel check: {}", err_text),
+                                };
+                            }
+                            if status_code.is_client_error() {
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: format!("http_{}", status_code.as_u16()),
+                                    error_message: format!("Meta rejected reel status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                                };
+                            }
+                            return PublishApiResult::AmbiguousTransport {
+                                error_code: format!("http_{}", status_code.as_u16()),
+                                error_message: format!("Meta server error on reel status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                            };
+                        }
+                        Err(err) => {
+                            return PublishApiResult::AmbiguousTransport {
+                                error_code: "network_transport_error".to_string(),
+                                error_message: format!("Network error checking finishing reel session: {}", err),
+                            };
+                        }
+                    }
+                } else {
+                    // in_progress: query authoritative offset
+                    let check_url = format!("https://rupload.facebook.com/video-reels/{}", vid_id);
+                    let check_resp = match self.client.get(&check_url)
+                        .header("Authorization", format!("OAuth {}", page_token))
+                        .send().await {
+                        Ok(r) => r,
+                        Err(e) => return PublishApiResult::AmbiguousTransport {
+                            error_code: "network_transport_error".to_string(),
+                            error_message: format!("Network error querying Reel offset on resume: {}", e),
+                        },
+                    };
+                    let status_code = check_resp.status();
+                    if !status_code.is_success() {
+                        let retry_after = check_resp.headers().get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(60);
+                        let err_text = check_resp.text().await.unwrap_or_default();
+                        if status_code.as_u16() == 429 {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: retry_after,
+                                error_message: format!("HTTP 429 Rate limited on Reel resume query: {}", err_text),
+                            };
+                        }
+                        if status_code.is_client_error() {
                             let rows = conn.execute(
-                                "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                                 params![sess_row_id, owner_id],
                             ).unwrap_or(0);
                             if rows != 1 {
                                 return PublishApiResult::DeterministicRejection {
                                     error_code: "session_lease_loss".to_string(),
-                                    error_message: "Lost lease while marking Reel session failed".to_string(),
+                                    error_message: "Lost lease while marking Reel resume failed".to_string(),
                                 };
                             }
                             return PublishApiResult::DeterministicRejection {
-                                error_code: "meta_reel_error".to_string(),
-                                error_message: "Meta Reel processing failed with error state".to_string(),
-                            };
-                        } else {
-                            return PublishApiResult::StillProcessing { upload_session_id: vid_id };
-                        }
-                    }
-                    Ok(check_resp) => {
-                        let status_code = check_resp.status();
-                        let err_text = check_resp.text().await.unwrap_or_default();
-                        if status_code.as_u16() == 429 {
-                            return PublishApiResult::RateLimited {
-                                retry_after_secs: 60,
-                                error_message: format!("HTTP 429 Rate limited during Reel check: {}", err_text),
-                            };
-                        }
-                        if status_code.is_client_error() {
-                            return PublishApiResult::DeterministicRejection {
                                 error_code: format!("http_{}", status_code.as_u16()),
-                                error_message: format!("Meta rejected reel status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                                error_message: format!("Meta rejected Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
                             };
                         }
                         return PublishApiResult::AmbiguousTransport {
                             error_code: format!("http_{}", status_code.as_u16()),
-                            error_message: format!("Meta server error on reel status check (HTTP {}): {}", status_code.as_u16(), err_text),
+                            error_message: format!("Meta server error on Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
                         };
                     }
-                    Err(err) => {
-                        return PublishApiResult::AmbiguousTransport {
-                            error_code: "network_transport_error".to_string(),
-                            error_message: format!("Network error checking finishing reel session: {}", err),
-                        };
-                    }
-                }
-            } else {
-                let check_url = format!("https://rupload.facebook.com/video-reels/{}", vid_id);
-                let check_resp = match self.client.get(&check_url)
-                    .header("Authorization", format!("OAuth {}", page_token))
-                    .send().await {
-                    Ok(r) => r,
-                    Err(e) => return PublishApiResult::AmbiguousTransport {
-                        error_code: "network_transport_error".to_string(),
-                        error_message: format!("Network error querying Reel offset on resume: {}", e),
-                    },
-                };
-                let status_code = check_resp.status();
-                if !status_code.is_success() {
-                    let retry_after = check_resp.headers().get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(60);
-                    let err_text = check_resp.text().await.unwrap_or_default();
-                    if status_code.as_u16() == 429 {
-                        return PublishApiResult::RateLimited {
-                            retry_after_secs: retry_after,
-                            error_message: format!("HTTP 429 Rate limited on Reel resume query: {}", err_text),
-                        };
-                    }
-                    if status_code.is_client_error() {
+
+                    let check_json: Value = match check_resp.json().await {
+                        Ok(j) => j,
+                        Err(e) => return PublishApiResult::AmbiguousTransport {
+                            error_code: "malformed_json_response".to_string(),
+                            error_message: format!("Invalid JSON in Reel resume query response: {}", e),
+                        },
+                    };
+                    let server_offset = match check_json.get("offset").and_then(|v| v.as_u64()) {
+                        Some(o) => o,
+                        None => return PublishApiResult::AmbiguousTransport {
+                            error_code: "missing_offset".to_string(),
+                            error_message: "Missing offset in Reel status response on resume".to_string(),
+                        },
+                    };
+
+                    if server_offset > file_size {
                         let rows = conn.execute(
                             "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                             params![sess_row_id, owner_id],
@@ -1887,52 +1984,16 @@ impl FacebookUploader {
                         if rows != 1 {
                             return PublishApiResult::DeterministicRejection {
                                 error_code: "session_lease_loss".to_string(),
-                                error_message: "Lost lease while marking Reel resume failed".to_string(),
+                                error_message: "Lost lease while handling out of bounds Reel server offset".to_string(),
                             };
                         }
                         return PublishApiResult::DeterministicRejection {
-                            error_code: format!("http_{}", status_code.as_u16()),
-                            error_message: format!("Meta rejected Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
+                            error_code: "server_offset_out_of_bounds".to_string(),
+                            error_message: format!("Reel server offset {} exceeds file size {}", server_offset, file_size),
                         };
                     }
-                    return PublishApiResult::AmbiguousTransport {
-                        error_code: format!("http_{}", status_code.as_u16()),
-                        error_message: format!("Meta server error on Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
-                    };
+                    (vid_id, server_offset)
                 }
-
-                let check_json: Value = match check_resp.json().await {
-                    Ok(j) => j,
-                    Err(e) => return PublishApiResult::AmbiguousTransport {
-                        error_code: "malformed_json_response".to_string(),
-                        error_message: format!("Invalid JSON in Reel resume query response: {}", e),
-                    },
-                };
-                let server_offset = match check_json.get("offset").and_then(|v| v.as_u64()) {
-                    Some(o) => o,
-                    None => return PublishApiResult::AmbiguousTransport {
-                        error_code: "missing_offset".to_string(),
-                        error_message: "Missing offset in Reel status response on resume".to_string(),
-                    },
-                };
-
-                if server_offset > file_size {
-                    let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
-                        params![sess_row_id, owner_id],
-                    ).unwrap_or(0);
-                    if rows != 1 {
-                        return PublishApiResult::DeterministicRejection {
-                            error_code: "session_lease_loss".to_string(),
-                            error_message: "Lost lease while handling out of bounds Reel server offset".to_string(),
-                        };
-                    }
-                    return PublishApiResult::DeterministicRejection {
-                        error_code: "server_offset_out_of_bounds".to_string(),
-                        error_message: format!("Reel server offset {} exceeds file size {}", server_offset, file_size),
-                    };
-                }
-                (vid_id, server_offset)
             }
         } else {
             // Pre-START intent persistence
@@ -1963,14 +2024,32 @@ impl FacebookUploader {
             };
             let status_code = init_resp.status();
             if !status_code.is_success() {
+                let retry_after = init_resp.headers().get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(60);
                 let err_text = init_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
+                    let _ = conn.execute(
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        params![intent_id, owner_id],
+                    );
                     return PublishApiResult::RateLimited {
-                        retry_after_secs: 60,
+                        retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited on Reel start: {}", err_text),
                     };
                 }
                 if status_code.is_client_error() {
+                    let rows = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        params![intent_id, owner_id],
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while marking Reel start failed".to_string(),
+                        };
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected Reel init (HTTP {}): {}", status_code.as_u16(), err_text),
