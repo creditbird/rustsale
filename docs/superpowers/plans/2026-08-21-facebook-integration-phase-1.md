@@ -795,19 +795,11 @@ impl ChannelSender for FacebookMessengerSender {
         let token = self.get_page_access_token(provider_account_key)?;
         let client = FacebookClient::new(token);
 
-        let validated_tag = match request.metadata_json
-            .as_ref()
-            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-            .and_then(|v| v.get("message_tag").and_then(|t| t.as_str()).map(|s| s.to_string())) {
-            Some(t) => Some(Self::validate_tag(&t)?.to_string()),
-            None => None,
-        };
-
         let res = client.send_text_message(
             provider_account_key,
             &request.external_thread_id,
             &request.text,
-            validated_tag.as_deref(),
+            None,
         ).await.map_err(|e| match e {
             MetaSendError::Transient(err) => anyhow!("TRANSIENT_ERROR: {:?}", err),
             MetaSendError::Permanent(err) => anyhow!("PERMANENT_DEAD_LETTER: {:?}", err),
@@ -946,7 +938,7 @@ impl FacebookSyncWorker {
                             )?;
 
                             tx.execute(
-                                "INSERT OR IGNORE INTO conversation_participants (conversation_id, identity_id, role, joined_at)
+                                "INSERT OR IGNORE INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
                                  VALUES (?1, ?2, 'customer', datetime('now'))",
                                 params![conv_id, identity_id],
                             )?;
@@ -958,7 +950,13 @@ impl FacebookSyncWorker {
                             };
                             let text_content = text_opt.unwrap_or("");
 
-                            let affected = tx.execute(
+                            let is_new: bool = tx.query_row(
+                                "SELECT COUNT(*) = 0 FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                                params![conv_id, mid],
+                                |r| r.get(0),
+                            )?;
+
+                            tx.execute(
                                 "INSERT INTO messages (conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
                                  VALUES (?1, ?2, 'inbound', ?3, ?4, ?5, CASE WHEN ?6 IS NOT NULL THEN strftime('%Y-%m-%d %H:%M:%f', ?6 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
@@ -989,10 +987,14 @@ impl FacebookSyncWorker {
                                     }
                                 }
 
-                                if affected > 0 {
+                                if is_new {
                                     tx.execute(
-                                        "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
-                                        params![conv_id],
+                                        "UPDATE channel_conversations SET 
+                                           last_message_at = CASE WHEN ?2 IS NOT NULL AND (last_message_at IS NULL OR strftime('%Y-%m-%d %H:%M:%f', ?2 / 1000.0, 'unixepoch') > last_message_at) THEN strftime('%Y-%m-%d %H:%M:%f', ?2 / 1000.0, 'unixepoch') ELSE COALESCE(last_message_at, datetime('now')) END,
+                                           last_synced_at = datetime('now'), 
+                                           updated_at = datetime('now') 
+                                         WHERE id = ?1",
+                                        params![conv_id, timestamp_ms],
                                     )?;
                                 }
                                 processed = true;
@@ -1030,7 +1032,13 @@ impl FacebookSyncWorker {
                             };
                             let text_content = text_opt.unwrap_or("");
 
-                            let affected = tx.execute(
+                            let is_new: bool = tx.query_row(
+                                "SELECT COUNT(*) = 0 FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                                params![conv_id, mid],
+                                |r| r.get(0),
+                            )?;
+
+                            tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
                                  VALUES (?1, 'outbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN strftime('%Y-%m-%d %H:%M:%f', ?5 / 1000.0, 'unixepoch') ELSE NULL END, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
@@ -1061,10 +1069,14 @@ impl FacebookSyncWorker {
                                     }
                                 }
 
-                                if affected > 0 {
+                                if is_new {
                                     tx.execute(
-                                        "UPDATE channel_conversations SET last_message_at = datetime('now'), last_synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
-                                        params![conv_id],
+                                        "UPDATE channel_conversations SET 
+                                           last_message_at = CASE WHEN ?2 IS NOT NULL AND (last_message_at IS NULL OR strftime('%Y-%m-%d %H:%M:%f', ?2 / 1000.0, 'unixepoch') > last_message_at) THEN strftime('%Y-%m-%d %H:%M:%f', ?2 / 1000.0, 'unixepoch') ELSE COALESCE(last_message_at, datetime('now')) END,
+                                           last_synced_at = datetime('now'), 
+                                           updated_at = datetime('now') 
+                                         WHERE id = ?1",
+                                        params![conv_id, timestamp_ms],
                                     )?;
                                 }
                                 processed = true;

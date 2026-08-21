@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS message_attachments (
     FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote
+ON message_attachments(message_id, remote_url)
+WHERE remote_url IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS message_reactions (
     message_id INTEGER NOT NULL,
     actor_external_id TEXT NOT NULL,
