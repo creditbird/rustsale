@@ -1083,10 +1083,16 @@ impl FacebookUploader {
                             }
                             return PublishApiResult::StillProcessing { upload_session_id: sess_id };
                         } else if video_status == "error" {
-                            let _ = conn.execute(
+                            let rows = conn.execute(
                                 "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                                 params![sess_row_id, owner_id],
-                            );
+                            ).unwrap_or(0);
+                            if rows != 1 {
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: "session_lease_loss".to_string(),
+                                    error_message: "Lost lease while marking video session failed".to_string(),
+                                };
+                            }
                             return PublishApiResult::DeterministicRejection {
                                 error_code: "meta_video_error".to_string(),
                                 error_message: "Meta video processing failed with error state".to_string(),
@@ -1172,10 +1178,16 @@ impl FacebookUploader {
                 };
 
                 if server_offset > file_size {
-                    let _ = conn.execute(
-                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                        params![sess_id],
-                    );
+                    let rows = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        params![sess_row_id, owner_id],
+                    ).unwrap_or(0);
+                    if rows != 1 {
+                        return PublishApiResult::DeterministicRejection {
+                            error_code: "session_lease_loss".to_string(),
+                            error_message: "Lost lease while handling out of bounds server offset".to_string(),
+                        };
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: "server_offset_out_of_bounds".to_string(),
                         error_message: format!("Server offset {} exceeds file size {}", server_offset, file_size),
@@ -1730,10 +1742,16 @@ impl FacebookUploader {
                             }
                             return PublishApiResult::StillProcessing { upload_session_id: vid_id };
                         } else if video_status == "error" || publishing_status == "error" {
-                            let _ = conn.execute(
+                            let rows = conn.execute(
                                 "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-                                params![vid_id],
-                            );
+                                params![sess_row_id, owner_id],
+                            ).unwrap_or(0);
+                            if rows != 1 {
+                                return PublishApiResult::DeterministicRejection {
+                                    error_code: "session_lease_loss".to_string(),
+                                    error_message: "Lost lease while marking Reel session failed".to_string(),
+                                };
+                            }
                             return PublishApiResult::DeterministicRejection {
                                 error_code: "meta_reel_error".to_string(),
                                 error_message: "Meta Reel processing failed with error state".to_string(),
