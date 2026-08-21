@@ -919,26 +919,10 @@ impl FacebookSyncWorker {
                         let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
-                        let payload_info = if let Some(t) = text_opt {
-                            Some(("text", t.to_string()))
-                        } else if let Some(atts) = atts_opt {
-                            if !atts.is_empty() {
-                                let first_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
-                                let content_type = match first_type {
-                                    "image" => "image",
-                                    "video" => "video",
-                                    "audio" => "audio",
-                                    _ => "file",
-                                };
-                                Some((content_type, serde_json::to_string(atts).unwrap_or_default()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
+                        let has_text = text_opt.is_some();
+                        let has_atts = atts_opt.map_or(false, |a| !a.is_empty());
 
-                        if let (Some((content_type, text_content)), false) = (payload_info, sender_psid.is_empty()) {
+                        if (has_text || has_atts) && !sender_psid.is_empty() {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
                                  VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
@@ -950,26 +934,42 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
+                            let content_type = if has_atts && !has_text {
+                                atts_opt.unwrap().first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file")
+                            } else {
+                                "text"
+                            };
+                            let text_content = text_opt.unwrap_or("");
+
                             let affected = tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'inbound', ?2, ?3, ?4, ?5, datetime('now'))
-                                 ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
+                                 VALUES (?1, 'inbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN datetime(?5 / 1000, 'unixepoch') ELSE NULL END, datetime('now'))
+                                 ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
                                    provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
                                  WHERE messages.direction = excluded.direction",
                                 params![conv_id, mid, content_type, text_content, timestamp_ms],
                             )?;
 
-                            if affected > 0 {
-                                processed = true;
-                            } else {
-                                let exists: Option<i64> = tx.query_row(
-                                    "SELECT 1 FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2 AND direction = 'inbound'",
-                                    params![conv_id, mid],
-                                    |r| r.get(0),
-                                ).optional()?;
-                                if exists.is_some() {
-                                    processed = true;
+                            let msg_id_opt: Option<i64> = tx.query_row(
+                                "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2 AND direction = 'inbound'",
+                                params![conv_id, mid],
+                                |r| r.get(0),
+                            ).optional()?;
+
+                            if let Some(msg_id) = msg_id_opt {
+                                if let Some(atts) = atts_opt {
+                                    for att in atts {
+                                        let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
+                                        let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                        let att_title = att.get("title").and_then(|t| t.as_str());
+                                        tx.execute(
+                                            "INSERT INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
+                                            params![msg_id, att_type, att_title, att_url],
+                                        )?;
+                                    }
                                 }
+                                processed = true;
                             }
                         }
                     }
@@ -982,26 +982,10 @@ impl FacebookSyncWorker {
                         let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
 
-                        let payload_info = if let Some(t) = text_opt {
-                            Some(("text", t.to_string()))
-                        } else if let Some(atts) = atts_opt {
-                            if !atts.is_empty() {
-                                let first_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
-                                let content_type = match first_type {
-                                    "image" => "image",
-                                    "video" => "video",
-                                    "audio" => "audio",
-                                    _ => "file",
-                                };
-                                Some((content_type, serde_json::to_string(atts).unwrap_or_default()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
+                        let has_text = text_opt.is_some();
+                        let has_atts = atts_opt.map_or(false, |a| !a.is_empty());
 
-                        if let (Some((content_type, text_content)), false) = (payload_info, recipient_psid.is_empty()) {
+                        if (has_text || has_atts) && !recipient_psid.is_empty() {
                             tx.execute(
                                 "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
                                  VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
@@ -1013,26 +997,42 @@ impl FacebookSyncWorker {
                                 |r| r.get(0),
                             )?;
 
+                            let content_type = if has_atts && !has_text {
+                                atts_opt.unwrap().first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file")
+                            } else {
+                                "text"
+                            };
+                            let text_content = text_opt.unwrap_or("");
+
                             let affected = tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'outbound', ?2, ?3, ?4, ?5, datetime('now'))
-                                 ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
+                                 VALUES (?1, 'outbound', ?2, ?3, ?4, CASE WHEN ?5 IS NOT NULL THEN datetime(?5 / 1000, 'unixepoch') ELSE NULL END, datetime('now'))
+                                 ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
                                    provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
                                  WHERE messages.direction = excluded.direction",
                                 params![conv_id, mid, content_type, text_content, timestamp_ms],
                             )?;
 
-                            if affected > 0 {
-                                processed = true;
-                            } else {
-                                let exists: Option<i64> = tx.query_row(
-                                    "SELECT 1 FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2 AND direction = 'outbound'",
-                                    params![conv_id, mid],
-                                    |r| r.get(0),
-                                ).optional()?;
-                                if exists.is_some() {
-                                    processed = true;
+                            let msg_id_opt: Option<i64> = tx.query_row(
+                                "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2 AND direction = 'outbound'",
+                                params![conv_id, mid],
+                                |r| r.get(0),
+                            ).optional()?;
+
+                            if let Some(msg_id) = msg_id_opt {
+                                if let Some(atts) = atts_opt {
+                                    for att in atts {
+                                        let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
+                                        let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                                        let att_title = att.get("title").and_then(|t| t.as_str());
+                                        tx.execute(
+                                            "INSERT INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
+                                            params![msg_id, att_type, att_title, att_url],
+                                        )?;
+                                    }
                                 }
+                                processed = true;
                             }
                         }
                     }
@@ -1084,7 +1084,7 @@ impl FacebookSyncWorker {
                                  FROM messages m
                                  JOIN channel_conversations c ON m.conversation_id = c.id
                                  WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
-                                   AND (m.provider_timestamp <= ?4 OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
+                                   AND (m.provider_timestamp <= datetime(?4 / 1000, 'unixepoch') OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
                                 params![account_id, recipient_psid, r_type, watermark],
                             )?;
                             processed = true;
