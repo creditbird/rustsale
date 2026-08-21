@@ -235,7 +235,15 @@ impl FacebookLeadIngestor {
                     "phone_number" | "phone" => phone = fval.to_string(),
                     "email" => email = fval.to_string(),
                     other => {
-                        custom_map.insert(other.to_string(), Value::String(fval.to_string()));
+                        if let Some(arr) = fvals {
+                            if arr.len() > 1 {
+                                custom_map.insert(other.to_string(), Value::Array(arr.clone()));
+                            } else {
+                                custom_map.insert(other.to_string(), Value::String(fval.to_string()));
+                            }
+                        } else {
+                            custom_map.insert(other.to_string(), Value::String(fval.to_string()));
+                        }
                     }
                 }
             }

@@ -94,15 +94,15 @@ CREATE POLICY "Tenants read own page buffer" ON meta_webhook_buffer
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const META_APP_SECRET = Deno.env.get("META_APP_SECRET") || "";
-const META_VERIFY_TOKEN = Deno.env.get("META_VERIFY_TOKEN") || "";
+const META_APP_SECRET = Deno.env.get("META_APP_SECRET");
+const META_VERIFY_TOKEN = Deno.env.get("META_VERIFY_TOKEN");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 async function verifyHmacSha256(signatureHeader: string | null, rawBody: Uint8Array): Promise<boolean> {
-  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
+  if (!META_APP_SECRET || !signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
   const signature = signatureHeader.slice(7);
   const key = await crypto.subtle.importKey(
     "raw",
@@ -121,6 +121,9 @@ serve(async (req: Request) => {
   const url = new URL(req.url);
 
   if (req.method === "GET") {
+    if (!META_VERIFY_TOKEN) {
+      return new Response("Configuration error: META_VERIFY_TOKEN not set", { status: 500 });
+    }
     const mode = url.searchParams.get("hub.mode");
     const token = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
@@ -659,7 +662,7 @@ use aes_gcm::{
 };
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use keyring::Entry;
+use keyring::{Entry, Error as KeyringError};
 use rand::RngCore;
 
 pub struct StrongholdKeyring;
@@ -680,7 +683,7 @@ impl StrongholdKeyring {
                 key.copy_from_slice(&raw);
                 Ok(key)
             }
-            Err(_) => {
+            Err(KeyringError::NoEntry) => {
                 let mut new_key = [0u8; 32];
                 rand::thread_rng().fill_bytes(&mut new_key);
                 let b64 = BASE64.encode(&new_key);
@@ -688,6 +691,7 @@ impl StrongholdKeyring {
                     .map_err(|e| anyhow!("Failed to persist new master key in OS Keyring: {}", e))?;
                 Ok(new_key)
             }
+            Err(e) => Err(anyhow!("OS Keyring access error (failed closed): {}", e)),
         }
     }
 
