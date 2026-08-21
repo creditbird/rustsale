@@ -238,6 +238,13 @@ mod tests {
 
                 INSERT INTO message_attachments (id, message_id, provider_attachment_id, file_name, mime_type, remote_url, local_path, thumbnail_url, metadata_json, created_at)
                 VALUES (902, 701, NULL, NULL, NULL, 'https://cdn.example.com/pic1.jpg', '/spool/local.jpg', 'https://cdn.example.com/thumb.jpg', '{"height": 600}', '2026-01-01');
+
+                -- Add duplicate attachments for message 701 with colliding provider_attachment_id without remote_url
+                INSERT INTO message_attachments (id, message_id, provider_attachment_id, file_name, mime_type, remote_url, metadata_json, created_at)
+                VALUES (903, 701, 'PROVIDER_COLLISION_1', 'photo_a.jpg', 'image/jpeg', NULL, '{"a": 1}', '2026-01-01');
+
+                INSERT INTO message_attachments (id, message_id, provider_attachment_id, file_name, mime_type, remote_url, metadata_json, created_at)
+                VALUES (904, 701, 'PROVIDER_COLLISION_1', 'photo_b.jpg', 'image/jpeg', NULL, '{"b": 2}', '2026-01-01');
             "#).unwrap();
 
             // 3. Execute migration under outer transaction (exactly matching db.rs::init_db production startup path)

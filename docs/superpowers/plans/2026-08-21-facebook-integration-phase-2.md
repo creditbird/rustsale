@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-08** | JIT Media Upload & Zero Query Leakage | `PLANNED` | Task 2 (Step 1) | Media is uploaded unpublished at push time with `Authorization: Bearer <token>` header (never query string). | Inspect HTTP logs during media upload; verify 0 tokens appear in URL query strings. | Integration test: Mock server inspects headers and query params. |
-| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` and `rupload.facebook.com`. Persistent state in `facebook_upload_sessions` keyed by `(page_id, upload_type, file_hash, file_size_bytes, status)`. Resumed session verifies confirmed offset with Meta server before sending chunks. | Network drops or app restarts at byte offset 8,388,608; restart queries server offset and resumes without data corruption. | Resumable upload unit test with mocked chunk interruption and session recovery. |
+| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` and `rupload.facebook.com`. Persistent state in `facebook_upload_sessions` keyed by `(page_id, upload_type, file_hash, file_size_bytes, status)`. Resumed session verifies confirmed offset with Meta server; aborts if invalid or unreachable. | Network drops or app restarts at byte offset 8,388,608; restart queries server offset and resumes without data corruption. | Resumable upload unit test with mocked chunk interruption and session recovery. |
 | **REQ-FB-10** | Dual-Mode Scheduling & Overdue Safety | `PLANNED` | Task 3 (Step 1) | Posts 10m–30d pushed to Meta with `published=false`; posts >30d held locally in SQLite. Overdue posts trigger safety prompt. Hourly cron promotes posts entering `<=27 days`. Multi-attribute reconciliation matches exact timestamp and SHA-256 message hash. | User's laptop closed for 35 days; opening app triggers "Đăng ngay / Dời lịch / Huỷ" prompt instead of unexpected auto-post. | Scheduler test: Pass overdue post to engine; assert status is `overdue_prompt`. |
-| **REQ-FB-11** | Idempotent Multi-Page Fan-Out & Lease Safety | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = format!("{}:{}:{}", draft_group_id, account_id, page_id)`. Promotion verifies ownership on update. Ambiguous reconciliation is fail-closed. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. Inconclusive reconciliation remains in `delivery_unknown`. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
+| **REQ-FB-11** | Idempotent Multi-Page Fan-Out & Lease Safety | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = format!("{}:{}:{}", draft_group_id, account_id, page_id)`. Promotion verifies ownership on update. All media errors transition cleanly. Ambiguous reconciliation is fail-closed. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. Inconclusive reconciliation remains in `delivery_unknown`. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
 
 ---
 
@@ -356,13 +356,16 @@ impl FacebookMediaUploader {
 
         let (video_id, mut offset) = match existing_session? {
             Some((_sess_id, vid, _saved_offset)) => {
-                // Query server for confirmed offset
+                // Query server for confirmed offset with fail-closed validation
                 let url_query = format!("https://rupload.facebook.com/video-reels/{}", vid);
                 let resp_q = self.http.get(&url_query).bearer_auth(&self.token).send().await?;
-                let confirmed_offset = if resp_q.status().is_success() {
-                    resp_q.headers().get("Offset").and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0)
-                } else {
-                    0
+                if !resp_q.status().is_success() {
+                    anyhow::bail!("Reel server offset query failed: HTTP {}", resp_q.status());
+                }
+                let offset_header = resp_q.headers().get("Offset").and_then(|v| v.to_str().ok());
+                let confirmed_offset = match offset_header.and_then(|s| s.parse::<u64>().ok()) {
+                    Some(off) => off,
+                    None => anyhow::bail!("Invalid or missing Offset header from Meta rupload"),
                 };
                 (vid, confirmed_offset)
             }
@@ -533,8 +536,8 @@ impl FacebookPostScheduler {
             let client = FacebookPostScheduler::new(token.to_string());
             let media_paths: Vec<String> = serde_json::from_str(&media_paths_str).unwrap_or_default();
 
-            // Dispatch all 6 post types
-            let publish_result = match post_type.as_str() {
+            // Wrap all publishers so media/network errors are caught cleanly
+            let publish_result: Result<String> = match post_type.as_str() {
                 "link" => {
                     let mut form = vec![("message", message.clone())];
                     if let Some(ref l) = link_url {
@@ -543,44 +546,67 @@ impl FacebookPostScheduler {
                     client.publish_custom_feed(&page_id, form, Some(target_time)).await
                 }
                 "photo" => {
-                    if let Some(first_path) = media_paths.first() {
-                        let bytes = fs::read(first_path).map_err(|e| anyhow!("Failed to read photo: {}", e))?;
-                        let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
-                        let photo_id = uploader.upload_photo_unpublished(&page_id, bytes).await?;
-                        let form = vec![
-                            ("message", message.clone()),
-                            ("attached_media", serde_json::json!([{ "media_fbid": photo_id }]).to_string()),
-                        ];
-                        client.publish_custom_feed(&page_id, form, Some(target_time)).await
-                    } else {
-                        Err(anyhow!("Missing photo file path"))
+                    match media_paths.first() {
+                        Some(first_path) => match fs::read(first_path) {
+                            Ok(bytes) => {
+                                let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                                match uploader.upload_photo_unpublished(&page_id, bytes).await {
+                                    Ok(photo_id) => {
+                                        let form = vec![
+                                            ("message", message.clone()),
+                                            ("attached_media", serde_json::json!([{ "media_fbid": photo_id }]).to_string()),
+                                        ];
+                                        client.publish_custom_feed(&page_id, form, Some(target_time)).await
+                                    }
+                                    Err(e) => Err(e),
+                                }
+                            }
+                            Err(e) => Err(anyhow!("Failed to read photo file: {}", e)),
+                        },
+                        None => Err(anyhow!("Missing photo file path")),
                     }
                 }
                 "multi_photo" => {
                     let mut photos_bytes = Vec::new();
+                    let mut read_err = None;
                     for path in &media_paths {
-                        let bytes = fs::read(path).map_err(|e| anyhow!("Failed to read photo {}: {}", path, e))?;
-                        photos_bytes.push(bytes);
+                        match fs::read(path) {
+                            Ok(b) => photos_bytes.push(b),
+                            Err(e) => {
+                                read_err = Some(anyhow!("Failed to read photo {}: {}", path, e));
+                                break;
+                            }
+                        }
                     }
-                    let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
-                    uploader.upload_multi_photo_post(&page_id, &message, photos_bytes, Some(target_time)).await
+                    if let Some(e) = read_err {
+                        Err(e)
+                    } else {
+                        let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                        uploader.upload_multi_photo_post(&page_id, &message, photos_bytes, Some(target_time)).await
+                    }
                 }
                 "video" => {
-                    if let Some(vid_path) = media_paths.first() {
-                        let bytes = fs::read(vid_path).map_err(|e| anyhow!("Failed to read video: {}", e))?;
-                        let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
-                        uploader.upload_full_resumable_video_with_state(conn, &page_id, vid_path, &bytes, "Video Post", &message, Some(target_time)).await
-                    } else {
-                        Err(anyhow!("Missing video file path"))
+                    match media_paths.first() {
+                        Some(vid_path) => match fs::read(vid_path) {
+                            Ok(bytes) => {
+                                let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                                uploader.upload_full_resumable_video_with_state(conn, &page_id, vid_path, &bytes, "Video Post", &message, Some(target_time)).await
+                            }
+                            Err(e) => Err(anyhow!("Failed to read video file: {}", e)),
+                        },
+                        None => Err(anyhow!("Missing video file path")),
                     }
                 }
                 "reel" => {
-                    if let Some(reel_path) = media_paths.first() {
-                        let bytes = fs::read(reel_path).map_err(|e| anyhow!("Failed to read reel: {}", e))?;
-                        let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
-                        uploader.upload_full_resumable_reel_with_state(conn, &page_id, reel_path, &bytes, &message, Some(target_time)).await
-                    } else {
-                        Err(anyhow!("Missing reel file path"))
+                    match media_paths.first() {
+                        Some(reel_path) => match fs::read(reel_path) {
+                            Ok(bytes) => {
+                                let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                                uploader.upload_full_resumable_reel_with_state(conn, &page_id, reel_path, &bytes, &message, Some(target_time)).await
+                            }
+                            Err(e) => Err(anyhow!("Failed to read reel file: {}", e)),
+                        },
+                        None => Err(anyhow!("Missing reel file path")),
                     }
                 }
                 _ => client.publish_status_post(&page_id, &message, Some(target_time)).await,
@@ -632,8 +658,11 @@ impl FacebookPostScheduler {
         let client = FacebookPostScheduler::new(token.to_string());
 
         for (post_id, page_id, message, target_time, retries) in unknown_posts {
+            // Atomic lease claim repeating expired condition
             let claimed = conn.execute(
-                "UPDATE facebook_scheduled_posts SET owner_id = ?1, claim_deadline = datetime('now', '+5 minutes') WHERE id = ?2 AND status = 'delivery_unknown'",
+                "UPDATE facebook_scheduled_posts 
+                 SET owner_id = ?1, claim_deadline = datetime('now', '+5 minutes') 
+                 WHERE id = ?2 AND status = 'delivery_unknown' AND (claim_deadline IS NULL OR claim_deadline < datetime('now'))",
                 params![worker_id, post_id],
             )?;
             if claimed == 0 {
@@ -648,19 +677,7 @@ impl FacebookPostScheduler {
                     )?;
                     reconciled += 1;
                 }
-                Ok(None) if retries >= 3 => {
-                    conn.execute(
-                        "UPDATE facebook_scheduled_posts SET status = 'failed', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",
-                        params![post_id, worker_id],
-                    )?;
-                }
-                Ok(None) => {
-                    conn.execute(
-                        "UPDATE facebook_scheduled_posts SET status = 'queued', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",
-                        params![post_id, worker_id],
-                    )?;
-                }
-                Err(_) => {
+                _ => {
                     // Fail-closed: release lease but keep in delivery_unknown
                     conn.execute(
                         "UPDATE facebook_scheduled_posts SET owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2",

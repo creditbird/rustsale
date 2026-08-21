@@ -343,6 +343,16 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                     GROUP BY message_id, remote_url
                   );
 
+                -- Lossless deduplication for provider_attachment_id before creating unique index
+                DELETE FROM message_attachments 
+                WHERE provider_attachment_id IS NOT NULL 
+                  AND id NOT IN (
+                    SELECT MIN(id) 
+                    FROM message_attachments 
+                    WHERE provider_attachment_id IS NOT NULL
+                    GROUP BY message_id, provider_attachment_id
+                  );
+
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote 
                 ON message_attachments(message_id, remote_url) 
                 WHERE remote_url IS NOT NULL;

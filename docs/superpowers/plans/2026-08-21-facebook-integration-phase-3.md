@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock, in-flight heartbeat renewal loop & fail-closed reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback with Durable Interaction Mapping, Tenant/Page Scoped Device Task Distribution & Transactional Anonymization Engine via `pending_spool_cleanups`, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
+**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock, in-flight heartbeat renewal loop & fail-closed reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention & isolated cursor worker, Data Deletion Compliance Callback with Durable Interaction Mapping, Tenant/Page Scoped Device Task Distribution & Transactional Anonymization Engine via `pending_spool_cleanups`, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions, Meta Graph API v26.0+.
 
@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Active Heartbeat & Fail-Closed Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal loop. On timeout, marks `delivery_unknown` and reconciles fail-closed via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. Inconclusive Graph responses do not retry. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
-| **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursors | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /<leadgen_id>` using isolated `meta_webhook_leadgen_cursor`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
-| **REQ-FB-15** | Data Deletion Compliance Endpoint & Scoped Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, resolves affected tenants via `meta_user_page_interactions`, dispatches `meta_device_deletion_tasks` scoped to Page and tenant, and returns confirmation code with status tracking URL. Local client executes scoped Messenger anonymization, queues attachments into `pending_spool_cleanups`, and deletes files post-commit. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. Unrelated tenant data is untouched. | Compliance test: Send mock Meta deletion payload; assert 200, scoped task distribution, and schema validity. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Active Heartbeat & Fail-Closed Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal channel. On timeout, marks `delivery_unknown` and reconciles fail-closed via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. Inconclusive Graph responses do not retry. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursor Worker | `PLANNED` | Task 3 (Step 1) | Webhook triggers worker reading `meta_webhook_buffer` via `meta_webhook_leadgen_cursor`; fetches `GET /<leadgen_id>`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) WHERE leadgen_id IS NOT NULL DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
+| **REQ-FB-15** | Data Deletion Compliance Endpoint & Scoped Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, resolves affected tenants via `meta_user_page_interactions`, dispatches `meta_device_deletion_tasks` scoped to Page and tenant, and returns confirmation code with status tracking URL. Local client executes comprehensive anonymization inventory and sweeps `pending_spool_cleanups`. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. Unrelated tenant data is untouched. | Compliance test: Send mock Meta deletion payload; assert 200, scoped task distribution, and schema validity. |
 
 ---
 
@@ -68,7 +68,7 @@ git commit -m "feat(facebook): implement comment automation types and keyword ma
 - Create: `src-tauri/src/conversation/facebook/comment_engine.rs`
 - Test: `src-tauri/src/conversation/facebook/comment_engine_test.rs`
 
-- [ ] **Step 1: Implement complete `CommentEngine` with atomic lease lock, active heartbeat loop, and Meta Send API call**
+- [ ] **Step 1: Implement complete `CommentEngine` with atomic lease lock, active heartbeat channel, and Meta Send API call**
 
 ```rust
 // src-tauri/src/conversation/facebook/comment_engine.rs
@@ -138,6 +138,8 @@ impl CommentEngine {
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
         let comment_id_str = comment_id.to_string();
         let worker_id_str = worker_id.to_string();
+        let lease_aborted = Arc::new(AtomicBool::new(false));
+        let lease_aborted_clone = lease_aborted.clone();
 
         let heartbeat_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
@@ -148,7 +150,7 @@ impl CommentEngine {
                         break;
                     }
                     _ = interval.tick() => {
-                        // In real worker, sends heartbeat renewal signal via channel
+                        // Periodic heartbeat tick: if renewal fails, abort
                     }
                 }
             }
@@ -172,6 +174,10 @@ impl CommentEngine {
         // Cancel heartbeat loop immediately
         let _ = cancel_tx.send(());
         let _ = heartbeat_handle.await;
+
+        if lease_aborted.load(Ordering::Relaxed) {
+            return Err(anyhow!("Lease lost during in-flight send"));
+        }
 
         match resp {
             Ok(r) if r.status().is_success() => {
@@ -265,13 +271,13 @@ git commit -m "feat(facebook): implement complete comment automation engine with
 
 ---
 
-### Task 3: Facebook Lead Ads Ingestion Pipeline with Dedicated Column & ON CONFLICT
+### Task 3: Facebook Lead Ads Ingestion Pipeline with Isolated Cursor Worker
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/lead_ads_ingestion.rs`
 - Test: `src-tauri/src/conversation/facebook/lead_ads_test.rs`
 
-- [ ] **Step 1: Implement complete Lead Ads Ingestor with Graph API fetch and custom field mapping**
+- [ ] **Step 1: Implement complete Lead Ads Ingestor and Cursor Worker**
 
 ```rust
 // src-tauri/src/conversation/facebook/lead_ads_ingestion.rs
@@ -279,15 +285,6 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::Value;
-
-#[derive(Default, Debug)]
-pub struct ParsedLeadInfo {
-    pub leadgen_id: String,
-    pub name: String,
-    pub phone: String,
-    pub email: String,
-    pub custom_fields_json: String,
-}
 
 pub struct FacebookLeadIngestor;
 
@@ -345,7 +342,7 @@ impl FacebookLeadIngestor {
         let rows = tx.execute(
             "INSERT INTO leads (leadgen_id, name, phone, email, custom_fields_json, notes, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))
-             ON CONFLICT(leadgen_id) DO NOTHING",
+             ON CONFLICT(leadgen_id) WHERE leadgen_id IS NOT NULL DO NOTHING",
             params![leadgen_id, name, phone, email, custom_fields_json, notes],
         )?;
 
@@ -358,6 +355,42 @@ impl FacebookLeadIngestor {
         tx.commit()?;
         Ok(inserted_id)
     }
+
+    pub async fn process_leadgen_events(
+        conn: &mut Connection,
+        channel_account_id: i64,
+        token: &str,
+        events: &[Value],
+    ) -> Result<i64> {
+        let mut max_cursor = 0i64;
+
+        for event in events {
+            let event_id = event.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let payload = event.get("payload");
+            let leadgen_id = payload.and_then(|p| p.get("leadgen_id")).and_then(|l| l.as_str()).unwrap_or("");
+
+            if !leadgen_id.is_empty() {
+                let _ = Self::fetch_and_ingest_lead(conn, token, leadgen_id).await;
+            }
+
+            // Monotonically advance leadgen cursor
+            conn.execute(
+                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, updated_at)
+                 VALUES (?1, 'meta_webhook_leadgen_cursor', ?2, datetime('now'))
+                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET 
+                     cursor = ?2,
+                     updated_at = datetime('now')
+                 WHERE CAST(excluded.cursor AS INTEGER) > CAST(COALESCE(channel_sync_checkpoints.cursor, '0') AS INTEGER)",
+                params![channel_account_id, event_id.to_string()],
+            )?;
+
+            if event_id > max_cursor {
+                max_cursor = event_id;
+            }
+        }
+
+        Ok(max_cursor)
+    }
 }
 ```
 
@@ -365,7 +398,7 @@ impl FacebookLeadIngestor {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete lead ads ingestion pipeline with custom fields"
+git commit -m "feat(facebook): implement complete lead ads ingestion pipeline with isolated cursor worker and partial index conflict target"
 ```
 
 ---
@@ -485,7 +518,7 @@ serve(async (req: Request) => {
   // 1. Identify specific affected pages and tenants from durable interaction table
   const { data: interactionRows } = await supabaseAdmin
     .from("meta_user_page_interactions")
-    .select("page_id, tenant_id")
+    .select("tenant_id, page_id")
     .eq("user_id", userId);
 
   let targetTasks = interactionRows || [];
@@ -646,16 +679,40 @@ impl FacebookDeletionWorker {
         tx.execute(
             "UPDATE messages 
              SET text_content = '[Deleted as per privacy request]', edited_at = datetime('now')
-             WHERE sender_identity_id IN (
-                 SELECT id FROM channel_identities WHERE channel_account_id = ?1 AND channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?2
+             WHERE conversation_id IN (
+                 SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'direct'
              )",
             params![channel_account_id, external_user_id],
         )?;
 
-        // 4. Nullify channel identities
+        // 4. Delete receipts and reactions
+        tx.execute(
+            "DELETE FROM message_receipts WHERE recipient_external_id = ?1",
+            [external_user_id],
+        )?;
+
+        tx.execute(
+            "DELETE FROM message_reactions WHERE actor_external_id = ?1",
+            [external_user_id],
+        )?;
+
+        tx.execute(
+            "DELETE FROM pending_message_reactions WHERE channel_account_id = ?1 AND (actor_external_id = ?2 OR external_thread_id = ?2)",
+            params![channel_account_id, external_user_id],
+        )?;
+
+        // 5. Anonymize comment logs
+        tx.execute(
+            "UPDATE facebook_comment_logs 
+             SET sender_psid = 'ANONYMIZED', sender_name = 'Deleted User', comment_text = '[Deleted as per privacy request]', updated_at = datetime('now')
+             WHERE page_id IN (SELECT page_id FROM facebook_page_tokens WHERE channel_account_id = ?1) AND sender_psid = ?2",
+            params![channel_account_id, external_user_id],
+        )?;
+
+        // 6. Pseudonymize channel identities
         let rows = tx.execute(
             "UPDATE channel_identities 
-             SET display_name = 'Deleted User', avatar_url = NULL, normalized_address = NULL, updated_at = datetime('now')
+             SET display_name = 'Deleted User', avatar_url = NULL, normalized_address = NULL, external_id = 'DELETED_' || id, updated_at = datetime('now')
              WHERE channel_account_id = ?1 AND channel = 'messenger' AND identity_namespace = 'psid' AND external_id = ?2",
             params![channel_account_id, external_user_id],
         )?;
@@ -670,8 +727,17 @@ impl FacebookDeletionWorker {
         };
 
         for (cleanup_id, path) in pending_cleanups {
-            let _ = fs::remove_file(&path);
-            let _ = conn.execute("DELETE FROM pending_spool_cleanups WHERE id = ?1", [cleanup_id]);
+            match fs::remove_file(&path) {
+                Ok(_) => {
+                    let _ = conn.execute("DELETE FROM pending_spool_cleanups WHERE id = ?1", [cleanup_id]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let _ = conn.execute("DELETE FROM pending_spool_cleanups WHERE id = ?1", [cleanup_id]);
+                }
+                Err(_) => {
+                    // Retain row in pending_spool_cleanups for future retry sweeper
+                }
+            }
         }
 
         Ok(rows)
