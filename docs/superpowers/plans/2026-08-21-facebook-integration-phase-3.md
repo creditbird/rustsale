@@ -2,22 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply), Facebook Lead Ads automatic CRM ingestion, Data Deletion Compliance Callback, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
-
-**Architecture:** A rule-based automation engine in Rust that processes `feed` and `leadgen` webhook events from the durable buffer. It enforces strict Meta compliance (loop guard `from.id != page_id`, 7-day window, exactly 1 private reply per comment). Lead Ads instantly populate the `leads` table with mapping for custom form questions. The Svelte 5 frontend ties together the whole Facebook Hub with health diagnostics and audit logs.
+**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions, Meta Graph API v26.0+.
 
 ---
 
-## Mandatory Implementation Harness & Requirement Ledger (Tier 3)
+## 1. Mandatory Implementation Harness Ledger (Tier 3)
 
-| Req ID | Requirement | Success Criteria | Adversarial Counterexample / Failure Mode | Verification Method |
-| :--- | :--- | :--- | :--- | :--- |
-| **REQ-FB-12** | Comment Loop Guard | Engine ignores all comments sent by the Page itself (`from.id == page_id`). | Bot public reply triggers new feed webhook; loop causes infinite replies. | Loop test: Pass comment event with `from.id == page_id`; verify status is `skipped` with `skip_reason = 'loop_guard'`. |
-| **REQ-FB-13** | 7-Day Window & 1-Reply Limit | Private Reply only sent once per comment and within 7 days of comment creation. | User spams comments; engine sends multiple private replies violating Meta policy. | Idempotency test: Process same `comment_id` twice; verify 2nd execution returns `skipped (already_replied)`. |
-| **REQ-FB-14** | Instant Lead Ads Ingestion | Webhook `leadgen_id` immediately fetches field data within 90 days and writes to `leads` table. | Lead Ads field data contains custom questions; parser fails or drops phone number. | Parsing test: Parse complex Lead Ads payload with international phone; assert contact created in `leads`. |
-| **REQ-FB-15** | Data Deletion Compliance | Supabase Edge Function `/meta-data-deletion` processes signed request and purges user data. | User removes app on Facebook; compliance ping fails with 404/500 leading to App Review strike. | Compliance test: Invoke `/meta-data-deletion` with valid signature; verify 200 response with confirmation code. |
+| Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, status) VALUES (?, 'processing')`) before sending Private Reply via Meta Send API. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-14** | Idempotent Lead Ads Ingestion | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /{leadgen_id}`; parses both standard contact fields and arbitrary custom form questions into `leads` table with `UNIQUE(leadgen_id)`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
+| **REQ-FB-15** | Data Deletion Compliance Endpoint | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta signed_request and returns confirmation code with status tracking URL. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
 
 ---
 
@@ -64,62 +62,98 @@ git commit -m "feat(facebook): implement comment automation types and keyword ma
 
 ---
 
-### Task 2: Comment Automation Engine with Transactional Guards
+### Task 2: Comment Automation Engine with Atomic Claim & Real Send API
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/comment_engine.rs`
 - Test: `src-tauri/src/conversation/facebook/comment_engine_test.rs`
 
-- [ ] **Step 1: Implement complete `CommentEngine` with database transaction and Send API dispatch**
+- [ ] **Step 1: Implement complete `CommentEngine` with atomic lock and Meta Send API call**
 
 ```rust
 // src-tauri/src/conversation/facebook/comment_engine.rs
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
+use reqwest::Client;
 use rusqlite::{params, Connection};
+use serde_json::json;
 
 pub struct CommentEngine;
 
 impl CommentEngine {
-    pub fn execute_comment_automation(
+    pub async fn execute_private_reply(
         conn: &mut Connection,
+        token: &str,
         page_id: &str,
         comment_id: &str,
         sender_id: &str,
         comment_text: &str,
+        reply_message: &str,
         created_time: DateTime<Utc>,
     ) -> Result<String> {
+        // 1. Loop guard
         if page_id == sender_id {
             return Ok("skipped_loop_guard".to_string());
         }
+        // 2. 7-day policy guard
         if Utc::now() - created_time > Duration::days(7) {
             return Ok("skipped_outside_7_days".to_string());
         }
 
-        let already_replied: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM facebook_comment_logs WHERE comment_id = ?1 AND private_reply_status = 'success')",
-            params![comment_id],
-            |r| r.get(0),
-        ).unwrap_or(false);
-
-        if already_replied {
-            return Ok("skipped_already_replied".to_string());
-        }
-
+        // 3. Atomic claim lock
         let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'success', datetime('now'))",
-            params![comment_id, page_id, sender_psid(sender_id), comment_text],
+        let rows_affected = tx.execute(
+            "INSERT OR IGNORE INTO facebook_comment_logs (comment_id, page_id, sender_psid, comment_text, private_reply_status, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'processing', datetime('now'))",
+            params![comment_id, page_id, sender_id, comment_text],
         )?;
+
+        if rows_affected == 0 {
+            // Already claimed or replied
+            return Ok("skipped_already_claimed".to_string());
+        }
         tx.commit()?;
 
-        Ok("replied_successfully".to_string())
-    }
-}
+        // 4. Call Meta Send API with recipient.comment_id
+        let client = Client::new();
+        let url = format!("https://graph.facebook.com/v26.0/{}/messages", page_id);
+        let body = json!({
+            "recipient": { "comment_id": comment_id },
+            "message": { "text": reply_message },
+            "messaging_type": "RESPONSE"
+        });
 
-fn sender_psid(s: &str) -> &str {
-    s
+        let resp = client.post(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                conn.execute(
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'success' WHERE comment_id = ?1",
+                    params![comment_id],
+                )?;
+                Ok("replied_successfully".to_string())
+            }
+            Ok(r) => {
+                let err_text = r.text().await.unwrap_or_default();
+                conn.execute(
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2 WHERE comment_id = ?1",
+                    params![comment_id, err_text],
+                )?;
+                Err(anyhow!("Send API failed: {}", err_text))
+            }
+            Err(e) => {
+                conn.execute(
+                    "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2 WHERE comment_id = ?1",
+                    params![comment_id, e.to_string()],
+                )?;
+                Err(anyhow!("Network failure: {}", e))
+            }
+        }
+    }
 }
 ```
 
@@ -127,64 +161,100 @@ fn sender_psid(s: &str) -> &str {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete comment automation engine with transactional guards"
+git commit -m "feat(facebook): implement complete comment automation engine with atomic claim and meta send api"
 ```
 
 ---
 
-### Task 3: Facebook Lead Ads Ingestion Pipeline
+### Task 3: Facebook Lead Ads Ingestion Pipeline with Custom Question Retention
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/lead_ads_ingestion.rs`
 - Test: `src-tauri/src/conversation/facebook/lead_ads_test.rs`
 
-- [ ] **Step 1: Implement complete Lead Ads Ingestor writing to `leads` table**
+- [ ] **Step 1: Implement complete Lead Ads Ingestor with Graph API fetch and custom field mapping**
 
 ```rust
 // src-tauri/src/conversation/facebook/lead_ads_ingestion.rs
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
 #[derive(Default, Debug)]
 pub struct ParsedLeadInfo {
+    pub leadgen_id: String,
     pub name: String,
     pub phone: String,
     pub email: String,
+    pub custom_fields_json: String,
 }
 
-pub fn extract_lead_info(field_data: &Value) -> ParsedLeadInfo {
-    let mut info = ParsedLeadInfo::default();
-    if let Some(arr) = field_data.as_array() {
-        for field in arr {
-            let name = field.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let val = field.get("values")
-                .and_then(|v| v.as_array())
-                .and_then(|v| v.first())
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+pub struct FacebookLeadIngestor;
 
-            match name {
-                "full_name" | "name" => info.name = val.to_string(),
-                "phone_number" | "phone" => info.phone = val.to_string(),
-                "email" => info.email = val.to_string(),
-                _ => {}
+impl FacebookLeadIngestor {
+    pub async fn fetch_and_ingest_lead(
+        conn: &mut Connection,
+        token: &str,
+        leadgen_id: &str,
+    ) -> Result<i64> {
+        // Idempotency check: if already ingested, return existing ID
+        let existing: Option<i64> = conn.query_row(
+            "SELECT id FROM leads WHERE notes LIKE ?1",
+            params![format!("%Facebook Leadgen ID: {}%", leadgen_id)],
+            |r| r.get(0),
+        ).ok();
+
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        // Fetch lead payload from Graph API
+        let client = Client::new();
+        let url = format!("https://graph.facebook.com/v26.0/{}", leadgen_id);
+        let resp = client.get(&url).bearer_auth(token).send().await?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("Failed to fetch lead {}: HTTP {}", leadgen_id, resp.status()));
+        }
+
+        let body: Value = resp.json().await?;
+        let field_data = body.get("field_data").and_then(|v| v.as_array());
+
+        let mut name = String::new();
+        let mut phone = String::new();
+        let mut email = String::new();
+        let mut custom_map = serde_json::Map::new();
+
+        if let Some(fields) = field_data {
+            for f in fields {
+                let fname = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let fval = f.get("values").and_then(|v| v.as_array()).and_then(|v| v.first()).and_then(|v| v.as_str()).unwrap_or("");
+
+                match fname {
+                    "full_name" | "name" => name = fval.to_string(),
+                    "phone_number" | "phone" => phone = fval.to_string(),
+                    "email" => email = fval.to_string(),
+                    other => {
+                        custom_map.insert(other.to_string(), Value::String(fval.to_string()));
+                    }
+                }
             }
         }
-    }
-    info
-}
 
-pub fn insert_lead_to_crm(conn: &mut Connection, lead: &ParsedLeadInfo) -> Result<i64> {
-    let tx = conn.transaction()?;
-    tx.execute(
-        "INSERT INTO leads (name, phone, email, notes, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'Source: Facebook Lead Ads', datetime('now'), datetime('now'))",
-        params![lead.name, lead.phone, lead.email],
-    )?;
-    let id = tx.last_insert_rowid();
-    tx.commit()?;
-    Ok(id)
+        let notes = format!("Source: Facebook Lead Ads\nFacebook Leadgen ID: {}\nCustom: {}", leadgen_id, Value::Object(custom_map));
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO leads (name, phone, email, notes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+            params![name, phone, email, notes],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+
+        Ok(id)
+    }
 }
 ```
 
@@ -192,7 +262,7 @@ pub fn insert_lead_to_crm(conn: &mut Connection, lead: &ParsedLeadInfo) -> Resul
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete lead ads ingestion pipeline writing to CRM leads"
+git commit -m "feat(facebook): implement complete lead ads ingestion pipeline with custom fields"
 ```
 
 ---
@@ -203,7 +273,7 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wr
 - Create: `supabase/functions/meta-data-deletion/index.ts`
 - Create: `src-tauri/src/conversation/facebook/health_monitor.rs`
 
-- [ ] **Step 1: Implement Edge Function `/meta-data-deletion` and Rust Health Monitor**
+- [ ] **Step 1: Implement Edge Function `/meta-data-deletion` with signed_request parser**
 - [ ] **Step 2: Commit Task 4**
 
 ```bash

@@ -4,20 +4,18 @@
 
 **Goal:** Build a robust, multi-type Facebook Post Scheduler supporting Status, Link, Photos, Albums, Resumable Videos, and Reels with dual-mode scheduling (Meta-side 10m–30d & Local-queued >30d), multi-page fan-out, and Svelte 5 Live Desktop/Mobile Feed Previews.
 
-**Architecture:** Dual-mode scheduling engine in Rust where posts scheduled for 10 minutes to 30 days are pushed directly to Meta API with `published=false` and `scheduled_publish_time` for guaranteed unattended publishing. Posts >30 days stay in local SQLite queue and get pushed when within 29 days. Unpublished media is uploaded just-in-time during the push transaction. Includes a Svelte 5 Post Planner with Calendar/Kanban views and an authentic Facebook Feed Live Preview simulator.
-
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), `reqwest`, `graph-video.facebook.com` API, Tailwind CSS.
 
 ---
 
-## Mandatory Implementation Harness & Requirement Ledger (Tier 3)
+## 1. Mandatory Implementation Harness Ledger (Tier 3)
 
-| Req ID | Requirement | Success Criteria | Adversarial Counterexample / Failure Mode | Verification Method |
-| :--- | :--- | :--- | :--- | :--- |
-| **REQ-FB-08** | Multi-Type JIT Media Upload | Photos for albums uploaded unpublished just-in-time when pushing to Meta. | Uploading photos at draft creation causes Meta CDN cleanup before scheduled time. | Test JIT pipeline: Verify `media_paths_json` kept local until push transaction executes. |
-| **REQ-FB-09** | Resumable Video & Reels Pipeline | Videos >= 50MB use chunked protocol on `graph-video.facebook.com`; Reels validated client-side. | Network drops during 200MB video upload; retry resumes from chunk offset without restarting. | Integration test: Simulate network interruption at chunk 2; verify resumption from `upload_session_id`. |
-| **REQ-FB-10** | Dual-Mode Scheduling Verification | Meta-side posts verified via read-after-write; overdue queued posts prompt user safely. | PC offline across overdue queued post window; app auto-posts stale content without user consent. | Test overdue handler: Simulate expired queued post; verify prompt returns "Đăng ngay / Dời lịch / Huỷ". |
-| **REQ-FB-11** | Idempotent Post Creation & Fan-Out | Posts to $N$ pages fan out into independent records with matching `(timestamp_sec, hash(message))`. | Retrying interrupted multi-page post creates duplicate post on Page 1 while retrying Page 2. | Idempotency test: Run duplicate push simulation; verify `remote_post_id` populated without re-creating post. |
+| Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **REQ-FB-08** | JIT Media Upload & Zero Query Leakage | `PLANNED` | Task 2 (Step 1) | Media is uploaded unpublished at push time with `Authorization: Bearer <token>` header (never query string). | Inspect HTTP logs during media upload; verify 0 tokens appear in URL query strings. | Integration test: Mock server inspects headers and query params. |
+| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` (`start` -> `transfer` in 4MB chunks with offset validation -> `finish`). | Network drops at byte offset 8,388,608 (chunk 2); retry resumes from byte 8,388,608 without restarting file. | Resumable upload unit test with mocked chunk interruption. |
+| **REQ-FB-10** | Dual-Mode Scheduling & Overdue Safety | `PLANNED` | Task 3 (Step 1) | Posts 10m–30d pushed to Meta with `published=false`; posts >30d held locally in SQLite. Overdue posts trigger safety prompt. | User's laptop closed for 35 days; opening app triggers "Đăng ngay / Dời lịch / Huỷ" prompt instead of unexpected auto-post. | Scheduler test: Pass overdue post to engine; assert status is `overdue_prompt`. |
+| **REQ-FB-11** | Idempotent Multi-Page Fan-Out | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = uuidv5(draft_group_id, page_id)`. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
 
 ---
 
@@ -28,7 +26,7 @@
 - Create: `src-tauri/src/conversation/facebook/post_types.rs`
 - Test: `src-tauri/src/conversation/facebook/post_types_test.rs`
 
-- [ ] **Step 1: Implement Post Types with validation**
+- [ ] **Step 1: Implement Post Types and Mode Decision Matrix**
 
 ```rust
 // src-tauri/src/conversation/facebook/post_types.rs
@@ -62,6 +60,7 @@ pub enum PostStatus {
     ScheduledOnMeta,
     Published,
     Failed,
+    OverduePrompt,
 }
 
 pub fn determine_scheduling_mode(
@@ -84,24 +83,24 @@ pub fn determine_scheduling_mode(
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement post scheduler types and mode selector"
+git commit -m "feat(facebook): implement post scheduler types and mode decision matrix"
 ```
 
 ---
 
-### Task 2: Multi-Type Media Pipeline & Resumable Uploader
+### Task 2: Multi-Type Media Pipeline & 3-Phase Resumable Uploader
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/media_uploader.rs`
 - Test: `src-tauri/src/conversation/facebook/media_uploader_test.rs`
 
-- [ ] **Step 1: Implement complete Resumable Video & JIT Photo Uploader with correct endpoints**
+- [ ] **Step 1: Implement 3-Phase Resumable Video Uploader on `graph-video.facebook.com`**
 
 ```rust
 // src-tauri/src/conversation/facebook/media_uploader.rs
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub struct FacebookMediaUploader {
     token: String,
@@ -120,10 +119,14 @@ impl FacebookMediaUploader {
         let url = format!("https://graph.facebook.com/v26.0/{}/photos", page_id);
         let form = reqwest::multipart::Form::new()
             .text("published", "false")
-            .text("access_token", self.token.clone())
             .part("source", reqwest::multipart::Part::bytes(image_bytes).file_name("photo.jpg"));
 
-        let resp = self.http.post(&url).multipart(form).send().await?;
+        let resp = self.http.post(&url)
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await?;
+
         let body: Value = resp.json().await?;
         body.get("id")
             .and_then(|v| v.as_str())
@@ -131,19 +134,76 @@ impl FacebookMediaUploader {
             .ok_or_else(|| anyhow!("Photo upload failed: {:?}", body))
     }
 
-    pub async fn start_video_resumable_session(&self, page_id: &str, file_size_bytes: u64) -> Result<(String, String)> {
+    pub async fn start_resumable_video_session(&self, page_id: &str, file_size_bytes: u64) -> Result<(String, String)> {
         let url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
         let resp = self.http.post(&url)
+            .bearer_auth(&self.token)
             .form(&[
                 ("upload_phase", "start"),
-                ("access_token", &self.token),
                 ("file_size", &file_size_bytes.to_string()),
             ])
             .send().await?;
+
         let body: Value = resp.json().await?;
         let session_id = body.get("upload_session_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("No session ID"))?.to_string();
         let video_id = body.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("No video ID"))?.to_string();
         Ok((session_id, video_id))
+    }
+
+    pub async fn transfer_video_chunk(&self, page_id: &str, session_id: &str, start_offset: u64, chunk_bytes: Vec<u8>) -> Result<u64> {
+        let url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
+        let form = reqwest::multipart::Form::new()
+            .text("upload_phase", "transfer")
+            .text("upload_session_id", session_id.to_string())
+            .text("start_offset", start_offset.to_string())
+            .part("video_file_chunk", reqwest::multipart::Part::bytes(chunk_bytes).file_name("chunk.bin"));
+
+        let resp = self.http.post(&url)
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await?;
+
+        let body: Value = resp.json().await?;
+        let next_offset = body.get("start_offset").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())
+            .or_else(|| body.get("start_offset").and_then(|v| v.as_u64()))
+            .ok_or_else(|| anyhow!("No next offset returned: {:?}", body))?;
+
+        Ok(next_offset)
+    }
+
+    pub async fn finish_resumable_video_session(
+        &self,
+        page_id: &str,
+        session_id: &str,
+        title: &str,
+        description: &str,
+        scheduled_publish_time: Option<i64>,
+    ) -> Result<String> {
+        let url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
+        let mut params = vec![
+            ("upload_phase", "finish".to_string()),
+            ("upload_session_id", session_id.to_string()),
+            ("title", title.to_string()),
+            ("description", description.to_string()),
+        ];
+
+        if let Some(t) = scheduled_publish_time {
+            params.push(("published", "false".to_string()));
+            params.push(("scheduled_publish_time", t.to_string()));
+        }
+
+        let resp = self.http.post(&url)
+            .bearer_auth(&self.token)
+            .form(&params)
+            .send().await?;
+
+        let body: Value = resp.json().await?;
+        let success = body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !success {
+            return Err(anyhow!("Finish video upload failed: {:?}", body));
+        }
+        Ok(session_id.to_string())
     }
 }
 ```
@@ -152,7 +212,7 @@ impl FacebookMediaUploader {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement multi-type media uploader and resumable video protocol"
+git commit -m "feat(facebook): implement complete 3-phase resumable video uploader with bearer auth"
 ```
 
 ---
@@ -163,7 +223,7 @@ git commit -m "feat(facebook): implement multi-type media uploader and resumable
 - Create: `src-tauri/src/conversation/facebook/post_scheduler.rs`
 - Test: `src-tauri/src/conversation/facebook/post_scheduler_test.rs`
 
-- [ ] **Step 1: Implement Post Scheduler with Read-After-Write Verification**
+- [ ] **Step 1: Implement Post Scheduler with Multi-Page Fan-Out & Read-After-Write Verification**
 
 ```rust
 // src-tauri/src/conversation/facebook/post_scheduler.rs
@@ -171,15 +231,48 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde_json::Value;
 
-pub async fn verify_meta_scheduled_post(token: &str, remote_post_id: &str) -> Result<bool> {
-    let client = Client::new();
-    let url = format!("https://graph.facebook.com/v26.0/{}?fields=is_published,scheduled_publish_time&access_token={}", remote_post_id, token);
-    let resp = client.get(&url).send().await?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("Read-after-write verification failed for post {}", remote_post_id));
+pub struct FacebookPostScheduler {
+    token: String,
+    http: Client,
+}
+
+impl FacebookPostScheduler {
+    pub fn new(token: String) -> Self {
+        Self {
+            token,
+            http: Client::new(),
+        }
     }
-    let body: Value = resp.json().await?;
-    Ok(body.get("scheduled_publish_time").is_some())
+
+    pub async fn publish_status_post(&self, page_id: &str, message: &str, scheduled_publish_time: Option<i64>) -> Result<String> {
+        let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
+        let mut form = vec![("message", message.to_string())];
+        if let Some(t) = scheduled_publish_time {
+            form.push(("published", "false".to_string()));
+            form.push(("scheduled_publish_time", t.to_string()));
+        }
+
+        let resp = self.http.post(&url)
+            .bearer_auth(&self.token)
+            .form(&form)
+            .send().await?;
+
+        let body: Value = resp.json().await?;
+        body.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).ok_or_else(|| anyhow!("Status post failed: {:?}", body))
+    }
+
+    pub async fn verify_meta_scheduled_post(&self, remote_post_id: &str) -> Result<bool> {
+        let url = format!("https://graph.facebook.com/v26.0/{}?fields=is_published,scheduled_publish_time", remote_post_id);
+        let resp = self.http.get(&url)
+            .bearer_auth(&self.token)
+            .send().await?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("Read-after-write verification failed for post {}", remote_post_id));
+        }
+        let body: Value = resp.json().await?;
+        Ok(body.get("scheduled_publish_time").is_some())
+    }
 }
 ```
 
@@ -187,7 +280,7 @@ pub async fn verify_meta_scheduled_post(token: &str, remote_post_id: &str) -> Re
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement post scheduler dual-mode engine with read-after-write verification"
+git commit -m "feat(facebook): implement complete post scheduler engine with read-after-write verification"
 ```
 
 ---

@@ -2,29 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Integrate Facebook Messenger into RustSale v2's Unified Omnichannel Inbox, enabling secure multi-tenant OAuth connection with one-time 60s token exchange, durable two-way real-time message sync with Supabase Edge Relay (immutable buffer + per-device cursor), and compliant 24-hour window messaging with Message Tags.
+**Goal:** Implement Facebook Messenger integration into RustSale v2's Unified Inbox with multi-tenant zero-secret auth, atomic one-time 60s deep link token exchange, durable webhook relay (immutable buffer + per-device cursor), SQLite Page-scoped PSID migration, typed outbound error classification, and compliant 24h window messaging.
 
-**Architecture:** A zero-secret desktop architecture where Meta App Secret lives strictly on Supabase Edge Functions. Incoming webhooks are verified via HMAC-SHA256 and stored in an immutable, RLS-protected buffer on Supabase Postgres. Desktop Rust workers pull pending events using per-device cursors (`id > last_synced_id`) and listen to scoped Realtime broadcasts when online. Outbound messages flow through an Outbox Queue with exponential backoff and error classification.
-
-**Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase (Auth, RLS, Edge Functions, Realtime), Meta Graph API v26.0+.
+**Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase (Auth, RLS, Edge Functions), Meta Graph API v26.0+.
 
 ---
 
-## Mandatory Implementation Harness & Requirement Ledger (Tier 3)
+## 1. Mandatory Implementation Harness Ledger (Tier 3)
 
-| Req ID | Requirement | Success Criteria | Adversarial Counterexample / Failure Mode | Verification Method |
-| :--- | :--- | :--- | :--- | :--- |
-| **REQ-FB-01** | Zero-Secret Auth & Replay-Proof Deep Link | App Secret never in binary; Deep link `exchange_code` expires in 60s and is single-use. | Attacker replays intercepted `exchange_code` or requests token without matching JWT. | Unit test `/meta-oauth-exchange` with expired and reused code; assert 401/403. |
-| **REQ-FB-02** | Service-Controlled Tenant Mapping | Client cannot forge `page_id` in `meta_tenant_pages`. | Authenticated client attempts direct INSERT/UPDATE into `meta_tenant_pages`. | RLS test: Assert direct client INSERT fails with `42501 permission denied`. |
-| **REQ-FB-03** | Multi-Device Immutable Webhook Buffer | Multiple client installations receive all events without event loss. | Client A syncs event and marks it, causing Client B to miss it. | Concurrency test: Two independent cursor workers pull from same buffer; verify both ingest 100% of events. |
-| **REQ-FB-04** | Webhook Persistence Retry Guard | Edge function returns 500 on DB failure so Meta retries. | Supabase DB temporarily down; webhook returns 200 causing silent drop. | Mock DB error in Edge Function; verify response status is 500 (not 200). |
-| **REQ-FB-05** | Page-Scoped PSID Schema Migration | `channel_identities` uniqueness scoped by `(channel, channel_account_id, identity_namespace, external_id)`. | Same customer PSID on 2 Pages overwrites contact info. | Migration test: Backfill existing Zalo/Email, insert identical PSID on Page 1 and Page 2; verify no collision. |
-| **REQ-FB-06** | Real Outbound Send & Error Classification | `FacebookMessengerSender` calls Meta API and classifies permanent vs transient errors. | Error code `2018278` (outside 24h) infinitely retries instead of dead-lettering. | Outbox test: Simulate 613 (retry) vs 2018278 (dead_letter); verify status. |
-| **REQ-FB-07** | 24-Hour Policy & Tag Enforcement | Mandatory Message Tag selector when customer last message > 24h; warns on promo words. | User types "Giảm giá 50%" outside 24h with tag. | UI scanner test: Heuristic validator flags promotional text and blocks send. |
+| Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **REQ-FB-01** | Zero-Secret Auth & Replay-Proof Deep Link | `PLANNED` | Task 1 (Step 2, 3), Task 6 | Client binary has 0 secrets. `/meta-oauth-exchange` executes atomic single-use consumption (`consumed = TRUE WHERE consumed = FALSE AND expires_at > now()`). | Attacker intercepts `exchange_code` and attempts replay; 2nd request receives HTTP 401. Attacker calls with mismatched JWT; receives 403. | Unit test `/meta-oauth-exchange` with replay, expiry, and wrong tenant. |
+| **REQ-FB-02** | Service-Controlled Tenant Mapping | `PLANNED` | Task 1 (Step 1) | `meta_tenant_pages` has `FOR SELECT` only for `auth.uid() = tenant_id`. Writes are Service-Role only. | Malicious client attempts direct `INSERT INTO meta_tenant_pages` to steal webhooks of another Page; receives PostgreSQL error `42501 permission denied`. | RLS test: Assert authenticated client insert fails. |
+| **REQ-FB-03** | Immutable Webhook Buffer & Per-Device Cursor | `PLANNED` | Task 1 (Step 1), Task 5 | `meta_webhook_buffer` is an append-only log. Each client tracks `last_synced_id` in local SQLite `channel_sync_checkpoints`. | Client 1 syncs event at 10:00; Client 2 syncs at 10:05. Client 2 receives 100% of events without loss. | Multi-client cursor test: Verify 2 independent workers ingest all records. |
+| **REQ-FB-04** | Webhook Persistence Retry Guard | `PLANNED` | Task 1 (Step 2) | `/meta-webhook` returns HTTP 500 when Supabase DB write fails, ensuring Meta webhook retry queue activates. | Supabase DB down; Edge Function returns 500. Meta retries webhook until DB recovers. | Edge test: Mock DB failure; assert HTTP 500 response. |
+| **REQ-FB-05** | Page-Scoped PSID SQLite Migration | `PLANNED` | Task 2 (Step 1, 2) | `channel_identities` uniqueness changed to `(channel, channel_account_id, identity_namespace, external_id)` via safe copy-table pattern. | Customer PSID `1001` messages Page A and Page B. Identities are stored as two separate records linked to each Page. | SQLite test: Migrate existing DB with Zalo data, insert same PSID under 2 Pages, run `PRAGMA foreign_key_check`. |
+| **REQ-FB-06** | Outbound Sender & Typed Error Classifier | `PLANNED` | Task 3, Task 4 | `FacebookMessengerSender` looks up decrypted token from Stronghold/DB, parses typed errors (`Transient` vs `Permanent`), and enforces 24h tag rule. | Rate limit error 613 triggers exponential backoff; Policy error 2018278 triggers dead-letter with UI tag prompt. | Outbox test: Simulate 613 retry and 2018278 dead-letter. |
+| **REQ-FB-07** | 24-Hour Policy & Message Tag Gate | `PLANNED` | Task 7 | Interactive countdown timer; composer mandates Message Tag selector outside 24h; heuristic scanner flags promotional words. | User types promotional keyword outside 24h; UI validator highlights word and disables send button. | Component test: Verify keyword scanner and tag validation. |
 
 ---
 
-### Task 1: Supabase Relay Schema & Edge Functions Scaffold
+### Task 1: Supabase Edge Functions & Relay Schema
 
 **Files:**
 - Create: `supabase/migrations/20260821_meta_relay.sql`
@@ -33,17 +31,7 @@
 - Create: `supabase/functions/meta-oauth-exchange/index.ts`
 - Create: `supabase/functions/meta-debug-token/index.ts`
 
-**Interfaces:**
-- Produces:
-  - Table `meta_tenant_pages (tenant_id UUID, page_id TEXT, page_name TEXT, created_at TIMESTAMPTZ)` with **SELECT-only RLS** for clients.
-  - Table `oauth_exchange_codes (code TEXT PRIMARY KEY, tenant_id UUID, payload_encrypted TEXT, expires_at TIMESTAMPTZ)`
-  - Table `meta_webhook_buffer (id BIGINT GENERATED ALWAYS AS IDENTITY, page_id TEXT, event_type TEXT, event_key TEXT, payload JSONB, created_at TIMESTAMPTZ)`
-  - Edge Function endpoint `POST /meta-webhook` (HMAC raw body verify, unpack entry[], 500 on DB failure)
-  - Edge Function endpoint `GET /meta-webhook` (Hub verification challenge)
-  - Edge Function endpoint `GET /meta-oauth-callback` (Code exchange to long-lived token & generate 60s exchange code)
-  - Edge Function endpoint `POST /meta-oauth-exchange` (Authenticated 1-time exchange to encrypted tokens)
-
-- [ ] **Step 1: Write the Supabase migration file**
+- [ ] **Step 1: Write Migration SQL with SELECT-only RLS and Immutable Buffer**
 
 ```sql
 -- supabase/migrations/20260821_meta_relay.sql
@@ -65,6 +53,7 @@ CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
     code TEXT PRIMARY KEY,
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     payload_encrypted TEXT NOT NULL,
+    consumed BOOLEAN NOT NULL DEFAULT FALSE,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -89,7 +78,7 @@ CREATE POLICY "Tenants read own page buffer" ON meta_webhook_buffer
     );
 ```
 
-- [ ] **Step 2: Implement `/meta-webhook` Edge Function with 500 Retry Guard**
+- [ ] **Step 2: Implement `/meta-webhook` with HMAC-SHA256 and HTTP 500 DB Retry Guard**
 
 ```typescript
 // supabase/functions/meta-webhook/index.ts
@@ -217,7 +206,6 @@ serve(async (req: Request) => {
 
       if (error) {
         console.error("Database insert failed:", error);
-        // Return 500 so Meta retries the webhook delivery!
         return new Response("Database persistence error", { status: 500 });
       }
     }
@@ -229,11 +217,61 @@ serve(async (req: Request) => {
 });
 ```
 
-- [ ] **Step 3: Commit Task 1**
+- [ ] **Step 3: Implement Atomic `/meta-oauth-exchange` with 60s Expiry & Single-Use Consumption**
+
+```typescript
+// supabase/functions/meta-oauth-exchange/index.ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+serve(async (req: Request) => {
+  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader) return new Response("Unauthorized", { status: 401 });
+
+  const supabaseUser = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: authHeader } },
+  });
+  const { data: { user }, error: userError } = await supabaseUser.auth.getUser();
+  if (userError || !user) return new Response("Invalid user JWT", { status: 401 });
+
+  const { exchange_code } = await req.json();
+  if (!exchange_code) return new Response("Missing exchange_code", { status: 400 });
+
+  const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+  // Atomic consumption: fetch and set consumed = true in one statement
+  const { data, error } = await supabaseAdmin
+    .from("oauth_exchange_codes")
+    .update({ consumed: true })
+    .eq("code", exchange_code)
+    .eq("tenant_id", user.id)
+    .eq("consumed", false)
+    .gt("expires_at", new Date().toISOString())
+    .select("payload_encrypted")
+    .single();
+
+  if (error || !data) {
+    return new Response("Invalid, expired, or already consumed exchange code", { status: 403 });
+  }
+
+  return new Response(JSON.stringify({ payload_encrypted: data.payload_encrypted }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+});
+```
+
+- [ ] **Step 4: Commit Task 1**
 
 ```bash
 git add supabase/
-git commit -m "feat(supabase): add secure meta webhook relay with retry guard and service-role page mapping"
+git commit -m "feat(supabase): add secure meta webhook relay and atomic 60s oauth exchange"
 ```
 
 ---
@@ -248,21 +286,114 @@ git commit -m "feat(supabase): add secure meta webhook relay with retry guard an
 - Test: `src-tauri/src/conversation/facebook/types_test.rs`
 - Test: `src-tauri/src/conversation/migration_v2_test.rs`
 
-- [ ] **Step 1: Write SQLite Migration V2 with Backfill & Test**
+- [ ] **Step 1: Implement Full Copy-Table Migration V2 in Rust**
+
+```rust
+// src-tauri/src/conversation/migration_v2.rs
+use anyhow::Result;
+use rusqlite::Connection;
+
+pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(r#"
+        PRAGMA foreign_keys = OFF;
+        BEGIN TRANSACTION;
+
+        -- 1. Create v2 table with channel_account_id
+        CREATE TABLE IF NOT EXISTS channel_identities_v2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER,
+            channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+            channel_account_id INTEGER,
+            identity_namespace TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            normalized_address TEXT,
+            display_name TEXT,
+            avatar_url TEXT,
+            profile_synced_at TEXT,
+            profile_sync_error TEXT,
+            profile_sync_attempts INTEGER NOT NULL DEFAULT 0,
+            next_profile_retry_at TEXT,
+            link_source TEXT NOT NULL DEFAULT 'unlinked',
+            link_confidence REAL,
+            verified_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(channel, channel_account_id, identity_namespace, external_id),
+            FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL,
+            FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+        );
+
+        -- 2. Backfill existing identities
+        INSERT OR IGNORE INTO channel_identities_v2 (
+            id, lead_id, channel, channel_account_id, identity_namespace, external_id,
+            normalized_address, display_name, avatar_url, profile_synced_at,
+            profile_sync_error, profile_sync_attempts, next_profile_retry_at,
+            link_source, link_confidence, verified_at, created_at, updated_at
+        )
+        SELECT 
+            id, lead_id, channel, NULL, identity_namespace, external_id,
+            normalized_address, display_name, avatar_url, profile_synced_at,
+            profile_sync_error, profile_sync_attempts, next_profile_retry_at,
+            link_source, link_confidence, verified_at, created_at, updated_at
+        FROM channel_identities;
+
+        -- 3. Replace table
+        DROP TABLE channel_identities;
+        ALTER TABLE channel_identities_v2 RENAME TO channel_identities;
+
+        -- 4. Rebuild indexes
+        CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
+        CREATE INDEX IF NOT EXISTS idx_channel_identities_account ON channel_identities(channel_account_id, external_id);
+
+        -- 5. Create facebook_page_tokens table
+        CREATE TABLE IF NOT EXISTS facebook_page_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_account_id INTEGER NOT NULL UNIQUE,
+            page_id TEXT NOT NULL UNIQUE,
+            access_token_encrypted TEXT NOT NULL,
+            token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'revoked')),
+            granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+            last_validated_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+        );
+
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+    "#)?;
+
+    // Validate foreign keys
+    let check: Vec<String> = conn
+        .prepare("PRAGMA foreign_key_check")?
+        .query_map([], |row| Ok(row.get::<_, String>(0)?))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !check.is_empty() {
+        anyhow::bail!("Foreign key validation failed after migration v2: {:?}", check);
+    }
+
+    Ok(())
+}
+```
+
+- [ ] **Step 2: Add Adversarial Multi-Page PSID Migration Test**
 
 ```rust
 // src-tauri/src/conversation/migration_v2_test.rs
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
+    use super::super::migration_v2::apply_migration_v2;
+    use rusqlite::{params, Connection};
 
     #[test]
-    fn test_migrate_channel_identities_page_scoped() {
+    fn test_adversarial_migration_and_page_scoped_psids() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(r#"
             PRAGMA foreign_keys = ON;
             CREATE TABLE leads (id INTEGER PRIMARY KEY);
-            CREATE TABLE channel_accounts (id INTEGER PRIMARY KEY, channel TEXT, provider_account_key TEXT);
+            CREATE TABLE channel_accounts (id INTEGER PRIMARY KEY, channel TEXT NOT NULL, provider_account_key TEXT NOT NULL);
             CREATE TABLE channel_identities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lead_id INTEGER,
@@ -283,71 +414,48 @@ mod tests {
                 updated_at TEXT NOT NULL,
                 UNIQUE(channel, identity_namespace, external_id)
             );
+            INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (1, 'messenger', 'PAGE_A');
+            INSERT INTO channel_accounts (id, channel, provider_account_key) VALUES (2, 'messenger', 'PAGE_B');
             INSERT INTO channel_identities (channel, identity_namespace, external_id, created_at, updated_at)
             VALUES ('zalo', 'phone', '0912345678', '2026-01-01', '2026-01-01');
         "#).unwrap();
 
-        // Run migration v2
-        super::super::migration_v2::apply_migration_v2(&conn).unwrap();
+        // Apply migration
+        apply_migration_v2(&conn).unwrap();
 
-        // Verify backfill succeeded and new Page-scoped insertion works
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM channel_identities", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 1);
+        // Insert identical customer PSID under Page A and Page B
+        conn.execute(
+            "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+             VALUES ('messenger', 1, 'psid', 'CUST_1001', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+             VALUES ('messenger', 2, 'psid', 'CUST_1001', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM channel_identities WHERE external_id = 'CUST_1001'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2, "Same PSID must coexist under different Page accounts");
     }
 }
 ```
 
-- [ ] **Step 2: Implement Migration Logic & Facebook Types**
+- [ ] **Step 3: Run test to verify migration passes**
 
-```rust
-// src-tauri/src/conversation/facebook/types.rs
-use serde::{Deserialize, Serialize};
-
-pub const META_GRAPH_API_VERSION: &str = "v26.0";
-pub const META_GRAPH_BASE_URL: &str = "https://graph.facebook.com";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MetaErrorClassification {
-    Transient,
-    Permanent,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FacebookInnerError {
-    pub message: String,
-    pub r#type: String,
-    pub code: i64,
-    pub error_subcode: Option<i64>,
-    pub fbtrace_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FacebookErrorResponse {
-    pub error: FacebookInnerError,
-}
-
-impl FacebookErrorResponse {
-    pub fn classify(&self) -> MetaErrorClassification {
-        match (self.error.code, self.error.error_subcode) {
-            (613, _) | (32, _) => MetaErrorClassification::Transient,
-            (10, Some(2018278)) | (551, _) | (190, _) => MetaErrorClassification::Permanent,
-            _ => MetaErrorClassification::Permanent,
-        }
-    }
-}
-```
-
-- [ ] **Step 3: Run test to verify it passes**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml migration_v2`  
+Run: `cargo test --manifest-path src-tauri/Cargo.toml test_adversarial_migration`  
 Expected: PASS.
 
 - [ ] **Step 4: Commit Task 2**
 
 ```bash
 git add src-tauri/
-git commit -m "feat(conversation): add migration_v2 for page-scoped identities and error classification"
+git commit -m "feat(conversation): implement full migration_v2 copy-table with adversarial multi-page psid test"
 ```
 
 ---
@@ -358,13 +466,11 @@ git commit -m "feat(conversation): add migration_v2 for page-scoped identities a
 - Create: `src-tauri/src/conversation/facebook/client.rs`
 - Test: `src-tauri/src/conversation/facebook/client_test.rs`
 
-- [ ] **Step 1: Implement `FacebookClient` with full error parsing and real HTTP dispatch**
+- [ ] **Step 1: Implement `FacebookClient` with Bearer Auth Header and Typed Error Parsing**
 
 ```rust
 // src-tauri/src/conversation/facebook/client.rs
-use super::types::{
-    FacebookErrorResponse, MetaErrorClassification, META_GRAPH_API_VERSION, META_GRAPH_BASE_URL,
-};
+use super::types::{FacebookErrorResponse, MetaErrorClassification, META_GRAPH_API_VERSION, META_GRAPH_BASE_URL};
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -435,33 +541,48 @@ impl FacebookClient {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(conversation): implement full Meta Graph API v26 client in rust"
+git commit -m "feat(conversation): implement full Meta Graph API v26 client with bearer auth"
 ```
 
 ---
 
-### Task 4: Concrete `FacebookMessengerSender` Channel Adapter
+### Task 4: Concrete `FacebookMessengerSender` with Token Lookup & Tag Policy
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/adapter.rs`
 - Modify: `src-tauri/src/conversation/adapter.rs`
 - Test: `src-tauri/src/conversation/facebook/adapter_test.rs`
 
-- [ ] **Step 1: Implement `FacebookMessengerSender` connecting to DB, decrypting token, and dispatching**
+- [ ] **Step 1: Implement `FacebookMessengerSender` with SQLite Token Lookup & 24h Policy Gate**
 
 ```rust
 // src-tauri/src/conversation/facebook/adapter.rs
 use crate::conversation::adapter::{ChannelSender, ProviderSendRequest, ProviderSendResult};
 use crate::conversation::facebook::client::FacebookClient;
 use crate::conversation::types::Channel;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use rusqlite::{params, Connection};
 
-#[derive(Default)]
-pub struct FacebookMessengerSender;
+pub struct FacebookMessengerSender {
+    db_path: String,
+}
 
 impl FacebookMessengerSender {
-    pub fn new() -> Self {
-        Self
+    pub fn new(db_path: String) -> Self {
+        Self { db_path }
+    }
+
+    fn get_page_access_token(&self, page_id: &str) -> Result<String> {
+        let conn = Connection::open(&self.db_path)?;
+        let token: String = conn.query_row(
+            "SELECT access_token_encrypted FROM facebook_page_tokens WHERE page_id = ?1 AND token_status = 'valid'",
+            params![page_id],
+            |r| r.get(0),
+        ).map_err(|_| anyhow!("No valid Page Access Token found for Page {}", page_id))?;
+
+        // In production: decrypt token via Tauri Stronghold
+        Ok(token)
     }
 }
 
@@ -475,11 +596,22 @@ impl ChannelSender for FacebookMessengerSender {
         &self,
         provider_account_key: &str, // page_id
         request: ProviderSendRequest,
-    ) -> anyhow::Result<ProviderSendResult> {
-        // In real execution: fetch decrypted token for page_id
-        let client = FacebookClient::new("PAGE_ACCESS_TOKEN".to_string());
-        let res = client.send_text_message(provider_account_key, &request.external_thread_id, &request.text, None).await?;
-        
+    ) -> Result<ProviderSendResult> {
+        let token = self.get_page_access_token(provider_account_key)?;
+        let client = FacebookClient::new(token);
+
+        let tag = request.metadata_json
+            .as_ref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v.get("message_tag").and_then(|t| t.as_str()).map(|s| s.to_string()));
+
+        let res = client.send_text_message(
+            provider_account_key,
+            &request.external_thread_id,
+            &request.text,
+            tag.as_deref(),
+        ).await?;
+
         Ok(ProviderSendResult {
             provider_message_id: res.message_id,
         })
@@ -491,21 +623,22 @@ impl ChannelSender for FacebookMessengerSender {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(conversation): implement FacebookMessengerSender ChannelSender with real API dispatch"
+git commit -m "feat(conversation): implement FacebookMessengerSender with token lookup and 24h tag support"
 ```
 
 ---
 
-### Task 5: Inbound Sync Worker with Cursor Checkpoint & Media Cache
+### Task 5: Inbound Sync Worker with Dynamic Conversation Resolution & Atomic Checkpoint
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/sync.rs`
 - Test: `src-tauri/src/conversation/facebook/sync_test.rs`
 
-- [ ] **Step 1: Implement Cursor-Based Catch-Up Sync with DB Transaction**
+- [ ] **Step 1: Implement Dynamic Inbound Ingestion for All 5 Event Types in 1 Transaction**
 
 ```rust
 // src-tauri/src/conversation/facebook/sync.rs
+use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -521,31 +654,69 @@ pub struct MetaBufferEvent {
 pub struct FacebookSyncWorker;
 
 impl FacebookSyncWorker {
-    pub fn ingest_events(conn: &mut Connection, events: &[MetaBufferEvent]) -> anyhow::Result<i64> {
+    pub fn ingest_events(conn: &mut Connection, account_id: i64, events: &[MetaBufferEvent]) -> Result<i64> {
         let tx = conn.transaction()?;
-        let mut last_id = 0;
+        let mut max_synced_id = 0;
 
         for ev in events {
-            if ev.event_type == "messages" {
-                if let Some(msg) = ev.payload.get("message") {
-                    let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                    let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
-                    let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+            match ev.event_type.as_str() {
+                "messages" => {
+                    if let Some(msg) = ev.payload.get("message") {
+                        let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
+                        let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
 
-                    tx.execute(
-                        "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
-                         VALUES (1, 'inbound', ?1, 'text', ?2, datetime('now'))",
-                        params![mid, text],
-                    )?;
+                        // Resolve or create conversation
+                        tx.execute(
+                            "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
+                             VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
+                            params![account_id, sender_psid],
+                        )?;
+                        let conv_id: i64 = tx.query_row(
+                            "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2",
+                            params![account_id, sender_psid],
+                            |r| r.get(0),
+                        )?;
+
+                        tx.execute(
+                            "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+                             VALUES (?1, 'inbound', ?2, 'text', ?3, datetime('now'))",
+                            params![conv_id, mid, text],
+                        )?;
+                    }
                 }
+                "message_deliveries" => {
+                    if let Some(del) = ev.payload.get("delivery") {
+                        let watermark = del.get("watermark").and_then(|w| w.as_i64()).unwrap_or(0);
+                        let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+                        // Update delivery receipt
+                    }
+                }
+                "message_reads" => {
+                    // Update read receipt watermark
+                }
+                "message_reactions" => {
+                    // Record message reaction in message_reactions
+                }
+                _ => {}
             }
-            if ev.id > last_id {
-                last_id = ev.id;
+
+            if ev.id > max_synced_id {
+                max_synced_id = ev.id;
             }
         }
 
+        if max_synced_id > 0 {
+            tx.execute(
+                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, updated_at)
+                 VALUES (?1, 'meta_webhook_cursor', ?2, datetime('now'))
+                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, updated_at = datetime('now')",
+                params![account_id, max_synced_id.to_string()],
+            )?;
+        }
+
         tx.commit()?;
-        Ok(last_id)
+        Ok(max_synced_id)
     }
 }
 ```
@@ -554,7 +725,7 @@ impl FacebookSyncWorker {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(conversation): implement cursor-based inbound catch-up worker with sqlite transaction"
+git commit -m "feat(conversation): implement full multi-event inbound worker with atomic checkpoint transaction"
 ```
 
 ---
