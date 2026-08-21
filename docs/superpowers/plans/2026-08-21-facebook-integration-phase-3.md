@@ -1,9 +1,9 @@
 # Facebook Integration Phase 3 Implementation Plan: Comment Automations, Lead Ads Ingestion, Page Health & Facebook Hub UI
 
-- **Goal:** Deliver marketing & comment automations (Auto-Like, Public Reply, 1-reply Private Send API with 5-minute atomic claim lease & fail-closed reconciliation), Facebook Lead Ads ingestion with isolated cursor worker, Data Deletion Compliance Callback with Active-Device Filtering, Atomic Task Claim & Transactional Task-Scoped Anonymizer via `meta_deletion_pending_cleanups`, and Facebook Hub UI.
+- **Goal:** Deliver marketing & comment automations (Auto-Like, Public Reply, 1-reply Private Send API with 5-minute atomic claim lease & fail-closed reconciliation), Facebook Lead Ads ingestion with isolated cursor worker, Data Deletion Compliance Callback with Durable Tenant Tombstones & Reconnect Scrubbing, Atomic Task Claim & Transactional Task-Scoped Anonymizer via `meta_deletion_pending_cleanups`, and Facebook Hub UI.
 - **Architecture & Invariants:**
   - **Comment Automations:** Loop guard (`sender_id != page_id`), 7-day window. Permanent 4xx errors classified as `failed` with zero retries. Transient 5xx / timeouts mark `delivery_unknown`. Reconciler calls `GET /<comment_id>?fields=private_reply_status`.
-  - **Data Deletion Compliance:** HMAC `signed_request` verification. PostgreSQL RPC `create_data_deletion_request_and_tasks` (service_role only) purges buffered events across all shapes and creates tasks for active registered tenant devices (`last_seen_at >= now() - INTERVAL '30 days'`).
+  - **Data Deletion Compliance:** HMAC `signed_request` verification. PostgreSQL RPC `create_data_deletion_request_and_tasks` (service_role only) purges buffered events across all shapes, persists durable tenant tombstones, and creates tasks for all registered tenant devices (with reconnect scrub backfill for offline devices).
   - **Desktop Deletion Worker:** Claims task atomically via `claim_device_deletion_tasks` receiving a single-use `lease_token`. Records task-scoped spool paths in `meta_deletion_pending_cleanups(task_id, local_path)`. Only calls `complete_device_deletion_task` when all task-scoped files are confirmed removed from disk and active references verified with fail-closed safety.
 
 ---
@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
     acknowledged_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_meta_device_deletion_task UNIQUE (request_id, tenant_id, device_id, page_id, user_id)
 );
 ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
 
@@ -149,6 +150,7 @@ AS $$
 DECLARE
     v_updated INT;
     v_request_id UUID;
+    v_req_status TEXT;
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.tenant_registered_devices
@@ -173,8 +175,13 @@ BEGIN
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
 
-    -- If all deletion tasks for this request_id across all tenants/devices are completed, update request status to completed
+    -- If all deletion tasks for this request_id across all tenants/devices are completed, update request status to completed with serialized row lock
     IF v_updated > 0 AND v_request_id IS NOT NULL THEN
+        SELECT status INTO v_req_status
+        FROM public.meta_data_deletion_requests
+        WHERE id = v_request_id
+        FOR UPDATE;
+
         IF NOT EXISTS (
             SELECT 1 FROM public.meta_device_deletion_tasks
             WHERE request_id = v_request_id AND status != 'completed'
@@ -265,20 +272,15 @@ BEGIN
         VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now());
     END IF;
 
+    -- Serialize against concurrent deletion completion by locking active deletion requests for this tenant
+    PERFORM 1 FROM public.meta_data_deletion_requests WHERE status = 'processing' FOR UPDATE;
+
     -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones where this device does not already have an active/completed task for that specific request
     INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
     SELECT t.request_id, t.tenant_id, p_device_id, t.page_id, t.user_id, 'pending'
     FROM public.meta_tenant_deletion_tombstones t
     WHERE t.tenant_id = auth.uid()
-      AND NOT EXISTS (
-          SELECT 1 FROM public.meta_device_deletion_tasks dt
-          WHERE dt.request_id = t.request_id
-            AND dt.tenant_id = auth.uid()
-            AND dt.device_id = p_device_id
-            AND dt.page_id = t.page_id
-            AND dt.user_id = t.user_id
-            AND dt.status IN ('pending', 'acknowledged', 'completed')
-      );
+    ON CONFLICT (request_id, tenant_id, device_id, page_id, user_id) DO NOTHING;
 
     -- Reopen request if new pending tasks were created for a request that was previously marked completed
     UPDATE public.meta_data_deletion_requests r
@@ -318,12 +320,11 @@ BEGIN
     VALUES (p_confirmation_code, p_user_id, 'processing')
     RETURNING id INTO v_request_id;
 
-    -- Collect all distinct target (tenant_id, page_id, page_scoped_user_id) tuples matching either root app_user_id, direct psid, or exact (page_id, psid) mapping
+    -- Collect all distinct target (tenant_id, page_id, page_scoped_user_id) tuples matching either authoritative root app_user_id or explicit resolved (page_id, psid) mapping
     FOR v_tenant_record IN
         SELECT DISTINCT mupi.tenant_id, mupi.page_id, mupi.page_scoped_user_id
         FROM public.meta_user_page_interactions mupi
         WHERE mupi.app_user_id = p_user_id
-           OR mupi.page_scoped_user_id = p_user_id
            OR EXISTS (
                SELECT 1 FROM jsonb_array_elements(p_target_mappings) m
                WHERE (m->>'page_id' IS NOT NULL AND m->>'page_id' <> '')
@@ -359,7 +360,8 @@ BEGIN
             v_has_active_devices := TRUE;
             -- Fan out deletion task strictly carrying page_id and page-scoped user_id to be scrubbed on desktop SQLite
             INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
-            VALUES (v_request_id, v_tenant_record.tenant_id, v_device_record.device_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id, 'pending');
+            VALUES (v_request_id, v_tenant_record.tenant_id, v_device_record.device_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id, 'pending')
+            ON CONFLICT (request_id, tenant_id, device_id, page_id, user_id) DO NOTHING;
         END LOOP;
 
         -- Clean up interaction records strictly scoped to this tenant, page, and user
@@ -369,9 +371,9 @@ BEGIN
           AND (app_user_id = p_user_id OR page_scoped_user_id = v_tenant_record.page_scoped_user_id);
     END LOOP;
 
-    -- Clean up any residual global interaction records matching app_user_id or page_scoped_user_id
+    -- Clean up any residual global interaction records matching authoritative app_user_id
     DELETE FROM public.meta_user_page_interactions
-    WHERE app_user_id = p_user_id OR page_scoped_user_id = p_user_id;
+    WHERE app_user_id = p_user_id;
 
     -- If no registered devices exist for target tenants and no tombstones were created, mark request completed immediately
     IF NOT v_has_active_devices AND NOT EXISTS (SELECT 1 FROM public.meta_tenant_deletion_tombstones WHERE request_id = v_request_id) THEN
@@ -500,12 +502,12 @@ serve(async (req: Request) => {
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
     }
 
-    // Fail-closed check on empty resolution: verify whether any retained interaction exists for app_user_id or page_scoped_user_id
+    // Fail-closed check on empty resolution: verify whether any retained interaction exists strictly for authoritative app_user_id
     if (resolvedMappings.length === 0) {
       const { count, error: countErr } = await supabaseAdmin
         .from("meta_user_page_interactions")
         .select("*", { count: "exact", head: true })
-        .or(`app_user_id.eq.${userId},page_scoped_user_id.eq.${userId}`);
+        .eq("app_user_id", userId);
       if (countErr || !count || count === 0) {
         return new Response("Bad Request: No associated Page identities or retained records found for user identifier", { status: 400 });
       }

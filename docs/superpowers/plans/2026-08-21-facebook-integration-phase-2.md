@@ -88,31 +88,30 @@ impl FacebookTokenVault {
 
     pub fn encrypt_and_upsert_page_token(
         conn: &Connection,
-        channel_account_id: &str,
+        channel_account_id: i64,
         page_id: &str,
-        page_name: &str,
         plain_token: &str,
-        token_expires_at: Option<&str>,
+        granted_scopes: &[String],
     ) -> Result<()> {
         let encrypted_ciphertext = Self::encrypt_token(plain_token)?;
+        let scopes_json = serde_json::to_string(granted_scopes).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
-            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, page_name, access_token_encrypted, token_status, token_expires_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'valid', ?5, datetime('now'))
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'valid', ?4, datetime('now'), datetime('now'))
              ON CONFLICT(page_id) DO UPDATE SET
                  channel_account_id = EXCLUDED.channel_account_id,
-                 page_name = EXCLUDED.page_name,
                  access_token_encrypted = EXCLUDED.access_token_encrypted,
                  token_status = 'valid',
-                 token_expires_at = EXCLUDED.token_expires_at,
+                 granted_scopes_json = EXCLUDED.granted_scopes_json,
                  updated_at = datetime('now')",
-            params![channel_account_id, page_id, page_name, encrypted_ciphertext, token_expires_at],
+            params![channel_account_id, page_id, encrypted_ciphertext, scopes_json],
         ).map_err(|e| anyhow!("Failed to upsert page token in vault: {}", e))?;
         Ok(())
     }
 
     pub fn get_valid_page_token(
         conn: &Connection,
-        channel_account_id: &str,
+        channel_account_id: i64,
         page_id: &str,
     ) -> Result<String> {
         let encrypted_token: Option<String> = conn.query_row(
@@ -131,10 +130,18 @@ impl FacebookTokenVault {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishOutcome {
+    Published { remote_post_id: String },
+    ScheduledOnMeta { remote_post_id: String },
+    StillProcessing { upload_session_id: String },
+}
+
 #[derive(Debug)]
 pub enum PublishApiResult {
     Success { remote_post_id: String },
     StillProcessing { upload_session_id: String },
+    RateLimited { retry_after_secs: u64, error_message: String },
     DeterministicRejection { error_code: String, error_message: String },
     AmbiguousTransport { error_code: String, error_message: String },
 }
@@ -153,12 +160,15 @@ impl FacebookPublisher {
     }
 
     pub fn renew_post_claim(conn: &Connection, post_id: i64, owner_id: &str) -> Result<()> {
-        conn.execute(
+        let rows = conn.execute(
             "UPDATE facebook_scheduled_posts
              SET claim_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
              WHERE id = ?1 AND owner_id = ?2 AND status = 'publishing'",
             params![post_id, owner_id],
         )?;
+        if rows != 1 {
+            return Err(anyhow!("Lost lease ownership on post {}: cannot continue", post_id));
+        }
         Ok(())
     }
 
@@ -166,10 +176,10 @@ impl FacebookPublisher {
         &self,
         conn: &rusqlite::Connection,
         post_id: i64,
-    ) -> Result<String> {
+    ) -> Result<PublishOutcome> {
         // 1. Authoritatively fetch and validate scheduled post row from database
         let (channel_account_id, page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time_str, current_status): (
-            String, String, String, String, Option<String>, String, Option<String>, String
+            i64, String, String, String, Option<String>, String, Option<String>, String
         ) = conn.query_row(
             "SELECT channel_account_id, page_id, post_type, message, link_url, media_paths_json, scheduled_publish_time, status
              FROM facebook_scheduled_posts
@@ -193,7 +203,7 @@ impl FacebookPublisher {
             return Err(anyhow!("Cannot publish post {}: status is 'delivery_unknown' and must be resolved by reconciler only", post_id));
         }
 
-        let worker_owner = format!("worker_{}", std::process::id());
+        let worker_owner = format!("worker_{}_{}", std::process::id(), uuid::Uuid::new_v4());
         let rows_claimed = conn.execute(
             "UPDATE facebook_scheduled_posts
              SET status = 'publishing',
@@ -220,11 +230,11 @@ impl FacebookPublisher {
         }
 
         // Authoritatively fetch and decrypt active Page token via local AES-256-GCM TokenVault helper joining account + page + valid
-        let page_token = match FacebookTokenVault::get_valid_page_token(conn, &channel_account_id, &page_id) {
+        let page_token = match FacebookTokenVault::get_valid_page_token(conn, channel_account_id, &page_id) {
             Ok(t) => t,
             Err(e) => {
                 let err_msg = format!("Failed to resolve valid token for post {}: {}", post_id, e);
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_scheduled_posts
                      SET status = 'failed',
                          error_code = 'token_vault_error',
@@ -232,9 +242,9 @@ impl FacebookPublisher {
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
-                     WHERE id = ?2 AND status = 'publishing'",
-                    params![err_msg, post_id],
-                )?;
+                     WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
+                    params![err_msg, post_id, worker_owner],
+                );
                 return Err(anyhow!(err_msg));
             }
         };
@@ -246,26 +256,31 @@ impl FacebookPublisher {
 
         match publish_result {
             PublishApiResult::Success { remote_post_id } => {
-                conn.execute(
+                let is_future_scheduled = scheduled_publish_time_epoch.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
+                let target_status = if is_future_scheduled { "scheduled_on_meta" } else { "published" };
+                let rows = conn.execute(
                     "UPDATE facebook_scheduled_posts
-                     SET status = CASE
-                             WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now')
-                             THEN 'scheduled_on_meta'
-                             ELSE 'published'
-                         END,
-                         remote_post_id = ?1,
+                     SET status = ?1,
+                         remote_post_id = ?2,
                          error_code = NULL,
                          error_message = NULL,
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
-                     WHERE id = ?2 AND status = 'publishing'",
-                    params![remote_post_id, post_id],
+                     WHERE id = ?3 AND owner_id = ?4 AND status = 'publishing'",
+                    params![target_status, remote_post_id, post_id, worker_owner],
                 )?;
-                Ok(remote_post_id)
+                if rows != 1 {
+                    return Err(anyhow!("Failed to transition post {}: lease ownership lost or expired", post_id));
+                }
+                if is_future_scheduled {
+                    Ok(PublishOutcome::ScheduledOnMeta { remote_post_id })
+                } else {
+                    Ok(PublishOutcome::Published { remote_post_id })
+                }
             }
             PublishApiResult::StillProcessing { upload_session_id } => {
-                conn.execute(
+                let rows = conn.execute(
                     "UPDATE facebook_scheduled_posts
                      SET status = 'publishing',
                          upload_session_id = ?1,
@@ -274,13 +289,30 @@ impl FacebookPublisher {
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
-                     WHERE id = ?2 AND status = 'publishing'",
-                    params![upload_session_id, post_id],
+                     WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
+                    params![upload_session_id, post_id, worker_owner],
                 )?;
-                Ok(upload_session_id)
+                if rows != 1 {
+                    return Err(anyhow!("Failed to transition post {}: lease ownership lost or expired", post_id));
+                }
+                Ok(PublishOutcome::StillProcessing { upload_session_id })
+            }
+            PublishApiResult::RateLimited { retry_after_secs, error_message } => {
+                let _ = conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET status = 'queued',
+                         error_code = 'rate_limited',
+                         error_message = ?1,
+                         owner_id = NULL,
+                         claim_deadline = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
+                    params![error_message, post_id, worker_owner],
+                );
+                Err(anyhow!("Meta rate limit encountered (retry in {}s): {}", retry_after_secs, error_message))
             }
             PublishApiResult::AmbiguousTransport { error_code, error_message } => {
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_scheduled_posts
                      SET status = 'delivery_unknown',
                          error_code = ?1,
@@ -288,13 +320,13 @@ impl FacebookPublisher {
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
-                     WHERE id = ?3 AND status = 'publishing'",
-                    params![error_code, error_message, post_id],
-                )?;
+                     WHERE id = ?3 AND owner_id = ?4 AND status = 'publishing'",
+                    params![error_code, error_message, post_id, worker_owner],
+                );
                 Err(anyhow!("Ambiguous transport outcome: {}", error_message))
             }
             PublishApiResult::DeterministicRejection { error_code, error_message } => {
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_scheduled_posts
                      SET status = 'failed',
                          error_code = ?1,
@@ -302,9 +334,9 @@ impl FacebookPublisher {
                          owner_id = NULL,
                          claim_deadline = NULL,
                          updated_at = datetime('now')
-                     WHERE id = ?3 AND status = 'publishing'",
-                    params![error_code, error_message, post_id],
-                )?;
+                     WHERE id = ?3 AND owner_id = ?4 AND status = 'publishing'",
+                    params![error_code, error_message, post_id, worker_owner],
+                );
                 Err(anyhow!("Meta deterministic rejection: {}", error_message))
             }
         }
@@ -343,8 +375,25 @@ impl FacebookPublisher {
                     },
                 };
                 let status_code = resp.status();
+                if status_code.as_u16() == 429 {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited: {}", err_body),
+                    };
+                }
                 if status_code.is_client_error() {
                     let err_body = resp.text().await.unwrap_or_default();
+                    if let Ok(err_json) = serde_json::from_str::<Value>(&err_body) {
+                        let code = err_json.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64()).unwrap_or(0);
+                        let is_transient = err_json.get("error").and_then(|e| e.get("is_transient")).and_then(|t| t.as_bool()).unwrap_or(false);
+                        if code == 4 || code == 17 || code == 32 || code == 341 || code == 613 || is_transient {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: 60,
+                                error_message: format!("Meta rate limit error (code {}): {}", code, err_body),
+                            };
+                        }
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected status post (HTTP {}): {}", status_code.as_u16(), err_body),
@@ -397,8 +446,25 @@ impl FacebookPublisher {
                     },
                 };
                 let status_code = resp.status();
+                if status_code.as_u16() == 429 {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited: {}", err_body),
+                    };
+                }
                 if status_code.is_client_error() {
                     let err_body = resp.text().await.unwrap_or_default();
+                    if let Ok(err_json) = serde_json::from_str::<Value>(&err_body) {
+                        let code = err_json.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64()).unwrap_or(0);
+                        let is_transient = err_json.get("error").and_then(|e| e.get("is_transient")).and_then(|t| t.as_bool()).unwrap_or(false);
+                        if code == 4 || code == 17 || code == 32 || code == 341 || code == 613 || is_transient {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: 60,
+                                error_message: format!("Meta rate limit error (code {}): {}", code, err_body),
+                            };
+                        }
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected link post (HTTP {}): {}", status_code.as_u16(), err_body),
@@ -463,8 +529,25 @@ impl FacebookPublisher {
                     },
                 };
                 let status_code = resp.status();
+                if status_code.as_u16() == 429 {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited: {}", err_body),
+                    };
+                }
                 if status_code.is_client_error() {
                     let err_body = resp.text().await.unwrap_or_default();
+                    if let Ok(err_json) = serde_json::from_str::<Value>(&err_body) {
+                        let code = err_json.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64()).unwrap_or(0);
+                        let is_transient = err_json.get("error").and_then(|e| e.get("is_transient")).and_then(|t| t.as_bool()).unwrap_or(false);
+                        if code == 4 || code == 17 || code == 32 || code == 341 || code == 613 || is_transient {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: 60,
+                                error_message: format!("Meta rate limit error (code {}): {}", code, err_body),
+                            };
+                        }
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected photo post (HTTP {}): {}", status_code.as_u16(), err_body),
@@ -526,8 +609,25 @@ impl FacebookPublisher {
                         },
                     };
                     let status_code = resp.status();
+                    if status_code.as_u16() == 429 {
+                        let err_body = resp.text().await.unwrap_or_default();
+                        return PublishApiResult::RateLimited {
+                            retry_after_secs: 60,
+                            error_message: format!("HTTP 429 Rate limited: {}", err_body),
+                        };
+                    }
                     if status_code.is_client_error() {
                         let err_body = resp.text().await.unwrap_or_default();
+                        if let Ok(err_json) = serde_json::from_str::<Value>(&err_body) {
+                            let code = err_json.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64()).unwrap_or(0);
+                            let is_transient = err_json.get("error").and_then(|e| e.get("is_transient")).and_then(|t| t.as_bool()).unwrap_or(false);
+                            if code == 4 || code == 17 || code == 32 || code == 341 || code == 613 || is_transient {
+                                return PublishApiResult::RateLimited {
+                                    retry_after_secs: 60,
+                                    error_message: format!("Meta rate limit error (code {}): {}", code, err_body),
+                                };
+                            }
+                        }
                         return PublishApiResult::DeterministicRejection {
                             error_code: format!("http_{}", status_code.as_u16()),
                             error_message: format!("Meta rejected multi-photo stage upload (HTTP {}): {}", status_code.as_u16(), err_body),
@@ -584,8 +684,25 @@ impl FacebookPublisher {
                     },
                 };
                 let status_code = resp.status();
+                if status_code.as_u16() == 429 {
+                    let err_body = resp.text().await.unwrap_or_default();
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited: {}", err_body),
+                    };
+                }
                 if status_code.is_client_error() {
                     let err_body = resp.text().await.unwrap_or_default();
+                    if let Ok(err_json) = serde_json::from_str::<Value>(&err_body) {
+                        let code = err_json.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64()).unwrap_or(0);
+                        let is_transient = err_json.get("error").and_then(|e| e.get("is_transient")).and_then(|t| t.as_bool()).unwrap_or(false);
+                        if code == 4 || code == 17 || code == 32 || code == 341 || code == 613 || is_transient {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: 60,
+                                error_message: format!("Meta rate limit error (code {}): {}", code, err_body),
+                            };
+                        }
+                    }
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected multi-photo post (HTTP {}): {}", status_code.as_u16(), err_body),
@@ -760,6 +877,12 @@ impl FacebookUploader {
                     Ok(check_resp) => {
                         let status_code = check_resp.status();
                         let err_text = check_resp.text().await.unwrap_or_default();
+                        if status_code.as_u16() == 429 {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: 60,
+                                error_message: format!("HTTP 429 Rate limited during video check: {}", err_text),
+                            };
+                        }
                         if status_code.is_client_error() {
                             return PublishApiResult::DeterministicRejection {
                                 error_code: format!("http_{}", status_code.as_u16()),
@@ -792,16 +915,17 @@ impl FacebookUploader {
             let status_code = status_resp.status();
             if !status_code.is_success() {
                 let err_text = status_resp.text().await.unwrap_or_default();
-                let _ = conn.execute(
-                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                    params![sess_id],
-                );
                 if status_code.is_client_error() {
+                    let _ = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![sess_id],
+                    );
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
                     };
                 }
+                // Ambiguous 5xx server error keeps session in_progress for retry
                 return PublishApiResult::AmbiguousTransport {
                     error_code: format!("http_{}", status_code.as_u16()),
                     error_message: format!("Meta server error on video resume query (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -853,6 +977,12 @@ impl FacebookUploader {
             let status_code = start_resp.status();
             if !status_code.is_success() {
                 let err_text = start_resp.text().await.unwrap_or_default();
+                if status_code.as_u16() == 429 {
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited on video start: {}", err_text),
+                    };
+                }
                 if status_code.is_client_error() {
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
@@ -887,16 +1017,26 @@ impl FacebookUploader {
                 },
             };
 
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
                  VALUES (?1, ?2, 'video', ?3, ?4, ?5, ?6, ?7, 0, 'in_progress', datetime('now'), datetime('now'))",
                 params![post_id, page_id, sess_id, vid_id, file_path, file_hash, file_size as i64],
-            );
+            ) {
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_insert_error".to_string(),
+                    error_message: format!("Failed to persist upload session to SQLite: {}", e),
+                };
+            }
 
-            let _ = conn.execute(
-                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
-                params![sess_id, post_id],
-            );
+            if let Err(e) = conn.execute(
+                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3",
+                params![sess_id, post_id, owner_id],
+            ) {
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_update_error".to_string(),
+                    error_message: format!("Failed to associate upload session with scheduled post: {}", e),
+                };
+            }
 
             (sess_id, vid_id, 0u64)
         };
@@ -913,8 +1053,13 @@ impl FacebookUploader {
         let chunk_size: usize = 4 * 1024 * 1024; // 4MB
 
         while offset < file_size {
-            // Heartbeat lease renewal before reading and uploading each chunk
-            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
+            // Heartbeat lease renewal before reading and uploading each chunk (fail fast on lease loss)
+            if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "lease_loss".to_string(),
+                    error_message: format!("Aborted video upload due to lease loss: {}", e),
+                };
+            }
 
             let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
             let mut buffer = vec![0u8; bytes_to_read];
@@ -949,16 +1094,23 @@ impl FacebookUploader {
             let status_code = transfer_resp.status();
             if !status_code.is_success() {
                 let err_text = transfer_resp.text().await.unwrap_or_default();
-                let _ = conn.execute(
-                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                    params![upload_session_id],
-                );
+                if status_code.as_u16() == 429 {
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited during video transfer at offset {}: {}", offset, err_text),
+                    };
+                }
                 if status_code.is_client_error() {
+                    let _ = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![upload_session_id],
+                    );
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected video chunk at offset {} (HTTP {}): {}", offset, status_code.as_u16(), err_text),
                     };
                 }
+                // On 5xx server error, preserve session in_progress for resumable recovery
                 return PublishApiResult::AmbiguousTransport {
                     error_code: format!("http_{}", status_code.as_u16()),
                     error_message: format!("Meta server error on video chunk at offset {} (HTTP {}): {}", offset, status_code.as_u16(), err_text),
@@ -992,17 +1144,27 @@ impl FacebookUploader {
             }
 
             offset = next_offset;
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
                 params![offset as i64, upload_session_id],
-            );
+            ) {
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_update_error".to_string(),
+                    error_message: format!("Failed to update upload session offset in SQLite: {}", e),
+                };
+            }
         }
 
         // 3. Finish Phase
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
             params![upload_session_id],
-        );
+        ) {
+            return PublishApiResult::AmbiguousTransport {
+                error_code: "db_update_error".to_string(),
+                error_message: format!("Failed to mark session finishing in SQLite: {}", e),
+            };
+        }
 
         let mut finish_body = json!({
             "access_token": page_token,
@@ -1026,11 +1188,11 @@ impl FacebookUploader {
         let status_code = finish_resp.status();
         if !status_code.is_success() {
             let err_text = finish_resp.text().await.unwrap_or_default();
-            let _ = conn.execute(
-                "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                params![upload_session_id],
-            );
             if status_code.is_client_error() {
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                    params![upload_session_id],
+                );
                 return PublishApiResult::DeterministicRejection {
                     error_code: format!("http_{}", status_code.as_u16()),
                     error_message: format!("Meta rejected video finish phase (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1045,7 +1207,12 @@ impl FacebookUploader {
         // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status,published&access_token={}", video_id, page_token);
         for attempt in 0..5 {
-            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
+            if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "lease_loss".to_string(),
+                    error_message: format!("Aborted video status polling due to lease loss: {}", e),
+                };
+            }
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(1000 * attempt as u64)).await;
             }
@@ -1164,6 +1331,12 @@ impl FacebookUploader {
                     Ok(check_resp) => {
                         let status_code = check_resp.status();
                         let err_text = check_resp.text().await.unwrap_or_default();
+                        if status_code.as_u16() == 429 {
+                            return PublishApiResult::RateLimited {
+                                retry_after_secs: 60,
+                                error_message: format!("HTTP 429 Rate limited during Reel check: {}", err_text),
+                            };
+                        }
                         if status_code.is_client_error() {
                             return PublishApiResult::DeterministicRejection {
                                 error_code: format!("http_{}", status_code.as_u16()),
@@ -1197,11 +1370,11 @@ impl FacebookUploader {
             let status_code = check_resp.status();
             if !status_code.is_success() {
                 let err_text = check_resp.text().await.unwrap_or_default();
-                let _ = conn.execute(
-                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                    params![vid_id],
-                );
                 if status_code.is_client_error() {
+                    let _ = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![vid_id],
+                    );
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected Reel resume query (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1256,6 +1429,12 @@ impl FacebookUploader {
             let status_code = init_resp.status();
             if !status_code.is_success() {
                 let err_text = init_resp.text().await.unwrap_or_default();
+                if status_code.as_u16() == 429 {
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited on Reel start: {}", err_text),
+                    };
+                }
                 if status_code.is_client_error() {
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
@@ -1283,16 +1462,26 @@ impl FacebookUploader {
                 },
             };
 
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
                  VALUES (?1, ?2, 'reel', ?3, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
                 params![post_id, page_id, vid_id, file_path, file_hash, file_size as i64],
-            );
+            ) {
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_insert_error".to_string(),
+                    error_message: format!("Failed to persist Reel upload session: {}", e),
+                };
+            }
 
-            let _ = conn.execute(
-                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2",
-                params![vid_id, post_id],
-            );
+            if let Err(e) = conn.execute(
+                "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3",
+                params![vid_id, post_id, owner_id],
+            ) {
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_update_error".to_string(),
+                    error_message: format!("Failed to associate Reel upload session: {}", e),
+                };
+            }
 
             (vid_id, 0u64)
         };
@@ -1308,8 +1497,13 @@ impl FacebookUploader {
         let chunk_size: usize = 4 * 1024 * 1024;
 
         while offset < file_size {
-            // Heartbeat lease renewal before reading and uploading each Reel chunk
-            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
+            // Heartbeat lease renewal before reading and uploading each Reel chunk (fail fast on lease loss)
+            if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "lease_loss".to_string(),
+                    error_message: format!("Aborted Reel upload due to lease loss: {}", e),
+                };
+            }
 
             let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
             let mut buffer = vec![0u8; bytes_to_read];
@@ -1341,11 +1535,17 @@ impl FacebookUploader {
             let status_code = resp.status();
             if !status_code.is_success() {
                 let err_text = resp.text().await.unwrap_or_default();
-                let _ = conn.execute(
-                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                    params![video_id],
-                );
+                if status_code.as_u16() == 429 {
+                    return PublishApiResult::RateLimited {
+                        retry_after_secs: 60,
+                        error_message: format!("HTTP 429 Rate limited during Reel chunk upload at offset {}: {}", offset, err_text),
+                    };
+                }
                 if status_code.is_client_error() {
+                    let _ = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                        params![video_id],
+                    );
                     return PublishApiResult::DeterministicRejection {
                         error_code: format!("http_{}", status_code.as_u16()),
                         error_message: format!("Meta rejected Reel chunk at offset {} (HTTP {}): {}", offset, status_code.as_u16(), err_text),
@@ -1384,17 +1584,27 @@ impl FacebookUploader {
             }
 
             offset = confirmed_offset;
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
                 params![offset as i64, video_id],
-            );
+            ) {
+                return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_update_error".to_string(),
+                    error_message: format!("Failed to update Reel upload session offset in SQLite: {}", e),
+                };
+            }
         }
 
         // 3. Finish Phase
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1",
             params![video_id],
-        );
+        ) {
+            return PublishApiResult::AmbiguousTransport {
+                error_code: "db_update_error".to_string(),
+                error_message: format!("Failed to mark Reel session finishing in SQLite: {}", e),
+            };
+        }
 
         let mut finish_body = json!({
             "access_token": page_token,
@@ -1418,11 +1628,11 @@ impl FacebookUploader {
         let status_code = finish_resp.status();
         if !status_code.is_success() {
             let err_text = finish_resp.text().await.unwrap_or_default();
-            let _ = conn.execute(
-                "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
-                params![video_id],
-            );
             if status_code.is_client_error() {
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                    params![video_id],
+                );
                 return PublishApiResult::DeterministicRejection {
                     error_code: format!("http_{}", status_code.as_u16()),
                     error_message: format!("Meta rejected Reel finish phase (HTTP {}): {}", status_code.as_u16(), err_text),
@@ -1437,7 +1647,12 @@ impl FacebookUploader {
         // Authoritative terminal status verification with bounded polling
         let check_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,status&access_token={}", video_id, page_token);
         for attempt in 0..5 {
-            let _ = FacebookPublisher::renew_post_claim(conn, post_id, owner_id);
+            if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "lease_loss".to_string(),
+                    error_message: format!("Aborted Reel status polling due to lease loss: {}", e),
+                };
+            }
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(1000 * attempt as u64)).await;
             }
@@ -1484,111 +1699,114 @@ impl FacebookUploader {
 
 ### Task 3: Fail-Closed Promotion Worker & Multi-Endpoint Reconciliation (`src-tauri/src/facebook/scheduler.rs`)
 
-- **Promotion Worker:** Claims rows with `status='queued'`, queries `facebook_page_tokens` for the specific claimed row's `page_id`, strictly parses RFC3339 timestamp (failing closed with `error_code='invalid_timestamp'` on parse failure), and sets `delivery_unknown` on transport timeout or 5xx.
+- **Promotion Worker:** Claims rows with `status='queued'`, queries `facebook_page_tokens` for the specific claimed row's `channel_account_id` and `page_id`, strictly parses RFC3339 timestamp (failing closed with `error_code='invalid_timestamp'` on parse failure), and sets `delivery_unknown` on transport timeout or 5xx.
 - **Reconciliation Engine:** Periodically claims `delivery_unknown` rows. Queries Graph API `/scheduled_posts` and `/feed` with pagination. Matches post type against Graph `status_type`, computes message SHA-256 hash, and verifies timestamp within 60s window. Sets `status='published'` for `/feed` matches and `status='scheduled_on_meta'` for `/scheduled_posts`.
-- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` via atomic lease token claim:
+- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` in both `in_progress` and `finishing` states via atomic lease token claim:
   ```sql
   UPDATE facebook_upload_sessions
   SET owner_id = ?1,
-      lease_deadline = datetime('now', '+60 seconds'),
+      lease_deadline = datetime('now', '+5 minutes'),
       updated_at = datetime('now')
   WHERE id = (
       SELECT id FROM facebook_upload_sessions
-      WHERE status = 'finishing'
+      WHERE status IN ('in_progress', 'finishing')
         AND (lease_deadline IS NULL OR lease_deadline < datetime('now'))
       LIMIT 1
-  ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id;
+  ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status;
   ```
-  Queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels).
-  - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel):
-    ```rust
-    // Execute atomic transaction: session CAS completion + scheduled post propagation
-    let tx = conn.transaction()?;
-    let session_rows = tx.execute(
-        "UPDATE facebook_upload_sessions
-         SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-         WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-        params![session_id, worker_id],
-    )?;
+  - For `status == 'in_progress'`:
+    Queries Meta Graph API for authoritative `start_offset` (`GET /{upload_session_id}?fields=start_offset,end_offset` for Video; `GET https://rupload.facebook.com/video-reels/{video_id}` for Reels), updates `start_offset` in `facebook_upload_sessions`, resumes uploading remaining 4MB chunks to EOF, and advances session `status = 'finishing'`.
+  - For `status == 'finishing'`:
+    Queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels).
+    - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel):
+      ```rust
+      // Verify publication before marking published
+      let is_future = scheduled_publish_time.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
+      let target_status = if is_future { "scheduled_on_meta" } else { "published" };
 
-    // Only if this worker won the CAS race (affected exactly 1 row), propagate terminal state to scheduled post within the same transaction
-    if session_rows == 1 {
-        let post_rows = tx.execute(
-            "UPDATE facebook_scheduled_posts
-             SET status = CASE
-                     WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now')
-                     THEN 'scheduled_on_meta'
-                     ELSE 'published'
-                 END,
-                 remote_post_id = ?1,
-                 error_code = NULL,
-                 error_message = NULL,
-                 updated_at = datetime('now')
-             WHERE id = ?2 AND status IN ('publishing', 'delivery_unknown')",
-            params![remote_video_id, post_id],
-        )?;
+      // Execute atomic transaction: session CAS completion + scheduled post propagation
+      let tx = conn.transaction()?;
+      let session_rows = tx.execute(
+          "UPDATE facebook_upload_sessions
+           SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+           WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+          params![session_id, worker_id],
+      )?;
 
-        // Enforce exactly 1 updated row or verify that the post is already in an equivalent terminal success state
-        if post_rows != 1 {
-            let post_status: Option<String> = tx.query_row(
-                "SELECT status FROM facebook_scheduled_posts WHERE id = ?1",
-                params![post_id],
-                |r| r.get(0),
-            ).optional()?;
+      // Only if this worker won the CAS race (affected exactly 1 row), propagate terminal state to scheduled post within the same transaction
+      if session_rows == 1 {
+          let post_rows = tx.execute(
+              "UPDATE facebook_scheduled_posts
+               SET status = ?1,
+                   remote_post_id = ?2,
+                   error_code = NULL,
+                   error_message = NULL,
+                   owner_id = NULL,
+                   claim_deadline = NULL,
+                   updated_at = datetime('now')
+               WHERE id = ?3 AND status IN ('publishing', 'delivery_unknown')",
+              params![target_status, remote_video_id, post_id],
+          )?;
 
-            match post_status.as_deref() {
-                Some("published") | Some("scheduled_on_meta") => {
-                    // Already terminal and consistent
-                }
-                _ => {
-                    return Err(anyhow!("Reconciler invariant violation: expected exactly 1 updated post row for id {} (affected {}, current: {:?}); rolling back", post_id, post_rows, post_status));
-                }
-            }
-        }
-    }
-    tx.commit()?;
-    ```
-  - On authoritative terminal failure:
-    ```rust
-    // Execute atomic transaction: session CAS failure + scheduled post failure propagation
-    let tx = conn.transaction()?;
-    let session_rows = tx.execute(
-        "UPDATE facebook_upload_sessions
-         SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-         WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-        params![session_id, worker_id],
-    )?;
+          if post_rows != 1 {
+              let post_status: Option<String> = tx.query_row(
+                  "SELECT status FROM facebook_scheduled_posts WHERE id = ?1",
+                  params![post_id],
+                  |r| r.get(0),
+              ).optional()?;
 
-    // Only if this worker won the CAS race, propagate failure to scheduled post within the same transaction
-    if session_rows == 1 {
-        let post_rows = tx.execute(
-            "UPDATE facebook_scheduled_posts
-             SET status = 'failed', error_code = 'upload_failed', error_message = ?1, updated_at = datetime('now')
-             WHERE id = ?2 AND status IN ('publishing', 'delivery_unknown')",
-            params![err_msg, post_id],
-        )?;
+              match post_status.as_deref() {
+                  Some("published") | Some("scheduled_on_meta") => {
+                      // Already terminal and consistent
+                  }
+                  _ => {
+                      return Err(anyhow!("Reconciler invariant violation: expected exactly 1 updated post row for id {} (affected {}, current: {:?}); rolling back", post_id, post_rows, post_status));
+                  }
+              }
+          }
+      }
+      tx.commit()?;
+      ```
+    - On authoritative terminal failure:
+      ```rust
+      // Execute atomic transaction: session CAS failure + scheduled post failure propagation
+      let tx = conn.transaction()?;
+      let session_rows = tx.execute(
+          "UPDATE facebook_upload_sessions
+           SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+           WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+          params![session_id, worker_id],
+      )?;
 
-        if post_rows != 1 {
-            let post_status: Option<String> = tx.query_row(
-                "SELECT status FROM facebook_scheduled_posts WHERE id = ?1",
-                params![post_id],
-                |r| r.get(0),
-            ).optional()?;
+      if session_rows == 1 {
+          let post_rows = tx.execute(
+              "UPDATE facebook_scheduled_posts
+               SET status = 'failed', error_code = 'upload_failed', error_message = ?1, owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now')
+               WHERE id = ?2 AND status IN ('publishing', 'delivery_unknown')",
+              params![err_msg, post_id],
+          )?;
 
-            if post_status.as_deref() != Some("failed") {
-                return Err(anyhow!("Reconciler invariant violation: expected exactly 1 updated post row for id {} (affected {}, current: {:?}); rolling back", post_id, post_rows, post_status));
-            }
-        }
-    }
-    tx.commit()?;
-    ```
-  - On non-terminal processing state:
-    ```rust
-    // Atomic CAS lease release: clears lease if still held by this worker
-    conn.execute(
-        "UPDATE facebook_upload_sessions
-         SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-         WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-        params![session_id, worker_id],
-    )?;
-    ```
+          if post_rows != 1 {
+              let post_status: Option<String> = tx.query_row(
+                  "SELECT status FROM facebook_scheduled_posts WHERE id = ?1",
+                  params![post_id],
+                  |r| r.get(0),
+              ).optional()?;
+
+              if post_status.as_deref() != Some("failed") {
+                  return Err(anyhow!("Reconciler invariant violation: expected exactly 1 updated post row for id {} (affected {}, current: {:?}); rolling back", post_id, post_rows, post_status));
+              }
+          }
+      }
+      tx.commit()?;
+      ```
+    - On non-terminal processing state:
+      ```rust
+      // Atomic CAS lease release: clears lease if still held by this worker
+      conn.execute(
+          "UPDATE facebook_upload_sessions
+           SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
+           WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+          params![session_id, worker_id],
+      )?;
+      ```

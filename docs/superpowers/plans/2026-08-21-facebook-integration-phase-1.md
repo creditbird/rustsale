@@ -648,31 +648,30 @@ impl FacebookTokenVault {
 
     pub fn encrypt_and_upsert_page_token(
         conn: &Connection,
-        channel_account_id: &str,
+        channel_account_id: i64,
         page_id: &str,
-        page_name: &str,
         plain_token: &str,
-        token_expires_at: Option<&str>,
+        granted_scopes: &[String],
     ) -> Result<()> {
         let encrypted_ciphertext = Self::encrypt_token(plain_token)?;
+        let scopes_json = serde_json::to_string(granted_scopes).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
-            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, page_name, access_token_encrypted, token_status, token_expires_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'valid', ?5, datetime('now'))
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'valid', ?4, datetime('now'), datetime('now'))
              ON CONFLICT(page_id) DO UPDATE SET
                  channel_account_id = EXCLUDED.channel_account_id,
-                 page_name = EXCLUDED.page_name,
                  access_token_encrypted = EXCLUDED.access_token_encrypted,
                  token_status = 'valid',
-                 token_expires_at = EXCLUDED.token_expires_at,
+                 granted_scopes_json = EXCLUDED.granted_scopes_json,
                  updated_at = datetime('now')",
-            params![channel_account_id, page_id, page_name, encrypted_ciphertext, token_expires_at],
+            params![channel_account_id, page_id, encrypted_ciphertext, scopes_json],
         ).map_err(|e| anyhow!("Failed to upsert page token in vault: {}", e))?;
         Ok(())
     }
 
     pub fn get_valid_page_token(
         conn: &Connection,
-        channel_account_id: &str,
+        channel_account_id: i64,
         page_id: &str,
     ) -> Result<String> {
         let encrypted_token: Option<String> = conn.query_row(
