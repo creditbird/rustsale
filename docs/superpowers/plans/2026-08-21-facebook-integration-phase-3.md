@@ -41,6 +41,23 @@ CREATE TABLE IF NOT EXISTS meta_data_deletion_requests (
 );
 ALTER TABLE meta_data_deletion_requests ENABLE ROW LEVEL SECURITY;
 
+CREATE TABLE IF NOT EXISTS meta_tenant_deletion_tombstones (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    page_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(tenant_id, page_id, user_id)
+);
+ALTER TABLE meta_tenant_deletion_tombstones ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE meta_tenant_deletion_tombstones FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE meta_tenant_deletion_tombstones TO authenticated;
+GRANT ALL ON TABLE meta_tenant_deletion_tombstones TO service_role;
+
+CREATE POLICY "Tenants read own deletion tombstones" ON meta_tenant_deletion_tombstones
+    FOR SELECT TO authenticated USING (auth.uid() = tenant_id);
+
 CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     request_id UUID NOT NULL REFERENCES meta_data_deletion_requests(id) ON DELETE CASCADE,
@@ -232,6 +249,17 @@ BEGIN
         VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now());
     END IF;
 
+    -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones not yet completed by this device
+    INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
+    SELECT COALESCE((SELECT r.id FROM public.meta_data_deletion_requests r WHERE r.status = 'processing' LIMIT 1), gen_random_uuid()),
+           t.tenant_id, p_device_id, t.page_id, t.user_id, 'pending'
+    FROM public.meta_tenant_deletion_tombstones t
+    WHERE t.tenant_id = auth.uid()
+      AND NOT EXISTS (
+          SELECT 1 FROM public.meta_device_deletion_tasks dt
+          WHERE dt.tenant_id = auth.uid() AND dt.device_id = p_device_id AND dt.page_id = t.page_id AND dt.user_id = t.user_id AND dt.status = 'completed'
+      );
+
     RETURN TRUE;
 END;
 $$;
@@ -266,10 +294,16 @@ BEGIN
         WHERE mupi.app_user_id = p_user_id
            OR EXISTS (
                SELECT 1 FROM jsonb_array_elements(p_target_mappings) m
-               WHERE (m->>'page_id' = '' OR mupi.page_id = (m->>'page_id'))
+               WHERE (m->>'page_id' IS NOT NULL AND m->>'page_id' <> '')
+                 AND mupi.page_id = (m->>'page_id')
                  AND mupi.page_scoped_user_id = (m->>'psid')
            )
     LOOP
+        -- Persist durable tenant-scoped deletion tombstone for scrub-on-reconnect
+        INSERT INTO public.meta_tenant_deletion_tombstones (tenant_id, page_id, user_id)
+        VALUES (v_tenant_record.tenant_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id)
+        ON CONFLICT (tenant_id, page_id, user_id) DO NOTHING;
+
         -- Purge server-side buffered webhooks strictly scoped to this tenant_id and page_id
         DELETE FROM public.meta_webhook_buffer
         WHERE tenant_id = v_tenant_record.tenant_id
@@ -284,10 +318,10 @@ BEGIN
               OR payload->'value'->>'user_id' = v_tenant_record.page_scoped_user_id
           );
 
-        -- Fan out tasks to all active registered tenant devices (last seen within 30 days) for this specific tenant and page
+        -- Fan out tasks to all registered tenant devices regardless of offline duration
         FOR v_device_record IN
             SELECT device_id FROM public.tenant_registered_devices
-            WHERE tenant_id = v_tenant_record.tenant_id AND last_seen_at >= now() - INTERVAL '30 days'
+            WHERE tenant_id = v_tenant_record.tenant_id
         LOOP
             v_has_active_devices := TRUE;
             -- Fan out deletion task strictly carrying page_id and page-scoped user_id to be scrubbed on desktop SQLite
@@ -305,7 +339,7 @@ BEGIN
     -- Clean up any residual global interaction records matching app_user_id
     DELETE FROM public.meta_user_page_interactions WHERE app_user_id = p_user_id;
 
-    -- If no active devices require local anonymization, mark request completed immediately
+    -- If no registered devices exist for target tenants, mark request completed immediately
     IF NOT v_has_active_devices THEN
         UPDATE public.meta_data_deletion_requests SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = v_request_id;
     END IF;
@@ -392,9 +426,10 @@ async function resolvePsidsForAsid(asid: string): Promise<PageScopedMapping[]> {
     const body = await res.json();
     if (Array.isArray(body?.data)) {
       for (const item of body.data) {
-        const psid = item?.id ? String(item.id) : "";
-        const pageId = item?.page?.id ? String(item.page.id) : "";
-        if (psid) {
+        const psid = item?.id ? String(item.id).trim() : "";
+        const pageId = item?.page?.id ? String(item.page.id).trim() : "";
+        // Strict fail-closed validation: Reject mappings missing page_id or psid
+        if (psid && pageId) {
           mappings.push({ page_id: pageId, psid });
         }
       }
@@ -427,6 +462,17 @@ serve(async (req: Request) => {
     } catch (err) {
       console.error("Fail-closed: Failed to resolve PSIDs from Meta Graph API for ASID:", userId, err);
       return new Response("Bad Gateway: Unable to resolve user identities from Meta Graph API. Retry later.", { status: 502 });
+    }
+
+    // Fail-closed check on empty resolution: verify whether any retained interaction exists for app_user_id
+    if (resolvedMappings.length === 0) {
+      const { count, error: countErr } = await supabaseAdmin
+        .from("meta_user_page_interactions")
+        .select("*", { count: "exact", head: true })
+        .eq("app_user_id", userId);
+      if (countErr || !count || count === 0) {
+        return new Response("Bad Request: No associated Page identities or retained records found for ASID", { status: 400 });
+      }
     }
 
     const { error: deletionRpcError } = await supabaseAdmin.rpc("create_data_deletion_request_and_tasks", {
