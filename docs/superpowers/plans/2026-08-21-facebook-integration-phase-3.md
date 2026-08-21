@@ -247,7 +247,8 @@ pub async fn process_pending_device_tasks(
     device_id: &str,
 ) -> Result<usize> {
     let client = Client::new();
-    let tasks_url = format!("{}/rest/v1/meta_device_deletion_tasks?device_id=eq.{}&status=eq.pending&select=id,user_id", supabase_url, device_id);
+    let lease_timeout_iso = (chrono::Utc::now() - chrono::Duration::minutes(15)).to_rfc3339();
+    let tasks_url = format!("{}/rest/v1/meta_device_deletion_tasks?device_id=eq.{}&or=(status.eq.pending,and(status.eq.acknowledged,acknowledged_at.lt.{}))&select=id,user_id", supabase_url, device_id, lease_timeout_iso);
 
     let resp = client.get(&tasks_url)
         .header("apikey", anon_key)
@@ -268,8 +269,8 @@ pub async fn process_pending_device_tasks(
             continue;
         }
 
-        // 1. Atomic claim: pending -> acknowledged
-        let claim_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&status=eq.pending", supabase_url, task_id);
+        // 1. Atomic claim: pending (or expired acknowledged lease) -> acknowledged
+        let claim_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&or=(status.eq.pending,and(status.eq.acknowledged,acknowledged_at.lt.{}))", supabase_url, task_id, lease_timeout_iso);
         let claim_resp = client.patch(&claim_url)
             .header("apikey", anon_key)
             .header("Authorization", format!("Bearer {}", user_jwt))
@@ -352,7 +353,7 @@ pub async fn process_pending_device_tasks(
             }
         }
 
-        // 4. Update task status on Supabase only when all task-scoped files are cleaned
+        // 4. Update task status on Supabase: completed when clean, or reset to pending for retry on next run
         if all_cleaned {
             let complete_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&status=eq.acknowledged", supabase_url, task_id);
             let patch_resp = client.patch(&complete_url)
@@ -368,6 +369,16 @@ pub async fn process_pending_device_tasks(
             if patch_resp.status().is_success() {
                 completed_count += 1;
             }
+        } else {
+            // Reset task to pending with backoff so next sweep retries file cleanup
+            let reset_url = format!("{}/rest/v1/meta_device_deletion_tasks?id=eq.{}&status=eq.acknowledged", supabase_url, task_id);
+            let _ = client.patch(&reset_url)
+                .header("apikey", anon_key)
+                .header("Authorization", format!("Bearer {}", user_jwt))
+                .json(&serde_json::json!({
+                    "status": "pending"
+                }))
+                .send().await;
         }
     }
 

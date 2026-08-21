@@ -183,6 +183,7 @@ impl FacebookPublisher {
 ```rust
 use anyhow::{anyhow, Result};
 use reqwest::Client;
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::path::Path;
 use tokio::fs::File;
@@ -199,6 +200,7 @@ impl FacebookUploader {
 
     pub async fn upload_video_resumable(
         &self,
+        conn: &Connection,
         page_id: &str,
         page_token: &str,
         file_path: &str,
@@ -208,26 +210,59 @@ impl FacebookUploader {
         let file_meta = tokio::fs::metadata(file_path).await?;
         let file_size = file_meta.len();
 
-        // 1. Start Phase
-        let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
-        let start_resp = self.client.post(&start_url)
-            .form(&[
-                ("access_token", page_token),
-                ("upload_phase", "start"),
-                ("file_size", &file_size.to_string()),
-            ])
-            .send().await?;
+        // 1. Check existing in-progress session in facebook_upload_sessions
+        let existing_session: Option<(String, String, u64)> = conn.query_row(
+            "SELECT upload_session_id, video_id, start_offset 
+             FROM facebook_upload_sessions 
+             WHERE page_id = ?1 AND upload_type = 'video' AND file_path = ?2 AND file_size_bytes = ?3 AND status = 'in_progress'",
+            params![page_id, file_path, file_size as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64)),
+        ).ok();
 
-        if !start_resp.status().is_success() {
-            return Err(anyhow!("Video start phase failed: {}", start_resp.text().await?));
-        }
+        let (upload_session_id, video_id, mut offset) = if let Some((sess_id, vid_id, saved_offset)) = existing_session {
+            // Query Graph video upload session for authoritative server offset
+            let status_url = format!("https://graph-video.facebook.com/v26.0/{}?fields=start_offset,end_offset&access_token={}", sess_id, page_token);
+            let status_resp = self.client.get(&status_url).send().await?;
+            if status_resp.status().is_success() {
+                let status_json: Value = status_resp.json().await?;
+                let server_offset = status_json.get("start_offset")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(saved_offset);
+                (sess_id, vid_id, server_offset)
+            } else {
+                (sess_id, vid_id, saved_offset)
+            }
+        } else {
+            // Start Phase
+            let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
+            let start_resp = self.client.post(&start_url)
+                .form(&[
+                    ("access_token", page_token),
+                    ("upload_phase", "start"),
+                    ("file_size", &file_size.to_string()),
+                ])
+                .send().await?;
 
-        let start_json: Value = start_resp.json().await?;
-        let upload_session_id = start_json.get("upload_session_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing upload_session_id"))?;
-        let video_id = start_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?;
+            if !start_resp.status().is_success() {
+                return Err(anyhow!("Video start phase failed: {}", start_resp.text().await?));
+            }
+
+            let start_json: Value = start_resp.json().await?;
+            let sess_id = start_json.get("upload_session_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing upload_session_id"))?.to_string();
+            let vid_id = start_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?.to_string();
+
+            conn.execute(
+                "INSERT INTO facebook_upload_sessions (page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+                 VALUES (?1, 'video', ?2, ?3, ?4, ?4, ?5, 0, 'in_progress', datetime('now'), datetime('now'))",
+                params![page_id, sess_id, vid_id, file_path, file_size as i64],
+            )?;
+
+            (sess_id, vid_id, 0u64)
+        };
 
         // 2. Transfer Phase
-        let mut offset: u64 = 0;
+        let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
         let mut file = File::open(file_path).await?;
         let chunk_size: usize = 4 * 1024 * 1024; // 4MB
 
@@ -241,12 +276,16 @@ impl FacebookUploader {
             let form = reqwest::multipart::Form::new()
                 .text("access_token", page_token.to_string())
                 .text("upload_phase", "transfer")
-                .text("upload_session_id", upload_session_id.to_string())
+                .text("upload_session_id", upload_session_id.clone())
                 .text("start_offset", offset.to_string())
                 .part("video_file_chunk", part);
 
             let transfer_resp = self.client.post(&start_url).multipart(form).send().await?;
             if !transfer_resp.status().is_success() {
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                    params![upload_session_id],
+                );
                 return Err(anyhow!("Video chunk upload failed: {}", transfer_resp.text().await?));
             }
 
@@ -254,12 +293,21 @@ impl FacebookUploader {
             let next_offset = transfer_json.get("start_offset")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(offset + bytes_to_read as u64);
+                .ok_or_else(|| anyhow!("Missing start_offset in Meta video transfer response"))?;
 
             if next_offset <= offset || next_offset > file_size {
-                return Err(anyhow!("Invalid server offset progression: {}", next_offset));
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                    params![upload_session_id],
+                );
+                return Err(anyhow!("Invalid server offset progression: prev={}, next={}, file_size={}", offset, next_offset, file_size));
             }
+
             offset = next_offset;
+            let _ = conn.execute(
+                "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
+                params![offset as i64, upload_session_id],
+            );
         }
 
         // 3. Finish Phase
@@ -277,14 +325,24 @@ impl FacebookUploader {
 
         let finish_resp = self.client.post(&start_url).json(&finish_body).send().await?;
         if !finish_resp.status().is_success() {
+            let _ = conn.execute(
+                "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                params![upload_session_id],
+            );
             return Err(anyhow!("Video finish phase failed: {}", finish_resp.text().await?));
         }
 
-        Ok(video_id.to_string())
+        let _ = conn.execute(
+            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+            params![upload_session_id],
+        );
+
+        Ok(video_id)
     }
 
     pub async fn upload_reel_resumable(
         &self,
+        conn: &Connection,
         page_id: &str,
         page_token: &str,
         file_path: &str,
@@ -307,7 +365,13 @@ impl FacebookUploader {
         }
 
         let init_json: Value = init_resp.json().await?;
-        let video_id = init_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?;
+        let video_id = init_json.get("video_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("Missing video_id"))?.to_string();
+
+        let _ = conn.execute(
+            "INSERT INTO facebook_upload_sessions (page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+             VALUES (?1, 'reel', ?2, ?2, ?3, ?3, ?4, 0, 'in_progress', datetime('now'), datetime('now'))",
+            params![page_id, video_id, file_path, file_size as i64],
+        );
 
         let rupload_url = format!("https://rupload.facebook.com/video-reels/{}", video_id);
         let mut offset: u64 = 0;
@@ -328,18 +392,31 @@ impl FacebookUploader {
                 .send().await?;
 
             if !resp.status().is_success() {
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                    params![video_id],
+                );
                 return Err(anyhow!("Reel chunk upload failed at offset {}: {}", offset, resp.text().await?));
             }
 
             let resp_json: Value = resp.json().await?;
             let confirmed_offset = resp_json.get("offset")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(offset + bytes_to_read as u64);
+                .ok_or_else(|| anyhow!("Missing offset in Meta Reel chunk response"))?;
 
             if confirmed_offset != offset + bytes_to_read as u64 {
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                    params![video_id],
+                );
                 return Err(anyhow!("Reel chunk offset mismatch: expected {}, got {}", offset + bytes_to_read as u64, confirmed_offset));
             }
+
             offset = confirmed_offset;
+            let _ = conn.execute(
+                "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
+                params![offset as i64, video_id],
+            );
         }
 
         let mut finish_body = json!({
@@ -353,12 +430,22 @@ impl FacebookUploader {
             finish_body["scheduled_publish_time"] = json!(st);
         }
 
-        let finish_resp = self.client.post(&init_url).json(&finish_body).send().await?;
+        let finish_url = format!("https://graph.facebook.com/v26.0/{}/video_reels", page_id);
+        let finish_resp = self.client.post(&finish_url).json(&finish_body).send().await?;
         if !finish_resp.status().is_success() {
+            let _ = conn.execute(
+                "UPDATE facebook_upload_sessions SET status = 'failed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+                params![video_id],
+            );
             return Err(anyhow!("Reel finish failed: {}", finish_resp.text().await?));
         }
 
-        Ok(video_id.to_string())
+        let _ = conn.execute(
+            "UPDATE facebook_upload_sessions SET status = 'completed', updated_at = datetime('now') WHERE upload_session_id = ?1",
+            params![video_id],
+        );
+
+        Ok(video_id)
     }
 }
 ```
