@@ -281,6 +281,7 @@ serve(async (req: Request) => {
       const idsData = await idsResp.json();
 
       // Persist authoritative ASID-to-PSID mapping from Meta ids_for_pages
+      const mappedPageIds = new Set<string>();
       for (const item of idsData.data || []) {
         if (item.page?.id && item.id) {
           const { error: upsertErr } = await supabaseAdmin.from("meta_user_page_interactions").upsert({
@@ -291,7 +292,14 @@ serve(async (req: Request) => {
             last_interaction_at: new Date().toISOString(),
           }, { onConflict: "tenant_id,page_id,page_scoped_user_id" });
           if (upsertErr) throw new Error(`Failed to persist durable user page interaction mapping: ${upsertErr.message}`);
+          mappedPageIds.add(item.page.id);
         }
+      }
+
+      // Enforce 100% complete coverage: every connected page MUST have an authoritative ASID-to-PSID mapping
+      const unmappedPages = pages.filter((p: any) => !mappedPageIds.has(p.id));
+      if (unmappedPages.length > 0) {
+        throw new Error(`Cannot connect pages: Meta Graph API /ids_for_pages did not return PSID mappings for connected page(s): ${unmappedPages.map((p: any) => p.id).join(", ")}. Every connected page requires an authoritative PSID mapping.`);
       }
 
       const exchangeCode = crypto.randomUUID();

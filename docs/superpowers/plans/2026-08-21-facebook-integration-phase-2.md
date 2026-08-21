@@ -946,7 +946,25 @@ impl FacebookUploader {
             }
 
             if session_status == "init_pending" {
-                // Re-use existing claimed init_pending row and execute Meta START phase
+                // Re-use existing claimed init_pending row
+                // 1. Verify if the post is already published or scheduled on Meta
+                let is_future = scheduled_publish_time.map(|t| t > chrono::Utc::now().timestamp()).unwrap_or(false);
+                let is_live = if is_future {
+                    Self::verify_scheduled_publication(&self.client, page_id, page_token, &sess_id).await
+                } else {
+                    Self::verify_feed_publication(&self.client, page_id, page_token, &sess_id).await
+                };
+                if is_live {
+                    let rows = conn.execute(
+                        "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        params![sess_row_id, owner_id],
+                    ).unwrap_or(0);
+                    if rows == 1 {
+                        return PublishApiResult::Success { remote_post_id: sess_id };
+                    }
+                }
+
+                // 2. Execute Meta START phase for uncommitted inert container
                 let intent_id = sess_id;
 
                 let start_url = format!("https://graph-video.facebook.com/v26.0/{}/videos", page_id);
