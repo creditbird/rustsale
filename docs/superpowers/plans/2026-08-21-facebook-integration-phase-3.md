@@ -501,16 +501,17 @@ pub async fn process_pending_device_tasks(
         {
             let tx = conn.transaction()?;
 
-            // Find all attachments to delete belonging to Messenger conversations
+            // Find all attachments to delete belonging to Messenger messages sent by target user
             let mut att_stmt = tx.prepare(
                 "SELECT ma.local_path
                  FROM message_attachments ma
                  JOIN messages m ON ma.message_id = m.id
-                 JOIN conversations c ON m.conversation_id = c.id
-                 JOIN channel_accounts ca ON c.channel_account_id = ca.id
-                 LEFT JOIN channel_identities ci ON m.sender_identity_id = ci.id
+                 JOIN channel_conversations cc ON m.conversation_id = cc.id
+                 JOIN channel_accounts ca ON cc.channel_account_id = ca.id
                  WHERE ca.channel = 'messenger'
-                   AND (ci.external_id = ?1 OR ma.metadata_json LIKE '%' || ?1 || '%')
+                   AND m.sender_identity_id IN (
+                       SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
+                   )
                    AND ma.local_path IS NOT NULL AND TRIM(ma.local_path) != ''"
             )?;
             let paths: Vec<String> = att_stmt
@@ -535,10 +536,12 @@ pub async fn process_pending_device_tasks(
                      metadata_json = '{}'
                  WHERE message_id IN (
                      SELECT m.id FROM messages m
-                     JOIN conversations c ON m.conversation_id = c.id
-                     JOIN channel_accounts ca ON c.channel_account_id = ca.id
-                     LEFT JOIN channel_identities ci ON m.sender_identity_id = ci.id
-                     WHERE ca.channel = 'messenger' AND (ci.external_id = ?1 OR m.content_json LIKE '%' || ?1 || '%')
+                     JOIN channel_conversations cc ON m.conversation_id = cc.id
+                     JOIN channel_accounts ca ON cc.channel_account_id = ca.id
+                     WHERE ca.channel = 'messenger'
+                       AND m.sender_identity_id IN (
+                           SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
+                       )
                  )",
                 [user_id],
             )?;
@@ -549,8 +552,8 @@ pub async fn process_pending_device_tasks(
                  WHERE actor_external_id = ?1 
                    AND message_id IN (
                        SELECT m.id FROM messages m
-                       JOIN conversations c ON m.conversation_id = c.id
-                       JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                       JOIN channel_conversations cc ON m.conversation_id = cc.id
+                       JOIN channel_accounts ca ON cc.channel_account_id = ca.id
                        WHERE ca.channel = 'messenger'
                    )",
                 [user_id],
@@ -560,8 +563,8 @@ pub async fn process_pending_device_tasks(
                  WHERE recipient_external_id = ?1 
                    AND message_id IN (
                        SELECT m.id FROM messages m
-                       JOIN conversations c ON m.conversation_id = c.id
-                       JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                       JOIN channel_conversations cc ON m.conversation_id = cc.id
+                       JOIN channel_accounts ca ON cc.channel_account_id = ca.id
                        WHERE ca.channel = 'messenger'
                    )",
                 [user_id],
@@ -579,8 +582,8 @@ pub async fn process_pending_device_tasks(
                  WHERE (external_id = ?1 OR identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1))
                    AND message_id IN (
                        SELECT m.id FROM messages m
-                       JOIN conversations c ON m.conversation_id = c.id
-                       JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                       JOIN channel_conversations cc ON m.conversation_id = cc.id
+                       JOIN channel_accounts ca ON cc.channel_account_id = ca.id
                        WHERE ca.channel = 'messenger'
                    )",
                 [user_id],
@@ -592,6 +595,21 @@ pub async fn process_pending_device_tasks(
                 [user_id],
             )?;
 
+            // Scrub channel sync dead letters for this Messenger user
+            tx.execute(
+                "DELETE FROM channel_sync_dead_letters
+                 WHERE channel_account_id IN (
+                     SELECT id FROM channel_accounts WHERE channel = 'messenger'
+                 ) AND (
+                     event_key = ?1
+                     OR json_extract(payload_json, '$.sender.id') = ?1
+                     OR json_extract(payload_json, '$.recipient.id') = ?1
+                     OR json_extract(payload_json, '$.entry[0].messaging[0].sender.id') = ?1
+                     OR json_extract(payload_json, '$.entry[0].messaging[0].recipient.id') = ?1
+                 )",
+                [user_id],
+            )?;
+
             // Redact messages
             tx.execute(
                 "UPDATE messages 
@@ -599,12 +617,11 @@ pub async fn process_pending_device_tasks(
                      content_json = '{\"type\":\"text\",\"text\":\"[Deleted for Compliance]\"}',
                      raw_payload_json = NULL
                  WHERE conversation_id IN (
-                     SELECT c.id FROM conversations c
-                     JOIN channel_accounts ca ON c.channel_account_id = ca.id
+                     SELECT cc.id FROM channel_conversations cc
+                     JOIN channel_accounts ca ON cc.channel_account_id = ca.id
                      WHERE ca.channel = 'messenger'
-                 ) AND (
-                     sender_identity_id IN (SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1)
-                     OR raw_payload_json LIKE '%' || ?1 || '%'
+                 ) AND sender_identity_id IN (
+                     SELECT id FROM channel_identities WHERE channel = 'messenger' AND external_id = ?1
                  )",
                 [user_id],
             )?;
