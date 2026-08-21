@@ -989,7 +989,7 @@ impl FacebookUploader {
                     let err_text = start_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
                         let rows = conn.execute(
-                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                             params![sess_row_id, owner_id],
                         ).unwrap_or(0);
                         if rows != 1 {
@@ -1159,7 +1159,7 @@ impl FacebookUploader {
                             let err_text = check_resp.text().await.unwrap_or_default();
                             if status_code.as_u16() == 429 {
                                 let rows = conn.execute(
-                                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                                     params![sess_row_id, owner_id],
                                 ).unwrap_or(0);
                                 if rows != 1 {
@@ -1210,7 +1210,7 @@ impl FacebookUploader {
                         let err_text = status_resp.text().await.unwrap_or_default();
                         if status_code.as_u16() == 429 {
                             let rows = conn.execute(
-                                "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                                "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                                 params![sess_row_id, owner_id],
                             ).unwrap_or(0);
                             if rows != 1 {
@@ -1317,7 +1317,7 @@ impl FacebookUploader {
                 let err_text = start_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                         params![intent_id, owner_id],
                     ).unwrap_or(0);
                     if rows != 1 {
@@ -1491,7 +1491,7 @@ impl FacebookUploader {
                 let err_text = transfer_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                         params![upload_session_id, owner_id],
                     ).unwrap_or(0);
                     if rows != 1 {
@@ -1624,7 +1624,7 @@ impl FacebookUploader {
             let err_text = finish_resp.text().await.unwrap_or_default();
             if status_code.as_u16() == 429 {
                 let rows = conn.execute(
-                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                     params![upload_session_id, owner_id],
                 ).unwrap_or(0);
                 if rows != 1 {
@@ -1688,7 +1688,7 @@ impl FacebookUploader {
                 let err_text = check_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                         params![upload_session_id, owner_id],
                     ).unwrap_or(0);
                     if rows != 1 {
@@ -1899,7 +1899,7 @@ impl FacebookUploader {
                     let err_text = init_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
                         let rows = conn.execute(
-                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                             params![sess_row_id, owner_id],
                         ).unwrap_or(0);
                         if rows != 1 {
@@ -2014,7 +2014,7 @@ impl FacebookUploader {
                     let err_text = check_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
                         let rows = conn.execute(
-                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = ?3",
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = ?3",
                             params![sess_row_id, owner_id, session_status],
                         ).unwrap_or(0);
                         if rows != 1 {
@@ -2050,18 +2050,28 @@ impl FacebookUploader {
                     };
                 }
 
-                let check_json: Value = check_resp.json().await.unwrap_or_default();
-                let video_status = check_json.get("status")
-                    .and_then(|s| s.get("video_status"))
+                let check_json: Value = match check_resp.json().await {
+                    Ok(j) => j,
+                    Err(e) => return PublishApiResult::AmbiguousTransport {
+                        error_code: "malformed_json_response".to_string(),
+                        error_message: format!("Invalid JSON in Reel status check response: {}", e),
+                    },
+                };
+                let status_obj = match check_json.get("status").and_then(|s| s.as_object()) {
+                    Some(o) => o,
+                    None => return PublishApiResult::AmbiguousTransport {
+                        error_code: "missing_status_object".to_string(),
+                        error_message: "Missing or invalid 'status' object in Reel status check response".to_string(),
+                    },
+                };
+                let video_status = status_obj.get("video_status")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let uploading_status = check_json.get("status")
-                    .and_then(|s| s.get("uploading_phase"))
+                let uploading_status = status_obj.get("uploading_phase")
                     .and_then(|p| p.get("status"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let publishing_status = check_json.get("status")
-                    .and_then(|s| s.get("publishing_phase"))
+                let publishing_status = status_obj.get("publishing_phase")
                     .and_then(|p| p.get("status"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
@@ -2083,6 +2093,17 @@ impl FacebookUploader {
                                 return PublishApiResult::Success { remote_post_id: vid_id };
                             }
                         }
+                        // Release lease on still-processing finishing session so next cycle can claim cleanly via checked CAS
+                        let rows = conn.execute(
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                            params![sess_row_id, owner_id],
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while releasing still-processing Reel finishing session".to_string(),
+                            };
+                        }
                         return PublishApiResult::StillProcessing { upload_session_id: sess_id };
                     } else if video_status == "error" || uploading_status == "error" || publishing_status == "error" {
                         let rows = conn.execute(
@@ -2100,6 +2121,17 @@ impl FacebookUploader {
                             error_message: "Meta Reel processing failed with error state".to_string(),
                         };
                     } else {
+                        // Release lease on still-processing finishing session so next cycle can claim cleanly via checked CAS
+                        let rows = conn.execute(
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                            params![sess_row_id, owner_id],
+                        ).unwrap_or(0);
+                        if rows != 1 {
+                            return PublishApiResult::DeterministicRejection {
+                                error_code: "session_lease_loss".to_string(),
+                                error_message: "Lost lease while releasing still-processing Reel finishing session".to_string(),
+                            };
+                        }
                         return PublishApiResult::StillProcessing { upload_session_id: sess_id };
                     }
                 } else {
@@ -2162,7 +2194,7 @@ impl FacebookUploader {
                 let err_text = init_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
                         params![intent_id, owner_id],
                     ).unwrap_or(0);
                     if rows != 1 {
@@ -2254,22 +2286,37 @@ impl FacebookUploader {
 
         // 2. Binary Upload Phase with Bounded-Memory File Streaming (if not already uploaded)
         if !already_uploaded {
-            if let Err(e) = FacebookPublisher::renew_post_claim(conn, post_id, owner_id) {
-                return PublishApiResult::DeterministicRejection {
-                    error_code: "lease_loss".to_string(),
-                    error_message: format!("Aborted Reel upload due to lease loss: {}", e),
-                };
-            }
-            let sess_lease_rows = match conn.execute(
-                "UPDATE facebook_upload_sessions
-                 SET lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
-                 WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
-                params![video_id, owner_id],
+            let stream_lease_mins = std::cmp::max(30, ((file_size / (1024 * 1024)) * 2) as i64);
+            let claim_deadline_str = format!("+{} minutes", stream_lease_mins);
+            let post_lease_rows = match conn.execute(
+                "UPDATE facebook_scheduled_posts
+                 SET claim_deadline = datetime('now', ?1), updated_at = datetime('now')
+                 WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
+                params![&claim_deadline_str, post_id, owner_id],
             ) {
                 Ok(r) => r,
                 Err(e) => return PublishApiResult::AmbiguousTransport {
                     error_code: "db_error".to_string(),
-                    error_message: format!("Failed to heartbeat Reel upload session lease: {}", e),
+                    error_message: format!("Failed to extend scheduled post claim deadline for Reel stream: {}", e),
+                },
+            };
+            if post_lease_rows != 1 {
+                return PublishApiResult::DeterministicRejection {
+                    error_code: "post_lease_loss".to_string(),
+                    error_message: "Aborted Reel upload due to post lease loss".to_string(),
+                };
+            }
+
+            let sess_lease_rows = match conn.execute(
+                "UPDATE facebook_upload_sessions
+                 SET lease_deadline = datetime('now', ?1), updated_at = datetime('now')
+                 WHERE upload_session_id = ?2 AND owner_id = ?3 AND status = 'in_progress'",
+                params![&claim_deadline_str, video_id, owner_id],
+            ) {
+                Ok(r) => r,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "db_error".to_string(),
+                    error_message: format!("Failed to extend Reel upload session lease: {}", e),
                 },
             };
             if sess_lease_rows != 1 {
@@ -2313,7 +2360,7 @@ impl FacebookUploader {
                 let err_text = resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
                         params![video_id, owner_id],
                     ).unwrap_or(0);
                     if rows != 1 {
@@ -2452,7 +2499,7 @@ impl FacebookUploader {
             let err_text = finish_resp.text().await.unwrap_or_default();
             if status_code.as_u16() == 429 {
                 let rows = conn.execute(
-                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                     params![video_id, owner_id],
                 ).unwrap_or(0);
                 if rows != 1 {
@@ -2517,7 +2564,7 @@ impl FacebookUploader {
                 let err_text = check_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
                         params![video_id, owner_id],
                     ).unwrap_or(0);
                     if rows != 1 {

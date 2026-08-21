@@ -285,7 +285,7 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
      - Because uncommitted START containers on Meta have 0 bytes and cannot publish, the worker safely executes a clean `START` request against Meta Graph API to acquire valid remote container IDs.
      - Upon receiving remote IDs, updates session row to `in_progress` via checked CAS (`WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'` with `rows == 1`) and proceeds with chunk upload.
      - If START returns client error (4xx non-429): marks session and post `failed` via checked CAS (`rows == 1`).
-     - If START returns 429: parses `retry-after` header, releases lease (`owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1`) for backoff retry, and returns `PublishApiResult::RateLimited`.
+     - If START returns 429: parses `retry-after` header, enforces session-level backoff via `owner_id = NULL, lease_deadline = datetime('now', '+' || retry_after || ' seconds'), retry_count = retry_count + 1` preventing reconcilers from premature re-claims, and returns `PublishApiResult::RateLimited`.
      - If `retry_count >= 3`: marks session and post `failed` via checked CAS (`rows == 1`).
    - **Case C (START Response Received + Local CAS Lease Loss):** If SQLite update returns `rows != 1`, the worker immediately aborts with `DeterministicRejection { error_code: "session_lease_loss" }`.
 
