@@ -52,6 +52,11 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
+      - name: Build Cloak Runtime sidecar
+        run: bun run build:cloak-runtime
+        env:
+          SKIP_CLEAN_ROOM_SMOKE: '1'
+
       - name: Cargo check
         run: cargo check --manifest-path src-tauri/Cargo.toml
 

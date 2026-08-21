@@ -496,7 +496,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
     {
         let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
         let violations: Vec<String> = stmt
-            .query_map([], |row| Ok(row.get::<_, String>(0)?))?
+            .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .collect();
         if !violations.is_empty() {

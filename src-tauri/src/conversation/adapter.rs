@@ -10,7 +10,11 @@ pub struct ProviderSendRequest {
 }
 
 impl ProviderSendRequest {
-    pub fn new(external_thread_id: impl Into<String>, is_group: bool, text: impl Into<String>) -> Self {
+    pub fn new(
+        external_thread_id: impl Into<String>,
+        is_group: bool,
+        text: impl Into<String>,
+    ) -> Self {
         Self {
             external_thread_id: external_thread_id.into(),
             is_group,

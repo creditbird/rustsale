@@ -10,7 +10,8 @@ pub struct PragmaGuard<'a> {
 impl<'a> PragmaGuard<'a> {
     pub fn new(conn: &'a Connection) -> Result<Self> {
         let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
-        let initial_legacy_alter: i32 = conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0))?;
+        let initial_legacy_alter: i32 =
+            conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0))?;
         Ok(Self {
             conn,
             initial_fk,
@@ -21,7 +22,11 @@ impl<'a> PragmaGuard<'a> {
     pub fn restore(&self) -> Result<()> {
         self.conn.execute_batch(&format!(
             "PRAGMA legacy_alter_table = {}; PRAGMA foreign_keys = {};",
-            if self.initial_legacy_alter == 1 { "ON" } else { "OFF" },
+            if self.initial_legacy_alter == 1 {
+                "ON"
+            } else {
+                "OFF"
+            },
             if self.initial_fk == 1 { "ON" } else { "OFF" },
         ))?;
         Ok(())
@@ -35,7 +40,9 @@ impl<'a> Drop for PragmaGuard<'a> {
 }
 
 pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
-    let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    let current_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
     if current_version >= 2 {
         return Ok(());
     }
@@ -46,7 +53,8 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
     let migration_result = (|| -> Result<()> {
         conn.execute_batch("SAVEPOINT migration_v2;")?;
 
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             -- 1. Create v2 table for channel_identities with channel_account_id
             CREATE TABLE IF NOT EXISTS channel_identities_v2 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +78,8 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
                 FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL,
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
             );
-        "#)?;
+        "#,
+        )?;
 
         let has_channel_identities: bool = conn.query_row(
             "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='channel_identities'",
@@ -88,18 +97,66 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
                 }
             }
 
-            let lead_id_expr = if existing_cols.contains("lead_id") { "lead_id" } else { "NULL" };
-            let channel_account_id_expr = if existing_cols.contains("channel_account_id") { "channel_account_id" } else { "NULL" };
-            let norm_addr_expr = if existing_cols.contains("normalized_address") { "normalized_address" } else { "NULL" };
-            let disp_name_expr = if existing_cols.contains("display_name") { "display_name" } else { "NULL" };
-            let avatar_url_expr = if existing_cols.contains("avatar_url") { "avatar_url" } else { "NULL" };
-            let sync_at_expr = if existing_cols.contains("profile_synced_at") { "profile_synced_at" } else { "NULL" };
-            let sync_err_expr = if existing_cols.contains("profile_sync_error") { "profile_sync_error" } else { "NULL" };
-            let sync_att_expr = if existing_cols.contains("profile_sync_attempts") { "profile_sync_attempts" } else { "0" };
-            let retry_at_expr = if existing_cols.contains("next_profile_retry_at") { "next_profile_retry_at" } else { "NULL" };
-            let link_src_expr = if existing_cols.contains("link_source") { "link_source" } else { "'unlinked'" };
-            let link_conf_expr = if existing_cols.contains("link_confidence") { "link_confidence" } else { "NULL" };
-            let verif_at_expr = if existing_cols.contains("verified_at") { "verified_at" } else { "NULL" };
+            let lead_id_expr = if existing_cols.contains("lead_id") {
+                "lead_id"
+            } else {
+                "NULL"
+            };
+            let channel_account_id_expr = if existing_cols.contains("channel_account_id") {
+                "channel_account_id"
+            } else {
+                "NULL"
+            };
+            let norm_addr_expr = if existing_cols.contains("normalized_address") {
+                "normalized_address"
+            } else {
+                "NULL"
+            };
+            let disp_name_expr = if existing_cols.contains("display_name") {
+                "display_name"
+            } else {
+                "NULL"
+            };
+            let avatar_url_expr = if existing_cols.contains("avatar_url") {
+                "avatar_url"
+            } else {
+                "NULL"
+            };
+            let sync_at_expr = if existing_cols.contains("profile_synced_at") {
+                "profile_synced_at"
+            } else {
+                "NULL"
+            };
+            let sync_err_expr = if existing_cols.contains("profile_sync_error") {
+                "profile_sync_error"
+            } else {
+                "NULL"
+            };
+            let sync_att_expr = if existing_cols.contains("profile_sync_attempts") {
+                "profile_sync_attempts"
+            } else {
+                "0"
+            };
+            let retry_at_expr = if existing_cols.contains("next_profile_retry_at") {
+                "next_profile_retry_at"
+            } else {
+                "NULL"
+            };
+            let link_src_expr = if existing_cols.contains("link_source") {
+                "link_source"
+            } else {
+                "'unlinked'"
+            };
+            let link_conf_expr = if existing_cols.contains("link_confidence") {
+                "link_confidence"
+            } else {
+                "NULL"
+            };
+            let verif_at_expr = if existing_cols.contains("verified_at") {
+                "verified_at"
+            } else {
+                "NULL"
+            };
 
             conn.execute_batch("PRAGMA legacy_alter_table = ON;")?;
 
@@ -154,11 +211,13 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         "#)?;
 
         // Conditionally add leadgen columns to leads table if leads table exists
-        let has_leads: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='leads'",
-            [],
-            |r| r.get(0),
-        ).unwrap_or(false);
+        let has_leads: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='leads'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
 
         if has_leads {
             let mut has_leadgen = false;
@@ -167,8 +226,12 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
                 let mut stmt = conn.prepare("PRAGMA table_info(leads)")?;
                 let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
                 for col in rows.flatten() {
-                    if col == "leadgen_id" { has_leadgen = true; }
-                    if col == "custom_fields_json" { has_custom_fields = true; }
+                    if col == "leadgen_id" {
+                        has_leadgen = true;
+                    }
+                    if col == "custom_fields_json" {
+                        has_custom_fields = true;
+                    }
                 }
             }
             if !has_leadgen {
@@ -176,16 +239,24 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
             }
             conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_leadgen_id ON leads(leadgen_id) WHERE leadgen_id IS NOT NULL;")?;
             if !has_custom_fields {
-                conn.execute_batch("ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';")?;
+                conn.execute_batch(
+                    "ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';",
+                )?;
             }
         }
 
         // Verify foreign key integrity
-        let fk_violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))?;
+        let fk_violations: i64 =
+            conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| {
+                r.get(0)
+            })?;
         if fk_violations > 0 {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
-                Some(format!("Foreign key check failed with {} violations", fk_violations)),
+                Some(format!(
+                    "Foreign key check failed with {} violations",
+                    fk_violations
+                )),
             ));
         }
 
@@ -195,7 +266,8 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
     })();
 
     if migration_result.is_err() {
-        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v2; RELEASE SAVEPOINT migration_v2;");
+        let _ = conn
+            .execute_batch("ROLLBACK TO SAVEPOINT migration_v2; RELEASE SAVEPOINT migration_v2;");
     }
 
     guard.restore()?;
@@ -205,7 +277,7 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
 fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
     let mut msg_stmt = conn.prepare(
         "SELECT DISTINCT message_id FROM message_attachments 
-         WHERE remote_url IS NOT NULL OR provider_attachment_id IS NOT NULL"
+         WHERE remote_url IS NOT NULL OR provider_attachment_id IS NOT NULL",
     )?;
     let msg_rows = msg_stmt.query_map([], |r| r.get::<_, i64>(0))?;
     let message_ids: Vec<i64> = msg_rows.collect::<Result<Vec<_>, _>>()?;
@@ -278,7 +350,10 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
                     (Some(r1), Some(r2)) => r1 == r2,
                     _ => false,
                 };
-                let shares_provider = match (&items[i].provider_attachment_id, &items[j].provider_attachment_id) {
+                let shares_provider = match (
+                    &items[i].provider_attachment_id,
+                    &items[j].provider_attachment_id,
+                ) {
                     (Some(p1), Some(p2)) => p1 == p2,
                     _ => false,
                 };
@@ -288,7 +363,8 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
             }
         }
 
-        let mut groups: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        let mut groups: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
         for i in 0..n {
             let root = find(&mut parent, i);
             groups.entry(root).or_default().push(i);
@@ -311,7 +387,8 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
             let mut merged_local = items[survivor_idx].local_path.clone();
             let mut merged_thumb = items[survivor_idx].thumbnail_url.clone();
 
-            let mut merged_json_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+            let mut merged_json_map: serde_json::Map<String, serde_json::Value> =
+                serde_json::Map::new();
             let mut raw_unparsed_values: Vec<serde_json::Value> = Vec::new();
 
             for &idx in &member_indices {
@@ -362,7 +439,8 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
                                 raw_unparsed_values.push(other);
                             }
                             Err(_) => {
-                                raw_unparsed_values.push(serde_json::Value::String(json_str.clone()));
+                                raw_unparsed_values
+                                    .push(serde_json::Value::String(json_str.clone()));
                             }
                         }
                     }
@@ -370,7 +448,10 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
             }
 
             if !raw_unparsed_values.is_empty() {
-                merged_json_map.insert("_legacy_unparsed_values".to_string(), serde_json::Value::Array(raw_unparsed_values));
+                merged_json_map.insert(
+                    "_legacy_unparsed_values".to_string(),
+                    serde_json::Value::Array(raw_unparsed_values),
+                );
             }
 
             let merged_metadata_str = serde_json::Value::Object(merged_json_map).to_string();
@@ -384,7 +465,10 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
 
             for &idx in &member_indices {
                 if items[idx].id != survivor_id {
-                    conn.execute("DELETE FROM message_attachments WHERE id = ?1", [items[idx].id])?;
+                    conn.execute(
+                        "DELETE FROM message_attachments WHERE id = ?1",
+                        [items[idx].id],
+                    )?;
                 }
             }
         }
@@ -396,7 +480,9 @@ fn merge_duplicate_attachments(conn: &Connection) -> Result<()> {
 pub fn apply_migration_v4(conn: &Connection) -> Result<()> {
     apply_migration_v3(conn)?;
 
-    let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    let current_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
     if current_version >= 4 {
         return Ok(());
     }
@@ -416,7 +502,8 @@ pub fn apply_migration_v4(conn: &Connection) -> Result<()> {
         if has_attachments {
             merge_duplicate_attachments(conn)?;
 
-            conn.execute_batch(r#"
+            conn.execute_batch(
+                r#"
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote 
                 ON message_attachments(message_id, remote_url) 
                 WHERE remote_url IS NOT NULL;
@@ -424,14 +511,21 @@ pub fn apply_migration_v4(conn: &Connection) -> Result<()> {
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_provider
                 ON message_attachments(message_id, provider_attachment_id)
                 WHERE provider_attachment_id IS NOT NULL;
-            "#)?;
+            "#,
+            )?;
         }
 
-        let fk_violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))?;
+        let fk_violations: i64 =
+            conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| {
+                r.get(0)
+            })?;
         if fk_violations > 0 {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
-                Some(format!("Foreign key check failed with {} violations", fk_violations)),
+                Some(format!(
+                    "Foreign key check failed with {} violations",
+                    fk_violations
+                )),
             ));
         }
 
@@ -441,7 +535,8 @@ pub fn apply_migration_v4(conn: &Connection) -> Result<()> {
     })();
 
     if migration_result.is_err() {
-        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v4; RELEASE SAVEPOINT migration_v4;");
+        let _ = conn
+            .execute_batch("ROLLBACK TO SAVEPOINT migration_v4; RELEASE SAVEPOINT migration_v4;");
     }
 
     guard.restore()?;
@@ -451,7 +546,9 @@ pub fn apply_migration_v4(conn: &Connection) -> Result<()> {
 pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
     apply_migration_v2(conn)?;
 
-    let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    let current_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
     if current_version >= 3 {
         return Ok(());
     }
@@ -505,7 +602,9 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
             }
 
             if !existing_att_cols.contains("provider_attachment_id") {
-                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN provider_attachment_id TEXT;")?;
+                conn.execute_batch(
+                    "ALTER TABLE message_attachments ADD COLUMN provider_attachment_id TEXT;",
+                )?;
             }
             if !existing_att_cols.contains("attachment_type") {
                 conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN attachment_type TEXT NOT NULL DEFAULT 'file';")?;
@@ -517,13 +616,17 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                 conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN mime_type TEXT;")?;
             }
             if !existing_att_cols.contains("size_bytes") {
-                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN size_bytes INTEGER;")?;
+                conn.execute_batch(
+                    "ALTER TABLE message_attachments ADD COLUMN size_bytes INTEGER;",
+                )?;
             }
             if !existing_att_cols.contains("local_path") {
                 conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN local_path TEXT;")?;
             }
             if !existing_att_cols.contains("thumbnail_url") {
-                conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN thumbnail_url TEXT;")?;
+                conn.execute_batch(
+                    "ALTER TABLE message_attachments ADD COLUMN thumbnail_url TEXT;",
+                )?;
             }
             if !existing_att_cols.contains("metadata_json") {
                 conn.execute_batch("ALTER TABLE message_attachments ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';")?;
@@ -532,7 +635,8 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
             // Lossless deduplication and unique index creation for message_attachments
             merge_duplicate_attachments(conn)?;
 
-            conn.execute_batch(r#"
+            conn.execute_batch(
+                r#"
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote 
                 ON message_attachments(message_id, remote_url) 
                 WHERE remote_url IS NOT NULL;
@@ -540,15 +644,18 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_provider
                 ON message_attachments(message_id, provider_attachment_id)
                 WHERE provider_attachment_id IS NOT NULL;
-            "#)?;
+            "#,
+            )?;
         }
 
         // Conditionally add provider_timestamp to messages table if messages table exists
-        let has_messages: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='messages'",
-            [],
-            |r| r.get(0),
-        ).unwrap_or(false);
+        let has_messages: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='messages'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
 
         if has_messages {
             let mut has_provider_timestamp = false;
@@ -556,7 +663,9 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                 let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
                 let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
                 for col in rows.flatten() {
-                    if col == "provider_timestamp" { has_provider_timestamp = true; }
+                    if col == "provider_timestamp" {
+                        has_provider_timestamp = true;
+                    }
                 }
             }
             if !has_provider_timestamp {
@@ -565,11 +674,17 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
         }
 
         // Verify foreign key integrity
-        let fk_violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))?;
+        let fk_violations: i64 =
+            conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| {
+                r.get(0)
+            })?;
         if fk_violations > 0 {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
-                Some(format!("Foreign key check failed with {} violations", fk_violations)),
+                Some(format!(
+                    "Foreign key check failed with {} violations",
+                    fk_violations
+                )),
             ));
         }
 
@@ -579,7 +694,8 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
     })();
 
     if migration_result.is_err() {
-        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v3; RELEASE SAVEPOINT migration_v3;");
+        let _ = conn
+            .execute_batch("ROLLBACK TO SAVEPOINT migration_v3; RELEASE SAVEPOINT migration_v3;");
     }
 
     guard.restore()?;

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::db::{init_db, open_db_connection};
     use super::super::migration_v2::{apply_migration_v2, apply_migration_v3, apply_migration_v4};
+    use crate::db::{init_db, open_db_connection};
     use rusqlite::Connection;
 
     #[test]
@@ -12,7 +12,9 @@ mod tests {
         ));
         {
             let conn = init_db(path.to_str().unwrap()).unwrap();
-            let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            let v: u32 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
             assert_eq!(v, 4);
 
             let count: i64 = conn.query_row(
@@ -65,7 +67,10 @@ mod tests {
                  VALUES ('messenger', 1, 'psid', 'PSID_COMMON_123', '2026-01-01', '2026-01-01')",
                 [],
             );
-            assert!(duplicate_res.is_err(), "Duplicate PSID under the same Page must violate unique constraint");
+            assert!(
+                duplicate_res.is_err(),
+                "Duplicate PSID under the same Page must violate unique constraint"
+            );
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -257,24 +262,32 @@ mod tests {
             conn.pragma_update(None, "foreign_keys", "ON").unwrap();
 
             // 4. Verify user_version is 4
-            let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            let v: u32 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
             assert_eq!(v, 4);
 
             // 5. Verify 0 foreign key violations
             let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
             let fk_violations: Vec<String> = fk_stmt
-                .query_map([], |row| Ok(row.get::<_, String>(0)?))
+                .query_map([], |row| row.get::<_, String>(0))
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
-            assert!(fk_violations.is_empty(), "Foreign key violations detected after migration: {:?}", fk_violations);
+            assert!(
+                fk_violations.is_empty(),
+                "Foreign key violations detected after migration: {:?}",
+                fk_violations
+            );
 
             // 6. Verify channel_identities row preserved with correct ID and columns
-            let identity_lead_id: Option<i64> = conn.query_row(
-                "SELECT lead_id FROM channel_identities WHERE id = 501",
-                [],
-                |r| r.get(0),
-            ).unwrap();
+            let identity_lead_id: Option<i64> = conn
+                .query_row(
+                    "SELECT lead_id FROM channel_identities WHERE id = 501",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(identity_lead_id, Some(101));
 
             // 7. Verify conversation_participants still references identity 501 without being cascaded/nulled
@@ -283,14 +296,19 @@ mod tests {
                 [],
                 |r| r.get(0),
             ).unwrap();
-            assert_eq!(participant_count, 1, "Participant reference was lost during migration");
+            assert_eq!(
+                participant_count, 1,
+                "Participant reference was lost during migration"
+            );
 
             // 8. Verify messages sender_identity_id preserved
-            let sender_id: Option<i64> = conn.query_row(
-                "SELECT sender_identity_id FROM messages WHERE id = 701",
-                [],
-                |r| r.get(0),
-            ).unwrap();
+            let sender_id: Option<i64> = conn
+                .query_row(
+                    "SELECT sender_identity_id FROM messages WHERE id = 701",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(sender_id, Some(501));
 
             // 9. Verify lossless attachment deduplication: exactly 1 attachment record with merged metadata
@@ -304,7 +322,10 @@ mod tests {
             assert_eq!(provider_att_id, Some("META_ATT_1".to_string()));
             assert_eq!(file_name, Some("photo.jpg".to_string()));
             assert_eq!(local_path, Some("/spool/local.jpg".to_string()));
-            assert_eq!(thumb_url, Some("https://cdn.example.com/thumb.jpg".to_string()));
+            assert_eq!(
+                thumb_url,
+                Some("https://cdn.example.com/thumb.jpg".to_string())
+            );
             assert!(meta_json.contains("\"width\":800") || meta_json.contains("\"width\": 800"));
             assert!(meta_json.contains("\"height\":600") || meta_json.contains("\"height\": 600"));
 
@@ -314,7 +335,10 @@ mod tests {
                  VALUES (701, 'https://cdn.example.com/pic1.jpg', '2026-01-01')",
                 [],
             );
-            assert!(dup_insert.is_err(), "Duplicate attachment remote_url must violate unique index");
+            assert!(
+                dup_insert.is_err(),
+                "Duplicate attachment remote_url must violate unique index"
+            );
 
             // 11. Verify provider_attachment_id collision deduplication: exactly 1 attachment record with merged metadata
             let (p_att_id, p_prov_id, p_file_name, p_meta): (i64, Option<String>, Option<String>, String) = conn.query_row(
@@ -335,7 +359,10 @@ mod tests {
                  VALUES (701, 'PROVIDER_COLLISION_1', '2026-01-01')",
                 [],
             );
-            assert!(dup_prov_insert.is_err(), "Duplicate provider_attachment_id must violate unique index");
+            assert!(
+                dup_prov_insert.is_err(),
+                "Duplicate provider_attachment_id must violate unique index"
+            );
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -390,11 +417,22 @@ mod tests {
 
         apply_migration_v4(&conn).unwrap();
 
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, 4);
 
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM message_attachments WHERE message_id = 100", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 1, "All overlapping connected rows must be merged into exactly 1 record");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_attachments WHERE message_id = 100",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "All overlapping connected rows must be merged into exactly 1 record"
+        );
 
         let (survivor_id, prov_id, remote, meta): (i64, Option<String>, Option<String>, String) = conn.query_row(
             "SELECT id, provider_attachment_id, remote_url, metadata_json FROM message_attachments WHERE message_id = 100",
@@ -404,18 +442,28 @@ mod tests {
 
         assert_eq!(survivor_id, 1001);
         assert_eq!(prov_id, Some("P1".to_string()));
-        assert_eq!(remote, Some("https://cdn.example.com/shared.jpg".to_string()));
+        assert_eq!(
+            remote,
+            Some("https://cdn.example.com/shared.jpg".to_string())
+        );
         assert!(meta.contains("\"key1\":\"val_a\"") || meta.contains("\"key1\": \"val_a\""));
         assert!(meta.contains("\"key2\":\"val_b\"") || meta.contains("\"key2\": \"val_b\""));
-        assert!(meta.contains("\"conflict_key\":\"survivor_val\"") || meta.contains("\"conflict_key\": \"survivor_val\""));
-        assert!(meta.contains("\"conflict_key_dup_1002\":\"dup_val\"") || meta.contains("\"conflict_key_dup_1002\": \"dup_val\""));
+        assert!(
+            meta.contains("\"conflict_key\":\"survivor_val\"")
+                || meta.contains("\"conflict_key\": \"survivor_val\"")
+        );
+        assert!(
+            meta.contains("\"conflict_key_dup_1002\":\"dup_val\"")
+                || meta.contains("\"conflict_key_dup_1002\": \"dup_val\"")
+        );
         assert!(meta.contains("invalid json string payload"));
     }
 
     #[test]
     fn test_old_v3_database_repaired_to_v4() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 3;
             CREATE TABLE channel_accounts (id INTEGER PRIMARY KEY);
             INSERT INTO channel_accounts (id) VALUES (1);
@@ -440,21 +488,33 @@ mod tests {
 
             INSERT INTO message_attachments (id, message_id, remote_url, metadata_json, created_at)
             VALUES (2002, 50, 'https://cdn.example.com/dup.jpg', '{"y": 20}', '2026-01-01');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         apply_migration_v4(&conn).unwrap();
 
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, 4);
 
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM message_attachments WHERE message_id = 50", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_attachments WHERE message_id = 50",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
 
-        let (survivor_id, meta): (i64, String) = conn.query_row(
-            "SELECT id, metadata_json FROM message_attachments WHERE message_id = 50",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
+        let (survivor_id, meta): (i64, String) = conn
+            .query_row(
+                "SELECT id, metadata_json FROM message_attachments WHERE message_id = 50",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(survivor_id, 2001);
         assert!(meta.contains("\"x\":10") || meta.contains("\"x\": 10"));
         assert!(meta.contains("\"y\":20") || meta.contains("\"y\": 20"));
@@ -465,7 +525,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
 
         // Base V1 schema fixture
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -520,11 +581,15 @@ mod tests {
                 remote_url TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         // 1. Setup V2 database
         apply_migration_v2(&conn).unwrap();
-        let v2: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v2: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v2, 2);
 
         // 2. Populate test data in V2
@@ -542,7 +607,9 @@ mod tests {
 
         // 3. Upgrade from V2 to V3
         apply_migration_v3(&conn).unwrap();
-        let v3: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v3: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v3, 3);
 
         // Verify preserved identity data
@@ -555,7 +622,9 @@ mod tests {
 
         // 4. Idempotency check
         apply_migration_v3(&conn).unwrap();
-        let v3_repeat: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v3_repeat: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v3_repeat, 3);
     }
 
@@ -592,9 +661,13 @@ mod tests {
         let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT test_fail; RELEASE SAVEPOINT test_fail;");
 
         // Verify that row 2 was rolled back cleanly and row 1 remains
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM channel_identities", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM channel_identities", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 1);
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, 1);
     }
 }
