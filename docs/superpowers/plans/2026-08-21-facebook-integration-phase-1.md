@@ -811,9 +811,12 @@ git commit -m "feat(conversation): implement Stronghold keyring interface and ta
 
 ```rust
 // src-tauri/src/conversation/facebook/sync.rs
-use anyhow::Result;
+// src-tauri/src/conversation/facebook/sync_worker.rs
+use anyhow::{anyhow, Result};
+use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaBufferEvent {
@@ -821,17 +824,49 @@ pub struct MetaBufferEvent {
     pub page_id: String,
     pub event_type: String,
     pub event_key: String,
-    pub payload: serde_json::Value,
+    pub payload: Value,
 }
 
-pub struct FacebookSyncWorker;
+pub struct FacebookSyncWorker {
+    supabase_url: String,
+    supabase_service_role_key: String,
+    http: Client,
+}
 
 impl FacebookSyncWorker {
+    pub fn new(supabase_url: String, supabase_service_role_key: String) -> Self {
+        Self {
+            supabase_url,
+            supabase_service_role_key,
+            http: Client::new(),
+        }
+    }
+
+    pub async fn fetch_new_events(&self, page_id: &str, last_synced_id: i64) -> Result<Vec<MetaBufferEvent>> {
+        let url = format!(
+            "{}/rest/v1/meta_webhook_buffer?page_id=eq.{}&id=gt.{}&order=id.asc&limit=100",
+            self.supabase_url, page_id, last_synced_id
+        );
+
+        let resp = self.http.get(&url)
+            .header("apikey", &self.supabase_service_role_key)
+            .header("Authorization", format!("Bearer {}", self.supabase_service_role_key))
+            .send().await?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("Failed to fetch webhook buffer: HTTP {}", resp.status()));
+        }
+
+        let rows: Vec<MetaBufferEvent> = resp.json().await?;
+        Ok(rows)
+    }
+
     pub fn ingest_events(conn: &mut Connection, account_id: i64, events: &[MetaBufferEvent]) -> Result<i64> {
         let tx = conn.transaction()?;
-        let mut max_synced_id = 0;
+        let mut max_synced_id = 0i64;
 
         for ev in events {
+            let mut processed = false;
             match ev.event_type.as_str() {
                 "messages" => {
                     if let Some(msg) = ev.payload.get("message") {
@@ -856,9 +891,9 @@ impl FacebookSyncWorker {
                                  VALUES (?1, 'inbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
+                            processed = true;
                         }
                     }
-                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
                 "message_echoes" => {
                     if let Some(msg) = ev.payload.get("message") {
@@ -883,28 +918,43 @@ impl FacebookSyncWorker {
                                  VALUES (?1, 'outbound', ?2, 'text', ?3, datetime('now'))",
                                 params![conv_id, mid, text],
                             )?;
+                            processed = true;
                         }
                     }
-                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
                 "message_deliveries" | "message_reads" => {
                     let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                     let watermark = ev.payload.get("delivery").or_else(|| ev.payload.get("read"))
                         .and_then(|d| d.get("watermark")).and_then(|w| w.as_i64()).unwrap_or(0);
 
-                    if !recipient_psid.is_empty() && watermark > 0 {
-                        let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
-                        tx.execute(
-                            "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
-                             SELECT m.id, ?2, ?3, datetime('now')
-                             FROM messages m
-                             JOIN channel_conversations c ON m.conversation_id = c.id
-                             WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2
-                             ORDER BY m.id DESC LIMIT 1",
-                            params![account_id, recipient_psid, r_type],
-                        )?;
+                    if !recipient_psid.is_empty() {
+                        if let Some(mids) = ev.payload.get("delivery").and_then(|d| d.get("mids")).and_then(|m| m.as_array()) {
+                            for mid_val in mids {
+                                if let Some(m_str) = mid_val.as_str() {
+                                    tx.execute(
+                                        "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
+                                         SELECT id, ?2, 'delivered', datetime('now')
+                                         FROM messages
+                                         WHERE provider_message_id = ?1",
+                                        params![m_str, recipient_psid],
+                                    )?;
+                                }
+                            }
+                            processed = true;
+                        } else if watermark > 0 {
+                            let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
+                            tx.execute(
+                                "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
+                                 SELECT m.id, ?2, ?3, datetime('now')
+                                 FROM messages m
+                                 JOIN channel_conversations c ON m.conversation_id = c.id
+                                 WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
+                                 ORDER BY m.id DESC LIMIT 1",
+                                params![account_id, recipient_psid, r_type],
+                            )?;
+                            processed = true;
+                        }
                     }
-                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
                 "message_reactions" => {
                     if let Some(r) = ev.payload.get("reaction") {
@@ -920,13 +970,17 @@ impl FacebookSyncWorker {
                                  ) VALUES (?1, ?2, 'direct', ?3, ?2, ?4, ?5, datetime('now'), datetime('now'), datetime('now'))",
                                 params![account_id, sender_psid, mid, reaction, if action == "unreact" { 1 } else { 0 }],
                             )?;
+                            processed = true;
                         }
                     }
-                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
                 _ => {
                     // Feed and Leadgen events leave messenger cursor unchanged; processed by dedicated feature workers
                 }
+            }
+
+            if processed && ev.id > max_synced_id {
+                max_synced_id = ev.id;
             }
         }
 
@@ -942,6 +996,9 @@ impl FacebookSyncWorker {
         tx.commit()?;
         Ok(max_synced_id)
     }
+}
+
+```
 }
 ```
 
@@ -995,4 +1052,195 @@ git commit -m "feat(ui): implement Facebook24hPolicyBanner with reactive countdo
 | **All Ledger Requirements Verified** | REQ-FB-01 through REQ-FB-07 proven by tests | `LOCKED (PRE-IMPLEMENTATION)` |
 | **No Stubs / No Bypasses** | 100% real implementation code with Zero Placeholder values | `LOCKED (PRE-IMPLEMENTATION)` |
 | **Clean Build & CI Matrix** | `bun run check`, `bun test`, and `cargo test` pass | `LOCKED (PRE-IMPLEMENTATION)` |
+// src-tauri/src/conversation/facebook/sync_worker.rs
+use anyhow::{anyhow, Result};
+use reqwest::Client;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookBufferRow {
+    pub id: i64,
+    pub page_id: String,
+    pub event_type: String,
+    pub event_key: String,
+    pub payload: Value,
+}
+
+pub struct FacebookSyncWorker {
+    supabase_url: String,
+    supabase_service_role_key: String,
+    http: Client,
+}
+
+impl FacebookSyncWorker {
+    pub fn new(supabase_url: String, supabase_service_role_key: String) -> Self {
+        Self {
+            supabase_url,
+            supabase_service_role_key,
+            http: Client::new(),
+        }
+    }
+
+    pub async fn fetch_new_events(&self, page_id: &str, last_synced_id: i64) -> Result<Vec<WebhookBufferRow>> {
+        let url = format!(
+            "{}/rest/v1/meta_webhook_buffer?page_id=eq.{}&id=gt.{}&order=id.asc&limit=100",
+            self.supabase_url, page_id, last_synced_id
+        );
+
+        let resp = self.http.get(&url)
+            .header("apikey", &self.supabase_service_role_key)
+            .header("Authorization", format!("Bearer {}", self.supabase_service_role_key))
+            .send().await?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("Failed to fetch webhook buffer: HTTP {}", resp.status()));
+        }
+
+        let rows: Vec<WebhookBufferRow> = resp.json().await?;
+        Ok(rows)
+    }
+
+    pub fn ingest_events(conn: &mut Connection, account_id: i64, page_id: &str, events: Vec<WebhookBufferRow>) -> Result<i64> {
+        let tx = conn.transaction()?;
+        let mut max_synced_id = 0i64;
+
+        for ev in &events {
+            let mut processed = false;
+            match ev.event_type.as_str() {
+                "messages" => {
+                    if let Some(msg) = ev.payload.get("message") {
+                        let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
+                        let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+
+                        if !sender_psid.is_empty() {
+                            tx.execute(
+                                "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
+                                 VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
+                                params![account_id, sender_psid],
+                            )?;
+                            let conv_id: i64 = tx.query_row(
+                                "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2",
+                                params![account_id, sender_psid],
+                                |r| r.get(0),
+                            )?;
+
+                            tx.execute(
+                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+                                 VALUES (?1, 'inbound', ?2, 'text', ?3, datetime('now'))",
+                                params![conv_id, mid, text],
+                            )?;
+                            processed = true;
+                        }
+                    }
+                }
+                "message_echoes" => {
+                    if let Some(msg) = ev.payload.get("message") {
+                        let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
+                        let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+
+                        if !recipient_psid.is_empty() {
+                            tx.execute(
+                                "INSERT OR IGNORE INTO channel_conversations (channel_account_id, external_thread_id, kind, status, created_at, updated_at)
+                                 VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'))",
+                                params![account_id, recipient_psid],
+                            )?;
+                            let conv_id: i64 = tx.query_row(
+                                "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2",
+                                params![account_id, recipient_psid],
+                                |r| r.get(0),
+                            )?;
+
+                            tx.execute(
+                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
+                                 VALUES (?1, 'outbound', ?2, 'text', ?3, datetime('now'))",
+                                params![conv_id, mid, text],
+                            )?;
+                            processed = true;
+                        }
+                    }
+                }
+                "message_deliveries" | "message_reads" => {
+                    let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+                    let watermark = ev.payload.get("delivery").or_else(|| ev.payload.get("read"))
+                        .and_then(|d| d.get("watermark")).and_then(|w| w.as_i64()).unwrap_or(0);
+
+                    if !recipient_psid.is_empty() {
+                        if let Some(mids) = ev.payload.get("delivery").and_then(|d| d.get("mids")).and_then(|m| m.as_array()) {
+                            for mid_val in mids {
+                                if let Some(m_str) = mid_val.as_str() {
+                                    tx.execute(
+                                        "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
+                                         SELECT id, ?2, 'delivered', datetime('now')
+                                         FROM messages
+                                         WHERE provider_message_id = ?1",
+                                        params![m_str, recipient_psid],
+                                    )?;
+                                }
+                            }
+                            processed = true;
+                        } else if watermark > 0 {
+                            let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
+                            tx.execute(
+                                "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
+                                 SELECT m.id, ?2, ?3, datetime('now')
+                                 FROM messages m
+                                 JOIN channel_conversations c ON m.conversation_id = c.id
+                                 WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
+                                 ORDER BY m.id DESC LIMIT 1",
+                                params![account_id, recipient_psid, r_type],
+                            )?;
+                            processed = true;
+                        }
+                    }
+                }
+                "message_reactions" => {
+                    if let Some(r) = ev.payload.get("reaction") {
+                        let mid = r.get("mid").and_then(|m| m.as_str()).unwrap_or("");
+                        let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
+                        let reaction = r.get("reaction").and_then(|re| re.as_str()).unwrap_or("");
+                        let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
+
+                        if !mid.is_empty() && !sender_psid.is_empty() {
+                            tx.execute(
+                                "INSERT OR REPLACE INTO pending_message_reactions (
+                                    channel_account_id, external_thread_id, conversation_kind, provider_message_id, actor_external_id, reaction, removed, occurred_at, created_at, updated_at
+                                 ) VALUES (?1, ?2, 'direct', ?3, ?2, ?4, ?5, datetime('now'), datetime('now'), datetime('now'))",
+                                params![account_id, sender_psid, mid, reaction, if action == "unreact" { 1 } else { 0 }],
+                            )?;
+                            processed = true;
+                        }
+                    }
+                }
+                _ => {
+                    // Feed and Leadgen events leave messenger cursor unchanged; processed by dedicated feature workers
+                }
+            }
+
+            if processed && ev.id > max_synced_id {
+                max_synced_id = ev.id;
+            }
+        }
+
+        if max_synced_id > 0 {
+            tx.execute(
+                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, last_event_at, updated_at)
+                 VALUES (?1, 'messenger', ?2, datetime('now'), datetime('now'))
+                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, last_event_at = datetime('now'), updated_at = datetime('now')",
+                params![account_id, max_synced_id.to_string()],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(max_synced_id)
+    }
+}
+```
+
+- [ ] **Step 2: Commit Task 5**
+
+```bash
 | **GitNexus Scope Verified** | `gitnexus_detect_changes()` matches exact expected scope | `LOCKED (PRE-IMPLEMENTATION)` |
