@@ -1,6 +1,23 @@
 use rusqlite::{Connection, Result};
 use std::collections::HashSet;
 
+struct PragmaGuard<'a> {
+    conn: &'a Connection,
+    restore_fk: bool,
+    restore_legacy_alter: bool,
+}
+
+impl<'a> Drop for PragmaGuard<'a> {
+    fn drop(&mut self) {
+        if self.restore_legacy_alter {
+            let _ = self.conn.execute_batch("PRAGMA legacy_alter_table = OFF;");
+        }
+        if self.restore_fk {
+            let _ = self.conn.execute_batch("PRAGMA foreign_keys = ON;");
+        }
+    }
+}
+
 pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
     let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
     if current_version >= 2 {
@@ -9,6 +26,12 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
 
     let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
     let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
+
+    let mut guard = PragmaGuard {
+        conn,
+        restore_fk: initial_fk == 1,
+        restore_legacy_alter: false,
+    };
 
     let migration_result = (|| -> Result<()> {
         conn.execute_batch("SAVEPOINT migration_v2;")?;
@@ -46,7 +69,6 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         ).unwrap_or(false);
 
         if has_channel_identities {
-            // Check which columns exist in channel_identities
             let mut existing_cols = HashSet::new();
             {
                 let mut stmt = conn.prepare("PRAGMA table_info(channel_identities)")?;
@@ -69,10 +91,11 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
             let link_conf_expr = if existing_cols.contains("link_confidence") { "link_confidence" } else { "NULL" };
             let verif_at_expr = if existing_cols.contains("verified_at") { "verified_at" } else { "NULL" };
 
+            guard.restore_legacy_alter = true;
+            conn.execute_batch("PRAGMA legacy_alter_table = ON;")?;
+
             let copy_sql = format!(
                 r#"
-                PRAGMA legacy_alter_table = ON;
-
                 INSERT INTO channel_identities_v2 (
                     id, lead_id, channel, channel_account_id, identity_namespace, external_id,
                     normalized_address, display_name, avatar_url, profile_synced_at,
@@ -88,11 +111,12 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
 
                 DROP TABLE IF EXISTS channel_identities;
                 ALTER TABLE channel_identities_v2 RENAME TO channel_identities;
-
-                PRAGMA legacy_alter_table = OFF;
                 "#
             );
             conn.execute_batch(&copy_sql)?;
+
+            conn.execute_batch("PRAGMA legacy_alter_table = OFF;")?;
+            guard.restore_legacy_alter = false;
         } else {
             conn.execute_batch("ALTER TABLE channel_identities_v2 RENAME TO channel_identities;")?;
         }
@@ -158,10 +182,6 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v2; RELEASE SAVEPOINT migration_v2;");
     }
 
-    if initial_fk == 1 {
-        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
-    }
-
     migration_result
 }
 
@@ -176,11 +196,17 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
     let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
     let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
 
+    let _guard = PragmaGuard {
+        conn,
+        restore_fk: initial_fk == 1,
+        restore_legacy_alter: false,
+    };
+
     let migration_result = (|| -> Result<()> {
         conn.execute_batch("SAVEPOINT migration_v3;")?;
 
         conn.execute_batch(r#"
-            -- 1. Create channel_sync_dead_letters table with complete lifecycle
+            -- 1. Create channel_sync_dead_letters table with complete lifecycle and failed status
             CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_account_id INTEGER NOT NULL,
@@ -190,9 +216,11 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                 event_key TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 error_reason TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'retrying', 'resolved', 'ignored')),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'retrying', 'resolved', 'ignored', 'failed')),
                 attempts INTEGER NOT NULL DEFAULT 0,
                 next_retry_at TEXT,
+                owner_id TEXT,
+                claim_deadline TEXT,
                 resolved_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
@@ -277,11 +305,14 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                         WHERE message_id = target.message_id AND remote_url = target.remote_url AND thumbnail_url IS NOT NULL 
                         LIMIT 1
                     )),
-                    metadata_json = COALESCE(target.metadata_json, (
-                        SELECT metadata_json FROM message_attachments 
-                        WHERE message_id = target.message_id AND remote_url = target.remote_url AND metadata_json IS NOT NULL AND metadata_json != '{}' 
-                        LIMIT 1
-                    ))
+                    metadata_json = CASE 
+                        WHEN target.metadata_json IS NOT NULL AND target.metadata_json != '{}' THEN target.metadata_json
+                        ELSE COALESCE((
+                            SELECT metadata_json FROM message_attachments 
+                            WHERE message_id = target.message_id AND remote_url = target.remote_url AND metadata_json IS NOT NULL AND metadata_json != '{}' 
+                            LIMIT 1
+                        ), '{}')
+                    END
                 WHERE target.id IN (
                     SELECT MIN(id) 
                     FROM message_attachments 
@@ -334,10 +365,6 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
 
     if migration_result.is_err() {
         let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v3; RELEASE SAVEPOINT migration_v3;");
-    }
-
-    if initial_fk == 1 {
-        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
     }
 
     migration_result

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock & reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback & Anonymization Engine, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
+**Goal:** Implement Comment Automations (Auto-Like, Public Reply, and 1-reply/comment Send API Private Reply with two-phase lease lock, heartbeat renewal & reconciliation), Facebook Lead Ads automatic CRM ingestion with custom field retention, Data Deletion Compliance Callback & Device Task Anonymization Engine, Page Health Monitoring, and the complete Svelte 5 Facebook Hub.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions, Meta Graph API v26.0+.
 
@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-12** | Comment Loop Guard | `PLANNED` | Task 2 (Step 1) | Engine checks `from.id != page_id` before processing any feed event. | Page posts a public reply; feed webhook arrives for that reply; engine marks `skipped_loop_guard` with zero replies sent. | Loop test: Feed event with `from.id == page_id` produces zero outbound calls. |
-| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Ambiguous Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and heartbeat renewal before sending Private Reply. On timeout, marks `delivery_unknown` and reconciles via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
-| **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursors | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /{leadgen_id}` using isolated `meta_webhook_leadgen_cursor`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
-| **REQ-FB-15** | Data Deletion Compliance Endpoint & Local/Cloud Anonymizer | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, purges buffer, anonymizes local SQLite records, and returns confirmation code with status tracking URL `https://rustsale.trantrongtri.com/deletion-status?id=...`. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
+| **REQ-FB-13** | 7-Day Window & Atomic 1-Reply Lock with Heartbeat & Reconciliation | `PLANNED` | Task 2 (Step 1) | Engine executes atomic claim (`INSERT INTO facebook_comment_logs (comment_id, private_reply_status, owner_id, claim_deadline) ...`) with 5-minute lease and in-flight heartbeat renewal before sending Private Reply. On timeout, marks `delivery_unknown` and reconciles via Graph API before retrying. | 2 concurrent workers receive the same comment webhook; only Worker 1 claims lock; Worker 2 exits with `already_claimed`. | Concurrency test: Race 2 threads on same `comment_id`; assert exactly 1 Meta Send API call is made. |
+| **REQ-FB-14** | Idempotent Lead Ads Ingestion & Isolated Cursors | `PLANNED` | Task 3 (Step 1) | Webhook triggers `GET /<leadgen_id>` using isolated `meta_webhook_leadgen_cursor`; parses standard fields and custom questions; inserts into `leads (leadgen_id, ...)` with `ON CONFLICT(leadgen_id) DO NOTHING`. | Meta re-delivers lead webhook 3 times; parser ingests lead on attempt 1, attempts 2 & 3 exit gracefully with `duplicate_ignored`. | Idempotency test: Ingest same `leadgen_id` 3 times; verify exactly 1 row exists in `leads`. |
+| **REQ-FB-15** | Data Deletion Compliance Endpoint & Multi-Device Lifecycle | `PLANNED` | Task 4 (Step 1) | Supabase Edge Function `/meta-data-deletion` validates Meta `signed_request` via HMAC-SHA256, purges buffer, dispatches `meta_device_deletion_tasks`, and returns confirmation code with status tracking URL `https://rustsale.trantrongtri.com/deletion-status?id=...`. Local client anonymizes SQLite records. | Meta review bot pings `/meta-data-deletion` with valid signature; receives HTTP 200 with JSON `{ url, confirmation_code }`. | Compliance test: Send mock Meta deletion payload; assert 200 and schema validity. |
 
 ---
 
@@ -62,7 +62,7 @@ git commit -m "feat(facebook): implement comment automation types and keyword ma
 
 ---
 
-### Task 2: Comment Automation Engine with 5-Min Lease Lock & Reconciliation
+### Task 2: Comment Automation Engine with 5-Min Lease Lock, Heartbeat & Reconciliation
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/comment_engine.rs`
@@ -81,6 +81,16 @@ use serde_json::{json, Value};
 pub struct CommentEngine;
 
 impl CommentEngine {
+    pub fn renew_heartbeat(conn: &Connection, comment_id: &str, worker_id: &str) -> Result<bool> {
+        let rows = conn.execute(
+            "UPDATE facebook_comment_logs 
+             SET claim_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+             WHERE comment_id = ?1 AND owner_id = ?2 AND private_reply_status = 'processing'",
+            params![comment_id, worker_id],
+        )?;
+        Ok(rows > 0)
+    }
+
     pub async fn execute_private_reply(
         conn: &mut Connection,
         token: &str,
@@ -121,7 +131,7 @@ impl CommentEngine {
         }
         tx.commit()?;
 
-        // 4. Call Meta Send API
+        // 4. Call Meta Send API with lease renewal
         let client = Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
         let url = format!("https://graph.facebook.com/v26.0/{}/messages", page_id);
         let body = json!({
@@ -168,9 +178,20 @@ impl CommentEngine {
     pub async fn reconcile_delivery_unknown(
         conn: &mut Connection,
         token: &str,
-        page_id: &str,
+        worker_id: &str,
         comment_id: &str,
     ) -> Result<bool> {
+        let claim_rows = conn.execute(
+            "UPDATE facebook_comment_logs 
+             SET owner_id = ?1, claim_deadline = datetime('now', '+5 minutes')
+             WHERE comment_id = ?2 AND private_reply_status = 'delivery_unknown'
+               AND (claim_deadline IS NULL OR claim_deadline < datetime('now'))",
+            params![worker_id, comment_id],
+        )?;
+        if claim_rows == 0 {
+            return Ok(false);
+        }
+
         let client = Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
         let url = format!("https://graph.facebook.com/v26.0/{}?fields=private_reply_status", comment_id);
         let resp = client.get(&url).bearer_auth(token).send().await?;
@@ -186,6 +207,11 @@ impl CommentEngine {
                 }
             }
         }
+        // If not confirmed replied, transition back to failed for safe retry
+        conn.execute(
+            "UPDATE facebook_comment_logs SET private_reply_status = 'failed', updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
+            params![comment_id, worker_id],
+        )?;
         Ok(false)
     }
 }
@@ -195,7 +221,7 @@ impl CommentEngine {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete comment automation engine with atomic claim and meta send api"
+git commit -m "feat(facebook): implement complete comment automation engine with atomic claim, heartbeat, and meta send api"
 ```
 
 ---
@@ -306,13 +332,45 @@ git commit -m "feat(facebook): implement complete lead ads ingestion pipeline wi
 
 ---
 
-### Task 4: Data Deletion Callback & Token Health Monitor
+### Task 4: Complete Data Deletion Lifecycle & Device Task Queue
 
 **Files:**
 - Create: `supabase/functions/meta-data-deletion/index.ts`
+- Create: `supabase/migrations/20260821000003_data_deletion_tables.sql`
+- Create: `src-tauri/src/conversation/facebook/deletion_sync.rs`
 - Create: `src-tauri/src/conversation/facebook/health_monitor.rs`
 
-- [ ] **Step 1: Implement Edge Function `/meta-data-deletion` with signed_request parser**
+- [ ] **Step 1: Write Supabase Migration for Data Deletion and Device Tasks**
+
+```sql
+-- supabase/migrations/20260821000003_data_deletion_tables.sql
+CREATE TABLE IF NOT EXISTS data_deletion_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL,
+    confirmation_code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+ALTER TABLE data_deletion_requests ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    request_id UUID NOT NULL REFERENCES data_deletion_requests(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed')),
+    acknowledged_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Tenants sync own deletion tasks" ON meta_device_deletion_tasks
+    FOR ALL USING (auth.uid() = tenant_id);
+```
+
+- [ ] **Step 2: Implement Edge Function `/meta-data-deletion` with signed_request parser & task dispatch**
 
 ```typescript
 // supabase/functions/meta-data-deletion/index.ts
@@ -322,7 +380,6 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const META_APP_SECRET = Deno.env.get("META_APP_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 function base64UrlDecode(input: string): Uint8Array {
@@ -331,9 +388,7 @@ function base64UrlDecode(input: string): Uint8Array {
   const binStr = atob(base64);
   const len = binStr.length;
   const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binStr.charCodeAt(i);
-  }
+  for (let i = 0; i < len; i++) bytes[i] = binStr.charCodeAt(i);
   return bytes;
 }
 
@@ -385,15 +440,29 @@ serve(async (req: Request) => {
   const userId = data.user_id;
   const confirmationCode = crypto.randomUUID();
 
-  const { error } = await supabaseAdmin.from("data_deletion_requests").insert({
+  const { data: requestRow, error } = await supabaseAdmin.from("data_deletion_requests").insert({
     user_id: userId,
     confirmation_code: confirmationCode,
     status: "pending",
-  });
+  }).select("id").single();
 
-  if (error) {
-    console.error("Database persistence error for deletion request:", error);
+  if (error || !requestRow) {
+    console.error("Database error creating deletion request:", error);
     return new Response("Database error", { status: 500 });
+  }
+
+  // Find all tenants with connected pages and dispatch device tasks
+  const { data: pages } = await supabaseAdmin.from("meta_tenant_pages").select("tenant_id");
+  if (pages) {
+    const uniqueTenants = Array.from(new Set(pages.map(p => p.tenant_id)));
+    for (const tId of uniqueTenants) {
+      await supabaseAdmin.from("meta_device_deletion_tasks").insert({
+        request_id: requestRow.id,
+        tenant_id: tId,
+        user_id: userId,
+        status: "pending",
+      });
+    }
   }
 
   return new Response(JSON.stringify({
@@ -406,11 +475,54 @@ serve(async (req: Request) => {
 });
 ```
 
-- [ ] **Step 2: Commit Task 4**
+- [ ] **Step 3: Implement Desktop Deletion Sync and Local SQLite Anonymizer**
+
+```rust
+// src-tauri/src/conversation/facebook/deletion_sync.rs
+use anyhow::Result;
+use rusqlite::{params, Connection};
+
+pub struct FacebookDeletionWorker;
+
+impl FacebookDeletionWorker {
+    pub fn anonymize_user_data_local(conn: &mut Connection, external_user_id: &str) -> Result<usize> {
+        let tx = conn.transaction()?;
+        
+        // 1. Anonymize leads
+        tx.execute(
+            "UPDATE leads 
+             SET name = 'Deleted User', email = NULL, phone = '', notes = '[Anonymized per GDPR/Meta privacy request]', updated_at = datetime('now')
+             WHERE id IN (SELECT lead_id FROM channel_identities WHERE external_id = ?1 AND lead_id IS NOT NULL)",
+            params![external_user_id],
+        )?;
+
+        // 2. Anonymize messages
+        tx.execute(
+            "UPDATE messages 
+             SET text_content = '[Deleted as per privacy request]', updated_at = datetime('now')
+             WHERE sender_identity_id IN (SELECT id FROM channel_identities WHERE external_id = ?1)",
+            params![external_user_id],
+        )?;
+
+        // 3. Nullify channel identities
+        let rows = tx.execute(
+            "UPDATE channel_identities 
+             SET display_name = 'Deleted User', avatar_url = NULL, normalized_address = NULL, updated_at = datetime('now')
+             WHERE external_id = ?1",
+            params![external_user_id],
+        )?;
+
+        tx.commit()?;
+        Ok(rows)
+    }
+}
+```
+
+- [ ] **Step 4: Commit Task 4**
 
 ```bash
-git add supabase/functions/ src-tauri/src/conversation/facebook/
-git commit -m "feat(compliance): implement data deletion callback edge function and page health monitor"
+git add supabase/ src-tauri/src/conversation/facebook/
+git commit -m "feat(compliance): implement full multi-device data deletion lifecycle, edge callback and local anonymizer"
 ```
 
 ---
@@ -482,4 +594,3 @@ git commit -m "feat(ui): add FacebookHub top-level view and global sidebar navig
 ```bash
 git commit --allow-empty -m "chore: complete phase 3 facebook automations and compliance implementation"
 ```
-

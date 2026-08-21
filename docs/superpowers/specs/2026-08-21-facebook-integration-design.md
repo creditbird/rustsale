@@ -25,15 +25,17 @@ flowchart TD
     end
 
     subgraph Supabase_Cloud ["Supabase Cloud Relay & Auth Bridge"]
+        EdgeOAuthStart["Edge Function: /meta-oauth-start (PKCE & Session Init)"]
         EdgeOAuth["Edge Function: /meta-oauth-callback (Verify & Exchange)"]
-        EdgeExchange["Edge Function: /meta-oauth-exchange (Authenticated 1-Time Handoff)"]
+        EdgeExchange["Edge Function: /meta-oauth-exchange (Authenticated 1-Time PKCE Handoff)"]
         EdgeDebug["Edge Function: /meta-debug-token (Inspect Scopes)"]
         EdgeHook["Edge Function: /meta-webhook (HMAC Raw Body Verify & Retry Guard)"]
         EdgeDelete["Edge Function: /meta-data-deletion (Signed Request Verify & Status Endpoint)"]
         TenantMap[("meta_tenant_pages (Service-Role Protected)")]
         BufferDB[("meta_webhook_buffer (Immutable Log + RLS)")]
-        ExchangeDB[("oauth_exchange_codes (Atomic 60s Single-Use)")]
-        DeletionDB[("data_deletion_requests (User Compliance Tracking)")]
+        AuthSessionsDB[("oauth_authorization_sessions (PKCE Challenges)")]
+        ExchangeDB[("oauth_exchange_codes (Atomic 60s Single-Use PKCE)")]
+        DeletionDB[("data_deletion_requests & meta_device_deletion_tasks")]
         Realtime["Supabase Realtime (Tenant Scoped Private Channel)"]
     end
 
@@ -41,8 +43,8 @@ flowchart TD
         DeepLink["tauri-plugin-deep-link (rustsale://oauth/facebook/callback?code=...&state=...)"]
         Stronghold["Tauri Stronghold / OS Keyring (AES-256-GCM Local Master Key)"]
         RustSyncWorker["Rust Inbound Sync Worker (Multi-Stream Isolated Cursors)"]
-        RustCommentWorker["Rust Comment Automation Worker (5-Min Lease Lock + Reconciliation)"]
-        RustPostWorker["Rust Post Scheduler Worker (Resumable Uploads & JIT Promotion)"]
+        RustCommentWorker["Rust Comment Automation Worker (5-Min Lease Lock + Heartbeat + Reconciliation)"]
+        RustPostWorker["Rust Post Scheduler Worker (Restart-Resumable Uploads & JIT Promotion)"]
         RustOutbox["Rust Outbox Sender (Exponential Backoff + Typed Error Classifier)"]
         SQLite[("Local SQLite DB (channel_accounts, messages, posts, leads, tokens)")]
         MediaCache["Local Media Cache (Sanitized Spool / Attachments)"]
@@ -50,9 +52,11 @@ flowchart TD
     end
 
     %% Auth Flow
-    SvelteUI -->|Initiate Connection| DeepLink
-    EdgeOAuth -->|Store 60s Single-Use Code| ExchangeDB
-    DeepLink -->|POST /meta-oauth-exchange with JWT & code| EdgeExchange
+    SvelteUI -->|1. Generate PKCE & Init| EdgeOAuthStart
+    EdgeOAuthStart -->|Store Session & Challenge| AuthSessionsDB
+    EdgeOAuthStart -->|Open Meta Dialog| DeepLink
+    EdgeOAuth -->|Store Bound 60s Single-Use Code| ExchangeDB
+    DeepLink -->|POST /meta-oauth-exchange with JWT & PKCE Verifier| EdgeExchange
     EdgeExchange -->|Return TLS-Protected Tokens| Stronghold
     Stronghold -->|Encrypt with OS Keyring Key| SQLite
 
@@ -70,7 +74,7 @@ flowchart TD
     %% Outbound & Automations
     SvelteUI -->|Gửi tin / Đăng bài| RustOutbox
     RustOutbox -->|POST /<page_id>/messages /feed| FB_Send
-    RustCommentWorker -->|Private Reply with Lock| FB_Send
+    RustCommentWorker -->|Private Reply with Lock & Heartbeat| FB_Send
     RustPostWorker -->|Resumable Chunked Transfer| FB_Send
 ```
 
@@ -78,36 +82,44 @@ flowchart TD
 
 ## 2. Security, Authentication & Cryptographic Token Lifecycle
 
-### 2.1 Zero-Secret Desktop Architecture & Complete Cryptographic Handoff
+### 2.1 Zero-Secret Desktop Architecture & Complete PKCE Token Handoff
 - **Strict Mandate:** Meta `client_secret` and App Access Tokens (`app_id|app_secret`) MUST NEVER reside within the desktop binary.
-- **End-to-End Cryptographic Protocol:**
-  1. **CSRF State Generation:** Desktop generates a cryptographically secure random `state` (UUIDv4) and stores it in memory.
-  2. **Authorization Code Flow:** Desktop triggers system browser to open Meta OAuth dialog:
-     `https://www.facebook.com/v26.0/dialog/oauth?client_id={APP_ID}&redirect_uri={SUPABASE_URL}/functions/v1/meta-oauth-callback&state={CSRF_STATE}&scope=pages_messaging,pages_manage_posts,pages_read_engagement,pages_show_list,leads_retrieval`
-  3. **Server-Side Token Exchange:** Meta redirects user to `/meta-oauth-callback`. Edge Function:
-     - Verifies `state` format.
-     - Exchanges `code` for short-lived user token via Meta Graph API with server-side `META_APP_SECRET`.
-     - Exchanges short-lived token for 60-day **Long-lived User Token**.
-     - Queries `GET /me/accounts` to retrieve all Page Access Tokens.
-     - Generates a cryptographically random 60-second single-use `exchange_code` (UUIDv4).
-     - Persists `{ exchange_code, tenant_id: null, payload: JSON.stringify(pages), expires_at: now() + 60s, consumed: false }` in `oauth_exchange_codes` table via `supabaseAdmin`.
-     - Redirects browser to desktop custom protocol: `rustsale://oauth/facebook/callback?code={exchange_code}&state={CSRF_STATE}`.
-  4. **Client-Side CSRF Verification & Authenticated Exchange:**
-     - Desktop catches deep-link callback via `tauri-plugin-deep-link` or loopback listener.
-     - Desktop verifies callback `state` strictly matches initial generated `state`. If mismatch, halts immediately (prevents CSRF injection).
-     - Desktop sends authenticated HTTPS POST request to `/meta-oauth-exchange` with user's Supabase Auth JWT header (`Authorization: Bearer <user_jwt>`) and body `{ "exchange_code": "{exchange_code}" }`.
-  5. **Atomic Single-Use Consumption & Tenant Authorization:**
-     - Edge Function verifies user JWT, extracting `auth.uid()`.
-     - Executes atomic consumption:
+- **End-to-End Cryptographic Protocol with PKCE & Server-Verifiable Binding:**
+  1. **PKCE & Session Initiation:**
+     - Desktop client generates a random UUIDv4 `state` and a cryptographically random 32-byte string `code_verifier`.
+     - Desktop computes `code_challenge = base64url(sha256(code_verifier))`.
+     - Desktop calls authenticated Supabase Edge Function `POST /meta-oauth-start` with user's JWT (`Authorization: Bearer <user_jwt>`) and body `{ state, code_challenge }`.
+     - Edge Function inserts `{ state, tenant_id: auth.uid(), code_challenge, expires_at: now() + interval '10 minutes' }` into `oauth_authorization_sessions` under RLS.
+  2. **Authorization Code Flow:**
+     - Desktop opens system browser to Meta OAuth dialog:
+       `https://www.facebook.com/v26.0/dialog/oauth?client_id=<app_id>&redirect_uri=<supabase_url>/functions/v1/meta-oauth-callback&state=<state>&scope=pages_messaging,pages_manage_posts,pages_read_engagement,pages_show_list,leads_retrieval`
+  3. **Server-Side Token Exchange & Pre-Binding:**
+     - Meta redirects user to `/meta-oauth-callback`. Edge Function:
+       - Looks up `oauth_authorization_sessions WHERE state = $state AND expires_at > now()`. If not found, returns HTTP 403 (prevents CSRF & forged state).
+       - Extracts bound `tenant_id` and `code_challenge`.
+       - Exchanges `code` for short-lived user token via Meta Graph API using server-side `META_APP_SECRET`.
+       - Exchanges short-lived token for 60-day **Long-lived User Token**.
+       - Queries `GET /me/accounts` to retrieve all Page Access Tokens.
+       - Generates a cryptographically random 60-second single-use `exchange_code` (UUIDv4).
+       - Persists `{ code: exchange_code, tenant_id: session.tenant_id, code_challenge: session.code_challenge, payload: JSON.stringify(pages), expires_at: now() + interval '60 seconds', consumed: false }` in `oauth_exchange_codes`.
+       - Redirects browser to desktop custom protocol: `rustsale://oauth/facebook/callback?code=<exchange_code>&state=<state>`.
+  4. **Client-Side CSRF Verification & Authenticated PKCE Exchange:**
+     - Desktop catches deep-link callback via `tauri-plugin-deep-link`.
+     - Desktop verifies callback `state` matches in-memory `state`.
+     - Desktop sends authenticated HTTPS POST request to `/meta-oauth-exchange` with user's Supabase Auth JWT header (`Authorization: Bearer <user_jwt>`) and body `{ code: exchange_code, code_verifier: code_verifier }`.
+  5. **Atomic Single-Use Consumption & Verifier Validation:**
+     - Edge Function verifies user JWT, ensuring `auth.uid()` matches `oauth_exchange_codes.tenant_id`.
+     - Edge Function computes `base64url(sha256(body.code_verifier))` and verifies it strictly matches `oauth_exchange_codes.code_challenge`.
+     - Executes atomic single-use consumption:
        ```sql
        UPDATE oauth_exchange_codes 
-       SET consumed = TRUE, tenant_id = auth.uid()
-       WHERE code = $1 AND consumed = FALSE AND expires_at > now()
+       SET consumed = TRUE
+       WHERE code = $1 AND tenant_id = auth.uid() AND consumed = FALSE AND expires_at > now()
        RETURNING payload;
        ```
-     - If row was already consumed, expired, or missing, returns HTTP 403 Forbidden.
+     - If row was already consumed, expired, verifier mismatched, or missing, returns HTTP 403 Forbidden.
      - Upserts Page ownership into `meta_tenant_pages (tenant_id, page_id, page_name)` under RLS.
-     - Returns the raw Page Tokens over authenticated TLS directly to the desktop client.
+     - Returns the Page Tokens over authenticated TLS directly to the desktop client.
   6. **Local Encryption at Rest:**
      - Desktop client receives Page Tokens over TLS and immediately encrypts `access_token` using AES-256-GCM via `StrongholdKeyring::encrypt_page_token(page_token)` before persisting into SQLite `facebook_page_tokens` table.
      - Master key is generated locally on first launch, stored in OS Keyring (Windows Credential Manager / Linux Secret Service / macOS Keychain), never leaving the device.
@@ -174,7 +186,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique
 ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
 WHERE channel_account_id IS NOT NULL;
 
--- 3. Dead-Letter Queue với đầy đủ Lifecycle Columns & Exponential Backoff
+-- 3. Dead-Letter Queue với đầy đủ Lifecycle Columns & Atomic Worker Claim
 CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_account_id INTEGER NOT NULL,
@@ -184,9 +196,11 @@ CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
     event_key TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     error_reason TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'retrying', 'resolved', 'ignored')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'retrying', 'resolved', 'ignored', 'failed')),
     attempts INTEGER NOT NULL DEFAULT 0,
     next_retry_at TEXT,
+    owner_id TEXT,
+    claim_deadline TEXT,
     resolved_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
@@ -209,7 +223,7 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_fb_upload_sessions_hash ON facebook_upload_sessions(file_hash, status);
+CREATE INDEX IF NOT EXISTS idx_fb_upload_sessions_lookup ON facebook_upload_sessions(page_id, file_hash, file_size_bytes, status);
 
 -- 5. Bảng quản lý Lên lịch đăng bài (Post Scheduler)
 CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
@@ -277,18 +291,6 @@ CREATE TABLE IF NOT EXISTS facebook_comment_logs (
     FOREIGN KEY(automation_id) REFERENCES facebook_comment_automations(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fb_comment_logs_page_date ON facebook_comment_logs(page_id, created_at);
-
--- 8. Bảng theo dõi yêu cầu xóa dữ liệu người dùng (Meta Compliance)
-CREATE TABLE IF NOT EXISTS data_deletion_requests (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    confirmation_code TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
-    records_deleted_count INTEGER NOT NULL DEFAULT 0,
-    error_message TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    completed_at TEXT
-);
 ```
 
 ### 3.2 Supabase Cloud Relay Schema & Multi-Tenant RLS
@@ -307,9 +309,19 @@ ALTER TABLE meta_tenant_pages ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Tenants read own pages" ON meta_tenant_pages
     FOR SELECT USING (auth.uid() = tenant_id);
 
+CREATE TABLE IF NOT EXISTS oauth_authorization_sessions (
+    state TEXT PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    code_challenge TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE oauth_authorization_sessions ENABLE ROW LEVEL SECURITY;
+
 CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
     code TEXT PRIMARY KEY,
-    tenant_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    code_challenge TEXT NOT NULL,
     payload TEXT NOT NULL,
     consumed BOOLEAN NOT NULL DEFAULT FALSE,
     expires_at TIMESTAMPTZ NOT NULL,
@@ -345,6 +357,21 @@ CREATE TABLE IF NOT EXISTS data_deletion_requests (
     completed_at TIMESTAMPTZ
 );
 ALTER TABLE data_deletion_requests ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    request_id UUID NOT NULL REFERENCES data_deletion_requests(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed')),
+    acknowledged_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Tenants sync own deletion tasks" ON meta_device_deletion_tasks
+    FOR ALL USING (auth.uid() = tenant_id);
 ```
 
 ---
@@ -372,7 +399,16 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 
 ### 4.3 Dead-Letter Recovery & Replay Worker
 - Failed payload ingestion logs to `channel_sync_dead_letters`.
-- Background replay worker polls items where `status IN ('pending', 'retrying') AND (next_retry_at IS NULL OR next_retry_at <= datetime('now')) AND attempts < 5`.
+- Background replay worker atomically claims work:
+  ```sql
+  UPDATE channel_sync_dead_letters
+  SET status = 'retrying', owner_id = ?1, claim_deadline = datetime('now', '+5 minutes'), attempts = attempts + 1
+  WHERE id = ?2 
+    AND status IN ('pending', 'retrying')
+    AND (claim_deadline IS NULL OR claim_deadline < datetime('now'))
+    AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+    AND attempts < 5;
+  ```
 - Replays payload with exponential backoff (`next_retry_at = datetime('now', '+' || (attempts * attempts * 30) || ' seconds')`).
 - Upon success, marks `status = 'resolved'`. After 5 failures, sets `status = 'failed'` and alerts operator.
 
@@ -406,16 +442,16 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 
 ### 6.2 Resumable Video & Reels Upload State Machine
 - Table `facebook_upload_sessions` tracks persistent upload state across restarts:
-  1. Hash file (SHA-256) and look up active session.
-  2. If session exists, query Meta `GET https://graph-video.facebook.com/v26.0/{session_id}` for confirmed offset.
-  3. If fresh, call `POST https://graph-video.facebook.com/v26.0/{page_id}/videos` with `upload_phase=start`, receive `upload_session_id` and initial `video_id`.
-  4. Upload 4MB chunks with `upload_phase=transfer`, persisting confirmed offset.
-  5. Call `POST https://graph-video.facebook.com/v26.0/{page_id}/videos` with `upload_phase=finish`, extract `video_id`, and mark session `completed`.
+  1. Hash file (SHA-256) and look up active session by composite key `(page_id, file_hash, file_size_bytes, 'in_progress')`.
+  2. If session exists, query Meta `GET https://graph-video.facebook.com/v26.0/<session_id>` for confirmed offset. If query fails or returns non-numeric offset, **fail closed** and abort with descriptive error.
+  3. If fresh session, call `POST https://graph-video.facebook.com/v26.0/<page_id>/videos` with `upload_phase=start`, receive `upload_session_id` and initial canonical `video_id`.
+  4. Upload 4MB chunks with `upload_phase=transfer`, persisting confirmed offset to SQLite after every chunk.
+  5. Call `POST https://graph-video.facebook.com/v26.0/<page_id>/videos` with `upload_phase=finish`, preserve canonical `video_id`, and mark session `completed`.
 
 ### 6.3 Dual-Mode Scheduling & JIT Promotion
 - Meta-side: Posts scheduled 10 minutes to 30 days are scheduled directly on Meta Graph API with `published=false&scheduled_publish_time=...`.
 - Local-queued: Posts >30 days stay in `local_queued`. Hourly cron promotes posts entering the `<=27 day` window to `scheduled_on_meta`.
-- Ambiguous responses mark post `delivery_unknown` and reconcile via `GET /{page_id}/feed` before any retry.
+- Ambiguous responses mark post `delivery_unknown` and reconcile via `GET /<page_id>/feed` matching exact `scheduled_publish_time` timestamp and SHA-256 message hash before any retry.
 
 ---
 
@@ -430,7 +466,7 @@ To prevent any event loss or skipping across different consumer workers (Messeng
     AND (private_reply_status IN ('none', 'failed') OR (private_reply_status = 'processing' AND claim_deadline < datetime('now')))
     AND private_reply_status != 'success';
   ```
-- Background heartbeat renews lease while request is in-flight.
+- Background heartbeat renews lease every 2 minutes while request is in-flight.
 - If Send API response is ambiguous/timed out, mark `delivery_unknown`. Reconciliation worker checks Meta thread before retrying to ensure strictly **one private reply per comment**.
 
 ---
@@ -438,17 +474,19 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 ## 8. Lead Ads Ingestion & User Data Deletion Compliance
 
 ### 8.1 Instant Lead Ads Ingestion
-- Webhook delivers `leadgen_id` -> Worker calls `GET https://graph.facebook.com/v26.0/{leadgen_id}?access_token={page_token}`.
+- Webhook delivers `leadgen_id` -> Worker calls `GET https://graph.facebook.com/v26.0/<leadgen_id>?access_token=<page_token>`.
 - Decrypts field data, maps to `leads` table with `leadgen_id` uniqueness, creates activity log, and surfaces real-time notification.
 
-### 8.2 Meta User Data Deletion Callback & Anonymization Engine
+### 8.2 Meta User Data Deletion Callback & Anonymization Lifecycle
 - Callback endpoint `POST /meta-data-deletion` parses `signed_request`, validates HMAC-SHA256 with `META_APP_SECRET`.
 - Persists request in `data_deletion_requests` with a unique `confirmation_code` (UUIDv4).
+- Fan-outs `meta_device_deletion_tasks` to all tenant devices.
 - Deletion Runner:
   - Purges matching user events from `meta_webhook_buffer`.
-  - Anonymizes local CRM records (`leads.name = 'Deleted User'`, removes phone/email/messages).
-  - Updates request status to `completed`.
-- Public Status Endpoint: `GET https://rustsale.trantrongtri.com/deletion-status?id={confirmation_code}` returns JSON `{ "confirmation_code": "...", "status": "completed" }`.
+  - Offline / Online desktop client syncs pending tasks and anonymizes local CRM records (`leads.name = 'Deleted User'`, nulls phone/email, replaces message text with `[Deleted as per privacy request]`, deletes physical spool attachments).
+  - Client acknowledges completion to Supabase: `UPDATE meta_device_deletion_tasks SET status = 'completed', completed_at = now()`.
+  - When all device tasks complete or after 30-day compliance retention window, updates request status to `completed`.
+- Public Status Endpoint: `GET https://rustsale.trantrongtri.com/deletion-status?id=<confirmation_code>` returns JSON `{ "confirmation_code": "...", "status": "completed" }`.
 
 ---
 
@@ -456,14 +494,13 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 
 | Requirement ID | Module | Description | Implementation Target | Verification Method |
 | :--- | :--- | :--- | :--- | :--- |
-| **REQ-FB-01** | Auth | Zero-secret OAuth flow with 60s single-use handoff code | Edge Function + Deep Link | Unit + Integration Test |
+| **REQ-FB-01** | Auth | Zero-secret OAuth flow with PKCE, session initiation & 60s single-use handoff code | Edge Function + Deep Link | Unit + Integration Test |
 | **REQ-FB-02** | Security | AES-256-GCM local storage with OS Keyring master key | `StrongholdKeyring` | Cargo Test |
 | **REQ-FB-03** | Webhooks | HMAC-SHA256 verification & raw body retry guard | `/meta-webhook` | Signature Invalidation Test |
 | **REQ-FB-04** | Sync | Isolated multi-stream cursors (Messenger, Feed, Leadgen) | `FacebookSyncWorker` | Interleaved Stream Test |
-| **REQ-FB-05** | Migration | Transaction-safe V1->V3 migration with foreign key check | `db.rs` + `migration_v2.rs` | Populated Migration Test |
+| **REQ-FB-05** | Migration | Transaction-safe V1->V3 migration with RAII PragmaGuard & foreign key check | `db.rs` + `migration_v2.rs` | Populated Migration Test |
 | **REQ-FB-06** | Policy | 24h interactive countdown & Message Tag selection gate | Svelte Composer | Rune Reactivity Test |
-| **REQ-FB-07** | Scheduler | Dual-mode scheduling (Meta 10m-30d, Local >30d JIT) | `PostScheduler` | Time-Travel Mock Test |
+| **REQ-FB-07** | Scheduler | Dual-mode scheduling (Meta 10m-30d, Local >30d JIT) with multi-attribute reconciliation | `PostScheduler` | Time-Travel Mock Test |
 | **REQ-FB-08** | Media | Resumable chunked video & Reels upload with session state | `ResumableUploader` | Restart Resume Test |
-| **REQ-FB-09** | Comments | Private Reply with 5-min lease lock & 1-reply guarantee | `CommentWorker` | Concurrency Stress Test |
-| **REQ-FB-10** | Compliance | Meta Data Deletion callback, anonymization & status API | `/meta-data-deletion` | Signed Request Test |
-
+| **REQ-FB-09** | Comments | Private Reply with 5-min lease lock, heartbeat & 1-reply guarantee | `CommentWorker` | Concurrency Stress Test |
+| **REQ-FB-10** | Compliance | Meta Data Deletion callback, device task queue, anonymization & status API | `/meta-data-deletion` | Signed Request Test |

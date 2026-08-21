@@ -13,9 +13,9 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-08** | JIT Media Upload & Zero Query Leakage | `PLANNED` | Task 2 (Step 1) | Media is uploaded unpublished at push time with `Authorization: Bearer <token>` header (never query string). | Inspect HTTP logs during media upload; verify 0 tokens appear in URL query strings. | Integration test: Mock server inspects headers and query params. |
-| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` (`start` -> `transfer` in 4MB chunks with offset validation -> `finish`). Persistent state in `facebook_upload_sessions`. | Network drops or app restarts at byte offset 8,388,608 (chunk 2); restart resumes from byte 8,388,608 without restarting file. | Resumable upload unit test with mocked chunk interruption and session recovery. |
-| **REQ-FB-10** | Dual-Mode Scheduling & Overdue Safety | `PLANNED` | Task 3 (Step 1) | Posts 10m–30d pushed to Meta with `published=false`; posts >30d held locally in SQLite. Overdue posts trigger safety prompt. Hourly cron promotes posts entering `<=27 days`. | User's laptop closed for 35 days; opening app triggers "Đăng ngay / Dời lịch / Huỷ" prompt instead of unexpected auto-post. | Scheduler test: Pass overdue post to engine; assert status is `overdue_prompt`. |
-| **REQ-FB-11** | Idempotent Multi-Page Fan-Out | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = uuidv5(draft_group_id, page_id)`. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
+| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` (`start` -> `transfer` in 4MB chunks with offset validation -> `finish`). Persistent state in `facebook_upload_sessions` keyed by `(page_id, file_hash, file_size_bytes, status)`. Fail-closed on server offset lookup failure. | Network drops or app restarts at byte offset 8,388,608 (chunk 2); restart confirms server offset and resumes without restarting file. | Resumable upload unit test with mocked chunk interruption and session recovery. |
+| **REQ-FB-10** | Dual-Mode Scheduling & Overdue Safety | `PLANNED` | Task 3 (Step 1) | Posts 10m–30d pushed to Meta with `published=false`; posts >30d held locally in SQLite. Overdue posts trigger safety prompt. Hourly cron promotes posts entering `<=27 days`. Multi-attribute reconciliation matches exact timestamp and SHA-256 message hash. | User's laptop closed for 35 days; opening app triggers "Đăng ngay / Dời lịch / Huỷ" prompt instead of unexpected auto-post. | Scheduler test: Pass overdue post to engine; assert status is `overdue_prompt`. |
+| **REQ-FB-11** | Idempotent Multi-Page Fan-Out | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = format!("{}:{}:{}", draft_group_id, account_id, page_id)`. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
 
 ---
 
@@ -184,10 +184,13 @@ impl FacebookMediaUploader {
     pub async fn query_resumable_video_offset(&self, session_id: &str) -> Result<u64> {
         let url = format!("https://graph-video.facebook.com/v26.0/{}", session_id);
         let resp = self.http.get(&url).bearer_auth(&self.token).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("Server offset query failed: HTTP {}", resp.status());
+        }
         let body: Value = resp.json().await?;
         let offset = body.get("start_offset").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())
             .or_else(|| body.get("start_offset").and_then(|v| v.as_u64()))
-            .unwrap_or(0);
+            .ok_or_else(|| anyhow!("Invalid start_offset from Meta: {:?}", body))?;
         Ok(offset)
     }
 
@@ -217,6 +220,7 @@ impl FacebookMediaUploader {
         &self,
         page_id: &str,
         session_id: &str,
+        canonical_video_id: &str,
         title: &str,
         description: &str,
         scheduled_publish_time: Option<i64>,
@@ -240,9 +244,16 @@ impl FacebookMediaUploader {
             .send().await?;
 
         let body: Value = resp.json().await?;
-        let video_id = body.get("id").or_else(|| body.get("video_id")).and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Finish video upload did not return video ID: {:?}", body))?;
-        Ok(video_id.to_string())
+        let returned_id = body.get("id").or_else(|| body.get("video_id")).and_then(|v| v.as_str());
+        let success = body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if let Some(vid) = returned_id {
+            Ok(vid.to_string())
+        } else if success {
+            Ok(canonical_video_id.to_string())
+        } else {
+            Err(anyhow!("Finish video upload failed: {:?}", body))
+        }
     }
 
     pub async fn upload_full_resumable_video_with_state(
@@ -260,24 +271,34 @@ impl FacebookMediaUploader {
         let file_hash = format!("{:x}", hasher.finalize());
         let file_size = video_bytes.len() as u64;
 
-        // Check existing upload session in SQLite
-        let existing_session: Option<(String, Option<String>, u64)> = conn.query_row(
-            "SELECT upload_session_id, video_id, start_offset FROM facebook_upload_sessions WHERE file_hash = ?1 AND status = 'in_progress'",
-            [&file_hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ).ok();
-
-        let (session_id, mut offset) = if let Some((sess_id, _, saved_offset)) = existing_session {
-            let confirmed_offset = self.query_resumable_video_offset(&sess_id).await.unwrap_or(saved_offset);
-            (sess_id, confirmed_offset)
-        } else {
-            let (sess_id, initial_vid) = self.start_resumable_video_session(page_id, file_size).await?;
-            conn.execute(
-                "INSERT INTO facebook_upload_sessions (page_id, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
-                (page_id, &sess_id, &initial_vid, file_path, &file_hash, file_size as i64),
+        // Check existing upload session in SQLite with complete composite key
+        let existing_session: Result<Option<(String, Option<String>, u64)>, rusqlite::Error> = {
+            let mut stmt = conn.prepare(
+                "SELECT upload_session_id, video_id, start_offset FROM facebook_upload_sessions 
+                 WHERE page_id = ?1 AND file_hash = ?2 AND file_size_bytes = ?3 AND status = 'in_progress'"
             )?;
-            (sess_id, 0u64)
+            let mut rows = stmt.query(rusqlite::params![page_id, &file_hash, file_size as i64])?;
+            if let Some(r) = rows.next()? {
+                Ok(Some((r.get(0)?, r.get(1)?, r.get(2)?)))
+            } else {
+                Ok(None)
+            }
+        };
+
+        let (session_id, canonical_vid, mut offset) = match existing_session? {
+            Some((sess_id, vid_opt, saved_offset)) => {
+                let confirmed_offset = self.query_resumable_video_offset(&sess_id).await?;
+                (sess_id, vid_opt.unwrap_or_default(), confirmed_offset)
+            }
+            None => {
+                let (sess_id, initial_vid) = self.start_resumable_video_session(page_id, file_size).await?;
+                conn.execute(
+                    "INSERT INTO facebook_upload_sessions (page_id, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'in_progress', datetime('now'), datetime('now'))",
+                    (page_id, &sess_id, &initial_vid, file_path, &file_hash, file_size as i64),
+                )?;
+                (sess_id, initial_vid, 0u64)
+            }
         };
 
         let chunk_size = 4 * 1024 * 1024;
@@ -295,7 +316,7 @@ impl FacebookMediaUploader {
             )?;
         }
 
-        let video_id = self.finish_resumable_video_session(page_id, &session_id, title, description, scheduled_publish_time).await?;
+        let video_id = self.finish_resumable_video_session(page_id, &session_id, &canonical_vid, title, description, scheduled_publish_time).await?;
         conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'completed', video_id = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2",
             (&video_id, &session_id),
@@ -359,7 +380,7 @@ git commit -m "feat(facebook): implement complete 3-phase resumable video upload
 
 ---
 
-### Task 3: Dual-Mode Scheduling Engine with Multi-Page Fan-Out & Reconciliation
+### Task 3: Dual-Mode Scheduling Engine with Multi-Attribute Reconciliation
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/post_scheduler.rs`
@@ -370,9 +391,11 @@ git commit -m "feat(facebook): implement complete 3-phase resumable video upload
 ```rust
 // src-tauri/src/conversation/facebook/post_scheduler.rs
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 pub struct FacebookPostScheduler {
     token: String,
@@ -414,6 +437,50 @@ impl FacebookPostScheduler {
         Ok(())
     }
 
+    pub async fn promote_local_queued_posts(conn: &mut Connection, token: &str) -> Result<usize> {
+        let mut promoted_count = 0;
+        let eligible_posts: Vec<(i64, String, String, i64)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, page_id, message, strftime('%s', scheduled_publish_time) 
+                 FROM facebook_scheduled_posts 
+                 WHERE scheduling_mode = 'local_queued' AND status = 'queued'
+                   AND datetime(scheduled_publish_time) <= datetime('now', '+27 days')"
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            rows.flatten().collect()
+        };
+
+        for (post_id, page_id, message, target_time) in eligible_posts {
+            let client = FacebookPostScheduler::new(token.to_string());
+            match client.publish_status_post(&page_id, &message, Some(target_time)).await {
+                Ok(remote_id) => {
+                    conn.execute(
+                        "UPDATE facebook_scheduled_posts SET status = 'scheduled_on_meta', remote_post_id = ?1, updated_at = datetime('now') WHERE id = ?2",
+                        rusqlite::params![&remote_id, post_id],
+                    )?;
+                    promoted_count += 1;
+                }
+                Err(e) => {
+                    conn.execute(
+                        "UPDATE facebook_scheduled_posts SET status = 'failed', error_message = ?1, updated_at = datetime('now') WHERE id = ?2",
+                        rusqlite::params![e.to_string(), post_id],
+                    )?;
+                }
+            }
+        }
+        Ok(promoted_count)
+    }
+
+    pub async fn check_overdue_posts(conn: &mut Connection) -> Result<usize> {
+        let rows = conn.execute(
+            "UPDATE facebook_scheduled_posts 
+             SET status = 'overdue_prompt', updated_at = datetime('now')
+             WHERE status = 'queued' AND datetime(scheduled_publish_time) < datetime('now')",
+            [],
+        )?;
+        Ok(rows)
+    }
+
     pub async fn publish_status_post(&self, page_id: &str, message: &str, scheduled_publish_time: Option<i64>) -> Result<String> {
         let url = format!("https://graph.facebook.com/v26.0/{}/feed", page_id);
         let mut form = vec![("message", message.to_string())];
@@ -431,19 +498,30 @@ impl FacebookPostScheduler {
         body.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).ok_or_else(|| anyhow!("Status post failed: {:?}", body))
     }
 
-    pub async fn reconcile_ambiguous_post(&self, page_id: &str, message_snippet: &str) -> Result<Option<String>> {
+    pub async fn reconcile_ambiguous_post(&self, page_id: &str, expected_message: &str, expected_scheduled_time: Option<i64>) -> Result<Option<String>> {
         let url = format!("https://graph.facebook.com/v26.0/{}/feed?fields=id,message,scheduled_publish_time,is_published&limit=25", page_id);
         let resp = self.http.get(&url).bearer_auth(&self.token).send().await?;
         if !resp.status().is_success() {
             return Ok(None);
         }
         let body: Value = resp.json().await?;
+        let expected_hash = {
+            let mut h = Sha256::new();
+            h.update(expected_message.as_bytes());
+            format!("{:x}", h.finalize())
+        };
+
         if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
             for post in data {
-                if let Some(msg) = post.get("message").and_then(|m| m.as_str()) {
-                    if msg.contains(message_snippet) {
-                        return Ok(post.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()));
-                    }
+                let msg = post.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                let mut h = Sha256::new();
+                h.update(msg.as_bytes());
+                let msg_hash = format!("{:x}", h.finalize());
+
+                let sched_time = post.get("scheduled_publish_time").and_then(|t| t.as_i64());
+
+                if msg_hash == expected_hash && (expected_scheduled_time.is_none() || sched_time == expected_scheduled_time) {
+                    return Ok(post.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()));
                 }
             }
         }
@@ -469,7 +547,7 @@ impl FacebookPostScheduler {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete post scheduler engine with multi-page fan-out, reconciliation, and read-after-write verification"
+git commit -m "feat(facebook): implement complete post scheduler engine with multi-page fan-out, multi-attribute reconciliation, and promotion cron"
 ```
 
 ---
@@ -556,4 +634,3 @@ git commit -m "feat(ui): implement PostPlanner with calendar and kanban schedule
 ```bash
 git commit --allow-empty -m "chore: complete phase 2 facebook post scheduler implementation"
 ```
-
