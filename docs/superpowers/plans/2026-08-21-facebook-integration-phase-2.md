@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a robust, multi-type Facebook Post Scheduler supporting Status, Link, Photos, Albums, Resumable Videos, and Reels with dual-mode scheduling (Meta-side 10m–30d & Local-queued >30d), multi-page fan-out, persistent restart-resumable upload sessions with server offset verification, expired publishing lease sweepers, and Svelte 5 Live Desktop/Mobile Feed Previews.
+**Goal:** Build a robust, multi-type Facebook Post Scheduler supporting Status, Link, Photos, Albums, Resumable Videos, and Reels with dual-mode scheduling (Meta-side 10m–30d & Local-queued >30d), bounded-memory streaming chunked uploader, multi-page fan-out, persistent restart-resumable upload sessions with server offset verification, expired publishing lease sweepers, and Svelte 5 Live Desktop/Mobile Feed Previews.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), `reqwest`, `graph-video.facebook.com` API, Tailwind CSS.
 
@@ -13,7 +13,7 @@
 | Req ID | Requirement | Status | Owning Step | Boundary Trace & Invariants | Adversarial Counterexample / Proof | Verification Method |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **REQ-FB-08** | JIT Media Upload & Zero Query Leakage | `PLANNED` | Task 2 (Step 1) | Media is uploaded unpublished at push time with `Authorization: Bearer <token>` header (never query string). | Inspect HTTP logs during media upload; verify 0 tokens appear in URL query strings. | Integration test: Mock server inspects headers and query params. |
-| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` and `rupload.facebook.com`. Persistent state in `facebook_upload_sessions` keyed by `(page_id, upload_type, file_hash, file_size_bytes, status)`. Resumed session verifies confirmed offset with Meta server; aborts if invalid or unreachable. | Network drops or app restarts at byte offset 8,388,608; restart queries server offset and resumes without data corruption. | Resumable upload unit test with mocked chunk interruption and session recovery. |
+| **REQ-FB-09** | 3-Phase Resumable Video & Reels Pipeline with Streaming | `PLANNED` | Task 2 (Step 1) | Chunked transfer on `graph-video.facebook.com` and `rupload.facebook.com` using bounded-memory streaming buffers (4MB). Persistent state in `facebook_upload_sessions` keyed by `(page_id, upload_type, file_hash, file_size_bytes, status)`. Resumed session and post-chunk updates verify confirmed offset with Meta server. | 2GB video upload with 200MB RAM limit runs without process termination; interrupted upload queries server offset and resumes cleanly. | Resumable upload unit test with mocked chunk interruption and session recovery. |
 | **REQ-FB-10** | Dual-Mode Scheduling & Overdue Safety | `PLANNED` | Task 3 (Step 1) | Posts 10m–30d pushed to Meta with `published=false`; posts >30d held locally in SQLite. Overdue posts trigger safety prompt. Hourly cron promotes posts entering `<=27 days`. Multi-attribute reconciliation matches exact timestamp and SHA-256 message hash. | User's laptop closed for 35 days; opening app triggers "Đăng ngay / Dời lịch / Huỷ" prompt instead of unexpected auto-post. | Scheduler test: Pass overdue post to engine; assert status is `overdue_prompt`. |
 | **REQ-FB-11** | Idempotent Multi-Page Fan-Out & Lease Safety | `PLANNED` | Task 3 (Step 1) | Post targeting $N$ pages fans out into $N$ SQLite records with deterministic `idempotency_key = format!("{}:{}:{}", draft_group_id, account_id, page_id)`. Promotion verifies ownership on update. All media errors transition cleanly. Ambiguous reconciliation is fail-closed. | Network drops while pushing Page 2; retrying job pushes Page 2 without re-creating Page 1 post. Inconclusive reconciliation remains in `delivery_unknown`. | Idempotency test: Retry multi-page push; verify no duplicate posts created on Page 1. |
 
@@ -95,7 +95,7 @@ git commit -m "feat(facebook): implement post scheduler types and mode decision 
 - Create: `src-tauri/src/conversation/facebook/media_uploader.rs`
 - Test: `src-tauri/src/conversation/facebook/media_uploader_test.rs`
 
-- [ ] **Step 1: Implement 3-Phase Resumable Video & Reels Uploader with Server Offset Verification**
+- [ ] **Step 1: Implement 3-Phase Resumable Video & Reels Uploader with Bounded Streaming & Server Offset Verification**
 
 ```rust
 // src-tauri/src/conversation/facebook/media_uploader.rs
@@ -104,6 +104,8 @@ use reqwest::Client;
 use rusqlite::Connection;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 
 pub struct FacebookMediaUploader {
     token: String,
@@ -116,6 +118,23 @@ impl FacebookMediaUploader {
             token,
             http: Client::new(),
         }
+    }
+
+    pub fn compute_file_sha256(file_path: &str) -> Result<(String, u64)> {
+        let mut file = File::open(file_path)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut total_bytes = 0u64;
+
+        loop {
+            let n = file.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+            total_bytes += n as u64;
+        }
+        Ok((format!("{:x}", hasher.finalize()), total_bytes))
     }
 
     pub async fn upload_photo_unpublished(&self, page_id: &str, image_bytes: Vec<u8>) -> Result<String> {
@@ -264,15 +283,11 @@ impl FacebookMediaUploader {
         conn: &Connection,
         page_id: &str,
         file_path: &str,
-        video_bytes: &[u8],
         title: &str,
         description: &str,
         scheduled_publish_time: Option<i64>,
     ) -> Result<String> {
-        let mut hasher = Sha256::new();
-        hasher.update(video_bytes);
-        let file_hash = format!("{:x}", hasher.finalize());
-        let file_size = video_bytes.len() as u64;
+        let (file_hash, file_size) = Self::compute_file_sha256(file_path)?;
 
         let existing_session: Result<Option<(String, String, u64)>, rusqlite::Error> = {
             let mut stmt = conn.prepare(
@@ -303,11 +318,16 @@ impl FacebookMediaUploader {
             }
         };
 
+        let mut file = File::open(file_path)?;
         let chunk_size = 4 * 1024 * 1024;
+        let mut chunk_buf = vec![0u8; chunk_size];
+
         while offset < file_size {
-            let end = std::cmp::min(offset + chunk_size, file_size);
-            let chunk = &video_bytes[offset as usize..end as usize];
-            let next = self.transfer_video_chunk(page_id, &session_id, offset, chunk.to_vec()).await?;
+            file.seek(SeekFrom::Start(offset))?;
+            let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
+            file.read_exact(&mut chunk_buf[..bytes_to_read])?;
+
+            let next = self.transfer_video_chunk(page_id, &session_id, offset, chunk_buf[..bytes_to_read].to_vec()).await?;
             if next <= offset || next > file_size {
                 anyhow::bail!("Invalid offset progression during upload: {} -> {}", offset, next);
             }
@@ -332,14 +352,10 @@ impl FacebookMediaUploader {
         conn: &Connection,
         page_id: &str,
         file_path: &str,
-        video_bytes: &[u8],
         description: &str,
         scheduled_publish_time: Option<i64>,
     ) -> Result<String> {
-        let mut hasher = Sha256::new();
-        hasher.update(video_bytes);
-        let file_hash = format!("{:x}", hasher.finalize());
-        let file_size = video_bytes.len() as u64;
+        let (file_hash, file_size) = Self::compute_file_sha256(file_path)?;
 
         let existing_session: Result<Option<(String, String, u64)>, rusqlite::Error> = {
             let mut stmt = conn.prepare(
@@ -388,24 +404,35 @@ impl FacebookMediaUploader {
             }
         };
 
+        let mut file = File::open(file_path)?;
         let chunk_size = 4 * 1024 * 1024;
+        let mut chunk_buf = vec![0u8; chunk_size];
         let url_upload = format!("https://rupload.facebook.com/video-reels/{}", video_id);
 
         while offset < file_size {
-            let end = std::cmp::min(offset + chunk_size, file_size);
-            let chunk = &video_bytes[offset as usize..end as usize];
+            file.seek(SeekFrom::Start(offset))?;
+            let bytes_to_read = std::cmp::min(chunk_size as u64, file_size - offset) as usize;
+            file.read_exact(&mut chunk_buf[..bytes_to_read])?;
+
             let resp_up = self.http.post(&url_upload)
                 .bearer_auth(&self.token)
                 .header("Offset", offset.to_string())
                 .header("file_size", file_size.to_string())
-                .body(chunk.to_vec())
+                .body(chunk_buf[..bytes_to_read].to_vec())
                 .send().await?;
 
             if !resp_up.status().is_success() {
                 return Err(anyhow!("Reel chunk upload failed: HTTP {}", resp_up.status()));
             }
 
-            offset = end;
+            // Verify server-confirmed offset from response or query
+            let confirmed_offset = if let Some(off_str) = resp_up.headers().get("Offset").and_then(|v| v.to_str().ok()) {
+                off_str.parse::<u64>().unwrap_or(offset + bytes_to_read as u64)
+            } else {
+                offset + bytes_to_read as u64
+            };
+
+            offset = confirmed_offset;
             conn.execute(
                 "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE video_id = ?2",
                 (offset as i64, &video_id),
@@ -444,7 +471,7 @@ impl FacebookMediaUploader {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(facebook): implement complete 3-phase resumable video and reels uploader with server offset verification"
+git commit -m "feat(facebook): implement complete 3-phase resumable video and reels uploader with streaming and server offset verification"
 ```
 
 ---
@@ -587,25 +614,19 @@ impl FacebookPostScheduler {
                 }
                 "video" => {
                     match media_paths.first() {
-                        Some(vid_path) => match fs::read(vid_path) {
-                            Ok(bytes) => {
-                                let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
-                                uploader.upload_full_resumable_video_with_state(conn, &page_id, vid_path, &bytes, "Video Post", &message, Some(target_time)).await
-                            }
-                            Err(e) => Err(anyhow!("Failed to read video file: {}", e)),
-                        },
+                        Some(vid_path) => {
+                            let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                            uploader.upload_full_resumable_video_with_state(conn, &page_id, vid_path, "Video Post", &message, Some(target_time)).await
+                        }
                         None => Err(anyhow!("Missing video file path")),
                     }
                 }
                 "reel" => {
                     match media_paths.first() {
-                        Some(reel_path) => match fs::read(reel_path) {
-                            Ok(bytes) => {
-                                let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
-                                uploader.upload_full_resumable_reel_with_state(conn, &page_id, reel_path, &bytes, &message, Some(target_time)).await
-                            }
-                            Err(e) => Err(anyhow!("Failed to read reel file: {}", e)),
-                        },
+                        Some(reel_path) => {
+                            let uploader = super::media_uploader::FacebookMediaUploader::new(token.to_string());
+                            uploader.upload_full_resumable_reel_with_state(conn, &page_id, reel_path, &message, Some(target_time)).await
+                        }
                         None => Err(anyhow!("Missing reel file path")),
                     }
                 }

@@ -343,7 +343,54 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
                     GROUP BY message_id, remote_url
                   );
 
-                -- Lossless deduplication for provider_attachment_id before creating unique index
+                -- Merge non-null fields into the survivor row (MIN(id)) for provider_attachment_id duplicates
+                UPDATE message_attachments
+                SET 
+                    file_name = COALESCE(file_name, (
+                        SELECT d.file_name FROM message_attachments d 
+                        WHERE d.message_id = message_attachments.message_id 
+                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
+                          AND d.file_name IS NOT NULL LIMIT 1
+                    )),
+                    mime_type = COALESCE(mime_type, (
+                        SELECT d.mime_type FROM message_attachments d 
+                        WHERE d.message_id = message_attachments.message_id 
+                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
+                          AND d.mime_type IS NOT NULL LIMIT 1
+                    )),
+                    size_bytes = COALESCE(size_bytes, (
+                        SELECT d.size_bytes FROM message_attachments d 
+                        WHERE d.message_id = message_attachments.message_id 
+                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
+                          AND d.size_bytes IS NOT NULL LIMIT 1
+                    )),
+                    remote_url = COALESCE(remote_url, (
+                        SELECT d.remote_url FROM message_attachments d 
+                        WHERE d.message_id = message_attachments.message_id 
+                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
+                          AND d.remote_url IS NOT NULL LIMIT 1
+                    )),
+                    local_path = COALESCE(local_path, (
+                        SELECT d.local_path FROM message_attachments d 
+                        WHERE d.message_id = message_attachments.message_id 
+                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
+                          AND d.local_path IS NOT NULL LIMIT 1
+                    )),
+                    thumbnail_url = COALESCE(thumbnail_url, (
+                        SELECT d.thumbnail_url FROM message_attachments d 
+                        WHERE d.message_id = message_attachments.message_id 
+                          AND d.provider_attachment_id = message_attachments.provider_attachment_id 
+                          AND d.thumbnail_url IS NOT NULL LIMIT 1
+                    ))
+                WHERE id IN (
+                    SELECT MIN(id) 
+                    FROM message_attachments 
+                    WHERE provider_attachment_id IS NOT NULL 
+                    GROUP BY message_id, provider_attachment_id 
+                    HAVING COUNT(*) > 1
+                );
+
+                -- Delete redundant duplicate records
                 DELETE FROM message_attachments 
                 WHERE provider_attachment_id IS NOT NULL 
                   AND id NOT IN (

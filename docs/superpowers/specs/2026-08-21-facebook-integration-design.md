@@ -3,9 +3,9 @@
 ## 1. Executive Summary & Architectural Invariants
 
 The Facebook Integration module provides enterprise-grade, multi-channel capabilities for RustSale CRM across three operational phases:
-1. **Phase 1:** Zero-Secret PKCE OAuth Token Exchange, Local Token Vault (AES-256-GCM + OS Keyring), Durable Webhook Ingestion Buffer with HMAC-SHA256, Isolated Multi-Stream Messenger 2-Way Sync Engine matching repository schema (`channel_conversations`, `conversation_participants`, `messages`, `message_attachments`, `message_reactions`, `message_receipts`, `pending_message_reactions`), and Svelte 5 Unified Inbox with 24-Hour Policy Gate & Message Tag selector.
-2. **Phase 2:** Multi-Type Post Scheduler (Status, Link, Photo, Multi-Photo, Resumable Video & Reels) with Dual-Mode scheduling (Meta-side 10m–30d & Local-queued >30d), restart-resumable upload sessions with server offset verification, multi-page fan-out, expired publishing lease sweeper, and Svelte 5 Live Feed Preview (Desktop & Mobile).
-3. **Phase 3:** Marketing & Comment Automations (Auto-Like, Public Reply, 1-reply Private Send API with active heartbeat loop & fail-closed reconciliation), Facebook Lead Ads ingestion with custom fields, Data Deletion Compliance Callback with Durable Interaction Mapping, Tenant/Page Scoped Device Task Dispatch & Transactional Anonymizer via `pending_spool_cleanups`, and Facebook Hub UI.
+1. **Phase 1:** Zero-Secret PKCE OAuth Token Exchange with encrypted handoff, Local Token Vault (AES-256-GCM + OS Keyring), Durable Webhook Ingestion Buffer (supporting both `entry.messaging` and `entry.changes`) with HMAC-SHA256, Isolated Multi-Stream Messenger 2-Way Sync Engine matching repository schema (`channel_conversations`, `conversation_participants`, `messages`, `message_attachments`, `message_reactions`, `message_receipts`, `pending_message_reactions`), and Svelte 5 Unified Inbox with 24-Hour Policy Gate & Message Tag selector.
+2. **Phase 2:** Multi-Type Post Scheduler (Status, Link, Photo, Multi-Photo, Resumable Video & Reels) with Dual-Mode scheduling (Meta-side 10m–30d & Local-queued >30d), bounded-memory streaming chunked uploader, restart-resumable upload sessions with server offset verification, multi-page fan-out, expired publishing lease sweeper, and Svelte 5 Live Feed Preview (Desktop & Mobile).
+3. **Phase 3:** Marketing & Comment Automations (Auto-Like, Public Reply, 1-reply Private Send API with active heartbeat loop & fail-closed reconciliation), Facebook Lead Ads ingestion with custom fields & cursor worker, Data Deletion Compliance Callback with Durable Interaction Mapping, Tenant/Page Scoped Device Task Dispatch & Transactional Anonymizer via `pending_spool_cleanups`, and Facebook Hub UI.
 
 ---
 
@@ -15,7 +15,7 @@ The Facebook Integration module provides enterprise-grade, multi-channel capabil
 1. **Authorization Request:** Client generates cryptographically secure `state`, PKCE `code_verifier`, and `code_challenge = BASE64URL(SHA256(code_verifier))`. Sends `state` and `code_challenge` to `/meta-oauth-start` with user JWT.
 2. **Meta Redirect:** User completes consent on Facebook. Meta redirects to `/meta-oauth-callback?code=...&state=...`.
 3. **Token Exchange:** Backend exchanges authorization code for short-lived token, upgrades to 60-day long-lived token, and fetches managed Pages via `GET /me/accounts`.
-4. **Single-Use Exchange Code:** Server writes Page tokens (encrypted at rest) and PKCE challenge to `oauth_exchange_codes` with 60-second TTL.
+4. **Encrypted Exchange Code:** Server encrypts Page tokens payload using AES-256-GCM and writes to `oauth_exchange_codes` with PKCE challenge and 60-second TTL.
 5. **Desktop Claim:** Client invokes `/meta-oauth-exchange` with user JWT, `code`, and `code_verifier`.
 6. **Secure RPC:** Function `complete_meta_oauth_exchange` derives tenant identity directly from `auth.uid()`, validates PKCE challenge, consumes and deletes payload atomically, and maps Page ownership to `meta_tenant_pages`.
 
@@ -184,8 +184,8 @@ Each ingestion stream maintains an independent cursor checkpoint in `channel_syn
 ### 4.2 Contiguous Processing & Poison Event Isolation
 Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 1. Required identifiers (`mid`, `psid`, `timestamp`) are validated before insertion.
-2. Malformed events are immediately quarantined to `channel_sync_dead_letters (channel_account_id, scope, event_id, item_index, ...)` with `error_reason = 'missing_required_identifier'`.
-3. Out-of-order reactions for not-yet-ingested messages are persisted to `pending_message_reactions`.
+2. Malformed events or events with unresolved dependencies (e.g. delivery/read for not-yet-synced message) are quarantined to `channel_sync_dead_letters (channel_account_id, scope, event_id, item_index, ...)` with descriptive `error_reason`.
+3. Out-of-order reactions for not-yet-ingested messages are persisted to `pending_message_reactions` with provider occurrence timestamp.
 4. Delivery and read events insert into `message_receipts` scoped to the exact conversation and update `messages.status`.
 5. Cursor advances monotonically per processed/quarantined event via conditional update `WHERE CAST(excluded.cursor AS INTEGER) > CAST(COALESCE(channel_sync_checkpoints.cursor, '0') AS INTEGER)`.
 
@@ -193,9 +193,9 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 
 ## 5. Resumable Upload Pipeline (Videos & Reels)
 
-### 5.1 Protocol Differences
-- **Videos (`graph-video.facebook.com`):** 3-Phase resumable upload (`upload_phase=start` -> `upload_phase=transfer` -> `upload_phase=finish`). Query server offset via `GET /<upload_session_id>`.
-- **Reels (`rupload.facebook.com`):** Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`. Send 4MB binary chunks to `https://rupload.facebook.com/video-reels/<video_id>` with headers `Offset` and `file_size`. On resume, query server confirmed `Offset` via `GET /video-reels/<video_id>` with Bearer auth; if failed or malformed, abort with error. Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`.
+### 5.1 Protocol Differences & Bounded Memory Streaming
+- **Videos (`graph-video.facebook.com`):** 3-Phase resumable upload (`upload_phase=start` -> `upload_phase=transfer` -> `upload_phase=finish`). Query server offset via `GET /<upload_session_id>`. Chunked streaming via file seek avoids high memory spikes.
+- **Reels (`rupload.facebook.com`):** Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`. Send 4MB binary chunks to `https://rupload.facebook.com/video-reels/<video_id>` with headers `Offset` and `file_size`. On resume, query server confirmed `Offset` via `GET /video-reels/<video_id>` with Bearer auth; if failed or malformed, abort with error. After chunk upload, parse confirmed server offset from response. Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`.
 
 ---
 
@@ -219,7 +219,7 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 2. **7-Day Window:** Skips if comment age > 7 days.
 3. **Atomic 1-Reply Claim:** `facebook_comment_logs` uniqueness on `comment_id` with 5-minute lease.
 4. **Active Heartbeat Loop:** Tokio task renews `claim_deadline = datetime('now', '+5 minutes')` every 120s via background channel while HTTP call awaits, cancelling immediately upon completion.
-5. **Fail-Closed Reconciliation:** On transport timeout or 5xx error, sets `delivery_unknown`. Reconciler calls `GET /<comment_id>?fields=private_reply_status`. Only transitions out on definitive response (`replied` -> `success`, `can_reply` -> `failed`).
+5. **Fail-Closed Reconciliation:** On transport timeout or 5xx error, sets `delivery_unknown`. Reconciler calls `GET /<comment_id>?fields=private_reply_status`. Terminal transitions strictly enforce owner ID (`replied` -> `success`, `can_reply` -> `failed`).
 
 ---
 
@@ -228,7 +228,7 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 1. **Durable Interaction Index:** `meta_user_page_interactions (tenant_id, page_id, user_id, last_interacted_at, PRIMARY KEY(tenant_id, page_id, user_id))` tracks user interactions across all channels and pages.
 2. **Callback Endpoint (`/meta-data-deletion`):** Verifies HMAC `signed_request`, queries interaction index, and transactionally creates `data_deletion_requests` with `required_tasks_count` and `meta_device_deletion_tasks` scoped to `(request_id, tenant_id, page_id, user_id)`.
 3. **Transactional Desktop Anonymizer:**
-   - Transactionally updates `leads`, queues attachment paths into `pending_spool_cleanups`, deletes `message_attachments`, updates `messages SET text_content = '[Deleted as per privacy request]', edited_at = datetime('now')`, deletes receipts, reactions, and pending reactions, anonymizes `facebook_comment_logs`, and pseudonymizes `channel_identities`.
+   - Transactionally updates `leads`, queues attachment paths (both inbound and outbound in the conversation) into `pending_spool_cleanups`, deletes `message_attachments`, updates `messages SET text_content = '[Deleted as per privacy request]', edited_at = datetime('now')`, deletes conversation-scoped receipts and reactions, anonymizes `facebook_comment_logs`, and pseudonymizes `channel_identities`.
    - Commits transaction, then sweeps `pending_spool_cleanups` physically deleting disk files. Deletes queue row only on successful deletion or `NotFound`.
    - Acknowledges task completion.
 4. **Status Endpoint (`/deletion-status`):** Reports `completed` only when all required device tasks are completed.
