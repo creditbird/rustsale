@@ -811,7 +811,6 @@ git commit -m "feat(conversation): implement Stronghold keyring interface and ta
 
 ```rust
 // src-tauri/src/conversation/facebook/sync.rs
-use anyhow::Result;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use rusqlite::{params, Connection};
@@ -846,7 +845,7 @@ impl FacebookSyncWorker {
 
     pub async fn fetch_new_events(&self, page_id: &str, last_synced_id: i64) -> Result<Vec<MetaBufferEvent>> {
         let url = format!(
-            "{}/rest/v1/meta_webhook_buffer?page_id=eq.{}&id=gt.{}&order=id.asc&limit=100",
+            "{}/rest/v1/meta_webhook_buffer?page_id=eq.{}&id=gt.{}&event_type=in.(messages,message_echoes,message_deliveries,message_reads,message_reactions)&order=id.asc&limit=100",
             self.supabase_url, page_id, last_synced_id
         );
 
@@ -935,10 +934,11 @@ impl FacebookSyncWorker {
                                 if let Some(m_str) = mid_val.as_str() {
                                     tx.execute(
                                         "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
-                                         SELECT id, ?2, 'delivered', datetime('now')
-                                         FROM messages
-                                         WHERE provider_message_id = ?1",
-                                        params![m_str, recipient_psid],
+                                         SELECT m.id, ?2, 'delivered', datetime('now')
+                                         FROM messages m
+                                         JOIN channel_conversations c ON m.conversation_id = c.id
+                                         WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND m.direction = 'outbound'",
+                                        params![m_str, recipient_psid, account_id],
                                     )?;
                                 }
                             }
