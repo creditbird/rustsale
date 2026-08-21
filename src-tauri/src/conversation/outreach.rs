@@ -82,7 +82,7 @@ pub fn record_outreach_success_in_transaction(
         "INSERT INTO channel_identities
          (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
          VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, ?4, 'outreach', ?5, ?5)
-         ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
+         ON CONFLICT(channel, identity_namespace, external_id) WHERE channel_account_id IS NULL DO UPDATE SET
              lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
              display_name = COALESCE(excluded.display_name, channel_identities.display_name),
              avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),

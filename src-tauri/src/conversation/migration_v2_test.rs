@@ -1,12 +1,22 @@
 #[cfg(test)]
 mod tests {
+    use crate::db::init_db;
     use super::super::migration_v2::{apply_migration_v2, apply_migration_v3};
     use rusqlite::Connection;
 
+    fn temp_db_connection() -> (Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "rustsale-migration-v2-test-{}.db",
+            rand::random::<u64>()
+        ));
+        let conn = init_db(path.to_str().unwrap()).unwrap();
+        (conn, path)
+    }
+
     #[test]
     fn test_fresh_database_to_v3() {
-        let conn = Connection::open_in_memory().unwrap();
-        apply_migration_v3(&conn).unwrap();
+        let (conn, path) = temp_db_connection();
+        let _guard = defer_remove(path);
 
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 3);
@@ -20,10 +30,49 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_page_psid_isolation() {
+        let (conn, path) = temp_db_connection();
+        let _guard = defer_remove(path);
+
+        // 1. Create two Facebook Page channel accounts
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at)
+             VALUES (1, 'messenger', 'PAGE_1', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at)
+             VALUES (2, 'messenger', 'PAGE_2', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+
+        // 2. Insert same PSID for Page 1 and Page 2 -> Both MUST succeed
+        conn.execute(
+            "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+             VALUES ('messenger', 1, 'psid', 'PSID_COMMON_123', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+             VALUES ('messenger', 2, 'psid', 'PSID_COMMON_123', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+
+        // 3. Duplicate PSID under Page 1 -> MUST FAIL
+        let duplicate_res = conn.execute(
+            "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+             VALUES ('messenger', 1, 'psid', 'PSID_COMMON_123', '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(duplicate_res.is_err(), "Duplicate PSID under the same Page must violate unique constraint");
+    }
+
+    #[test]
     fn test_existing_v2_to_v3_upgrade_preserves_data() {
         let conn = Connection::open_in_memory().unwrap();
 
-        // Exact canonical V1 schema
+        // Base V1 schema fixture
         conn.execute_batch(r#"
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,5 +165,15 @@ mod tests {
         apply_migration_v3(&conn).unwrap();
         let v3_repeat: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v3_repeat, 3);
+    }
+
+    struct DeferRemove(std::path::PathBuf);
+    impl Drop for DeferRemove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    fn defer_remove(path: std::path::PathBuf) -> DeferRemove {
+        DeferRemove(path)
     }
 }

@@ -9,6 +9,8 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
 
     let migration_result = (|| -> Result<()> {
+        conn.execute_batch("SAVEPOINT migration_v2;")?;
+
         conn.execute_batch(r#"
             -- 1. Create v2 table for channel_identities with channel_account_id
             CREATE TABLE IF NOT EXISTS channel_identities_v2 (
@@ -42,7 +44,31 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         ).unwrap_or(false);
 
         if has_channel_identities {
-            conn.execute_batch(r#"
+            // Check which columns exist in channel_identities
+            let mut existing_cols = Vec::new();
+            {
+                let mut stmt = conn.prepare("PRAGMA table_info(channel_identities)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                for col in rows.flatten() {
+                    existing_cols.push(col.to_lowercase());
+                }
+            }
+
+            let lead_id_expr = if existing_cols.contains(&"lead_id".to_string()) { "lead_id" } else { "NULL" };
+            let channel_account_id_expr = if existing_cols.contains(&"channel_account_id".to_string()) { "channel_account_id" } else { "NULL" };
+            let norm_addr_expr = if existing_cols.contains(&"normalized_address".to_string()) { "normalized_address" } else { "NULL" };
+            let disp_name_expr = if existing_cols.contains(&"display_name".to_string()) { "display_name" } else { "NULL" };
+            let avatar_url_expr = if existing_cols.contains(&"avatar_url".to_string()) { "avatar_url" } else { "NULL" };
+            let sync_at_expr = if existing_cols.contains(&"profile_synced_at".to_string()) { "profile_synced_at" } else { "NULL" };
+            let sync_err_expr = if existing_cols.contains(&"profile_sync_error".to_string()) { "profile_sync_error" } else { "NULL" };
+            let sync_att_expr = if existing_cols.contains(&"profile_sync_attempts".to_string()) { "profile_sync_attempts" } else { "0" };
+            let retry_at_expr = if existing_cols.contains(&"next_profile_retry_at".to_string()) { "next_profile_retry_at" } else { "NULL" };
+            let link_src_expr = if existing_cols.contains(&"link_source".to_string()) { "link_source" } else { "'unlinked'" };
+            let link_conf_expr = if existing_cols.contains(&"link_confidence".to_string()) { "link_confidence" } else { "NULL" };
+            let verif_at_expr = if existing_cols.contains(&"verified_at".to_string()) { "verified_at" } else { "NULL" };
+
+            let copy_sql = format!(
+                r#"
                 INSERT INTO channel_identities_v2 (
                     id, lead_id, channel, channel_account_id, identity_namespace, external_id,
                     normalized_address, display_name, avatar_url, profile_synced_at,
@@ -50,26 +76,30 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
                     link_source, link_confidence, verified_at, created_at, updated_at
                 )
                 SELECT 
-                    id, lead_id, channel, NULL, identity_namespace, external_id,
-                    normalized_address, display_name, avatar_url, profile_synced_at,
-                    profile_sync_error, profile_sync_attempts, next_profile_retry_at,
-                    link_source, link_confidence, verified_at, created_at, updated_at
+                    id, {lead_id_expr}, channel, {channel_account_id_expr}, identity_namespace, external_id,
+                    {norm_addr_expr}, {disp_name_expr}, {avatar_url_expr}, {sync_at_expr},
+                    {sync_err_expr}, {sync_att_expr}, {retry_at_expr},
+                    {link_src_expr}, {link_conf_expr}, {verif_at_expr}, created_at, updated_at
                 FROM channel_identities;
 
                 DROP TABLE IF EXISTS channel_identities;
                 ALTER TABLE channel_identities_v2 RENAME TO channel_identities;
-            "#)?;
+                "#
+            );
+            conn.execute_batch(&copy_sql)?;
         } else {
             conn.execute_batch("ALTER TABLE channel_identities_v2 RENAME TO channel_identities;")?;
         }
 
         conn.execute_batch(r#"
-            -- 2. Rebuild indexes with unique constraints
+            -- 2. Rebuild partial unique constraints
             CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique 
-            ON channel_identities(channel, identity_namespace, external_id);
-            CREATE INDEX IF NOT EXISTS idx_channel_identities_page_scope 
-            ON channel_identities(channel, channel_account_id, identity_namespace, external_id);
+            ON channel_identities(channel, identity_namespace, external_id) 
+            WHERE channel_account_id IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique 
+            ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
+            WHERE channel_account_id IS NOT NULL;
 
             -- 3. Create facebook_page_tokens table
             CREATE TABLE IF NOT EXISTS facebook_page_tokens (
@@ -127,8 +157,13 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         }
 
         conn.execute_batch("PRAGMA user_version = 2;")?;
+        conn.execute_batch("RELEASE SAVEPOINT migration_v2;")?;
         Ok(())
     })();
+
+    if migration_result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v2; RELEASE SAVEPOINT migration_v2;");
+    }
 
     let pragma_res = conn.execute_batch("PRAGMA foreign_keys = ON;");
     match migration_result {
@@ -151,6 +186,8 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
 
     let migration_result = (|| -> Result<()> {
+        conn.execute_batch("SAVEPOINT migration_v3;")?;
+
         conn.execute_batch(r#"
             -- 1. Create channel_sync_dead_letters table
             CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
@@ -210,8 +247,13 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
         }
 
         conn.execute_batch("PRAGMA user_version = 3;")?;
+        conn.execute_batch("RELEASE SAVEPOINT migration_v3;")?;
         Ok(())
     })();
+
+    if migration_result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v3; RELEASE SAVEPOINT migration_v3;");
+    }
 
     let pragma_res = conn.execute_batch("PRAGMA foreign_keys = ON;");
     match migration_result {
