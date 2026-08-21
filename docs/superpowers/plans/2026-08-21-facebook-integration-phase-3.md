@@ -138,25 +138,28 @@ impl CommentEngine {
 
         match resp {
             Ok(r) if r.status().is_success() => {
-                conn.execute(
+                let rows = conn.execute(
                     "UPDATE facebook_comment_logs SET private_reply_status = 'success', updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?2",
                     params![comment_id, worker_id],
                 )?;
+                if rows == 0 {
+                    return Err(anyhow!("Lease expired during send and was claimed by another worker"));
+                }
                 Ok("replied_successfully".to_string())
             }
             Ok(r) => {
                 let err_text = r.text().await.unwrap_or_default();
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
                     params![comment_id, err_text, worker_id],
-                )?;
+                );
                 Err(anyhow!("Send API failed: {}", err_text))
             }
             Err(e) => {
-                conn.execute(
+                let _ = conn.execute(
                     "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
                     params![comment_id, e.to_string(), worker_id],
-                )?;
+                );
                 Err(anyhow!("Network timeout / transport failure: {}", e))
             }
         }

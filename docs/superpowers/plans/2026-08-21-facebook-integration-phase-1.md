@@ -302,9 +302,14 @@ use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 
 pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
+    let current_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    if current_version >= 2 {
+        return Ok(());
+    }
+
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
 
-    let result = (|| -> Result<()> {
+    let migration_result = (|| -> Result<()> {
         let tx = conn.transaction()?;
 
         tx.execute_batch(r#"
@@ -398,7 +403,7 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_dedup ON message_reactions(channel_account_id, mid, sender_psid);
         "#)?;
 
-        // Conditionally add leadgen_id and custom_fields_json to leads table
+        // Conditionally add leadgen columns to leads table
         let mut has_leadgen = false;
         let mut has_custom_fields = false;
         {
@@ -417,25 +422,31 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
             tx.execute_batch("ALTER TABLE leads ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';")?;
         }
 
-        // Check FK violations using tx
-        let mut fk_stmt = tx.prepare("PRAGMA foreign_key_check")?;
-        let fk_violations: Vec<String> = fk_stmt
-            .query_map([], |row| Ok(row.get::<_, String>(0)?))?
-            .filter_map(|r| r.ok())
-            .collect();
+        // Check FK violations using a scoped statement
+        {
+            let mut fk_stmt = tx.prepare("PRAGMA foreign_key_check")?;
+            let fk_violations: Vec<String> = fk_stmt
+                .query_map([], |row| Ok(row.get::<_, String>(0)?))?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        if !fk_violations.is_empty() {
-            return Err(anyhow!("Foreign key violations found: {:?}", fk_violations));
+            if !fk_violations.is_empty() {
+                return Err(anyhow!("Foreign key violations found: {:?}", fk_violations));
+            }
         }
 
+        tx.execute_batch("PRAGMA user_version = 2;")?;
         tx.commit()?;
         Ok(())
     })();
 
     let pragma_res = conn.execute_batch("PRAGMA foreign_keys = ON;");
-    match result {
+    match migration_result {
         Ok(_) => pragma_res.map_err(|e| anyhow!("Failed to restore foreign keys: {}", e)),
-        Err(e) => Err(e),
+        Err(e) => {
+            let _ = pragma_res;
+            Err(e)
+        }
     }
 }
 ```
@@ -451,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_adversarial_migration_and_page_scoped_psids() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(r#"
             PRAGMA foreign_keys = ON;
             CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT);
@@ -482,7 +493,7 @@ mod tests {
             VALUES ('zalo', 'phone', '0912345678', '2026-01-01', '2026-01-01');
         "#).unwrap();
 
-        apply_migration_v2(&conn).unwrap();
+        apply_migration_v2(&mut conn).unwrap();
 
         conn.execute(
             "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
@@ -648,18 +659,40 @@ use aes_gcm::{
 };
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use keyring::Entry;
 use rand::RngCore;
 
 pub struct StrongholdKeyring;
 
 impl StrongholdKeyring {
-    fn get_vault_key() -> Result<[u8; 32]> {
-        // Retrieves non-exportable 256-bit AES master key from Tauri Stronghold vault
-        Ok([42u8; 32])
+    fn get_or_create_master_key() -> Result<[u8; 32]> {
+        let entry = Entry::new("rustsale", "facebook_token_master_key")
+            .map_err(|e| anyhow!("Failed to access OS Keyring service: {}", e))?;
+
+        match entry.get_password() {
+            Ok(pwd_b64) => {
+                let raw = BASE64.decode(pwd_b64.trim())
+                    .map_err(|e| anyhow!("Failed to decode keyring master key: {}", e))?;
+                if raw.len() != 32 {
+                    return Err(anyhow!("Keyring master key length invalid"));
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&raw);
+                Ok(key)
+            }
+            Err(_) => {
+                let mut new_key = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut new_key);
+                let b64 = BASE64.encode(&new_key);
+                entry.set_password(&b64)
+                    .map_err(|e| anyhow!("Failed to persist new master key in OS Keyring: {}", e))?;
+                Ok(new_key)
+            }
+        }
     }
 
     pub fn decrypt_page_token(ciphertext_b64: &str) -> Result<String> {
-        let key_bytes = Self::get_vault_key()?;
+        let key_bytes = Self::get_or_create_master_key()?;
         let raw = BASE64.decode(ciphertext_b64.trim())
             .map_err(|e| anyhow!("Base64 decode failure: {}", e))?;
         if raw.len() < 12 {
@@ -677,7 +710,7 @@ impl StrongholdKeyring {
         if plain_token.is_empty() {
             return Err(anyhow!("Cannot encrypt empty token"));
         }
-        let key_bytes = Self::get_vault_key()?;
+        let key_bytes = Self::get_or_create_master_key()?;
         let cipher = Aes256Gcm::new((&key_bytes).into());
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
