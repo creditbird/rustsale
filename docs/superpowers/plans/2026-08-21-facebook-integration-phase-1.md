@@ -1060,11 +1060,12 @@ impl FacebookSyncWorker {
                                     let att_url = att.get("payload").and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
                                     let trimmed_url = att_url.trim();
                                     let att_title = att.get("title").and_then(|t| t.as_str());
+                                    let provider_att_id = att.get("payload").and_then(|p| p.get("id").or_else(|| p.get("attachment_id"))).and_then(|i| i.as_str());
                                     if !trimmed_url.is_empty() {
                                         tx.execute(
-                                            "INSERT OR IGNORE INTO message_attachments (message_id, attachment_type, file_name, remote_url, metadata_json, created_at)
-                                             VALUES (?1, ?2, ?3, ?4, '{}', datetime('now'))",
-                                            params![msg_id, att_type, att_title, trimmed_url],
+                                            "INSERT OR IGNORE INTO message_attachments (message_id, provider_attachment_id, attachment_type, file_name, remote_url, metadata_json, created_at)
+                                             VALUES (?1, ?2, ?3, ?4, ?5, '{}', datetime('now'))",
+                                            params![msg_id, provider_att_id, att_type, att_title, trimmed_url],
                                         )?;
                                     }
                                 }

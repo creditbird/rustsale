@@ -61,9 +61,9 @@ fn ensure_zalo_session_schema(conn: &Connection) -> Result<()> {
 }
 
 pub fn migrate(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("schema.sql"))?;
-
     super::migration_v2::apply_migration_v3(conn)?;
+
+    conn.execute_batch(include_str!("schema.sql"))?;
 
     add_column_if_missing(conn, "channel_identities", "profile_synced_at", "TEXT")?;
     add_column_if_missing(conn, "channel_identities", "profile_sync_error", "TEXT")?;

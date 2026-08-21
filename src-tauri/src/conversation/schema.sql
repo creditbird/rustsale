@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS channel_identities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     lead_id INTEGER,
     channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+    channel_account_id INTEGER,
     identity_namespace TEXT NOT NULL,
     external_id TEXT NOT NULL,
     normalized_address TEXT,
@@ -32,9 +33,17 @@ CREATE TABLE IF NOT EXISTS channel_identities (
     verified_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(channel, identity_namespace, external_id),
-    FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL
+    FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique 
+ON channel_identities(channel, identity_namespace, external_id) 
+WHERE channel_account_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique 
+ON channel_identities(channel, channel_account_id, identity_namespace, external_id) 
+WHERE channel_account_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS channel_conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -390,3 +399,37 @@ CREATE TABLE IF NOT EXISTS pending_spool_cleanups (
     local_path TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS facebook_page_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL UNIQUE,
+    page_id TEXT NOT NULL UNIQUE,
+    access_token_encrypted TEXT NOT NULL,
+    token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'revoked')),
+    granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+    last_validated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    error_reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'retrying', 'resolved', 'ignored')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT,
+    resolved_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
+    UNIQUE(channel_account_id, scope, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
+CREATE INDEX IF NOT EXISTS idx_dead_letters_status ON channel_sync_dead_letters(status, next_retry_at);

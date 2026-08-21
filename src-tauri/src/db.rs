@@ -34,6 +34,7 @@ pub fn open_db_connection(db_path: &str) -> Result<Connection> {
 
 pub fn init_db(db_path: &str) -> Result<Connection> {
     let mut conn = open_db_connection(db_path)?;
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
 
     {
         let tx = conn.transaction()?;
@@ -491,6 +492,19 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         tx.commit()?;
     }
 
+    // Verify foreign key integrity after schema creation & migrations
+    {
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+        let violations: Vec<String> = stmt
+            .query_map([], |row| Ok(row.get::<_, String>(0)?))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if !violations.is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+    }
+
+    conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(conn)
 }
 

@@ -149,17 +149,17 @@ impl CommentEngine {
             }
             Ok(r) => {
                 let err_text = r.text().await.unwrap_or_default();
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE facebook_comment_logs SET private_reply_status = 'failed', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
                     params![comment_id, err_text, worker_id],
-                );
+                )?;
                 Err(anyhow!("Send API failed: {}", err_text))
             }
             Err(e) => {
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE facebook_comment_logs SET private_reply_status = 'delivery_unknown', error_message = ?2, updated_at = datetime('now') WHERE comment_id = ?1 AND owner_id = ?3",
                     params![comment_id, e.to_string(), worker_id],
-                );
+                )?;
                 Err(anyhow!("Network timeout / transport failure: {}", e))
             }
         }

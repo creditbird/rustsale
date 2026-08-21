@@ -227,11 +227,10 @@ impl FacebookMediaUploader {
             .send().await?;
 
         let body: Value = resp.json().await?;
-        let success = body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !success {
-            return Err(anyhow!("Finish video upload failed: {:?}", body));
-        }
-        Ok(session_id.to_string())
+        let success = body.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+        let video_id = body.get("id").and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Finish video upload did not return video ID: {:?}", body))?;
+        Ok(video_id.to_string())
     }
 
     pub async fn upload_full_resumable_video(
