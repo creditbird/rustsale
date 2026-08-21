@@ -842,7 +842,7 @@ git commit -m "feat(conversation): implement Stronghold keyring interface and ta
 // src-tauri/src/conversation/facebook/sync.rs
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -913,10 +913,20 @@ impl FacebookSyncWorker {
             match ev.event_type.as_str() {
                 "messages" => {
                     if let Some(msg) = ev.payload.get("message") {
-                        let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        let text_opt = msg.get("text").and_then(|t| t.as_str());
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let sender_psid = ev.payload.get("sender").and_then(|s| s.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
+
+                        let (content_type, text_content) = if let Some(t) = text_opt {
+                            ("text", t.to_string())
+                        } else if let Some(atts) = msg.get("attachments").and_then(|a| a.as_array()) {
+                            let att_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
+                            let att_url = atts.first().and_then(|a| a.get("payload")).and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                            (att_type, att_url.to_string())
+                        } else {
+                            ("text", String::new())
+                        };
 
                         if !sender_psid.is_empty() {
                             tx.execute(
@@ -932,10 +942,11 @@ impl FacebookSyncWorker {
 
                             tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'inbound', ?2, 'text', ?3, ?4, datetime('now'))
+                                 VALUES (?1, 'inbound', ?2, ?3, ?4, ?5, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
-                                   provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)",
-                                params![conv_id, mid, text, timestamp_ms],
+                                   provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
+                                 WHERE messages.direction = excluded.direction",
+                                params![conv_id, mid, content_type, text_content, timestamp_ms],
                             )?;
                             processed = true;
                         }
@@ -943,10 +954,20 @@ impl FacebookSyncWorker {
                 }
                 "message_echoes" => {
                     if let Some(msg) = ev.payload.get("message") {
-                        let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        let text_opt = msg.get("text").and_then(|t| t.as_str());
                         let mid = msg.get("mid").and_then(|m| m.as_str()).unwrap_or(&ev.event_key);
                         let recipient_psid = ev.payload.get("recipient").and_then(|r| r.get("id")).and_then(|id| id.as_str()).unwrap_or("");
                         let timestamp_ms: Option<i64> = ev.payload.get("timestamp").and_then(|t| t.as_i64()).filter(|&t| t > 0);
+
+                        let (content_type, text_content) = if let Some(t) = text_opt {
+                            ("text", t.to_string())
+                        } else if let Some(atts) = msg.get("attachments").and_then(|a| a.as_array()) {
+                            let att_type = atts.first().and_then(|a| a.get("type")).and_then(|t| t.as_str()).unwrap_or("file");
+                            let att_url = atts.first().and_then(|a| a.get("payload")).and_then(|p| p.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                            (att_type, att_url.to_string())
+                        } else {
+                            ("text", String::new())
+                        };
 
                         if !recipient_psid.is_empty() {
                             tx.execute(
@@ -962,10 +983,11 @@ impl FacebookSyncWorker {
 
                             tx.execute(
                                 "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
-                                 VALUES (?1, 'outbound', ?2, 'text', ?3, ?4, datetime('now'))
+                                 VALUES (?1, 'outbound', ?2, ?3, ?4, ?5, datetime('now'))
                                  ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
-                                   provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)",
-                                params![conv_id, mid, text, timestamp_ms],
+                                   provider_timestamp = COALESCE(messages.provider_timestamp, excluded.provider_timestamp)
+                                 WHERE messages.direction = excluded.direction",
+                                params![conv_id, mid, content_type, text_content, timestamp_ms],
                             )?;
                             processed = true;
                         }
@@ -990,15 +1012,15 @@ impl FacebookSyncWorker {
                                         params![m_str, recipient_psid, account_id],
                                     )?;
                                     if affected == 0 {
-                                        let exists: bool = tx.query_row(
+                                        let exists: Option<i64> = tx.query_row(
                                             "SELECT 1 FROM message_receipts r
                                              JOIN messages m ON r.message_id = m.id
                                              JOIN channel_conversations c ON m.conversation_id = c.id
                                              WHERE m.provider_message_id = ?1 AND c.channel_account_id = ?3 AND c.external_thread_id = ?2 AND r.receipt_type = 'delivered'",
                                             params![m_str, recipient_psid, account_id],
-                                            |_| Ok(true),
-                                        ).unwrap_or(false);
-                                        if !exists {
+                                            |r| r.get(0),
+                                        ).optional()?;
+                                        if exists.is_none() {
                                             all_accounted = false;
                                         }
                                     }
