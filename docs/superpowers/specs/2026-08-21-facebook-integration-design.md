@@ -266,11 +266,11 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 
 ### 5.1 Bounded Memory Streaming & Official Meta Upload Protocol
 - **Videos (`graph-video.facebook.com`):** 3-Phase resumable upload (`upload_phase=start` -> `upload_phase=transfer` -> `upload_phase=finish`). Tracks `facebook_upload_sessions`. On resume, queries Graph API video upload session for authoritative start offset. Verifies `server_offset > offset && server_offset <= file_size`. Chunked streaming via file seek avoids high memory spikes.
-- **Reels (`rupload.facebook.com`):** 3-Phase binary streaming upload conforming to Meta Graph API specifications:
+- **Reels (`rupload.facebook.com`):** 3-Phase binary streaming upload conforming strictly to Meta Graph API specifications:
   1. `START`: Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`, returning `{"video_id": "<video_id>"}`.
-  2. `UPLOAD`: Stream binary file directly to `https://rupload.facebook.com/video-upload/v26.0/<video_id>` with headers `Authorization: OAuth <page_token>`, `offset: 0`, `file_size: <file_size>`, and `Content-Type: application/octet-stream`. Successful upload returns `{"success": true}` and updates local `start_offset = file_size`.
+  2. `UPLOAD`: Streams binary file boundedly via `tokio_util::io::ReaderStream` directly to `https://rupload.facebook.com/video-upload/v26.0/<video_id>` with headers `Authorization: OAuth <page_token>`, `offset: 0`, `file_size: <file_size>`, and `Content-Type: application/octet-stream`. Strictly parses documented response and requires `{"success": true}` fail-closed (rejecting malformed or non-success payloads), advancing local `start_offset = file_size` via checked CAS (`rows == 1`).
   3. `FINISH`: Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`, `video_id: <video_id>`, and `video_state`.
-  4. `STATUS & RESUME`: Status and resume verification query Graph API `GET /<video_id>?fields=id,status`. If `video_status == "ready"`, proceeds to finalize/verify without redundant upload payload streaming.
+  4. `STATUS & RESUME`: Status and resume verification query Graph API `GET /<video_id>?fields=id,status`. Inspects authoritative `status.uploading_phase.status == "complete"` (or `video_status == "ready"` / `publishing_phase.status == "complete"`) to detect previously accepted upload payloads and avoid redundant re-streaming.
 
 ### 5.2 Authoritative START Response-Loss & Reconciler Protocol
 1. **Meta Graph API Resumable Upload Architecture:**
