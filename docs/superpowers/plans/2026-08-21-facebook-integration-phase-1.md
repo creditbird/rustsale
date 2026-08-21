@@ -383,7 +383,36 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
             );
+
+            -- 6. Create channel_sync_dead_letters table
+            CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_account_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                event_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                event_key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                error_reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
+                UNIQUE(channel_account_id, scope, event_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
         "#)?;
+
+        // Conditionally add provider_timestamp to messages table
+        let mut has_provider_timestamp = false;
+        {
+            let mut stmt = tx.prepare("PRAGMA table_info(messages)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for col in rows.flatten() {
+                if col == "provider_timestamp" { has_provider_timestamp = true; }
+            }
+        }
+        if !has_provider_timestamp {
+            tx.execute_batch("ALTER TABLE messages ADD COLUMN provider_timestamp INTEGER;")?;
+        }
 
         // Conditionally add leadgen columns to leads table
         let mut has_leadgen = false;
@@ -902,9 +931,9 @@ impl FacebookSyncWorker {
                             )?;
 
                             tx.execute(
-                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
-                                 VALUES (?1, 'inbound', ?2, 'text', ?3, datetime('now'))",
-                                params![conv_id, mid, text],
+                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
+                                 VALUES (?1, 'inbound', ?2, 'text', ?3, ?4, datetime('now'))",
+                                params![conv_id, mid, text, timestamp_ms],
                             )?;
                             processed = true;
                         }
@@ -930,9 +959,9 @@ impl FacebookSyncWorker {
                             )?;
 
                             tx.execute(
-                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, ingested_at)
-                                 VALUES (?1, 'outbound', ?2, 'text', ?3, datetime('now'))",
-                                params![conv_id, mid, text],
+                                "INSERT OR IGNORE INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at)
+                                 VALUES (?1, 'outbound', ?2, 'text', ?3, ?4, datetime('now'))",
+                                params![conv_id, mid, text, timestamp_ms],
                             )?;
                             processed = true;
                         }
@@ -960,14 +989,14 @@ impl FacebookSyncWorker {
                             processed = true;
                         } else if watermark > 0 {
                             let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
-                            // Cumulative watermark resolution across all preceding qualifying outbound messages
+                            // Cumulative watermark resolution across all preceding qualifying outbound messages using authoritative provider timestamp
                             tx.execute(
                                 "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
                                  SELECT m.id, ?2, ?3, datetime(?4 / 1000, 'unixepoch')
                                  FROM messages m
                                  JOIN channel_conversations c ON m.conversation_id = c.id
                                  WHERE c.channel_account_id = ?1 AND c.external_thread_id = ?2 AND m.direction = 'outbound'
-                                   AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')",
+                                   AND (m.provider_timestamp <= ?4 OR (m.provider_timestamp IS NULL AND m.ingested_at <= datetime(?4 / 1000, 'unixepoch')))",
                                 params![account_id, recipient_psid, r_type, watermark],
                             )?;
                             processed = true;
@@ -1000,7 +1029,7 @@ impl FacebookSyncWorker {
             if !processed {
                 // Route unhandled / malformed payload to dedicated durable dead-letter table with full diagnostic metadata
                 tx.execute(
-                    "INSERT INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
+                    "INSERT OR IGNORE INTO channel_sync_dead_letters (channel_account_id, scope, event_id, event_type, event_key, payload_json, error_reason, created_at)
                      VALUES (?1, 'messenger', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
                     params![account_id, ev.id, ev.event_type, ev.event_key, ev.payload.to_string(), "unhandled_or_malformed_payload"],
                 )?;
