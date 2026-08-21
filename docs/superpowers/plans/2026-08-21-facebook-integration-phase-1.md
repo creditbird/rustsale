@@ -316,7 +316,7 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
         let tx = conn.transaction()?;
 
         tx.execute_batch(r#"
-            -- 1. Create v2 table with channel_account_id
+            -- 1. Create v2 table for channel_identities with channel_account_id
             CREATE TABLE IF NOT EXISTS channel_identities_v2 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lead_id INTEGER,
@@ -380,30 +380,6 @@ pub fn apply_migration_v2(conn: &mut Connection) -> Result<()> {
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
             );
-
-            -- 6. Receipts and reactions tables
-            CREATE TABLE IF NOT EXISTS message_receipts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_account_id INTEGER NOT NULL,
-                recipient_psid TEXT NOT NULL,
-                receipt_type TEXT NOT NULL CHECK (receipt_type IN ('delivery', 'read')),
-                watermark INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_dedup ON message_receipts(channel_account_id, recipient_psid, receipt_type, watermark);
-
-            CREATE TABLE IF NOT EXISTS message_reactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_account_id INTEGER NOT NULL,
-                mid TEXT NOT NULL,
-                sender_psid TEXT NOT NULL,
-                reaction TEXT NOT NULL,
-                action TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_dedup ON message_reactions(channel_account_id, mid, sender_psid);
         "#)?;
 
         // Conditionally add leadgen columns to leads table
@@ -912,13 +888,14 @@ impl FacebookSyncWorker {
                         .and_then(|d| d.get("watermark")).and_then(|w| w.as_i64()).unwrap_or(0);
 
                     if !recipient_psid.is_empty() && watermark > 0 {
-                        let r_type = if ev.event_type == "message_deliveries" { "delivery" } else { "read" };
-                        tx.execute(
-                            "INSERT OR IGNORE INTO message_receipts (channel_account_id, recipient_psid, receipt_type, watermark, created_at)
-                             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
-                            params![account_id, recipient_psid, r_type, watermark],
-                        )?;
+                        let r_type = if ev.event_type == "message_deliveries" { "delivered" } else { "read" };
+                        let _ = tx.execute(
+                            "INSERT OR IGNORE INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at)
+                             SELECT id, ?2, ?3, datetime('now') FROM messages WHERE channel_account_id = ?1 ORDER BY id DESC LIMIT 1",
+                            params![account_id, recipient_psid, r_type],
+                        );
                     }
+                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
                 "message_reactions" => {
                     if let Some(r) = ev.payload.get("reaction") {
@@ -928,33 +905,27 @@ impl FacebookSyncWorker {
                         let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
 
                         if !mid.is_empty() && !sender_psid.is_empty() {
-                            tx.execute(
-                                "INSERT OR REPLACE INTO message_reactions (channel_account_id, mid, sender_psid, reaction, action, created_at)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-                                params![account_id, mid, sender_psid, reaction, action],
-                            )?;
+                            let _ = tx.execute(
+                                "INSERT OR REPLACE INTO pending_message_reactions (
+                                    channel_account_id, external_thread_id, conversation_kind, provider_message_id, actor_external_id, reaction, removed, occurred_at, created_at, updated_at
+                                 ) VALUES (?1, ?2, 'direct', ?3, ?2, ?4, ?5, datetime('now'), datetime('now'), datetime('now'))",
+                                params![account_id, sender_psid, mid, reaction, if action == "unreact" { 1 } else { 0 }],
+                            );
                         }
                     }
+                    if ev.id > max_synced_id { max_synced_id = ev.id; }
                 }
-                "feed" => {
-                    // Ingested by CommentAutomation engine in Phase 3
+                _ => {
+                    // Feed and Leadgen events leave messenger cursor unchanged; processed by dedicated feature workers
                 }
-                "leadgen" => {
-                    // Ingested by LeadAds pipeline in Phase 3
-                }
-                _ => {}
-            }
-
-            if ev.id > max_synced_id {
-                max_synced_id = ev.id;
             }
         }
 
         if max_synced_id > 0 {
             tx.execute(
-                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, updated_at)
-                 VALUES (?1, 'meta_webhook_cursor', ?2, datetime('now'))
-                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, updated_at = datetime('now')",
+                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, last_event_at, updated_at)
+                 VALUES (?1, 'messenger', ?2, datetime('now'), datetime('now'))
+                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, last_event_at = datetime('now'), updated_at = datetime('now')",
                 params![account_id, max_synced_id.to_string()],
             )?;
         }
