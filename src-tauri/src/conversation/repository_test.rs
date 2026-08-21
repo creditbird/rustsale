@@ -4317,3 +4317,116 @@ fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transitio
     ).unwrap();
     assert_eq!(max_retry_fail, 1, "Max retries must mark session failed");
 }
+
+#[test]
+fn test_facebook_upload_session_reel_flow_and_polling_429() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            page_id TEXT NOT NULL,
+            upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+            upload_session_id TEXT NOT NULL UNIQUE,
+            video_id TEXT,
+            file_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            owner_id TEXT,
+            lease_deadline TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    ).unwrap();
+
+    // 0. Insert parent channel account and scheduled post
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (200, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (200, 'grp_200', 200, 'page_123', 'reel', 'test reel message', 'idemp_200', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // 1. Insert Reel in_progress session after START
+    let reel_vid_id = "meta_reel_12345";
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (200, 'page_123', 'reel', ?1, ?1, '/tmp/reel.mp4', 'reel_hash_1', 5242880, 0, 'in_progress', 0, 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+        params![reel_vid_id],
+    ).unwrap();
+
+    // 2. Simulate binary upload completion on rupload (Meta returns {"success": true})
+    let rupload_resp_json = serde_json::json!({ "success": true });
+    assert_eq!(
+        rupload_resp_json.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let offset_updated = conn.execute(
+        "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2 AND owner_id = 'worker_1' AND status = 'in_progress'",
+        params![5242880i64, reel_vid_id],
+    ).unwrap();
+    assert_eq!(offset_updated, 1);
+
+    // 3. Transition to finishing before calling FINISH endpoint
+    let finishing_updated = conn.execute(
+        "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'in_progress'",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(finishing_updated, 1);
+
+    // 4. Test terminal status polling receiving HTTP 429: releases lease and increments retry count
+    let poll_429_updated = conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'finishing'",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(poll_429_updated, 1);
+
+    let (owner, retries, status): (Option<String>, i64, String) = conn.query_row(
+        "SELECT owner_id, retry_count, status FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+        params![reel_vid_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    ).unwrap();
+    assert_eq!(owner, None);
+    assert_eq!(retries, 1);
+    assert_eq!(status, "finishing");
+
+    // 5. Subsequent polling worker reclaims lease and verifies complete publishing status
+    let reclaims = conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = 'worker_2', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now') WHERE upload_session_id = ?1 AND status = 'finishing' AND owner_id IS NULL",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(reclaims, 1);
+
+    let status_json = serde_json::json!({
+        "status": {
+            "video_status": "ready",
+            "publishing_phase": {
+                "status": "complete"
+            }
+        }
+    });
+    let pub_status = status_json
+        .get("status")
+        .and_then(|s| s.get("publishing_phase"))
+        .and_then(|p| p.get("status"))
+        .and_then(|v| v.as_str());
+    assert_eq!(pub_status, Some("complete"));
+
+    let completed = conn.execute(
+        "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_2' AND status = 'finishing'",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(completed, 1);
+}

@@ -264,16 +264,20 @@ Events from `meta_webhook_buffer` are processed in strict ascending `id` order.
 
 ## 5. Resumable Upload Pipeline (Videos & Reels)
 
-### 5.1 Bounded Memory Streaming & Exact Offset Verification
+### 5.1 Bounded Memory Streaming & Official Meta Upload Protocol
 - **Videos (`graph-video.facebook.com`):** 3-Phase resumable upload (`upload_phase=start` -> `upload_phase=transfer` -> `upload_phase=finish`). Tracks `facebook_upload_sessions`. On resume, queries Graph API video upload session for authoritative start offset. Verifies `server_offset > offset && server_offset <= file_size`. Chunked streaming via file seek avoids high memory spikes.
-- **Reels (`rupload.facebook.com`):** Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`. Send 4MB binary chunks to `https://rupload.facebook.com/video-reels/<video_id>` with headers `Offset` and `file_size`. On resume, query server confirmed `Offset` via `GET /video-reels/<video_id>` with Bearer auth; if failed or malformed, abort with error. After chunk upload, parse confirmed server offset and strictly verify `confirmed_offset == offset + bytes_to_read as u64`. Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`.
+- **Reels (`rupload.facebook.com`):** 3-Phase binary streaming upload conforming to Meta Graph API specifications:
+  1. `START`: Initialize via `POST /<page_id>/video_reels` with `upload_phase=start`, returning `{"video_id": "<video_id>"}`.
+  2. `UPLOAD`: Stream binary file directly to `https://rupload.facebook.com/video-upload/v26.0/<video_id>` with headers `Authorization: OAuth <page_token>`, `offset: 0`, `file_size: <file_size>`, and `Content-Type: application/octet-stream`. Successful upload returns `{"success": true}` and updates local `start_offset = file_size`.
+  3. `FINISH`: Finalize via `POST /<page_id>/video_reels` with `upload_phase=finish`, `video_id: <video_id>`, and `video_state`.
+  4. `STATUS & RESUME`: Status and resume verification query Graph API `GET /<video_id>?fields=id,status`. If `video_status == "ready"`, proceeds to finalize/verify without redundant upload payload streaming.
 
 ### 5.2 Authoritative START Response-Loss & Reconciler Protocol
 1. **Meta Graph API Resumable Upload Architecture:**
    - Meta Graph API video and reels upload operates in 3 distinct phases (`upload_phase=start` -> `upload_phase=transfer` -> `upload_phase=finish`).
    - The `start` phase initializes an uncommitted media container and allocates a session on Meta media servers.
    - An uncommitted container contains 0 uploaded byte chunks and is strictly an inert upload buffer. Meta does not publish any media or create a live post on the Page until all byte chunks are transferred and `upload_phase=finish` is explicitly executed.
-   - If a network interruption or timeout occurs during the initial `start` request, the local client has not received remote IDs and no media chunks have been uploaded. Executing a fresh `start` request safely allocates a new upload container for chunk transfer. The previous uncommitted, zero-byte container on Meta remains inert and unpublishable, guaranteeing zero ghost posts or duplicate publications.
+   - If a network interruption or timeout occurs during the initial `start` request, the local client has not received remote IDs and no media chunks have been uploaded. Executing a fresh `start` request safely allocates a new upload container for chunk transfer. Uncommitted zero-byte containers on Meta remain inert without a subsequent finish phase, and this recovery risk is strictly bounded by `retry_count < 3` before fail-closed failure.
 2. **Deterministic Response-Loss State Machine:**
    - **Local State Invariant:** When an upload starts, SQLite creates `facebook_upload_sessions` with `status = 'init_pending'`, `upload_session_id = 'intent_' || post_id || '_' || uuid`, and `video_id = NULL`.
    - **Case A (START Accepted & Response Received):** Worker receives remote `upload_session_id` and `video_id`. Updates SQLite session row to `upload_session_id = ?1, video_id = ?2, status = 'in_progress'` via checked CAS (`WHERE id = ?3 AND owner_id = ?4 AND status = 'init_pending'` with `rows == 1`).
