@@ -10,9 +10,9 @@
 ## 1. Executive Summary & Architecture Overview
 
 The Facebook Integration module empowers RustSale v2 with enterprise-grade Meta capabilities across three pillars:
-1. **Unified Omnichannel Messenger Inbox (`/conversation`)**: Seamless 2-way real-time messaging with Facebook Pages, integrating directly into the existing RustSale unified inbox alongside Zalo and Email.
-2. **Facebook Post Scheduler & Planner (`/facebook`)**: Dual-mode scheduling (Meta-side 10m–30d & Local-queued >30d) supporting Status, Link, Single Photo, Multi-photo Albums, Resumable Videos, and Reels with live Desktop/Mobile feed previews.
-3. **Automations & Growth Engine**: Compliant Private Reply for comments with in-flight heartbeat and fail-closed reconciliation, 24-hour window countdown with Message Tag gating, Lead Ads instant CRM ingestion, proactive Page Health monitoring, and User Data Deletion compliance.
+1. **Unified Omnichannel Messenger Inbox (`/conversation`)**: Seamless 2-way real-time messaging with Facebook Pages, integrating directly into the existing RustSale unified inbox alongside Zalo and Email. Fully matches the repository conversation schema (`channel_conversations`, `conversation_participants`, `messages`, `message_attachments`, `message_reactions`, `message_receipts`).
+2. **Facebook Post Scheduler & Planner (`/facebook`)**: Dual-mode scheduling (Meta-side 10m–30d & Local-queued >30d) supporting Status, Link, Single Photo, Multi-photo Albums, Resumable Videos, and Reels with persistent restart-resumable upload sessions and live Desktop/Mobile feed previews.
+3. **Automations & Growth Engine**: Compliant Private Reply for comments with in-flight heartbeat loop and fail-closed reconciliation, 24-hour window countdown with Message Tag gating, Lead Ads instant CRM ingestion, proactive Page Health monitoring, and User Data Deletion compliance with tenant-scoped device tasks.
 
 ### High-Level Architecture
 
@@ -67,7 +67,7 @@ flowchart TD
     EdgeHook -.->|500 on DB Error (Meta Retries)| FB_Hook
     BufferDB -->|Broadcast Event| Realtime
     Realtime -.->|Live Event| RustSyncWorker
-    RustSyncWorker -->|Cursor-Based Pull WHERE id > last_cursor| SQLite
+    RustSyncWorker -->|Cursor-Based Pull WHERE id > cursor| SQLite
     RustSyncWorker -->|Tải Media Cục bộ| MediaCache
     SQLite -->|Reactive Timeline| SvelteUI
 
@@ -107,9 +107,9 @@ flowchart TD
      - Desktop verifies callback `state` matches in-memory `state`.
      - Desktop sends authenticated HTTPS POST request to `/meta-oauth-exchange` with user's Supabase Auth JWT header (`Authorization: Bearer <user_jwt>`) and body `{ code: exchange_code, code_verifier: code_verifier }`.
   5. **Atomic Single-Use Consumption, Tenant Mapping & Payload Erasure:**
-     - Edge Function calls Postgres RPC function `complete_meta_oauth_exchange(p_code, p_tenant_id, p_challenge)` in a single transaction:
+     - Edge Function calls Postgres RPC function `complete_meta_oauth_exchange(p_code, p_tenant_id, p_challenge)` with `SET search_path = public, auth, pg_temp;` and execution restricted to `authenticated, service_role`:
        - Verifies `auth.uid() == tenant_id` and `code_challenge == base64url(sha256(code_verifier))`.
-       - Atomically marks `consumed = true` and erases `payload = ''` to prevent token leakage in backups.
+       - Atomically marks `consumed = true` and erases `payload = ''` to prevent token retention in storage.
        - Upserts Page ownership into `meta_tenant_pages (tenant_id, page_id, page_name)` under RLS.
        - Returns the Page Tokens over authenticated TLS directly to the desktop client.
        - If any step fails, the transaction rolls back cleanly.
@@ -117,20 +117,13 @@ flowchart TD
      - Desktop client receives Page Tokens over TLS and immediately encrypts `access_token` using AES-256-GCM via `StrongholdKeyring::encrypt_page_token(page_token)` before persisting into SQLite `facebook_page_tokens` table.
      - Master key is generated locally on first launch, stored in OS Keyring (Windows Credential Manager / Linux Secret Service / macOS Keychain), never leaving the device.
 
-### 2.2 Token Inspection & Status Machine
-- Scheduled background worker inspects tokens every 24 hours via `/meta-debug-token`.
-- Token States:
-  - `valid`: Token active and operational.
-  - `invalid`: Token expired or scopes insufficient.
-  - `revoked`: User password changed, permissions removed, or admin role lost on Page. Emits `TokenRevoked` event to UI.
-
 ---
 
 ## 3. Database Schema & SQLite Data Architecture
 
-All SQLite database migrations enforce `PRAGMA foreign_keys = ON;`.
+All SQLite database operations enforce `PRAGMA foreign_keys = ON;`.
 
-### 3.1 SQLite Local Database (Desktop) & Complete Lifecycle Tables
+### 3.1 Complete Local SQLite Schema
 
 ```sql
 -- 1. Quản lý Token mã hóa của từng Fanpage
@@ -147,12 +140,12 @@ CREATE TABLE IF NOT EXISTS facebook_page_tokens (
     FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
 );
 
--- 2. Chuẩn hóa channel_identities hỗ trợ Page-Scoped PSID và Unique cho Legacy Channels
+-- 2. Chuẩn hóa channel_identities hỗ trợ Page-Scoped PSID
 CREATE TABLE IF NOT EXISTS channel_identities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     lead_id INTEGER,
     channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
-    channel_account_id INTEGER, -- NULL cho Zalo/Email, NOT NULL cho Facebook Page-scoped PSID
+    channel_account_id INTEGER,
     identity_namespace TEXT NOT NULL,
     external_id TEXT NOT NULL,
     normalized_address TEXT,
@@ -218,7 +211,7 @@ CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(page_id, file_hash, file_size_bytes) WHERE status = 'in_progress';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(page_id, upload_type, file_hash, file_size_bytes) WHERE status = 'in_progress';
 
 -- 5. Bảng quản lý Lên lịch đăng bài (Post Scheduler)
 CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
@@ -290,93 +283,12 @@ CREATE TABLE IF NOT EXISTS facebook_comment_logs (
 CREATE INDEX IF NOT EXISTS idx_fb_comment_logs_page_date ON facebook_comment_logs(page_id, created_at);
 ```
 
-### 3.2 Supabase Cloud Relay Schema & Multi-Tenant RLS
-
-```sql
-CREATE TABLE IF NOT EXISTS meta_tenant_pages (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    page_id TEXT NOT NULL,
-    page_name TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE(tenant_id, page_id)
-);
-ALTER TABLE meta_tenant_pages ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Tenants read own pages" ON meta_tenant_pages
-    FOR SELECT USING (auth.uid() = tenant_id);
-
-CREATE TABLE IF NOT EXISTS oauth_authorization_sessions (
-    state TEXT PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    code_challenge TEXT NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-ALTER TABLE oauth_authorization_sessions ENABLE ROW LEVEL SECURITY;
-
-CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
-    code TEXT PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    code_challenge TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    consumed BOOLEAN NOT NULL DEFAULT FALSE,
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-ALTER TABLE oauth_exchange_codes ENABLE ROW LEVEL SECURITY;
-
-CREATE TABLE IF NOT EXISTS meta_webhook_buffer (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    page_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    event_key TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_buffer_dedup ON meta_webhook_buffer(page_id, event_type, event_key);
-CREATE INDEX IF NOT EXISTS idx_meta_buffer_cursor ON meta_webhook_buffer(page_id, id);
-CREATE INDEX IF NOT EXISTS idx_meta_buffer_type ON meta_webhook_buffer(page_id, event_type, id);
-
-ALTER TABLE meta_webhook_buffer ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Tenants read own page buffer" ON meta_webhook_buffer
-    FOR SELECT USING (
-        page_id IN (SELECT page_id FROM meta_tenant_pages WHERE tenant_id = auth.uid())
-    );
-
-CREATE TABLE IF NOT EXISTS data_deletion_requests (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id TEXT NOT NULL,
-    confirmation_code TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at TIMESTAMPTZ
-);
-ALTER TABLE data_deletion_requests ENABLE ROW LEVEL SECURITY;
-
-CREATE TABLE IF NOT EXISTS meta_device_deletion_tasks (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    request_id UUID NOT NULL REFERENCES data_deletion_requests(id) ON DELETE CASCADE,
-    tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    user_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'acknowledged', 'completed')),
-    acknowledged_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-ALTER TABLE meta_device_deletion_tasks ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Tenants sync own deletion tasks" ON meta_device_deletion_tasks
-    FOR ALL USING (auth.uid() = tenant_id);
-```
-
 ---
 
 ## 4. Multi-Stream Webhook Ingestion & Isolated Cursor Protocol
 
 ### 4.1 Independent Consumer Cursor Scopes
-To prevent any event loss or skipping across different consumer workers (Messenger sync, Comment automations, and Lead Ads ingestion), the system utilizes **independent cursor scopes** per event stream in `channel_sync_checkpoints`:
+To prevent any event loss or skipping across different consumer workers (Messenger sync, Comment automations, and Lead Ads ingestion), the system utilizes **independent cursor scopes** per event stream in `channel_sync_checkpoints` (`channel_account_id`, `scope`, `cursor`, `updated_at`):
 
 1. `meta_webhook_messenger_cursor`:
    - Scopes: `messages`, `message_echoes`, `message_deliveries`, `message_reads`, `message_reactions`.
@@ -394,24 +306,45 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 - If database insert fails, returns HTTP 500 so Meta automatically retries.
 - On success: Returns HTTP 200 OK and broadcasts to tenant private channels.
 
-### 4.3 Dead-Letter Recovery & Replay Worker
+### 4.3 Dead-Letter Recovery & 5-Attempt State Machine
 - Failed payload ingestion logs to `channel_sync_dead_letters` with `item_index`.
-- Background replay worker atomically claims work:
+- Background replay worker claims work (5 attempts allowed):
   ```sql
   UPDATE channel_sync_dead_letters
-  SET status = CASE WHEN attempts + 1 >= 5 THEN 'failed' ELSE 'retrying' END,
+  SET status = 'retrying',
       owner_id = ?1,
       claim_deadline = datetime('now', '+5 minutes'),
       attempts = attempts + 1
   WHERE id = ?2 
     AND status IN ('pending', 'retrying')
+    AND attempts < 5
     AND (claim_deadline IS NULL OR claim_deadline < datetime('now'))
-    AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
-    AND attempts < 5;
+    AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'));
   ```
-- Replays payload with exponential backoff (`next_retry_at = datetime('now', '+' || (attempts * attempts * 30) || ' seconds')`).
-- Upon success, marks `status = 'resolved'`, `resolved_at = datetime('now')`, requiring matching `owner_id`.
-- Expired lease sweeper transitions timed-out claims back to `pending` (or `failed` if `attempts >= 5`).
+- If attempt execution fails:
+  ```sql
+  UPDATE channel_sync_dead_letters
+  SET status = CASE WHEN attempts >= 5 THEN 'failed' ELSE 'pending' END,
+      next_retry_at = datetime('now', '+' || (attempts * attempts * 30) || ' seconds'),
+      owner_id = NULL,
+      claim_deadline = NULL,
+      error_reason = ?1
+  WHERE id = ?2 AND owner_id = ?3;
+  ```
+- If attempt execution succeeds:
+  ```sql
+  UPDATE channel_sync_dead_letters
+  SET status = 'resolved', resolved_at = datetime('now'), owner_id = NULL, claim_deadline = NULL
+  WHERE id = ?1 AND owner_id = ?2;
+  ```
+- Expired lease sweeper:
+  ```sql
+  UPDATE channel_sync_dead_letters
+  SET status = CASE WHEN attempts >= 5 THEN 'failed' ELSE 'pending' END,
+      owner_id = NULL,
+      claim_deadline = NULL
+  WHERE status = 'retrying' AND claim_deadline < datetime('now');
+  ```
 
 ---
 
@@ -438,16 +371,16 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 
 ### 6.1 Multi-Page Fan-Out & Durability
 - User scheduling a post across $N$ Pages generates deterministic client draft IDs:
-  `client_draft_id = UUIDv5(namespace, format!("{}:{}:{}", user_id, base_post_id, page_id))`
+  `idempotency_key = format!("{}:{}:{}", draft_group_id, account_id, page_id)`
 - Inserts $N$ atomic rows in SQLite inside a single transaction.
 
 ### 6.2 Resumable Video & Reels Upload State Machine
 - Table `facebook_upload_sessions` tracks persistent upload state across restarts:
-  1. Hash file (SHA-256) and look up active session by composite key `(page_id, file_hash, file_size_bytes)` where `status = 'in_progress'`.
-  2. If session exists, query Meta `GET https://graph-video.facebook.com/v26.0/<session_id>` for confirmed offset. If query fails or returns non-numeric offset, **fail closed** and abort with descriptive error.
-  3. If fresh session, call `POST https://graph-video.facebook.com/v26.0/<page_id>/videos` with `upload_phase=start`, receive `upload_session_id` and non-empty initial canonical `video_id`.
-  4. Upload 4MB chunks with `upload_phase=transfer`, persisting confirmed offset to SQLite after every chunk.
-  5. Call `POST https://graph-video.facebook.com/v26.0/<page_id>/videos` with `upload_phase=finish`, preserve canonical `video_id`, and mark session `completed`.
+  1. Hash file (SHA-256) and look up active session by composite key `(page_id, upload_type, file_hash, file_size_bytes)` where `status = 'in_progress'`.
+  2. If session exists, query Meta server offset. If query fails or returns non-numeric offset, **fail closed** and abort with descriptive error.
+  3. If fresh session, call start endpoint, receive `upload_session_id` and non-empty initial canonical `video_id`.
+  4. Upload 4MB chunks, persisting confirmed offset to SQLite after every chunk.
+  5. Call finish endpoint, preserve canonical `video_id`, and mark session `completed`.
 
 ### 6.3 Dual-Mode Scheduling & JIT Promotion
 - Meta-side: Posts scheduled 10 minutes to 30 days are scheduled directly on Meta Graph API with `published=false&scheduled_publish_time=...`.
@@ -471,7 +404,7 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 - In-flight heartbeat loop extends `claim_deadline` by 5 minutes every 2 minutes while HTTP request is in progress.
 - If Send API response is ambiguous/timed out, mark `delivery_unknown`. Reconciliation worker checks Meta thread before retrying:
   - If `status == "replied"`, marks `success`.
-  - If positive confirmation of non-delivery and `retry_count < 3`, transitions to `failed`.
+  - If positive confirmation of non-delivery (`can_reply`), transitions to `failed`.
   - On any inconclusive error or rate limit, **fails closed** remaining in `delivery_unknown` to ensure strictly **one private reply per comment**.
 
 ---
@@ -484,16 +417,13 @@ To prevent any event loss or skipping across different consumer workers (Messeng
 
 ### 8.2 Meta User Data Deletion Callback & Anonymization Lifecycle
 - Callback endpoint `POST /meta-data-deletion` parses `signed_request`, validates HMAC-SHA256 with `META_APP_SECRET`.
-- Persists request in `data_deletion_requests` with a unique `confirmation_code` (UUIDv4).
-- Dispatches `meta_device_deletion_tasks` ONLY to tenants whose connected Pages have received events from that user.
+- Matches `userId` to Pages in `meta_webhook_buffer` and dispatches `meta_device_deletion_tasks` ONLY to tenants whose connected Pages received events from that user.
 - Purges user events from `meta_webhook_buffer`.
 - Desktop sync worker polls pending device tasks, executes scoped local anonymization:
-  - Anonymizes matching leads (`leads.name = 'Deleted User'`).
-  - Anonymizes messages (`messages.text_content = '[Deleted as per privacy request]'`).
-  - Deletes physical attachment spool files and database attachment rows.
-  - Anonymizes `channel_identities` for `channel = 'messenger' AND identity_namespace = 'psid'`.
+  - Scoped to `channel_account_id` and `external_id`: anonymizes matching leads, messages, and identities.
+  - Collects attachment local paths and deletes physical files post-commit.
   - Acknowledges task completion: `UPDATE meta_device_deletion_tasks SET status = 'completed', completed_at = now()`.
-- Public Status Endpoint: `GET https://rustsale.trantrongtri.com/deletion-status?id=<confirmation_code>` returns JSON `{ "confirmation_code": "...", "status": "completed" | "processing" }` where `completed` requires all dispatched tasks to be confirmed.
+- Public Status Endpoint: `GET https://rustsale.trantrongtri.com/deletion-status?id=<confirmation_code>` returns JSON `{ "confirmation_code": "...", "status": "completed" | "processing" }` verifying that all dispatched device tasks have completed.
 
 ---
 

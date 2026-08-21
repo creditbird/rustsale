@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Establish the production foundation for Facebook Integration: zero-secret PKCE OAuth token exchange, encrypted local credential store, durable Supabase webhook relay buffer, isolated multi-stream sync engine for Messenger 2-way conversation, and Svelte 5 chat UI with 24-hour Message Tag policy enforcement.
+**Goal:** Establish the production foundation for Facebook Integration: zero-secret PKCE OAuth token exchange, encrypted local credential store, durable Supabase webhook relay buffer, isolated multi-stream sync engine for Messenger 2-way conversation matching repository schema (`channel_conversations`, `conversation_participants`, `messages`), and Svelte 5 chat UI with 24-hour Message Tag policy enforcement.
 
 **Tech Stack:** Tauri 2.0 (Rust), Svelte 5 (Runes), SQLite Local (`rusqlite`), Supabase Edge Functions (Deno / TypeScript), Meta Graph API v26.0+, Tailwind CSS.
 
@@ -76,14 +76,20 @@ CREATE OR REPLACE FUNCTION complete_meta_oauth_exchange(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public, auth, pg_temp
 AS $$
 DECLARE
     v_payload TEXT;
     v_pages JSONB;
     v_page RECORD;
 BEGIN
+    -- Verify tenant matches authenticated user
+    IF auth.uid() IS DISTINCT FROM p_tenant_id THEN
+        RAISE EXCEPTION 'Unauthorized tenant access';
+    END IF;
+
     SELECT payload INTO v_payload
-    FROM oauth_exchange_codes
+    FROM public.oauth_exchange_codes
     WHERE code = p_code
       AND tenant_id = p_tenant_id
       AND code_challenge = p_verifier_challenge
@@ -96,7 +102,7 @@ BEGIN
     END IF;
 
     -- Atomically consume and erase payload
-    UPDATE oauth_exchange_codes
+    UPDATE public.oauth_exchange_codes
     SET consumed = TRUE, payload = ''
     WHERE code = p_code;
 
@@ -105,7 +111,7 @@ BEGIN
     -- Upsert page ownership
     FOR v_page IN SELECT * FROM jsonb_to_recordset(v_pages) AS (id TEXT, name TEXT)
     LOOP
-        INSERT INTO meta_tenant_pages (tenant_id, page_id, page_name)
+        INSERT INTO public.meta_tenant_pages (tenant_id, page_id, page_name)
         VALUES (p_tenant_id, v_page.id, v_page.name)
         ON CONFLICT (tenant_id, page_id) DO UPDATE SET page_name = EXCLUDED.page_name;
     END LOOP;
@@ -113,6 +119,9 @@ BEGIN
     RETURN v_pages;
 END;
 $$;
+
+REVOKE ALL ON FUNCTION complete_meta_oauth_exchange FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION complete_meta_oauth_exchange TO authenticated, service_role;
 ```
 
 - [ ] **Step 2: Implement `/meta-oauth-start` Edge Function**
@@ -294,7 +303,7 @@ git commit -m "feat(supabase): implement zero-secret PKCE OAuth exchange and tra
 - Modify: `src-tauri/src/conversation/migration.rs`
 - Test: `src-tauri/src/conversation/migration_v2_test.rs`
 
-- [ ] **Step 1: Implement RAII PragmaGuard and Dynamic Column Migration in `migration_v2.rs`**
+- [ ] **Step 1: Implement RAII PragmaGuard, Foreign Key Check, and Dynamic Column Migration in `migration_v2.rs`**
 
 ```rust
 // Verified in src-tauri/src/conversation/migration_v2.rs
@@ -308,28 +317,31 @@ pub struct PragmaGuard<'a> {
 }
 
 impl<'a> PragmaGuard<'a> {
-    pub fn new(conn: &'a Connection) -> Self {
-        let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
-        let initial_legacy_alter: i32 = conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0)).unwrap_or(0);
-        Self {
+    pub fn new(conn: &'a Connection) -> Result<Self> {
+        let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        let initial_legacy_alter: i32 = conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0))?;
+        Ok(Self {
             conn,
             initial_fk,
             initial_legacy_alter,
-        }
+        })
+    }
+
+    pub fn restore(&self) -> Result<()> {
+        self.conn.execute_batch(&format!(
+            "PRAGMA legacy_alter_table = {}; PRAGMA foreign_keys = {};",
+            if self.initial_legacy_alter == 1 { "ON" } else { "OFF" },
+            if self.initial_fk == 1 { "ON" } else { "OFF" },
+        ))?;
+        Ok(())
     }
 }
 
 impl<'a> Drop for PragmaGuard<'a> {
     fn drop(&mut self) {
-        let _ = self.conn.execute_batch(&format!(
-            "PRAGMA legacy_alter_table = {}; PRAGMA foreign_keys = {};",
-            if self.initial_legacy_alter == 1 { "ON" } else { "OFF" },
-            if self.initial_fk == 1 { "ON" } else { "OFF" },
-        ));
+        let _ = self.restore();
     }
 }
-// apply_migration_v2 & apply_migration_v3 fully implement dynamic column discovery,
-// lossless metadata merge, and dead-letter queue with item_index.
 ```
 
 - [ ] **Step 2: Run Unit Tests for Migration**
@@ -342,7 +354,7 @@ cargo test --manifest-path src-tauri/Cargo.toml migration_v2_test
 
 ```bash
 git add src-tauri/src/conversation/
-git commit -m "feat(db): implement migration v2 and v3 with exact RAII PragmaGuard and item index"
+git commit -m "feat(db): implement migration v2 and v3 with exact RAII PragmaGuard, foreign key check, and item index"
 ```
 
 ---
@@ -381,7 +393,7 @@ git commit -m "feat(webhook): implement durable webhook relay with HMAC verifica
 
 ---
 
-### Task 5: Inbound Facebook Messenger Sync Engine & Dead-Letter Replay
+### Task 5: Inbound Facebook Messenger Sync Engine Matching Conversation Schema
 
 **Files:**
 - Create: `src-tauri/src/conversation/facebook/sync.rs`
@@ -389,7 +401,7 @@ git commit -m "feat(webhook): implement durable webhook relay with HMAC verifica
 - Create: `src-tauri/src/conversation/facebook/dead_letter_replay.rs`
 - Test: `src-tauri/src/conversation/facebook/sync_test.rs`
 
-- [ ] **Step 1: Implement Inbound Sync Worker with Isolated Messenger Cursor and Dead-Letter Quarantine**
+- [ ] **Step 1: Implement Inbound Sync Worker with Isolated Messenger Cursor, Partial Unique Matching, and Conversation Linkage**
 
 ```rust
 // src-tauri/src/conversation/facebook/sync.rs
@@ -410,12 +422,11 @@ impl FacebookSyncWorker {
 
         for event in events {
             let event_id = event.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-            if event_id > max_cursor {
-                max_cursor = event_id;
-            }
             let event_type = event.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
             let event_key = event.get("event_key").and_then(|v| v.as_str()).unwrap_or("");
             let payload = event.get("payload").cloned().unwrap_or(Value::Null);
+
+            let mut event_succeeded = false;
 
             match event_type {
                 "messages" | "message_echoes" => {
@@ -427,12 +438,13 @@ impl FacebookSyncWorker {
                         let recipient_id = payload.get("recipient").and_then(|r| r.get("id")).and_then(|i| i.as_str()).unwrap_or("");
                         let timestamp = payload.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
 
-                        // Ensure channel_identity exists for customer PSID
                         let psid = if is_echo { recipient_id } else { sender_psid };
+
+                        // 1. Ensure channel_identity exists matching partial unique index
                         tx.execute(
                             "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
                              VALUES ('messenger', ?1, 'psid', ?2, datetime('now'), datetime('now'))
-                             ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) DO UPDATE SET updated_at = datetime('now')",
+                             ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) WHERE channel_account_id IS NOT NULL DO UPDATE SET updated_at = datetime('now')",
                             params![channel_account_id, psid],
                         )?;
 
@@ -442,21 +454,43 @@ impl FacebookSyncWorker {
                             |r| r.get(0),
                         )?;
 
-                        // Insert message record
+                        // 2. Ensure channel_conversations exists
                         tx.execute(
-                            "INSERT INTO messages (channel_account_id, sender_identity_id, external_message_id, direction, text_content, provider_timestamp, status, created_at, updated_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'delivered', datetime('now'), datetime('now'))
-                             ON CONFLICT(external_message_id) DO NOTHING",
-                            params![channel_account_id, identity_id, mid, if is_echo { "outbound" } else { "inbound" }, text, timestamp.to_string()],
+                            "INSERT INTO channel_conversations (channel_account_id, external_thread_id, kind, status, last_message_at, created_at, updated_at)
+                             VALUES (?1, ?2, 'direct', 'active', datetime('now'), datetime('now'), datetime('now'))
+                             ON CONFLICT(channel_account_id, external_thread_id, kind) DO UPDATE SET last_message_at = datetime('now'), updated_at = datetime('now')",
+                            params![channel_account_id, psid],
                         )?;
 
-                        let message_id: i64 = tx.query_row(
-                            "SELECT id FROM messages WHERE external_message_id = ?1",
-                            params![mid],
+                        let conversation_id: i64 = tx.query_row(
+                            "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'direct'",
+                            params![channel_account_id, psid],
                             |r| r.get(0),
                         )?;
 
-                        // Process attachments with individual quarantine
+                        // 3. Ensure conversation_participants
+                        tx.execute(
+                            "INSERT INTO conversation_participants (conversation_id, identity_id, joined_at)
+                             VALUES (?1, ?2, datetime('now'))
+                             ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+                            params![conversation_id, identity_id],
+                        )?;
+
+                        // 4. Insert message record matching schema.sql
+                        tx.execute(
+                            "INSERT INTO messages (conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, provider_timestamp, ingested_at, status)
+                             VALUES (?1, ?2, ?3, ?4, 'text', ?5, ?6, datetime('now'), 'delivered')
+                             ON CONFLICT(conversation_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO NOTHING",
+                            params![conversation_id, identity_id, if is_echo { "outbound" } else { "inbound" }, mid, text, timestamp.to_string()],
+                        )?;
+
+                        let message_id: i64 = tx.query_row(
+                            "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                            params![conversation_id, mid],
+                            |r| r.get(0),
+                        )?;
+
+                        // 5. Process attachments with individual quarantine
                         if let Some(attachments) = msg.get("attachments").and_then(|a| a.as_array()) {
                             for (idx, att) in attachments.iter().enumerate() {
                                 let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
@@ -466,15 +500,15 @@ impl FacebookSyncWorker {
 
                                 if let Some(remote_url) = url {
                                     tx.execute(
-                                        "INSERT INTO message_attachments (message_id, provider_attachment_id, attachment_type, remote_url, metadata_json, created_at, updated_at)
-                                         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))
-                                         ON CONFLICT(message_id, remote_url) DO UPDATE SET updated_at = datetime('now')",
+                                        "INSERT INTO message_attachments (message_id, provider_attachment_id, attachment_type, remote_url, metadata_json, created_at)
+                                         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+                                         ON CONFLICT(message_id, remote_url) WHERE remote_url IS NOT NULL DO NOTHING",
                                         params![message_id, provider_id, att_type, remote_url, serde_json::to_string(att)?],
                                     )?;
                                 } else if let Some(pid) = provider_id {
                                     tx.execute(
-                                        "INSERT INTO message_attachments (message_id, provider_attachment_id, attachment_type, metadata_json, created_at, updated_at)
-                                         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+                                        "INSERT INTO message_attachments (message_id, provider_attachment_id, attachment_type, metadata_json, created_at)
+                                         VALUES (?1, ?2, ?3, ?4, datetime('now'))",
                                         params![message_id, pid, att_type, serde_json::to_string(att)?],
                                     )?;
                                 } else {
@@ -488,6 +522,7 @@ impl FacebookSyncWorker {
                                 }
                             }
                         }
+                        event_succeeded = true;
                     }
                 }
                 "message_deliveries" => {
@@ -495,28 +530,79 @@ impl FacebookSyncWorker {
                         if let Some(mids) = del.get("mids").and_then(|m| m.as_array()) {
                             for mid in mids {
                                 if let Some(m_str) = mid.as_str() {
-                                    tx.execute("UPDATE messages SET status = 'delivered', updated_at = datetime('now') WHERE external_message_id = ?1", [m_str])?;
+                                    tx.execute("UPDATE messages SET status = 'delivered' WHERE provider_message_id = ?1", [m_str])?;
                                 }
                             }
                         }
                     }
+                    event_succeeded = true;
                 }
                 "message_reads" => {
                     if let Some(watermark) = payload.get("read").and_then(|r| r.get("watermark")).and_then(|w| w.as_i64()) {
-                        tx.execute("UPDATE messages SET status = 'read', updated_at = datetime('now') WHERE channel_account_id = ?1 AND provider_timestamp <= ?2", params![channel_account_id, watermark.to_string()])?;
+                        tx.execute(
+                            "UPDATE messages SET status = 'read' 
+                             WHERE conversation_id IN (SELECT id FROM channel_conversations WHERE channel_account_id = ?1)
+                               AND provider_timestamp <= ?2",
+                            params![channel_account_id, watermark.to_string()],
+                        )?;
                     }
+                    event_succeeded = true;
                 }
-                _ => {}
+                "message_reactions" => {
+                    if let Some(reaction_obj) = payload.get("reaction") {
+                        let mid = reaction_obj.get("mid").and_then(|m| m.as_str()).unwrap_or("");
+                        let action = reaction_obj.get("action").and_then(|a| a.as_str()).unwrap_or("react");
+                        let emoji = reaction_obj.get("reaction").and_then(|r| r.as_str()).unwrap_or("");
+                        let actor_id = payload.get("sender").and_then(|s| s.get("id")).and_then(|i| i.as_str()).unwrap_or("");
+
+                        let msg_row: Result<i64, _> = tx.query_row(
+                            "SELECT id FROM messages WHERE provider_message_id = ?1",
+                            [mid],
+                            |r| r.get(0),
+                        );
+
+                        if let Ok(msg_id) = msg_row {
+                            if action == "react" {
+                                tx.execute(
+                                    "INSERT INTO message_reactions (message_id, actor_external_id, reaction, count, reacted_at)
+                                     VALUES (?1, ?2, ?3, 1, datetime('now'))
+                                     ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET count = count + 1, reacted_at = datetime('now')",
+                                    params![msg_id, actor_id, emoji],
+                                )?;
+                            } else {
+                                tx.execute(
+                                    "DELETE FROM message_reactions WHERE message_id = ?1 AND actor_external_id = ?2 AND reaction = ?3",
+                                    params![msg_id, actor_id, emoji],
+                                )?;
+                            }
+                        }
+                    }
+                    event_succeeded = true;
+                }
+                _ => {
+                    // Unknown or unsupported event type quarantined
+                    tx.execute(
+                        "INSERT INTO channel_sync_dead_letters (channel_account_id, scope, event_id, item_index, event_type, event_key, payload_json, error_reason, status, created_at)
+                         VALUES (?1, 'meta_webhook_messenger_cursor', ?2, 0, ?3, ?4, ?5, 'unsupported_event_type', 'ignored', datetime('now'))
+                         ON CONFLICT(channel_account_id, scope, event_id, item_index) DO NOTHING",
+                        params![channel_account_id, event_id, event_type, event_key, serde_json::to_string(&payload)?],
+                    )?;
+                    event_succeeded = true;
+                }
+            }
+
+            if event_succeeded && event_id > max_cursor {
+                max_cursor = event_id;
             }
         }
 
-        // Advance cursor checkpoint
+        // Advance cursor checkpoint only after events are handled
         if max_cursor > 0 {
             tx.execute(
-                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, last_cursor, updated_at)
+                "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, updated_at)
                  VALUES (?1, 'meta_webhook_messenger_cursor', ?2, datetime('now'))
-                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET last_cursor = ?2, updated_at = datetime('now')",
-                params![channel_account_id, max_cursor],
+                 ON CONFLICT(channel_account_id, scope) DO UPDATE SET cursor = ?2, updated_at = datetime('now')",
+                params![channel_account_id, max_cursor.to_string()],
             )?;
         }
 
@@ -530,7 +616,7 @@ impl FacebookSyncWorker {
 
 ```bash
 git add src-tauri/src/conversation/facebook/
-git commit -m "feat(sync): implement complete messenger sync worker with isolated cursor and dead-letter quarantine"
+git commit -m "feat(sync): implement complete messenger sync worker matching exact schema and isolated cursor"
 ```
 
 ---

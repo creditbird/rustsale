@@ -8,24 +8,29 @@ pub struct PragmaGuard<'a> {
 }
 
 impl<'a> PragmaGuard<'a> {
-    pub fn new(conn: &'a Connection) -> Self {
-        let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap_or(1);
-        let initial_legacy_alter: i32 = conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0)).unwrap_or(0);
-        Self {
+    pub fn new(conn: &'a Connection) -> Result<Self> {
+        let initial_fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        let initial_legacy_alter: i32 = conn.query_row("PRAGMA legacy_alter_table", [], |r| r.get(0))?;
+        Ok(Self {
             conn,
             initial_fk,
             initial_legacy_alter,
-        }
+        })
+    }
+
+    pub fn restore(&self) -> Result<()> {
+        self.conn.execute_batch(&format!(
+            "PRAGMA legacy_alter_table = {}; PRAGMA foreign_keys = {};",
+            if self.initial_legacy_alter == 1 { "ON" } else { "OFF" },
+            if self.initial_fk == 1 { "ON" } else { "OFF" },
+        ))?;
+        Ok(())
     }
 }
 
 impl<'a> Drop for PragmaGuard<'a> {
     fn drop(&mut self) {
-        let _ = self.conn.execute_batch(&format!(
-            "PRAGMA legacy_alter_table = {}; PRAGMA foreign_keys = {};",
-            if self.initial_legacy_alter == 1 { "ON" } else { "OFF" },
-            if self.initial_fk == 1 { "ON" } else { "OFF" },
-        ));
+        let _ = self.restore();
     }
 }
 
@@ -35,8 +40,8 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
-    let _guard = PragmaGuard::new(conn);
-    let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
+    let guard = PragmaGuard::new(conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
 
     let migration_result = (|| -> Result<()> {
         conn.execute_batch("SAVEPOINT migration_v2;")?;
@@ -175,6 +180,15 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
             }
         }
 
+        // Verify foreign key integrity
+        let fk_violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))?;
+        if fk_violations > 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+                Some(format!("Foreign key check failed with {} violations", fk_violations)),
+            ));
+        }
+
         conn.execute_batch("PRAGMA user_version = 2;")?;
         conn.execute_batch("RELEASE SAVEPOINT migration_v2;")?;
         Ok(())
@@ -184,6 +198,7 @@ pub fn apply_migration_v2(conn: &Connection) -> Result<()> {
         let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v2; RELEASE SAVEPOINT migration_v2;");
     }
 
+    guard.restore()?;
     migration_result
 }
 
@@ -195,8 +210,8 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
-    let _guard = PragmaGuard::new(conn);
-    let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
+    let guard = PragmaGuard::new(conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
 
     let migration_result = (|| -> Result<()> {
         conn.execute_batch("SAVEPOINT migration_v3;")?;
@@ -355,6 +370,15 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
             }
         }
 
+        // Verify foreign key integrity
+        let fk_violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))?;
+        if fk_violations > 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+                Some(format!("Foreign key check failed with {} violations", fk_violations)),
+            ));
+        }
+
         conn.execute_batch("PRAGMA user_version = 3;")?;
         conn.execute_batch("RELEASE SAVEPOINT migration_v3;")?;
         Ok(())
@@ -364,5 +388,6 @@ pub fn apply_migration_v3(conn: &Connection) -> Result<()> {
         let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT migration_v3; RELEASE SAVEPOINT migration_v3;");
     }
 
+    guard.restore()?;
     migration_result
 }
