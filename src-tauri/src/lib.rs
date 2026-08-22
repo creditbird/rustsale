@@ -8,6 +8,7 @@ mod commands;
 #[cfg(test)]
 mod commands_test;
 pub mod conversation;
+pub mod facebook;
 mod db;
 #[cfg(test)]
 mod db_test;

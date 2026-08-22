@@ -3,6 +3,7 @@ pub mod commands;
 pub mod echo_cache;
 pub mod error;
 pub mod events;
+pub mod facebook_sync;
 pub mod forwarding;
 pub mod mentions;
 pub mod migration;
