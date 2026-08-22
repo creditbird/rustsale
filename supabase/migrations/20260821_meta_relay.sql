@@ -16,7 +16,8 @@
 -- - Webhook ingestion happens ONLY through stage_meta_webhook_events():
 --   SERVICE-ROLE ONLY. It resolves each Page's current owner and inserts
 --   buffer rows inside ONE transaction while holding FOR SHARE locks on the
---   mapping rows, so ingestion and ownership replacement are serialized per
+--   stable meta_page_guards rows, so ingestion and ownership replacement are
+--   serialized per
 --   Page: an event can never be persisted under the previous tenant AFTER a
 --   takeover has committed, and events persisted just BEFORE a takeover are
 --   purged by it under the documented retention rule.
@@ -55,6 +56,19 @@ ALTER TABLE meta_webhook_buffer ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Tenants read own buffer rows" ON meta_webhook_buffer
     FOR SELECT USING (tenant_id = auth.uid());
 
+-- Stable per-Page mutex rows. Mapping tuples are deleted and recreated by
+-- takeover, so they cannot serve as reliable lock targets across concurrent
+-- reconciliations. Guard rows are keyed by page_id and NEVER deleted: both
+-- privileged RPCs take transaction-scoped row locks on them (FOR UPDATE for
+-- replacement, FOR SHARE for ingestion), giving a churn-proof serialization
+-- point per Page. Accessed exclusively inside SECURITY DEFINER functions.
+CREATE TABLE IF NOT EXISTS meta_page_guards (
+    page_id TEXT PRIMARY KEY
+);
+REVOKE ALL ON meta_page_guards FROM PUBLIC;
+REVOKE ALL ON meta_page_guards FROM anon;
+REVOKE ALL ON meta_page_guards FROM authenticated;
+
 -- No INSERT/UPDATE/DELETE policies exist for clients: payloads stay immutable
 -- and status transitions go exclusively through the RPC below.
 
@@ -79,23 +93,26 @@ BEGIN
         RAISE EXCEPTION 'p_pages must be a JSON array';
     END IF;
 
-    -- Serialize against concurrent ingestion: take FOR UPDATE locks on every
-    -- involved Page's existing mapping row (deterministic order). FOR UPDATE
-    -- conflicts with the FOR SHARE taken by stage_meta_webhook_events(), so
-    -- ownership replacement and ingestion fully serialize per Page. Pages
-    -- with no mapping yet cannot race an in-flight ingest of stale rows:
-    -- stage resolves owners only from committed mappings it has locked.
+    -- Serialize against concurrent ingestion on a STABLE lock target: ensure
+    -- a guard row exists for every involved Page, then take FOR UPDATE locks
+    -- in deterministic order. FOR UPDATE conflicts with the FOR SHARE taken
+    -- by stage_meta_webhook_events(), so ownership replacement and ingestion
+    -- fully serialize per Page even across mapping delete/recreate churn.
     CREATE TEMP TABLE _replace_page_ids (page_id TEXT PRIMARY KEY) ON COMMIT DROP;
     INSERT INTO _replace_page_ids (page_id)
     SELECT DISTINCT elem->>'page_id'
       FROM jsonb_array_elements(p_pages) AS elem
      WHERE COALESCE(elem->>'page_id', '') <> '';
 
+    INSERT INTO public.meta_page_guards (page_id)
+    SELECT page_id FROM _replace_page_ids
+    ON CONFLICT (page_id) DO NOTHING;
+
     PERFORM 1
-      FROM public.meta_tenant_pages m
-      JOIN _replace_page_ids s ON s.page_id = m.page_id
-     ORDER BY m.page_id
-       FOR UPDATE OF m;
+      FROM public.meta_page_guards g
+      JOIN _replace_page_ids s ON s.page_id = g.page_id
+     ORDER BY g.page_id
+       FOR UPDATE OF g;
 
     -- 1. Purge buffered history owned by OTHER tenants for Pages the caller
     --    is (re)claiming (documented retention-on-transfer rule).
@@ -146,7 +163,7 @@ REVOKE ALL ON FUNCTION replace_meta_tenant_pages(UUID, JSONB) FROM authenticated
 GRANT EXECUTE ON FUNCTION replace_meta_tenant_pages(UUID, JSONB) TO service_role;
 
 -- Atomic webhook ingestion: resolve current owner per Page and persist rows
--- in one transaction while holding FOR SHARE locks on the mapping rows, so a
+-- in one transaction while holding FOR SHARE locks on the stable guard rows, so a
 -- concurrent replace_meta_tenant_pages() cannot interleave between snapshot
 -- and insert (and vice versa). Events for unmapped Pages are counted and NOT
 -- stored: without a durable owning tenant they could never be authorized.
@@ -164,10 +181,10 @@ BEGIN
         RAISE EXCEPTION 'p_rows must be a JSON array';
     END IF;
 
-    -- Serialize against concurrent reconciliation: take FOR SHARE locks on
-    -- every involved Page's mapping row. FOR SHARE conflicts with the
-    -- FOR UPDATE taken by replace_meta_tenant_pages(), so ownership
-    -- replacement and ingestion fully serialize per Page.
+    -- Serialize against concurrent reconciliation on the STABLE guard rows:
+    -- FOR SHARE conflicts with the FOR UPDATE taken by
+    -- replace_meta_tenant_pages(), so ownership replacement and ingestion
+    -- fully serialize per Page regardless of mapping-row churn.
     CREATE TEMP TABLE _stage_page_ids (page_id TEXT PRIMARY KEY) ON COMMIT DROP;
 
     INSERT INTO _stage_page_ids (page_id)
@@ -175,11 +192,15 @@ BEGIN
       FROM jsonb_array_elements(p_rows) AS elem
      WHERE COALESCE(elem->>'page_id', '') <> '';
 
+    INSERT INTO public.meta_page_guards (page_id)
+    SELECT page_id FROM _stage_page_ids
+    ON CONFLICT (page_id) DO NOTHING;
+
     PERFORM 1
-      FROM public.meta_tenant_pages m
-      JOIN _stage_page_ids s ON s.page_id = m.page_id
-     ORDER BY m.page_id
-       FOR SHARE OF m;
+      FROM public.meta_page_guards g
+      JOIN _stage_page_ids s ON s.page_id = g.page_id
+     ORDER BY g.page_id
+       FOR SHARE OF g;
 
     CREATE TEMP TABLE _stage_buffer_rows (
         page_id TEXT NOT NULL,
