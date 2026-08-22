@@ -26,6 +26,7 @@ const supabaseAdmin =
     : null;
 
 const GRAPH_TIMEOUT_MS = 15_000;
+const MAX_PAGINATION_REQUESTS = 50; // 50 x 100 = 5,000 Pages hard bound.
 
 function logStructured(fields: Record<string, unknown>): void {
   // Never log codes, tokens, or secrets.
@@ -78,7 +79,12 @@ async function fetchAllManagedPages(longLivedToken: string): Promise<PageRow[]> 
     fields: "id,name,access_token",
     limit: "100",
   });
+  let cursorCount = 0;
   while (url) {
+    if (++cursorCount > MAX_PAGINATION_REQUESTS) {
+      // Defensive bound against malformed/cyclic paging chains.
+      throw new Error("Meta page enumeration exceeded pagination limit");
+    }
     const page: { data?: PageRow[]; paging?: { next?: string } } = await jsonFetch(url);
     pages = pages.concat(page.data ?? []);
     url = page.paging?.next ?? null;
@@ -119,6 +125,7 @@ serve(async (req: Request) => {
   if (userErr || !userData?.user?.id) {
     return json({ error: "Invalid Supabase session" }, 401);
   }
+  const tenantId = userData.user.id;
 
   let code: string | undefined;
   try {
@@ -172,12 +179,15 @@ serve(async (req: Request) => {
     return json({ error: "Meta page enumeration failed" }, 502);
   }
 
-  // Step 4: ATOMIC reconciliation via SECURITY DEFINER RPC. Runs on every
-  // complete enumeration — including zero Pages (= revoke all). The RPC also
+  // Step 4: ATOMIC reconciliation via SERVICE-ROLE-ONLY SECURITY DEFINER RPC.
+  // The tenant id is passed explicitly from the JWT we just verified (the
+  // service-role client carries no auth.uid() context). The RPC runs on every
+  // complete enumeration — including zero Pages (= revoke all) — and also
   // purges other tenants' buffered history for Pages being (re)claimed, so
   // ownership transfer never leaks the previous tenant's events.
   const verifiedPages = pages.map((p) => ({ page_id: p.id, page_name: p.name }));
   const { error: rpcErr } = await supabaseAdmin.rpc("replace_meta_tenant_pages", {
+    p_tenant_id: tenantId,
     p_pages: verifiedPages,
   });
   if (rpcErr) {

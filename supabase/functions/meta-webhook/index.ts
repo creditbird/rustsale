@@ -9,9 +9,11 @@
 //    instead of silently dropping events.
 // 4. One malformed event is skipped without poisoning the rest of the batch,
 //    and no synthetic "undefined_*" idempotency keys are ever persisted.
-// 5. Every buffered row carries the tenant_id owning the Page at ingestion
-//    time, so later Page ownership transfers cannot leak history across
-//    tenants. Events for Pages unknown to the relay are acked but not stored.
+// 5. Persistence happens through the SERVICE-ROLE-ONLY RPC
+//    stage_meta_webhook_events(), which resolves each Page's owner and inserts
+//    rows inside ONE transaction while holding FOR SHARE locks on the mapping
+//    rows — serialized against replace_meta_tenant_pages() so an event can
+//    never be stored under the previous tenant after a takeover commits.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
@@ -19,6 +21,8 @@ const META_APP_SECRET = Deno.env.get("META_APP_SECRET") ?? "";
 const META_VERIFY_TOKEN = Deno.env.get("META_VERIFY_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+// Meta webhook payloads are small JSON documents; 1 MiB is generous.
+const MAX_BODY_BYTES = 1_048_576;
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
@@ -51,13 +55,11 @@ async function verifyHmacSha256(
   return await crypto.subtle.verify("HMAC", key, expectedSig, rawBody);
 }
 
-type BufferRow = {
-  tenant_id: string;
+type StagedEventRow = {
   page_id: string;
   event_type: string;
   event_key: string;
   payload: unknown;
-  status: "pending";
 };
 
 serve(async (req: Request) => {
@@ -86,9 +88,20 @@ serve(async (req: Request) => {
   }
 
   if (req.method === "POST") {
+    // Resource bound before reading the full body.
+    const declaredLength = Number(req.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+      logStructured({ event: "body_too_large", declared_length: declaredLength });
+      return new Response("Payload too large", { status: 413 });
+    }
+
     // Read raw bytes BEFORE parsing JSON so signature verification cannot be bypassed.
     const signature = req.headers.get("X-Hub-Signature-256");
     const rawBody = new Uint8Array(await req.arrayBuffer());
+    if (rawBody.byteLength > MAX_BODY_BYTES) {
+      logStructured({ event: "body_too_large", actual_length: rawBody.byteLength });
+      return new Response("Payload too large", { status: 413 });
+    }
 
     const isValid = await verifyHmacSha256(signature, rawBody);
     if (!isValid) {
@@ -104,11 +117,11 @@ serve(async (req: Request) => {
     }
 
     const entries = Array.isArray(payload?.entry) ? payload.entry : [];
-    // Staged per entry page; every component must be a real string so no
-    // "undefined_*" synthetic keys can reach the dedup index.
-    type StagedRow = { tenant_id: string | null; row: Omit<BufferRow, "tenant_id"> };
-    const staged: StagedRow[] = [];
+    const staged: StagedEventRow[] = [];
     let malformedSkipped = 0;
+
+    const requireId = (value: unknown): string | null =>
+      typeof value === "string" && value.length > 0 ? value : null;
 
     const stageRow = (
       pageId: unknown,
@@ -127,19 +140,12 @@ serve(async (req: Request) => {
         return;
       }
       staged.push({
-        tenant_id: null,
-        row: {
-          page_id: pageId,
-          event_type: eventType,
-          event_key: eventKey,
-          payload: payloadEvent,
-          status: "pending",
-        },
+        page_id: pageId,
+        event_type: eventType,
+        event_key: eventKey,
+        payload: payloadEvent,
       });
     };
-
-    const requireId = (value: unknown): string | null =>
-      typeof value === "string" && value.length > 0 ? value : null;
 
     for (const entry of entries) {
       const pageId = requireId(entry?.id);
@@ -154,12 +160,7 @@ serve(async (req: Request) => {
           if (msg?.delivery && typeof msg.delivery?.watermark !== "undefined") {
             const recipientId = requireId(msg.recipient?.id);
             if (recipientId && typeof msg.delivery.watermark !== "object") {
-              stageRow(
-                pageId,
-                "message_deliveries",
-                `${recipientId}_${msg.delivery.watermark}`,
-                msg,
-              );
+              stageRow(pageId, "message_deliveries", `${recipientId}_${msg.delivery.watermark}`, msg);
               continue;
             }
             malformedSkipped += 1;
@@ -215,63 +216,37 @@ serve(async (req: Request) => {
       }
     }
 
-    let persisted = 0;
+    let accepted = 0;
     let droppedUnmapped = 0;
 
     if (staged.length > 0) {
-      // Resolve the CURRENT owner of each involved Page so rows are stamped
-      // with the tenant that owned the Page at ingestion time.
-      const involvedPages = [...new Set(staged.map((s) => s.row.page_id))];
-      const { data: mappings, error: mapErr } = await supabaseAdmin
-        .from("meta_tenant_pages")
-        .select("page_id,tenant_id")
-        .in("page_id", involvedPages);
-      if (mapErr) {
-        logStructured({ event: "tenant_lookup_failed" });
+      // Single-transaction persistence: the SERVICE-ROLE-ONLY RPC locks the
+      // involved mapping rows FOR SHARE, resolves owners, and inserts rows
+      // stamped with ingestion-time tenancy — fully serialized against
+      // ownership takeover.
+      const { data: result, error: rpcErr } = await supabaseAdmin.rpc(
+        "stage_meta_webhook_events",
+        { p_rows: staged },
+      );
+      if (rpcErr || !result) {
+        // Durable persistence failed: tell Meta to retry instead of acking loss.
+        logStructured({
+          event: "buffer_persist_failed",
+          batch: staged.length,
+          error_code: rpcErr?.code ?? null,
+        });
         return new Response("Temporary storage failure", { status: 503 });
       }
-      const ownerByPage = new Map<string, string>(
-        (mappings ?? []).map((m: { page_id: string; tenant_id: string }) => [m.page_id, m.tenant_id]),
-      );
-
-      const rowsToInsert: BufferRow[] = [];
-      for (const item of staged) {
-        const tenantId = ownerByPage.get(item.row.page_id);
-        if (!tenantId) {
-          droppedUnmapped += 1; // Page not connected to any RustSale tenant.
-          continue;
-        }
-        rowsToInsert.push({ ...item.row, tenant_id: tenantId });
-      }
-
-      if (rowsToInsert.length > 0) {
-        const { error: upsertErr, count } = await supabaseAdmin
-          .from("meta_webhook_buffer")
-          .upsert(rowsToInsert, {
-            onConflict: "page_id,event_type,event_key",
-            ignoreDuplicates: true,
-            count: "exact",
-          });
-        if (upsertErr) {
-          // Durable persistence failed: tell Meta to retry instead of acking loss.
-          logStructured({
-            event: "buffer_persist_failed",
-            batch: rowsToInsert.length,
-            error_code: upsertErr.code ?? null,
-          });
-          return new Response("Temporary storage failure", { status: 503 });
-        }
-        persisted = count ?? rowsToInsert.length;
-      }
+      accepted = typeof result.accepted === "number" ? result.accepted : 0;
+      droppedUnmapped =
+        typeof result.dropped_unmapped === "number" ? result.dropped_unmapped : 0;
     }
 
     logStructured({
       event: "events_accepted",
       received_batches: entries.length,
-      accepted: persisted,
-      duplicates_or_empty: staged.length - droppedUnmapped - persisted >= 0
-        ? staged.length - droppedUnmapped - persisted
-        : 0,
+      accepted,
+      duplicates_or_empty: Math.max(0, staged.length - droppedUnmapped - accepted),
       malformed_skipped: malformedSkipped,
       dropped_unmapped_page: droppedUnmapped,
     });
