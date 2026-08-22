@@ -1,0 +1,16 @@
+# Supabase project configuration for RustSale v2.
+project_id = "rustsale"
+
+# Meta delivers webhooks without a Supabase JWT, so gateway-level JWT
+# verification must be disabled for this function. In-function security is
+# preserved via X-Hub-Signature-256 HMAC verification and the GET
+# hub.verify_token handshake inside the handler.
+[functions.meta-webhook]
+verify_jwt = false
+
+# /meta-oauth serves both the JWT-authenticated /meta-oauth-start endpoint AND
+# the browser-redirect /meta-oauth-callback (which arrives without a Supabase
+# JWT). Gateway verification must therefore stay off; the function enforces
+# authentication itself on the start endpoint.
+[functions.meta-oauth]
+verify_jwt = false
