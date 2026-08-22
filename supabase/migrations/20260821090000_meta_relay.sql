@@ -137,6 +137,7 @@ BEGIN
 
     INSERT INTO public.meta_page_guards (page_id)
     SELECT page_id FROM _lock_page_ids
+     ORDER BY page_id
     ON CONFLICT (page_id) DO NOTHING;
 
     PERFORM 1
@@ -225,6 +226,7 @@ BEGIN
 
     INSERT INTO public.meta_page_guards (page_id)
     SELECT page_id FROM _stage_page_ids
+     ORDER BY page_id
     ON CONFLICT (page_id) DO NOTHING;
 
     PERFORM 1
