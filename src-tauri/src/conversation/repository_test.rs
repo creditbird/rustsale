@@ -4551,3 +4551,152 @@ fn test_facebook_upload_session_reel_flow_and_polling_429() {
     ).unwrap();
     assert_eq!(completed, 1);
 }
+
+#[test]
+fn test_facebook_uploader_429_backoff_sql_contract_binds_retry_after() {
+    // Regression guard (Review 4998233494, finding 1/4): every 429-backoff UPDATE in the
+    // Phase 2 plan must bind Meta's Retry-After into its own placeholder, distinct from the
+    // session/row identifier placeholders. The broken shape reused ?1 for both the datetime
+    // modifier and the identifier, so lease_deadline was derived from a row id instead of
+    // Retry-After and the hand-written SQL test could not catch it.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let plan_path = format!(
+        "{}/../docs/superpowers/plans/2026-08-21-facebook-integration-phase-2.md",
+        manifest_dir
+    );
+    let plan = std::fs::read_to_string(&plan_path).expect("phase-2 plan must exist");
+
+    let backoff_marker = "lease_deadline = datetime('now', '+' || ?";
+    let mut checked = 0usize;
+    for line in plan.lines() {
+        // Only count executable uploader statements (Rust SQL string literals); prose
+        // bullets quoting the pattern inline are documentation, not code paths.
+        if !line.contains(backoff_marker)
+            || !line
+                .trim_start()
+                .starts_with("\"UPDATE facebook_upload_sessions")
+        {
+            continue;
+        }
+        let modifier_start = line.find(backoff_marker).unwrap() + backoff_marker.len();
+        let modifier_tail = &line[modifier_start..];
+        let modifier: u32 = modifier_tail
+            .split(" || ' seconds'")
+            .next()
+            .and_then(|num| num.parse::<u32>().ok())
+            .expect("backoff statement must embed a numeric placeholder in its datetime modifier");
+
+        // Strip the datetime modifier occurrence itself, then forbid any reuse of that
+        // placeholder number as an identifier anywhere else in the statement.
+        let needle = format!("'+' || ?{} || ' seconds'", modifier);
+        let stripped = line.replacen(&needle, "'+'", 1);
+        let reused = stripped.split('?').skip(1).any(|seg| {
+            seg.chars()
+                .next()
+                .and_then(|c| c.to_digit(10))
+                .map(|n| n == modifier)
+                .unwrap_or(false)
+        });
+        assert!(
+            !reused,
+            "429-backoff placeholder ?{} must not be reused as an identifier in: {}",
+            modifier,
+            line.trim()
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, 13,
+        "expected exactly 13 Retry-After backoff statements in the Phase 2 plan"
+    );
+
+    // Execute the canonical finishing/upload_session_id variant verbatim against a real
+    // SQLite database and assert the persisted deadline tracks Retry-After (+90s). Under
+    // the old double-bound shape this statement would either match zero rows or persist a
+    // NULL/unrelated deadline.
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            page_id TEXT NOT NULL,
+            upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+            upload_session_id TEXT NOT NULL UNIQUE,
+            video_id TEXT,
+            file_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            owner_id TEXT,
+            lease_deadline TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (300, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (300, 'grp_300', 300, 'page_123', 'reel', '429 contract message', 'idemp_300', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (300, 'page_123', 'reel', 'sess_429_contract', 'meta_reel_999', '/tmp/reel429.mp4', 'hash_429', 1024, 0, 'finishing', 0, 'worker_429', NULL, datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    let canonical_sql = "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'";
+    assert!(
+        plan.contains(canonical_sql),
+        "plan must contain the canonical finishing-variant 429 statement with distinct placeholders"
+    );
+    let updated = conn
+        .execute(
+            canonical_sql,
+            params!["sess_429_contract", "worker_429", 90i64],
+        )
+        .unwrap();
+    assert_eq!(
+        updated, 1,
+        "canonical 429 statement must claim exactly the leased finishing row"
+    );
+
+    let (deadline, retries): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT lease_deadline, retry_count FROM facebook_upload_sessions WHERE upload_session_id = 'sess_429_contract'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retries, 1, "retry counter must increment on 429 backoff");
+    let deadline = deadline.expect("lease_deadline must persist after 429 backoff");
+    let deadline_ts = chrono::NaiveDateTime::parse_from_str(&deadline, "%Y-%m-%d %H:%M:%S")
+        .expect("lease_deadline must be a valid SQLite datetime")
+        .and_utc()
+        .timestamp();
+    let now = chrono::Utc::now().timestamp();
+    assert!(
+        deadline_ts >= now + 80 && deadline_ts <= now + 100,
+        "persisted lease_deadline must track Meta's Retry-After (+90s), got offset {}s",
+        deadline_ts - now
+    );
+
+    let premature_reconcile = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_reconciler', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE upload_session_id = 'sess_429_contract' AND (lease_deadline IS NULL OR lease_deadline < datetime('now'))",
+        [],
+    ).unwrap();
+    assert_eq!(
+        premature_reconcile, 0,
+        "background reconciler must not re-claim while Retry-After backoff is active"
+    );
+}

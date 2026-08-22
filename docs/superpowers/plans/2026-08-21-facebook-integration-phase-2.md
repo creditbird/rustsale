@@ -989,8 +989,8 @@ impl FacebookUploader {
                     let err_text = start_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
                         let rows = conn.execute(
-                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
-                            params![sess_row_id, owner_id],
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            params![sess_row_id, owner_id, retry_after as i64],
                         ).unwrap_or(0);
                         if rows != 1 {
                             return PublishApiResult::DeterministicRejection {
@@ -1159,8 +1159,8 @@ impl FacebookUploader {
                             let err_text = check_resp.text().await.unwrap_or_default();
                             if status_code.as_u16() == 429 {
                                 let rows = conn.execute(
-                                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-                                    params![sess_row_id, owner_id],
+                                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                                    params![sess_row_id, owner_id, retry_after as i64],
                                 ).unwrap_or(0);
                                 if rows != 1 {
                                     return PublishApiResult::DeterministicRejection {
@@ -1210,8 +1210,8 @@ impl FacebookUploader {
                         let err_text = status_resp.text().await.unwrap_or_default();
                         if status_code.as_u16() == 429 {
                             let rows = conn.execute(
-                                "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
-                                params![sess_row_id, owner_id],
+                                "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                                params![sess_row_id, owner_id, retry_after as i64],
                             ).unwrap_or(0);
                             if rows != 1 {
                                 return PublishApiResult::DeterministicRejection {
@@ -1317,8 +1317,8 @@ impl FacebookUploader {
                 let err_text = start_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
-                        params![intent_id, owner_id],
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        params![intent_id, owner_id, retry_after as i64],
                     ).unwrap_or(0);
                     if rows != 1 {
                         return PublishApiResult::DeterministicRejection {
@@ -1491,8 +1491,8 @@ impl FacebookUploader {
                 let err_text = transfer_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
-                        params![upload_session_id, owner_id],
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        params![upload_session_id, owner_id, retry_after as i64],
                     ).unwrap_or(0);
                     if rows != 1 {
                         return PublishApiResult::DeterministicRejection {
@@ -1624,8 +1624,8 @@ impl FacebookUploader {
             let err_text = finish_resp.text().await.unwrap_or_default();
             if status_code.as_u16() == 429 {
                 let rows = conn.execute(
-                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-                    params![upload_session_id, owner_id],
+                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                    params![upload_session_id, owner_id, retry_after as i64],
                 ).unwrap_or(0);
                 if rows != 1 {
                     return PublishApiResult::DeterministicRejection {
@@ -1688,8 +1688,8 @@ impl FacebookUploader {
                 let err_text = check_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-                        params![upload_session_id, owner_id],
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                        params![upload_session_id, owner_id, retry_after as i64],
                     ).unwrap_or(0);
                     if rows != 1 {
                         return PublishApiResult::DeterministicRejection {
@@ -1899,8 +1899,8 @@ impl FacebookUploader {
                     let err_text = init_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
                         let rows = conn.execute(
-                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
-                            params![sess_row_id, owner_id],
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                            params![sess_row_id, owner_id, retry_after as i64],
                         ).unwrap_or(0);
                         if rows != 1 {
                             return PublishApiResult::DeterministicRejection {
@@ -2014,8 +2014,8 @@ impl FacebookUploader {
                     let err_text = check_resp.text().await.unwrap_or_default();
                     if status_code.as_u16() == 429 {
                         let rows = conn.execute(
-                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = ?3",
-                            params![sess_row_id, owner_id, session_status],
+                            "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?4 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = ?3",
+                            params![sess_row_id, owner_id, session_status, retry_after as i64],
                         ).unwrap_or(0);
                         if rows != 1 {
                             return PublishApiResult::DeterministicRejection {
@@ -2075,6 +2075,18 @@ impl FacebookUploader {
                     .and_then(|p| p.get("status"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+
+                // Fail-closed authoritative-status gate: Meta's documented status payload must
+                // expose at least one classification field (video_status, uploading_phase.status,
+                // publishing_phase.status). An empty/partial status object cannot establish the
+                // upload state, so the session must NOT be blindly re-streamed; it is marked
+                // delivery_unknown via AmbiguousTransport and resolved by reconciliation instead.
+                if video_status.is_empty() && uploading_status.is_empty() && publishing_status.is_empty() {
+                    return PublishApiResult::AmbiguousTransport {
+                        error_code: "missing_authoritative_status_fields".to_string(),
+                        error_message: "Meta Reel status response exposes no authoritative video_status/uploading_phase.status/publishing_phase.status; upload state unknown".to_string(),
+                    };
+                }
 
                 if session_status == "finishing" {
                     if publishing_status == "complete" || video_status == "ready" {
@@ -2194,8 +2206,8 @@ impl FacebookUploader {
                 let err_text = init_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
-                        params![intent_id, owner_id],
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
+                        params![intent_id, owner_id, retry_after as i64],
                     ).unwrap_or(0);
                     if rows != 1 {
                         return PublishApiResult::DeterministicRejection {
@@ -2360,8 +2372,8 @@ impl FacebookUploader {
                 let err_text = resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
-                        params![video_id, owner_id],
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                        params![video_id, owner_id, retry_after as i64],
                     ).unwrap_or(0);
                     if rows != 1 {
                         return PublishApiResult::DeterministicRejection {
@@ -2499,8 +2511,8 @@ impl FacebookUploader {
             let err_text = finish_resp.text().await.unwrap_or_default();
             if status_code.as_u16() == 429 {
                 let rows = conn.execute(
-                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-                    params![video_id, owner_id],
+                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                    params![video_id, owner_id, retry_after as i64],
                 ).unwrap_or(0);
                 if rows != 1 {
                     return PublishApiResult::DeterministicRejection {
@@ -2564,8 +2576,8 @@ impl FacebookUploader {
                 let err_text = check_resp.text().await.unwrap_or_default();
                 if status_code.as_u16() == 429 {
                     let rows = conn.execute(
-                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
-                        params![video_id, owner_id],
+                        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                        params![video_id, owner_id, retry_after as i64],
                     ).unwrap_or(0);
                     if rows != 1 {
                         return PublishApiResult::DeterministicRejection {
@@ -2689,11 +2701,11 @@ impl FacebookUploader {
        - It directly executes a clean `START` request against Meta Graph API (`POST /{page_id}/videos` or `POST /{page_id}/video_reels`) using the page access token to establish an authoritative upload container.
        - Upon receiving remote `{ upload_session_id, video_id }`, it atomically updates the existing session row to `in_progress` via checked CAS (`UPDATE facebook_upload_sessions SET upload_session_id = ?1, video_id = ?2, status = 'in_progress', updated_at = datetime('now') WHERE id = ?3 AND owner_id = ?4 AND status = 'init_pending'` with `rows == 1`), and proceeds to upload chunks.
        - If Meta returns client error (HTTP 4xx non-429): transitions session and post to `status = 'failed'` via checked CAS (`rows == 1`).
-       - If Meta returns HTTP 429: parses `retry-after` header and releases lease (`owner_id = NULL, lease_deadline = NULL`) for backoff retry.
+       - If Meta returns HTTP 429: parses `retry-after` header and records the identical session-level backoff as the foreground uploader (`UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'` with `params![sess_row_id, owner_id, retry_after as i64]`). The reconciler claim predicate (`lease_deadline IS NULL OR lease_deadline < datetime('now')`) therefore cannot re-claim the session before Meta's Retry-After elapses.
        - If retry attempts reach `max_retries` (>= 3): transitions session and post to `status = 'failed'` via checked CAS (`rows == 1`).
   - For `status == 'in_progress'`:
     For Video (`upload_type == 'video'`): queries Meta Graph API for authoritative `start_offset` (`GET /{upload_session_id}?fields=start_offset,end_offset`), updates `start_offset` in `facebook_upload_sessions`, resumes uploading remaining 4MB chunks to EOF, and advances session `status = 'finishing'`.
-    For Reel (`upload_type == 'reel'`): queries Meta Graph API status (`GET /{video_id}?fields=id,status`); if `video_status == 'ready'`, advances to finish phase; otherwise streams binary upload payload to `https://rupload.facebook.com/video-upload/v26.0/{video_id}`, updates `start_offset = file_size`, and advances session `status = 'finishing'`.
+    For Reel (`upload_type == 'reel'`): queries Meta Graph API status (`GET /{video_id}?fields=id,status`) and classifies strictly from authoritative fields (`status.video_status`, `status.uploading_phase.status`); if `video_status == 'ready'` OR `uploading_phase.status == 'complete'`, advances to finish phase (Meta reports `video_status == 'processing'` while `uploading_phase.status == 'complete'` after the binary upload completed but its response was lost, so re-streaming in that state is forbidden). If any authoritative field is `error`, marks the session failed fail-closed. If the status payload exposes no authoritative classification field at all, returns ambiguous and defers to the next reconciliation cycle. Otherwise (authoritative upload still in progress) streams the remaining binary payload to `https://rupload.facebook.com/video-upload/v26.0/{video_id}`, updates `start_offset = file_size`, and advances session `status = 'finishing'`.
   - For `status == 'finishing'`:
     Queries Meta Graph API `/video_id` status (`status.video_status` for videos, `status.publishing_phase.status` for reels).
     - On authoritative terminal success (`video_status == 'ready' || published == true` for Video; `publishing_phase.status == 'complete'` for Reel):
