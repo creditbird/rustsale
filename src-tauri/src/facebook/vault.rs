@@ -75,10 +75,24 @@ impl FacebookTokenVault {
     }
 
     /// Cross-process critical section: hold an exclusive advisory lock on a
-    /// per-user lock file while touching the keyring, then RE-READ before any
-    /// generation so the first creator wins deterministically.
+    /// PER-USER PRIVATE lock file while touching the keyring, then RE-READ
+    /// before any generation so the first creator wins deterministically.
+    ///
+    /// The lock lives under the user's local data directory (e.g.
+    /// ~/.local/share/rustsale on Linux), never in the shared /tmp namespace:
+    /// unrelated OS users can neither reach nor pre-create/symlink-replace it,
+    /// closing the insecure-temporary-file class of issues.
+    fn vault_lock_path() -> Result<std::path::PathBuf> {
+        let base = dirs::data_local_dir()
+            .ok_or_else(|| anyhow!("Could not resolve the user's local data directory"))?;
+        let dir = base.join("rustsale");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| anyhow!("Failed to create vault directory {}: {}", dir.display(), e))?;
+        Ok(dir.join("facebook-vault.lock"))
+    }
+
     fn load_or_create_key_cross_process() -> Result<[u8; 32]> {
-        let lock_path = std::env::temp_dir().join("rustsale-facebook-vault.lock");
+        let lock_path = Self::vault_lock_path()?;
         let file: File = OpenOptions::new()
             .create(true)
             .truncate(false)
