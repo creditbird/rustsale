@@ -5,9 +5,11 @@
 // 2. Exchanges it again for a Long-Lived User Token (~60 days).
 // 3. Fetches ALL managed Pages via /me/accounts with full cursor pagination
 //    (long-lived Page tokens).
-// 4. Persists tenant <-> page ownership and reconciles stale mappings — but
-//    ONLY after a complete, successful enumeration, so an incomplete Meta
-//    response can never revoke valid access.
+// 4. Atomically replaces this tenant's page ownership via the
+//    replace_meta_tenant_pages() SECURITY DEFINER RPC — invoked on EVERY
+//    complete successful enumeration, INCLUDING an empty result set, so
+//    revocation and stale-owner takeover are deterministic. A failed
+//    enumeration aborts BEFORE any database mutation.
 // 5. Returns tokens so the desktop app can store them in Stronghold/Keyring.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
@@ -23,16 +25,23 @@ const supabaseAdmin =
     ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
     : null;
 
+const GRAPH_TIMEOUT_MS = 15_000;
+
 function logStructured(fields: Record<string, unknown>): void {
   // Never log codes, tokens, or secrets.
   console.log(JSON.stringify({ fn: "meta-oauth", ...fields }));
 }
 
 function json(body: unknown, status = 200): Response {
-  // Token-bearing bodies must never be cached by any intermediary or WebView.
+  // Token-bearing bodies must never be cached; browser/WebView callers need
+  // ACAO on every actual response, not only the preflight.
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+    },
   });
 }
 
@@ -42,12 +51,17 @@ function graph(path: string, params: Record<string, string>): string {
 }
 
 async function jsonFetch<T>(url: string): Promise<T> {
-  const resp = await fetch(url);
-  const body = await resp.json();
+  const resp = await fetch(url, { signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS) });
+  let body: unknown;
+  try {
+    body = await resp.json();
+  } catch {
+    throw new Error(`Meta API non-JSON response (HTTP ${resp.status})`);
+  }
   if (!resp.ok) {
-    throw new Error(
-      body?.error?.message ? `Meta API error: ${body.error.message}` : `Meta API HTTP ${resp.status}`,
-    );
+    const message =
+      (body as any)?.error?.message ?? `Meta API HTTP ${resp.status}`;
+    throw new Error(`Meta API error: ${message}`);
   }
   return body as T;
 }
@@ -56,7 +70,8 @@ type PageRow = { id: string; name: string; access_token: string };
 
 async function fetchAllManagedPages(longLivedToken: string): Promise<PageRow[]> {
   // Follow paging.next cursors until exhausted so >100-Page accounts are not
-  // silently truncated.
+  // silently truncated. Any intermediate failure throws -> caller aborts
+  // without touching the database.
   let pages: PageRow[] = [];
   let url: string | null = graph("me/accounts", {
     access_token: longLivedToken,
@@ -104,7 +119,6 @@ serve(async (req: Request) => {
   if (userErr || !userData?.user?.id) {
     return json({ error: "Invalid Supabase session" }, 401);
   }
-  const tenantId = userData.user.id;
 
   let code: string | undefined;
   try {
@@ -127,9 +141,9 @@ serve(async (req: Request) => {
         code,
       }),
     );
-  } catch (err) {
+  } catch {
     logStructured({ event: "code_exchange_failed" });
-    return json({ error: String(err) }, 502);
+    return json({ error: "Meta authorization code exchange failed" }, 502);
   }
 
   // Step 2: short-lived -> long-lived user token (~60 days)
@@ -143,9 +157,9 @@ serve(async (req: Request) => {
         fb_exchange_token: shortLived.access_token,
       }),
     );
-  } catch (err) {
+  } catch {
     logStructured({ event: "long_lived_exchange_failed" });
-    return json({ error: String(err) }, 502);
+    return json({ error: "Meta token upgrade failed" }, 502);
   }
 
   // Step 3: fetch ALL managed pages (paginated). Reconciliation depends on
@@ -153,56 +167,22 @@ serve(async (req: Request) => {
   let pages: PageRow[];
   try {
     pages = await fetchAllManagedPages(longLived.access_token);
-  } catch (err) {
+  } catch {
     logStructured({ event: "page_enumeration_failed" });
-    return json({ error: String(err) }, 502);
+    return json({ error: "Meta page enumeration failed" }, 502);
   }
 
-  // Step 4a: persist current ownership mapping (service role bypasses RLS;
-  // page_id is globally UNIQUE so one page belongs to exactly one tenant).
-  if (pages.length > 0) {
-    const rows = pages.map((p) => ({
-      tenant_id: tenantId,
-      page_id: p.id,
-      page_name: p.name,
-    }));
-    const { error: upsertErr } = await supabaseAdmin
-      .from("meta_tenant_pages")
-      .upsert(rows, { onConflict: "tenant_id,page_id" });
-    if (upsertErr) {
-      logStructured({ event: "page_mapping_upsert_failed" });
-      return json({ error: `Failed to store page mapping: ${upsertErr.message}` }, 500);
-    }
-  }
-
-  // Step 4b: reconcile stale mappings. Only reachable on a complete,
-  // successful enumeration above. Removes pages this tenant no longer
-  // manages so former admins cannot keep reading webhook payloads via RLS.
-  if (pages.length > 0) {
-    const keepIds = pages.map((p) => p.id);
-    const { data: ownedRows, error: selectErr } = await supabaseAdmin
-      .from("meta_tenant_pages")
-      .select("page_id")
-      .eq("tenant_id", tenantId);
-    if (selectErr) {
-      logStructured({ event: "reconcile_select_failed" });
-      return json({ error: `Failed to reconcile page mappings: ${selectErr.message}` }, 500);
-    }
-    const staleIds = ((ownedRows ?? []) as Array<{ page_id: string }>)
-      .map((r) => r.page_id)
-      .filter((pid: string) => !keepIds.includes(pid));
-    if (staleIds.length > 0) {
-      const { error: delErr } = await supabaseAdmin
-        .from("meta_tenant_pages")
-        .delete()
-        .eq("tenant_id", tenantId)
-        .in("page_id", staleIds);
-      if (delErr) {
-        logStructured({ event: "reconcile_delete_failed", stale_count: staleIds.length });
-        return json({ error: `Failed to remove stale page mappings: ${delErr.message}` }, 500);
-      }
-      logStructured({ event: "stale_mappings_removed", count: staleIds.length });
-    }
+  // Step 4: ATOMIC reconciliation via SECURITY DEFINER RPC. Runs on every
+  // complete enumeration — including zero Pages (= revoke all). The RPC also
+  // purges other tenants' buffered history for Pages being (re)claimed, so
+  // ownership transfer never leaks the previous tenant's events.
+  const verifiedPages = pages.map((p) => ({ page_id: p.id, page_name: p.name }));
+  const { error: rpcErr } = await supabaseAdmin.rpc("replace_meta_tenant_pages", {
+    p_pages: verifiedPages,
+  });
+  if (rpcErr) {
+    logStructured({ event: "reconciliation_failed", detail: rpcErr.code ?? null });
+    return json({ error: "Failed to reconcile page mappings" }, 500);
   }
 
   logStructured({ event: "oauth_completed", page_count: pages.length });

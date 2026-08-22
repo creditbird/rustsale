@@ -23,9 +23,14 @@ function logStructured(fields: Record<string, unknown>): void {
 }
 
 function json(body: unknown, status = 200): Response {
+  // Browser/WebView callers need ACAO on actual responses, not just preflight.
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+    },
   });
 }
 

@@ -7,7 +7,11 @@
 //    any JSON parsing, with strict 64-hex-char format validation.
 // 3. Durable persistence failures return a RETRYABLE non-2xx so Meta redelivers
 //    instead of silently dropping events.
-// 4. One malformed event is skipped without poisoning the rest of the batch.
+// 4. One malformed event is skipped without poisoning the rest of the batch,
+//    and no synthetic "undefined_*" idempotency keys are ever persisted.
+// 5. Every buffered row carries the tenant_id owning the Page at ingestion
+//    time, so later Page ownership transfers cannot leak history across
+//    tenants. Events for Pages unknown to the relay are acked but not stored.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
@@ -46,6 +50,15 @@ async function verifyHmacSha256(
   );
   return await crypto.subtle.verify("HMAC", key, expectedSig, rawBody);
 }
+
+type BufferRow = {
+  tenant_id: string;
+  page_id: string;
+  event_type: string;
+  event_key: string;
+  payload: unknown;
+  status: "pending";
+};
 
 serve(async (req: Request) => {
   // Fail closed when the deployment is misconfigured.
@@ -91,10 +104,13 @@ serve(async (req: Request) => {
     }
 
     const entries = Array.isArray(payload?.entry) ? payload.entry : [];
-    const rowsToInsert: any[] = [];
+    // Staged per entry page; every component must be a real string so no
+    // "undefined_*" synthetic keys can reach the dedup index.
+    type StagedRow = { tenant_id: string | null; row: Omit<BufferRow, "tenant_id"> };
+    const staged: StagedRow[] = [];
     let malformedSkipped = 0;
 
-    const pushRow = (
+    const stageRow = (
       pageId: unknown,
       eventType: string,
       eventKey: unknown,
@@ -104,49 +120,81 @@ serve(async (req: Request) => {
         typeof pageId !== "string" ||
         pageId.length === 0 ||
         typeof eventKey !== "string" ||
-        eventKey.length === 0
+        eventKey.length === 0 ||
+        /\bundefined\b|\bnull\b/.test(eventKey)
       ) {
         malformedSkipped += 1;
         return;
       }
-      rowsToInsert.push({
-        page_id: pageId,
-        event_type: eventType,
-        event_key: eventKey,
-        payload: payloadEvent,
-        status: "pending",
+      staged.push({
+        tenant_id: null,
+        row: {
+          page_id: pageId,
+          event_type: eventType,
+          event_key: eventKey,
+          payload: payloadEvent,
+          status: "pending",
+        },
       });
     };
 
+    const requireId = (value: unknown): string | null =>
+      typeof value === "string" && value.length > 0 ? value : null;
+
     for (const entry of entries) {
-      const pageId = entry?.id;
+      const pageId = requireId(entry?.id);
 
       if (Array.isArray(entry?.messaging)) {
         for (const msg of entry.messaging) {
           if (msg?.message?.mid) {
-            pushRow(pageId, msg.message.is_echo ? "message_echoes" : "messages", msg.message.mid, msg);
-          } else if (msg?.delivery && typeof msg.delivery?.watermark !== "undefined") {
-            pushRow(
-              pageId,
-              "message_deliveries",
-              `${msg.recipient?.id}_${msg.delivery.watermark}`,
-              msg,
-            );
-          } else if (msg?.read && typeof msg.read?.watermark !== "undefined") {
-            pushRow(pageId, "message_reads", `${msg.recipient?.id}_${msg.read.watermark}`, msg);
-          } else if (msg?.reaction?.mid) {
-            // Include action/emoji/timestamp so react -> unreact/change are
-            // distinct logical events, while true Meta retries (identical
-            // payloads) still dedupe.
-            pushRow(
-              pageId,
-              "message_reactions",
-              `${msg.reaction.mid}_${msg.sender?.id}_${msg.reaction.action ?? ""}_${msg.reaction.emoji ?? ""}_${msg.timestamp ?? ""}`,
-              msg,
-            );
-          } else {
-            malformedSkipped += 1;
+            stageRow(pageId, msg.message.is_echo ? "message_echoes" : "messages", msg.message.mid, msg);
+            continue;
           }
+
+          if (msg?.delivery && typeof msg.delivery?.watermark !== "undefined") {
+            const recipientId = requireId(msg.recipient?.id);
+            if (recipientId && typeof msg.delivery.watermark !== "object") {
+              stageRow(
+                pageId,
+                "message_deliveries",
+                `${recipientId}_${msg.delivery.watermark}`,
+                msg,
+              );
+              continue;
+            }
+            malformedSkipped += 1;
+            continue;
+          }
+
+          if (msg?.read && typeof msg.read?.watermark !== "undefined") {
+            const recipientId = requireId(msg.recipient?.id);
+            if (recipientId && typeof msg.read.watermark !== "object") {
+              stageRow(pageId, "message_reads", `${recipientId}_${msg.read.watermark}`, msg);
+              continue;
+            }
+            malformedSkipped += 1;
+            continue;
+          }
+
+          if (msg?.reaction?.mid) {
+            const senderId = requireId(msg.sender?.id);
+            if (senderId) {
+              // Include action/emoji/timestamp so react -> unreact/change are
+              // distinct logical events, while true Meta retries (identical
+              // payloads) still dedupe.
+              stageRow(
+                pageId,
+                "message_reactions",
+                `${msg.reaction.mid}_${senderId}_${msg.reaction.action ?? ""}_${msg.reaction.emoji ?? ""}_${msg.timestamp ?? ""}`,
+                msg,
+              );
+              continue;
+            }
+            malformedSkipped += 1;
+            continue;
+          }
+
+          malformedSkipped += 1;
         }
       }
 
@@ -157,9 +205,9 @@ serve(async (req: Request) => {
             change.value?.item === "comment" &&
             change.value?.verb === "add"
           ) {
-            pushRow(pageId, "feed", change.value.comment_id, change);
+            stageRow(pageId, "feed", change.value.comment_id, change);
           } else if (change?.field === "leadgen") {
-            pushRow(pageId, "leadgen", change.value?.leadgen_id, change);
+            stageRow(pageId, "leadgen", change.value?.leadgen_id, change);
           } else {
             malformedSkipped += 1;
           }
@@ -168,32 +216,64 @@ serve(async (req: Request) => {
     }
 
     let persisted = 0;
-    if (rowsToInsert.length > 0) {
-      const { error: upsertErr, count } = await supabaseAdmin
-        .from("meta_webhook_buffer")
-        .upsert(rowsToInsert, {
-          onConflict: "page_id,event_type,event_key",
-          ignoreDuplicates: true,
-          count: "exact",
-        });
-      if (upsertErr) {
-        // Durable persistence failed: tell Meta to retry instead of acking loss.
-        logStructured({
-          event: "buffer_persist_failed",
-          batch: rowsToInsert.length,
-          error_code: upsertErr.code ?? null,
-        });
+    let droppedUnmapped = 0;
+
+    if (staged.length > 0) {
+      // Resolve the CURRENT owner of each involved Page so rows are stamped
+      // with the tenant that owned the Page at ingestion time.
+      const involvedPages = [...new Set(staged.map((s) => s.row.page_id))];
+      const { data: mappings, error: mapErr } = await supabaseAdmin
+        .from("meta_tenant_pages")
+        .select("page_id,tenant_id")
+        .in("page_id", involvedPages);
+      if (mapErr) {
+        logStructured({ event: "tenant_lookup_failed" });
         return new Response("Temporary storage failure", { status: 503 });
       }
-      persisted = count ?? rowsToInsert.length;
+      const ownerByPage = new Map<string, string>(
+        (mappings ?? []).map((m: { page_id: string; tenant_id: string }) => [m.page_id, m.tenant_id]),
+      );
+
+      const rowsToInsert: BufferRow[] = [];
+      for (const item of staged) {
+        const tenantId = ownerByPage.get(item.row.page_id);
+        if (!tenantId) {
+          droppedUnmapped += 1; // Page not connected to any RustSale tenant.
+          continue;
+        }
+        rowsToInsert.push({ ...item.row, tenant_id: tenantId });
+      }
+
+      if (rowsToInsert.length > 0) {
+        const { error: upsertErr, count } = await supabaseAdmin
+          .from("meta_webhook_buffer")
+          .upsert(rowsToInsert, {
+            onConflict: "page_id,event_type,event_key",
+            ignoreDuplicates: true,
+            count: "exact",
+          });
+        if (upsertErr) {
+          // Durable persistence failed: tell Meta to retry instead of acking loss.
+          logStructured({
+            event: "buffer_persist_failed",
+            batch: rowsToInsert.length,
+            error_code: upsertErr.code ?? null,
+          });
+          return new Response("Temporary storage failure", { status: 503 });
+        }
+        persisted = count ?? rowsToInsert.length;
+      }
     }
 
     logStructured({
       event: "events_accepted",
       received_batches: entries.length,
       accepted: persisted,
-      duplicates_or_empty: rowsToInsert.length - persisted >= 0 ? rowsToInsert.length - persisted : 0,
+      duplicates_or_empty: staged.length - droppedUnmapped - persisted >= 0
+        ? staged.length - droppedUnmapped - persisted
+        : 0,
       malformed_skipped: malformedSkipped,
+      dropped_unmapped_page: droppedUnmapped,
     });
 
     // Ack fast (<1s) — Meta retries non-2xx with backoff.
