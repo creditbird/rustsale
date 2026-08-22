@@ -138,7 +138,7 @@ describe('Facebook24hPolicyBanner component', () => {
     render(Facebook24hPolicyBanner, {
       props: { lastInboundAt: new Date(NOW - 8 * DAY).toISOString(), nowMs: NOW }
     });
-    expect(screen.getByText(/không thể gửi tin nhắn mới/)).toBeTruthy();
+    expect(screen.getByText(/không thể gửi tin nhắn tự do/)).toBeTruthy();
     expect(screen.queryByRole('combobox')).toBeNull();
   });
 });

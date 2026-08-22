@@ -38,7 +38,7 @@
     class="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-2.5 text-xs text-red-600 dark:text-red-400"
     data-testid="facebook-policy-expired"
   >
-    ⛔ Đã quá 7 ngày kể từ tương tác cuối — không thể gửi tin nhắn mới qua Messenger.
+    ⛔ Đã quá 7 ngày kể từ tương tác cuối — không thể gửi tin nhắn tự do qua ô chat này.
   </div>
 {:else if !status.freeWindow}
   <div

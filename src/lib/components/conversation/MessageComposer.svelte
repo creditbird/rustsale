@@ -349,7 +349,12 @@
 
   $effect(() => {
     if (!selectedOption) return;
-    const resolvedKey = `${selectedOption.target.conversationId}:${selectedOption.id}`;
+    // Re-emit on ANY policy-relevant change (identity OR lastInboundAt), so
+    // an inbox refresh that reopens the 24h window reaches the workspace
+    // even though (conversationId, channelAccountId) stay the same.
+    const resolvedKey =
+      `${selectedOption.target.conversationId}:${selectedOption.id}` +
+      `:${selectedOption.target.lastInboundAt ?? ''}`;
     if (resolvedKey !== lastResolvedTargetKey) {
       lastResolvedTargetKey = resolvedKey;
       onTargetResolved?.(selectedOption.target);
@@ -845,7 +850,7 @@
         if (!(fresh.humanAgentEligible && facebookPolicy.selectedTag === 'HUMAN_AGENT')) {
           sendError =
             'Không thể gửi: đã quá cửa sổ cho phép của Meta' +
-            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày).');
+            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày — không thể gửi tin tự do).');
           return;
         }
         outboundMessageTag = 'HUMAN_AGENT';
@@ -920,7 +925,7 @@
         if (!(fresh.humanAgentEligible && facebookPolicy.selectedTag === 'HUMAN_AGENT')) {
           sendError =
             'Không thể gửi: đã quá cửa sổ cho phép của Meta' +
-            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày).');
+            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày — không thể gửi tin tự do).');
           return;
         }
         stickerMessageTag = 'HUMAN_AGENT';

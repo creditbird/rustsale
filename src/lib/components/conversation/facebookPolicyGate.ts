@@ -52,6 +52,11 @@ export function evaluateFacebookWindow(
   if (!Number.isFinite(ms)) {
     return { freeWindow: false, humanAgentEligible: false, remainingMs: 0 };
   }
+  // Clock-skew guard: timestamps more than 5 minutes in the future are
+  // implausible provider data and must not open any window.
+  if (ms - nowMs > 5 * 60 * 1000) {
+    return { freeWindow: false, humanAgentEligible: false, remainingMs: 0 };
+  }
   const elapsed = nowMs - ms;
   const remainingMs = Math.max(0, WINDOW_MS - elapsed);
   return {
@@ -75,7 +80,7 @@ export function validateOutboundPolicy(
   if (!status.humanAgentEligible) {
     return {
       allowed: false,
-      reason: 'Đã quá 7 ngày kể từ tương tác cuối — không thể gửi tin nhắn mới qua Messenger.'
+      reason: 'Đã quá 7 ngày kể từ tương tác cuối — không thể gửi tin nhắn tự do qua ô chat này.'
     };
   }
   if (selectedTag === 'HUMAN_AGENT') {

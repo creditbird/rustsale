@@ -1,4 +1,4 @@
-use super::error::ConversationCommandError;
+use super::error::{ConversationCommandError, ConversationError, ConversationErrorCode};
 use super::service::ConversationService;
 use super::types::{
     Channel, ConversationForwardTargetResult, ConversationMentionCandidate, ConversationMessage,
@@ -200,6 +200,18 @@ pub fn send_conversation_batch(
     state: tauri::State<'_, ConversationState>,
     request: SendConversationBatchRequest,
 ) -> Result<SendConversationBatchResult, ConversationCommandError> {
+    // Boundary validation: the only Messenger 24h-policy tag this build
+    // accepts is HUMAN_AGENT (legacy tags are retired by Meta). Reject
+    // arbitrary strings at the IPC boundary instead of silently dropping.
+    if let Some(tag) = &request.message_tag {
+        if tag != "HUMAN_AGENT" {
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                format!("unsupported message_tag: {tag}"),
+            )
+            .command_error());
+        }
+    }
     state
         .service
         .enqueue_batch(&request)
