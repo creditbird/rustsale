@@ -20,6 +20,11 @@ const MAX_BODY_BYTES = 1_048_576;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+function serverMisconfigured(): Response {
+  logStructured({ event: "server_misconfigured" });
+  return new Response("Server configuration error", { status: 500 });
+}
+
 function logStructured(fields: Record<string, unknown>): void {
   // Redacted by construction: only counters/flags, never payloads or tokens.
   console.log(JSON.stringify({ fn: "meta-webhook", ...fields }));
@@ -67,15 +72,40 @@ async function verifyMetaSignature(req: Request, rawBodyBytes: Uint8Array): Prom
 function safeTimestampIso(value: unknown): string {
   try {
     const d = new Date(value as any);
-    const ms = d.getTime();
-    if (!Number.isNaN(ms)) return d.toISOString();
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
   } catch {
     // fall through
   }
   return new Date().toISOString();
 }
 
+// Messenger messaging events carry millisecond epoch timestamps.
+function messengerTimestampIso(value: unknown): string {
+  return safeTimestampIso(value);
+}
+
+// Page feed / leadgen webhooks carry Unix-SECONDS created_time values; a bare
+// number must be scaled to milliseconds or it decodes to January 1970.
+function changeTimestampIso(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return safeTimestampIso(value * 1000);
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return safeTimestampIso(Number(value.trim()) * 1000);
+  }
+  return safeTimestampIso(value);
+}
+
 serve(async (req: Request) => {
+  if (
+    !SUPABASE_URL ||
+    !SUPABASE_SERVICE_ROLE_KEY ||
+    !META_APP_SECRET ||
+    !META_VERIFY_TOKEN
+  ) {
+    return serverMisconfigured();
+  }
+
   const url = new URL(req.url);
 
   if (req.method === "GET") {
@@ -120,6 +150,8 @@ serve(async (req: Request) => {
     } catch {
       return new Response("Invalid JSON", { status: 400 });
     }
+
+    let malformedSkipped = 0;
     if (payload.object !== "page") {
       logStructured({ event: "ignored_non_page_object" });
       return new Response("Ignored non-page object", { status: 200 });
@@ -155,14 +187,22 @@ serve(async (req: Request) => {
 
           let eventKey = "";
           if (msg.message?.mid) eventKey = `msg_${msg.message.mid}`;
-          else if (msg.delivery?.mids) eventKey = `del_${msg.delivery.mids.join("_")}_${msg.delivery.watermark}`;
+          else if (
+            msg.delivery?.mids &&
+            Array.isArray(msg.delivery.mids) &&
+            msg.delivery.mids.length > 0 &&
+            typeof msg.delivery.watermark !== "undefined"
+          ) eventKey = `del_${msg.delivery.mids.join("_")}_${msg.delivery.watermark}`;
           else if (msg.read?.watermark && senderId) eventKey = `read_${senderId}_${msg.read.watermark}`;
           else if (msg.reaction?.mid && senderId) {
             // Include action+emoji so react -> unreact/change remain distinct
             // logical events; true retries carry identical payloads and dedupe.
             eventKey = `react_${msg.reaction.mid}_${senderId}_${msg.reaction.action ?? ""}_${msg.reaction.emoji ?? ""}_${msg.reaction.reaction || "none"}`;
           } else if (senderId) eventKey = `misc_${senderId}_${await computeSha256(canonicalJsonStringify(msg))}`;
-          else continue; // No durable identity components: skip instead of synthesizing keys.
+          else {
+            malformedSkipped += 1;
+            continue; // No durable identity components: skip instead of synthesizing keys.
+          }
 
           events.push({ field: "messages", event_key: eventKey, payload: msg });
         }
@@ -172,9 +212,12 @@ serve(async (req: Request) => {
         for (const ch of entry.changes) {
           const val = ch.value || {};
           const field = typeof ch.field === "string" && ch.field.length > 0 ? ch.field : null;
-          if (!field) continue; // field is NOT NULL in the buffer schema.
+          if (!field) {
+            malformedSkipped += 1;
+            continue; // field is NOT NULL in the buffer schema.
+          }
           const fromId = val.from?.id;
-          const timestamp = safeTimestampIso(val.created_time);
+          const timestamp = changeTimestampIso(val.created_time);
 
           if (fromId && fromId !== pageId) {
             interactions.push({ user_id: fromId, app_user_id: null, timestamp });
@@ -221,7 +264,11 @@ serve(async (req: Request) => {
       }
     }
 
-    logStructured({ event: "events_accepted", received_batches: (payload.entry || []).length });
+    logStructured({
+      event: "events_accepted",
+      received_batches: (payload.entry || []).length,
+      malformed_skipped: malformedSkipped,
+    });
     return new Response("OK", { status: 200 });
   }
 

@@ -57,8 +57,27 @@ CREATE TABLE IF NOT EXISTS meta_webhook_buffer (
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'synced', 'dead_letter')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_buffer_dedup ON meta_webhook_buffer(page_id, event_type, event_key);
-CREATE INDEX IF NOT EXISTS idx_meta_buffer_sync ON meta_webhook_buffer(tenant_id, status, id);
+DO $$
+DECLARE
+    v_legacy_shape BOOLEAN;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'meta_webhook_buffer'
+           AND column_name = 'event_type'
+    ) INTO v_legacy_shape;
+
+    -- Legacy-only DDL: on databases where 002 already created the revised
+    -- buffer shape there is no event_type column, and recreating the
+    -- superseded index would fail. Those objects exist only in databases that
+    -- originally applied this migration's original content.
+    IF v_legacy_shape THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_buffer_dedup ON meta_webhook_buffer(page_id, event_type, event_key);
+        CREATE INDEX IF NOT EXISTS idx_meta_buffer_sync ON meta_webhook_buffer(tenant_id, status, id);
+    END IF;
+END
+$$;
 
 ALTER TABLE meta_webhook_buffer ENABLE ROW LEVEL SECURITY;
 
