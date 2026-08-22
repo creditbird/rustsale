@@ -44,7 +44,7 @@ async function computeSha256(str: string): Promise<string> {
   return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function verifyMetaSignature(req: Request, rawBody: string): Promise<boolean> {
+async function verifyMetaSignature(req: Request, rawBodyBytes: Uint8Array): Promise<boolean> {
   const signatureHeader = req.headers.get("X-Hub-Signature-256");
   if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
 
@@ -59,7 +59,20 @@ async function verifyMetaSignature(req: Request, rawBody: string): Promise<boole
     expectedSignature.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []
   );
 
-  return await crypto.subtle.verify("HMAC", key, signatureBytes, encoder.encode(rawBody));
+  // Verify against the ORIGINAL request bytes — no decode/re-encode round trip.
+  return await crypto.subtle.verify("HMAC", key, signatureBytes, rawBodyBytes);
+}
+
+// Malformed timestamps must not poison an otherwise valid delivery.
+function safeTimestampIso(value: unknown): string {
+  try {
+    const d = new Date(value as any);
+    const ms = d.getTime();
+    if (!Number.isNaN(ms)) return d.toISOString();
+  } catch {
+    // fall through
+  }
+  return new Date().toISOString();
 }
 
 serve(async (req: Request) => {
@@ -86,13 +99,16 @@ serve(async (req: Request) => {
       return new Response("Payload too large", { status: 413 });
     }
 
-    const rawBody = await req.text();
-    if (rawBody.length > MAX_BODY_BYTES) {
-      logStructured({ event: "body_too_large", actual_length: rawBody.length });
+    // Read the ORIGINAL raw bytes once: size bound and HMAC both operate on
+    // bytes (UTF-16 String.length is not a wire-byte measure), decoding only
+    // happens after signature verification succeeds.
+    const rawBodyBytes = new Uint8Array(await req.arrayBuffer());
+    if (rawBodyBytes.byteLength > MAX_BODY_BYTES) {
+      logStructured({ event: "body_too_large", actual_length: rawBodyBytes.byteLength });
       return new Response("Payload too large", { status: 413 });
     }
 
-    const isValid = await verifyMetaSignature(req, rawBody);
+    const isValid = await verifyMetaSignature(req, rawBodyBytes);
     if (!isValid) {
       logStructured({ event: "signature_rejected" });
       return new Response("Invalid signature", { status: 401 });
@@ -100,7 +116,7 @@ serve(async (req: Request) => {
 
     let payload: any;
     try {
-      payload = JSON.parse(rawBody);
+      payload = JSON.parse(new TextDecoder().decode(rawBodyBytes));
     } catch {
       return new Response("Invalid JSON", { status: 400 });
     }
@@ -130,8 +146,9 @@ serve(async (req: Request) => {
 
       if (entry.messaging) {
         for (const msg of entry.messaging) {
-          const senderId = msg.sender?.id;
-          const timestamp = msg.timestamp ? new Date(msg.timestamp).toISOString() : new Date().toISOString();
+          const senderId =
+            typeof msg.sender?.id === "string" && msg.sender.id.length > 0 ? msg.sender.id : null;
+          const timestamp = safeTimestampIso(msg.timestamp);
           if (senderId && senderId !== pageId) {
             interactions.push({ user_id: senderId, app_user_id: null, timestamp });
           }
@@ -139,12 +156,13 @@ serve(async (req: Request) => {
           let eventKey = "";
           if (msg.message?.mid) eventKey = `msg_${msg.message.mid}`;
           else if (msg.delivery?.mids) eventKey = `del_${msg.delivery.mids.join("_")}_${msg.delivery.watermark}`;
-          else if (msg.read?.watermark) eventKey = `read_${senderId}_${msg.read.watermark}`;
-          else if (msg.reaction?.mid) {
+          else if (msg.read?.watermark && senderId) eventKey = `read_${senderId}_${msg.read.watermark}`;
+          else if (msg.reaction?.mid && senderId) {
             // Include action+emoji so react -> unreact/change remain distinct
             // logical events; true retries carry identical payloads and dedupe.
             eventKey = `react_${msg.reaction.mid}_${senderId}_${msg.reaction.action ?? ""}_${msg.reaction.emoji ?? ""}_${msg.reaction.reaction || "none"}`;
-          } else eventKey = `misc_${senderId}_${await computeSha256(canonicalJsonStringify(msg))}`;
+          } else if (senderId) eventKey = `misc_${senderId}_${await computeSha256(canonicalJsonStringify(msg))}`;
+          else continue; // No durable identity components: skip instead of synthesizing keys.
 
           events.push({ field: "messages", event_key: eventKey, payload: msg });
         }
@@ -153,9 +171,10 @@ serve(async (req: Request) => {
       if (entry.changes) {
         for (const ch of entry.changes) {
           const val = ch.value || {};
-          const field = ch.field;
+          const field = typeof ch.field === "string" && ch.field.length > 0 ? ch.field : null;
+          if (!field) continue; // field is NOT NULL in the buffer schema.
           const fromId = val.from?.id;
-          const timestamp = val.created_time ? new Date(val.created_time * 1000).toISOString() : new Date().toISOString();
+          const timestamp = safeTimestampIso(val.created_time);
 
           if (fromId && fromId !== pageId) {
             interactions.push({ user_id: fromId, app_user_id: null, timestamp });

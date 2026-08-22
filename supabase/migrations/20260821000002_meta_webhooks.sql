@@ -19,6 +19,11 @@ ALTER TABLE meta_webhook_buffer ENABLE ROW LEVEL SECURITY;
 -- new tables to the Data API). Tenants may read their own events and flip
 -- status forward through the column-scoped UPDATE; every other column is
 -- immutable to clients, keeping payloads tamper-proof.
+-- Ownership resolution in /meta-webhook queries this table through the
+-- service-role client: BYPASSRLS bypasses row policies but NOT missing table
+-- privileges under current explicit-grant defaults.
+GRANT SELECT ON TABLE public.meta_tenant_pages TO service_role;
+
 REVOKE ALL ON TABLE meta_webhook_buffer FROM PUBLIC, anon, authenticated;
 GRANT SELECT, UPDATE(status) ON TABLE meta_webhook_buffer TO authenticated;
 GRANT ALL ON TABLE meta_webhook_buffer TO service_role;
@@ -29,7 +34,7 @@ CREATE POLICY "Tenants select own buffered events" ON meta_webhook_buffer
 
 CREATE POLICY "Tenants ack own buffered events" ON meta_webhook_buffer
     FOR UPDATE TO authenticated
-    USING (auth.uid() = tenant_id)
+    USING (auth.uid() = tenant_id AND status IN ('pending', 'processing'))
     WITH CHECK (auth.uid() = tenant_id AND status IN ('processing', 'completed', 'failed'));
 
 CREATE TABLE IF NOT EXISTS meta_lead_page_interactions (
@@ -42,6 +47,8 @@ CREATE TABLE IF NOT EXISTS meta_lead_page_interactions (
     UNIQUE(tenant_id, page_id, leadgen_id)
 );
 CREATE INDEX IF NOT EXISTS idx_meta_lead_interactions_page ON meta_lead_page_interactions(tenant_id, page_id);
+CREATE INDEX IF NOT EXISTS idx_meta_buffer_queue ON meta_webhook_buffer(tenant_id, status, id);
+
 ALTER TABLE meta_lead_page_interactions ENABLE ROW LEVEL SECURITY;
 
 -- Written exclusively inside the ingestion RPC below; no client surface in P1.
