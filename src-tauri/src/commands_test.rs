@@ -3722,7 +3722,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let valid_path = temp_dir.path().join("saved_photo.png");
         let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-        let b64 = BASE64_STANDARD.encode(&png_bytes);
+        let b64 = BASE64_STANDARD.encode(png_bytes);
 
         // 1. User picks a valid path
         let valid_path_clone = valid_path.clone();
@@ -3768,7 +3768,7 @@ mod tests {
 
         // 4. Format alias acceptance: JPEG payload saved to .jpeg path succeeds
         let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
-        let jpeg_b64 = BASE64_STANDARD.encode(&jpeg_bytes);
+        let jpeg_b64 = BASE64_STANDARD.encode(jpeg_bytes);
         let jpeg_path = temp_dir.path().join("my_picture.jpeg");
         let jpeg_path_clone = jpeg_path.clone();
         let res_alias = commands::save_image_file_with_dialog(

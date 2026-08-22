@@ -804,7 +804,7 @@ impl ConversationRepository {
                     "INSERT INTO channel_identities
                      (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-                     ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
+                     ON CONFLICT(channel, identity_namespace, external_id) WHERE channel_account_id IS NULL DO UPDATE SET
                          lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
                          display_name = COALESCE(excluded.display_name, channel_identities.display_name),
                          avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),
@@ -1043,11 +1043,32 @@ impl ConversationRepository {
                          size_bytes = COALESCE(?6, size_bytes),
                          remote_url = COALESCE(?7, remote_url),
                          thumbnail_url = COALESCE(?8, thumbnail_url),
-                         metadata_json = COALESCE(?9, metadata_json)
+                         metadata_json = CASE
+                             WHEN ?9 IS NULL THEN metadata_json
+                             WHEN metadata_json IS NULL THEN ?9
+                             WHEN json_valid(metadata_json) AND json_valid(?9) AND json_type(?9) = 'object' THEN (
+                                 SELECT json_patch(
+                                     json_patch(metadata_json, ?9),
+                                     json_object(
+                                         'provider_attachment_id_aliases', json(COALESCE(json_extract(metadata_json, '$.provider_attachment_id_aliases'), 'null')),
+                                         'remote_url_aliases', json(COALESCE(json_extract(metadata_json, '$.remote_url_aliases'), 'null')),
+                                         '_merged_attachment_rows', json(COALESCE(json_extract(metadata_json, '$._merged_attachment_rows'), 'null'))
+                                     )
+                                 )
+                             )
+                             ELSE metadata_json
+                         END
                      WHERE message_id = ?1
                        AND (
-                           provider_attachment_id = ?2
-                           OR (provider_attachment_id IS NULL AND attachment_type = ?3)
+                           (?2 IS NOT NULL AND provider_attachment_id = ?2)
+                           OR (?7 IS NOT NULL AND remote_url = ?7)
+                           OR (?2 IS NOT NULL AND json_valid(metadata_json) AND EXISTS (
+                               SELECT 1 FROM json_each(metadata_json, '$.provider_attachment_id_aliases') WHERE value = ?2
+                           ))
+                           OR (?7 IS NOT NULL AND json_valid(metadata_json) AND EXISTS (
+                               SELECT 1 FROM json_each(metadata_json, '$.remote_url_aliases') WHERE value = ?7
+                           ))
+                           OR (provider_attachment_id IS NULL AND remote_url IS NULL AND attachment_type = ?3)
                        )",
                     params![
                         message_id,
@@ -4154,7 +4175,7 @@ impl ConversationRepository {
             "INSERT INTO channel_identities
              (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
              VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, ?4, ?5, ?6, ?6)
-             ON CONFLICT(channel, identity_namespace, external_id) DO UPDATE SET
+             ON CONFLICT(channel, identity_namespace, external_id) WHERE channel_account_id IS NULL DO UPDATE SET
                  lead_id = COALESCE(channel_identities.lead_id, excluded.lead_id),
                  display_name = COALESCE(excluded.display_name, channel_identities.display_name),
                  avatar_url = COALESCE(excluded.avatar_url, channel_identities.avatar_url),

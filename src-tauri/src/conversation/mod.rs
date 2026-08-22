@@ -6,6 +6,7 @@ pub mod events;
 pub mod forwarding;
 pub mod mentions;
 pub mod migration;
+pub mod migration_v2;
 pub mod outreach;
 pub mod projection;
 pub mod quick_templates;
@@ -25,6 +26,8 @@ mod forwarding_test;
 mod mentions_test;
 #[cfg(test)]
 mod migration_test;
+#[cfg(test)]
+mod migration_v2_test;
 #[cfg(test)]
 mod outreach_test;
 #[cfg(test)]

@@ -3954,3 +3954,872 @@ fn list_inbox_unlinked_title_ignores_other_senders_in_shared_group() {
 
     assert_eq!(user_a_item.title, "Nguyễn Mạnh Toàn");
 }
+
+#[test]
+fn test_attachment_replay_with_merged_aliases_updates_survivor_cleanly() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    // 1. Setup account, identity, conversation and message
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (1, 'messenger', 'fb_page_1', 'Facebook Page', 'connected', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel_account_id, channel, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (10, 1, 'messenger', 'user', 'fb_user_1', 'FB User', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, last_message_at, created_at, updated_at)
+         VALUES (100, 1, 'direct', 'fb_thread_1', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, provider_message_id, content_type, raw_payload_json, provider_timestamp, ingested_at, status)
+         VALUES (1001, 100, 10, 'inbound', 'mid_fb_1', 'image', '{}', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', 'received')",
+        [],
+    ).unwrap();
+
+    // Insert survivor attachment with aliases in metadata_json
+    let metadata = serde_json::json!({
+        "provider_attachment_id_aliases": ["att_alias_1", "att_alias_2"],
+        "remote_url_aliases": ["https://cdn.example.com/alias_url_1.png", "https://cdn.example.com/alias_url_2.png"]
+    });
+    conn.execute(
+        "INSERT INTO message_attachments (id, message_id, provider_attachment_id, attachment_type, mime_type, file_name, remote_url, metadata_json, created_at)
+         VALUES (500, 1001, 'att_canonical_1', 'image', 'image/png', 'photo.png', 'https://cdn.example.com/canonical.png', ?1, '2026-08-01T00:00:00Z')",
+        rusqlite::params![metadata.to_string()],
+    ).unwrap();
+
+    // 2. Now replay message with an attachment whose provider_attachment_id matches one of the aliases ("att_alias_2")
+    let replay_msg = NormalizedMessage {
+        channel: Channel::Messenger,
+        provider_account_key: "fb_page_1".to_string(),
+        account_display_name: Some("Facebook Page".to_string()),
+        participant: Some(NormalizedIdentity {
+            identity_namespace: "user".to_string(),
+            external_id: "fb_user_1".to_string(),
+            display_name: Some("FB User".to_string()),
+            avatar_url: None,
+            lead_id: None,
+        }),
+        sender_is_participant: true,
+        external_thread_id: "fb_thread_1".to_string(),
+        conversation_kind: ConversationKind::Direct,
+        conversation_title: Some("FB User".to_string()),
+        direction: MessageDirection::Inbound,
+        provider_message_id: Some("mid_fb_1".to_string()),
+        provider_client_message_id: None,
+        local_request_id: None,
+        content_type: "image".to_string(),
+        text_content: None,
+        content: serde_json::json!({"type": "image"}),
+        attachments: vec![crate::conversation::repository::NormalizedAttachment {
+            provider_attachment_id: Some("att_alias_2".to_string()),
+            media_type: "image".to_string(),
+            mime_type: "image/png".to_string(),
+            file_name: Some("updated_photo.png".to_string()),
+            size_bytes: Some(1024),
+            remote_url: Some("https://cdn.example.com/alias_url_2.png".to_string()),
+            thumbnail_url: None,
+            metadata_json: Some(serde_json::json!({
+                "provider_attachment_id_aliases": null,
+                "remote_url_aliases": null,
+                "_merged_attachment_rows": null,
+                "custom_tag": "tag1"
+            })),
+        }],
+        reply: None,
+        mentions: Vec::new(),
+        raw_payload: None,
+        provider_timestamp: Some("2026-08-01T00:00:00Z".to_string()),
+        ingested_at: "2026-08-01T00:00:00Z".to_string(),
+        status: MessageStatus::Received,
+    };
+
+    let applied = harness
+        .repository
+        .apply_normalized_message(&replay_msg)
+        .unwrap();
+    assert!(applied.duplicate, "Message must be identified as duplicate");
+
+    // Verify attachment count remains 1 and survivor was updated without unique violation
+    let att_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_attachments WHERE message_id = 1001",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        att_count, 1,
+        "Duplicate attachment should update survivor, not insert duplicate row"
+    );
+
+    let (file_name, meta_str): (String, String) = conn
+        .query_row(
+            "SELECT file_name, metadata_json FROM message_attachments WHERE id = 500",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(file_name, "updated_photo.png");
+    let meta_json: serde_json::Value = serde_json::from_str(&meta_str).unwrap();
+    assert_eq!(meta_json["custom_tag"], "tag1");
+    assert_eq!(
+        meta_json["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"]),
+        "Preserved alias array must NOT be removed by incoming null"
+    );
+
+    // 3. Replay again with second alias "att_alias_1" and another metadata field
+    let mut replay_msg_2 = replay_msg.clone();
+    replay_msg_2.attachments[0].provider_attachment_id = Some("att_alias_1".to_string());
+    replay_msg_2.attachments[0].metadata_json = Some(serde_json::json!({"second_tag": "tag2"}));
+
+    let applied_2 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_2)
+        .unwrap();
+    assert!(applied_2.duplicate);
+
+    let meta_str_2: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let meta_json_2: serde_json::Value = serde_json::from_str(&meta_str_2).unwrap();
+    assert_eq!(meta_json_2["custom_tag"], "tag1");
+    assert_eq!(meta_json_2["second_tag"], "tag2");
+    assert_eq!(
+        meta_json_2["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"])
+    );
+
+    // 4. Adversarial test: replay attempting to overwrite provider_attachment_id_aliases with a fake array
+    let mut replay_msg_3 = replay_msg.clone();
+    replay_msg_3.attachments[0].provider_attachment_id = Some("att_alias_2".to_string());
+    replay_msg_3.attachments[0].metadata_json = Some(serde_json::json!({
+        "provider_attachment_id_aliases": ["fake_hacked_alias"],
+        "remote_url_aliases": ["fake_url"],
+        "_merged_attachment_rows": null,
+        "third_tag": "tag3"
+    }));
+
+    let applied_3 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_3)
+        .unwrap();
+    assert!(applied_3.duplicate);
+
+    let meta_str_3: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let meta_json_3: serde_json::Value = serde_json::from_str(&meta_str_3).unwrap();
+    assert_eq!(meta_json_3["third_tag"], "tag3");
+    assert_eq!(
+        meta_json_3["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"]),
+        "Alias arrays must be immutable against hostile incoming array replacements"
+    );
+
+    // 5. Adversarial test: replay with non-object metadata (e.g. JSON string)
+    let mut replay_msg_4 = replay_msg.clone();
+    replay_msg_4.attachments[0].provider_attachment_id = Some("att_alias_1".to_string());
+    replay_msg_4.attachments[0].metadata_json = Some(serde_json::json!("a raw string payload"));
+
+    let applied_4 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_4)
+        .unwrap();
+    assert!(applied_4.duplicate);
+
+    let meta_str_4: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let meta_json_4: serde_json::Value = serde_json::from_str(&meta_str_4).unwrap();
+    assert_eq!(
+        meta_json_4["provider_attachment_id_aliases"],
+        serde_json::json!(["att_alias_1", "att_alias_2"]),
+        "Non-object metadata must not corrupt or erase preserved aliases"
+    );
+
+    // 6. Replay using remote_url alias without provider_attachment_id
+    let mut replay_msg_5 = replay_msg.clone();
+    replay_msg_5.attachments[0].provider_attachment_id = None;
+    replay_msg_5.attachments[0].remote_url =
+        Some("https://cdn.example.com/alias_url_1.png".to_string());
+    replay_msg_5.attachments[0].metadata_json = Some(serde_json::json!({"url_replayed": true}));
+
+    let applied_5 = harness
+        .repository
+        .apply_normalized_message(&replay_msg_5)
+        .unwrap();
+    assert!(applied_5.duplicate);
+
+    let att_count_final: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_attachments WHERE message_id = 1001",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        att_count_final, 1,
+        "All 6 replays must map to the exact same survivor row"
+    );
+}
+
+#[test]
+fn test_facebook_upload_session_init_pending_nullable_video_id_and_cas_transition() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    // Create facebook_upload_sessions table matching schema
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            page_id TEXT NOT NULL,
+            upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+            upload_session_id TEXT NOT NULL UNIQUE,
+            video_id TEXT,
+            file_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            owner_id TEXT,
+            lease_deadline TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    ).unwrap();
+
+    // 1. Insert parent channel account and scheduled post
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (100, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (100, 'grp_100', 100, 'page_123', 'video', 'test message', 'idemp_100', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // 2. Insert init_pending pre-START intent with video_id = NULL
+    let intent_id = "intent_100_uuid";
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (100, 'page_123', 'video', ?1, NULL, '/tmp/video.mp4', 'hash123', 10485760, 0, 'init_pending', 0, 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+        params![intent_id],
+    ).unwrap();
+
+    // 3. Query row decoding video_id into Option<String> and loading retry_count
+    let (row_id, sess_id, vid_id, status, retries): (i64, String, Option<String>, String, i64) = conn.query_row(
+        "SELECT id, upload_session_id, video_id, status, retry_count FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+        params![intent_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ).unwrap();
+    assert_eq!(sess_id, intent_id);
+    assert_eq!(vid_id, None);
+    assert_eq!(status, "init_pending");
+    assert_eq!(retries, 0);
+
+    // 4. START accepted: checked CAS transitions to in_progress with remote video_id
+    let updated = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET upload_session_id = 'meta_sess_456', video_id = 'meta_vid_789', status = 'in_progress', updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending'",
+        params![row_id],
+    ).unwrap();
+    assert_eq!(updated, 1);
+
+    // 5. Stolen lease CAS rejection
+    let stale_update = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET upload_session_id = 'meta_sess_stale', video_id = 'meta_vid_stale', status = 'in_progress', updated_at = datetime('now')
+         WHERE id = ?1 AND owner_id = 'worker_2_stolen' AND status = 'init_pending'",
+        params![row_id],
+    ).unwrap();
+    assert_eq!(stale_update, 0);
+
+    // 6. Test 429 RateLimited lease release and retry_count increment with checked CAS (rows == 1)
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (101, 'grp_101', 100, 'page_123', 'video', 'test message 2', 'idemp_101', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    let intent_429 = "intent_429_uuid";
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (101, 'page_123', 'video', ?1, NULL, '/tmp/video2.mp4', 'hash429', 10485760, 0, 'init_pending', 0, 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+        params![intent_429],
+    ).unwrap();
+
+    let r429_updated = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = NULL, lease_deadline = NULL, retry_count = retry_count + 1, updated_at = datetime('now')
+         WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'init_pending'",
+        params![intent_429],
+    ).unwrap();
+    assert_eq!(
+        r429_updated, 1,
+        "429 backoff must release lease and increment retry count"
+    );
+
+    let (r429_owner, r429_retries): (Option<String>, i64) = conn.query_row(
+        "SELECT owner_id, retry_count FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+        params![intent_429],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(r429_owner, None);
+    assert_eq!(r429_retries, 1);
+
+    // 7. Test max retries enforcement (retry_count >= 3) in uploader state machine transitioning session to failed
+    conn.execute(
+        "UPDATE facebook_upload_sessions SET retry_count = 3, owner_id = 'worker_1', lease_deadline = datetime('now', '+5 minutes') WHERE upload_session_id = ?1",
+        params![intent_429],
+    ).unwrap();
+
+    let (sess_id_check, retries_check): (String, i64) = conn.query_row(
+        "SELECT upload_session_id, retry_count FROM facebook_upload_sessions WHERE upload_session_id = ?1",
+        params![intent_429],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(sess_id_check, intent_429);
+    assert_eq!(retries_check, 3);
+
+    // When uploader sees retries_check >= 3, it executes checked CAS transition to failed
+    let max_retry_fail = conn.execute(
+        "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1'",
+        params![intent_429],
+    ).unwrap();
+    assert_eq!(max_retry_fail, 1, "Max retries must mark session failed");
+}
+
+#[test]
+fn test_facebook_upload_session_reel_flow_and_polling_429() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            page_id TEXT NOT NULL,
+            upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+            upload_session_id TEXT NOT NULL UNIQUE,
+            video_id TEXT,
+            file_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            owner_id TEXT,
+            lease_deadline TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    ).unwrap();
+
+    // 0. Insert parent channel account and scheduled post
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (200, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, owner_id, claim_deadline, created_at, updated_at)
+         VALUES (200, 'grp_200', 200, 'page_123', 'reel', 'test reel message', 'idemp_200', 'publishing', 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // 1. Test canonical column association for Reel START & START-retry on facebook_scheduled_posts
+    let reel_vid_id = "meta_reel_12345";
+    let assoc_rows = conn.execute(
+        "UPDATE facebook_scheduled_posts SET upload_session_id = ?1 WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
+        params![reel_vid_id, 200i64, "worker_1"],
+    ).unwrap();
+    assert_eq!(
+        assoc_rows, 1,
+        "Canonical columns upload_session_id and owner_id must successfully update scheduled post"
+    );
+
+    let post_upload_session: Option<String> = conn
+        .query_row(
+            "SELECT upload_session_id FROM facebook_scheduled_posts WHERE id = 200",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(post_upload_session, Some(reel_vid_id.to_string()));
+
+    // 2. Insert Reel in_progress session after START
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (200, 'page_123', 'reel', ?1, ?1, '/tmp/reel.mp4', 'reel_hash_1', 5242880, 0, 'in_progress', 0, 'worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+        params![reel_vid_id],
+    ).unwrap();
+
+    // 3. Test lease contention when another worker tries to claim an actively leased session
+    let contender_rows = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_contender', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE upload_session_id = ?1 AND (owner_id = 'worker_contender' OR owner_id IS NULL OR lease_deadline < datetime('now'))",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(contender_rows, 0, "Contending worker must fail to claim active lease without failing parent post (returns StillProcessing)");
+
+    // 4. Strict fail-closed parsing of Reel binary upload responses
+    let valid_success = serde_json::json!({ "success": true });
+    let is_valid = valid_success.get("success").and_then(|v| v.as_bool()) == Some(true);
+    assert!(is_valid, "Documented {{\\\"success\\\": true}} must pass");
+
+    let false_success = serde_json::json!({ "success": false });
+    let is_false = false_success.get("success").and_then(|v| v.as_bool()) == Some(true);
+    assert!(
+        !is_false,
+        "{{\\\"success\\\": false}} must be rejected fail-closed"
+    );
+
+    let missing_success = serde_json::json!({ "error": "upload_failed" });
+    let is_missing = missing_success.get("success").and_then(|v| v.as_bool()) == Some(true);
+    assert!(
+        !is_missing,
+        "Missing success field must be rejected fail-closed"
+    );
+
+    let empty_obj = serde_json::json!({});
+    let is_empty = empty_obj.get("success").and_then(|v| v.as_bool()) == Some(true);
+    assert!(!is_empty, "Empty response must be rejected fail-closed");
+
+    let offset_updated = conn.execute(
+        "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2 AND owner_id = 'worker_1' AND status = 'in_progress'",
+        params![5242880i64, reel_vid_id],
+    ).unwrap();
+    assert_eq!(offset_updated, 1);
+
+    // 5. Test extended streaming lease duration (+30 mins) for Reel upload
+    let stream_lease_mins = 30i64;
+    let claim_deadline_str = format!("+{} minutes", stream_lease_mins);
+    let extended_post_lease = conn.execute(
+        "UPDATE facebook_scheduled_posts SET claim_deadline = datetime('now', ?1), updated_at = datetime('now') WHERE id = ?2 AND owner_id = ?3 AND status = 'publishing'",
+        params![&claim_deadline_str, 200i64, "worker_1"],
+    ).unwrap();
+    assert_eq!(extended_post_lease, 1);
+
+    let extended_sess_lease = conn.execute(
+        "UPDATE facebook_upload_sessions SET lease_deadline = datetime('now', ?1), updated_at = datetime('now') WHERE upload_session_id = ?2 AND owner_id = ?3 AND status = 'in_progress'",
+        params![&claim_deadline_str, reel_vid_id, "worker_1"],
+    ).unwrap();
+    assert_eq!(extended_sess_lease, 1);
+
+    let offset_updated = conn.execute(
+        "UPDATE facebook_upload_sessions SET start_offset = ?1, updated_at = datetime('now') WHERE upload_session_id = ?2 AND owner_id = 'worker_1' AND status = 'in_progress'",
+        params![5242880i64, reel_vid_id],
+    ).unwrap();
+    assert_eq!(offset_updated, 1);
+
+    // 6. Test authoritative uploading_phase.status detection on resume and fail-closed missing status check
+    let invalid_resume_json = serde_json::json!({
+        "id": reel_vid_id
+    });
+    let invalid_status_obj = invalid_resume_json
+        .get("status")
+        .and_then(|s| s.as_object());
+    assert!(
+        invalid_status_obj.is_none(),
+        "Missing status object must fail-closed"
+    );
+
+    let resume_status_json = serde_json::json!({
+        "status": {
+            "video_status": "processing",
+            "uploading_phase": {
+                "status": "complete"
+            },
+            "processing_phase": {
+                "status": "in_progress"
+            },
+            "publishing_phase": {
+                "status": "not_started"
+            }
+        }
+    });
+    let status_obj = resume_status_json.get("status").and_then(|s| s.as_object());
+    assert!(
+        status_obj.is_some(),
+        "Status object must be present and valid"
+    );
+    let uploading_status = status_obj
+        .and_then(|s| s.get("uploading_phase"))
+        .and_then(|p| p.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let is_already_uploaded = uploading_status == "complete";
+    assert!(
+        is_already_uploaded,
+        "uploading_phase.status == 'complete' proves binary upload completed"
+    );
+
+    // 7. Transition to finishing before calling FINISH endpoint
+    let finishing_updated = conn.execute(
+        "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'in_progress'",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(finishing_updated, 1);
+
+    // 8. Test finishing session re-entry releasing lease cleanly on non-terminal StillProcessing via checked CAS
+    let finishing_still_proc_release = conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_1' AND status = 'finishing'",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(
+        finishing_still_proc_release, 1,
+        "Finishing session must release lease on StillProcessing return"
+    );
+
+    // 9. Test terminal status polling receiving HTTP 429: sets lease_deadline with Retry-After backoff (e.g. +60s)
+    let retry_after_secs = 60u64;
+    let poll_429_updated = conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?1 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?2 AND status = 'finishing'",
+        params![retry_after_secs, reel_vid_id],
+    ).unwrap();
+    assert_eq!(poll_429_updated, 1);
+
+    // Verify background reconciler CANNOT claim this session while retry-after backoff is active
+    let premature_reconcile = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_reconciler', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE upload_session_id = ?1 AND status = 'finishing' AND (lease_deadline IS NULL OR lease_deadline < datetime('now'))",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(
+        premature_reconcile, 0,
+        "Reconciler must not claim rate-limited session before lease_deadline backoff expires"
+    );
+
+    // 10. After backoff elapses, polling worker reclaims lease and verifies complete publishing status
+    let reclaims = conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = 'worker_2', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now') WHERE upload_session_id = ?1 AND status = 'finishing' AND (owner_id IS NULL OR lease_deadline <= datetime('now', '+60 seconds'))",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(reclaims, 1);
+
+    let status_json = serde_json::json!({
+        "status": {
+            "video_status": "ready",
+            "publishing_phase": {
+                "status": "complete"
+            }
+        }
+    });
+    let pub_status = status_json
+        .get("status")
+        .and_then(|s| s.get("publishing_phase"))
+        .and_then(|p| p.get("status"))
+        .and_then(|v| v.as_str());
+    assert_eq!(pub_status, Some("complete"));
+
+    let completed = conn.execute(
+        "UPDATE facebook_upload_sessions SET status = 'completed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = 'worker_2' AND status = 'finishing'",
+        params![reel_vid_id],
+    ).unwrap();
+    assert_eq!(completed, 1);
+}
+
+#[test]
+fn test_facebook_uploader_429_backoff_sql_contract_binds_retry_after() {
+    // Regression guard (Review 4998233494, finding 1/4): every 429-backoff UPDATE in the
+    // Phase 2 plan must bind Meta's Retry-After into its own placeholder, distinct from the
+    // session/row identifier placeholders. The broken shape reused ?1 for both the datetime
+    // modifier and the identifier, so lease_deadline was derived from a row id instead of
+    // Retry-After and the hand-written SQL test could not catch it.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let plan_path = format!(
+        "{}/../docs/superpowers/plans/2026-08-21-facebook-integration-phase-2.md",
+        manifest_dir
+    );
+    let plan = std::fs::read_to_string(&plan_path).expect("phase-2 plan must exist");
+
+    let backoff_marker = "lease_deadline = datetime('now', '+' || ?";
+    let mut checked = 0usize;
+    for line in plan.lines() {
+        // Only count executable uploader statements (Rust SQL string literals); prose
+        // bullets quoting the pattern inline are documentation, not code paths.
+        if !line.contains(backoff_marker)
+            || !line
+                .trim_start()
+                .starts_with("\"UPDATE facebook_upload_sessions")
+        {
+            continue;
+        }
+        let modifier_start = line.find(backoff_marker).unwrap() + backoff_marker.len();
+        let modifier_tail = &line[modifier_start..];
+        let modifier: u32 = modifier_tail
+            .split(" || ' seconds'")
+            .next()
+            .and_then(|num| num.parse::<u32>().ok())
+            .expect("backoff statement must embed a numeric placeholder in its datetime modifier");
+
+        // Strip the datetime modifier occurrence itself, then forbid any reuse of that
+        // placeholder number as an identifier anywhere else in the statement.
+        let needle = format!("'+' || ?{} || ' seconds'", modifier);
+        let stripped = line.replacen(&needle, "'+'", 1);
+        let reused = stripped.split('?').skip(1).any(|seg| {
+            seg.chars()
+                .next()
+                .and_then(|c| c.to_digit(10))
+                .map(|n| n == modifier)
+                .unwrap_or(false)
+        });
+        assert!(
+            !reused,
+            "429-backoff placeholder ?{} must not be reused as an identifier in: {}",
+            modifier,
+            line.trim()
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, 13,
+        "expected exactly 13 Retry-After backoff statements in the Phase 2 plan"
+    );
+
+    // Execute the canonical finishing/upload_session_id variant verbatim against a real
+    // SQLite database and assert the persisted deadline tracks Retry-After (+90s). Under
+    // the old double-bound shape this statement would either match zero rows or persist a
+    // NULL/unrelated deadline.
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            page_id TEXT NOT NULL,
+            upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+            upload_session_id TEXT NOT NULL UNIQUE,
+            video_id TEXT,
+            file_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            owner_id TEXT,
+            lease_deadline TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (300, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+         VALUES (300, 'grp_300', 300, 'page_123', 'reel', '429 contract message', 'idemp_300', 'publishing', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (300, 'page_123', 'reel', 'sess_429_contract', 'meta_reel_999', '/tmp/reel429.mp4', 'hash_429', 1024, 0, 'finishing', 0, 'worker_429', NULL, datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    let canonical_sql = "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = datetime('now', '+' || ?3 || ' seconds'), retry_count = retry_count + 1, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'";
+    assert!(
+        plan.contains(canonical_sql),
+        "plan must contain the canonical finishing-variant 429 statement with distinct placeholders"
+    );
+    let updated = conn
+        .execute(
+            canonical_sql,
+            params!["sess_429_contract", "worker_429", 90i64],
+        )
+        .unwrap();
+    assert_eq!(
+        updated, 1,
+        "canonical 429 statement must claim exactly the leased finishing row"
+    );
+
+    let (deadline, retries): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT lease_deadline, retry_count FROM facebook_upload_sessions WHERE upload_session_id = 'sess_429_contract'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retries, 1, "retry counter must increment on 429 backoff");
+    let deadline = deadline.expect("lease_deadline must persist after 429 backoff");
+    let deadline_ts = chrono::NaiveDateTime::parse_from_str(&deadline, "%Y-%m-%d %H:%M:%S")
+        .expect("lease_deadline must be a valid SQLite datetime")
+        .and_utc()
+        .timestamp();
+    let now = chrono::Utc::now().timestamp();
+    assert!(
+        deadline_ts >= now + 80 && deadline_ts <= now + 100,
+        "persisted lease_deadline must track Meta's Retry-After (+90s), got offset {}s",
+        deadline_ts - now
+    );
+
+    let premature_reconcile = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_reconciler', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE upload_session_id = 'sess_429_contract' AND (lease_deadline IS NULL OR lease_deadline < datetime('now'))",
+        [],
+    ).unwrap();
+    assert_eq!(
+        premature_reconcile, 0,
+        "background reconciler must not re-claim while Retry-After backoff is active"
+    );
+}
+
+#[test]
+fn test_facebook_reel_post_finish_release_and_reconciler_parent_clock_eligibility() {
+    // Regression guards (Review 4998373731, findings 2/3):
+    // A) publishing_phase.status == 'complete' with unsuccessful feed/scheduled verification
+    //    must RELEASE the session lease via checked CAS before returning StillProcessing.
+    // B) The reconciler claim predicate must honor the parent post's next_retry_at, so a
+    //    Retry-After < 60s session can never be reconciled while its parent is still queued.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let plan_path = format!(
+        "{}/../docs/superpowers/plans/2026-08-21-facebook-integration-phase-2.md",
+        manifest_dir
+    );
+    let plan = std::fs::read_to_string(&plan_path).expect("phase-2 plan must exist");
+    assert!(
+        plan.contains("JOIN facebook_scheduled_posts p ON p.id = s.post_id")
+            && plan.contains("AND (p.next_retry_at IS NULL OR p.next_retry_at <= datetime('now'))"),
+        "reconciler claim predicate must join the parent post and require elapsed next_retry_at"
+    );
+
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (400, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, next_retry_at, created_at, updated_at)
+         VALUES (400, 'grp_400', 400, 'page_123', 'reel', 'clock divergence', 'idemp_400', 'queued', datetime('now', '+60 seconds'), datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // Parent in queued state with pending next_retry_at (+60s per publisher floor);
+    // session leased with a short +10s backoff deadline (Retry-After = 10 < 60).
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (400, 'page_123', 'reel', 'sess_clock_divergence', 'meta_reel_400', '/tmp/reel400.mp4', 'hash_400', 2048, 0, 'finishing', 1, NULL, datetime('now', '+10 seconds'), datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // B) Old predicate (session clock only) would reclaim now; the plan's predicate must NOT:
+    // the parent's next_retry_at is still pending while the session backoff already expired.
+    let premature_claim = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_reconciler', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE id = (
+             SELECT s.id FROM facebook_upload_sessions s
+             JOIN facebook_scheduled_posts p ON p.id = s.post_id
+             WHERE s.status IN ('init_pending', 'in_progress', 'finishing')
+               AND (s.lease_deadline IS NULL OR s.lease_deadline < datetime('now'))
+               AND (p.next_retry_at IS NULL OR p.next_retry_at <= datetime('now'))
+             LIMIT 1
+         )",
+        [],
+    ).unwrap();
+    assert_eq!(
+        premature_claim, 0,
+        "reconciler must not claim a session whose parent post is still inside next_retry_at backoff (Retry-After < 60 divergence)"
+    );
+
+    // Terminal propagation must never transition a queued parent: zero rows expected.
+    let propagation_on_queued = conn.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'published', remote_post_id = 'meta_reel_400', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now')
+         WHERE id = 400 AND status IN ('publishing', 'delivery_unknown')",
+        [],
+    ).unwrap();
+    assert_eq!(
+        propagation_on_queued, 0,
+        "terminal propagation cannot encounter (or mutate) a queued parent; it must roll back instead"
+    );
+
+    // After BOTH retry windows elapse, the same claim succeeds (one consistent rule).
+    conn.execute(
+        "UPDATE facebook_scheduled_posts SET next_retry_at = datetime('now', '-1 seconds'), updated_at = datetime('now') WHERE id = 400",
+        [],
+    ).unwrap();
+    conn.execute(
+        "UPDATE facebook_upload_sessions SET lease_deadline = datetime('now', '-1 seconds'), updated_at = datetime('now') WHERE upload_session_id = 'sess_clock_divergence'",
+        [],
+    ).unwrap();
+    let eligible_claim = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_reconciler', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE id = (
+             SELECT s.id FROM facebook_upload_sessions s
+             JOIN facebook_scheduled_posts p ON p.id = s.post_id
+             WHERE s.status IN ('init_pending', 'in_progress', 'finishing')
+               AND (s.lease_deadline IS NULL OR s.lease_deadline < datetime('now'))
+               AND (p.next_retry_at IS NULL OR p.next_retry_at <= datetime('now'))
+             LIMIT 1
+         )",
+        [],
+    ).unwrap();
+    assert_eq!(eligible_claim, 1);
+
+    // A) Post-FINISH early-return path: publishing complete but verification not live yet.
+    // The uploader holds a long stream-extended lease; the documented checked-CAS release
+    // (executed before returning StillProcessing) must free the lease immediately.
+    conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = 'worker_stream', lease_deadline = datetime('now', '+30 minutes'), updated_at = datetime('now')
+         WHERE upload_session_id = 'sess_clock_divergence'",
+        [],
+    ).unwrap();
+    let release_rows = conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+        params!["sess_clock_divergence", "worker_stream"],
+    ).unwrap();
+    assert_eq!(
+        release_rows, 1,
+        "not-yet-live completed Reel must release its stream-extended lease via checked CAS before StillProcessing"
+    );
+    let (owner_after, deadline_after): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT owner_id, lease_deadline FROM facebook_upload_sessions WHERE upload_session_id = 'sess_clock_divergence'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(owner_after.is_none() && deadline_after.is_none());
+}

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS channel_identities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     lead_id INTEGER,
     channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+    channel_account_id INTEGER,
     identity_namespace TEXT NOT NULL,
     external_id TEXT NOT NULL,
     normalized_address TEXT,
@@ -32,9 +33,17 @@ CREATE TABLE IF NOT EXISTS channel_identities (
     verified_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(channel, identity_namespace, external_id),
-    FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL
+    FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE SET NULL,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_channel_identities_lead ON channel_identities(lead_id, channel);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_legacy_unique
+ON channel_identities(channel, identity_namespace, external_id)
+WHERE channel_account_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_page_unique
+ON channel_identities(channel, channel_account_id, identity_namespace, external_id)
+WHERE channel_account_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS channel_conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +126,14 @@ CREATE TABLE IF NOT EXISTS message_attachments (
     created_at TEXT NOT NULL,
     FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_remote
+ON message_attachments(message_id, remote_url)
+WHERE remote_url IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_message_attachments_provider
+ON message_attachments(message_id, provider_attachment_id)
+WHERE provider_attachment_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS message_reactions (
     message_id INTEGER NOT NULL,
@@ -386,3 +403,136 @@ CREATE TABLE IF NOT EXISTS pending_spool_cleanups (
     local_path TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS facebook_page_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL UNIQUE,
+    page_id TEXT NOT NULL UNIQUE,
+    access_token_encrypted TEXT NOT NULL,
+    token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'revoked')),
+    granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+    last_validated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS channel_sync_dead_letters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    item_index INTEGER NOT NULL DEFAULT 0,
+    event_type TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    error_reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'retrying', 'resolved', 'ignored', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT,
+    owner_id TEXT,
+    claim_deadline TEXT,
+    resolved_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
+    UNIQUE(channel_account_id, scope, event_id, item_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dead_letters_account_scope ON channel_sync_dead_letters(channel_account_id, scope);
+CREATE INDEX IF NOT EXISTS idx_dead_letters_status ON channel_sync_dead_letters(status, next_retry_at);
+
+-- Facebook Phase 2 & 3 Tables
+CREATE TABLE IF NOT EXISTS facebook_upload_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL REFERENCES facebook_scheduled_posts(id) ON DELETE CASCADE,
+    page_id TEXT NOT NULL,
+    upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
+    upload_session_id TEXT NOT NULL UNIQUE,
+    video_id TEXT,
+    file_path TEXT NOT NULL,
+    file_hash TEXT NOT NULL,
+    file_size_bytes INTEGER NOT NULL,
+    start_offset INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    owner_id TEXT,
+    lease_deadline TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_upload_active_unique ON facebook_upload_sessions(post_id, page_id, upload_type, file_hash, file_size_bytes) WHERE status IN ('init_pending', 'in_progress', 'finishing');
+
+CREATE TABLE IF NOT EXISTS meta_deletion_pending_cleanups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    local_path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meta_del_cleanups_task ON meta_deletion_pending_cleanups(task_id);
+
+CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_group_id TEXT NOT NULL,
+    channel_account_id INTEGER NOT NULL,
+    page_id TEXT NOT NULL,
+    post_type TEXT NOT NULL CHECK (post_type IN ('status', 'link', 'photo', 'multi_photo', 'video', 'reel')),
+    message TEXT NOT NULL,
+    link_url TEXT,
+    media_paths_json TEXT NOT NULL DEFAULT '[]',
+    scheduling_mode TEXT NOT NULL DEFAULT 'meta' CHECK (scheduling_mode IN ('meta', 'local_queued')),
+    scheduled_publish_time TEXT,
+    next_retry_at TEXT,
+    remote_post_id TEXT,
+    upload_session_id TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'queued', 'publishing', 'scheduled_on_meta', 'published', 'failed', 'delivery_unknown', 'overdue_prompt')),
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    owner_id TEXT,
+    claim_deadline TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_fb_scheduled_posts_status ON facebook_scheduled_posts(status, scheduled_publish_time, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_fb_scheduled_posts_group ON facebook_scheduled_posts(draft_group_id);
+
+CREATE TABLE IF NOT EXISTS facebook_comment_automations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_account_id INTEGER NOT NULL,
+    page_id TEXT NOT NULL,
+    rule_name TEXT NOT NULL,
+    post_ids_json TEXT NOT NULL DEFAULT '[]',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    match_mode TEXT NOT NULL DEFAULT 'contains' CHECK (match_mode IN ('contains', 'exact', 'regex', 'all')),
+    auto_like INTEGER NOT NULL DEFAULT 1 CHECK (auto_like IN (0, 1)),
+    public_reply_template TEXT,
+    private_reply_template TEXT,
+    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS facebook_comment_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    comment_id TEXT NOT NULL UNIQUE,
+    page_id TEXT NOT NULL,
+    post_id TEXT,
+    sender_psid TEXT NOT NULL,
+    sender_name TEXT,
+    comment_text TEXT,
+    automation_id INTEGER,
+    like_status TEXT NOT NULL DEFAULT 'none' CHECK (like_status IN ('none', 'processing', 'success', 'failed')),
+    public_reply_status TEXT NOT NULL DEFAULT 'none' CHECK (public_reply_status IN ('none', 'processing', 'success', 'failed')),
+    private_reply_status TEXT NOT NULL DEFAULT 'none' CHECK (private_reply_status IN ('none', 'processing', 'success', 'failed', 'skipped', 'delivery_unknown')),
+    owner_id TEXT,
+    claim_deadline TEXT,
+    skip_reason TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(automation_id) REFERENCES facebook_comment_automations(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fb_comment_logs_page_date ON facebook_comment_logs(page_id, created_at);
