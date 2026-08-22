@@ -69,6 +69,17 @@ REVOKE ALL ON meta_page_guards FROM PUBLIC;
 REVOKE ALL ON meta_page_guards FROM anon;
 REVOKE ALL ON meta_page_guards FROM authenticated;
 
+-- Stable per-TENANT mutex rows (same churn-proof pattern as page guards):
+-- full-set reconciliation is a replacement, so two concurrent replacements
+-- for the same tenant must serialize instead of merging into an unverified
+-- union state. Never deleted; touched only inside SECURITY DEFINER functions.
+CREATE TABLE IF NOT EXISTS meta_tenant_guards (
+    tenant_id UUID PRIMARY KEY
+);
+REVOKE ALL ON meta_tenant_guards FROM PUBLIC;
+REVOKE ALL ON meta_tenant_guards FROM anon;
+REVOKE ALL ON meta_tenant_guards FROM authenticated;
+
 -- No INSERT/UPDATE/DELETE policies exist for clients: payloads stay immutable
 -- and status transitions go exclusively through the RPC below.
 
@@ -93,24 +104,44 @@ BEGIN
         RAISE EXCEPTION 'p_pages must be a JSON array';
     END IF;
 
-    -- Serialize against concurrent ingestion on a STABLE lock target: ensure
-    -- a guard row exists for every involved Page, then take FOR UPDATE locks
-    -- in deterministic order. FOR UPDATE conflicts with the FOR SHARE taken
-    -- by stage_meta_webhook_events(), so ownership replacement and ingestion
-    -- fully serialize per Page even across mapping delete/recreate churn.
+    -- Tenant-level mutex first: full-set replacement must serialize against
+    -- concurrent replacements for the SAME tenant (two devices / repeated
+    -- OAuth callbacks), otherwise the result could be an unverified union of
+    -- two enumerations.
+    INSERT INTO public.meta_tenant_guards (tenant_id)
+    VALUES (p_tenant_id)
+    ON CONFLICT (tenant_id) DO NOTHING;
+    PERFORM 1
+      FROM public.meta_tenant_guards g
+     WHERE g.tenant_id = p_tenant_id
+       FOR UPDATE OF g;
+
+    -- Page-level serialization on a STABLE lock target. The lock set is the
+    -- UNION of (a) the freshly verified Pages and (b) every Page currently
+    -- mapped to this tenant — revoked-by-omission Pages must participate in
+    -- the same mutex, otherwise a webhook could persist events under this
+    -- tenant after revocation committed.
     CREATE TEMP TABLE _replace_page_ids (page_id TEXT PRIMARY KEY) ON COMMIT DROP;
     INSERT INTO _replace_page_ids (page_id)
     SELECT DISTINCT elem->>'page_id'
       FROM jsonb_array_elements(p_pages) AS elem
      WHERE COALESCE(elem->>'page_id', '') <> '';
 
+    CREATE TEMP TABLE _lock_page_ids (page_id TEXT PRIMARY KEY) ON COMMIT DROP;
+    INSERT INTO _lock_page_ids (page_id)
+        SELECT page_id FROM _replace_page_ids
+    UNION
+        SELECT m.page_id
+          FROM public.meta_tenant_pages m
+         WHERE m.tenant_id = p_tenant_id;
+
     INSERT INTO public.meta_page_guards (page_id)
-    SELECT page_id FROM _replace_page_ids
+    SELECT page_id FROM _lock_page_ids
     ON CONFLICT (page_id) DO NOTHING;
 
     PERFORM 1
       FROM public.meta_page_guards g
-      JOIN _replace_page_ids s ON s.page_id = g.page_id
+      JOIN _lock_page_ids s ON s.page_id = g.page_id
      ORDER BY g.page_id
        FOR UPDATE OF g;
 
