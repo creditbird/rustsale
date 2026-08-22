@@ -18,7 +18,7 @@ const META_VERIFY_TOKEN = Deno.env.get("META_VERIFY_TOKEN")!;
 // Meta webhook payloads are small JSON documents; 1 MiB is generous.
 const MAX_BODY_BYTES = 1_048_576;
 
-const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+let supabaseAdmin: ReturnType<typeof createClient> | null = null;
 
 function serverMisconfigured(): Response {
   logStructured({ event: "server_misconfigured" });
@@ -104,6 +104,9 @@ serve(async (req: Request) => {
     !META_VERIFY_TOKEN
   ) {
     return serverMisconfigured();
+  }
+  if (!supabaseAdmin) {
+    supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   }
 
   const url = new URL(req.url);

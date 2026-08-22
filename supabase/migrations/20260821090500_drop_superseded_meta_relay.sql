@@ -8,8 +8,11 @@
 --        event_type -> field (normalized to the canonical webhook namespace)
 --        status synced/dead_letter -> completed/failed
 --      in an order that cannot violate intermediate constraints
---      (drop old status CHECK -> map values -> add revised constraints),
---      deduplicating tenant-scoped keys before creating the new unique index.
+--      (drop old status CHECK -> map values -> RENAME event_type -> field ->
+--      re-key rows into a collision-proof 'legacy_<family>_<key>' namespace ->
+--      normalize field values -> swap indexes/constraints).
+--      Every legacy row survives: collisions are resolved by deterministic
+--      re-keying, never by deletion.
 -- Safe no-op on fresh databases where the superseded objects never existed.
 
 DROP FUNCTION IF EXISTS public.mark_meta_buffer_synced(BIGINT[]);
@@ -45,26 +48,26 @@ BEGIN
         UPDATE public.meta_webhook_buffer SET status = 'completed' WHERE status = 'synced';
         UPDATE public.meta_webhook_buffer SET status = 'failed' WHERE status = 'dead_letter';
 
-        -- 3. Normalize the field namespace. Legacy messaging-family events
-        --    (echoes/deliveries/reads/reactions/messages) all live under the
-        --    canonical webhook field "messages"; feed and leadgen keep their
-        --    own canonical fields.
+        -- 3. Rename FIRST: every subsequent statement operates on 'field'.
+        ALTER TABLE public.meta_webhook_buffer RENAME COLUMN event_type TO field;
+
+        -- 4. Re-key EVERY legacy row into a collision-proof namespace that
+        --    preserves the ORIGINAL event family. Legacy uniqueness was
+        --    (page_id, event_type, event_key); embedding the pre-normalized
+        --    field value keeps that distinction, so NO row is ever deleted.
+        UPDATE public.meta_webhook_buffer
+           SET event_key = 'legacy_' || field || '_' || event_key;
+
+        -- 5. NOW normalize the field namespace. Legacy messaging-family
+        --    events (echoes/deliveries/reads/reactions/messages) live under
+        --    the canonical webhook field "messages"; feed/leadgen unchanged.
         UPDATE public.meta_webhook_buffer
            SET field = 'messages'
          WHERE field IN ('message_echoes', 'message_deliveries', 'message_reads', 'message_reactions', 'messages');
 
-        -- 4. Deduplicate tenant-scoped keys BEFORE creating the unique index:
-        --    the legacy unique domain was (page_id, event_type, event_key), so
-        --    distinct event_types could share an event_key within one page and
-        --    collide once event_type collapses into field. Keep MIN(id).
-        DELETE FROM public.meta_webhook_buffer b
-         USING public.meta_webhook_buffer b2
-         WHERE b.tenant_id = b2.tenant_id
-           AND b.page_id = b2.page_id
-           AND b.event_key = b2.event_key
-           AND b.id > b2.id;
-
-        -- 5. Replace legacy index structures with the revised ones.
+        -- 6. Replace legacy index structures with the revised ones. The
+        --    legacy unique domain was strictly finer than the revised one
+        --    after step 4, so the new unique index cannot fail.
         DROP INDEX IF EXISTS public.idx_meta_buffer_dedup;
         DROP INDEX IF EXISTS public.idx_meta_buffer_sync;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_buffer_dedup
@@ -72,7 +75,7 @@ BEGIN
         CREATE INDEX IF NOT EXISTS idx_meta_buffer_queue
             ON public.meta_webhook_buffer(tenant_id, status, id);
 
-        -- 6. Enforce revised column constraints on the transformed table.
+        -- 7. Enforce revised column constraints on the transformed table.
         DELETE FROM public.meta_webhook_buffer WHERE field IS NULL OR field = '';
         ALTER TABLE public.meta_webhook_buffer ALTER COLUMN field SET NOT NULL;
         ALTER TABLE public.meta_webhook_buffer
@@ -84,9 +87,9 @@ BEGIN
 END
 $$;
 
--- NOTE on key-namespace continuity: migrated rows keep their legacy event_key
--- format. A post-migration Meta replay of the same logical event therefore
--- creates one additional buffered row under the revised key format. This is
+-- NOTE on key namespaces: migrated rows carry 'legacy_<family>_<key>' keys.
+-- A post-migration Meta replay of the same logical event arrives under the
+-- revised canonical key format and buffers as one additional row. This is
 -- accepted by design: downstream desktop sync performs payload-level
 -- provider_message_id / comment_id deduplication before rendering, so no
 -- duplicate reaches user-visible state.
