@@ -3,24 +3,36 @@
 // POST { code } with the desktop user's Supabase Bearer JWT.
 // 1. Exchanges the authorization code for a short-lived user token.
 // 2. Exchanges it again for a Long-Lived User Token (~60 days).
-// 3. Fetches all managed Pages via /me/accounts (long-lived Page tokens).
-// 4. Persists tenant <-> page ownership in meta_tenant_pages.
+// 3. Fetches ALL managed Pages via /me/accounts with full cursor pagination
+//    (long-lived Page tokens).
+// 4. Persists tenant <-> page ownership and reconciles stale mappings — but
+//    ONLY after a complete, successful enumeration, so an incomplete Meta
+//    response can never revoke valid access.
 // 5. Returns tokens so the desktop app can store them in Stronghold/Keyring.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
-const META_APP_ID = Deno.env.get("META_APP_ID") || "";
-const META_APP_SECRET = Deno.env.get("META_APP_SECRET") || "";
+const META_APP_ID = Deno.env.get("META_APP_ID") ?? "";
+const META_APP_SECRET = Deno.env.get("META_APP_SECRET") ?? "";
 const META_GRAPH_VERSION = Deno.env.get("META_GRAPH_VERSION") || "v26.0";
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabaseAdmin =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    : null;
+
+function logStructured(fields: Record<string, unknown>): void {
+  // Never log codes, tokens, or secrets.
+  console.log(JSON.stringify({ fn: "meta-oauth", ...fields }));
+}
 
 function json(body: unknown, status = 200): Response {
+  // Token-bearing bodies must never be cached by any intermediary or WebView.
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }
 
@@ -40,7 +52,44 @@ async function jsonFetch<T>(url: string): Promise<T> {
   return body as T;
 }
 
+type PageRow = { id: string; name: string; access_token: string };
+
+async function fetchAllManagedPages(longLivedToken: string): Promise<PageRow[]> {
+  // Follow paging.next cursors until exhausted so >100-Page accounts are not
+  // silently truncated.
+  let pages: PageRow[] = [];
+  let url: string | null = graph("me/accounts", {
+    access_token: longLivedToken,
+    fields: "id,name,access_token",
+    limit: "100",
+  });
+  while (url) {
+    const page: { data?: PageRow[]; paging?: { next?: string } } = await jsonFetch(url);
+    pages = pages.concat(page.data ?? []);
+    url = page.paging?.next ?? null;
+  }
+  return pages;
+}
+
 serve(async (req: Request) => {
+  if (!supabaseAdmin || !META_APP_ID || !META_APP_SECRET) {
+    logStructured({ event: "server_misconfigured" });
+    return json({ error: "Server configuration error" }, 500);
+  }
+
+  // Browser/WebView callers send an OPTIONS preflight before the POST.
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "authorization, content-type",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
+
   if (req.method !== "POST") {
     return json({ error: "Method not allowed" }, 405);
   }
@@ -67,10 +116,6 @@ serve(async (req: Request) => {
     return json({ error: "Missing OAuth code" }, 400);
   }
 
-  if (!META_APP_ID || !META_APP_SECRET) {
-    return json({ error: "Server missing Meta app credentials" }, 500);
-  }
-
   // Step 1: code -> short-lived user access token
   let shortLived: { access_token: string };
   try {
@@ -83,6 +128,7 @@ serve(async (req: Request) => {
       }),
     );
   } catch (err) {
+    logStructured({ event: "code_exchange_failed" });
     return json({ error: String(err) }, 502);
   }
 
@@ -98,26 +144,22 @@ serve(async (req: Request) => {
       }),
     );
   } catch (err) {
+    logStructured({ event: "long_lived_exchange_failed" });
     return json({ error: String(err) }, 502);
   }
 
-  // Step 3: fetch all managed pages (never-expiring page tokens unless revoked)
-  type PageRow = { id: string; name: string; access_token: string };
+  // Step 3: fetch ALL managed pages (paginated). Reconciliation depends on
+  // this being a COMPLETE enumeration, so failures abort before any delete.
   let pages: PageRow[];
   try {
-    const meAccounts = await jsonFetch<{ data: PageRow[] }>(
-      graph("me/accounts", {
-        access_token: longLived.access_token,
-        fields: "id,name,access_token",
-        limit: "100",
-      }),
-    );
-    pages = meAccounts.data ?? [];
+    pages = await fetchAllManagedPages(longLived.access_token);
   } catch (err) {
+    logStructured({ event: "page_enumeration_failed" });
     return json({ error: String(err) }, 502);
   }
 
-  // Step 4: persist tenant <-> page ownership mapping
+  // Step 4a: persist current ownership mapping (service role bypasses RLS;
+  // page_id is globally UNIQUE so one page belongs to exactly one tenant).
   if (pages.length > 0) {
     const rows = pages.map((p) => ({
       tenant_id: tenantId,
@@ -128,9 +170,42 @@ serve(async (req: Request) => {
       .from("meta_tenant_pages")
       .upsert(rows, { onConflict: "tenant_id,page_id" });
     if (upsertErr) {
+      logStructured({ event: "page_mapping_upsert_failed" });
       return json({ error: `Failed to store page mapping: ${upsertErr.message}` }, 500);
     }
   }
+
+  // Step 4b: reconcile stale mappings. Only reachable on a complete,
+  // successful enumeration above. Removes pages this tenant no longer
+  // manages so former admins cannot keep reading webhook payloads via RLS.
+  if (pages.length > 0) {
+    const keepIds = pages.map((p) => p.id);
+    const { data: ownedRows, error: selectErr } = await supabaseAdmin
+      .from("meta_tenant_pages")
+      .select("page_id")
+      .eq("tenant_id", tenantId);
+    if (selectErr) {
+      logStructured({ event: "reconcile_select_failed" });
+      return json({ error: `Failed to reconcile page mappings: ${selectErr.message}` }, 500);
+    }
+    const staleIds = ((ownedRows ?? []) as Array<{ page_id: string }>)
+      .map((r) => r.page_id)
+      .filter((pid: string) => !keepIds.includes(pid));
+    if (staleIds.length > 0) {
+      const { error: delErr } = await supabaseAdmin
+        .from("meta_tenant_pages")
+        .delete()
+        .eq("tenant_id", tenantId)
+        .in("page_id", staleIds);
+      if (delErr) {
+        logStructured({ event: "reconcile_delete_failed", stale_count: staleIds.length });
+        return json({ error: `Failed to remove stale page mappings: ${delErr.message}` }, 500);
+      }
+      logStructured({ event: "stale_mappings_removed", count: staleIds.length });
+    }
+  }
+
+  logStructured({ event: "oauth_completed", page_count: pages.length });
 
   // Step 5: hand tokens back for Stronghold storage. The App Secret never leaves this function.
   return json({
