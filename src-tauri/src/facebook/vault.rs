@@ -6,8 +6,9 @@
 //! via AES-GCM associated data, so swapping a valid ciphertext between rows
 //! fails authentication.
 //!
-//! First-use key initialization is serialized process-wide through `OnceLock`;
-//! see [`FacebookTokenVault::master_key`] for the cross-process caveat.
+//! First-use key initialization is serialized across processes with an
+//! advisory file lock (re-read after acquisition), and cached process-locally
+//! via `OnceLock`; see [`FacebookTokenVault::master_key`].
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
@@ -16,6 +17,8 @@ use base64::prelude::*;
 use keyring::Entry;
 use rusqlite::{params, Connection, OptionalExtension};
 use anyhow::{anyhow, Result};
+use fs2::FileExt;
+use std::fs::{File, OpenOptions};
 use std::sync::OnceLock;
 
 const KEYRING_SERVICE: &str = "rustsale";
@@ -31,53 +34,35 @@ const KEY: [u8; 32] = [7u8; 32];
 pub struct FacebookTokenVault;
 
 impl FacebookTokenVault {
-    /// Loads (or lazily creates) the 32-byte vault master key from the OS
-    /// keyring.
-    ///
-    /// Concurrency: `OnceLock` guarantees the create-or-load closure runs
-    /// exactly once per process, eliminating the intra-process first-use race
-    /// where two threads generate competing keys and the loser's ciphertexts
-    /// become undecryptable. Cross-process concurrency relies on RustSale's
-    /// single-instance-per-profile deployment model; if multi-process profiles
-    /// are ever introduced, this initialization needs a file lock.
+    /// Deterministic-key override so unit tests exercise the FULL public API
+    /// (upsert -> store -> get_valid_page_token) without an OS keyring or
+    /// cross-process lock file dependency.
     #[cfg(test)]
     fn master_key() -> Result<[u8; 32]> {
         Ok(KEY)
     }
 
+    /// Loads (or lazily creates) the 32-byte vault master key from the OS
+    /// keyring.
+    ///
+    /// Concurrency model:
+    /// - Process-local fast path via `OnceLock` (success-only caching, so a
+    ///   transient keyring failure on first call can be retried).
+    /// - CROSS-PROCESS safety via an exclusive advisory file lock held around
+    ///   the entire create-or-load critical section. After acquiring the lock,
+    ///   the keyring is RE-READ so a process that raced us and created the key
+    ///   first wins; we adopt theirs instead of generating a competing one.
+    ///   This removes the documented orphaned-ciphertext failure mode without
+    ///   requiring single-instance enforcement at the application layer.
     #[cfg(not(test))]
     fn master_key() -> Result<[u8; 32]> {
-        static MASTER_KEY: OnceLock<Result<[u8; 32], String>> = OnceLock::new();
-        let cached = MASTER_KEY.get_or_init(|| {
-            let entry = Entry::new(KEYRING_SERVICE, KEYRING_USER)
-                .map_err(|e| format!("Failed to access OS keyring: {}", e))?;
-            match entry.get_password() {
-                Ok(secret) => {
-                    let decoded = BASE64_STANDARD
-                        .decode(secret.trim())
-                        .map_err(|e| format!("Invalid base64 in keyring secret: {}", e))?;
-                    let mut key = [0u8; 32];
-                    if decoded.len() != 32 {
-                        return Err("Keyring master key length is not 32 bytes".to_string());
-                    }
-                    key.copy_from_slice(&decoded);
-                    Ok(key)
-                }
-                Err(keyring::Error::NoEntry) => {
-                    let mut key = [0u8; 32];
-                    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
-                    entry
-                        .set_password(&BASE64_STANDARD.encode(key))
-                        .map_err(|e| format!("Failed to persist master key to OS keyring: {}", e))?;
-                    Ok(key)
-                }
-                Err(e) => Err(format!("Keyring access failed: {}", e)),
-            }
-        });
-        cached
-            .as_ref()
-            .copied()
-            .map_err(|e| anyhow!("{}", e))
+        static PROCESS_KEY: OnceLock<[u8; 32]> = OnceLock::new();
+        if let Some(k) = PROCESS_KEY.get() {
+            return Ok(*k);
+        }
+        let key = Self::load_or_create_key_cross_process()?;
+        let _ = PROCESS_KEY.set(key);
+        Ok(key)
     }
 
     /// Row-context binding: ciphertext from one Page/account cannot be
@@ -87,6 +72,57 @@ impl FacebookTokenVault {
         aad.extend_from_slice(&channel_account_id.to_le_bytes());
         aad.extend_from_slice(page_id.as_bytes());
         aad
+    }
+
+    /// Cross-process critical section: hold an exclusive advisory lock on a
+    /// per-user lock file while touching the keyring, then RE-READ before any
+    /// generation so the first creator wins deterministically.
+    fn load_or_create_key_cross_process() -> Result<[u8; 32]> {
+        let lock_path = std::env::temp_dir().join("rustsale-facebook-vault.lock");
+        let file: File = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| anyhow!("Failed to open vault lock file {}: {}", lock_path.display(), e))?;
+        // Blocking exclusive lock: the loser waits, then re-reads below and
+        // adopts the winner's key.
+        file.lock_exclusive()
+            .map_err(|e| anyhow!("Failed to acquire vault lock: {}", e))?;
+
+        let result = Self::load_or_create_key_from_keyring();
+
+        // Release best-effort; OS releases on process exit regardless.
+        let _ = file.unlock();
+
+        result
+    }
+
+    fn load_or_create_key_from_keyring() -> Result<[u8; 32]> {
+        let entry = Entry::new(KEYRING_SERVICE, KEYRING_USER)
+            .map_err(|e| anyhow!("Failed to access OS keyring: {}", e))?;
+        match entry.get_password() {
+            Ok(secret) => {
+                let decoded = BASE64_STANDARD
+                    .decode(secret.trim())
+                    .map_err(|e| anyhow!("Invalid base64 in keyring secret: {}", e))?;
+                let mut key = [0u8; 32];
+                if decoded.len() != 32 {
+                    return Err(anyhow!("Keyring master key length is not 32 bytes"));
+                }
+                key.copy_from_slice(&decoded);
+                Ok(key)
+            }
+            Err(keyring::Error::NoEntry) => {
+                let mut key = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
+                entry
+                    .set_password(&BASE64_STANDARD.encode(key))
+                    .map_err(|e| anyhow!("Failed to persist master key to OS keyring: {}", e))?;
+                Ok(key)
+            }
+            Err(e) => Err(anyhow!("Keyring access failed: {}", e)),
+        }
     }
 
     fn seal(key: &[u8; 32], aad: &[u8], plain_token: &str) -> Result<String> {
