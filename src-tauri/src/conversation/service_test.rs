@@ -1217,7 +1217,7 @@ async fn outbound_group_mentions_enqueued_and_sent_with_exact_ranges() {
                 }],
             },
         }],
-    message_tag: None,
+        message_tag: None,
     };
 
     let res = harness.service.enqueue_batch(&batch_req).unwrap();
@@ -1312,7 +1312,7 @@ fn direct_conversation_mentions_rejected_with_typed_error() {
                 }],
             },
         }],
-    message_tag: None,
+        message_tag: None,
     };
 
     let err = harness.service.enqueue_batch(&batch_req).unwrap_err();

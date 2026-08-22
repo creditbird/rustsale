@@ -2969,7 +2969,7 @@ fn enqueue_batch_creates_batch_parts_attachments_and_jobs_in_one_transaction() {
                 },
             },
         ],
-    message_tag: None,
+        message_tag: None,
     };
 
     let res = repo
@@ -3035,7 +3035,7 @@ fn repeated_client_batch_id_returns_existing_batch_without_duplicates() {
                 mentions: Vec::new(),
             },
         }],
-    message_tag: None,
+        message_tag: None,
     };
 
     let res1 = repo
@@ -3095,7 +3095,7 @@ fn sticker_must_be_the_only_part_in_phase_one() {
                 },
             },
         ],
-    message_tag: None,
+        message_tag: None,
     };
 
     let err = repo
@@ -3119,7 +3119,7 @@ fn sticker_must_be_the_only_part_in_phase_one() {
                 url: None,
             },
         }],
-    message_tag: None,
+        message_tag: None,
     };
 
     let res = repo
@@ -3168,7 +3168,7 @@ fn enqueue_batch_group_with_null_display_name_participant_succeeds() {
                 mentions: vec![],
             },
         }],
-    message_tag: None,
+        message_tag: None,
     };
 
     let res = harness

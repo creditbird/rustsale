@@ -8,10 +8,10 @@ mod commands;
 #[cfg(test)]
 mod commands_test;
 pub mod conversation;
-pub mod facebook;
 mod db;
 #[cfg(test)]
 mod db_test;
+pub mod facebook;
 pub mod google_maps_jobs;
 mod models;
 pub mod scrapers;
