@@ -97,7 +97,8 @@
     onBatchQueued,
     onOpenSettings = () => {},
     onOpenQrLogin = () => {},
-    onRuntimeRefresh = () => {}
+    onRuntimeRefresh = () => {},
+    facebookPolicy = null
   }: {
     item: InboxItem;
     runtime?: ConversationRuntimeStatus;
@@ -109,6 +110,8 @@
     onOpenSettings?: () => void;
     onOpenQrLogin?: (accountKey?: string) => void;
     onRuntimeRefresh?: () => void | Promise<void>;
+    /** Messenger-only 24h policy gate; null for non-Facebook channels. */
+    facebookPolicy?: { outsideWindow: boolean; selectedTagChosen: boolean } | null;
   } = $props();
 
   import VoiceRecorderBar from './VoiceRecorderBar.svelte';
@@ -766,9 +769,15 @@
     }
     return null;
   });
+  // Facebook 24h policy: outside the window, a CSKH Message Tag is mandatory.
+  let facebookBlocked = $derived(
+    facebookPolicy !== null && facebookPolicy.outsideWindow && !facebookPolicy.selectedTagChosen
+  );
+
   let canSend = $derived(
     !disabled &&
       !isSending &&
+      !facebookBlocked &&
       selectedOption !== null &&
       selectedOption.isEligible &&
       targetConversationId !== null &&

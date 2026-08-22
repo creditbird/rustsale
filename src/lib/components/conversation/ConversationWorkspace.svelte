@@ -42,6 +42,8 @@
   import LinkedLeadActions from './LinkedLeadActions.svelte';
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
+  import Facebook24hPolicyBanner from './Facebook24hPolicyBanner.svelte';
+  import { evaluateFacebookWindow } from './facebookPolicyGate';
   import RecallMessageDialog from './RecallMessageDialog.svelte';
   import ForwardConversationDialog from './ForwardConversationDialog.svelte';
   import MessageReactionMutationState from './MessageReactionMutationState.svelte';
@@ -318,6 +320,33 @@
   let timelineRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   let selectedItem = $derived(inbox.find((i) => i.key === selectedKey) ?? null);
+
+  // --- Facebook 24-Hour Policy Gate (Messenger conversations only) ---
+  let facebookNowTick = $state(Date.now());
+  let facebookSelectedTag: string | null = $state(null);
+
+  // Live countdown for the policy banner (30s cadence is plenty for hh:mm).
+  $effect(() => {
+    const id = window.setInterval(() => (facebookNowTick = Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  });
+
+  // Reset any chosen CSKH Message Tag when switching conversations.
+  $effect(() => {
+    void selectedItem?.key;
+    facebookSelectedTag = null;
+  });
+
+  let messengerTarget = $derived(
+    selectedItem?.replyTargets.find((t) => t.channel === 'messenger') ?? null
+  );
+  let isMessengerConversation = $derived(messengerTarget !== null);
+  let facebookWindowStatus = $derived(
+    evaluateFacebookWindow(
+      messengerTarget?.lastInboundAt ? Date.parse(messengerTarget.lastInboundAt) : null,
+      facebookNowTick
+    )
+  );
 
   $effect(() => {
     const convId = selectedItem?.conversationId;
@@ -1214,6 +1243,17 @@
       />
 
 
+      <!-- Facebook 24-Hour Policy Gate (Messenger only) -->
+      {#if isMessengerConversation}
+        <div class="px-4 pt-2">
+          <Facebook24hPolicyBanner
+            lastInboundAt={messengerTarget?.lastInboundAt ?? null}
+            nowMs={facebookNowTick}
+            bind:selectedTag={facebookSelectedTag}
+          />
+        </div>
+      {/if}
+
       <!-- Message Composer -->
       <MessageComposer
         item={selectedItem}
@@ -1225,6 +1265,14 @@
         {onOpenSettings}
         {onOpenQrLogin}
         onRuntimeRefresh={() => refreshRuntimeStatus()}
+        facebookPolicy={
+          isMessengerConversation
+            ? {
+                outsideWindow: facebookWindowStatus.outsideWindow,
+                selectedTagChosen: facebookSelectedTag !== null
+              }
+            : null
+        }
       />
     {:else}
       <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-center">
