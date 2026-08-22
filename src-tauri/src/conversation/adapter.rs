@@ -6,6 +6,27 @@ pub struct ProviderSendRequest {
     pub external_thread_id: String,
     pub is_group: bool,
     pub text: String,
+    pub message_tag: Option<String>,
+}
+
+impl ProviderSendRequest {
+    pub fn new(
+        external_thread_id: impl Into<String>,
+        is_group: bool,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            external_thread_id: external_thread_id.into(),
+            is_group,
+            text: text.into(),
+            message_tag: None,
+        }
+    }
+
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.message_tag = Some(tag.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

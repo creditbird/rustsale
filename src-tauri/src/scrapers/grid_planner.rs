@@ -65,7 +65,7 @@ impl GridPlanner {
             return Err("Step size must be greater than zero".to_string());
         }
 
-        let earth_radius_km = 6_371.0088;
+        let earth_radius_km = 6_371.008_8;
         let height_km =
             ((lat_max - lat_min) * std::f64::consts::PI / 180.0).abs() * earth_radius_km;
 
