@@ -1,7 +1,9 @@
 <script lang="ts">
   // Facebook 24-Hour Policy Gate banner (revised plan Task 4).
-  // Inside the window: informational countdown. Outside: policy mode that
-  // requires selecting one of the approved CSKH Message Tags before sending.
+  // Three states aligned with current Meta policy:
+  //  - free window (<24h): green countdown
+  //  - HUMAN_AGENT window (24h..7d): amber banner + single approved tag select
+  //  - beyond 7d: hard block, nothing can unlock sending
   import {
     FACEBOOK_MESSAGE_TAGS,
     evaluateFacebookWindow,
@@ -22,8 +24,7 @@
     onTagChange?: (tag: string | null) => void;
   } = $props();
 
-  let parsedMs = $derived(lastInboundAt === null || lastInboundAt === undefined ? null : Date.parse(lastInboundAt));
-  let status = $derived(evaluateFacebookWindow(parsedMs, nowMs));
+  let status = $derived(evaluateFacebookWindow(lastInboundAt, nowMs));
 
   function handleSelect(event: Event): void {
     const value = (event.currentTarget as HTMLSelectElement).value;
@@ -32,12 +33,19 @@
   }
 </script>
 
-{#if status.outsideWindow}
+{#if !status.freeWindow && !status.humanAgentEligible}
+  <div
+    class="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-2.5 text-xs text-red-600 dark:text-red-400"
+    data-testid="facebook-policy-expired"
+  >
+    ⛔ Đã quá 7 ngày kể từ tương tác cuối — không thể gửi tin nhắn mới qua Messenger.
+  </div>
+{:else if !status.freeWindow}
   <div
     class="flex items-center justify-between gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-400"
     data-testid="facebook-policy-outside"
   >
-    <span>⚠️ Đã quá 24h kể từ tương tác cuối — bắt buộc chọn thẻ tin nhắn CSKH hợp lệ.</span>
+    <span>⚠️ Đã quá 24h — chỉ có thể gửi bằng thẻ HUMAN_AGENT.</span>
     <select
       class="rounded border border-border bg-background px-2 py-1 text-foreground"
       aria-label="Chọn thẻ tin nhắn CSKH"

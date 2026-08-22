@@ -43,6 +43,7 @@
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
   import Facebook24hPolicyBanner from './Facebook24hPolicyBanner.svelte';
+  import type { InboxReplyTarget } from '$lib/services/conversationService';
   import { evaluateFacebookWindow } from './facebookPolicyGate';
   import RecallMessageDialog from './RecallMessageDialog.svelte';
   import ForwardConversationDialog from './ForwardConversationDialog.svelte';
@@ -321,9 +322,24 @@
 
   let selectedItem = $derived(inbox.find((i) => i.key === selectedKey) ?? null);
 
-  // --- Facebook 24-Hour Policy Gate (Messenger conversations only) ---
+  // --- Facebook 24-Hour Policy Gate ---
+  // Policy binds to the reply target the COMPOSER actually resolved
+  // (onTargetResolved), not to the first Messenger target on the item — a
+  // unified item may carry Messenger + Zalo targets, or several Pages.
   let facebookNowTick = $state(Date.now());
   let facebookSelectedTag: string | null = $state(null);
+  const facebookTargetState = $state<{ target: InboxReplyTarget | null }>({ target: null });
+
+  function handleTargetResolved(target: InboxReplyTarget): void {
+    facebookTargetState.target = target;
+  }
+
+  // Reset the chosen CSKH tag whenever the send target identity changes.
+  $effect(() => {
+    const t = facebookTargetState.target;
+    void `${t?.conversationId}:${t?.channelAccountId}:${selectedItem?.key}`;
+    facebookSelectedTag = null;
+  });
 
   // Live countdown for the policy banner (30s cadence is plenty for hh:mm).
   $effect(() => {
@@ -331,21 +347,17 @@
     return () => window.clearInterval(id);
   });
 
-  // Reset any chosen CSKH Message Tag when switching conversations.
-  $effect(() => {
-    void selectedItem?.key;
-    facebookSelectedTag = null;
-  });
-
-  let messengerTarget = $derived(
-    selectedItem?.replyTargets.find((t) => t.channel === 'messenger') ?? null
-  );
-  let isMessengerConversation = $derived(messengerTarget !== null);
-  let facebookWindowStatus = $derived(
-    evaluateFacebookWindow(
-      messengerTarget?.lastInboundAt ? Date.parse(messengerTarget.lastInboundAt) : null,
-      facebookNowTick
-    )
+  let isMessengerTarget = $derived(facebookTargetState.target?.channel === 'messenger');
+  let facebookPolicyState = $derived(
+    isMessengerTarget
+      ? {
+          lastInboundAtMs: facebookTargetState.target?.lastInboundAt
+            ? Date.parse(facebookTargetState.target.lastInboundAt)
+            : null,
+          selectedTag: facebookSelectedTag,
+          nowMs: facebookNowTick
+        }
+      : null
   );
 
   $effect(() => {
@@ -1243,11 +1255,11 @@
       />
 
 
-      <!-- Facebook 24-Hour Policy Gate (Messenger only) -->
-      {#if isMessengerConversation}
+      <!-- Facebook 24-Hour Policy Gate (Messenger target only) -->
+      {#if isMessengerTarget}
         <div class="px-4 pt-2">
           <Facebook24hPolicyBanner
-            lastInboundAt={messengerTarget?.lastInboundAt ?? null}
+            lastInboundAt={facebookTargetState.target?.lastInboundAt ?? null}
             nowMs={facebookNowTick}
             bind:selectedTag={facebookSelectedTag}
           />
@@ -1265,14 +1277,8 @@
         {onOpenSettings}
         {onOpenQrLogin}
         onRuntimeRefresh={() => refreshRuntimeStatus()}
-        facebookPolicy={
-          isMessengerConversation
-            ? {
-                outsideWindow: facebookWindowStatus.outsideWindow,
-                selectedTagChosen: facebookSelectedTag !== null
-              }
-            : null
-        }
+        onTargetResolved={handleTargetResolved}
+        facebookPolicy={facebookPolicyState}
       />
     {:else}
       <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-center">

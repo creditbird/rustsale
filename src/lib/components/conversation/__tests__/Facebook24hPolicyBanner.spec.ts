@@ -6,64 +6,86 @@ import {
   evaluateFacebookWindow,
   formatRemainingHm,
   validateOutboundPolicy,
+  HUMAN_AGENT_WINDOW_MS,
   WINDOW_MS
 } from '../facebookPolicyGate';
 import Facebook24hPolicyBanner from '../Facebook24hPolicyBanner.svelte';
 
 const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 const NOW = 1_800_000_000_000; // fixed "now"
 
 afterEach(() => cleanup());
 
 describe('evaluateFacebookWindow', () => {
-  test('missing last inbound time fails closed as outside window', () => {
+  test('missing last inbound time fails closed on both windows', () => {
     const s = evaluateFacebookWindow(null, NOW);
-    expect(s.outsideWindow).toBe(true);
+    expect(s.freeWindow).toBe(false);
+    expect(s.humanAgentEligible).toBe(false);
     expect(s.remainingMs).toBe(0);
   });
 
-  test('unparseable last inbound time fails closed as outside window', () => {
+  test('unparseable last inbound time fails closed on both windows', () => {
     const s = evaluateFacebookWindow('not-a-date', NOW);
-    expect(s.outsideWindow).toBe(true);
-    expect(s.remainingMs).toBe(0);
+    expect(s.freeWindow).toBe(false);
+    expect(s.humanAgentEligible).toBe(false);
   });
 
-  test('recent interaction is inside the window with positive remaining', () => {
+  test('recent interaction: free window open with positive remaining', () => {
     const s = evaluateFacebookWindow(NOW - HOUR, NOW);
-    expect(s.outsideWindow).toBe(false);
+    expect(s.freeWindow).toBe(true);
+    expect(s.humanAgentEligible).toBe(true);
     expect(s.remainingMs).toBe(23 * HOUR);
   });
 
-  test('exactly 24h boundary closes the window', () => {
+  test('exactly 24h boundary closes the free window but keeps HUMAN_AGENT eligible', () => {
     const s = evaluateFacebookWindow(NOW - WINDOW_MS, NOW);
-    expect(s.outsideWindow).toBe(true);
+    expect(s.freeWindow).toBe(false);
+    expect(s.humanAgentEligible).toBe(true);
     expect(s.remainingMs).toBe(0);
   });
 
-  test('beyond 24h is outside the window', () => {
-    const s = evaluateFacebookWindow(NOW - WINDOW_MS - 1, NOW);
-    expect(s.outsideWindow).toBe(true);
-    expect(s.remainingMs).toBe(0);
+  test('between 24h and 7d only HUMAN_AGENT remains', () => {
+    const s = evaluateFacebookWindow(NOW - 3 * DAY, NOW);
+    expect(s.freeWindow).toBe(false);
+    expect(s.humanAgentEligible).toBe(true);
+  });
+
+  test('exactly 7d boundary ends HUMAN_AGENT eligibility', () => {
+    const s = evaluateFacebookWindow(NOW - HUMAN_AGENT_WINDOW_MS, NOW);
+    expect(s.humanAgentEligible).toBe(false);
   });
 });
 
 describe('validateOutboundPolicy', () => {
-  test('inside window allows sending without a tag', () => {
-    const v = validateOutboundPolicy(false, null);
+  test('free window allows sending without a tag', () => {
+    const status = evaluateFacebookWindow(NOW - HOUR, NOW);
+    const v = validateOutboundPolicy(status, null);
     expect(v.allowed).toBe(true);
     expect(v.reason).toBeNull();
   });
 
-  test('outside window without a tag blocks sending with a reason', () => {
-    const v = validateOutboundPolicy(true, null);
+  test('24h-7d window requires exactly the HUMAN_AGENT tag', () => {
+    const status = evaluateFacebookWindow(NOW - 2 * DAY, NOW);
+    expect(validateOutboundPolicy(status, null).allowed).toBe(false);
+    expect(
+      validateOutboundPolicy(status, 'CONFIRMED_EVENT_UPDATE' as string).allowed
+    ).toBe(false);
+    expect(validateOutboundPolicy(status, 'HUMAN_AGENT').allowed).toBe(true);
+  });
+
+  test('beyond 7d nothing unlocks sending', () => {
+    const status = evaluateFacebookWindow(NOW - 8 * DAY, NOW);
+    const v = validateOutboundPolicy(status, 'HUMAN_AGENT');
     expect(v.allowed).toBe(false);
-    expect(v.reason).toBeTruthy();
+    expect(v.reason).toContain('7 ngày');
   });
+});
 
-  test('outside window with a selected HUMAN_AGENT tag allows sending', () => {
-    const v = validateOutboundPolicy(true, 'HUMAN_AGENT');
-    expect(v.allowed).toBe(true);
-    expect(v.reason).toBeNull();
+describe('FACEBOOK_MESSAGE_TAGS', () => {
+  test('only HUMAN_AGENT is offered (legacy tags retired by Meta)', () => {
+    expect(FACEBOOK_MESSAGE_TAGS).toHaveLength(1);
+    expect(FACEBOOK_MESSAGE_TAGS[0].value).toBe('HUMAN_AGENT');
   });
 });
 
@@ -75,18 +97,8 @@ describe('formatRemainingHm', () => {
   });
 });
 
-describe('FACEBOOK_MESSAGE_TAGS', () => {
-  test('contains the four Meta-approved CSKH tags', () => {
-    const values = FACEBOOK_MESSAGE_TAGS.map((t) => t.value);
-    expect(values).toContain('CONFIRMED_EVENT_UPDATE');
-    expect(values).toContain('POST_PURCHASE_UPDATE');
-    expect(values).toContain('ACCOUNT_UPDATE');
-    expect(values).toContain('HUMAN_AGENT');
-  });
-});
-
 describe('Facebook24hPolicyBanner component', () => {
-  test('inside window shows remaining-time indicator', () => {
+  test('free window shows remaining-time indicator', () => {
     render(Facebook24hPolicyBanner, {
       props: { lastInboundAt: new Date(NOW - HOUR).toISOString(), nowMs: NOW }
     });
@@ -94,21 +106,18 @@ describe('Facebook24hPolicyBanner component', () => {
     expect(screen.getByText(/23h 00m/)).toBeTruthy();
   });
 
-  test('outside window shows warning and tag selector with all four options', async () => {
+  test('24h-7d window shows amber banner with single HUMAN_AGENT option', async () => {
     render(Facebook24hPolicyBanner, {
       props: { lastInboundAt: new Date(NOW - 25 * HOUR).toISOString(), nowMs: NOW }
     });
-    expect(screen.getByText(/quá 24h/i)).toBeTruthy();
+    expect(screen.getByText(/chỉ có thể gửi bằng thẻ HUMAN_AGENT/)).toBeTruthy();
 
     const select = screen.getByRole('combobox') as HTMLSelectElement;
     expect(select.value).toBe('');
-    for (const t of FACEBOOK_MESSAGE_TAGS) {
-      const option = Array.from(select.options).find((o) => o.value === t.value);
-      expect(option).toBeTruthy();
-    }
+    expect(select.options.length).toBe(2); // placeholder + HUMAN_AGENT
   });
 
-  test('selecting a tag reports it through onTagChange and clears the block reason', async () => {
+  test('selecting HUMAN_AGENT reports it through onTagChange', async () => {
     const holder: { reported: string | null } = { reported: null };
     render(Facebook24hPolicyBanner, {
       props: {
@@ -120,8 +129,16 @@ describe('Facebook24hPolicyBanner component', () => {
       }
     });
     const select = screen.getByRole('combobox') as HTMLSelectElement;
-    select.value = 'POST_PURCHASE_UPDATE';
+    select.value = 'HUMAN_AGENT';
     await fireEvent.change(select);
-    expect(holder.reported).toBe('POST_PURCHASE_UPDATE');
+    expect(holder.reported).toBe('HUMAN_AGENT');
+  });
+
+  test('beyond 7d renders hard block with no selector', () => {
+    render(Facebook24hPolicyBanner, {
+      props: { lastInboundAt: new Date(NOW - 8 * DAY).toISOString(), nowMs: NOW }
+    });
+    expect(screen.getByText(/không thể gửi tin nhắn mới/)).toBeTruthy();
+    expect(screen.queryByRole('combobox')).toBeNull();
   });
 });

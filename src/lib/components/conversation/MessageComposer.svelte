@@ -110,11 +110,20 @@
     onOpenSettings?: () => void;
     onOpenQrLogin?: (accountKey?: string) => void;
     onRuntimeRefresh?: () => void | Promise<void>;
-    /** Messenger-only 24h policy gate; null for non-Facebook channels. */
-    facebookPolicy?: { outsideWindow: boolean; selectedTagChosen: boolean } | null;
+    /**
+     * Messenger-only policy inputs; null for non-Facebook channels.
+     * The composer re-evaluates against real wall-clock time at SEND time
+     * (never trusts the cached tick for the final decision).
+     */
+    facebookPolicy?: {
+      lastInboundAtMs: number | null;
+      selectedTag: string | null;
+      nowMs: number;
+    } | null;
   } = $props();
 
   import VoiceRecorderBar from './VoiceRecorderBar.svelte';
+  import { evaluateFacebookWindow } from './facebookPolicyGate';
 
   const draftCache = new ComposerDraftCache();
   let text = $state('');
@@ -769,9 +778,16 @@
     }
     return null;
   });
-  // Facebook 24h policy: outside the window, a CSKH Message Tag is mandatory.
+  // Facebook 24h policy (UI cadence): outside the free window, sending is
+  // only possible with the HUMAN_AGENT tag selected. Final authority is
+  // re-checked inside handleSend()/handleStickerSelect() with real wall clock.
+  let facebookUiStatus = $derived(
+    facebookPolicy ? evaluateFacebookWindow(facebookPolicy.lastInboundAtMs, facebookPolicy.nowMs) : null
+  );
   let facebookBlocked = $derived(
-    facebookPolicy !== null && facebookPolicy.outsideWindow && !facebookPolicy.selectedTagChosen
+    facebookUiStatus !== null &&
+      !facebookUiStatus.freeWindow &&
+      !(facebookUiStatus.humanAgentEligible && facebookPolicy?.selectedTag === 'HUMAN_AGENT')
   );
 
   let canSend = $derived(
@@ -818,6 +834,23 @@
 
   async function handleSend(): Promise<void> {
     if (!canSend || !activeDraftKey || targetConversationId === null) return;
+
+    // AUTHORITATIVE policy evaluation at the actual send instant (fixes the
+    // 30s-stale-tick boundary hole). Beyond 7d: hard block. Within 24h..7d:
+    // require + transmit the HUMAN_AGENT tag on the outbound request.
+    let outboundMessageTag: 'HUMAN_AGENT' | undefined;
+    if (facebookPolicy) {
+      const fresh = evaluateFacebookWindow(facebookPolicy.lastInboundAtMs, Date.now());
+      if (!fresh.freeWindow) {
+        if (!(fresh.humanAgentEligible && facebookPolicy.selectedTag === 'HUMAN_AGENT')) {
+          sendError =
+            'Không thể gửi: đã quá cửa sổ cho phép của Meta' +
+            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày).');
+          return;
+        }
+        outboundMessageTag = 'HUMAN_AGENT';
+      }
+    }
     persistDraft();
     const snapshot = draftCache.takeSnapshot(activeDraftKey);
     const parts = buildParts(snapshot.text, snapshot.stagedAttachmentIds, snapshot.mentions);
@@ -846,7 +879,8 @@
         conversationId: targetConversationId,
         clientBatchId: newClientId('batch'),
         replyToMessageId: currentReplyTarget?.messageId ?? null,
-        parts
+        parts,
+        messageTag: outboundMessageTag ?? null
       });
       onBatchQueued?.(result);
       if (currentReplyTarget) onCancelReply();
@@ -878,6 +912,21 @@
       return;
     }
 
+    // Same authoritative Facebook policy gate as text sends.
+    let stickerMessageTag: 'HUMAN_AGENT' | undefined;
+    if (facebookPolicy) {
+      const fresh = evaluateFacebookWindow(facebookPolicy.lastInboundAtMs, Date.now());
+      if (!fresh.freeWindow) {
+        if (!(fresh.humanAgentEligible && facebookPolicy.selectedTag === 'HUMAN_AGENT')) {
+          sendError =
+            'Không thể gửi: đã quá cửa sổ cho phép của Meta' +
+            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày).');
+          return;
+        }
+        stickerMessageTag = 'HUMAN_AGENT';
+      }
+    }
+
     isSending = true;
     sendError = null;
     try {
@@ -894,7 +943,8 @@
             stickerType: sticker.stickerType,
             url: sticker.url
           }
-        ]
+        ],
+        messageTag: stickerMessageTag ?? null
       });
       activePopover = null;
       onBatchQueued?.(result);

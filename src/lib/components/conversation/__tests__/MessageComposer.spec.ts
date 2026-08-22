@@ -269,6 +269,7 @@ describe('MessageComposer', () => {
       conversationId: 102,
       clientBatchId: expect.any(String),
       replyToMessageId: null,
+      messageTag: null,
       parts: [{ clientPartId: expect.any(String), type: 'text', text: 'Xin chào' }]
     });
     await waitFor(() => expect(onBatchQueued).toHaveBeenCalledTimes(1));
@@ -320,6 +321,7 @@ describe('MessageComposer', () => {
       conversationId: 101,
       clientBatchId: expect.any(String),
       replyToMessageId: 9,
+      messageTag: null,
       parts: [{ clientPartId: expect.any(String), type: 'text', text: 'Trả lời' }]
     });
   });
