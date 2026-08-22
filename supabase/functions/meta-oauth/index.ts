@@ -20,6 +20,10 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 const GRAPH_TIMEOUT_MS = 30_000; // per request, well below the 5-minute lease
 const MAX_PAGINATION_REQUESTS = 50;
+// Callback-wide wall-clock budget: comfortably below Supabase's 150-second
+// gateway idle timeout so the browser ALWAYS receives the redirect (or an
+// error) — a finalize must never commit after the client has gone away.
+const CALLBACK_DEADLINE_MS = 110_000;
 
 function logStructured(fields: Record<string, unknown>): void {
   // Redacted by construction: never codes, tokens, secrets, or raw payloads.
@@ -195,8 +199,15 @@ serve(async (req: Request) => {
     }
     const leaseId: string = claimed.lease_id;
     const tenantId: string = claimed.tenant_id;
+    const callbackStart = Date.now();
+    const assertDeadline = (): void => {
+      if (Date.now() - callbackStart > CALLBACK_DEADLINE_MS) {
+        throw new Error("callback_deadline_exceeded");
+      }
+    };
 
     try {
+      assertDeadline();
       // Same exact configured redirect URI for authorization and exchange.
       const tokenUrl =
         `https://graph.facebook.com/v26.0/oauth/access_token?client_id=${encodeURIComponent(META_APP_ID)}` +
@@ -205,6 +216,7 @@ serve(async (req: Request) => {
         `&code=${encodeURIComponent(code)}`;
       const tokenData = await jsonFetch<{ access_token?: string }>(tokenUrl);
       const shortToken = tokenData.access_token;
+      assertDeadline();
       if (!shortToken) throw new Error("missing_short_token");
 
       const longData = await jsonFetch<{ access_token?: string }>(
@@ -213,6 +225,7 @@ serve(async (req: Request) => {
           `&fb_exchange_token=${encodeURIComponent(shortToken)}`,
       );
       const longLivedUserToken = longData.access_token;
+      assertDeadline();
       if (!longLivedUserToken) throw new Error("missing_long_token");
 
       // Fail-closed ASID resolution from /me
@@ -223,7 +236,9 @@ serve(async (req: Request) => {
       if (!appUserId) throw new Error("missing_asid");
 
       // Fully paginate both edges.
+      assertDeadline();
       const pages = await fetchAllPages(longLivedUserToken);
+      assertDeadline();
       const allIdRows = await fetchAllPageIds(appUserId, longLivedUserToken);
 
       // The /me/accounts set is the authoritative managed-Page boundary:
@@ -245,7 +260,9 @@ serve(async (req: Request) => {
       }
 
       // Single transaction: interactions + encrypted single-use exchange code
-      // + fenced session finalization.
+      // + fenced session finalization. Refuse to start it once the deadline
+      // has passed so the browser is never left without its redirect.
+      assertDeadline();
       const exchangeCode = crypto.randomUUID();
       const { error: finalizeErr } = await supabaseAdmin.rpc("finalize_meta_oauth", {
         p_state: state,

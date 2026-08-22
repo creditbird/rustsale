@@ -13,6 +13,7 @@ ALTER TABLE meta_tenant_pages ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Tenants read own pages" ON meta_tenant_pages
     FOR SELECT USING (auth.uid() = tenant_id);
+GRANT SELECT ON TABLE meta_tenant_pages TO authenticated;
 
 CREATE TABLE IF NOT EXISTS oauth_authorization_sessions (
     state TEXT PRIMARY KEY,
@@ -30,6 +31,11 @@ CREATE TABLE IF NOT EXISTS oauth_authorization_sessions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE oauth_authorization_sessions ENABLE ROW LEVEL SECURITY;
+
+-- Explicit least-privilege grants: current Supabase projects do NOT auto-expose
+-- new tables to the Data API. Only the service-role insert performed by
+-- /meta-oauth-start is granted; everything else stays server-side.
+GRANT INSERT ON TABLE oauth_authorization_sessions TO service_role;
 
 -- Server-write-only: session lifecycle (claim/finalize/fail) happens through
 -- the SECURITY DEFINER RPCs below so callers cannot forge status, attempts,
@@ -67,6 +73,7 @@ ALTER TABLE meta_user_page_interactions ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Tenants read own interactions" ON meta_user_page_interactions
     FOR SELECT TO authenticated
     USING (auth.uid() = tenant_id);
+GRANT SELECT ON TABLE meta_user_page_interactions TO authenticated;
 
 -- Atomic lease claim: real SQL predicate (PostgREST cannot express this),
 -- increments attempts, mints a fresh fence token.
@@ -159,6 +166,7 @@ BEGIN
      WHERE state = p_state
        AND lease_id = p_lease_id
        AND status = 'processing'
+       AND expires_at > now()
     RETURNING tenant_id, code_challenge INTO v_tenant_id, v_code_challenge;
 
     IF v_tenant_id IS NULL THEN
