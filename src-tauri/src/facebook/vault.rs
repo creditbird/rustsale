@@ -13,15 +13,21 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
+use anyhow::{anyhow, Result};
 use base64::prelude::*;
+#[cfg(not(test))]
+use fs2::FileExt;
+#[cfg(not(test))]
 use keyring::Entry;
 use rusqlite::{params, Connection, OptionalExtension};
-use anyhow::{anyhow, Result};
-use fs2::FileExt;
+#[cfg(not(test))]
 use std::fs::{File, OpenOptions};
+#[cfg(not(test))]
 use std::sync::OnceLock;
 
+#[cfg(not(test))]
 const KEYRING_SERVICE: &str = "rustsale";
+#[cfg(not(test))]
 const KEYRING_USER: &str = "facebook_vault_key";
 
 /// Deterministic key used by unit tests so the FULL public API path
@@ -82,6 +88,7 @@ impl FacebookTokenVault {
     /// ~/.local/share/rustsale on Linux), never in the shared /tmp namespace:
     /// unrelated OS users can neither reach nor pre-create/symlink-replace it,
     /// closing the insecure-temporary-file class of issues.
+    #[cfg(not(test))]
     fn vault_lock_path() -> Result<std::path::PathBuf> {
         let base = dirs::data_local_dir()
             .ok_or_else(|| anyhow!("Could not resolve the user's local data directory"))?;
@@ -91,6 +98,7 @@ impl FacebookTokenVault {
         Ok(dir.join("facebook-vault.lock"))
     }
 
+    #[cfg(not(test))]
     fn load_or_create_key_cross_process() -> Result<[u8; 32]> {
         let lock_path = Self::vault_lock_path()?;
         let file: File = OpenOptions::new()
@@ -98,7 +106,13 @@ impl FacebookTokenVault {
             .truncate(false)
             .write(true)
             .open(&lock_path)
-            .map_err(|e| anyhow!("Failed to open vault lock file {}: {}", lock_path.display(), e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to open vault lock file {}: {}",
+                    lock_path.display(),
+                    e
+                )
+            })?;
         // Blocking exclusive lock: the loser waits, then re-reads below and
         // adopts the winner's key.
         file.lock_exclusive()
@@ -112,6 +126,7 @@ impl FacebookTokenVault {
         result
     }
 
+    #[cfg(not(test))]
     fn load_or_create_key_from_keyring() -> Result<[u8; 32]> {
         let entry = Entry::new(KEYRING_SERVICE, KEYRING_USER)
             .map_err(|e| anyhow!("Failed to access OS keyring: {}", e))?;
@@ -357,7 +372,10 @@ mod tests {
             10,
             "page-1",
             "token-v2",
-            &["pages_messaging".to_string(), "pages_manage_posts".to_string()],
+            &[
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string(),
+            ],
         )
         .unwrap();
         let rotated: String = conn
