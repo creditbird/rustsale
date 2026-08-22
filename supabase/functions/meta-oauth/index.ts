@@ -60,6 +60,20 @@ async function fetchAllPages(longLivedUserToken: string): Promise<PageRow[]> {
     pages = pages.concat(page.data ?? []);
     url = page.paging?.next ?? null;
   }
+  // Fail-closed record validation: an OAuth handoff without a usable Page
+  // Access Token would produce an un-usable connection downstream.
+  for (const p of pages) {
+    if (
+      typeof p.id !== "string" ||
+      p.id.length === 0 ||
+      typeof p.name !== "string" ||
+      p.name.length === 0 ||
+      typeof p.access_token !== "string" ||
+      p.access_token.length === 0
+    ) {
+      throw new Error("invalid_page_record");
+    }
+  }
   return pages;
 }
 
@@ -116,13 +130,14 @@ serve(async (req: Request) => {
     }
 
     // Early rejection of unusable sessions: state must be high-entropy and
-    // code_challenge must be a valid S256 base64url value (43-128 chars).
+    // code_challenge must be a valid S256 base64url value — always exactly
+    // 43 unpadded characters for BASE64URL(SHA256(verifier)).
     if (
       typeof state !== "string" ||
       state.length < 16 ||
       state.length > 256 ||
       typeof codeChallenge !== "string" ||
-      !/^[A-Za-z0-9_-]{43,128}$/.test(codeChallenge)
+      !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)
     ) {
       return jsonResponse({ error: "invalid_parameters" }, 400);
     }
@@ -209,7 +224,12 @@ serve(async (req: Request) => {
 
       // Fully paginate both edges.
       const pages = await fetchAllPages(longLivedUserToken);
-      const interactions = await fetchAllPageIds(appUserId, longLivedUserToken);
+      const allIdRows = await fetchAllPageIds(appUserId, longLivedUserToken);
+
+      // The /me/accounts set is the authoritative managed-Page boundary:
+      // only identity rows for THOSE pages may ever be persisted.
+      const managedPageIds = new Set(pages.map((p) => p.id));
+      const interactions = allIdRows.filter((i) => managedPageIds.has(i.page_id));
 
       // Enforce 100% coverage IN MEMORY before persisting anything.
       const mappedPageIds = new Set(interactions.map((i) => i.page_id));
@@ -219,6 +239,7 @@ serve(async (req: Request) => {
         logStructured({
           event: "coverage_failure",
           unmapped_count: unmappedPages.length,
+          dropped_unmanaged_rows: allIdRows.length - interactions.length,
         });
         throw new Error("incomplete_psid_coverage");
       }

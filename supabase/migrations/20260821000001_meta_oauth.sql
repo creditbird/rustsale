@@ -74,7 +74,7 @@ CREATE OR REPLACE FUNCTION claim_meta_oauth_session(p_state TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp, extensions
+SET search_path = ''
 AS $$
 DECLARE
     v_row RECORD;
@@ -112,7 +112,7 @@ CREATE OR REPLACE FUNCTION fail_meta_oauth_session(p_state TEXT, p_lease_id UUID
 RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp, extensions
+SET search_path = ''
 AS $$
 BEGIN
     UPDATE public.oauth_authorization_sessions
@@ -142,7 +142,7 @@ CREATE OR REPLACE FUNCTION finalize_meta_oauth(
 RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp, extensions
+SET search_path = ''
 AS $$
 DECLARE
     v_tenant_id UUID;
@@ -211,7 +211,7 @@ CREATE OR REPLACE FUNCTION complete_meta_oauth_exchange(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp, extensions
+SET search_path = ''
 AS $$
 DECLARE
     v_tenant_id UUID;
