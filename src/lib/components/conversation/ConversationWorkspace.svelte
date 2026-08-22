@@ -42,6 +42,9 @@
   import LinkedLeadActions from './LinkedLeadActions.svelte';
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
+  import Facebook24hPolicyBanner from './Facebook24hPolicyBanner.svelte';
+  import type { InboxReplyTarget } from '$lib/services/conversationService';
+  import { evaluateFacebookWindow } from './facebookPolicyGate';
   import RecallMessageDialog from './RecallMessageDialog.svelte';
   import ForwardConversationDialog from './ForwardConversationDialog.svelte';
   import MessageReactionMutationState from './MessageReactionMutationState.svelte';
@@ -318,6 +321,44 @@
   let timelineRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   let selectedItem = $derived(inbox.find((i) => i.key === selectedKey) ?? null);
+
+  // --- Facebook 24-Hour Policy Gate ---
+  // Policy binds to the reply target the COMPOSER actually resolved
+  // (onTargetResolved), not to the first Messenger target on the item — a
+  // unified item may carry Messenger + Zalo targets, or several Pages.
+  let facebookNowTick = $state(Date.now());
+  let facebookSelectedTag: string | null = $state(null);
+  const facebookTargetState = $state<{ target: InboxReplyTarget | null }>({ target: null });
+
+  function handleTargetResolved(target: InboxReplyTarget): void {
+    facebookTargetState.target = target;
+  }
+
+  // Reset the chosen CSKH tag whenever the send target identity changes.
+  $effect(() => {
+    const t = facebookTargetState.target;
+    void `${t?.conversationId}:${t?.channelAccountId}:${selectedItem?.key}`;
+    facebookSelectedTag = null;
+  });
+
+  // Live countdown for the policy banner (30s cadence is plenty for hh:mm).
+  $effect(() => {
+    const id = window.setInterval(() => (facebookNowTick = Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  });
+
+  let isMessengerTarget = $derived(facebookTargetState.target?.channel === 'messenger');
+  let facebookPolicyState = $derived(
+    isMessengerTarget
+      ? {
+          lastInboundAtMs: facebookTargetState.target?.lastInboundAt
+            ? Date.parse(facebookTargetState.target.lastInboundAt)
+            : null,
+          selectedTag: facebookSelectedTag,
+          nowMs: facebookNowTick
+        }
+      : null
+  );
 
   $effect(() => {
     const convId = selectedItem?.conversationId;
@@ -1214,6 +1255,17 @@
       />
 
 
+      <!-- Facebook 24-Hour Policy Gate (Messenger target only) -->
+      {#if isMessengerTarget}
+        <div class="px-4 pt-2">
+          <Facebook24hPolicyBanner
+            lastInboundAt={facebookTargetState.target?.lastInboundAt ?? null}
+            nowMs={facebookNowTick}
+            bind:selectedTag={facebookSelectedTag}
+          />
+        </div>
+      {/if}
+
       <!-- Message Composer -->
       <MessageComposer
         item={selectedItem}
@@ -1225,6 +1277,8 @@
         {onOpenSettings}
         {onOpenQrLogin}
         onRuntimeRefresh={() => refreshRuntimeStatus()}
+        onTargetResolved={handleTargetResolved}
+        facebookPolicy={facebookPolicyState}
       />
     {:else}
       <div class="flex-1 flex flex-col items-center justify-center p-6 text-muted-foreground text-center">

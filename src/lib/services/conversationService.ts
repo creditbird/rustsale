@@ -371,6 +371,8 @@ export interface SendConversationBatchRequest {
   clientBatchId: string;
   replyToMessageId: number | null;
   parts: SendPartRequest[];
+  /** Messenger policy tag (HUMAN_AGENT) required for sends beyond the 24h window. */
+  messageTag?: string | null;
 }
 
 export interface SendConversationBatchResult {

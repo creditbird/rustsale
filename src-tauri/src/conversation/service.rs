@@ -667,6 +667,7 @@ impl ConversationService {
             conversation_id: request.conversation_id,
             client_batch_id: format!("msg-{}", rand::random::<u128>()),
             reply_to_message_id: request.reply_to_message_id,
+            message_tag: None,
             parts: vec![super::types::ConversationSendPartRequest {
                 client_part_id: "part-0".to_string(),
                 content: super::types::ConversationSendPartContent::Text {

@@ -963,6 +963,12 @@ pub struct SendConversationBatchRequest {
     pub client_batch_id: String,
     pub reply_to_message_id: Option<i64>,
     pub parts: Vec<ConversationSendPartRequest>,
+    /// Messenger 24h-policy tag (currently only HUMAN_AGENT). Required by the
+    /// UI for sends beyond the free window; consumed by the Messenger send
+    /// path as messaging_type/tag on the Graph request. Defaults to None so
+    /// existing callers stay compatible.
+    #[serde(default)]
+    pub message_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1064,6 +1070,7 @@ mod tests {
                     staged_attachment_id: "stage-1".into(),
                 },
             }],
+        message_tag: None,
         };
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["conversationId"], 31);
