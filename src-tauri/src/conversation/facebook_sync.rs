@@ -23,57 +23,48 @@ pub fn mark_messages_delivered(
     let updated = conn.execute(
         "UPDATE messages SET status = 'delivered'
           WHERE conversation_id = ?1 AND provider_message_id = ?2
+            AND direction = 'outbound'
             AND status IN ('sent', 'queued', 'pending')",
         params![conversation_id, provider_message_id],
     )?;
     Ok(updated)
 }
 
-/// Applies a read receipt watermark to outbound messages. Forward-only:
-/// only pre-`read` states transition, and only messages whose
-/// `provider_timestamp` is at or before the watermark. Returns rows advanced.
+/// Applies a read receipt watermark to outbound messages.
+///
+/// Atomicity: a SINGLE UPDATE re-checks every eligibility predicate in SQL, so
+/// a concurrent writer flipping a row to `failed` (or any other state) between
+/// candidate selection and application can never be converted to `read`.
+/// Forward-only: only pre-`read` states transition. Timestamp comparison uses
+/// SQLite's Julian-day conversion (`%J`, minus the Unix epoch 2440587.5,
+/// scaled to epoch-ms and rounded to whole milliseconds) so the watermark
+/// boundary compares on exact integers; rows with unparseable
+/// provider_timestamp simply never match. Returns rows advanced.
 pub fn apply_read_receipt(
     conn: &Connection,
     conversation_id: i64,
     watermark: &str,
 ) -> anyhow::Result<usize> {
-    // Watermark is an epoch-milliseconds string from Meta; lexical comparison
-    // against the stored ISO-8601 provider_timestamp is wrong, so compare on
-    // parsed millisecond values instead.
+    // Meta watermarks are epoch milliseconds; reject negatives defensively.
     let watermark_ms: i64 = watermark.parse()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, provider_timestamp FROM messages
-          WHERE conversation_id = ?1 AND direction = 'outbound'
-            AND status IN ('sent', 'queued', 'pending', 'delivered')
-            AND provider_timestamp IS NOT NULL",
-    )?;
-    let candidates: Vec<(i64, String)> = stmt
-        .query_map(params![conversation_id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<_, _>>()?;
-    drop(stmt);
-
-    let mut updated = 0usize;
-    for (id, ts) in candidates {
-        if timestamp_to_epoch_millis(&ts)
-            .map(|ms| ms <= watermark_ms)
-            .unwrap_or(false)
-        {
-            updated += conn.execute(
-                "UPDATE messages SET status = 'read' WHERE id = ?1 AND status <> 'read'",
-                params![id],
-            )?;
-        }
+    if watermark_ms < 0 {
+        anyhow::bail!("read receipt watermark must be a non-negative epoch-milliseconds value");
     }
+    let updated = conn.execute(
+        "UPDATE messages SET status = 'read'
+          WHERE conversation_id = ?1
+            AND direction = 'outbound'
+            AND status IN ('sent', 'queued', 'pending', 'delivered')
+            AND provider_timestamp IS NOT NULL
+            -- %J is JULIAN DAY: subtract the Unix epoch (2440587.5) before
+            -- scaling to epoch-ms, and round away sub-ms float drift so the
+            -- watermark boundary compares on exact integers.
+            AND CAST(ROUND(
+                    (strftime('%J', provider_timestamp) - 2440587.5) * 86400000.0
+                ) AS INTEGER) <= ?2",
+        params![conversation_id, watermark_ms as f64],
+    )?;
     Ok(updated)
-}
-
-fn timestamp_to_epoch_millis(iso: &str) -> Option<i64> {
-    // Stored timestamps are RFC-3339 with millisecond precision (utc_now()).
-    chrono::DateTime::parse_from_rfc3339(iso)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
 }
 
 /// Quarantines a reaction event whose timestamp cannot be trusted. Mirrors the
@@ -156,7 +147,8 @@ mod tests {
              (2, 500, 'outbound', 'mid.out.delivered', '2026-08-21T00:00:01.000Z', 'delivered'),
              (3, 500, 'outbound', 'mid.out.read',      '2026-08-21T00:00:02.000Z', 'read'),
              (4, 500, 'outbound', 'mid.out.late',      '2026-08-21T05:00:00.000Z', 'sent'),
-             (5, 500, 'inbound',  'mid.in.msg',        '2026-08-21T00:00:03.000Z', 'received');",
+             (5, 500, 'inbound',  'mid.in.msg',        '2026-08-21T00:00:03.000Z', 'received'),
+             (6, 500, 'outbound', 'mid.out.failed',    '2026-08-21T00:00:01.000Z', 'failed');",
         )
         .unwrap();
         conn
@@ -188,7 +180,10 @@ mod tests {
 
         // Watermark covers mid.out.sent (t=0s) and mid.out.delivered (t=1s);
         // mid.out.late (t=5h) must stay unread; inbound untouched; already-read stays read.
-        let wm = timestamp_to_epoch_millis("2026-08-21T00:00:01.500Z").unwrap().to_string();
+        let wm = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:01.500Z")
+            .unwrap()
+            .timestamp_millis()
+            .to_string();
         let advanced = apply_read_receipt(&conn, 500, &wm).unwrap();
         assert_eq!(advanced, 2, "sent + delivered advance to read");
 
@@ -201,9 +196,16 @@ mod tests {
         assert_eq!(status(3), "read", "already-read remains read");
         assert_eq!(status(4), "sent", "beyond-watermark outbound not advanced");
         assert_eq!(status(5), "received", "inbound never touched by read receipts");
+        assert_eq!(status(6), "failed", "concurrently-failed row must NOT become read (atomic predicate)");
 
         // Replay is a no-op (forward-only).
         assert_eq!(apply_read_receipt(&conn, 500, &wm).unwrap(), 0);
+    }
+
+    #[test]
+    fn negative_watermark_is_rejected() {
+        let conn = fixture_conn();
+        assert!(apply_read_receipt(&conn, 500, "-5").is_err());
     }
 
     #[test]
