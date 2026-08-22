@@ -1,9 +1,10 @@
 # Facebook Integration Phase 2 Implementation Plan: Post Scheduler, Resumable Video & Reels, Live Feed Previews & Planner
 
-- **Goal:** Deliver full Facebook post publishing and scheduling capabilities across all 6 post types (`status`, `link`, `photo`, `multi_photo`, `video`, `reel`), restart-resumable chunked video and Reel uploaders with exact server offset verification, dual-mode scheduler (Meta-side 10m–30d & local-queued >30d) with per-row token resolution, fail-closed atomic reconciliation with Graph status-type matching, and Svelte 5 Live Feed Preview.
+- **Goal:** Deliver full Facebook post publishing and scheduling capabilities across all 6 post types (`status`, `link`, `photo`, `multi_photo`, `video`, `reel`), a restart-resumable chunked video uploader with exact server offset verification plus a Meta-official single-request Reel uploader (`/video-upload/{video_id}` binary POST, recovery via Graph `status.uploading_phase`), dual-mode scheduler (Meta-side 10m–30d & local-queued >30d) with per-row token resolution, fail-closed atomic reconciliation with Graph status-type matching, and Svelte 5 Live Feed Preview.
 - **Architecture & Invariants:**
   - **Six-Type Multi-Publisher:** `FacebookPublisher::publish_post` supports status, link, photo, multi-photo, video, and reel.
-  - **Restart-Resumable Video & Reel Uploader:** `facebook_upload_sessions` persists active uploads. On resume, queries Meta's authoritative server offset and strictly validates bounds (`server_offset > offset && server_offset <= file_size`). Reels verifies `confirmed_offset == offset + bytes_to_read as u64`.
+  - **Restart-Resumable Video Uploader:** `facebook_upload_sessions` persists active video uploads. On resume, queries Meta's authoritative server offset and strictly validates bounds (`server_offset > offset && server_offset <= file_size`).
+  - **Meta-Official Local-Reel Uploader:** Reels use Meta's documented local-file contract — one binary POST to `https://rupload.facebook.com/video-upload/v26.0/{video_id}` with header `offset: 0`, expecting `{ "success": true }`. There is NO chunked/confirmed-offset protocol for Reels; START response-loss and post-FINISH recovery classify strictly via Graph `status.video_status`, `status.uploading_phase.status`, and `status.publishing_phase.status`, and re-streaming without an authoritative upload-complete signal is forbidden.
   - **Fail-Closed Promotion Worker:** `promote_local_queued_posts` claims rows with 5-minute atomic leases, resolves token and page ID per claimed row, strictly fails closed on corrupt timestamps (`error_code='invalid_timestamp'`), and transitions transport/5xx/empty-id errors to `delivery_unknown`.
   - **Multi-Endpoint Reconciliation:** Scans both `/scheduled_posts` and `/feed`, matches `post_type` to Graph `status_type`, normalizes numeric and ISO timestamps, sets `published` for `/feed` and `scheduled_on_meta` for `/scheduled_posts`.
 
@@ -2612,7 +2613,13 @@ impl FacebookUploader {
                 };
             }
 
-            let check_json: Value = check_resp.json().await.unwrap_or_default();
+            let check_json: Value = match check_resp.json().await {
+                Ok(j) => j,
+                Err(e) => return PublishApiResult::AmbiguousTransport {
+                    error_code: "malformed_json_response".to_string(),
+                    error_message: format!("Invalid JSON in Reel status polling response: {}", e),
+                },
+            };
             let video_status = check_json.get("status")
                 .and_then(|s| s.get("video_status"))
                 .and_then(|v| v.as_str())
@@ -2638,6 +2645,19 @@ impl FacebookUploader {
                     if rows == 1 {
                         return PublishApiResult::Success { remote_post_id: video_id };
                     }
+                }
+                // Release the possibly stream-extended lease via checked CAS before yielding,
+                // so reconciliation can re-claim on the next cycle instead of waiting out a
+                // long binary-upload lease deadline for a publication that Meta already completed.
+                let rows = conn.execute(
+                    "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+                    params![video_id, owner_id],
+                ).unwrap_or(0);
+                if rows != 1 {
+                    return PublishApiResult::DeterministicRejection {
+                        error_code: "session_lease_loss".to_string(),
+                        error_message: "Lost lease while releasing not-yet-live completed Reel".to_string(),
+                    };
                 }
                 return PublishApiResult::StillProcessing { upload_session_id: video_id };
             } else if video_status == "error" || publishing_status == "error" {
@@ -2681,16 +2701,18 @@ impl FacebookUploader {
 
 - **Promotion Worker:** Claims rows with `status='queued'`, queries `facebook_page_tokens` for the specific claimed row's `channel_account_id` and `page_id`, strictly parses RFC3339 timestamp (failing closed with `error_code='invalid_timestamp'` on parse failure), and sets `delivery_unknown` on transport timeout or 5xx.
 - **Reconciliation Engine:** Periodically claims `delivery_unknown` rows. Queries Graph API `/scheduled_posts` and `/feed` with pagination. Matches post type against Graph `status_type`, computes message SHA-256 hash, and verifies timestamp within 60s window. Sets `status='published'` for `/feed` matches and `status='scheduled_on_meta'` for `/scheduled_posts`.
-- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` in `init_pending`, `in_progress`, and `finishing` states via atomic lease token claim:
+- **Upload Session Background Reconciler:** Concurrently claims `facebook_upload_sessions` in `init_pending`, `in_progress`, and `finishing` states via atomic lease token claim. Eligibility uses ONE consistent retry-clock rule shared with `FacebookPublisher`: a session is claimable only when its own lease is free AND its parent post's `next_retry_at` backoff has elapsed, so the reconciler can never run ahead of the parent's Retry-After schedule nor observe a parent still in `queued`:
   ```sql
   UPDATE facebook_upload_sessions
   SET owner_id = ?1,
       lease_deadline = datetime('now', '+5 minutes'),
       updated_at = datetime('now')
   WHERE id = (
-      SELECT id FROM facebook_upload_sessions
-      WHERE status IN ('init_pending', 'in_progress', 'finishing')
-        AND (lease_deadline IS NULL OR lease_deadline < datetime('now'))
+      SELECT s.id FROM facebook_upload_sessions s
+      JOIN facebook_scheduled_posts p ON p.id = s.post_id
+      WHERE s.status IN ('init_pending', 'in_progress', 'finishing')
+        AND (s.lease_deadline IS NULL OR s.lease_deadline < datetime('now'))
+        AND (p.next_retry_at IS NULL OR p.next_retry_at <= datetime('now'))
       LIMIT 1
   ) RETURNING id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status;
   ```

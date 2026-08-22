@@ -4700,3 +4700,126 @@ fn test_facebook_uploader_429_backoff_sql_contract_binds_retry_after() {
         "background reconciler must not re-claim while Retry-After backoff is active"
     );
 }
+
+#[test]
+fn test_facebook_reel_post_finish_release_and_reconciler_parent_clock_eligibility() {
+    // Regression guards (Review 4998373731, findings 2/3):
+    // A) publishing_phase.status == 'complete' with unsuccessful feed/scheduled verification
+    //    must RELEASE the session lease via checked CAS before returning StillProcessing.
+    // B) The reconciler claim predicate must honor the parent post's next_retry_at, so a
+    //    Retry-After < 60s session can never be reconciled while its parent is still queued.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let plan_path = format!(
+        "{}/../docs/superpowers/plans/2026-08-21-facebook-integration-phase-2.md",
+        manifest_dir
+    );
+    let plan = std::fs::read_to_string(&plan_path).expect("phase-2 plan must exist");
+    assert!(
+        plan.contains("JOIN facebook_scheduled_posts p ON p.id = s.post_id")
+            && plan.contains("AND (p.next_retry_at IS NULL OR p.next_retry_at <= datetime('now'))"),
+        "reconciler claim predicate must join the parent post and require elapsed next_retry_at"
+    );
+
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (400, 'messenger', 'page_123', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, next_retry_at, created_at, updated_at)
+         VALUES (400, 'grp_400', 400, 'page_123', 'reel', 'clock divergence', 'idemp_400', 'queued', datetime('now', '+60 seconds'), datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // Parent in queued state with pending next_retry_at (+60s per publisher floor);
+    // session leased with a short +10s backoff deadline (Retry-After = 10 < 60).
+    conn.execute(
+        "INSERT INTO facebook_upload_sessions (post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+         VALUES (400, 'page_123', 'reel', 'sess_clock_divergence', 'meta_reel_400', '/tmp/reel400.mp4', 'hash_400', 2048, 0, 'finishing', 1, NULL, datetime('now', '+10 seconds'), datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    // B) Old predicate (session clock only) would reclaim now; the plan's predicate must NOT:
+    // the parent's next_retry_at is still pending while the session backoff already expired.
+    let premature_claim = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_reconciler', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE id = (
+             SELECT s.id FROM facebook_upload_sessions s
+             JOIN facebook_scheduled_posts p ON p.id = s.post_id
+             WHERE s.status IN ('init_pending', 'in_progress', 'finishing')
+               AND (s.lease_deadline IS NULL OR s.lease_deadline < datetime('now'))
+               AND (p.next_retry_at IS NULL OR p.next_retry_at <= datetime('now'))
+             LIMIT 1
+         )",
+        [],
+    ).unwrap();
+    assert_eq!(
+        premature_claim, 0,
+        "reconciler must not claim a session whose parent post is still inside next_retry_at backoff (Retry-After < 60 divergence)"
+    );
+
+    // Terminal propagation must never transition a queued parent: zero rows expected.
+    let propagation_on_queued = conn.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'published', remote_post_id = 'meta_reel_400', owner_id = NULL, claim_deadline = NULL, updated_at = datetime('now')
+         WHERE id = 400 AND status IN ('publishing', 'delivery_unknown')",
+        [],
+    ).unwrap();
+    assert_eq!(
+        propagation_on_queued, 0,
+        "terminal propagation cannot encounter (or mutate) a queued parent; it must roll back instead"
+    );
+
+    // After BOTH retry windows elapse, the same claim succeeds (one consistent rule).
+    conn.execute(
+        "UPDATE facebook_scheduled_posts SET next_retry_at = datetime('now', '-1 seconds'), updated_at = datetime('now') WHERE id = 400",
+        [],
+    ).unwrap();
+    conn.execute(
+        "UPDATE facebook_upload_sessions SET lease_deadline = datetime('now', '-1 seconds'), updated_at = datetime('now') WHERE upload_session_id = 'sess_clock_divergence'",
+        [],
+    ).unwrap();
+    let eligible_claim = conn.execute(
+        "UPDATE facebook_upload_sessions
+         SET owner_id = 'worker_reconciler', lease_deadline = datetime('now', '+5 minutes'), updated_at = datetime('now')
+         WHERE id = (
+             SELECT s.id FROM facebook_upload_sessions s
+             JOIN facebook_scheduled_posts p ON p.id = s.post_id
+             WHERE s.status IN ('init_pending', 'in_progress', 'finishing')
+               AND (s.lease_deadline IS NULL OR s.lease_deadline < datetime('now'))
+               AND (p.next_retry_at IS NULL OR p.next_retry_at <= datetime('now'))
+             LIMIT 1
+         )",
+        [],
+    ).unwrap();
+    assert_eq!(eligible_claim, 1);
+
+    // A) Post-FINISH early-return path: publishing complete but verification not live yet.
+    // The uploader holds a long stream-extended lease; the documented checked-CAS release
+    // (executed before returning StillProcessing) must free the lease immediately.
+    conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = 'worker_stream', lease_deadline = datetime('now', '+30 minutes'), updated_at = datetime('now')
+         WHERE upload_session_id = 'sess_clock_divergence'",
+        [],
+    ).unwrap();
+    let release_rows = conn.execute(
+        "UPDATE facebook_upload_sessions SET owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'finishing'",
+        params!["sess_clock_divergence", "worker_stream"],
+    ).unwrap();
+    assert_eq!(
+        release_rows, 1,
+        "not-yet-live completed Reel must release its stream-extended lease via checked CAS before StillProcessing"
+    );
+    let (owner_after, deadline_after): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT owner_id, lease_deadline FROM facebook_upload_sessions WHERE upload_session_id = 'sess_clock_divergence'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(owner_after.is_none() && deadline_after.is_none());
+}
