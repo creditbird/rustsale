@@ -41,14 +41,14 @@ pub(crate) fn resolve_facebook_channel_account_id(
     page_id: &str,
 ) -> Result<i64, String> {
     if requested_id > 0 {
-        let exists: bool = conn
+        let matches: bool = conn
             .query_row(
-                "SELECT 1 FROM channel_accounts WHERE id = ?1",
-                rusqlite::params![requested_id],
+                "SELECT 1 FROM channel_accounts WHERE id = ?1 AND provider_account_key = ?2 AND (channel = 'messenger' OR channel = 'facebook')",
+                rusqlite::params![requested_id, page_id],
                 |_| Ok(true),
             )
             .unwrap_or(false);
-        if exists {
+        if matches {
             return Ok(requested_id);
         }
     }
@@ -932,5 +932,20 @@ mod tests {
         // 4. Invalid channel_account_id and unknown page_id fails closed
         let res_err2 = resolve_facebook_channel_account_id(&conn, 999, "page_unknown");
         assert!(res_err2.is_err());
+
+        // 5. Cross-account mismatch: valid account ID 1 (page_123) with page_456
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, name)
+             VALUES (2, 'facebook', 'page_456', 'Second Page')",
+            [],
+        ).unwrap();
+
+        // When passing account 1 with page_456, it must resolve to account 2 (the true owner of page_456)
+        let res_mismatch = resolve_facebook_channel_account_id(&conn, 1, "page_456");
+        assert_eq!(res_mismatch.unwrap(), 2);
+
+        // When passing account 1 with unknown page_999, it must fail closed
+        let res_mismatch_err = resolve_facebook_channel_account_id(&conn, 1, "page_999");
+        assert!(res_mismatch_err.is_err());
     }
 }
