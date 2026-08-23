@@ -1,7 +1,8 @@
 use crate::conversation::commands::ConversationState;
 use crate::models::{
-    Activity, Category, Deal, EmailTemplate, Lead, ManagedFacebookAccount, ManagedSmtpAccount,
-    ManagedZaloAccount, SmtpServer, ZaloSessionStatus,
+    Activity, Category, Deal, DiscoveredFacebookPage, EmailTemplate, Lead, ManagedFacebookAccount,
+    ManagedSmtpAccount, ManagedZaloAccount, SaveFacebookAccountRequest, SmtpServer,
+    ZaloSessionStatus,
 };
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
@@ -1856,6 +1857,424 @@ pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Res
         .map_err(|e| format!("Database commit error: {}", e))?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn save_managed_facebook_account(
+    state: tauri::State<'_, DbState>,
+    request: SaveFacebookAccountRequest,
+) -> Result<ManagedFacebookAccount, String> {
+    let page_id = request.page_id.trim();
+    let access_token = request.access_token.trim();
+
+    if page_id.is_empty() {
+        return Err("Facebook Page ID cannot be empty".to_string());
+    }
+    if access_token.is_empty() {
+        return Err("Facebook Access Token cannot be empty".to_string());
+    }
+
+    // Verify token principal with Meta Graph API via token-relative /me endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
+
+    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,tasks";
+    let resp = client
+        .get(me_url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|e| {
+            let safe_err = e.to_string().replace(access_token, "[REDACTED]");
+            format!("Failed to verify token with Meta Graph API: {}", safe_err)
+        })?;
+
+    if !resp.status().is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        let safe_err = err_body.replace(access_token, "[REDACTED]");
+        return Err(format!("Meta token verification failed: {}", safe_err));
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let returned_id = body.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+    if returned_id != page_id {
+        return Err(format!(
+            "Access token principal ID '{}' does not match target Page ID '{}'",
+            returned_id, page_id
+        ));
+    }
+
+    // Positively verify principal type: Pages have a non-empty category in Meta Graph API; personal Users do not
+    let category_opt = body
+        .get("category")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty());
+    if category_opt.is_none() {
+        return Err("Access token represents a personal Facebook User profile, not a Facebook Fanpage. Please provide a Page Access Token.".to_string());
+    }
+
+    // Fetch granted App OAuth permissions from /me/permissions
+    let mut app_permissions = Vec::new();
+    let perms_url = "https://graph.facebook.com/v26.0/me/permissions";
+    if let Ok(perms_resp) = client.get(perms_url).bearer_auth(access_token).send().await {
+        if perms_resp.status().is_success() {
+            if let Ok(perms_body) = perms_resp.json::<serde_json::Value>().await {
+                app_permissions = parse_meta_app_permissions(&perms_body);
+            }
+        }
+    }
+
+    // Strict fail-closed capability resolution: strictly intersect Page tasks with verified App OAuth permissions
+    let task_scopes = if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
+        map_facebook_tasks_to_scopes(tasks)
+    } else {
+        vec!["pages_show_list".to_string()]
+    };
+
+    let verified_scopes = intersect_tasks_and_app_permissions(&task_scopes, &app_permissions);
+
+    let mut final_request = request;
+    final_request.granted_scopes = Some(verified_scopes);
+
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    save_managed_facebook_account_internal(&conn, final_request)
+}
+
+pub fn parse_meta_app_permissions(permissions_json: &serde_json::Value) -> Vec<String> {
+    let mut granted = Vec::new();
+    if let Some(data) = permissions_json.get("data").and_then(|d| d.as_array()) {
+        for item in data {
+            if let (Some(perm), Some(status)) = (
+                item.get("permission").and_then(|v| v.as_str()),
+                item.get("status").and_then(|v| v.as_str()),
+            ) {
+                if status == "granted" {
+                    granted.push(perm.to_string());
+                }
+            }
+        }
+    }
+    granted
+}
+
+pub fn intersect_tasks_and_app_permissions(
+    task_scopes: &[String],
+    app_permissions: &[String],
+) -> Vec<String> {
+    let mut effective = Vec::new();
+    for scope in task_scopes {
+        if app_permissions.iter().any(|p| p == scope) {
+            if !effective.iter().any(|s| s == scope) {
+                effective.push(scope.clone());
+            }
+        }
+    }
+    effective
+}
+
+pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> {
+    let mut scopes = vec!["pages_show_list".to_string()];
+    for t in tasks {
+        if let Some(s) = t.as_str() {
+            match s {
+                "PROFILE_PLUS_FULL_CONTROL" | "FULL_CONTROL" | "ADMINISTER" => {
+                    if !scopes.iter().any(|x| x == "pages_messaging") {
+                        scopes.push("pages_messaging".to_string());
+                    }
+                    if !scopes.iter().any(|x| x == "pages_manage_posts") {
+                        scopes.push("pages_manage_posts".to_string());
+                    }
+                    if !scopes.iter().any(|x| x == "pages_read_engagement") {
+                        scopes.push("pages_read_engagement".to_string());
+                    }
+                }
+                "PROFILE_PLUS_MESSAGING" | "MESSAGING" => {
+                    if !scopes.iter().any(|x| x == "pages_messaging") {
+                        scopes.push("pages_messaging".to_string());
+                    }
+                }
+                "PROFILE_PLUS_CREATE_CONTENT" | "CREATE_CONTENT" | "PROFILE_PLUS_MANAGE" | "MANAGE" => {
+                    if !scopes.iter().any(|x| x == "pages_manage_posts") {
+                        scopes.push("pages_manage_posts".to_string());
+                    }
+                }
+                "PROFILE_PLUS_MODERATE" | "MODERATE" | "PROFILE_PLUS_ANALYZE" | "ANALYZE" | "PROFILE_PLUS_ADVERTISE" | "ADVERTISE" => {
+                    if !scopes.iter().any(|x| x == "pages_read_engagement") {
+                        scopes.push("pages_read_engagement".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    scopes
+}
+
+pub fn save_managed_facebook_account_internal(
+    conn: &Connection,
+    request: SaveFacebookAccountRequest,
+) -> Result<ManagedFacebookAccount, String> {
+    let page_id = request.page_id.trim();
+    let access_token = request.access_token.trim();
+
+    if page_id.is_empty() {
+        return Err("Facebook Page ID cannot be empty".to_string());
+    }
+    if access_token.is_empty() {
+        return Err("Facebook Access Token cannot be empty".to_string());
+    }
+
+    let page_name = request
+        .page_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let avatar_url = request
+        .avatar_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let granted_scopes = request
+        .granted_scopes
+        .unwrap_or_default();
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Database transaction error: {}", e))?;
+
+    // 1. Insert or update channel_accounts
+    tx.execute(
+        "INSERT INTO channel_accounts (
+            channel, provider_account_key, display_name, avatar_url, enabled, connection_status, last_connected_at, created_at, updated_at
+        ) VALUES ('messenger', ?1, ?2, ?3, 1, 'connected', datetime('now'), datetime('now'), datetime('now'))
+        ON CONFLICT(channel, provider_account_key) DO UPDATE SET
+            display_name = COALESCE(EXCLUDED.display_name, channel_accounts.display_name),
+            avatar_url = COALESCE(EXCLUDED.avatar_url, channel_accounts.avatar_url),
+            enabled = 1,
+            connection_status = 'connected',
+            last_connected_at = datetime('now'),
+            last_error = NULL,
+            updated_at = datetime('now')",
+        rusqlite::params![page_id, page_name, avatar_url],
+    )
+    .map_err(|e| format!("Failed to upsert channel account: {}", e))?;
+
+    let channel_account_id: i64 = tx
+        .query_row(
+            "SELECT id FROM channel_accounts WHERE channel = 'messenger' AND provider_account_key = ?1",
+            rusqlite::params![page_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to query channel account id: {}", e))?;
+
+    // 2. Encrypt and store page token in OS keyring-backed token vault
+    crate::facebook::vault::FacebookTokenVault::encrypt_and_upsert_page_token(
+        &tx,
+        channel_account_id,
+        page_id,
+        access_token,
+        &granted_scopes,
+    )
+    .map_err(|e| format!("Failed to encrypt page token in vault: {}", e))?;
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+    // 3. Return the populated ManagedFacebookAccount
+    let accounts = get_managed_facebook_accounts_internal(conn)?;
+    accounts
+        .into_iter()
+        .find(|a| a.page_id == page_id)
+        .ok_or_else(|| "Failed to retrieve saved facebook account".to_string())
+}
+
+#[tauri::command]
+pub async fn fetch_facebook_pages_from_token(
+    token: String,
+) -> Result<Vec<DiscoveredFacebookPage>, String> {
+    fetch_facebook_pages_from_token_internal(&token).await
+}
+
+pub async fn fetch_facebook_pages_from_token_internal(
+    token: &str,
+) -> Result<Vec<DiscoveredFacebookPage>, String> {
+    let clean_token = token.trim();
+    if clean_token.is_empty() {
+        return Err("Access token cannot be empty".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
+
+    // Query /me/permissions to retrieve granted App OAuth permissions
+    let mut app_permissions = Vec::new();
+    let perms_url = "https://graph.facebook.com/v26.0/me/permissions";
+    if let Ok(perms_resp) = client.get(perms_url).bearer_auth(clean_token).send().await {
+        if perms_resp.status().is_success() {
+            if let Ok(perms_body) = perms_resp.json::<serde_json::Value>().await {
+                app_permissions = parse_meta_app_permissions(&perms_body);
+            }
+        }
+    }
+
+    // 1. Query /me/accounts (User Token managing multiple pages) with Bearer auth (never in query string)
+    let mut pages = Vec::new();
+    let mut next_url = Some(
+        "https://graph.facebook.com/v26.0/me/accounts?fields=id,name,access_token,category,tasks,perms,picture.type(large)&limit=100".to_string()
+    );
+    let mut page_count_limit = 0;
+
+    while let Some(url) = next_url.take() {
+        if page_count_limit >= 5 {
+            // Cap at 500 pages (5 pages of 100) to prevent unbounded loops
+            break;
+        }
+        page_count_limit += 1;
+
+        let resp = match client.get(&url).bearer_auth(clean_token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                // Redact any potential query parameters/tokens from error
+                let safe_err = e.to_string().replace(clean_token, "[REDACTED]");
+                return Err(format!("Failed to connect to Meta Graph API: {}", safe_err));
+            }
+        };
+
+        let status = resp.status();
+        let resp_text = resp.text().await.unwrap_or_default();
+
+        if status.is_success() {
+            if let Ok(body) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+                if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+                    for item in data {
+                        if let (Some(id), Some(name), Some(access_token)) = (
+                            item.get("id").and_then(|v| v.as_str()),
+                            item.get("name").and_then(|v| v.as_str()),
+                            item.get("access_token").and_then(|v| v.as_str()),
+                        ) {
+                            let category = item.get("category").and_then(|v| v.as_str()).map(String::from);
+                            let avatar_url = item
+                                .get("picture")
+                                .and_then(|p| p.get("data"))
+                                .and_then(|d| d.get("url"))
+                                .and_then(|u| u.as_str())
+                                .map(String::from);
+
+                            // Extract actual granted tasks or permissions accurately (supports New Pages Experience & legacy tasks)
+                            let raw_task_scopes = if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
+                                map_facebook_tasks_to_scopes(tasks)
+                            } else if let Some(p_arr) = item.get("perms").and_then(|p| p.as_array()) {
+                                let mut p_scopes = vec!["pages_show_list".to_string()];
+                                for p in p_arr {
+                                    if let Some(p_str) = p.as_str() {
+                                        if p_str == "ADMINISTER" || p_str == "EDIT_PROFILE" {
+                                            if !p_scopes.iter().any(|s| s == "pages_messaging") {
+                                                p_scopes.push("pages_messaging".to_string());
+                                            }
+                                            if !p_scopes.iter().any(|s| s == "pages_manage_posts") {
+                                                p_scopes.push("pages_manage_posts".to_string());
+                                            }
+                                            if !p_scopes.iter().any(|s| s == "pages_read_engagement") {
+                                                p_scopes.push("pages_read_engagement".to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                                p_scopes
+                            } else {
+                                vec!["pages_show_list".to_string()]
+                            };
+
+                            let perms = intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions);
+
+                            pages.push(DiscoveredFacebookPage {
+                                id: id.to_string(),
+                                name: name.to_string(),
+                                category,
+                                avatar_url,
+                                access_token: access_token.to_string(),
+                                permissions: perms,
+                            });
+                        }
+                    }
+                }
+
+                // Handle pagination if more than 100 pages exist (with origin validation)
+                if let Some(next) = body
+                    .get("paging")
+                    .and_then(|p| p.get("next"))
+                    .and_then(|n| n.as_str())
+                {
+                    if next.starts_with("https://graph.facebook.com/") {
+                        next_url = Some(next.to_string());
+                    }
+                }
+            }
+        } else {
+            // Check if error response has a specific message
+            if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+                if let Some(err_msg) = err_json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                    return Err(format!("Meta Graph API error: {}", err_msg));
+                }
+            }
+            break;
+        }
+    }
+
+    if !pages.is_empty() {
+        return Ok(pages);
+    }
+
+    // 2. If /me/accounts returned no pages (empty data), check if token was a direct Page Access Token via GET /me
+    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,tasks,picture.type(large)";
+    if let Ok(me_resp) = client.get(me_url).bearer_auth(clean_token).send().await {
+        let me_status = me_resp.status();
+        let me_text = me_resp.text().await.unwrap_or_default();
+        if me_status.is_success() {
+            if let Ok(me_body) = serde_json::from_str::<serde_json::Value>(&me_text) {
+                // Positively verify that this is a Page (Pages have a non-empty `category` field in Meta Graph API; Users do not)
+                let category_opt = me_body.get("category").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+                if let (Some(id), Some(name), Some(category)) = (
+                    me_body.get("id").and_then(|v| v.as_str()),
+                    me_body.get("name").and_then(|v| v.as_str()),
+                    category_opt,
+                ) {
+                    let avatar_url = me_body
+                        .get("picture")
+                        .and_then(|p| p.get("data"))
+                        .and_then(|d| d.get("url"))
+                        .and_then(|u| u.as_str())
+                        .map(String::from);
+
+                    let raw_task_scopes = if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
+                        map_facebook_tasks_to_scopes(tasks)
+                    } else {
+                        vec!["pages_show_list".to_string()]
+                    };
+
+                    let perms = intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions);
+
+                    return Ok(vec![DiscoveredFacebookPage {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        category: Some(category.to_string()),
+                        avatar_url,
+                        access_token: clean_token.to_string(),
+                        permissions: perms,
+                    }]);
+                }
+            }
+        }
+    }
+
+    Err("No Facebook Fanpages found for this account. Ensure you have admin access to at least one Fanpage and granted 'pages_show_list' permission.".to_string())
 }
 
 #[tauri::command]

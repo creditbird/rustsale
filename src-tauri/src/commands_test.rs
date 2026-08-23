@@ -786,6 +786,221 @@ mod tests {
     }
 
     #[test]
+    fn test_save_managed_facebook_account_success() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        let req = crate::models::SaveFacebookAccountRequest {
+            page_id: "page_new_456".to_string(),
+            page_name: Some("My Business Fanpage".to_string()),
+            avatar_url: Some("https://example.com/avatar.jpg".to_string()),
+            access_token: "EAA_test_access_token_12345".to_string(),
+            granted_scopes: Some(vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string(),
+            ]),
+        };
+
+        let saved = commands::save_managed_facebook_account_internal(&conn, req).unwrap();
+        assert_eq!(saved.page_id, "page_new_456");
+        assert_eq!(saved.page_name.as_deref(), Some("My Business Fanpage"));
+        assert_eq!(
+            saved.avatar_url.as_deref(),
+            Some("https://example.com/avatar.jpg")
+        );
+        assert_eq!(saved.token_status, "valid");
+        assert_eq!(saved.runtime_status, "connected");
+        assert_eq!(
+            saved.granted_scopes,
+            vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string()
+            ]
+        );
+
+        // Verify token in vault can be decrypted with the same channel_account_id
+        let decrypted_token = crate::facebook::vault::FacebookTokenVault::get_valid_page_token(
+            &conn,
+            saved.channel_account_id,
+            "page_new_456",
+        )
+        .unwrap();
+        assert_eq!(decrypted_token, "EAA_test_access_token_12345");
+
+        // Verify listing reflects the newly saved account
+        let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].page_id, "page_new_456");
+    }
+
+    #[test]
+    fn test_save_managed_facebook_account_validation() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        // Empty page_id
+        let err_page = commands::save_managed_facebook_account_internal(
+            &conn,
+            crate::models::SaveFacebookAccountRequest {
+                page_id: "".to_string(),
+                page_name: Some("Page".to_string()),
+                avatar_url: None,
+                access_token: "tok123".to_string(),
+                granted_scopes: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err_page.contains("Page ID cannot be empty"));
+
+        // Empty access_token
+        let err_token = commands::save_managed_facebook_account_internal(
+            &conn,
+            crate::models::SaveFacebookAccountRequest {
+                page_id: "123".to_string(),
+                page_name: Some("Page".to_string()),
+                avatar_url: None,
+                access_token: "   ".to_string(),
+                granted_scopes: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err_token.contains("Access Token cannot be empty"));
+    }
+
+    #[test]
+    fn test_save_managed_facebook_account_defaults_to_minimal_scopes() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        let req = crate::models::SaveFacebookAccountRequest {
+            page_id: "page_minimal_111".to_string(),
+            page_name: Some("Minimal Scopes Page".to_string()),
+            avatar_url: None,
+            access_token: "EAA_test_token_minimal".to_string(),
+            granted_scopes: None,
+        };
+
+        let saved = commands::save_managed_facebook_account_internal(&conn, req).unwrap();
+        assert_eq!(saved.page_id, "page_minimal_111");
+        assert!(saved.granted_scopes.is_empty());
+    }
+
+    #[test]
+    fn test_map_facebook_tasks_to_scopes_exact_and_failclosed() {
+        // 1. NPE Profile Plus Full Control grants full page management scopes
+        let full_control_tasks = vec![serde_json::json!("PROFILE_PLUS_FULL_CONTROL")];
+        let scopes = commands::map_facebook_tasks_to_scopes(&full_control_tasks);
+        assert!(scopes.contains(&"pages_show_list".to_string()));
+        assert!(scopes.contains(&"pages_messaging".to_string()));
+        assert!(scopes.contains(&"pages_manage_posts".to_string()));
+        assert!(scopes.contains(&"pages_read_engagement".to_string()));
+
+        // 2. Exact NPE granular tasks
+        let npe_tasks = vec![
+            serde_json::json!("PROFILE_PLUS_MESSAGING"),
+            serde_json::json!("PROFILE_PLUS_CREATE_CONTENT"),
+            serde_json::json!("PROFILE_PLUS_ANALYZE"),
+        ];
+        let npe_scopes = commands::map_facebook_tasks_to_scopes(&npe_tasks);
+        assert_eq!(
+            npe_scopes,
+            vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string(),
+                "pages_read_engagement".to_string(),
+            ]
+        );
+
+        // 3. Legacy task names
+        let legacy_tasks = vec![
+            serde_json::json!("MESSAGING"),
+            serde_json::json!("MANAGE"),
+            serde_json::json!("MODERATE"),
+        ];
+        let legacy_scopes = commands::map_facebook_tasks_to_scopes(&legacy_tasks);
+        assert_eq!(
+            legacy_scopes,
+            vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string(),
+                "pages_read_engagement".to_string(),
+            ]
+        );
+
+        // 4. Unknown task names and lookalikes fail closed strictly to pages_show_list
+        let unknown_tasks = vec![
+            serde_json::json!("PROFILE_PLUS_NOT_MESSAGING"),
+            serde_json::json!("UNKNOWN_FUTURE_CAPABILITY"),
+            serde_json::json!("MANAGE_PAYMENTS_ONLY"),
+        ];
+        let unknown_scopes = commands::map_facebook_tasks_to_scopes(&unknown_tasks);
+        assert_eq!(unknown_scopes, vec!["pages_show_list".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_meta_app_permissions() {
+        let json = serde_json::json!({
+            "data": [
+                { "permission": "pages_show_list", "status": "granted" },
+                { "permission": "pages_messaging", "status": "granted" },
+                { "permission": "pages_manage_posts", "status": "declined" },
+                { "permission": "user_friends", "status": "expired" },
+            ]
+        });
+
+        let perms = commands::parse_meta_app_permissions(&json);
+        assert_eq!(perms, vec!["pages_show_list", "pages_messaging"]);
+
+        // Malformed, empty, or all declined JSON returns empty
+        assert!(commands::parse_meta_app_permissions(&serde_json::json!({})).is_empty());
+        assert!(commands::parse_meta_app_permissions(&serde_json::json!({"data": []})).is_empty());
+    }
+
+    #[test]
+    fn test_intersect_tasks_and_app_permissions_enforces_dual_authorization() {
+        let full_task_scopes = vec![
+            "pages_show_list".to_string(),
+            "pages_messaging".to_string(),
+            "pages_manage_posts".to_string(),
+            "pages_read_engagement".to_string(),
+        ];
+
+        // 1. App only granted pages_messaging and pages_show_list: effective scopes MUST ONLY include those two
+        let app_perms_messaging_only = vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
+        let effective1 = commands::intersect_tasks_and_app_permissions(&full_task_scopes, &app_perms_messaging_only);
+        assert_eq!(effective1, vec!["pages_show_list".to_string(), "pages_messaging".to_string()]);
+
+        // 2. App granted all permissions, but Page task only grants pages_messaging:
+        let messaging_task_only = vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
+        let app_perms_all = vec![
+            "pages_show_list".to_string(),
+            "pages_messaging".to_string(),
+            "pages_manage_posts".to_string(),
+            "pages_read_engagement".to_string(),
+        ];
+        let effective2 = commands::intersect_tasks_and_app_permissions(&messaging_task_only, &app_perms_all);
+        assert_eq!(effective2, vec!["pages_show_list".to_string(), "pages_messaging".to_string()]);
+
+        // 3. App permissions missing pages_show_list: strict mathematical intersection does not include pages_show_list
+        let app_perms_no_show_list = vec!["pages_messaging".to_string()];
+        let effective3 = commands::intersect_tasks_and_app_permissions(&full_task_scopes, &app_perms_no_show_list);
+        assert_eq!(effective3, vec!["pages_messaging".to_string()]);
+
+        // 4. Empty app permissions (e.g. API/network failure, zero grants): strictly empty (fails closed)
+        let effective_empty = commands::intersect_tasks_and_app_permissions(&full_task_scopes, &[]);
+        assert!(effective_empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_facebook_pages_empty_token_validation() {
+        let err = commands::fetch_facebook_pages_from_token_internal("   ")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Access token cannot be empty"));
+    }
+
+    #[test]
     fn test_zalo_qr_session_rejects_callback_without_device_imei() {
         let conn = db::init_db(":memory:").unwrap();
         let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".to_string();

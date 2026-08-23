@@ -139,6 +139,27 @@ pub struct ManagedFacebookAccount {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SaveFacebookAccountRequest {
+    pub page_id: String,
+    pub page_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub access_token: String,
+    pub granted_scopes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredFacebookPage {
+    pub id: String,
+    pub name: String,
+    pub category: Option<String>,
+    pub avatar_url: Option<String>,
+    pub access_token: String,
+    pub permissions: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ManagedSmtpAccount {
     pub id: i32,
     pub name: String,
