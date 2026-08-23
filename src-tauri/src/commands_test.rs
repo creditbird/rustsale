@@ -867,6 +867,23 @@ mod tests {
         assert!(err_token.contains("Access Token cannot be empty"));
     }
 
+    #[test]
+    fn test_save_managed_facebook_account_defaults_to_minimal_scopes() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        let req = crate::models::SaveFacebookAccountRequest {
+            page_id: "page_minimal_111".to_string(),
+            page_name: Some("Minimal Scopes Page".to_string()),
+            avatar_url: None,
+            access_token: "EAA_test_token_minimal".to_string(),
+            granted_scopes: None,
+        };
+
+        let saved = commands::save_managed_facebook_account_internal(&conn, req).unwrap();
+        assert_eq!(saved.page_id, "page_minimal_111");
+        assert_eq!(saved.granted_scopes, vec!["pages_show_list".to_string()]);
+    }
+
     #[tokio::test]
     async fn test_fetch_facebook_pages_empty_token_validation() {
         let err = commands::fetch_facebook_pages_from_token_internal("   ")

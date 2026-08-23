@@ -1906,7 +1906,7 @@ pub async fn save_managed_facebook_account(
         ));
     }
 
-    // Strict fail-closed capability resolution
+    // Strict fail-closed capability resolution: only capabilities directly proven by Meta are saved
     let mut verified_scopes = vec!["pages_show_list".to_string()];
     if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
         for task in tasks {
@@ -1929,13 +1929,6 @@ pub async fn save_managed_facebook_account(
                     }
                     _ => {}
                 }
-            }
-        }
-    } else if let Some(req_scopes) = request.granted_scopes.as_ref() {
-        // If discovery previously extracted tasks, intersect with caller-supplied verified scopes
-        for s in req_scopes {
-            if !verified_scopes.iter().any(|existing| existing == s) {
-                verified_scopes.push(s.clone());
             }
         }
     }
@@ -1974,14 +1967,9 @@ pub fn save_managed_facebook_account_internal(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let granted_scopes = request.granted_scopes.unwrap_or_else(|| {
-        vec![
-            "pages_show_list".to_string(),
-            "pages_read_engagement".to_string(),
-            "pages_manage_posts".to_string(),
-            "pages_messaging".to_string(),
-        ]
-    });
+    let granted_scopes = request
+        .granted_scopes
+        .unwrap_or_else(|| vec!["pages_show_list".to_string()]);
 
     let tx = conn
         .unchecked_transaction()
