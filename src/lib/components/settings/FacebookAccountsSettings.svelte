@@ -126,7 +126,7 @@
       crypto.getRandomValues(bytes);
       return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
     }
-    return Math.random().toString(36).substring(2, 15);
+    throw new Error('Web Crypto API is required for secure OAuth state generation');
   }
 
   function openConnectModal() {
@@ -148,8 +148,13 @@
     const trimmed = raw.trim();
     if (!trimmed) return { token: '' };
 
-    // If OAuth flow was initiated in this session, require valid state correlation
-    if (oauthStateNonce) {
+    if (connectTab === 'oauth') {
+      if (!oauthStateNonce) {
+        return {
+          token: '',
+          error: "Please click 'Open Meta Login' to initiate authentication session before pasting."
+        };
+      }
       const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
       if (!stateMatch || !stateMatch[1]) {
         return {

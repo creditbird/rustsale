@@ -1874,60 +1874,74 @@ pub async fn save_managed_facebook_account(
         return Err("Facebook Access Token cannot be empty".to_string());
     }
 
-    // Verify token with Meta Graph API if it's a live access token
-    let verified_scopes = if access_token.starts_with("EAA") && !access_token.contains("test") {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
-        let verify_url = format!("https://graph.facebook.com/v26.0/{}?fields=id,name,category,tasks", page_id);
-        let resp = client
-            .get(&verify_url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| {
-                let safe_err = e.to_string().replace(access_token, "[REDACTED]");
-                format!("Failed to verify Page token with Meta Graph API: {}", safe_err)
-            })?;
+    // Verify token principal with Meta Graph API via token-relative /me endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
-        if !resp.status().is_success() {
-            let err_body = resp.text().await.unwrap_or_default();
-            return Err(format!("Meta Page token verification failed: {}", err_body));
-        }
+    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,tasks";
+    let resp = client
+        .get(me_url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|e| {
+            let safe_err = e.to_string().replace(access_token, "[REDACTED]");
+            format!("Failed to verify token with Meta Graph API: {}", safe_err)
+        })?;
 
-        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        let returned_id = body.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        if returned_id != page_id {
-            return Err(format!("Token belongs to Page ID '{}', not '{}'", returned_id, page_id));
-        }
+    if !resp.status().is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        let safe_err = err_body.replace(access_token, "[REDACTED]");
+        return Err(format!("Meta token verification failed: {}", safe_err));
+    }
 
-        let mut scopes = vec!["pages_show_list".to_string()];
-        if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
-            for task in tasks {
-                if let Some(t_str) = task.as_str() {
-                    match t_str {
-                        "MESSAGING" => scopes.push("pages_messaging".to_string()),
-                        "MANAGE" | "CREATE_CONTENT" => scopes.push("pages_manage_posts".to_string()),
-                        "MODERATE" | "ANALYZE" => scopes.push("pages_read_engagement".to_string()),
-                        _ => {}
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let returned_id = body.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+    if returned_id != page_id {
+        return Err(format!(
+            "Access token principal ID '{}' does not match target Page ID '{}'",
+            returned_id, page_id
+        ));
+    }
+
+    // Strict fail-closed capability resolution
+    let mut verified_scopes = vec!["pages_show_list".to_string()];
+    if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
+        for task in tasks {
+            if let Some(t_str) = task.as_str() {
+                match t_str {
+                    "MESSAGING" => {
+                        if !verified_scopes.iter().any(|s| s == "pages_messaging") {
+                            verified_scopes.push("pages_messaging".to_string());
+                        }
                     }
+                    "MANAGE" | "CREATE_CONTENT" => {
+                        if !verified_scopes.iter().any(|s| s == "pages_manage_posts") {
+                            verified_scopes.push("pages_manage_posts".to_string());
+                        }
+                    }
+                    "MODERATE" | "ANALYZE" => {
+                        if !verified_scopes.iter().any(|s| s == "pages_read_engagement") {
+                            verified_scopes.push("pages_read_engagement".to_string());
+                        }
+                    }
+                    _ => {}
                 }
             }
-        } else {
-            scopes.push("pages_read_engagement".to_string());
-            scopes.push("pages_manage_posts".to_string());
-            scopes.push("pages_messaging".to_string());
         }
-        Some(scopes)
-    } else {
-        request.granted_scopes.clone()
-    };
+    } else if let Some(req_scopes) = request.granted_scopes.as_ref() {
+        // If discovery previously extracted tasks, intersect with caller-supplied verified scopes
+        for s in req_scopes {
+            if !verified_scopes.iter().any(|existing| existing == s) {
+                verified_scopes.push(s.clone());
+            }
+        }
+    }
 
     let mut final_request = request;
-    if let Some(scopes) = verified_scopes {
-        final_request.granted_scopes = Some(scopes);
-    }
+    final_request.granted_scopes = Some(verified_scopes);
 
     let conn = state
         .conn

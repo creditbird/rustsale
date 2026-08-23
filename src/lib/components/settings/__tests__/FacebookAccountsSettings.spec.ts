@@ -125,8 +125,22 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
     expect(screen.getByText(/Login with Facebook \(OAuth\)/i)).toBeTruthy();
 
+    let capturedAuthUrl = '';
+    window.open = (url?: string | URL) => {
+      capturedAuthUrl = String(url);
+      return null;
+    };
+
+    const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openLoginBtn);
+
+    const stateMatch = capturedAuthUrl.match(/state=([^&]+)/);
+    expect(stateMatch).toBeTruthy();
+
     const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
-    await fireEvent.input(tokenInput, { target: { value: 'EAAB_user_token_abc' } });
+    await fireEvent.input(tokenInput, {
+      target: { value: `https://facebook.com/connect/login_success.html#access_token=EAAB_user_token_abc&state=${stateMatch![1]}` }
+    });
 
     const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
     await fireEvent.click(fetchBtn);
