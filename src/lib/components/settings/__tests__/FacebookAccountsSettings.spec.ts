@@ -138,6 +138,9 @@ describe('FacebookAccountsSettings', () => {
       return null;
     };
 
+    const advBtn = screen.getByRole('button', { name: /Advanced Settings/i });
+    await fireEvent.click(advBtn);
+
     const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
     await fireEvent.input(appIdInput, { target: { value: '1075678647572774' } });
 
@@ -165,7 +168,7 @@ describe('FacebookAccountsSettings', () => {
     await fireEvent.click(fetchBtn);
 
     expect(await screen.findByText('Discovered Coffee Page')).toBeTruthy();
-    expect(screen.getByText(/Found 1 Fanpage\(s\)/i)).toBeTruthy();
+    expect(screen.getByText(/Discovered Fanpages/i)).toBeTruthy();
 
     const connectSelectedBtn = screen.getByRole('button', { name: /Connect Selected Pages/i });
     await fireEvent.click(connectSelectedBtn);
@@ -203,6 +206,9 @@ describe('FacebookAccountsSettings', () => {
     render(FacebookAccountsSettings);
 
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    const advBtn = screen.getByRole('button', { name: /Advanced Settings/i });
+    await fireEvent.click(advBtn);
 
     const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
     await fireEvent.input(appIdInput, { target: { value: '1075678647572774' } });
@@ -244,11 +250,14 @@ describe('FacebookAccountsSettings', () => {
 
     expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
 
+    const advBtn = screen.getByRole('button', { name: /Advanced Settings/i });
+    await fireEvent.click(advBtn);
+
     const copyCallbackBtn = screen.getByRole('button', { name: /Copy Callback URL/i });
     await fireEvent.click(copyCallbackBtn);
 
     expect(clipboardText).toContain('/auth/v1/callback');
-    expect(await screen.findByText(/Copied Callback URL/i)).toBeTruthy();
+    expect(await screen.findByText(/Copied/i)).toBeTruthy();
   });
 
   test('extracts provider_token from Supabase OAuth redirect URL', async () => {
@@ -312,6 +321,9 @@ describe('FacebookAccountsSettings', () => {
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
 
     expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    const advBtn = screen.getByRole('button', { name: /Advanced Settings/i });
+    await fireEvent.click(advBtn);
 
     const redirectInput = screen.getByPlaceholderText(/https:\/\/<project-ref>\.supabase\.co/i);
     await fireEvent.input(redirectInput, { target: { value: 'javascript:alert(1)' } });
@@ -397,6 +409,9 @@ describe('FacebookAccountsSettings', () => {
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
 
     expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    const advBtn = screen.getByRole('button', { name: /Advanced Settings/i });
+    await fireEvent.click(advBtn);
 
     const redirectInput = screen.getByPlaceholderText(/https:\/\/<project-ref>\.supabase\.co/i);
     await fireEvent.input(redirectInput, { target: { value: 'https://rustsale.trantrongtri.com.attacker.com/oauth/callback' } });

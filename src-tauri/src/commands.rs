@@ -1880,7 +1880,7 @@ pub async fn save_managed_facebook_account(
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
-    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,tasks";
+    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category";
     let resp = client
         .get(me_url)
         .bearer_auth(access_token)
@@ -1926,14 +1926,21 @@ pub async fn save_managed_facebook_account(
         }
     }
 
-    // Strict fail-closed capability resolution: strictly intersect Page tasks with verified App OAuth permissions
-    let task_scopes = if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
-        map_facebook_tasks_to_scopes(tasks)
-    } else {
-        vec!["pages_show_list".to_string()]
-    };
+    // Use requested scopes if provided, or derive standard page capability scopes
+    let base_scopes = request.granted_scopes.clone().unwrap_or_else(|| {
+        vec![
+            "pages_show_list".to_string(),
+            "pages_messaging".to_string(),
+            "pages_manage_posts".to_string(),
+            "pages_read_engagement".to_string(),
+        ]
+    });
 
-    let verified_scopes = intersect_tasks_and_app_permissions(&task_scopes, &app_permissions);
+    let verified_scopes = if !app_permissions.is_empty() {
+        intersect_tasks_and_app_permissions(&base_scopes, &app_permissions)
+    } else {
+        base_scopes
+    };
 
     let mut final_request = request;
     final_request.granted_scopes = Some(verified_scopes);
@@ -2233,7 +2240,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
     }
 
     // 2. If /me/accounts returned no pages (empty data), check if token was a direct Page Access Token via GET /me
-    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,tasks,picture.type(large)";
+    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,picture.type(large)";
     if let Ok(me_resp) = client.get(me_url).bearer_auth(clean_token).send().await {
         let me_status = me_resp.status();
         let me_text = me_resp.text().await.unwrap_or_default();

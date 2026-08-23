@@ -63,6 +63,8 @@
     AlertCircle,
     Check,
     CheckCircle2,
+    ChevronDown,
+    ChevronUp,
     Clock3,
     Copy,
     ExternalLink,
@@ -71,6 +73,7 @@
     MessagesSquare,
     Plus,
     RefreshCw,
+    Settings2,
     ShieldCheck,
     Trash2,
     Wifi,
@@ -177,12 +180,15 @@
     throw new Error('Web Crypto API is required for secure OAuth state generation');
   }
 
+  let showAdvanced = $state(false);
+
   function openConnectModal() {
     connectTab = 'oauth';
     oauthTokenOrUrl = '';
     oauthStateNonce = null;
     oauthAuthUrl = null;
     copiedAuthUrl = false;
+    showAdvanced = false;
     customAppId =
       (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
       import.meta.env.VITE_FACEBOOK_APP_ID ||
@@ -416,13 +422,23 @@
     selectedPageIds = next;
   }
 
+  function toggleSelectAllPages() {
+    if (selectedPageIds.size === discoveredPages.length) {
+      selectedPageIds = new Set();
+    } else {
+      selectedPageIds = new Set(discoveredPages.map((p) => p.id));
+    }
+  }
+
   async function handleSaveDiscoveredPages() {
     if (selectedPageIds.size === 0) {
       modalError = 'Please select at least one Fanpage to connect.';
+      modalSuccess = null;
       return;
     }
 
     modalError = null;
+    modalSuccess = null;
     isSavingPages = true;
 
     try {
@@ -441,6 +457,7 @@
       connectModalOpen = false;
     } catch (e) {
       modalError = e instanceof Error ? e.message : String(e);
+      modalSuccess = null;
     } finally {
       isSavingPages = false;
     }
@@ -694,8 +711,8 @@
 
 <!-- Connect Fanpage Modal -->
 <Dialog.Root bind:open={connectModalOpen}>
-  <Dialog.Content class="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
-    <Dialog.Header>
+  <Dialog.Content class="max-w-lg max-h-[85vh] flex flex-col p-0 overflow-hidden" onInteractOutside={(e) => e.preventDefault()}>
+    <Dialog.Header class="px-6 pt-5 pb-3 border-b border-border/50 shrink-0">
       <Dialog.Title class="flex items-center gap-2 text-base">
         <MessagesSquare class="size-5 text-blue-600" />
         Connect Facebook Fanpage
@@ -703,259 +720,308 @@
       <Dialog.Description class="text-xs text-muted-foreground">
         Link your Meta Fanpage to enable 2-way Messenger synchronization, post scheduling, and comment automations.
       </Dialog.Description>
+
+      <!-- Tab Switcher -->
+      <div class="flex border-b border-border mt-3 text-xs">
+        <button
+          type="button"
+          onclick={() => {
+            connectTab = 'oauth';
+            modalError = null;
+            modalSuccess = null;
+          }}
+          class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'oauth' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+        >
+          Login with Facebook (OAuth)
+        </button>
+        <button
+          type="button"
+          onclick={() => {
+            connectTab = 'manual';
+            oauthStateNonce = null;
+            modalError = null;
+            modalSuccess = null;
+          }}
+          class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'manual' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+        >
+          Manual Access Token
+        </button>
+      </div>
     </Dialog.Header>
 
-    <!-- Tab Switcher -->
-    <div class="flex border-b border-border mb-3 text-xs">
-      <button
-        type="button"
-        onclick={() => {
-          connectTab = 'oauth';
-          modalError = null;
-        }}
-        class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'oauth' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
-      >
-        Login with Facebook (OAuth)
-      </button>
-      <button
-        type="button"
-        onclick={() => {
-          connectTab = 'manual';
-          oauthStateNonce = null;
-          modalError = null;
-        }}
-        class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'manual' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
-      >
-        Manual Access Token
-      </button>
-    </div>
-
-    {#if modalError}
-      <div class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive mb-2">
-        <AlertCircle class="size-4 shrink-0 mt-0.5" />
-        <span>{modalError}</span>
-      </div>
-    {/if}
-
-    {#if modalSuccess}
-      <div class="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-700 dark:text-emerald-400 mb-2">
-        <CheckCircle2 class="size-4 shrink-0 mt-0.5" />
-        <span>{modalSuccess}</span>
-      </div>
-    {/if}
-
-    {#if connectTab === 'oauth'}
-      <div class="flex flex-col gap-3 py-1 text-xs">
-        <!-- Meta App ID Input -->
-        <div class="flex flex-col gap-1">
-          <div class="flex items-center justify-between">
-            <label for="meta-app-id-input" class="text-xs font-medium text-foreground">
-              Meta App ID
-            </label>
-            <a
-              href="https://developers.facebook.com/apps"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
-            >
-              developers.facebook.com
-              <ExternalLink class="size-2.5" />
-            </a>
-          </div>
-          <Input
-            id="meta-app-id-input"
-            type="text"
-            bind:value={customAppId}
-            oninput={(e) => handleAppIdChange(e.currentTarget.value)}
-            placeholder="Enter App ID (e.g. 102938475610293) or set VITE_FACEBOOK_APP_ID in .env"
-            class="text-xs font-mono"
-          />
+    <div class="flex-1 overflow-y-auto px-6 py-3.5 flex flex-col gap-3 min-h-0">
+      {#if modalError}
+        <div class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive shrink-0">
+          <AlertCircle class="size-4 shrink-0 mt-0.5" />
+          <span class="break-words leading-relaxed">{modalError}</span>
         </div>
-
-        <!-- OAuth Redirect URI / Callback URL -->
-        <div class="flex flex-col gap-1">
-          <div class="flex items-center justify-between">
-            <label for="redirect-uri-input" class="text-xs font-medium text-foreground">
-              Valid OAuth Redirect URI (Supabase / Callback)
-            </label>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onclick={handleCopyRedirectUri}
-              class="h-5 px-1.5 text-[11px] text-blue-600 dark:text-blue-400 gap-1 hover:bg-transparent"
-              title="Copy to paste into Meta Developer -> Valid OAuth Redirect URIs"
-            >
-              {#if copiedRedirectUri}
-                <Check class="size-2.5 text-emerald-600 dark:text-emerald-400" />
-                Copied Callback URL
-              {:else}
-                <Copy class="size-2.5" />
-                Copy Callback URL
-              {/if}
-            </Button>
-          </div>
-          <Input
-            id="redirect-uri-input"
-            type="text"
-            bind:value={customRedirectUri}
-            oninput={(e) => handleRedirectUriChange(e.currentTarget.value)}
-            placeholder="https://<project-ref>.supabase.co/auth/v1/callback"
-            class="text-xs font-mono"
-          />
-          <span class="text-[10px] text-muted-foreground">
-            Make sure this exact URL is added to <strong>Meta Developer ➜ Facebook Login ➜ Valid OAuth Redirect URIs</strong>.
-          </span>
+      {:else if modalSuccess}
+        <div class="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-700 dark:text-emerald-400 shrink-0">
+          <CheckCircle2 class="size-4 shrink-0 mt-0.5" />
+          <span class="break-words leading-relaxed">{modalSuccess}</span>
         </div>
+      {/if}
 
-        <div class="rounded-lg bg-muted/40 p-3 border border-border flex flex-col gap-2">
-          <div class="flex items-center justify-between gap-2">
-            <span class="font-semibold text-foreground">Step 1: Authorize on Facebook</span>
-            <div class="flex items-center gap-1.5 shrink-0">
+      {#if connectTab === 'oauth'}
+        <div class="flex flex-col gap-3.5 text-xs">
+          <!-- Step 1: Authorize -->
+          <div class="rounded-xl bg-blue-50/60 dark:bg-blue-950/20 p-3.5 border border-blue-200/60 dark:border-blue-800/40 flex flex-col gap-2.5">
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-semibold text-foreground flex items-center gap-1.5">
+                <span class="size-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[11px] font-bold">1</span>
+                Authorize with Facebook
+              </span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onclick={handleCopyAuthUrl}
+                  class="text-xs h-7 gap-1 px-2 border-border bg-background"
+                  title="Copy authorization link to paste into your browser"
+                >
+                  {#if copiedAuthUrl}
+                    <Check class="size-3 text-emerald-600 dark:text-emerald-400" />
+                    Copied
+                  {:else}
+                    <Copy class="size-3" />
+                    Copy Link
+                  {/if}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onclick={handleOpenMetaOAuth}
+                  class="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 gap-1.5 px-3 shadow-sm"
+                >
+                  <ExternalLink class="size-3" />
+                  Open Meta Login
+                </Button>
+              </div>
+            </div>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              Click <strong>Open Meta Login</strong> to log in with your Facebook account and select the Fanpages you want to grant permissions to.
+            </p>
+          </div>
+
+          <!-- Step 2: Paste Token or URL -->
+          <div class="rounded-xl bg-muted/30 p-3.5 border border-border flex flex-col gap-2.5">
+            <span class="font-semibold text-foreground flex items-center gap-1.5">
+              <span class="size-5 rounded-full bg-slate-700 dark:bg-slate-300 text-white dark:text-slate-900 flex items-center justify-center text-[11px] font-bold">2</span>
+              Paste Access Token or Callback URL
+            </span>
+            <div class="flex gap-2">
+              <Input
+                id="oauth-token-input"
+                type="text"
+                bind:value={oauthTokenOrUrl}
+                placeholder="Paste Access Token (EAAB...) or redirected address URL"
+                class="text-xs flex-1 font-mono bg-background"
+              />
               <Button
                 type="button"
                 size="sm"
-                variant="outline"
-                onclick={handleCopyAuthUrl}
-                class="text-xs h-7 gap-1 px-2 border-border"
-                title="Copy authorization link to paste into your browser"
+                onclick={handleDiscoverPages}
+                disabled={isFetchingPages || !oauthTokenOrUrl.trim()}
+                class="text-xs bg-blue-600 hover:bg-blue-700 text-white shrink-0 gap-1.5 px-3"
               >
-                {#if copiedAuthUrl}
-                  <Check class="size-3 text-emerald-600 dark:text-emerald-400" />
-                  Copied
+                {#if isFetchingPages}
+                  <LoaderCircle class="size-3.5 animate-spin" />
+                  Scanning...
                 {:else}
-                  <Copy class="size-3" />
-                  Copy Link
+                  <RefreshCw class="size-3.5" />
+                  Fetch Pages
                 {/if}
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                onclick={handleOpenMetaOAuth}
-                class="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 gap-1 px-2.5"
-              >
-                <ExternalLink class="size-3" />
-                Open Meta Login
-              </Button>
             </div>
           </div>
-          <p class="text-[11px] text-muted-foreground">
-            Clicking the button opens the official Meta login screen in your default browser. Grant permissions to the Fanpages you want to manage.
-          </p>
-        </div>
 
-        <div class="flex flex-col gap-1.5">
-          <label for="oauth-token-input" class="text-xs font-medium text-foreground">
-            Step 2: Paste Access Token or Redirect URL
-          </label>
-          <div class="flex gap-2">
-            <Input
-              id="oauth-token-input"
-              type="text"
-              bind:value={oauthTokenOrUrl}
-              placeholder="Paste Access Token (EAAB...) or redirected URL"
-              class="text-xs flex-1 font-mono"
-            />
-            <Button
-              type="button"
-              size="sm"
-              onclick={handleDiscoverPages}
-              disabled={isFetchingPages || !oauthTokenOrUrl.trim()}
-              class="text-xs bg-blue-600 hover:bg-blue-700 text-white shrink-0 gap-1.5"
-            >
-              {#if isFetchingPages}
-                <LoaderCircle class="size-3.5 animate-spin" />
-                Scanning...
-              {:else}
-                <RefreshCw class="size-3.5" />
-                Fetch Pages
-              {/if}
-            </Button>
-          </div>
-        </div>
-
-        {#if discoveredPages.length > 0}
-          <div class="flex flex-col gap-2 mt-2">
-            <span class="text-xs font-medium text-foreground">Discovered Fanpages:</span>
-            <div class="max-h-48 overflow-y-auto flex flex-col gap-2 pr-1">
-              {#each discoveredPages as page (page.id)}
-                <div
-                  class="flex items-center justify-between p-2.5 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors"
-                  role="button"
-                  tabindex="0"
-                  onclick={() => toggleSelectPage(page.id)}
-                  onkeydown={(e) => { if (e.key === ' ' || e.key === 'Enter') toggleSelectPage(page.id); }}
+          <!-- Discovered Pages -->
+          {#if discoveredPages.length > 0}
+            <div class="flex flex-col gap-2 p-3 rounded-xl border border-border bg-card">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <CheckCircle2 class="size-3.5 text-emerald-600" />
+                  Discovered Fanpages ({discoveredPages.length})
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onclick={toggleSelectAllPages}
+                  class="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
                 >
-                  <div class="flex items-center gap-2.5 min-w-0">
-                    <div class="size-5 rounded border border-border flex items-center justify-center {selectedPageIds.has(page.id) ? 'bg-blue-600 text-white border-blue-600' : 'bg-background'}">
-                      {#if selectedPageIds.has(page.id)}
-                        <Check class="size-3.5 stroke-[3]" />
+                  {selectedPageIds.size === discoveredPages.length ? 'Deselect All' : 'Select All'}
+                </Button>
+              </div>
+
+              <div class="max-h-48 overflow-y-auto flex flex-col gap-1.5 pr-0.5">
+                {#each discoveredPages as page (page.id)}
+                  <div
+                    class="flex items-center justify-between p-2 rounded-lg border transition-all cursor-pointer {selectedPageIds.has(page.id) ? 'border-blue-500 bg-blue-50/40 dark:bg-blue-950/20 shadow-xs' : 'border-border/70 hover:bg-accent/40'}"
+                    role="button"
+                    tabindex="0"
+                    onclick={() => toggleSelectPage(page.id)}
+                    onkeydown={(e) => { if (e.key === ' ' || e.key === 'Enter') toggleSelectPage(page.id); }}
+                  >
+                    <div class="flex items-center gap-2.5 min-w-0">
+                      <div class="size-4.5 rounded border flex items-center justify-center shrink-0 {selectedPageIds.has(page.id) ? 'bg-blue-600 text-white border-blue-600' : 'border-border bg-background'}">
+                        {#if selectedPageIds.has(page.id)}
+                          <Check class="size-3 stroke-[3]" />
+                        {/if}
+                      </div>
+                      {#if page.avatarUrl}
+                        <img src={page.avatarUrl} alt={page.name} class="size-7 rounded-full object-cover border border-border shrink-0" />
+                      {:else}
+                        <div class="size-7 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0">f</div>
                       {/if}
+                      <div class="min-w-0">
+                        <div class="text-xs font-semibold truncate text-foreground">{page.name}</div>
+                        <div class="text-[10px] text-muted-foreground font-mono truncate">
+                          ID: {page.id} {page.category ? `• ${page.category}` : ''}
+                        </div>
+                      </div>
                     </div>
-                    {#if page.avatarUrl}
-                      <img src={page.avatarUrl} alt={page.name} class="size-7 rounded object-cover border border-border" />
-                    {:else}
-                      <div class="size-7 rounded bg-blue-600 text-white flex items-center justify-center font-bold text-xs">f</div>
-                    {/if}
-                    <div class="min-w-0">
-                      <div class="text-xs font-semibold truncate text-foreground">{page.name}</div>
-                      <div class="text-[10px] text-muted-foreground font-mono truncate">ID: {page.id} {page.category ? `• ${page.category}` : ''}</div>
-                    </div>
+                    <Badge variant="outline" class="text-[9px] px-1.5 py-0 shrink-0">Ready</Badge>
                   </div>
-                  <Badge variant="outline" class="text-[9px] px-1.5 py-0 shrink-0">Ready</Badge>
-                </div>
-              {/each}
+                {/each}
+              </div>
             </div>
+          {/if}
+
+          <!-- Advanced Configuration Accordion -->
+          <div class="border-t border-border/50 pt-2 flex flex-col gap-2">
+            <button
+              type="button"
+              onclick={() => (showAdvanced = !showAdvanced)}
+              class="w-full flex items-center justify-between py-1 px-2 text-[11px] text-muted-foreground hover:text-foreground rounded hover:bg-muted/40 transition-colors"
+            >
+              <span class="flex items-center gap-1.5 font-medium">
+                <Settings2 class="size-3 text-muted-foreground" />
+                Advanced Settings (App ID & OAuth Redirect URI)
+              </span>
+              {#if showAdvanced}
+                <ChevronUp class="size-3.5 text-muted-foreground" />
+              {:else}
+                <ChevronDown class="size-3.5 text-muted-foreground" />
+              {/if}
+            </button>
+
+            {#if showAdvanced}
+              <div class="flex flex-col gap-2.5 p-3 rounded-lg bg-muted/20 border border-border/60">
+                <!-- Meta App ID -->
+                <div class="flex flex-col gap-1">
+                  <div class="flex items-center justify-between">
+                    <label for="meta-app-id-input" class="text-[11px] font-medium text-foreground">
+                      Meta App ID
+                    </label>
+                    <a
+                      href="https://developers.facebook.com/apps"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="text-[10px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
+                    >
+                      developers.facebook.com
+                      <ExternalLink class="size-2.5" />
+                    </a>
+                  </div>
+                  <Input
+                    id="meta-app-id-input"
+                    type="text"
+                    bind:value={customAppId}
+                    oninput={(e) => handleAppIdChange(e.currentTarget.value)}
+                    placeholder="Enter App ID (e.g. 1585399209632312)"
+                    class="text-xs font-mono h-8"
+                  />
+                </div>
+
+                <!-- OAuth Redirect URI -->
+                <div class="flex flex-col gap-1">
+                  <div class="flex items-center justify-between">
+                    <label for="redirect-uri-input" class="text-[11px] font-medium text-foreground">
+                      Valid OAuth Redirect URI
+                    </label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onclick={handleCopyRedirectUri}
+                      class="h-5 px-1.5 text-[10px] text-blue-600 dark:text-blue-400 gap-1 hover:bg-transparent"
+                      title="Copy to paste into Meta Developer -> Valid OAuth Redirect URIs"
+                    >
+                      {#if copiedRedirectUri}
+                        <Check class="size-2.5 text-emerald-600 dark:text-emerald-400" />
+                        Copied
+                      {:else}
+                        <Copy class="size-2.5" />
+                        Copy Callback URL
+                      {/if}
+                    </Button>
+                  </div>
+                  <Input
+                    id="redirect-uri-input"
+                    type="text"
+                    bind:value={customRedirectUri}
+                    oninput={(e) => handleRedirectUriChange(e.currentTarget.value)}
+                    placeholder="https://<project-ref>.supabase.co/auth/v1/callback"
+                    class="text-xs font-mono h-8"
+                  />
+                  <span class="text-[9px] text-muted-foreground">
+                    Must match an exact entry in <strong>Meta Developer ➜ Facebook Login ➜ Valid OAuth Redirect URIs</strong>.
+                  </span>
+                </div>
+              </div>
+            {/if}
           </div>
-        {/if}
-      </div>
-    {:else}
-      <div class="flex flex-col gap-3 py-1 text-xs">
-        <div class="flex flex-col gap-1.5">
-          <label for="manual-page-id" class="text-xs font-medium text-foreground">
-            Page ID <span class="text-destructive">*</span>
-          </label>
-          <Input
-            id="manual-page-id"
-            type="text"
-            bind:value={manualPageId}
-            placeholder="e.g. 102938475610293"
-            class="text-xs font-mono"
-          />
         </div>
+      {:else}
+        <div class="flex flex-col gap-3 text-xs">
+          <div class="flex flex-col gap-1.5">
+            <label for="manual-page-id" class="text-xs font-medium text-foreground">
+              Page ID <span class="text-destructive">*</span>
+            </label>
+            <Input
+              id="manual-page-id"
+              type="text"
+              bind:value={manualPageId}
+              placeholder="e.g. 102938475610293"
+              class="text-xs font-mono"
+            />
+          </div>
 
-        <div class="flex flex-col gap-1.5">
-          <label for="manual-page-name" class="text-xs font-medium text-foreground">
-            Page Name (Optional)
-          </label>
-          <Input
-            id="manual-page-name"
-            type="text"
-            bind:value={manualPageName}
-            placeholder="e.g. RustSale Support Fanpage"
-            class="text-xs"
-          />
+          <div class="flex flex-col gap-1.5">
+            <label for="manual-page-name" class="text-xs font-medium text-foreground">
+              Page Name (Optional)
+            </label>
+            <Input
+              id="manual-page-name"
+              type="text"
+              bind:value={manualPageName}
+              placeholder="e.g. RustSale Support Fanpage"
+              class="text-xs"
+            />
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <label for="manual-token" class="text-xs font-medium text-foreground">
+              Page Access Token <span class="text-destructive">*</span>
+            </label>
+            <Input
+              id="manual-token"
+              type="password"
+              bind:value={manualAccessToken}
+              placeholder="EAAB..."
+              class="text-xs font-mono"
+            />
+            <span class="text-[10px] text-muted-foreground">
+              Token will be securely encrypted using AES-256-GCM in your OS Keyring Token Vault.
+            </span>
+          </div>
         </div>
+      {/if}
+    </div>
 
-        <div class="flex flex-col gap-1.5">
-          <label for="manual-token" class="text-xs font-medium text-foreground">
-            Page Access Token <span class="text-destructive">*</span>
-          </label>
-          <Input
-            id="manual-token"
-            type="password"
-            bind:value={manualAccessToken}
-            placeholder="EAAB..."
-            class="text-xs font-mono"
-          />
-          <span class="text-[10px] text-muted-foreground">
-            Token will be securely encrypted using AES-256-GCM in your OS Keyring Token Vault.
-          </span>
-        </div>
-      </div>
-    {/if}
-
-    <Dialog.Footer class="gap-2 sm:gap-0 mt-2">
+    <Dialog.Footer class="px-6 py-3 border-t border-border bg-muted/20 flex items-center justify-between shrink-0">
       <Button variant="outline" size="sm" onclick={() => (connectModalOpen = false)}>
         Cancel
       </Button>
@@ -964,7 +1030,7 @@
           size="sm"
           onclick={handleSaveDiscoveredPages}
           disabled={isSavingPages || discoveredPages.length === 0 || selectedPageIds.size === 0}
-          class="bg-blue-600 hover:bg-blue-700 text-white gap-1.5 text-xs"
+          class="bg-blue-600 hover:bg-blue-700 text-white gap-1.5 text-xs shadow-sm"
         >
           {#if isSavingPages}
             <LoaderCircle class="size-3.5 animate-spin" />
@@ -979,7 +1045,7 @@
           size="sm"
           onclick={handleSaveManual}
           disabled={isSavingPages || !manualPageId.trim() || !manualAccessToken.trim()}
-          class="bg-blue-600 hover:bg-blue-700 text-white gap-1.5 text-xs"
+          class="bg-blue-600 hover:bg-blue-700 text-white gap-1.5 text-xs shadow-sm"
         >
           {#if isSavingPages}
             <LoaderCircle class="size-3.5 animate-spin" />
