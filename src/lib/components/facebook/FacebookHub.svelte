@@ -111,21 +111,26 @@
   let isSyncingDeletion = $state(false);
   let deletionSyncResult = $state<string | null>(null);
 
-  let prevTab = '';
+  let activeRequestId = 0;
+  let lastLoadedTab = '';
   $effect(() => {
-    if (activeTab === 'facebook_hub' && prevTab !== 'facebook_hub') {
-      prevTab = activeTab;
+    const tab = activeTab;
+    if (tab === 'facebook_hub' && lastLoadedTab !== 'facebook_hub') {
+      lastLoadedTab = 'facebook_hub';
       loadAccounts();
-    } else if (activeTab !== 'facebook_hub') {
-      prevTab = activeTab;
+    } else if (tab !== 'facebook_hub') {
+      lastLoadedTab = tab;
     }
   });
 
   async function loadAccounts() {
     if (isLoadingAccounts) return;
+    const reqId = ++activeRequestId;
     isLoadingAccounts = true;
     try {
       connectedAccounts = await listManagedFacebookAccounts();
+      if (reqId !== activeRequestId) return;
+
       const savedPageId = localStorage.getItem('rustsale_facebook_hub_selected_page_id');
       if (savedPageId && connectedAccounts.some((a) => a.pageId === savedPageId)) {
         selectedPageId = savedPageId;
@@ -134,14 +139,11 @@
         localStorage.setItem('rustsale_facebook_hub_selected_page_id', selectedPageId);
       } else {
         selectedPageId = '';
+        localStorage.removeItem('rustsale_facebook_hub_selected_page_id');
       }
 
       if (selectedPageId) {
-        await Promise.all([
-          loadPageHealth(),
-          loadScheduledPosts(),
-          loadAutomations()
-        ]);
+        await loadPageData(selectedPageId, reqId);
       } else {
         pageHealth = null;
         scheduledPosts = [];
@@ -149,22 +151,22 @@
         commentLogs = [];
       }
     } catch (e) {
+      if (reqId !== activeRequestId) return;
       console.error('Failed to load connected facebook accounts:', e);
       connectedAccounts = [];
       selectedPageId = '';
     } finally {
-      isLoadingAccounts = false;
+      if (reqId === activeRequestId) {
+        isLoadingAccounts = false;
+      }
     }
   }
 
   async function handlePageSelect(pageId: string) {
+    const reqId = ++activeRequestId;
     selectedPageId = pageId;
     localStorage.setItem('rustsale_facebook_hub_selected_page_id', selectedPageId);
-    await Promise.all([
-      loadPageHealth(),
-      loadScheduledPosts(),
-      loadAutomations()
-    ]);
+    await loadPageData(pageId, reqId);
   }
 
   function handlePageSelectChange(e: Event) {
@@ -174,45 +176,61 @@
     }
   }
 
-  async function loadPageHealth() {
-    if (!selectedPageId) return;
+  async function loadPageData(pageId: string, reqId: number) {
+    if (!pageId) return;
     isLoadingHealth = true;
+    isLoadingPosts = true;
+    isLoadingAutomations = true;
     try {
-      pageHealth = await getFacebookPageHealth(selectedPageId);
-    } catch (e) {
-      console.error('Failed to load page health:', e);
-      pageHealth = null;
+      const [health, posts, rules, logs] = await Promise.all([
+        getFacebookPageHealth(pageId).catch((e) => {
+          console.error('Failed to load page health:', e);
+          return null;
+        }),
+        listFacebookScheduledPosts(pageId).catch((e) => {
+          console.error('Failed to load scheduled posts:', e);
+          return [];
+        }),
+        listCommentAutomations(pageId).catch((e) => {
+          console.error('Failed to load automations:', e);
+          return [];
+        }),
+        listCommentLogs(pageId, 50).catch((e) => {
+          console.error('Failed to load comment logs:', e);
+          return [];
+        })
+      ]);
+
+      if (reqId !== activeRequestId || selectedPageId !== pageId) return;
+
+      pageHealth = health;
+      scheduledPosts = Array.isArray(posts) ? posts : [];
+      automationRules = Array.isArray(rules) ? rules : [];
+      commentLogs = Array.isArray(logs) ? logs : [];
     } finally {
-      isLoadingHealth = false;
+      if (reqId === activeRequestId) {
+        isLoadingHealth = false;
+        isLoadingPosts = false;
+        isLoadingAutomations = false;
+      }
     }
   }
 
   async function loadScheduledPosts() {
-    isLoadingPosts = true;
-    try {
-      const res = await listFacebookScheduledPosts(selectedPageId || undefined);
-      scheduledPosts = Array.isArray(res) ? res : [];
-    } catch (e) {
-      console.error('Failed to load scheduled posts:', e);
-      scheduledPosts = [];
-    } finally {
-      isLoadingPosts = false;
+    if (selectedPageId) {
+      await loadPageData(selectedPageId, ++activeRequestId);
     }
   }
 
   async function loadAutomations() {
-    isLoadingAutomations = true;
-    try {
-      const rules = await listCommentAutomations(selectedPageId || undefined);
-      automationRules = Array.isArray(rules) ? rules : [];
-      const logs = await listCommentLogs(selectedPageId || undefined, 50);
-      commentLogs = Array.isArray(logs) ? logs : [];
-    } catch (e) {
-      console.error('Failed to load automations:', e);
-      automationRules = [];
-      commentLogs = [];
-    } finally {
-      isLoadingAutomations = false;
+    if (selectedPageId) {
+      await loadPageData(selectedPageId, ++activeRequestId);
+    }
+  }
+
+  async function loadPageHealth() {
+    if (selectedPageId) {
+      await loadPageData(selectedPageId, ++activeRequestId);
     }
   }
 
@@ -230,8 +248,8 @@
   async function handleCreatePost() {
     postError = null;
     postSuccess = null;
-    if (!selectedPageId) {
-      postError = 'Vui lòng kết nối và chọn Fanpage Facebook trước khi đăng bài.';
+    if (!selectedPageId || !currentAccount?.channelAccountId) {
+      postError = 'Vui lòng kết nối và chọn Fanpage Facebook hợp lệ trước khi đăng bài.';
       return;
     }
     if (!postMessage.trim()) {
@@ -246,7 +264,7 @@
         : null;
 
       const postId = await scheduleFacebookPost({
-        channel_account_id: currentAccount?.channelAccountId || 1,
+        channel_account_id: currentAccount.channelAccountId,
         page_id: selectedPageId,
         post_type: postType,
         message: postMessage,
@@ -259,18 +277,17 @@
         await publishFacebookPostNow(postId);
         postSuccess = 'Post submitted for immediate publishing!';
       } else {
-        postSuccess = `Post successfully scheduled (ID: ${postId})`;
+        postSuccess = 'Post scheduled successfully!';
       }
 
-      // Reset form
       postMessage = '';
       postLinkUrl = '';
       postMediaPaths = [];
-      isScheduled = false;
       scheduledDateTime = '';
-      await loadScheduledPosts();
-    } catch (e) {
-      postError = errToString(e);
+      const reqId = ++activeRequestId;
+      await loadPageData(selectedPageId, reqId);
+    } catch (e: any) {
+      postError = e?.message || String(e) || 'Failed to submit post';
     } finally {
       isSubmittingPost = false;
     }
@@ -321,8 +338,8 @@
   }
 
   async function handleSaveRule() {
-    if (!selectedPageId) {
-      alert('Vui lòng kết nối và chọn Fanpage Facebook trước khi lưu quy tắc.');
+    if (!selectedPageId || !currentAccount?.channelAccountId) {
+      alert('Vui lòng kết nối và chọn Fanpage Facebook hợp lệ trước khi lưu quy tắc.');
       return;
     }
     if (!ruleName.trim()) {
@@ -354,7 +371,7 @@
         });
       } else {
         await createCommentAutomation({
-          channel_account_id: currentAccount?.channelAccountId || 1,
+          channel_account_id: currentAccount.channelAccountId,
           page_id: selectedPageId,
           rule_name: ruleName,
           keywords,
@@ -367,7 +384,8 @@
         });
       }
       showRuleModal = false;
-      await loadAutomations();
+      const reqId = ++activeRequestId;
+      await loadPageData(selectedPageId, reqId);
     } catch (e) {
       alert(`Failed to save rule: ${errToString(e)}`);
     }
@@ -377,7 +395,8 @@
     if (confirm('Are you sure you want to delete this automation rule?')) {
       try {
         await deleteCommentAutomation(id);
-        await loadAutomations();
+        const reqId = ++activeRequestId;
+        await loadPageData(selectedPageId, reqId);
       } catch (e) {
         alert(`Failed to delete rule: ${errToString(e)}`);
       }
@@ -389,10 +408,6 @@
     if (e instanceof Error) return e.message;
     return JSON.stringify(e);
   }
-
-  onMount(() => {
-    loadAccounts();
-  });
 </script>
 
 <div class="flex flex-col gap-6 w-full max-w-7xl mx-auto pb-12">

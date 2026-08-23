@@ -35,6 +35,37 @@ pub struct CreateFacebookPostRequest {
     pub scheduled_publish_time: Option<String>,
 }
 
+pub(crate) fn resolve_facebook_channel_account_id(
+    conn: &rusqlite::Connection,
+    requested_id: i64,
+    page_id: &str,
+) -> Result<i64, String> {
+    if requested_id > 0 {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM channel_accounts WHERE id = ?1",
+                rusqlite::params![requested_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if exists {
+            return Ok(requested_id);
+        }
+    }
+
+    conn.query_row(
+        "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
+        rusqlite::params![page_id],
+        |r| r.get(0),
+    )
+    .map_err(|_| {
+        format!(
+            "No linked Facebook channel account found for page_id '{}'. Please connect your Fanpage in Settings first.",
+            page_id
+        )
+    })
+}
+
 pub fn schedule_facebook_post_impl(
     conn: &rusqlite::Connection,
     request: CreateFacebookPostRequest,
@@ -69,30 +100,7 @@ pub fn schedule_facebook_post_impl(
         ("meta".to_string(), "draft")
     };
 
-    let channel_account_id = if request.channel_account_id > 0 {
-        let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM channel_accounts WHERE id = ?1",
-                params![request.channel_account_id],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
-        if exists {
-            request.channel_account_id
-        } else {
-            conn.query_row(
-                "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
-                params![request.page_id],
-                |r| r.get(0),
-            ).unwrap_or(1)
-        }
-    } else {
-        conn.query_row(
-            "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
-            params![request.page_id],
-            |r| r.get(0),
-        ).unwrap_or(1)
-    };
+    let channel_account_id = resolve_facebook_channel_account_id(conn, request.channel_account_id, &request.page_id)?;
 
     conn.execute(
         "INSERT INTO facebook_scheduled_posts (
@@ -326,30 +334,7 @@ pub fn create_comment_automation_impl(
     let auto_like = if req.auto_like.unwrap_or(true) { 1 } else { 0 };
     let is_enabled = if req.is_enabled.unwrap_or(true) { 1 } else { 0 };
 
-    let channel_account_id = if req.channel_account_id > 0 {
-        let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM channel_accounts WHERE id = ?1",
-                params![req.channel_account_id],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
-        if exists {
-            req.channel_account_id
-        } else {
-            conn.query_row(
-                "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
-                params![req.page_id],
-                |r| r.get(0),
-            ).unwrap_or(req.channel_account_id)
-        }
-    } else {
-        conn.query_row(
-            "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
-            params![req.page_id],
-            |r| r.get(0),
-        ).unwrap_or(1)
-    };
+    let channel_account_id = resolve_facebook_channel_account_id(conn, req.channel_account_id, &req.page_id)?;
 
     conn.execute(
         "INSERT INTO facebook_comment_automations
@@ -613,13 +598,13 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE channel_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_type TEXT NOT NULL,
-                account_id TEXT NOT NULL UNIQUE,
-                account_name TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                provider_account_key TEXT NOT NULL,
+                name TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active'
             );
-            INSERT INTO channel_accounts (id, channel_type, account_id, account_name)
-            VALUES (1, 'facebook', 'act_100', 'Test Page');
+            INSERT INTO channel_accounts (id, channel, provider_account_key, name)
+            VALUES (1, 'facebook', 'page_123', 'Test Page');
 
             CREATE TABLE facebook_scheduled_posts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -925,5 +910,27 @@ mod tests {
         assert_eq!(health.granted_scopes.len(), 2);
         assert_eq!(health.active_scheduled_count, 0);
         assert_eq!(health.active_automations_count, 0);
+    }
+
+    #[test]
+    fn test_channel_account_resolution_fallback_and_fail_closed() {
+        let conn = setup_test_db();
+
+        // 1. Direct valid ID resolves
+        let res_direct = resolve_facebook_channel_account_id(&conn, 1, "page_123");
+        assert_eq!(res_direct.unwrap(), 1);
+
+        // 2. ID 0 with matching provider_account_key falls back to account id 1
+        let res_fallback = resolve_facebook_channel_account_id(&conn, 0, "page_123");
+        assert_eq!(res_fallback.unwrap(), 1);
+
+        // 3. Unknown page_id fails closed with explicit error
+        let res_err = resolve_facebook_channel_account_id(&conn, 0, "page_unknown");
+        assert!(res_err.is_err());
+        assert!(res_err.unwrap_err().contains("No linked Facebook channel account found for page_id 'page_unknown'"));
+
+        // 4. Invalid channel_account_id and unknown page_id fails closed
+        let res_err2 = resolve_facebook_channel_account_id(&conn, 999, "page_unknown");
+        assert!(res_err2.is_err());
     }
 }

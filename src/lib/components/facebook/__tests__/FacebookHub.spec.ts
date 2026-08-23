@@ -206,4 +206,19 @@ describe('FacebookHub Component', () => {
 
     expect(await screen.findByText(/Post submitted for immediate publishing!/i)).toBeTruthy();
   });
+
+  test('blocks post submission when account is missing or has no channelAccountId', async () => {
+    mockAccounts = [];
+
+    render(FacebookHub, {
+      props: {
+        activeTab: 'facebook_hub'
+      }
+    });
+
+    expect(await screen.findByText('Chưa kết nối Facebook Fanpage')).toBeTruthy();
+
+    const scheduleCalls = invokedCommands.filter((c) => c.command === 'schedule_facebook_post');
+    expect(scheduleCalls.length).toBe(0);
+  });
 });
