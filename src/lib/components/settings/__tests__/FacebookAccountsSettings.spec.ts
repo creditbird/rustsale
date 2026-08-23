@@ -56,6 +56,9 @@ mock.module('@tauri-apps/api/core', () => ({
 
 beforeEach(() => {
   setLocale('en');
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('rustsale_meta_app_id', '1075678647572774');
+  }
   invokedCommands = [];
   mockListError = null;
   mockDeleteError = null;
@@ -131,12 +134,16 @@ describe('FacebookAccountsSettings', () => {
       return null;
     };
 
+    const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
+    await fireEvent.input(appIdInput, { target: { value: '1075678647572774' } });
+
     const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
     await fireEvent.click(openLoginBtn);
 
     await waitFor(() => {
       const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
       const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/client_id=1075678647572774/);
       expect(url).toMatch(/state=([^&]+)/);
     });
 
@@ -193,12 +200,29 @@ describe('FacebookAccountsSettings', () => {
 
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
 
+    const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
+    await fireEvent.input(appIdInput, { target: { value: '1075678647572774' } });
+
     const copyBtn = screen.getByRole('button', { name: /Copy Link/i });
     await fireEvent.click(copyBtn);
 
     expect(clipboardText).toMatch(/^https:\/\/www\.facebook\.com\/v26\.0\/dialog\/oauth\?client_id=1075678647572774/);
     expect(clipboardText).toMatch(/state=([^&]+)/);
     expect(await screen.findByText('Copied')).toBeTruthy();
+  });
+
+  test('validates and prompts for Meta App ID when App ID is empty in OAuth tab', async () => {
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
+    await fireEvent.input(appIdInput, { target: { value: '' } });
+
+    const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openLoginBtn);
+
+    expect(await screen.findByText(/Please enter your Meta App ID above/i)).toBeTruthy();
   });
 
   test('connects via manual tab with Page ID and Access Token', async () => {
