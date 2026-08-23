@@ -786,6 +786,88 @@ mod tests {
     }
 
     #[test]
+    fn test_save_managed_facebook_account_success() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        let req = crate::models::SaveFacebookAccountRequest {
+            page_id: "page_new_456".to_string(),
+            page_name: Some("My Business Fanpage".to_string()),
+            avatar_url: Some("https://example.com/avatar.jpg".to_string()),
+            access_token: "EAA_test_access_token_12345".to_string(),
+            granted_scopes: Some(vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string(),
+            ]),
+        };
+
+        let saved = commands::save_managed_facebook_account_internal(&conn, req).unwrap();
+        assert_eq!(saved.page_id, "page_new_456");
+        assert_eq!(saved.page_name.as_deref(), Some("My Business Fanpage"));
+        assert_eq!(
+            saved.avatar_url.as_deref(),
+            Some("https://example.com/avatar.jpg")
+        );
+        assert_eq!(saved.token_status, "valid");
+        assert_eq!(saved.runtime_status, "connected");
+        assert_eq!(
+            saved.granted_scopes,
+            vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string()
+            ]
+        );
+
+        // Verify token in vault can be decrypted with the same channel_account_id
+        let decrypted_token = crate::facebook::vault::FacebookTokenVault::get_valid_page_token(
+            &conn,
+            saved.channel_account_id,
+            "page_new_456",
+        )
+        .unwrap();
+        assert_eq!(decrypted_token, "EAA_test_access_token_12345");
+
+        // Verify listing reflects the newly saved account
+        let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].page_id, "page_new_456");
+    }
+
+    #[test]
+    fn test_save_managed_facebook_account_validation() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        // Empty page_id
+        let err_page = commands::save_managed_facebook_account_internal(
+            &conn,
+            crate::models::SaveFacebookAccountRequest {
+                page_id: "".to_string(),
+                page_name: Some("Page".to_string()),
+                avatar_url: None,
+                access_token: "tok123".to_string(),
+                granted_scopes: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err_page.contains("Page ID cannot be empty"));
+
+        // Empty access_token
+        let err_token = commands::save_managed_facebook_account_internal(
+            &conn,
+            crate::models::SaveFacebookAccountRequest {
+                page_id: "123".to_string(),
+                page_name: Some("Page".to_string()),
+                avatar_url: None,
+                access_token: "   ".to_string(),
+                granted_scopes: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err_token.contains("Access Token cannot be empty"));
+    }
+
+    #[test]
     fn test_zalo_qr_session_rejects_callback_without_device_imei() {
         let conn = db::init_db(":memory:").unwrap();
         let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".to_string();

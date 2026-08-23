@@ -66,8 +66,31 @@ export interface ManagedFacebookAccount {
   updatedAt: string;
 }
 
+export interface SaveFacebookAccountPayload {
+  pageId: string;
+  pageName?: string | null;
+  avatarUrl?: string | null;
+  accessToken: string;
+  grantedScopes?: string[];
+}
+
+export interface DiscoveredFacebookPage {
+  id: string;
+  name: string;
+  category?: string | null;
+  avatarUrl?: string | null;
+  accessToken: string;
+  permissions: string[];
+}
+
 export const listManagedFacebookAccounts = () =>
   invoke<ManagedFacebookAccount[]>('get_managed_facebook_accounts');
+
+export const saveManagedFacebookAccount = (request: SaveFacebookAccountPayload) =>
+  invoke<ManagedFacebookAccount>('save_managed_facebook_account', { request });
+
+export const fetchFacebookPagesFromToken = (token: string) =>
+  invoke<DiscoveredFacebookPage[]>('fetch_facebook_pages_from_token', { token });
 
 export const deleteFacebookAccount = (pageId: string) =>
   invoke<void>('delete_facebook_account', { pageId });

@@ -1,7 +1,8 @@
 use crate::conversation::commands::ConversationState;
 use crate::models::{
-    Activity, Category, Deal, EmailTemplate, Lead, ManagedFacebookAccount, ManagedSmtpAccount,
-    ManagedZaloAccount, SmtpServer, ZaloSessionStatus,
+    Activity, Category, Deal, DiscoveredFacebookPage, EmailTemplate, Lead, ManagedFacebookAccount,
+    ManagedSmtpAccount, ManagedZaloAccount, SaveFacebookAccountRequest, SmtpServer,
+    ZaloSessionStatus,
 };
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
@@ -1856,6 +1857,228 @@ pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Res
         .map_err(|e| format!("Database commit error: {}", e))?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn save_managed_facebook_account(
+    state: tauri::State<DbState>,
+    request: SaveFacebookAccountRequest,
+) -> Result<ManagedFacebookAccount, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    save_managed_facebook_account_internal(&conn, request)
+}
+
+pub fn save_managed_facebook_account_internal(
+    conn: &Connection,
+    request: SaveFacebookAccountRequest,
+) -> Result<ManagedFacebookAccount, String> {
+    let page_id = request.page_id.trim();
+    let access_token = request.access_token.trim();
+
+    if page_id.is_empty() {
+        return Err("Facebook Page ID cannot be empty".to_string());
+    }
+    if access_token.is_empty() {
+        return Err("Facebook Access Token cannot be empty".to_string());
+    }
+
+    let page_name = request
+        .page_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let avatar_url = request
+        .avatar_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let granted_scopes = request.granted_scopes.unwrap_or_else(|| {
+        vec![
+            "pages_show_list".to_string(),
+            "pages_read_engagement".to_string(),
+            "pages_manage_posts".to_string(),
+            "pages_messaging".to_string(),
+        ]
+    });
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Database transaction error: {}", e))?;
+
+    // 1. Insert or update channel_accounts
+    tx.execute(
+        "INSERT INTO channel_accounts (
+            channel, provider_account_key, display_name, avatar_url, enabled, connection_status, last_connected_at, created_at, updated_at
+        ) VALUES ('messenger', ?1, ?2, ?3, 1, 'connected', datetime('now'), datetime('now'), datetime('now'))
+        ON CONFLICT(channel, provider_account_key) DO UPDATE SET
+            display_name = COALESCE(EXCLUDED.display_name, channel_accounts.display_name),
+            avatar_url = COALESCE(EXCLUDED.avatar_url, channel_accounts.avatar_url),
+            enabled = 1,
+            connection_status = 'connected',
+            last_connected_at = datetime('now'),
+            last_error = NULL,
+            updated_at = datetime('now')",
+        rusqlite::params![page_id, page_name, avatar_url],
+    )
+    .map_err(|e| format!("Failed to upsert channel account: {}", e))?;
+
+    let channel_account_id: i64 = tx
+        .query_row(
+            "SELECT id FROM channel_accounts WHERE channel = 'messenger' AND provider_account_key = ?1",
+            rusqlite::params![page_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to query channel account id: {}", e))?;
+
+    // 2. Encrypt and store page token in OS keyring-backed token vault
+    crate::facebook::vault::FacebookTokenVault::encrypt_and_upsert_page_token(
+        &tx,
+        channel_account_id,
+        page_id,
+        access_token,
+        &granted_scopes,
+    )
+    .map_err(|e| format!("Failed to encrypt page token in vault: {}", e))?;
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+    // 3. Return the populated ManagedFacebookAccount
+    let accounts = get_managed_facebook_accounts_internal(conn)?;
+    accounts
+        .into_iter()
+        .find(|a| a.page_id == page_id)
+        .ok_or_else(|| "Failed to retrieve saved facebook account".to_string())
+}
+
+#[tauri::command]
+pub async fn fetch_facebook_pages_from_token(
+    token: String,
+) -> Result<Vec<DiscoveredFacebookPage>, String> {
+    fetch_facebook_pages_from_token_internal(&token).await
+}
+
+pub async fn fetch_facebook_pages_from_token_internal(
+    token: &str,
+) -> Result<Vec<DiscoveredFacebookPage>, String> {
+    let clean_token = token.trim();
+    if clean_token.is_empty() {
+        return Err("Access token cannot be empty".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
+
+    // 1. Try querying /me/accounts (User Token managing multiple pages)
+    let url = format!(
+        "https://graph.facebook.com/v26.0/me/accounts?fields=id,name,access_token,category,picture.type(large)&limit=100&access_token={}",
+        urlencoding::encode(clean_token)
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Meta Graph API: {}", e))?;
+
+    let status = resp.status();
+    let resp_text = resp.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        if let Ok(body) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+            let mut pages = Vec::new();
+            if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+                for item in data {
+                    if let (Some(id), Some(name), Some(access_token)) = (
+                        item.get("id").and_then(|v| v.as_str()),
+                        item.get("name").and_then(|v| v.as_str()),
+                        item.get("access_token").and_then(|v| v.as_str()),
+                    ) {
+                        let category = item.get("category").and_then(|v| v.as_str()).map(String::from);
+                        let avatar_url = item
+                            .get("picture")
+                            .and_then(|p| p.get("data"))
+                            .and_then(|d| d.get("url"))
+                            .and_then(|u| u.as_str())
+                            .map(String::from);
+
+                        pages.push(DiscoveredFacebookPage {
+                            id: id.to_string(),
+                            name: name.to_string(),
+                            category,
+                            avatar_url,
+                            access_token: access_token.to_string(),
+                            permissions: vec![
+                                "pages_show_list".to_string(),
+                                "pages_read_engagement".to_string(),
+                                "pages_manage_posts".to_string(),
+                                "pages_messaging".to_string(),
+                            ],
+                        });
+                    }
+                }
+            }
+
+            if !pages.is_empty() {
+                return Ok(pages);
+            }
+        }
+    }
+
+    // 2. If /me/accounts returned empty or was not successful, check if token is a direct Page Access Token via /me
+    let me_url = format!(
+        "https://graph.facebook.com/v26.0/me?fields=id,name,category,picture.type(large)&access_token={}",
+        urlencoding::encode(clean_token)
+    );
+
+    if let Ok(me_resp) = client.get(&me_url).send().await {
+        let me_status = me_resp.status();
+        let me_text = me_resp.text().await.unwrap_or_default();
+        if me_status.is_success() {
+            if let Ok(me_body) = serde_json::from_str::<serde_json::Value>(&me_text) {
+                if let (Some(id), Some(name)) = (
+                    me_body.get("id").and_then(|v| v.as_str()),
+                    me_body.get("name").and_then(|v| v.as_str()),
+                ) {
+                    let category = me_body.get("category").and_then(|v| v.as_str()).map(String::from);
+                    let avatar_url = me_body
+                        .get("picture")
+                        .and_then(|p| p.get("data"))
+                        .and_then(|d| d.get("url"))
+                        .and_then(|u| u.as_str())
+                        .map(String::from);
+
+                    return Ok(vec![DiscoveredFacebookPage {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        category,
+                        avatar_url,
+                        access_token: clean_token.to_string(),
+                        permissions: vec![
+                            "pages_show_list".to_string(),
+                            "pages_read_engagement".to_string(),
+                            "pages_manage_posts".to_string(),
+                            "pages_messaging".to_string(),
+                        ],
+                    }]);
+                }
+            }
+        }
+    }
+
+    // 3. If neither worked, extract error message from Meta response
+    if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+        if let Some(err_msg) = err_json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+            return Err(format!("Meta Graph API: {}", err_msg));
+        }
+    }
+
+    Err(format!("Meta Graph API error ({}): {}", status, resp_text))
 }
 
 #[tauri::command]

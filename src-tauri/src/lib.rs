@@ -266,6 +266,8 @@ pub fn run() {
             commands::get_managed_zalo_accounts,
             commands::get_managed_smtp_accounts,
             commands::get_managed_facebook_accounts,
+            commands::save_managed_facebook_account,
+            commands::fetch_facebook_pages_from_token,
             commands::delete_facebook_account,
             commands::delete_zalo_session,
             commands::verify_zalo_session,

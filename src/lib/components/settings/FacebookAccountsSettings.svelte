@@ -2,19 +2,25 @@
   import { onDestroy, onMount } from 'svelte';
   import {
     deleteFacebookAccount,
+    fetchFacebookPagesFromToken,
     listManagedFacebookAccounts,
+    saveManagedFacebookAccount,
     type AccountRuntimeStatus,
+    type DiscoveredFacebookPage,
     type ManagedFacebookAccount
   } from '$lib/services/accountSettingsService';
   import { Badge } from '$lib/components/ui/badge';
   import { Button } from '$lib/components/ui/button';
   import * as Card from '$lib/components/ui/card';
   import * as Dialog from '$lib/components/ui/dialog';
+  import { Input } from '$lib/components/ui/input';
   import {
     AlertCircle,
+    Check,
     CheckCircle2,
     Clock3,
     ExternalLink,
+    KeyRound,
     LoaderCircle,
     MessagesSquare,
     Plus,
@@ -24,7 +30,6 @@
     Wifi,
     WifiOff
   } from 'lucide-svelte';
-  import { m } from '$lib/i18n';
 
   let { onNavigateToHub }: { onNavigateToHub?: () => void } = $props();
 
@@ -35,7 +40,24 @@
   let actionError = $state<string | null>(null);
   let deleting = $state(new Set<string>());
 
+  // Connect Modal State
   let connectModalOpen = $state(false);
+  let connectTab = $state<'oauth' | 'manual'>('oauth');
+  let oauthTokenOrUrl = $state('');
+  let isFetchingPages = $state(false);
+  let isSavingPages = $state(false);
+  let modalError = $state<string | null>(null);
+  let modalSuccess = $state<string | null>(null);
+  let discoveredPages = $state<DiscoveredFacebookPage[]>([]);
+  let selectedPageIds = $state<Set<string>>(new Set());
+
+  // Manual Tab Form
+  let manualPageId = $state('');
+  let manualPageName = $state('');
+  let manualAccessToken = $state('');
+  let manualAvatarUrl = $state('');
+
+  // Delete Confirm Modal State
   let deleteConfirmOpen = $state(false);
   let pageToDelete = $state<ManagedFacebookAccount | null>(null);
 
@@ -68,7 +90,7 @@
   }
 
   export async function loadAccounts(silent = false) {
-    if (isPolling) return;
+    if (silent && isPolling) return;
     isPolling = true;
     if (!silent) {
       loading = true;
@@ -86,6 +108,145 @@
         loading = false;
       }
       isPolling = false;
+    }
+  }
+
+  function openConnectModal() {
+    connectTab = 'oauth';
+    oauthTokenOrUrl = '';
+    discoveredPages = [];
+    selectedPageIds = new Set();
+    modalError = null;
+    modalSuccess = null;
+    manualPageId = '';
+    manualPageName = '';
+    manualAccessToken = '';
+    manualAvatarUrl = '';
+    connectModalOpen = true;
+  }
+
+  function extractToken(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed) return '';
+    // If user pasted a full callback URL like https://...#access_token=EAAB... or ?access_token=EAAB...
+    const hashMatch = trimmed.match(/[#?]access_token=([^&]+)/);
+    if (hashMatch && hashMatch[1]) {
+      return decodeURIComponent(hashMatch[1]);
+    }
+    return trimmed;
+  }
+
+  function handleOpenMetaOAuth() {
+    const metaAppId = '1075678647572774'; // Meta App ID or default
+    const redirectUri = 'https://facebook.com/connect/login_success.html';
+    const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
+    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${metaAppId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(scope)}`;
+    window.open(authUrl, '_blank');
+  }
+
+  async function handleDiscoverPages() {
+    const cleanToken = extractToken(oauthTokenOrUrl);
+    if (!cleanToken) {
+      modalError = 'Please enter or paste an Access Token or Meta Callback URL';
+      return;
+    }
+
+    modalError = null;
+    modalSuccess = null;
+    isFetchingPages = true;
+
+    try {
+      const pages = await fetchFacebookPagesFromToken(cleanToken);
+      if (pages.length === 0) {
+        modalError = 'No managed Fanpages found for this account/token.';
+      } else {
+        discoveredPages = pages;
+        // Select all by default
+        selectedPageIds = new Set(pages.map((p) => p.id));
+        modalSuccess = `Found ${pages.length} Fanpage(s). Select which pages to connect below:`;
+      }
+    } catch (e) {
+      modalError = e instanceof Error ? e.message : String(e);
+      discoveredPages = [];
+    } finally {
+      isFetchingPages = false;
+    }
+  }
+
+  function toggleSelectPage(pageId: string) {
+    const next = new Set(selectedPageIds);
+    if (next.has(pageId)) {
+      next.delete(pageId);
+    } else {
+      next.add(pageId);
+    }
+    selectedPageIds = next;
+  }
+
+  async function handleSaveDiscoveredPages() {
+    if (selectedPageIds.size === 0) {
+      modalError = 'Please select at least one Fanpage to connect.';
+      return;
+    }
+
+    modalError = null;
+    isSavingPages = true;
+
+    try {
+      for (const page of discoveredPages) {
+        if (selectedPageIds.has(page.id)) {
+          await saveManagedFacebookAccount({
+            pageId: page.id,
+            pageName: page.name,
+            avatarUrl: page.avatarUrl,
+            accessToken: page.accessToken,
+            grantedScopes: page.permissions
+          });
+        }
+      }
+      await loadAccounts(false);
+      connectModalOpen = false;
+    } catch (e) {
+      modalError = e instanceof Error ? e.message : String(e);
+    } finally {
+      isSavingPages = false;
+    }
+  }
+
+  async function handleSaveManual() {
+    const pageId = manualPageId.trim();
+    const token = manualAccessToken.trim();
+    if (!pageId) {
+      modalError = 'Page ID is required';
+      return;
+    }
+    if (!token) {
+      modalError = 'Page Access Token is required';
+      return;
+    }
+
+    modalError = null;
+    isSavingPages = true;
+
+    try {
+      await saveManagedFacebookAccount({
+        pageId,
+        pageName: manualPageName.trim() || pageId,
+        avatarUrl: manualAvatarUrl.trim() || null,
+        accessToken: token,
+        grantedScopes: [
+          'pages_show_list',
+          'pages_read_engagement',
+          'pages_manage_posts',
+          'pages_messaging'
+        ]
+      });
+      await loadAccounts(false);
+      connectModalOpen = false;
+    } catch (e) {
+      modalError = e instanceof Error ? e.message : String(e);
+    } finally {
+      isSavingPages = false;
     }
   }
 
@@ -121,6 +282,7 @@
     runtimePoll = setInterval(() => {
       void loadAccounts(true);
     }, 5_000);
+    runtimePoll?.unref?.();
 
     return () => {
       if (runtimePoll) clearInterval(runtimePoll);
@@ -153,7 +315,7 @@
       </Button>
       <Button
         size="sm"
-        onclick={() => (connectModalOpen = true)}
+        onclick={openConnectModal}
         class="gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white shadow-2xs"
       >
         <Plus class="size-3.5" />
@@ -195,7 +357,7 @@
         </div>
         <Button
           size="sm"
-          onclick={() => (connectModalOpen = true)}
+          onclick={openConnectModal}
           class="gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white shadow-2xs mt-2"
         >
           <Plus class="size-3.5" />
@@ -299,43 +461,219 @@
 
 <!-- Connect Fanpage Modal -->
 <Dialog.Root bind:open={connectModalOpen}>
-  <Dialog.Content class="max-w-md">
+  <Dialog.Content class="max-w-lg">
     <Dialog.Header>
-      <Dialog.Title class="flex items-center gap-2">
+      <Dialog.Title class="flex items-center gap-2 text-base">
         <MessagesSquare class="size-5 text-blue-600" />
-        Connect Facebook Page
+        Connect Facebook Fanpage
       </Dialog.Title>
-      <Dialog.Description class="text-xs">
-        Connect your Meta Fanpage to activate 2-way Messenger synchronization and marketing automations.
+      <Dialog.Description class="text-xs text-muted-foreground">
+        Link your Meta Fanpage to enable 2-way Messenger synchronization, post scheduling, and comment automations.
       </Dialog.Description>
     </Dialog.Header>
 
-    <div class="flex flex-col gap-3 py-2 text-xs">
-      <div class="rounded-lg bg-muted/40 p-3.5 border border-border flex flex-col gap-2">
-        <span class="font-semibold text-foreground">How connection works:</span>
-        <ol class="list-decimal list-inside space-y-1 text-muted-foreground">
-          <li>Authenticate via Zero-Secret PKCE OAuth flow with Meta.</li>
-          <li>Page Access Tokens are encrypted using AES-256-GCM in OS Keyring.</li>
-          <li>Inbound Messenger webhooks and post comments sync directly into Conversations and Facebook Hub.</li>
-        </ol>
-      </div>
+    <!-- Tab Switcher -->
+    <div class="flex border-b border-border mb-3 text-xs">
+      <button
+        type="button"
+        onclick={() => {
+          connectTab = 'oauth';
+          modalError = null;
+        }}
+        class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'oauth' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+      >
+        Login with Facebook (OAuth)
+      </button>
+      <button
+        type="button"
+        onclick={() => {
+          connectTab = 'manual';
+          modalError = null;
+        }}
+        class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'manual' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+      >
+        Manual Access Token
+      </button>
     </div>
 
-    <Dialog.Footer class="gap-2 sm:gap-0">
+    {#if modalError}
+      <div class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive mb-2">
+        <AlertCircle class="size-4 shrink-0 mt-0.5" />
+        <span>{modalError}</span>
+      </div>
+    {/if}
+
+    {#if modalSuccess}
+      <div class="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-700 dark:text-emerald-400 mb-2">
+        <CheckCircle2 class="size-4 shrink-0 mt-0.5" />
+        <span>{modalSuccess}</span>
+      </div>
+    {/if}
+
+    {#if connectTab === 'oauth'}
+      <div class="flex flex-col gap-3 py-1 text-xs">
+        <div class="rounded-lg bg-muted/40 p-3 border border-border flex flex-col gap-2">
+          <div class="flex items-center justify-between">
+            <span class="font-semibold text-foreground">Step 1: Authorize on Facebook</span>
+            <Button
+              type="button"
+              size="sm"
+              onclick={handleOpenMetaOAuth}
+              class="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 gap-1 px-2.5"
+            >
+              <ExternalLink class="size-3" />
+              Open Meta Login
+            </Button>
+          </div>
+          <p class="text-[11px] text-muted-foreground">
+            Clicking the button opens the official Meta login screen in your browser. Grant permissions to the Fanpages you want to manage.
+          </p>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label for="oauth-token-input" class="text-xs font-medium text-foreground">
+            Step 2: Paste Access Token or Redirect URL
+          </label>
+          <div class="flex gap-2">
+            <Input
+              id="oauth-token-input"
+              type="text"
+              bind:value={oauthTokenOrUrl}
+              placeholder="Paste Access Token (EAAB...) or redirected URL"
+              class="text-xs flex-1 font-mono"
+            />
+            <Button
+              type="button"
+              size="sm"
+              onclick={handleDiscoverPages}
+              disabled={isFetchingPages || !oauthTokenOrUrl.trim()}
+              class="text-xs bg-blue-600 hover:bg-blue-700 text-white shrink-0 gap-1.5"
+            >
+              {#if isFetchingPages}
+                <LoaderCircle class="size-3.5 animate-spin" />
+                Scanning...
+              {:else}
+                <RefreshCw class="size-3.5" />
+                Fetch Pages
+              {/if}
+            </Button>
+          </div>
+        </div>
+
+        {#if discoveredPages.length > 0}
+          <div class="flex flex-col gap-2 mt-2">
+            <span class="text-xs font-medium text-foreground">Discovered Fanpages:</span>
+            <div class="max-h-48 overflow-y-auto flex flex-col gap-2 pr-1">
+              {#each discoveredPages as page (page.id)}
+                <div
+                  class="flex items-center justify-between p-2.5 rounded-lg border border-border bg-card hover:bg-accent/40 cursor-pointer transition-colors"
+                  role="button"
+                  tabindex="0"
+                  onclick={() => toggleSelectPage(page.id)}
+                  onkeydown={(e) => { if (e.key === ' ' || e.key === 'Enter') toggleSelectPage(page.id); }}
+                >
+                  <div class="flex items-center gap-2.5 min-w-0">
+                    <div class="size-5 rounded border border-border flex items-center justify-center {selectedPageIds.has(page.id) ? 'bg-blue-600 text-white border-blue-600' : 'bg-background'}">
+                      {#if selectedPageIds.has(page.id)}
+                        <Check class="size-3.5 stroke-[3]" />
+                      {/if}
+                    </div>
+                    {#if page.avatarUrl}
+                      <img src={page.avatarUrl} alt={page.name} class="size-7 rounded object-cover border border-border" />
+                    {:else}
+                      <div class="size-7 rounded bg-blue-600 text-white flex items-center justify-center font-bold text-xs">f</div>
+                    {/if}
+                    <div class="min-w-0">
+                      <div class="text-xs font-semibold truncate text-foreground">{page.name}</div>
+                      <div class="text-[10px] text-muted-foreground font-mono truncate">ID: {page.id} {page.category ? `• ${page.category}` : ''}</div>
+                    </div>
+                  </div>
+                  <Badge variant="outline" class="text-[9px] px-1.5 py-0 shrink-0">Ready</Badge>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <div class="flex flex-col gap-3 py-1 text-xs">
+        <div class="flex flex-col gap-1.5">
+          <label for="manual-page-id" class="text-xs font-medium text-foreground">
+            Page ID <span class="text-destructive">*</span>
+          </label>
+          <Input
+            id="manual-page-id"
+            type="text"
+            bind:value={manualPageId}
+            placeholder="e.g. 102938475610293"
+            class="text-xs font-mono"
+          />
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label for="manual-page-name" class="text-xs font-medium text-foreground">
+            Page Name (Optional)
+          </label>
+          <Input
+            id="manual-page-name"
+            type="text"
+            bind:value={manualPageName}
+            placeholder="e.g. RustSale Support Fanpage"
+            class="text-xs"
+          />
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label for="manual-token" class="text-xs font-medium text-foreground">
+            Page Access Token <span class="text-destructive">*</span>
+          </label>
+          <Input
+            id="manual-token"
+            type="password"
+            bind:value={manualAccessToken}
+            placeholder="EAAB..."
+            class="text-xs font-mono"
+          />
+          <span class="text-[10px] text-muted-foreground">
+            Token will be securely encrypted using AES-256-GCM in your OS Keyring Token Vault.
+          </span>
+        </div>
+      </div>
+    {/if}
+
+    <Dialog.Footer class="gap-2 sm:gap-0 mt-2">
       <Button variant="outline" size="sm" onclick={() => (connectModalOpen = false)}>
-        Close
+        Cancel
       </Button>
-      {#if onNavigateToHub}
+      {#if connectTab === 'oauth'}
         <Button
           size="sm"
-          onclick={() => {
-            connectModalOpen = false;
-            onNavigateToHub?.();
-          }}
-          class="bg-blue-600 hover:bg-blue-700 text-white gap-1.5"
+          onclick={handleSaveDiscoveredPages}
+          disabled={isSavingPages || discoveredPages.length === 0 || selectedPageIds.size === 0}
+          class="bg-blue-600 hover:bg-blue-700 text-white gap-1.5 text-xs"
         >
-          <ExternalLink class="size-3.5" />
-          Open Facebook Hub
+          {#if isSavingPages}
+            <LoaderCircle class="size-3.5 animate-spin" />
+            Connecting...
+          {:else}
+            <Check class="size-3.5" />
+            Connect Selected Pages ({selectedPageIds.size})
+          {/if}
+        </Button>
+      {:else}
+        <Button
+          size="sm"
+          onclick={handleSaveManual}
+          disabled={isSavingPages || !manualPageId.trim() || !manualAccessToken.trim()}
+          class="bg-blue-600 hover:bg-blue-700 text-white gap-1.5 text-xs"
+        >
+          {#if isSavingPages}
+            <LoaderCircle class="size-3.5 animate-spin" />
+            Connecting...
+          {:else}
+            <Check class="size-3.5" />
+            Save & Connect Page
+          {/if}
         </Button>
       {/if}
     </Dialog.Footer>
@@ -365,3 +703,4 @@
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
+

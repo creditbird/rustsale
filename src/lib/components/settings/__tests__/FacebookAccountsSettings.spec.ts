@@ -2,12 +2,19 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { setLocale } from '$lib/i18n';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import FacebookAccountsSettings from '../FacebookAccountsSettings.svelte';
-import type { ManagedFacebookAccount } from '$lib/services/accountSettingsService';
+import type {
+  DiscoveredFacebookPage,
+  ManagedFacebookAccount,
+  SaveFacebookAccountPayload
+} from '$lib/services/accountSettingsService';
 
 let invokedCommands: Array<{ command: string; args?: Record<string, any> }> = [];
 let mockAccounts: ManagedFacebookAccount[] = [];
+let mockDiscoveredPages: DiscoveredFacebookPage[] = [];
 let mockListError: Error | null = null;
 let mockDeleteError: Error | null = null;
+let mockFetchError: Error | null = null;
+let mockSaveError: Error | null = null;
 
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: Record<string, any>) => {
@@ -15,11 +22,32 @@ mock.module('@tauri-apps/api/core', () => ({
     switch (command) {
       case 'get_managed_facebook_accounts':
         if (mockListError) throw mockListError;
-        return structuredClone(mockAccounts);
+        return JSON.parse(JSON.stringify(mockAccounts));
       case 'delete_facebook_account':
         if (mockDeleteError) throw mockDeleteError;
         mockAccounts = mockAccounts.filter((a) => a.pageId !== args?.pageId);
         return undefined;
+      case 'fetch_facebook_pages_from_token':
+        if (mockFetchError) throw mockFetchError;
+        return JSON.parse(JSON.stringify(mockDiscoveredPages));
+      case 'save_managed_facebook_account': {
+        if (mockSaveError) throw mockSaveError;
+        const req = args?.request as SaveFacebookAccountPayload;
+        const newAcc: ManagedFacebookAccount = {
+          channelAccountId: 200,
+          pageId: req.pageId,
+          pageName: req.pageName || req.pageId,
+          avatarUrl: req.avatarUrl || null,
+          tokenStatus: 'valid',
+          grantedScopes: req.grantedScopes || ['pages_messaging'],
+          runtimeStatus: 'connected',
+          lastConnectedAt: new Date().toISOString(),
+          lastError: null,
+          updatedAt: new Date().toISOString()
+        };
+        mockAccounts.push(newAcc);
+        return newAcc;
+      }
       default:
         return undefined;
     }
@@ -31,6 +59,9 @@ beforeEach(() => {
   invokedCommands = [];
   mockListError = null;
   mockDeleteError = null;
+  mockFetchError = null;
+  mockSaveError = null;
+  mockDiscoveredPages = [];
   mockAccounts = [
     {
       channelAccountId: 101,
@@ -49,6 +80,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  mockListError = null;
+  mockDeleteError = null;
+  mockFetchError = null;
+  mockSaveError = null;
 });
 
 describe('FacebookAccountsSettings', () => {
@@ -71,24 +106,97 @@ describe('FacebookAccountsSettings', () => {
     expect(screen.getByText(/Connect your Facebook Fanpage/i)).toBeTruthy();
   });
 
-  test('opens connect modal and triggers onNavigateToHub', async () => {
-    let navigated = false;
-    render(FacebookAccountsSettings, {
-      props: {
-        onNavigateToHub: () => {
-          navigated = true;
-        }
+  test('connects via OAuth token discovery and saves selected pages', async () => {
+    mockDiscoveredPages = [
+      {
+        id: 'page_discovered_999',
+        name: 'Discovered Coffee Page',
+        category: 'Coffee Shop',
+        avatarUrl: 'https://example.com/coffee.png',
+        accessToken: 'EAAB_token_page_999',
+        permissions: ['pages_messaging', 'pages_manage_posts']
       }
-    });
+    ];
+
+    render(FacebookAccountsSettings);
 
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
 
-    expect(await screen.findByText('How connection works:')).toBeTruthy();
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+    expect(screen.getByText(/Login with Facebook \(OAuth\)/i)).toBeTruthy();
 
-    const openHubBtn = screen.getByRole('button', { name: /Open Facebook Hub/i });
-    await fireEvent.click(openHubBtn);
+    const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    await fireEvent.input(tokenInput, { target: { value: 'EAAB_user_token_abc' } });
 
-    expect(navigated).toBe(true);
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
+
+    expect(await screen.findByText('Discovered Coffee Page')).toBeTruthy();
+    expect(screen.getByText(/Found 1 Fanpage\(s\)/i)).toBeTruthy();
+
+    const connectSelectedBtn = screen.getByRole('button', { name: /Connect Selected Pages/i });
+    await fireEvent.click(connectSelectedBtn);
+
+    await waitFor(() => {
+      expect(invokedCommands).toContainEqual({
+        command: 'save_managed_facebook_account',
+        args: {
+          request: {
+            pageId: 'page_discovered_999',
+            pageName: 'Discovered Coffee Page',
+            avatarUrl: 'https://example.com/coffee.png',
+            accessToken: 'EAAB_token_page_999',
+            grantedScopes: ['pages_messaging', 'pages_manage_posts']
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/page_discovered_999/)).toBeTruthy();
+    });
+  });
+
+  test('connects via manual tab with Page ID and Access Token', async () => {
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    const manualTab = await screen.findByRole('button', { name: /Manual Access Token/i });
+    await fireEvent.click(manualTab);
+
+    const pageIdInput = screen.getByPlaceholderText('e.g. 102938475610293');
+    const pageNameInput = screen.getByPlaceholderText('e.g. RustSale Support Fanpage');
+    const tokenInput = screen.getByPlaceholderText('EAAB...');
+
+    await fireEvent.input(pageIdInput, { target: { value: 'page_manual_777' } });
+    await fireEvent.input(pageNameInput, { target: { value: 'Manual Store Page' } });
+    await fireEvent.input(tokenInput, { target: { value: 'EAAB_manual_secret' } });
+
+    const connectBtn = screen.getByRole('button', { name: /Save & Connect Page/i });
+    await fireEvent.click(connectBtn);
+
+    await waitFor(() => {
+      expect(invokedCommands).toContainEqual({
+        command: 'save_managed_facebook_account',
+        args: {
+          request: {
+            pageId: 'page_manual_777',
+            pageName: 'Manual Store Page',
+            avatarUrl: null,
+            accessToken: 'EAAB_manual_secret',
+            grantedScopes: [
+              'pages_show_list',
+              'pages_read_engagement',
+              'pages_manage_posts',
+              'pages_messaging'
+            ]
+          }
+        }
+      });
+    });
+
+    expect(await screen.findByText('Manual Store Page')).toBeTruthy();
   });
 
   test('disconnects page and updates list after confirmation', async () => {
@@ -118,5 +226,6 @@ describe('FacebookAccountsSettings', () => {
     render(FacebookAccountsSettings);
 
     expect(await screen.findByText('Database connection locked')).toBeTruthy();
+    mockListError = null;
   });
 });
