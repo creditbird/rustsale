@@ -199,6 +199,25 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Manual Store Page')).toBeTruthy();
   });
 
+  test('rejects callback with missing OAuth state parameter when OAuth was initiated', async () => {
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    await fireEvent.input(tokenInput, {
+      target: { value: 'https://facebook.com/connect/login_success.html#access_token=EAAB_test_without_state' }
+    });
+
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
+
+    expect(await screen.findByText(/missing required state parameter/i)).toBeTruthy();
+  });
+
   test('rejects callback with mismatched OAuth state nonce', async () => {
     render(FacebookAccountsSettings);
 

@@ -34,7 +34,8 @@
   let { onNavigateToHub }: { onNavigateToHub?: () => void } = $props();
 
   let accounts = $state<ManagedFacebookAccount[]>([]);
-  let loading = $state(true);
+  let inFlightLoads = $state(0);
+  let loading = $derived(inFlightLoads > 0);
   let isPolling = $state(false);
   let loadRequestId = 0;
   let loadError = $state<string | null>(null);
@@ -93,10 +94,10 @@
 
   export async function loadAccounts(silent = false) {
     if (silent && isPolling) return;
-    isPolling = true;
+    if (silent) isPolling = true;
     const thisRequestId = ++loadRequestId;
     if (!silent) {
-      loading = true;
+      inFlightLoads++;
       loadError = null;
     }
     try {
@@ -110,11 +111,22 @@
         loadError = error instanceof Error ? error.message : String(error);
       }
     } finally {
-      if (!silent && thisRequestId === loadRequestId) {
-        loading = false;
+      if (!silent) {
+        inFlightLoads = Math.max(0, inFlightLoads - 1);
       }
-      isPolling = false;
+      if (silent) {
+        isPolling = false;
+      }
     }
+  }
+
+  function generateCryptoNonce(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    return Math.random().toString(36).substring(2, 15);
   }
 
   function openConnectModal() {
@@ -136,12 +148,21 @@
     const trimmed = raw.trim();
     if (!trimmed) return { token: '' };
 
-    // If state is included in URL callback, verify against nonce to prevent CSRF
-    const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
-    if (stateMatch && stateMatch[1] && oauthStateNonce) {
+    // If OAuth flow was initiated in this session, require valid state correlation
+    if (oauthStateNonce) {
+      const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
+      if (!stateMatch || !stateMatch[1]) {
+        return {
+          token: '',
+          error: 'OAuth callback is missing required state parameter. Please complete authorization through the opened window.'
+        };
+      }
       const decodedState = decodeURIComponent(stateMatch[1]);
       if (decodedState !== oauthStateNonce) {
-        return { token: '', error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.' };
+        return {
+          token: '',
+          error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
+        };
       }
     }
 
@@ -157,7 +178,7 @@
     const metaAppId = '1075678647572774';
     const redirectUri = 'https://facebook.com/connect/login_success.html';
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
-    const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    const nonce = generateCryptoNonce();
     oauthStateNonce = nonce;
     const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${metaAppId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(nonce)}&scope=${encodeURIComponent(scope)}`;
     window.open(authUrl, '_blank');
@@ -511,6 +532,7 @@
         type="button"
         onclick={() => {
           connectTab = 'manual';
+          oauthStateNonce = null;
           modalError = null;
         }}
         class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'manual' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
