@@ -1070,7 +1070,7 @@ mod tests {
                     staged_attachment_id: "stage-1".into(),
                 },
             }],
-        message_tag: None,
+            message_tag: None,
         };
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["conversationId"], 31);

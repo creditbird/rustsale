@@ -8,10 +8,10 @@ mod commands;
 #[cfg(test)]
 mod commands_test;
 pub mod conversation;
-pub mod facebook;
 mod db;
 #[cfg(test)]
 mod db_test;
+pub mod facebook;
 pub mod google_maps_jobs;
 mod models;
 pub mod scrapers;
@@ -181,6 +181,46 @@ pub fn run() {
                 }
             });
 
+            let fb_db_path = db_path_str.to_string();
+            std::thread::Builder::new()
+                .name("facebook-scheduler".to_string())
+                .spawn(move || {
+                    let rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::error!("Failed to build runtime for facebook-scheduler: {}", e);
+                            return;
+                        }
+                    };
+                    rt.block_on(async move {
+                        let scheduler = facebook::scheduler::FacebookScheduler::new();
+                        loop {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                            if let Ok(mut conn) = rusqlite::Connection::open(&fb_db_path) {
+                                let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+                                let _ = conn.execute_batch(
+                                    "PRAGMA foreign_keys = ON;
+                                     PRAGMA journal_mode = WAL;
+                                     PRAGMA synchronous = NORMAL;",
+                                );
+                                if let Err(e) = scheduler.run_promotion_cycle(&conn, 10).await {
+                                    tracing::warn!(target: "facebook_scheduler", error = %e, "promotion cycle error");
+                                }
+                                if let Err(e) = scheduler.run_reconciliation_cycle(&conn, 10).await {
+                                    tracing::warn!(target: "facebook_scheduler", error = %e, "reconciliation cycle error");
+                                }
+                                if let Err(e) = scheduler.reconcile_upload_sessions(&mut conn, 10).await {
+                                    tracing::warn!(target: "facebook_scheduler", error = %e, "upload session reconciler error");
+                                }
+                            }
+                        }
+                    });
+                })
+                .expect("Failed to spawn facebook-scheduler thread");
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -288,6 +328,10 @@ pub fn run() {
             conversation::commands::pin_conversation_message,
             conversation::commands::unpin_conversation_message,
             conversation::commands::list_conversation_pinned_messages,
+            facebook::commands::schedule_facebook_post,
+            facebook::commands::publish_facebook_post_now,
+            facebook::commands::list_facebook_scheduled_posts,
+            facebook::commands::cancel_facebook_scheduled_post,
             commands::get_group_members_unrestricted,
             commands::batch_import_group_members_to_leads,
             commands::sync_and_deep_scan_group_members,

@@ -159,14 +159,29 @@ mod tests {
         let conn = fixture_conn();
 
         // sent -> delivered advances.
-        assert_eq!(mark_messages_delivered(&conn, 500, "mid.out.sent").unwrap(), 1);
+        assert_eq!(
+            mark_messages_delivered(&conn, 500, "mid.out.sent").unwrap(),
+            1
+        );
         // Already-delivered/read rows do not regress.
-        assert_eq!(mark_messages_delivered(&conn, 500, "mid.out.delivered").unwrap(), 0);
-        assert_eq!(mark_messages_delivered(&conn, 500, "mid.out.read").unwrap(), 0);
+        assert_eq!(
+            mark_messages_delivered(&conn, 500, "mid.out.delivered").unwrap(),
+            0
+        );
+        assert_eq!(
+            mark_messages_delivered(&conn, 500, "mid.out.read").unwrap(),
+            0
+        );
         // Unknown ids touch nothing.
-        assert_eq!(mark_messages_delivered(&conn, 500, "mid.missing").unwrap(), 0);
+        assert_eq!(
+            mark_messages_delivered(&conn, 500, "mid.missing").unwrap(),
+            0
+        );
         // Other conversations are isolated by scoping.
-        assert_eq!(mark_messages_delivered(&conn, 999, "mid.out.sent").unwrap(), 0);
+        assert_eq!(
+            mark_messages_delivered(&conn, 999, "mid.out.sent").unwrap(),
+            0
+        );
 
         let status: String = conn
             .query_row("SELECT status FROM messages WHERE id = 1", [], |r| r.get(0))
@@ -188,15 +203,27 @@ mod tests {
         assert_eq!(advanced, 2, "sent + delivered advance to read");
 
         let status = |id: i64| -> String {
-            conn.query_row("SELECT status FROM messages WHERE id = ?1", params![id], |r| r.get(0))
-                .unwrap()
+            conn.query_row(
+                "SELECT status FROM messages WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(status(1), "read");
         assert_eq!(status(2), "read");
         assert_eq!(status(3), "read", "already-read remains read");
         assert_eq!(status(4), "sent", "beyond-watermark outbound not advanced");
-        assert_eq!(status(5), "received", "inbound never touched by read receipts");
-        assert_eq!(status(6), "failed", "concurrently-failed row must NOT become read (atomic predicate)");
+        assert_eq!(
+            status(5),
+            "received",
+            "inbound never touched by read receipts"
+        );
+        assert_eq!(
+            status(6),
+            "failed",
+            "concurrently-failed row must NOT become read (atomic predicate)"
+        );
 
         // Replay is a no-op (forward-only).
         assert_eq!(apply_read_receipt(&conn, 500, &wm).unwrap(), 0);
@@ -217,17 +244,56 @@ mod tests {
     #[test]
     fn reaction_quarantine_is_idempotent_per_item_index() {
         let conn = fixture_conn();
-        quarantine_reaction(&conn, 800, "facebook", 42, 0, "react_mid_1", r#"{"x":1}"#, "timestamp_out_of_range").unwrap();
-        quarantine_reaction(&conn, 800, "facebook", 42, 0, "react_mid_1", r#"{"x":1}"#, "timestamp_out_of_range").unwrap();
-        quarantine_reaction(&conn, 800, "facebook", 42, 1, "react_mid_2", r#"{"x":2}"#, "timestamp_out_of_range").unwrap();
+        quarantine_reaction(
+            &conn,
+            800,
+            "facebook",
+            42,
+            0,
+            "react_mid_1",
+            r#"{"x":1}"#,
+            "timestamp_out_of_range",
+        )
+        .unwrap();
+        quarantine_reaction(
+            &conn,
+            800,
+            "facebook",
+            42,
+            0,
+            "react_mid_1",
+            r#"{"x":1}"#,
+            "timestamp_out_of_range",
+        )
+        .unwrap();
+        quarantine_reaction(
+            &conn,
+            800,
+            "facebook",
+            42,
+            1,
+            "react_mid_2",
+            r#"{"x":2}"#,
+            "timestamp_out_of_range",
+        )
+        .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM channel_sync_dead_letters", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM channel_sync_dead_letters", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(count, 2, "same (event,item_index) dedupes; distinct indexes kept");
+        assert_eq!(
+            count, 2,
+            "same (event,item_index) dedupes; distinct indexes kept"
+        );
 
         let idx: i64 = conn
-            .query_row("SELECT item_index FROM channel_sync_dead_letters WHERE event_key='react_mid_2'", [], |r| r.get(0))
+            .query_row(
+                "SELECT item_index FROM channel_sync_dead_letters WHERE event_key='react_mid_2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(idx, 1, "item_index mirrors array position");
     }
@@ -236,11 +302,20 @@ mod tests {
     fn reaction_timestamp_range_check() {
         let now: i64 = 1_800_000_000_000; // fixed "now" in ms
         assert!(is_reaction_timestamp_valid(now as f64, now));
-        assert!(is_reaction_timestamp_valid((now - 86_400_000) as f64, now), "a day old is fine");
+        assert!(
+            is_reaction_timestamp_valid((now - 86_400_000) as f64, now),
+            "a day old is fine"
+        );
         assert!(!is_reaction_timestamp_valid(-1.0, now));
         assert!(!is_reaction_timestamp_valid(f64::NAN, now));
         assert!(!is_reaction_timestamp_valid(f64::INFINITY, now));
-        assert!(!is_reaction_timestamp_valid((now + 6 * 60 * 1000) as f64, now), "beyond 5-min future skew rejected");
-        assert!(is_reaction_timestamp_valid((now + 60_000) as f64, now), "small clock skew tolerated");
+        assert!(
+            !is_reaction_timestamp_valid((now + 6 * 60 * 1000) as f64, now),
+            "beyond 5-min future skew rejected"
+        );
+        assert!(
+            is_reaction_timestamp_valid((now + 60_000) as f64, now),
+            "small clock skew tolerated"
+        );
     }
 }
