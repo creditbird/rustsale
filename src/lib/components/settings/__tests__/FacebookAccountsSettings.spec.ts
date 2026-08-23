@@ -389,6 +389,52 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText(/not recognized as a valid secure domain/i)).toBeTruthy();
   });
 
+  test('rejects domain confusion attack URLs (e.g. rustsale.trantrongtri.com.attacker.com)', async () => {
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    const redirectInput = screen.getByPlaceholderText(/https:\/\/<project-ref>\.supabase\.co/i);
+    await fireEvent.input(redirectInput, { target: { value: 'https://rustsale.trantrongtri.com.attacker.com/oauth/callback' } });
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    expect(await screen.findByText(/Invalid OAuth Redirect URI/i)).toBeTruthy();
+  });
+
+  test('validates approved hostnames via isAllowedOAuthHost and isValidOAuthRedirectUri', async () => {
+    const { isAllowedOAuthHost, isValidOAuthRedirectUri } = await import('../FacebookAccountsSettings.svelte');
+    
+    // Approved hosts
+    expect(isAllowedOAuthHost('rustsale.trantrongtri.com')).toBe(true);
+    expect(isAllowedOAuthHost('trantrongtri.com')).toBe(true);
+    expect(isAllowedOAuthHost('xyz.supabase.co')).toBe(true);
+    expect(isAllowedOAuthHost('supabase.co')).toBe(true);
+    expect(isAllowedOAuthHost('localhost')).toBe(true);
+    expect(isAllowedOAuthHost('127.0.0.1')).toBe(true);
+    expect(isAllowedOAuthHost('mycustombackend.org', 'https://mycustombackend.org/auth/v1/callback')).toBe(true);
+
+    // Rejected hosts (domain confusion & arbitrary external)
+    expect(isAllowedOAuthHost('rustsale.trantrongtri.com.attacker.com')).toBe(false);
+    expect(isAllowedOAuthHost('supabase.co.attacker.com')).toBe(false);
+    expect(isAllowedOAuthHost('attacker.example.com')).toBe(false);
+    expect(isAllowedOAuthHost('eviltrantrongtri.com')).toBe(false);
+
+    // Full URI validation
+    expect(isValidOAuthRedirectUri('https://xyz.supabase.co/auth/v1/callback')).toBe(true);
+    expect(isValidOAuthRedirectUri('https://rustsale.trantrongtri.com/oauth/callback.html')).toBe(true);
+    expect(isValidOAuthRedirectUri('http://localhost:5173/auth/callback')).toBe(true);
+    expect(isValidOAuthRedirectUri('javascript:alert(1)')).toBe(false);
+    expect(isValidOAuthRedirectUri('file:///etc/passwd')).toBe(false);
+    expect(isValidOAuthRedirectUri('https://attacker.example.com/oauth/callback')).toBe(false);
+    expect(isValidOAuthRedirectUri('https://rustsale.trantrongtri.com.evil.com/callback')).toBe(false);
+  });
+
   test('connects via manual tab with Page ID and Access Token', async () => {
     render(FacebookAccountsSettings);
 

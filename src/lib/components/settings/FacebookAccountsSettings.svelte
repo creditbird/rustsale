@@ -1,3 +1,48 @@
+<script module lang="ts">
+  export function isAllowedOAuthHost(hostname: string, configuredSupabaseUrl?: string | null): boolean {
+    const host = hostname.toLowerCase().trim();
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return true;
+    }
+    if (host === 'trantrongtri.com' || host.endsWith('.trantrongtri.com')) {
+      return true;
+    }
+    if (host === 'supabase.co' || host.endsWith('.supabase.co')) {
+      return true;
+    }
+    if (configuredSupabaseUrl) {
+      try {
+        const configHost = new URL(configuredSupabaseUrl).hostname.toLowerCase();
+        if (host === configHost) {
+          return true;
+        }
+      } catch {
+        // ignore malformed configured supabase url
+      }
+    }
+    return false;
+  }
+
+  export function isValidOAuthRedirectUri(uri: string, configuredSupabaseUrl?: string | null): boolean {
+    if (!uri) return false;
+    try {
+      const parsed = new URL(uri.trim());
+      if (parsed.protocol === 'http:') {
+        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+          return true;
+        }
+        return false;
+      }
+      if (parsed.protocol === 'https:') {
+        return isAllowedOAuthHost(parsed.hostname, configuredSupabaseUrl);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+</script>
+
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import {
@@ -154,25 +199,6 @@
     connectModalOpen = true;
   }
 
-  export function isValidOAuthRedirectUri(uri: string): boolean {
-    if (!uri) return false;
-    try {
-      const parsed = new URL(uri.trim());
-      if (parsed.protocol === 'https:') {
-        return true;
-      }
-      if (
-        parsed.protocol === 'http:' &&
-        (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
-      ) {
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
   function extractTokenAndValidateState(raw: string): { token: string; error?: string } {
     const trimmed = raw.trim();
     if (!trimmed) return { token: '' };
@@ -205,7 +231,8 @@
       if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
         try {
           const urlObj = new URL(trimmed);
-          if (!isValidOAuthRedirectUri(urlObj.origin)) {
+          const { url: sbUrl } = getSupabaseConfig();
+          if (!isValidOAuthRedirectUri(urlObj.href, sbUrl)) {
             return {
               token: '',
               error: 'OAuth callback origin is not recognized as a valid secure domain.'
@@ -227,12 +254,12 @@
   }
 
   function getDefaultRedirectUri(): string {
+    const { url } = getSupabaseConfig();
     if (typeof localStorage !== 'undefined') {
       const saved = localStorage.getItem('rustsale_facebook_redirect_uri');
-      if (saved && isValidOAuthRedirectUri(saved)) return saved;
+      if (saved && isValidOAuthRedirectUri(saved, url)) return saved;
     }
-    const { url } = getSupabaseConfig();
-    if (url && isValidOAuthRedirectUri(url)) {
+    if (url && isValidOAuthRedirectUri(url, url)) {
       return `${url.replace(/\/$/, '')}/auth/v1/callback`;
     }
     return 'https://rustsale.trantrongtri.com/oauth/callback.html';
@@ -261,7 +288,8 @@
     const trimmed = val.trim();
     customRedirectUri = trimmed;
     if (typeof localStorage !== 'undefined') {
-      if (!trimmed || isValidOAuthRedirectUri(trimmed)) {
+      const { url } = getSupabaseConfig();
+      if (!trimmed || isValidOAuthRedirectUri(trimmed, url)) {
         localStorage.setItem('rustsale_facebook_redirect_uri', trimmed);
       }
     }
@@ -271,8 +299,10 @@
 
   async function handleCopyRedirectUri() {
     try {
+      let succeeded = false;
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(customRedirectUri);
+        succeeded = true;
       } else if (typeof document !== 'undefined') {
         const textarea = document.createElement('textarea');
         textarea.value = customRedirectUri;
@@ -280,13 +310,17 @@
         textarea.style.opacity = '0';
         document.body.appendChild(textarea);
         textarea.select();
-        document.execCommand('copy');
+        succeeded = document.execCommand('copy');
         document.body.removeChild(textarea);
       }
-      copiedRedirectUri = true;
-      setTimeout(() => {
-        copiedRedirectUri = false;
-      }, 2500);
+      if (succeeded) {
+        copiedRedirectUri = true;
+        setTimeout(() => {
+          copiedRedirectUri = false;
+        }, 2500);
+      } else {
+        modalError = 'Failed to copy Redirect URI to clipboard.';
+      }
     } catch {
       modalError = 'Failed to copy Redirect URI to clipboard.';
     }
@@ -298,9 +332,10 @@
       modalError = 'Please enter your Meta App ID above (or set VITE_FACEBOOK_APP_ID in .env), or switch to the "Manual Access Token" tab to connect directly without creating an App.';
       return null;
     }
+    const { url } = getSupabaseConfig();
     const redirectUri = customRedirectUri.trim() || getDefaultRedirectUri();
-    if (!isValidOAuthRedirectUri(redirectUri)) {
-      modalError = 'Invalid OAuth Redirect URI. Must be a valid HTTPS URL (e.g. Supabase callback or *.trantrongtri.com).';
+    if (!isValidOAuthRedirectUri(redirectUri, url)) {
+      modalError = 'Invalid OAuth Redirect URI. Must be a valid HTTPS URL on an approved domain (e.g. Supabase callback *.supabase.co or *.trantrongtri.com).';
       return null;
     }
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
