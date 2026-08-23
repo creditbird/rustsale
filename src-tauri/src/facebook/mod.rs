@@ -1,3 +1,4 @@
+pub mod automations;
 pub mod commands;
 pub mod publisher;
 pub mod scheduler;

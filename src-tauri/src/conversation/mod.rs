@@ -1,10 +1,12 @@
 pub mod adapter;
 pub mod commands;
+pub mod deletion_sync;
 pub mod echo_cache;
 pub mod error;
 pub mod events;
 pub mod facebook_sync;
 pub mod forwarding;
+pub mod lead_sync;
 pub mod mentions;
 pub mod migration;
 pub mod migration_v2;

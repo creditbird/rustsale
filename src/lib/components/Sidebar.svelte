@@ -11,7 +11,8 @@
     UserCheck,
     Settings2,
     Sparkles,
-    ChevronRight
+    ChevronRight,
+    Share2
   } from 'lucide-svelte';
   import { updaterService, type UpdaterState } from '$lib/services/updaterService';
   import { getCurrentUser, verifyDeviceAndSubscription, type DeviceVerificationResult } from '$lib/services/licenseService';
@@ -91,6 +92,7 @@
     { id: 'leads', label: m.nav_leads(), icon: Users },
     { id: 'categories', label: m.nav_categories(), icon: Tags },
     { id: 'conversation', label: m.nav_conversation(), icon: MessagesSquare },
+    { id: 'facebook_hub', label: m.nav_facebook_hub(), icon: Share2 },
     { id: 'outreach', label: m.nav_outreach(), icon: MessageSquare },
     { id: 'email_outreach', label: m.nav_email_outreach(), icon: Mail },
     { id: 'pipeline', label: m.nav_pipeline(), icon: Kanban },
