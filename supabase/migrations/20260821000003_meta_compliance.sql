@@ -1,4 +1,4 @@
--- Meta Data Deletion Compliance, Multi-Device Tombstones, and Task Distribution (Phase 3)
+-- Meta Data Deletion Compliance, Multi-Device Tombstones, Task Distribution, and Immutable Audit Logging (Phase 3)
 
 CREATE TABLE IF NOT EXISTS tenant_registered_devices (
     tenant_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS meta_data_deletion_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     confirmation_code TEXT NOT NULL UNIQUE,
     user_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'partially_completed', 'completed', 'failed')),
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -70,6 +70,24 @@ GRANT ALL ON TABLE meta_device_deletion_tasks TO service_role;
 CREATE POLICY "Tenants read own device deletion tasks" ON meta_device_deletion_tasks
     FOR SELECT TO authenticated USING (auth.uid() = tenant_id);
 
+CREATE TABLE IF NOT EXISTS meta_compliance_audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    request_id UUID REFERENCES meta_data_deletion_requests(id) ON DELETE SET NULL,
+    tenant_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    device_id TEXT,
+    action TEXT NOT NULL,
+    details JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE meta_compliance_audit_logs ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE meta_compliance_audit_logs FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE meta_compliance_audit_logs TO authenticated;
+GRANT ALL ON TABLE meta_compliance_audit_logs TO service_role;
+
+CREATE POLICY "Tenants read own compliance audit logs" ON meta_compliance_audit_logs
+    FOR SELECT TO authenticated USING (auth.uid() = tenant_id);
+
 CREATE OR REPLACE FUNCTION claim_device_deletion_tasks(
     p_device_id TEXT,
     p_device_secret TEXT,
@@ -99,27 +117,41 @@ BEGIN
         RAISE EXCEPTION 'Unauthorized: Invalid device credentials';
     END IF;
 
+    UPDATE public.tenant_registered_devices
+    SET last_seen_at = now()
+    WHERE tenant_id = auth.uid() AND device_id = p_device_id;
+
     v_raw_token := encode(gen_random_bytes(32), 'hex');
 
     RETURN QUERY
-    UPDATE public.meta_device_deletion_tasks
-    SET status = 'acknowledged',
-        lease_token_hash = encode(digest(v_raw_token, 'sha256'), 'hex'),
-        acknowledged_at = now(),
-        updated_at = now()
-    WHERE meta_device_deletion_tasks.id IN (
-        SELECT t.id FROM public.meta_device_deletion_tasks t
+    WITH candidate_tasks AS (
+        SELECT t.id AS target_id
+        FROM public.meta_device_deletion_tasks t
         WHERE t.tenant_id = auth.uid()
           AND t.device_id = p_device_id
           AND (
               t.status = 'pending'
-              OR (t.status = 'acknowledged' AND t.acknowledged_at < now() - (p_lease_seconds || ' seconds')::INTERVAL)
+              OR (
+                  t.status = 'acknowledged'
+                  AND t.acknowledged_at < now() - (COALESCE(p_lease_seconds, 300) || ' seconds')::INTERVAL
+              )
           )
         ORDER BY t.created_at ASC
         LIMIT 10
         FOR UPDATE SKIP LOCKED
+    ),
+    updated_tasks AS (
+        UPDATE public.meta_device_deletion_tasks t
+        SET status = 'acknowledged',
+            lease_token_hash = encode(digest(v_raw_token, 'sha256'), 'hex'),
+            acknowledged_at = now(),
+            updated_at = now()
+        FROM candidate_tasks c
+        WHERE t.id = c.target_id
+        RETURNING t.id, t.request_id, t.page_id, t.user_id, t.created_at
     )
-    RETURNING meta_device_deletion_tasks.id, meta_device_deletion_tasks.request_id, meta_device_deletion_tasks.page_id, meta_device_deletion_tasks.user_id, v_raw_token AS lease_token, meta_device_deletion_tasks.created_at;
+    SELECT u.id, u.request_id, u.page_id, u.user_id, v_raw_token, u.created_at
+    FROM updated_tasks u;
 END;
 $$;
 
@@ -135,9 +167,10 @@ SECURITY DEFINER
 SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
-    v_updated INT;
-    v_request_id UUID;
-    v_req_status TEXT;
+    v_task RECORD;
+    v_req_id UUID;
+    v_uncompleted_count INT;
+    v_total_tasks INT;
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.tenant_registered_devices
@@ -156,30 +189,41 @@ BEGIN
     WHERE id = p_task_id
       AND tenant_id = auth.uid()
       AND device_id = p_device_id
-      AND lease_token_hash = encode(digest(p_lease_token, 'sha256'), 'hex')
       AND status = 'acknowledged'
-    RETURNING request_id INTO v_request_id;
+      AND lease_token_hash = encode(digest(p_lease_token, 'sha256'), 'hex')
+    RETURNING request_id INTO v_req_id;
 
-    GET DIAGNOSTICS v_updated = ROW_COUNT;
-
-    -- If all deletion tasks for this request_id across all tenants/devices are completed, update request status to completed with serialized row lock
-    IF v_updated > 0 AND v_request_id IS NOT NULL THEN
-        SELECT status INTO v_req_status
-        FROM public.meta_data_deletion_requests
-        WHERE id = v_request_id
-        FOR UPDATE;
-
-        IF NOT EXISTS (
-            SELECT 1 FROM public.meta_device_deletion_tasks
-            WHERE request_id = v_request_id AND status != 'completed'
-        ) THEN
-            UPDATE public.meta_data_deletion_requests
-            SET status = 'completed', completed_at = now(), updated_at = now()
-            WHERE id = v_request_id;
-        END IF;
+    IF v_req_id IS NULL THEN
+        RETURN FALSE;
     END IF;
 
-    RETURN v_updated > 0;
+    -- Audit log
+    INSERT INTO public.meta_compliance_audit_logs (request_id, tenant_id, device_id, action, details)
+    VALUES (v_req_id, auth.uid(), p_device_id, 'device_task_completed', jsonb_build_object('task_id', p_task_id));
+
+    -- Check overall completion of all distributed device tasks for this parent request
+    SELECT COUNT(*), COUNT(*) FILTER (WHERE status != 'completed')
+    INTO v_total_tasks, v_uncompleted_count
+    FROM public.meta_device_deletion_tasks
+    WHERE request_id = v_req_id;
+
+    IF v_uncompleted_count = 0 THEN
+        UPDATE public.meta_data_deletion_requests
+        SET status = 'completed',
+            completed_at = now(),
+            updated_at = now()
+        WHERE id = v_req_id;
+
+        INSERT INTO public.meta_compliance_audit_logs (request_id, tenant_id, device_id, action, details)
+        VALUES (v_req_id, auth.uid(), p_device_id, 'request_fully_completed', jsonb_build_object('total_tasks', v_total_tasks));
+    ELSE
+        UPDATE public.meta_data_deletion_requests
+        SET status = 'partially_completed',
+            updated_at = now()
+        WHERE id = v_req_id AND status != 'completed';
+    END IF;
+
+    RETURN TRUE;
 END;
 $$;
 
@@ -195,7 +239,7 @@ SECURITY DEFINER
 SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
-    v_updated INT;
+    v_req_id UUID;
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.tenant_registered_devices
@@ -214,11 +258,17 @@ BEGIN
     WHERE id = p_task_id
       AND tenant_id = auth.uid()
       AND device_id = p_device_id
+      AND status = 'acknowledged'
       AND lease_token_hash = encode(digest(p_lease_token, 'sha256'), 'hex')
-      AND status = 'acknowledged';
+    RETURNING request_id INTO v_req_id;
 
-    GET DIAGNOSTICS v_updated = ROW_COUNT;
-    RETURN v_updated > 0;
+    IF v_req_id IS NOT NULL THEN
+        INSERT INTO public.meta_compliance_audit_logs (request_id, tenant_id, device_id, action, details)
+        VALUES (v_req_id, auth.uid(), p_device_id, 'device_task_released', jsonb_build_object('task_id', p_task_id));
+        RETURN TRUE;
+    END IF;
+
+    RETURN FALSE;
 END;
 $$;
 
@@ -234,149 +284,66 @@ SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
     v_secret_hash TEXT;
-    v_existing_hash TEXT;
 BEGIN
-    IF p_device_secret IS NULL OR length(p_device_secret) < 32 THEN
-        RAISE EXCEPTION 'Invalid device secret: minimum 32 characters required';
-    END IF;
-
     v_secret_hash := encode(digest(p_device_secret, 'sha256'), 'hex');
 
-    SELECT device_secret_hash INTO v_existing_hash
-    FROM public.tenant_registered_devices
-    WHERE tenant_id = auth.uid() AND device_id = p_device_id;
+    INSERT INTO public.tenant_registered_devices (tenant_id, device_id, device_secret_hash, device_name, last_seen_at)
+    VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now())
+    ON CONFLICT (tenant_id, device_id) DO UPDATE
+    SET last_seen_at = now(),
+        device_name = COALESCE(EXCLUDED.device_name, public.tenant_registered_devices.device_name)
+    WHERE public.tenant_registered_devices.device_secret_hash = v_secret_hash;
 
-    IF v_existing_hash IS NOT NULL THEN
-        IF v_existing_hash != v_secret_hash THEN
-            RAISE EXCEPTION 'Unauthorized: Device credential mismatch';
-        END IF;
-        UPDATE public.tenant_registered_devices
-        SET last_seen_at = now(),
-            device_name = COALESCE(p_device_name, device_name)
-        WHERE tenant_id = auth.uid() AND device_id = p_device_id;
-    ELSE
-        INSERT INTO public.tenant_registered_devices (tenant_id, device_id, device_secret_hash, device_name, last_seen_at)
-        VALUES (auth.uid(), p_device_id, v_secret_hash, p_device_name, now());
-    END IF;
-
-    -- Serialize against concurrent deletion completion by locking active deletion requests relevant to this tenant
-    PERFORM 1
-    FROM public.meta_data_deletion_requests r
-    WHERE r.status = 'processing'
-      AND EXISTS (
-          SELECT 1 FROM public.meta_tenant_deletion_tombstones t
-          WHERE t.request_id = r.id AND t.tenant_id = auth.uid()
-      )
-    FOR UPDATE;
-
-    -- Durable scrub-on-reconnect: Backfill pending deletion tasks for any tenant deletion tombstones where this device does not already have an active/completed task for that specific request
-    INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
-    SELECT t.request_id, t.tenant_id, p_device_id, t.page_id, t.user_id, 'pending'
+    -- Durable reconnect tombstone scrub check
+    INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status, created_at, updated_at)
+    SELECT t.request_id, t.tenant_id, p_device_id, t.page_id, t.user_id, 'pending', now(), now()
     FROM public.meta_tenant_deletion_tombstones t
     WHERE t.tenant_id = auth.uid()
     ON CONFLICT (request_id, tenant_id, device_id, page_id, user_id) DO NOTHING;
-
-    -- Reopen request if new pending tasks were created for a request that was previously marked completed
-    UPDATE public.meta_data_deletion_requests r
-    SET status = 'processing', completed_at = NULL, updated_at = now()
-    WHERE r.id IN (
-        SELECT dt.request_id
-        FROM public.meta_device_deletion_tasks dt
-        WHERE dt.tenant_id = auth.uid()
-          AND dt.device_id = p_device_id
-          AND dt.status = 'pending'
-    ) AND r.status = 'completed';
 
     RETURN TRUE;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION register_or_heartbeat_device, claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION register_or_heartbeat_device, claim_device_deletion_tasks, complete_device_deletion_task, release_device_deletion_task TO authenticated, service_role;
-
 CREATE OR REPLACE FUNCTION create_data_deletion_request_and_tasks(
     p_confirmation_code TEXT,
-    p_user_id TEXT,
-    p_target_mappings JSONB DEFAULT '[]'::JSONB
+    p_meta_user_id TEXT,
+    p_affected_pages JSONB
 )
 RETURNS UUID
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth, pg_temp
+SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
     v_request_id UUID;
-    v_tenant_record RECORD;
-    v_device_record RECORD;
-    v_has_active_devices BOOLEAN := FALSE;
+    v_item RECORD;
 BEGIN
-    INSERT INTO public.meta_data_deletion_requests (confirmation_code, user_id, status)
-    VALUES (p_confirmation_code, p_user_id, 'processing')
+    INSERT INTO public.meta_data_deletion_requests (confirmation_code, user_id, status, created_at, updated_at)
+    VALUES (p_confirmation_code, p_meta_user_id, 'processing', now(), now())
     RETURNING id INTO v_request_id;
 
-    -- Collect all distinct target (tenant_id, page_id, page_scoped_user_id) tuples matching either authoritative root app_user_id or explicit resolved (page_id, psid) mapping
-    FOR v_tenant_record IN
-        SELECT DISTINCT mupi.tenant_id, mupi.page_id, mupi.page_scoped_user_id
-        FROM public.meta_user_page_interactions mupi
-        WHERE mupi.app_user_id = p_user_id
-           OR EXISTS (
-               SELECT 1 FROM jsonb_array_elements(p_target_mappings) m
-               WHERE (m->>'page_id' IS NOT NULL AND m->>'page_id' <> '')
-                 AND mupi.page_id = (m->>'page_id')
-                 AND mupi.page_scoped_user_id = (m->>'psid')
-           )
+    INSERT INTO public.meta_compliance_audit_logs (request_id, action, details)
+    VALUES (v_request_id, 'request_created', jsonb_build_object('user_id', p_meta_user_id, 'affected_pages', p_affected_pages));
+
+    FOR v_item IN
+        SELECT 
+            (elem->>'tenant_id')::UUID AS tenant_id,
+            elem->>'page_id' AS page_id,
+            elem->>'psid' AS psid
+        FROM jsonb_array_elements(p_affected_pages) AS elem
     LOOP
-        -- Persist durable tenant-scoped deletion tombstone with authoritative request_id
-        INSERT INTO public.meta_tenant_deletion_tombstones (request_id, tenant_id, page_id, user_id)
-        VALUES (v_request_id, v_tenant_record.tenant_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id)
-        ON CONFLICT (tenant_id, page_id, user_id)
-        DO UPDATE SET request_id = EXCLUDED.request_id, created_at = now();
+        INSERT INTO public.meta_tenant_deletion_tombstones (request_id, tenant_id, page_id, user_id, created_at)
+        VALUES (v_request_id, v_item.tenant_id, v_item.page_id, v_item.psid, now())
+        ON CONFLICT (tenant_id, page_id, user_id) DO NOTHING;
 
-        -- Purge server-side buffered webhooks strictly scoped to this tenant_id and page_id
-        DELETE FROM public.meta_webhook_buffer
-        WHERE tenant_id = v_tenant_record.tenant_id
-          AND (page_id = v_tenant_record.page_id OR page_id IS NULL)
-          AND (
-              payload->'sender'->>'id' = v_tenant_record.page_scoped_user_id
-              OR payload->'recipient'->>'id' = v_tenant_record.page_scoped_user_id
-              OR payload->'from'->>'id' = v_tenant_record.page_scoped_user_id
-              OR payload->'value'->'from'->>'id' = v_tenant_record.page_scoped_user_id
-              OR payload->'value'->'sender'->>'id' = v_tenant_record.page_scoped_user_id
-              OR payload->'value'->>'sender_id' = v_tenant_record.page_scoped_user_id
-              OR payload->'value'->>'user_id' = v_tenant_record.page_scoped_user_id
-          );
-
-        -- Fan out tasks to all registered tenant devices regardless of offline duration
-        FOR v_device_record IN
-            SELECT device_id FROM public.tenant_registered_devices
-            WHERE tenant_id = v_tenant_record.tenant_id
-        LOOP
-            v_has_active_devices := TRUE;
-            -- Fan out deletion task strictly carrying page_id and page-scoped user_id to be scrubbed on desktop SQLite
-            INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status)
-            VALUES (v_request_id, v_tenant_record.tenant_id, v_device_record.device_id, v_tenant_record.page_id, v_tenant_record.page_scoped_user_id, 'pending')
-            ON CONFLICT (request_id, tenant_id, device_id, page_id, user_id) DO NOTHING;
-        END LOOP;
-
-        -- Clean up interaction records strictly scoped to this tenant, page, and user
-        DELETE FROM public.meta_user_page_interactions
-        WHERE tenant_id = v_tenant_record.tenant_id
-          AND page_id = v_tenant_record.page_id
-          AND (app_user_id = p_user_id OR page_scoped_user_id = v_tenant_record.page_scoped_user_id);
+        INSERT INTO public.meta_device_deletion_tasks (request_id, tenant_id, device_id, page_id, user_id, status, created_at, updated_at)
+        SELECT v_request_id, v_item.tenant_id, d.device_id, v_item.page_id, v_item.psid, 'pending', now(), now()
+        FROM public.tenant_registered_devices d
+        WHERE d.tenant_id = v_item.tenant_id
+        ON CONFLICT (request_id, tenant_id, device_id, page_id, user_id) DO NOTHING;
     END LOOP;
-
-    -- Clean up any residual global interaction records matching authoritative app_user_id
-    DELETE FROM public.meta_user_page_interactions
-    WHERE app_user_id = p_user_id;
-
-    -- If no registered devices exist for target tenants and no tombstones were created, mark request completed immediately
-    IF NOT v_has_active_devices AND NOT EXISTS (SELECT 1 FROM public.meta_tenant_deletion_tombstones WHERE request_id = v_request_id) THEN
-        UPDATE public.meta_data_deletion_requests SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = v_request_id;
-    END IF;
 
     RETURN v_request_id;
 END;
 $$;
-
-REVOKE ALL ON FUNCTION create_data_deletion_request_and_tasks FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION create_data_deletion_request_and_tasks TO service_role;

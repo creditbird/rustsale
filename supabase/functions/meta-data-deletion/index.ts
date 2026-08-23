@@ -151,7 +151,17 @@ serve(async (req: Request) => {
 
   if (req.method === "GET" && url.pathname === "/deletion-status") {
     const code = url.searchParams.get("code");
-    if (!code) return new Response("Missing code", { status: 400 });
+    if (!code || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(code)) {
+      return new Response("Invalid or missing confirmation code", {
+        status: 400,
+        headers: {
+          "Content-Type": "text/plain",
+          "Cache-Control": "no-store, private",
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "DENY"
+        }
+      });
+    }
 
     const { data: reqData, error: reqError } = await supabaseAdmin
       .from("meta_data_deletion_requests")
@@ -161,11 +171,17 @@ serve(async (req: Request) => {
 
     if (reqError) {
       console.error("Failed to query deletion request:", reqError);
-      return new Response("Internal Server Error: Status query failed", { status: 500 });
+      return new Response("Internal Server Error: Status query failed", {
+        status: 500,
+        headers: { "Cache-Control": "no-store, private" }
+      });
     }
 
     if (!reqData) {
-      return new Response("Deletion request not found", { status: 404 });
+      return new Response("Deletion request not found", {
+        status: 404,
+        headers: { "Cache-Control": "no-store, private" }
+      });
     }
 
     const { data: pendingTasks, error: taskError } = await supabaseAdmin
@@ -176,7 +192,10 @@ serve(async (req: Request) => {
 
     if (taskError) {
       console.error("Failed to query device deletion task status:", taskError);
-      return new Response("Internal Server Error: Device task check failed", { status: 500 });
+      return new Response("Internal Server Error: Device task check failed", {
+        status: 500,
+        headers: { "Cache-Control": "no-store, private" }
+      });
     }
 
     let currentStatus = reqData.status;
@@ -189,7 +208,10 @@ serve(async (req: Request) => {
 
       if (updateError) {
         console.error("Failed to update deletion request completion:", updateError);
-        return new Response("Internal Server Error: Failed to record completion", { status: 500 });
+        return new Response("Internal Server Error: Failed to record completion", {
+          status: 500,
+          headers: { "Cache-Control": "no-store, private" }
+        });
       }
     }
 
@@ -199,7 +221,12 @@ serve(async (req: Request) => {
       created_at: reqData.created_at,
       completed_at: currentStatus === "completed" ? (reqData.completed_at || new Date().toISOString()) : null,
     }), {
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store, private",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY"
+      },
     });
   }
 

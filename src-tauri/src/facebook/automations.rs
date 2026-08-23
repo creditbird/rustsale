@@ -89,8 +89,13 @@ impl FacebookAutomationEngine {
                 .iter()
                 .any(|k| text_lower.trim() == k.to_lowercase().trim()),
             "regex" => keywords.iter().any(|pattern| {
+                if pattern.len() > 256 {
+                    return false;
+                }
                 if let Ok(re) = regex::RegexBuilder::new(pattern)
                     .case_insensitive(true)
+                    .size_limit(64 * 1024)
+                    .dfa_size_limit(64 * 1024)
                     .build()
                 {
                     re.is_match(comment_text)

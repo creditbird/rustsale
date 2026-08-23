@@ -3,26 +3,33 @@ use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
+#[derive(Debug, Clone)]
+pub struct DeletionWorkerConfig<'a> {
+    pub supabase_url: &'a str,
+    pub anon_key: &'a str,
+    pub user_jwt: &'a str,
+    pub device_id: &'a str,
+    pub device_secret: &'a str,
+}
+
 pub async fn process_pending_device_tasks(
     conn: &mut Connection,
-    supabase_url: &str,
-    anon_key: &str,
-    user_jwt: &str,
-    device_id: &str,
-    device_secret: &str,
+    client: &Client,
+    config: &DeletionWorkerConfig<'_>,
     spool_root: &std::path::Path,
 ) -> Result<usize> {
-    let client = Client::new();
-
     // 0. Ensure device is enrolled and active via register_or_heartbeat_device RPC
-    let heartbeat_url = format!("{}/rest/v1/rpc/register_or_heartbeat_device", supabase_url);
+    let heartbeat_url = format!(
+        "{}/rest/v1/rpc/register_or_heartbeat_device",
+        config.supabase_url
+    );
     let heartbeat_resp = client
         .post(&heartbeat_url)
-        .header("apikey", anon_key)
-        .header("Authorization", format!("Bearer {}", user_jwt))
+        .header("apikey", config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.user_jwt))
         .json(&serde_json::json!({
-            "p_device_id": device_id,
-            "p_device_secret": device_secret,
+            "p_device_id": config.device_id,
+            "p_device_secret": config.device_secret,
             "p_device_name": "RustSale Desktop"
         }))
         .send()
@@ -36,14 +43,17 @@ pub async fn process_pending_device_tasks(
     }
 
     // 1. Claim pending deletion tasks via secure RPC (bound to authenticated device_secret and returning unforgeable single-use lease tokens)
-    let claim_url = format!("{}/rest/v1/rpc/claim_device_deletion_tasks", supabase_url);
+    let claim_url = format!(
+        "{}/rest/v1/rpc/claim_device_deletion_tasks",
+        config.supabase_url
+    );
     let claim_resp = client
         .post(&claim_url)
-        .header("apikey", anon_key)
-        .header("Authorization", format!("Bearer {}", user_jwt))
+        .header("apikey", config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.user_jwt))
         .json(&serde_json::json!({
-            "p_device_id": device_id,
-            "p_device_secret": device_secret,
+            "p_device_id": config.device_id,
+            "p_device_secret": config.device_secret,
             "p_lease_seconds": 300
         }))
         .send()
@@ -81,15 +91,18 @@ pub async fn process_pending_device_tasks(
                 user_id,
                 err
             );
-            let release_url = format!("{}/rest/v1/rpc/release_device_deletion_task", supabase_url);
+            let release_url = format!(
+                "{}/rest/v1/rpc/release_device_deletion_task",
+                config.supabase_url
+            );
             let _ = client
                 .post(&release_url)
-                .header("apikey", anon_key)
-                .header("Authorization", format!("Bearer {}", user_jwt))
+                .header("apikey", config.anon_key)
+                .header("Authorization", format!("Bearer {}", config.user_jwt))
                 .json(&serde_json::json!({
                     "p_task_id": task_id,
-                    "p_device_id": device_id,
-                    "p_device_secret": device_secret,
+                    "p_device_id": config.device_id,
+                    "p_device_secret": config.device_secret,
                     "p_lease_token": lease_token
                 }))
                 .send()
@@ -107,16 +120,18 @@ pub async fn process_pending_device_tasks(
 
         // 4. Update task status on Supabase via single-use lease token & device-secret RPCs
         if sweep_result.is_ok() && remaining_spools == 0 {
-            let complete_url =
-                format!("{}/rest/v1/rpc/complete_device_deletion_task", supabase_url);
+            let complete_url = format!(
+                "{}/rest/v1/rpc/complete_device_deletion_task",
+                config.supabase_url
+            );
             let patch_resp = client
                 .post(&complete_url)
-                .header("apikey", anon_key)
-                .header("Authorization", format!("Bearer {}", user_jwt))
+                .header("apikey", config.anon_key)
+                .header("Authorization", format!("Bearer {}", config.user_jwt))
                 .json(&serde_json::json!({
                     "p_task_id": task_id,
-                    "p_device_id": device_id,
-                    "p_device_secret": device_secret,
+                    "p_device_id": config.device_id,
+                    "p_device_secret": config.device_secret,
                     "p_lease_token": lease_token
                 }))
                 .send()
@@ -129,15 +144,18 @@ pub async fn process_pending_device_tasks(
                 }
             }
         } else {
-            let release_url = format!("{}/rest/v1/rpc/release_device_deletion_task", supabase_url);
+            let release_url = format!(
+                "{}/rest/v1/rpc/release_device_deletion_task",
+                config.supabase_url
+            );
             let _ = client
                 .post(&release_url)
-                .header("apikey", anon_key)
-                .header("Authorization", format!("Bearer {}", user_jwt))
+                .header("apikey", config.anon_key)
+                .header("Authorization", format!("Bearer {}", config.user_jwt))
                 .json(&serde_json::json!({
                     "p_task_id": task_id,
-                    "p_device_id": device_id,
-                    "p_device_secret": device_secret,
+                    "p_device_id": config.device_id,
+                    "p_device_secret": config.device_secret,
                     "p_lease_token": lease_token
                 }))
                 .send()
@@ -156,13 +174,13 @@ pub fn execute_local_anonymization(
 ) -> Result<()> {
     let tx = conn.transaction()?;
 
-    // Resolve exactly one authoritative Messenger account joined to facebook_page_tokens for this Page ID
+    // Explicit Page -> Messenger channel account relationship resolution via facebook_page_tokens foreign key
     let matched_accounts: Vec<i64> = {
         let mut stmt = tx.prepare(
             "SELECT ca.id
              FROM channel_accounts ca
              JOIN facebook_page_tokens fpt ON ca.id = fpt.channel_account_id
-             WHERE ca.channel = 'messenger' AND fpt.page_id = ?1 AND ca.provider_account_key = ?1",
+             WHERE ca.channel = 'messenger' AND fpt.page_id = ?1",
         )?;
         let rows = stmt.query_map([page_id], |r| r.get(0))?;
         let mut acc = Vec::new();
@@ -556,7 +574,7 @@ mod tests {
         // 1. Seed channel account, page token, identity, conversation, messages, attachments, dead letters, comment logs
         conn.execute(
             "INSERT INTO channel_accounts (id, channel, account_name, provider_account_key)
-             VALUES (10, 'messenger', 'Test Page', 'page_123')",
+             VALUES (10, 'messenger', 'Test Page', 'page_custom_key_456')",
             [],
         )
         .unwrap();
@@ -652,7 +670,13 @@ mod tests {
             .unwrap();
         assert_eq!(reactions, 0);
 
-        let receipts: i64 = conn.query_row("SELECT COUNT(*) FROM message_receipts WHERE recipient_external_id = 'psid_user_456'", [], |r| r.get(0)).unwrap();
+        let receipts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_receipts WHERE recipient_external_id = 'psid_user_456'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(receipts, 0);
 
         let dead_letters: i64 = conn

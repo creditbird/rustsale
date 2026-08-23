@@ -14,6 +14,7 @@ pub struct LeadAdData {
     pub phone: String,
     pub company: String,
     pub about: String,
+    pub raw_field_data: Value,
     pub ad_name: Option<String>,
     pub campaign_name: Option<String>,
 }
@@ -66,8 +67,12 @@ impl FacebookLeadSync {
         let mut phone = String::new();
         let mut company = String::new();
         let mut custom_notes = Vec::new();
+        let raw_field_data = body
+            .get("field_data")
+            .cloned()
+            .unwrap_or(Value::Array(vec![]));
 
-        if let Some(field_data) = body.get("field_data").and_then(|v| v.as_array()) {
+        if let Some(field_data) = raw_field_data.as_array() {
             for item in field_data {
                 let name_key = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let values = item.get("values").and_then(|v| v.as_array());
@@ -139,6 +144,7 @@ impl FacebookLeadSync {
             phone,
             company,
             about,
+            raw_field_data,
             ad_name,
             campaign_name,
         }
@@ -179,11 +185,11 @@ impl FacebookLeadSync {
     }
 
     pub fn insert_or_ignore_lead(conn: &Connection, lead: &LeadAdData) -> Result<Option<i64>> {
-        // Check if already exists by checking about field or email/phone match
+        // Check if already exists by checking about field
         let existing: Option<i64> = conn
             .query_row(
                 "SELECT id FROM leads WHERE about LIKE ?1",
-                [format!("%{}%", lead.leadgen_id)],
+                [format!("%[LeadGen ID: {}]%", lead.leadgen_id)],
                 |r| r.get(0),
             )
             .optional()?;
@@ -193,7 +199,10 @@ impl FacebookLeadSync {
         }
 
         let now = chrono::Utc::now().to_rfc3339();
-        let about_with_id = format!("[LeadGen ID: {}] {}", lead.leadgen_id, lead.about);
+        let about_with_id = format!(
+            "[LeadGen ID: {}] {} [RawPayload: {}]",
+            lead.leadgen_id, lead.about, lead.raw_field_data
+        );
 
         conn.execute(
             "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about)
@@ -209,6 +218,60 @@ impl FacebookLeadSync {
         )?;
 
         let lead_id = conn.last_insert_rowid();
+        Ok(Some(lead_id))
+    }
+
+    pub fn ingest_lead_and_advance_checkpoint_tx(
+        conn: &mut Connection,
+        lead: &LeadAdData,
+        channel_account_id: i64,
+        cursor: &str,
+    ) -> Result<Option<i64>> {
+        let tx = conn.transaction()?;
+
+        let existing: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM leads WHERE about LIKE ?1",
+                [format!("%[LeadGen ID: {}]%", lead.leadgen_id)],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let lead_id = if let Some(id) = existing {
+            id
+        } else {
+            let now = chrono::Utc::now().to_rfc3339();
+            let about_with_id = format!(
+                "[LeadGen ID: {}] {} [RawPayload: {}]",
+                lead.leadgen_id, lead.about, lead.raw_field_data
+            );
+
+            tx.execute(
+                "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone, about)
+                 VALUES (?1, ?2, 'new', 0.0, ?3, 'Facebook Lead Ads', ?4, ?5, ?6)",
+                params![
+                    lead.name,
+                    lead.company,
+                    now,
+                    lead.email,
+                    lead.phone,
+                    about_with_id
+                ],
+            )?;
+            tx.last_insert_rowid()
+        };
+
+        // Monotonically advance checkpoint cursor in the exact same transaction
+        tx.execute(
+            "INSERT INTO channel_sync_checkpoints (channel_account_id, scope, cursor, updated_at)
+             VALUES (?1, 'meta_webhook_leadgen_cursor', ?2, datetime('now'))
+             ON CONFLICT(channel_account_id, scope) DO UPDATE
+             SET cursor = CASE WHEN EXCLUDED.cursor > channel_sync_checkpoints.cursor THEN EXCLUDED.cursor ELSE channel_sync_checkpoints.cursor END,
+                 updated_at = datetime('now')",
+            params![channel_account_id, cursor],
+        )?;
+
+        tx.commit()?;
         Ok(Some(lead_id))
     }
 }
@@ -232,6 +295,14 @@ mod tests {
                 email TEXT NOT NULL,
                 phone TEXT NOT NULL,
                 about TEXT
+            );
+            CREATE TABLE channel_sync_checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_account_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                cursor TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(channel_account_id, scope)
             );",
         )
         .unwrap();
@@ -281,8 +352,8 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_or_ignore_lead_is_idempotent() {
-        let conn = setup_test_leads_db();
+    fn test_ingest_lead_and_advance_checkpoint_tx_is_atomic_and_idempotent() {
+        let mut conn = setup_test_leads_db();
 
         let lead = LeadAdData {
             leadgen_id: "lead_999".to_string(),
@@ -293,14 +364,30 @@ mod tests {
             phone: "+84987654321".to_string(),
             company: "Tech JSC".to_string(),
             about: "Interested in CRM".to_string(),
+            raw_field_data: json!([{"name": "full_name", "values": ["Tran Van B"]}]),
             ad_name: Some("Ad 1".to_string()),
             campaign_name: Some("Camp 1".to_string()),
         };
 
-        let id1 = FacebookLeadSync::insert_or_ignore_lead(&conn, &lead).unwrap();
+        let id1 =
+            FacebookLeadSync::ingest_lead_and_advance_checkpoint_tx(&mut conn, &lead, 10, "1001")
+                .unwrap();
         assert!(id1.is_some());
 
-        let id2 = FacebookLeadSync::insert_or_ignore_lead(&conn, &lead).unwrap();
+        // Check cursor advanced
+        let cursor1: String = conn
+            .query_row(
+                "SELECT cursor FROM channel_sync_checkpoints WHERE channel_account_id = 10 AND scope = 'meta_webhook_leadgen_cursor'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor1, "1001");
+
+        // Replay same event with higher cursor
+        let id2 =
+            FacebookLeadSync::ingest_lead_and_advance_checkpoint_tx(&mut conn, &lead, 10, "1002")
+                .unwrap();
         assert_eq!(
             id1, id2,
             "Duplicate leadgen_id must return existing row id without re-inserting"
@@ -310,5 +397,14 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+
+        let cursor2: String = conn
+            .query_row(
+                "SELECT cursor FROM channel_sync_checkpoints WHERE channel_account_id = 10 AND scope = 'meta_webhook_leadgen_cursor'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor2, "1002");
     }
 }
