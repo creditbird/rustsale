@@ -1793,16 +1793,20 @@ pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Res
     )
     .map_err(|e| format!("Database error updating channel account: {}", e))?;
 
-    // 3. Mark pending un-published scheduled posts failed to prevent publishers from firing without credentials
+    // 3. Mark all active, pending, in-flight, or ambiguous scheduled posts failed with a stable error code.
+    //    Clearing owner_id & claim_deadline revokes any active publisher leases and prevents race conditions.
     tx.execute(
         "UPDATE facebook_scheduled_posts
          SET status = 'failed',
+             owner_id = NULL,
+             claim_deadline = NULL,
+             error_code = 'page_disconnected',
              error_message = 'Page disconnected by user',
              updated_at = datetime('now')
-         WHERE page_id = ?1 AND status IN ('queued', 'draft')",
+         WHERE page_id = ?1 AND status IN ('draft', 'queued', 'publishing', 'scheduled_on_meta', 'delivery_unknown', 'overdue_prompt')",
         rusqlite::params![page_id],
     )
-    .map_err(|e| format!("Database error updating pending scheduled posts: {}", e))?;
+    .map_err(|e| format!("Database error updating scheduled posts: {}", e))?;
 
     tx.commit()
         .map_err(|e| format!("Database commit error: {}", e))?;

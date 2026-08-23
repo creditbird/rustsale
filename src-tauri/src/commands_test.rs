@@ -629,10 +629,25 @@ mod tests {
             [],
         ).unwrap();
 
-        // 4. Insert pending scheduled post
+        // 4. Insert scheduled posts across various lifecycles: queued, scheduled_on_meta, publishing (leased), delivery_unknown
         conn.execute(
             "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, idempotency_key, status, created_at, updated_at)
-             VALUES (401, 'grp_1', 101, 'page_123', 'status', 'Pending Post', '[]', 'local_queued', 'idem_1', 'queued', datetime('now'), datetime('now'))",
+             VALUES (401, 'grp_1', 101, 'page_123', 'status', 'Queued Post', '[]', 'local_queued', 'idem_1', 'queued', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, remote_post_id, idempotency_key, status, created_at, updated_at)
+             VALUES (402, 'grp_2', 101, 'page_123', 'status', 'Meta Scheduled Post', '[]', 'meta', 'remote_meta_999', 'idem_2', 'scheduled_on_meta', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, owner_id, claim_deadline, idempotency_key, status, created_at, updated_at)
+             VALUES (403, 'grp_3', 101, 'page_123', 'status', 'In Flight Post', '[]', 'meta', 'worker_xyz', datetime('now', '+5 minutes'), 'idem_3', 'publishing', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, idempotency_key, status, created_at, updated_at)
+             VALUES (404, 'grp_4', 101, 'page_123', 'status', 'Ambiguous Post', '[]', 'meta', 'idem_4', 'delivery_unknown', datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
@@ -693,15 +708,38 @@ mod tests {
             .unwrap();
         assert_eq!(ca_status, "disconnected");
 
-        // 10. Verify queued scheduled post is marked failed with error message
-        let post_status: String = conn
-            .query_row(
-                "SELECT status FROM facebook_scheduled_posts WHERE id = 401",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(post_status, "failed");
+        // 10. Verify queued, scheduled_on_meta, publishing (lease cleared), and delivery_unknown posts are all marked failed with error_code
+        for post_id in [401, 402, 403, 404] {
+            let (status, error_code, owner_id, claim_deadline): (
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = conn
+                .query_row(
+                    "SELECT status, error_code, owner_id, claim_deadline FROM facebook_scheduled_posts WHERE id = ?1",
+                    [post_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(status, "failed", "Post {} must be failed", post_id);
+            assert_eq!(
+                error_code.as_deref(),
+                Some("page_disconnected"),
+                "Post {} must have error_code page_disconnected",
+                post_id
+            );
+            assert!(
+                owner_id.is_none(),
+                "Post {} owner lease must be cleared",
+                post_id
+            );
+            assert!(
+                claim_deadline.is_none(),
+                "Post {} claim deadline must be cleared",
+                post_id
+            );
+        }
     }
 
     #[test]
