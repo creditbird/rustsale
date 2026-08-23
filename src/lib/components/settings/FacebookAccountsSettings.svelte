@@ -183,23 +183,42 @@
     return { token: trimmed };
   }
 
+  let customAppId = $state(
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
+      import.meta.env.VITE_FACEBOOK_APP_ID ||
+      ''
+  );
   let oauthAuthUrl = $state<string | null>(null);
   let copiedAuthUrl = $state(false);
 
-  function getOrGenerateAuthUrl(): string {
-    const metaAppId = '1075678647572774';
+  function handleAppIdChange(val: string) {
+    customAppId = val.trim();
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('rustsale_meta_app_id', customAppId);
+    }
+    oauthAuthUrl = null;
+    oauthStateNonce = null;
+  }
+
+  function getOrGenerateAuthUrl(): string | null {
+    const appId = customAppId.trim() || import.meta.env.VITE_FACEBOOK_APP_ID || '';
+    if (!appId) {
+      modalError = 'Please enter your Meta App ID above (or set VITE_FACEBOOK_APP_ID in .env), or switch to the "Manual Access Token" tab to connect directly without creating an App.';
+      return null;
+    }
     const redirectUri = 'https://facebook.com/connect/login_success.html';
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
     if (!oauthStateNonce) {
       oauthStateNonce = generateCryptoNonce();
     }
-    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${metaAppId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(oauthStateNonce)}&scope=${encodeURIComponent(scope)}`;
+    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${encodeURIComponent(appId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(oauthStateNonce)}&scope=${encodeURIComponent(scope)}`;
     oauthAuthUrl = authUrl;
     return authUrl;
   }
 
   async function handleOpenMetaOAuth() {
     const authUrl = getOrGenerateAuthUrl();
+    if (!authUrl) return;
     modalError = null;
     modalSuccess = 'Opened Meta Login in your default browser. Please complete authorization, then copy the address bar URL or access token and paste below.';
     await openExternalUrl(authUrl);
@@ -207,6 +226,7 @@
 
   async function handleCopyAuthUrl() {
     const authUrl = getOrGenerateAuthUrl();
+    if (!authUrl) return;
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard) {
         await navigator.clipboard.writeText(authUrl);
@@ -593,6 +613,32 @@
 
     {#if connectTab === 'oauth'}
       <div class="flex flex-col gap-3 py-1 text-xs">
+        <!-- Meta App ID Input -->
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center justify-between">
+            <label for="meta-app-id-input" class="text-xs font-medium text-foreground">
+              Meta App ID
+            </label>
+            <a
+              href="https://developers.facebook.com/apps"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
+            >
+              developers.facebook.com
+              <ExternalLink class="size-2.5" />
+            </a>
+          </div>
+          <Input
+            id="meta-app-id-input"
+            type="text"
+            value={customAppId}
+            oninput={(e) => handleAppIdChange(e.currentTarget.value)}
+            placeholder="Enter App ID (e.g. 102938475610293) or set VITE_FACEBOOK_APP_ID in .env"
+            class="text-xs font-mono"
+          />
+        </div>
+
         <div class="rounded-lg bg-muted/40 p-3 border border-border flex flex-col gap-2">
           <div class="flex items-center justify-between gap-2">
             <span class="font-semibold text-foreground">Step 1: Authorize on Facebook</span>
