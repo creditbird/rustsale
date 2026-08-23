@@ -83,6 +83,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  if (typeof document !== 'undefined') {
+    document.body.innerHTML = '';
+    document.body.removeAttribute('style');
+  }
   mockListError = null;
   mockDeleteError = null;
   mockFetchError = null;
@@ -211,18 +215,224 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Copied')).toBeTruthy();
   });
 
-  test('validates and prompts for Meta App ID when App ID is empty in OAuth tab', async () => {
+  test('validates and prompts for input when Access Token is empty in OAuth tab', async () => {
     render(FacebookAccountsSettings);
 
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
 
-    const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
-    await fireEvent.input(appIdInput, { target: { value: '' } });
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
 
-    const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
-    await fireEvent.click(openLoginBtn);
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
 
-    expect(await screen.findByText(/Please enter your Meta App ID above/i)).toBeTruthy();
+    expect(await screen.findByText(/Please enter or paste an Access Token/i)).toBeTruthy();
+  });
+
+  test('copies Supabase OAuth callback redirect URI to clipboard', async () => {
+    let clipboardText = '';
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: async (text: string) => {
+          clipboardText = text;
+        }
+      }
+    });
+
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    const copyCallbackBtn = screen.getByRole('button', { name: /Copy Callback URL/i });
+    await fireEvent.click(copyCallbackBtn);
+
+    expect(clipboardText).toContain('/auth/v1/callback');
+    expect(await screen.findByText(/Copied Callback URL/i)).toBeTruthy();
+  });
+
+  test('extracts provider_token from Supabase OAuth redirect URL', async () => {
+    mockDiscoveredPages = [
+      {
+        id: 'page_supabase_1',
+        name: 'Supabase Connected Page',
+        category: 'Business',
+        avatarUrl: null,
+        accessToken: 'EAAB_provider_token_123',
+        permissions: ['pages_messaging', 'pages_read_engagement']
+      }
+    ];
+
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    let capturedAuthUrl = '';
+    window.open = (url?: string | URL) => {
+      capturedAuthUrl = String(url);
+      return null;
+    };
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/state=([^&]+)/);
+    });
+
+    const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+    const authUrl = String(openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl);
+    const stateMatch = authUrl.match(/state=([^&]+)/);
+    expect(stateMatch).toBeTruthy();
+
+    const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    await fireEvent.input(tokenInput, {
+      target: {
+        value: `https://xyzcompany.supabase.co/auth/v1/callback#provider_token=EAAB_provider_token_123&state=${stateMatch![1]}`
+      }
+    });
+
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
+
+    expect(await screen.findByText('Supabase Connected Page')).toBeTruthy();
+  });
+
+  test('rejects unsafe OAuth redirect URIs such as javascript: or non-HTTPS schemes', async () => {
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    const redirectInput = screen.getByPlaceholderText(/https:\/\/<project-ref>\.supabase\.co/i);
+    await fireEvent.input(redirectInput, { target: { value: 'javascript:alert(1)' } });
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    expect(await screen.findByText(/Invalid OAuth Redirect URI/i)).toBeTruthy();
+  });
+
+  test('ignores invalid previous redirect URI stored in localStorage and falls back to safe default', async () => {
+    localStorage.setItem('rustsale_facebook_redirect_uri', 'javascript:evil()');
+
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    let capturedAuthUrl = '';
+    window.open = (url?: string | URL) => {
+      capturedAuthUrl = String(url);
+      return null;
+    };
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/redirect_uri=https%3A%2F%2F/);
+      expect(url).not.toMatch(/javascript/);
+    });
+  });
+
+  test('rejects provider_token when callback origin is invalid or unsafe', async () => {
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    let capturedAuthUrl = '';
+    window.open = (url?: string | URL) => {
+      capturedAuthUrl = String(url);
+      return null;
+    };
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/state=([^&]+)/);
+    });
+
+    const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+    const authUrl = String(openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl);
+    const stateMatch = authUrl.match(/state=([^&]+)/);
+
+    const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    await fireEvent.input(tokenInput, {
+      target: {
+        value: `http://insecure-domain.xyz/auth/v1/callback#provider_token=EAAB_fake&state=${stateMatch![1]}`
+      }
+    });
+
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
+
+    expect(await screen.findByText(/not recognized as a valid secure domain/i)).toBeTruthy();
+  });
+
+  test('rejects domain confusion attack URLs (e.g. rustsale.trantrongtri.com.attacker.com)', async () => {
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    const redirectInput = screen.getByPlaceholderText(/https:\/\/<project-ref>\.supabase\.co/i);
+    await fireEvent.input(redirectInput, { target: { value: 'https://rustsale.trantrongtri.com.attacker.com/oauth/callback' } });
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    expect(await screen.findByText(/Invalid OAuth Redirect URI/i)).toBeTruthy();
+  });
+
+  test('validates approved hostnames via isAllowedOAuthHost and isValidOAuthRedirectUri', async () => {
+    const { isAllowedOAuthHost, isValidOAuthRedirectUri } = await import('../FacebookAccountsSettings.svelte');
+    
+    // Approved hosts
+    expect(isAllowedOAuthHost('rustsale.trantrongtri.com')).toBe(true);
+    expect(isAllowedOAuthHost('trantrongtri.com')).toBe(true);
+    expect(isAllowedOAuthHost('xyz.supabase.co')).toBe(true);
+    expect(isAllowedOAuthHost('supabase.co')).toBe(true);
+    expect(isAllowedOAuthHost('localhost')).toBe(true);
+    expect(isAllowedOAuthHost('127.0.0.1')).toBe(true);
+    expect(isAllowedOAuthHost('mycustombackend.org', 'https://mycustombackend.org/auth/v1/callback')).toBe(true);
+
+    // Rejected hosts (domain confusion & arbitrary external)
+    expect(isAllowedOAuthHost('rustsale.trantrongtri.com.attacker.com')).toBe(false);
+    expect(isAllowedOAuthHost('supabase.co.attacker.com')).toBe(false);
+    expect(isAllowedOAuthHost('attacker.example.com')).toBe(false);
+    expect(isAllowedOAuthHost('eviltrantrongtri.com')).toBe(false);
+
+    // Full URI validation
+    expect(isValidOAuthRedirectUri('https://xyz.supabase.co/auth/v1/callback')).toBe(true);
+    expect(isValidOAuthRedirectUri('https://rustsale.trantrongtri.com/oauth/callback.html')).toBe(true);
+    expect(isValidOAuthRedirectUri('http://localhost:5173/auth/callback')).toBe(true);
+    expect(isValidOAuthRedirectUri('javascript:alert(1)')).toBe(false);
+    expect(isValidOAuthRedirectUri('file:///etc/passwd')).toBe(false);
+    expect(isValidOAuthRedirectUri('https://attacker.example.com/oauth/callback')).toBe(false);
+    expect(isValidOAuthRedirectUri('https://rustsale.trantrongtri.com.evil.com/callback')).toBe(false);
   });
 
   test('connects via manual tab with Page ID and Access Token', async () => {

@@ -1,3 +1,48 @@
+<script module lang="ts">
+  export function isAllowedOAuthHost(hostname: string, configuredSupabaseUrl?: string | null): boolean {
+    const host = hostname.toLowerCase().trim();
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return true;
+    }
+    if (host === 'trantrongtri.com' || host.endsWith('.trantrongtri.com')) {
+      return true;
+    }
+    if (host === 'supabase.co' || host.endsWith('.supabase.co')) {
+      return true;
+    }
+    if (configuredSupabaseUrl) {
+      try {
+        const configHost = new URL(configuredSupabaseUrl).hostname.toLowerCase();
+        if (host === configHost) {
+          return true;
+        }
+      } catch {
+        // ignore malformed configured supabase url
+      }
+    }
+    return false;
+  }
+
+  export function isValidOAuthRedirectUri(uri: string, configuredSupabaseUrl?: string | null): boolean {
+    if (!uri) return false;
+    try {
+      const parsed = new URL(uri.trim());
+      if (parsed.protocol === 'http:') {
+        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+          return true;
+        }
+        return false;
+      }
+      if (parsed.protocol === 'https:') {
+        return isAllowedOAuthHost(parsed.hostname, configuredSupabaseUrl);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+</script>
+
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import {
@@ -32,6 +77,7 @@
     WifiOff
   } from 'lucide-svelte';
   import { openExternalUrl } from '$lib/components/conversation/messageMedia';
+  import { getSupabaseConfig } from '$lib/services/supabaseClient';
 
   let { onNavigateToHub }: { onNavigateToHub?: () => void } = $props();
 
@@ -137,6 +183,11 @@
     oauthStateNonce = null;
     oauthAuthUrl = null;
     copiedAuthUrl = false;
+    customAppId =
+      (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
+      import.meta.env.VITE_FACEBOOK_APP_ID ||
+      '';
+    customRedirectUri = getDefaultRedirectUri();
     discoveredPages = [];
     selectedPageIds = new Set();
     modalError = null;
@@ -175,6 +226,25 @@
       }
     }
 
+    const providerTokenMatch = trimmed.match(/[#&?]provider_token=([^&]+)/);
+    if (providerTokenMatch && providerTokenMatch[1]) {
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        try {
+          const urlObj = new URL(trimmed);
+          const { url: sbUrl } = getSupabaseConfig();
+          if (!isValidOAuthRedirectUri(urlObj.href, sbUrl)) {
+            return {
+              token: '',
+              error: 'OAuth callback origin is not recognized as a valid secure domain.'
+            };
+          }
+        } catch {
+          // ignore parsing error and proceed with token extraction
+        }
+      }
+      return { token: decodeURIComponent(providerTokenMatch[1]) };
+    }
+
     const tokenMatch = trimmed.match(/[#&?]access_token=([^&]+)/);
     if (tokenMatch && tokenMatch[1]) {
       return { token: decodeURIComponent(tokenMatch[1]) };
@@ -183,11 +253,25 @@
     return { token: trimmed };
   }
 
+  function getDefaultRedirectUri(): string {
+    const { url } = getSupabaseConfig();
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem('rustsale_facebook_redirect_uri');
+      if (saved && isValidOAuthRedirectUri(saved, url)) return saved;
+    }
+    if (url && isValidOAuthRedirectUri(url, url)) {
+      return `${url.replace(/\/$/, '')}/auth/v1/callback`;
+    }
+    return 'https://rustsale.trantrongtri.com/oauth/callback.html';
+  }
+
   let customAppId = $state(
     (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
       import.meta.env.VITE_FACEBOOK_APP_ID ||
       ''
   );
+  let customRedirectUri = $state(getDefaultRedirectUri());
+  let copiedRedirectUri = $state(false);
   let oauthAuthUrl = $state<string | null>(null);
   let copiedAuthUrl = $state(false);
 
@@ -200,18 +284,71 @@
     oauthStateNonce = null;
   }
 
+  function handleRedirectUriChange(val: string) {
+    const trimmed = val.trim();
+    customRedirectUri = trimmed;
+    if (typeof localStorage !== 'undefined') {
+      const { url } = getSupabaseConfig();
+      if (!trimmed || isValidOAuthRedirectUri(trimmed, url)) {
+        localStorage.setItem('rustsale_facebook_redirect_uri', trimmed);
+      }
+    }
+    oauthAuthUrl = null;
+    oauthStateNonce = null;
+  }
+
+  async function handleCopyRedirectUri() {
+    try {
+      let succeeded = false;
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(customRedirectUri);
+        succeeded = true;
+      } else if (typeof document !== 'undefined') {
+        const textarea = document.createElement('textarea');
+        textarea.value = customRedirectUri;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        succeeded = document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      if (succeeded) {
+        copiedRedirectUri = true;
+        setTimeout(() => {
+          copiedRedirectUri = false;
+        }, 2500);
+      } else {
+        modalError = 'Failed to copy Redirect URI to clipboard.';
+      }
+    } catch {
+      modalError = 'Failed to copy Redirect URI to clipboard.';
+    }
+  }
+
   function getOrGenerateAuthUrl(): string | null {
     const appId = customAppId.trim() || import.meta.env.VITE_FACEBOOK_APP_ID || '';
     if (!appId) {
       modalError = 'Please enter your Meta App ID above (or set VITE_FACEBOOK_APP_ID in .env), or switch to the "Manual Access Token" tab to connect directly without creating an App.';
       return null;
     }
-    const redirectUri = 'https://facebook.com/connect/login_success.html';
+    const { url } = getSupabaseConfig();
+    const redirectUri = customRedirectUri.trim() || getDefaultRedirectUri();
+    if (!isValidOAuthRedirectUri(redirectUri, url)) {
+      modalError = 'Invalid OAuth Redirect URI. Must be a valid HTTPS URL on an approved domain (e.g. Supabase callback *.supabase.co or *.trantrongtri.com).';
+      return null;
+    }
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
     if (!oauthStateNonce) {
       oauthStateNonce = generateCryptoNonce();
     }
-    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${encodeURIComponent(appId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(oauthStateNonce)}&scope=${encodeURIComponent(scope)}`;
+    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${encodeURIComponent(
+      appId
+    )}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&scope=${encodeURIComponent(scope)}&response_type=token&state=${encodeURIComponent(
+      oauthStateNonce
+    )}`;
     oauthAuthUrl = authUrl;
     return authUrl;
   }
@@ -561,7 +698,7 @@
 
 <!-- Connect Fanpage Modal -->
 <Dialog.Root bind:open={connectModalOpen}>
-  <Dialog.Content class="max-w-lg">
+  <Dialog.Content class="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2 text-base">
         <MessagesSquare class="size-5 text-blue-600" />
@@ -632,11 +769,47 @@
           <Input
             id="meta-app-id-input"
             type="text"
-            value={customAppId}
+            bind:value={customAppId}
             oninput={(e) => handleAppIdChange(e.currentTarget.value)}
             placeholder="Enter App ID (e.g. 102938475610293) or set VITE_FACEBOOK_APP_ID in .env"
             class="text-xs font-mono"
           />
+        </div>
+
+        <!-- OAuth Redirect URI / Callback URL -->
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center justify-between">
+            <label for="redirect-uri-input" class="text-xs font-medium text-foreground">
+              Valid OAuth Redirect URI (Supabase / Callback)
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onclick={handleCopyRedirectUri}
+              class="h-5 px-1.5 text-[11px] text-blue-600 dark:text-blue-400 gap-1 hover:bg-transparent"
+              title="Copy to paste into Meta Developer -> Valid OAuth Redirect URIs"
+            >
+              {#if copiedRedirectUri}
+                <Check class="size-2.5 text-emerald-600 dark:text-emerald-400" />
+                Copied Callback URL
+              {:else}
+                <Copy class="size-2.5" />
+                Copy Callback URL
+              {/if}
+            </Button>
+          </div>
+          <Input
+            id="redirect-uri-input"
+            type="text"
+            bind:value={customRedirectUri}
+            oninput={(e) => handleRedirectUriChange(e.currentTarget.value)}
+            placeholder="https://<project-ref>.supabase.co/auth/v1/callback"
+            class="text-xs font-mono"
+          />
+          <span class="text-[10px] text-muted-foreground">
+            Make sure this exact URL is added to <strong>Meta Developer ➜ Facebook Login ➜ Valid OAuth Redirect URIs</strong>.
+          </span>
         </div>
 
         <div class="rounded-lg bg-muted/40 p-3 border border-border flex flex-col gap-2">
