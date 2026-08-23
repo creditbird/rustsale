@@ -651,7 +651,14 @@ mod tests {
             [],
         ).unwrap();
 
-        // 5. List managed accounts
+        // 5. Insert active upload session
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, file_path, file_hash, file_size_bytes, status, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (501, 403, 'page_123', 'video', 'sess_abc', '/tmp/vid.mp4', 'hash123', 1024, 'in_progress', 'upload_worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 6. List managed accounts
         let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
         assert_eq!(accounts.len(), 1);
         let acc = &accounts[0];
@@ -668,14 +675,14 @@ mod tests {
             vec!["pages_messaging", "pages_manage_posts"]
         );
 
-        // 6. Disconnect account (non-destructive)
+        // 7. Disconnect account (non-destructive)
         commands::delete_facebook_account_internal(&conn, "page_123").unwrap();
 
-        // 7. Verify no longer returned in managed accounts list (token removed)
+        // 8. Verify no longer returned in managed accounts list (token removed)
         let remaining = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
         assert_eq!(remaining.len(), 0);
 
-        // 8. Verify historical conversation and messages were NOT deleted
+        // 9. Verify historical conversation and messages were NOT deleted
         let conv_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM channel_conversations WHERE id = 201",
@@ -698,7 +705,7 @@ mod tests {
             "Historical messages must be preserved upon disconnect"
         );
 
-        // 9. Verify channel account is marked disconnected
+        // 10. Verify channel account is marked disconnected
         let ca_status: String = conn
             .query_row(
                 "SELECT connection_status FROM channel_accounts WHERE id = 101",
@@ -708,7 +715,22 @@ mod tests {
             .unwrap();
         assert_eq!(ca_status, "disconnected");
 
-        // 10. Verify queued, scheduled_on_meta, publishing (lease cleared), and delivery_unknown posts are all marked failed with error_code
+        // 11. Verify active upload session is failed and leases cleared
+        let (upload_status, upload_owner, upload_lease): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT status, owner_id, lease_deadline FROM facebook_upload_sessions WHERE id = 501",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(upload_status, "failed", "Upload session must be failed");
+        assert!(upload_owner.is_none(), "Upload owner lease must be cleared");
+        assert!(
+            upload_lease.is_none(),
+            "Upload lease deadline must be cleared"
+        );
+
+        // 12. Verify queued, scheduled_on_meta, publishing (lease cleared), and delivery_unknown posts are all marked failed with error_code
         for post_id in [401, 402, 403, 404] {
             let (status, error_code, owner_id, claim_deadline): (
                 String,

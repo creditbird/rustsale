@@ -1793,8 +1793,19 @@ pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Res
     )
     .map_err(|e| format!("Database error updating channel account: {}", e))?;
 
-    // 3. Mark all active, pending, in-flight, or ambiguous scheduled posts failed with a stable error code.
-    //    Clearing owner_id & claim_deadline revokes any active publisher leases and prevents race conditions.
+    // 3. Revoke any active resumable upload sessions to halt background video/reel chunk uploads
+    tx.execute(
+        "UPDATE facebook_upload_sessions
+         SET status = 'failed',
+             owner_id = NULL,
+             lease_deadline = NULL,
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status IN ('init_pending', 'in_progress', 'finishing')",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error revoking facebook upload sessions: {}", e))?;
+
+    // 4. Mark local queued, draft, publishing, and overdue scheduled posts failed & clear worker leases
     tx.execute(
         "UPDATE facebook_scheduled_posts
          SET status = 'failed',
@@ -1803,10 +1814,43 @@ pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Res
              error_code = 'page_disconnected',
              error_message = 'Page disconnected by user',
              updated_at = datetime('now')
-         WHERE page_id = ?1 AND status IN ('draft', 'queued', 'publishing', 'scheduled_on_meta', 'delivery_unknown', 'overdue_prompt')",
+         WHERE page_id = ?1 AND status IN ('draft', 'queued', 'publishing', 'overdue_prompt')",
         rusqlite::params![page_id],
     )
-    .map_err(|e| format!("Database error updating scheduled posts: {}", e))?;
+    .map_err(|e| format!("Database error updating local scheduled posts: {}", e))?;
+
+    // 5. Explicitly handle scheduled_on_meta posts (remote Meta-side schedule)
+    tx.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'failed',
+             owner_id = NULL,
+             claim_deadline = NULL,
+             error_code = 'page_disconnected',
+             error_message = 'Page disconnected by user; remote schedule retained on Meta',
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status = 'scheduled_on_meta'",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error updating meta scheduled posts: {}", e))?;
+
+    // 6. Explicitly handle delivery_unknown posts (unreconciled transport ambiguity at disconnect)
+    tx.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'failed',
+             owner_id = NULL,
+             claim_deadline = NULL,
+             error_code = 'page_disconnected',
+             error_message = 'Page disconnected by user before delivery confirmation',
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status = 'delivery_unknown'",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| {
+        format!(
+            "Database error updating delivery_unknown scheduled posts: {}",
+            e
+        )
+    })?;
 
     tx.commit()
         .map_err(|e| format!("Database commit error: {}", e))?;
