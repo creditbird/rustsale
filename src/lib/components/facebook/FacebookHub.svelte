@@ -24,7 +24,10 @@
     Share2,
     Clock,
     Check,
-    X
+    X,
+    Settings2,
+    ChevronDown,
+    ExternalLink
   } from 'lucide-svelte';
   import {
     scheduleFacebookPost,
@@ -42,12 +45,31 @@
     type CommentLog,
     type PageHealth
   } from '$lib/services/facebookService';
+  import {
+    listManagedFacebookAccounts,
+    type ManagedFacebookAccount
+  } from '$lib/services/accountSettingsService';
+
+  let {
+    activeTab = 'facebook_hub',
+    onOpenSettings
+  }: {
+    activeTab?: string;
+    onOpenSettings?: () => void;
+  } = $props();
 
   // Sub-tabs
   let activeSubTab = $state<'composer' | 'automations' | 'compliance'>('composer');
 
-  // Page state
-  let selectedPageId = $state<string>('page_default');
+  // Accounts & Page state
+  let connectedAccounts = $state<ManagedFacebookAccount[]>([]);
+  let isLoadingAccounts = $state(false);
+  let selectedPageId = $state<string>('');
+  let currentAccount = $derived(
+    connectedAccounts.find((a) => a.pageId === selectedPageId) ||
+    connectedAccounts[0] ||
+    null
+  );
   let pageHealth = $state<PageHealth | null>(null);
   let isLoadingHealth = $state(false);
 
@@ -89,39 +111,126 @@
   let isSyncingDeletion = $state(false);
   let deletionSyncResult = $state<string | null>(null);
 
-  async function loadPageHealth() {
-    if (!selectedPageId) return;
-    isLoadingHealth = true;
+  let activeRequestId = 0;
+  let lastLoadedTab = '';
+  $effect(() => {
+    const tab = activeTab;
+    if (tab === 'facebook_hub' && lastLoadedTab !== 'facebook_hub') {
+      lastLoadedTab = 'facebook_hub';
+      loadAccounts();
+    } else if (tab !== 'facebook_hub') {
+      lastLoadedTab = tab;
+    }
+  });
+
+  async function loadAccounts() {
+    if (isLoadingAccounts) return;
+    const reqId = ++activeRequestId;
+    isLoadingAccounts = true;
     try {
-      pageHealth = await getFacebookPageHealth(selectedPageId);
+      connectedAccounts = await listManagedFacebookAccounts();
+      if (reqId !== activeRequestId) return;
+
+      const savedPageId = localStorage.getItem('rustsale_facebook_hub_selected_page_id');
+      if (savedPageId && connectedAccounts.some((a) => a.pageId === savedPageId)) {
+        selectedPageId = savedPageId;
+      } else if (connectedAccounts.length > 0) {
+        selectedPageId = connectedAccounts[0].pageId;
+        localStorage.setItem('rustsale_facebook_hub_selected_page_id', selectedPageId);
+      } else {
+        selectedPageId = '';
+        localStorage.removeItem('rustsale_facebook_hub_selected_page_id');
+      }
+
+      if (selectedPageId) {
+        await loadPageData(selectedPageId, reqId);
+      } else {
+        pageHealth = null;
+        scheduledPosts = [];
+        automationRules = [];
+        commentLogs = [];
+      }
     } catch (e) {
-      console.warn('Page health not loaded:', e);
-      pageHealth = null;
+      if (reqId !== activeRequestId) return;
+      console.error('Failed to load connected facebook accounts:', e);
+      connectedAccounts = [];
+      selectedPageId = '';
     } finally {
-      isLoadingHealth = false;
+      if (reqId === activeRequestId) {
+        isLoadingAccounts = false;
+      }
+    }
+  }
+
+  async function handlePageSelect(pageId: string) {
+    const reqId = ++activeRequestId;
+    selectedPageId = pageId;
+    localStorage.setItem('rustsale_facebook_hub_selected_page_id', selectedPageId);
+    await loadPageData(pageId, reqId);
+  }
+
+  function handlePageSelectChange(e: Event) {
+    const target = (e.target || e.currentTarget) as HTMLSelectElement;
+    if (target?.value) {
+      handlePageSelect(target.value);
+    }
+  }
+
+  async function loadPageData(pageId: string, reqId: number) {
+    if (!pageId) return;
+    isLoadingHealth = true;
+    isLoadingPosts = true;
+    isLoadingAutomations = true;
+    try {
+      const [health, posts, rules, logs] = await Promise.all([
+        getFacebookPageHealth(pageId).catch((e) => {
+          console.error('Failed to load page health:', e);
+          return null;
+        }),
+        listFacebookScheduledPosts(pageId).catch((e) => {
+          console.error('Failed to load scheduled posts:', e);
+          return [];
+        }),
+        listCommentAutomations(pageId).catch((e) => {
+          console.error('Failed to load automations:', e);
+          return [];
+        }),
+        listCommentLogs(pageId, 50).catch((e) => {
+          console.error('Failed to load comment logs:', e);
+          return [];
+        })
+      ]);
+
+      if (reqId !== activeRequestId || selectedPageId !== pageId) return;
+
+      pageHealth = health;
+      scheduledPosts = Array.isArray(posts) ? posts : [];
+      automationRules = Array.isArray(rules) ? rules : [];
+      commentLogs = Array.isArray(logs) ? logs : [];
+    } finally {
+      if (reqId === activeRequestId) {
+        isLoadingHealth = false;
+        isLoadingPosts = false;
+        isLoadingAutomations = false;
+      }
     }
   }
 
   async function loadScheduledPosts() {
-    isLoadingPosts = true;
-    try {
-      scheduledPosts = await listFacebookScheduledPosts(selectedPageId || undefined);
-    } catch (e) {
-      console.error('Failed to load scheduled posts:', e);
-    } finally {
-      isLoadingPosts = false;
+    if (selectedPageId) {
+      await loadPageData(selectedPageId, ++activeRequestId);
     }
   }
 
   async function loadAutomations() {
-    isLoadingAutomations = true;
-    try {
-      automationRules = await listCommentAutomations(selectedPageId || undefined);
-      commentLogs = await listCommentLogs(selectedPageId || undefined, 50);
-    } catch (e) {
-      console.error('Failed to load automations:', e);
-    } finally {
-      isLoadingAutomations = false;
+    if (selectedPageId) {
+      await loadPageData(selectedPageId, ++activeRequestId);
+    }
+  }
+
+  async function loadPageHealth() {
+    if (selectedPageId) {
+      await loadPageData(selectedPageId, ++activeRequestId);
     }
   }
 
@@ -139,6 +248,10 @@
   async function handleCreatePost() {
     postError = null;
     postSuccess = null;
+    if (!selectedPageId || !currentAccount?.channelAccountId) {
+      postError = 'Vui lòng kết nối và chọn Fanpage Facebook hợp lệ trước khi đăng bài.';
+      return;
+    }
     if (!postMessage.trim()) {
       postError = 'Message content cannot be empty';
       return;
@@ -151,7 +264,7 @@
         : null;
 
       const postId = await scheduleFacebookPost({
-        channel_account_id: 1,
+        channel_account_id: currentAccount.channelAccountId,
         page_id: selectedPageId,
         post_type: postType,
         message: postMessage,
@@ -164,18 +277,17 @@
         await publishFacebookPostNow(postId);
         postSuccess = 'Post submitted for immediate publishing!';
       } else {
-        postSuccess = `Post successfully scheduled (ID: ${postId})`;
+        postSuccess = 'Post scheduled successfully!';
       }
 
-      // Reset form
       postMessage = '';
       postLinkUrl = '';
       postMediaPaths = [];
-      isScheduled = false;
       scheduledDateTime = '';
-      await loadScheduledPosts();
-    } catch (e) {
-      postError = errToString(e);
+      const reqId = ++activeRequestId;
+      await loadPageData(selectedPageId, reqId);
+    } catch (e: any) {
+      postError = e?.message || String(e) || 'Failed to submit post';
     } finally {
       isSubmittingPost = false;
     }
@@ -226,6 +338,10 @@
   }
 
   async function handleSaveRule() {
+    if (!selectedPageId || !currentAccount?.channelAccountId) {
+      alert('Vui lòng kết nối và chọn Fanpage Facebook hợp lệ trước khi lưu quy tắc.');
+      return;
+    }
     if (!ruleName.trim()) {
       alert('Rule name is required');
       return;
@@ -255,7 +371,7 @@
         });
       } else {
         await createCommentAutomation({
-          channel_account_id: 1,
+          channel_account_id: currentAccount.channelAccountId,
           page_id: selectedPageId,
           rule_name: ruleName,
           keywords,
@@ -268,7 +384,8 @@
         });
       }
       showRuleModal = false;
-      await loadAutomations();
+      const reqId = ++activeRequestId;
+      await loadPageData(selectedPageId, reqId);
     } catch (e) {
       alert(`Failed to save rule: ${errToString(e)}`);
     }
@@ -278,7 +395,8 @@
     if (confirm('Are you sure you want to delete this automation rule?')) {
       try {
         await deleteCommentAutomation(id);
-        await loadAutomations();
+        const reqId = ++activeRequestId;
+        await loadPageData(selectedPageId, reqId);
       } catch (e) {
         alert(`Failed to delete rule: ${errToString(e)}`);
       }
@@ -290,57 +408,110 @@
     if (e instanceof Error) return e.message;
     return JSON.stringify(e);
   }
-
-  onMount(() => {
-    loadPageHealth();
-    loadScheduledPosts();
-    loadAutomations();
-  });
 </script>
 
 <div class="flex flex-col gap-6 w-full max-w-7xl mx-auto pb-12">
-  <!-- Page Header & Health Banner -->
-  <div class="bg-card border border-border rounded-xl p-5 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-    <div class="flex items-center gap-4">
-      <div class="w-12 h-12 rounded-xl bg-blue-600/10 text-blue-600 flex items-center justify-center font-bold text-xl">
+  {#if connectedAccounts.length === 0 && !isLoadingAccounts}
+    <!-- Zero State Banner -->
+    <div class="bg-card border border-border rounded-2xl p-8 shadow-xs flex flex-col items-center justify-center text-center gap-4 py-12">
+      <div class="w-16 h-16 rounded-2xl bg-blue-600/10 text-blue-600 flex items-center justify-center font-bold text-2xl">
         f
       </div>
-      <div>
-        <div class="flex items-center gap-2">
-          <h2 class="text-lg font-bold text-foreground">Facebook Marketing Hub</h2>
-          {#if pageHealth?.token_status === 'valid'}
-            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-              <CheckCircle2 class="w-3 h-3" /> Token Active
-            </span>
-          {:else}
-            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-600 border border-amber-500/20">
-              <AlertTriangle class="w-3 h-3" /> Token Missing / Expired
-            </span>
-          {/if}
-        </div>
-        <p class="text-xs text-muted-foreground mt-0.5">
-          Connected Page: <span class="font-medium text-foreground">{selectedPageId}</span> • 
-          Active Automations: <span class="font-medium text-foreground">{pageHealth?.active_automations_count ?? 0}</span> • 
-          Pending Posts: <span class="font-medium text-foreground">{pageHealth?.active_scheduled_count ?? 0}</span>
+      <div class="max-w-md flex flex-col gap-1.5">
+        <h3 class="text-base font-bold text-foreground">Chưa kết nối Facebook Fanpage</h3>
+        <p class="text-xs text-muted-foreground leading-relaxed">
+          Kết nối Fanpage của bạn trong mục Cài đặt Hệ thống để quản lý bài viết, lên lịch tiếp thị và kích hoạt kịch bản trả lời bình luận tự động.
         </p>
       </div>
-    </div>
-
-    <div class="flex items-center gap-2">
       <button
         type="button"
-        onclick={() => {
-          loadPageHealth();
-          loadScheduledPosts();
-          loadAutomations();
-        }}
-        class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-input bg-background hover:bg-accent text-foreground transition-colors shadow-2xs"
+        onclick={() => onOpenSettings?.()}
+        class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-xs font-semibold shadow-xs transition-colors"
       >
-        <RefreshCw class="w-3.5 h-3.5 {isLoadingHealth ? 'animate-spin' : ''}" />
-        Refresh
+        <Settings2 class="w-4 h-4" />
+        Đi tới Cài đặt & Kết nối Fanpage
       </button>
     </div>
-  </div>
+  {:else}
+    <!-- Page Header & Health Banner -->
+    <div class="bg-card border border-border rounded-xl p-5 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div class="flex items-center gap-4 min-w-0">
+        {#if currentAccount?.avatarUrl}
+          <img
+            src={currentAccount.avatarUrl}
+            alt={currentAccount.pageName || 'Fanpage'}
+            class="w-12 h-12 rounded-xl object-cover border border-border shrink-0 shadow-2xs"
+          />
+        {:else}
+          <div class="w-12 h-12 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-lg shrink-0 shadow-2xs">
+            {currentAccount?.pageName ? currentAccount.pageName.charAt(0).toUpperCase() : 'F'}
+          </div>
+        {/if}
+        <div class="min-w-0 flex flex-col gap-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-base font-bold text-foreground truncate">
+              {currentAccount?.pageName || 'Facebook Marketing Hub'}
+            </h2>
+            {#if pageHealth?.token_status === 'valid' || currentAccount?.tokenStatus === 'valid'}
+              <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                <CheckCircle2 class="w-3 h-3" /> Token Active (Keyring Vault)
+              </span>
+            {:else}
+              <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                <AlertTriangle class="w-3 h-3" /> Token Missing / Expired
+              </span>
+            {/if}
+          </div>
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {#if connectedAccounts.length > 1}
+              <div class="flex items-center gap-1.5">
+                <span class="font-medium text-foreground">Chọn Page:</span>
+                <select
+                  aria-label="Chọn Fanpage Facebook"
+                  value={selectedPageId}
+                  onchange={handlePageSelectChange}
+                  class="px-2 py-0.5 rounded-md border border-input bg-background text-xs text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-ring"
+                >
+                  {#each connectedAccounts as acc}
+                    <option value={acc.pageId}>{acc.pageName || acc.pageId} (ID: {acc.pageId})</option>
+                  {/each}
+                </select>
+              </div>
+            {:else}
+              <span>ID: <span class="font-mono text-foreground font-medium">{currentAccount?.pageId || selectedPageId}</span></span>
+            {/if}
+            <span>•</span>
+            <span>Active Automations: <span class="font-semibold text-foreground">{pageHealth?.active_automations_count ?? (automationRules || []).filter(r => r?.is_enabled).length}</span></span>
+            <span>•</span>
+            <span>Pending Posts: <span class="font-semibold text-foreground">{pageHealth?.active_scheduled_count ?? (scheduledPosts || []).filter(p => p?.status === 'queued' || p?.status === 'scheduled_on_meta').length}</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          onclick={() => {
+            loadAccounts();
+          }}
+          class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-input bg-background hover:bg-accent text-foreground transition-colors shadow-2xs"
+          title="Làm mới trạng thái"
+        >
+          <RefreshCw class="w-3.5 h-3.5 {isLoadingHealth || isLoadingAccounts ? 'animate-spin' : ''}" />
+          Refresh
+        </button>
+        <button
+          type="button"
+          onclick={() => onOpenSettings?.()}
+          class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors shadow-2xs"
+          title="Quản lý tài khoản Facebook trong Cài đặt"
+        >
+          <Settings2 class="w-3.5 h-3.5 text-muted-foreground" />
+          Settings
+        </button>
+      </div>
+    </div>
+  {/if}
 
   <!-- Sub-Tabs Navigation -->
   <div class="flex border-b border-border gap-2">
@@ -430,6 +601,10 @@
             <textarea
               id="post-msg-input"
               bind:value={postMessage}
+              oninput={(e) => {
+                const target = (e.target || e.currentTarget) as HTMLTextAreaElement;
+                if (target) postMessage = target.value;
+              }}
               rows="4"
               placeholder="What's on your mind? Type your post message here..."
               class="w-full rounded-lg border border-input bg-background p-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
@@ -544,7 +719,7 @@
           <!-- Submit Button -->
           <button
             type="button"
-            onclick={handleCreatePost}
+            onclick={() => handleCreatePost()}
             disabled={isSubmittingPost}
             class="w-full py-2.5 px-4 rounded-lg bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
           >
@@ -590,12 +765,20 @@
         <div class="bg-card border border-border rounded-xl shadow-sm overflow-hidden {previewDevice === 'mobile' ? 'max-w-sm mx-auto' : 'w-full'}">
           <!-- Post Author Header -->
           <div class="p-4 flex items-center gap-3">
-            <div class="w-10 h-10 rounded-full bg-blue-600 text-white font-bold flex items-center justify-center text-sm shadow-2xs">
-              RS
-            </div>
+            {#if currentAccount?.avatarUrl}
+              <img
+                src={currentAccount.avatarUrl}
+                alt={currentAccount.pageName || 'Fanpage'}
+                class="w-10 h-10 rounded-full object-cover shadow-2xs border border-border shrink-0"
+              />
+            {:else}
+              <div class="w-10 h-10 rounded-full bg-blue-600 text-white font-bold flex items-center justify-center text-sm shadow-2xs shrink-0">
+                {currentAccount?.pageName ? currentAccount.pageName.charAt(0).toUpperCase() : 'RS'}
+              </div>
+            {/if}
             <div>
               <div class="font-bold text-sm text-foreground flex items-center gap-1">
-                RustSale Official Page
+                {currentAccount?.pageName || 'Facebook Fanpage'}
                 <span class="text-blue-500 text-xs">✓</span>
               </div>
               <div class="text-[11px] text-muted-foreground flex items-center gap-1">

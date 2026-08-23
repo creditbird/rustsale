@@ -196,7 +196,7 @@
         <ConversationWorkspace {activeTab} targetLead={targetLeadForConversation} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
       </div>
       <div class={activeTab === 'facebook_hub' ? '' : 'hidden'}>
-        <FacebookHub />
+        <FacebookHub {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       </div>
       <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
         <Dashboard {activeTab} />
