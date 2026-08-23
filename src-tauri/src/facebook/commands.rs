@@ -69,6 +69,31 @@ pub fn schedule_facebook_post_impl(
         ("meta".to_string(), "draft")
     };
 
+    let channel_account_id = if request.channel_account_id > 0 {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM channel_accounts WHERE id = ?1",
+                params![request.channel_account_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if exists {
+            request.channel_account_id
+        } else {
+            conn.query_row(
+                "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
+                params![request.page_id],
+                |r| r.get(0),
+            ).unwrap_or(1)
+        }
+    } else {
+        conn.query_row(
+            "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
+            params![request.page_id],
+            |r| r.get(0),
+        ).unwrap_or(1)
+    };
+
     conn.execute(
         "INSERT INTO facebook_scheduled_posts (
             draft_group_id, channel_account_id, page_id, post_type, message, link_url,
@@ -77,7 +102,7 @@ pub fn schedule_facebook_post_impl(
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), datetime('now'))",
         params![
             draft_group_id,
-            request.channel_account_id,
+            channel_account_id,
             request.page_id,
             request.post_type,
             request.message,
@@ -301,12 +326,37 @@ pub fn create_comment_automation_impl(
     let auto_like = if req.auto_like.unwrap_or(true) { 1 } else { 0 };
     let is_enabled = if req.is_enabled.unwrap_or(true) { 1 } else { 0 };
 
+    let channel_account_id = if req.channel_account_id > 0 {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM channel_accounts WHERE id = ?1",
+                params![req.channel_account_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if exists {
+            req.channel_account_id
+        } else {
+            conn.query_row(
+                "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
+                params![req.page_id],
+                |r| r.get(0),
+            ).unwrap_or(req.channel_account_id)
+        }
+    } else {
+        conn.query_row(
+            "SELECT id FROM channel_accounts WHERE (channel = 'messenger' OR channel = 'facebook') AND provider_account_key = ?1",
+            params![req.page_id],
+            |r| r.get(0),
+        ).unwrap_or(1)
+    };
+
     conn.execute(
         "INSERT INTO facebook_comment_automations
          (channel_account_id, page_id, rule_name, post_ids_json, keywords_json, match_mode, auto_like, public_reply_template, private_reply_template, is_enabled, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'), datetime('now'))",
         params![
-            req.channel_account_id,
+            channel_account_id,
             req.page_id,
             req.rule_name,
             post_ids_json,
