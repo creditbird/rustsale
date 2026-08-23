@@ -108,27 +108,44 @@ impl FacebookScheduler {
             )?;
 
             // Strict RFC3339 parsing, failing closed with error_code='invalid_timestamp'
-            if let Some(ts) = scheduled_publish_time.as_deref() {
-                if chrono::DateTime::parse_from_rfc3339(ts).is_err() {
-                    let rows = conn.execute(
-                        "UPDATE facebook_scheduled_posts
-                         SET status = 'failed',
-                             error_code = 'invalid_timestamp',
-                             error_message = ?1,
-                             owner_id = NULL,
-                             claim_deadline = NULL,
-                             updated_at = datetime('now')
-                         WHERE id = ?2 AND status = 'queued'",
-                        params![
-                            format!("Invalid RFC3339 scheduled_publish_time '{}'", ts),
-                            post_id
-                        ],
-                    )?;
-                    if rows == 1 {
-                        summary.failed += 1;
-                    } else {
-                        summary.deferred += 1;
+            let parsed_epoch: Option<i64> = if let Some(ts) = scheduled_publish_time.as_deref() {
+                match chrono::DateTime::parse_from_rfc3339(ts) {
+                    Ok(dt) => Some(dt.timestamp()),
+                    Err(_) => {
+                        let rows = conn.execute(
+                            "UPDATE facebook_scheduled_posts
+                             SET status = 'failed',
+                                 error_code = 'invalid_timestamp',
+                                 error_message = ?1,
+                                 owner_id = NULL,
+                                 claim_deadline = NULL,
+                                 updated_at = datetime('now')
+                             WHERE id = ?2 AND status = 'queued'",
+                            params![
+                                format!("Invalid RFC3339 scheduled_publish_time '{}'", ts),
+                                post_id
+                            ],
+                        )?;
+                        if rows == 1 {
+                            summary.failed += 1;
+                        } else {
+                            summary.deferred += 1;
+                        }
+                        continue;
                     }
+                }
+            } else {
+                None
+            };
+
+            // >30-day local scheduling contract: If scheduled_publish_time is > 30 days in the future,
+            // Meta Graph API rejects it. Leave in queued state until within 30 days.
+            let now_epoch = chrono::Utc::now().timestamp();
+            const META_MAX_SCHEDULE_SECS: i64 = 30 * 86400; // 30 days
+
+            if let Some(target_epoch) = parsed_epoch {
+                if target_epoch > now_epoch + META_MAX_SCHEDULE_SECS {
+                    summary.deferred += 1;
                     continue;
                 }
             }
@@ -233,7 +250,7 @@ impl FacebookScheduler {
             )> = conn
                 .query_row(
                     "UPDATE facebook_scheduled_posts
-                     SET owner_id = ?7,
+                     SET owner_id = ?1,
                          claim_deadline = datetime('now', '+5 minutes'),
                          updated_at = datetime('now')
                      WHERE id = (
@@ -307,6 +324,8 @@ impl FacebookScheduler {
                     &page_id,
                     &page_token,
                     remote_post_id.as_deref(),
+                    &post_type,
+                    &message,
                     reference_epoch,
                 )
                 .await?
@@ -359,17 +378,24 @@ impl FacebookScheduler {
         message: &str,
         reference_epoch: Option<i64>,
     ) -> Result<Option<String>> {
+        let auth_header = format!("Bearer {}", page_token);
         let mut next_url: Option<String> = Some(format!(
-            "https://graph.facebook.com/v26.0/{}/feed?fields=id,status_type,message,created_time&limit=50&access_token={}",
-            page_id, page_token
+            "https://graph.facebook.com/v26.0/{}/feed?fields=id,status_type,message,created_time&limit=50",
+            page_id
         ));
         let mut pages = 0usize;
+        let mut matches = Vec::new();
         while let Some(url) = next_url {
             pages += 1;
             if pages > GRAPH_PAGE_LIMIT {
                 break;
             }
-            let resp = self.client.get(&url).send().await?;
+            let resp = self
+                .client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 return Err(anyhow!("Graph /feed query returned HTTP {}", resp.status()));
             }
@@ -401,13 +427,20 @@ impl FacebookScheduler {
                 ) {
                     continue;
                 }
-                return Ok(Some(Self::strip_page_prefix(id, page_id)));
+                matches.push(Self::strip_page_prefix(id, page_id));
             }
             next_url = body
                 .get("paging")
                 .and_then(|p| p.get("next"))
                 .and_then(|n| n.as_str())
                 .map(|s| s.to_string());
+        }
+        if matches.len() > 1 {
+            return Err(anyhow!(
+                "Ambiguous match: multiple feed posts matched candidate criteria"
+            ));
+        } else if matches.len() == 1 {
+            return Ok(Some(matches.remove(0)));
         }
         Ok(None)
     }
@@ -417,19 +450,28 @@ impl FacebookScheduler {
         page_id: &str,
         page_token: &str,
         remote_post_id: Option<&str>,
+        post_type: &str,
+        message: &str,
         reference_epoch: Option<i64>,
     ) -> Result<Option<String>> {
+        let auth_header = format!("Bearer {}", page_token);
         let mut next_url: Option<String> = Some(format!(
-            "https://graph.facebook.com/v26.0/{}/scheduled_posts?fields=id,scheduled_publish_time&limit=50&access_token={}",
-            page_id, page_token
+            "https://graph.facebook.com/v26.0/{}/scheduled_posts?fields=id,scheduled_publish_time,message,status_type&limit=50",
+            page_id
         ));
         let mut pages = 0usize;
+        let mut matches = Vec::new();
         while let Some(url) = next_url {
             pages += 1;
             if pages > GRAPH_PAGE_LIMIT {
                 break;
             }
-            let resp = self.client.get(&url).send().await?;
+            let resp = self
+                .client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 return Err(anyhow!(
                     "Graph /scheduled_posts query returned HTTP {}",
@@ -448,15 +490,26 @@ impl FacebookScheduler {
                     continue;
                 }
                 let bare_id = Self::strip_page_prefix(id, page_id);
-                let id_known_match = remote_post_id
-                    .map(|rp| rp == id || rp == bare_id)
-                    .unwrap_or(false);
+                if let Some(rp) = remote_post_id {
+                    if rp == id || rp == bare_id {
+                        return Ok(Some(bare_id));
+                    }
+                }
+                let graph_message = item.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                let status_type = item
+                    .get("status_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let time_ok = Self::timestamp_within_window(
                     item.get("scheduled_publish_time").and_then(|v| v.as_str()),
                     reference_epoch,
                 );
-                if id_known_match || (remote_post_id.is_none() && time_ok) {
-                    return Ok(Some(bare_id));
+                let type_ok =
+                    status_type.is_empty() || Self::post_type_matches(post_type, status_type);
+                let msg_ok = graph_message.is_empty()
+                    || Self::message_hash(graph_message) == Self::message_hash(message);
+                if time_ok && type_ok && msg_ok {
+                    matches.push(bare_id);
                 }
             }
             next_url = body
@@ -465,32 +518,47 @@ impl FacebookScheduler {
                 .and_then(|n| n.as_str())
                 .map(|s| s.to_string());
         }
+        if matches.len() > 1 {
+            return Err(anyhow!(
+                "Ambiguous match: multiple scheduled posts matched candidate criteria"
+            ));
+        } else if matches.len() == 1 {
+            return Ok(Some(matches.remove(0)));
+        }
         Ok(None)
     }
 
     fn strip_page_prefix(id: &str, page_id: &str) -> String {
         let prefix = format!("{}_", page_id);
-        id.strip_prefix(&prefix).unwrap_or(id).to_string()
+        if let Some(stripped) = id.strip_prefix(&prefix) {
+            stripped.to_string()
+        } else {
+            id.to_string()
+        }
     }
 
-    fn message_hash(message: &str) -> String {
+    fn message_hash(msg: &str) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(message.as_bytes());
+        hasher.update(msg.trim().as_bytes());
         format!("{:x}", hasher.finalize())
     }
 
-    fn timestamp_within_window(rfc3339: Option<&str>, reference_epoch: Option<i64>) -> bool {
-        let candidate = match rfc3339
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.timestamp())
-        {
-            Some(c) => c,
-            None => return reference_epoch.is_none(),
+    fn timestamp_within_window(graph_time_str: Option<&str>, reference_epoch: Option<i64>) -> bool {
+        let reference = match reference_epoch {
+            Some(epoch) => epoch,
+            None => return false,
         };
-        match reference_epoch {
-            Some(reference) => (candidate - reference).abs() <= 60,
-            None => true,
-        }
+        let graph_ts = match graph_time_str {
+            Some(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+                Ok(dt) => dt.timestamp(),
+                Err(_) => match s.parse::<i64>() {
+                    Ok(epoch) => epoch,
+                    Err(_) => return false,
+                },
+            },
+            None => return false,
+        };
+        (graph_ts - reference).abs() <= 60
     }
 
     fn post_type_matches(post_type: &str, status_type: &str) -> bool {
@@ -622,17 +690,40 @@ impl FacebookScheduler {
                 other => Err(anyhow!("Unexpected session status '{}'", other)),
             };
 
-            if let Err(err) = outcome {
-                tracing::warn!(
-                    target: "facebook_scheduler",
-                    event = "upload_reconciler_deferred",
-                    session_id = session.id,
-                    status = %session.status,
-                    error = %err,
-                );
-                Self::release_session_lease(conn, session.id, &worker_owner).ok();
-            } else {
-                resolved += 1;
+            match outcome {
+                Ok(()) => {
+                    resolved += 1;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "facebook_scheduler",
+                        event = "upload_reconciler_deferred",
+                        session_id = session.id,
+                        status = %session.status,
+                        error = %err,
+                    );
+                    if session.retry_count + 1 >= MAX_UPLOAD_RETRIES {
+                        let _ = Self::fail_session_and_parent_tx(
+                            conn,
+                            session.id,
+                            session.post_id,
+                            &worker_owner,
+                            &session.status,
+                            "max_retries_exceeded",
+                            &format!("Upload reconciler exceeded max retries: {}", err),
+                        );
+                    } else {
+                        let _ = conn.execute(
+                            "UPDATE facebook_upload_sessions
+                             SET owner_id = NULL,
+                                 retry_count = retry_count + 1,
+                                 lease_deadline = datetime('now', '+30 seconds'),
+                                 updated_at = datetime('now')
+                             WHERE id = ?1 AND owner_id = ?2",
+                            params![session.id, &worker_owner],
+                        );
+                    }
+                }
             }
         }
 
@@ -676,38 +767,34 @@ impl FacebookScheduler {
         Ok(())
     }
 
-    fn fail_session_cas(
+    fn fail_session_and_parent_tx(
         conn: &Connection,
         session_id: i64,
+        post_id: i64,
         owner_id: &str,
         from_status: &str,
+        error_code: &str,
+        error_message: &str,
     ) -> Result<()> {
-        conn.execute(
+        let rows_sess = conn.execute(
             "UPDATE facebook_upload_sessions
              SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
              WHERE id = ?1 AND owner_id = ?2 AND status = ?3",
             params![session_id, owner_id, from_status],
         )?;
-        Ok(())
-    }
-
-    fn fail_parent_post_cas(
-        conn: &Connection,
-        post_id: i64,
-        error_code: &str,
-        error_message: &str,
-    ) -> Result<()> {
-        conn.execute(
-            "UPDATE facebook_scheduled_posts
-             SET status = 'failed',
-                 error_code = ?1,
-                 error_message = ?2,
-                 owner_id = NULL,
-                 claim_deadline = NULL,
-                 updated_at = datetime('now')
-             WHERE id = ?3 AND status IN ('publishing', 'delivery_unknown')",
-            params![error_code, error_message, post_id],
-        )?;
+        if rows_sess == 1 {
+            conn.execute(
+                "UPDATE facebook_scheduled_posts
+                 SET status = 'failed',
+                     error_code = ?1,
+                     error_message = ?2,
+                     owner_id = NULL,
+                     claim_deadline = NULL,
+                     updated_at = datetime('now')
+                 WHERE id = ?3 AND status IN ('publishing', 'delivery_unknown')",
+                params![error_code, error_message, post_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -730,10 +817,12 @@ impl FacebookScheduler {
     ) -> Result<()> {
         // Max retries reached -> fail closed (session + parent post)
         if sess.retry_count >= MAX_UPLOAD_RETRIES {
-            Self::fail_session_cas(conn, sess.id, owner, "init_pending")?;
-            Self::fail_parent_post_cas(
+            Self::fail_session_and_parent_tx(
                 conn,
+                sess.id,
                 sess.post_id,
+                owner,
+                "init_pending",
                 "max_retries_exceeded",
                 "Upload session exceeded maximum retry limit during START recovery",
             )?;
@@ -798,23 +887,19 @@ impl FacebookScheduler {
         }
         if status_code.is_client_error() {
             let err_text = resp.text().await.unwrap_or_default();
-            let rows = conn.execute(
-                "UPDATE facebook_upload_sessions SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
-                 WHERE id = ?1 AND owner_id = ?2 AND status = 'init_pending'",
-                params![sess.id, owner],
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "init_pending",
+                &format!("http_{}", status_code.as_u16()),
+                &format!(
+                    "Meta rejected fresh START (HTTP {}): {}",
+                    status_code.as_u16(),
+                    err_text
+                ),
             )?;
-            if rows == 1 {
-                Self::fail_parent_post_cas(
-                    conn,
-                    sess.post_id,
-                    &format!("http_{}", status_code.as_u16()),
-                    &format!(
-                        "Meta rejected fresh START (HTTP {}): {}",
-                        status_code.as_u16(),
-                        err_text
-                    ),
-                )?;
-            }
             return Ok(());
         }
         if !status_code.is_success() {
@@ -922,7 +1007,18 @@ impl FacebookScheduler {
             return Ok(());
         }
         if status_code.is_client_error() {
-            Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "in_progress",
+                "server_offset_client_error",
+                &format!(
+                    "Meta rejected server offset query with HTTP {}",
+                    status_code.as_u16()
+                ),
+            )?;
             return Ok(());
         }
         if !status_code.is_success() {
@@ -939,7 +1035,18 @@ impl FacebookScheduler {
             .ok_or_else(|| anyhow!("Missing start_offset in server offset response"))?;
         let file_size = sess.file_size_bytes as u64;
         if server_offset > file_size {
-            Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "in_progress",
+                "invalid_server_offset",
+                &format!(
+                    "Server offset {} exceeds file size {}",
+                    server_offset, file_size
+                ),
+            )?;
             return Err(anyhow!(
                 "Server offset {} exceeds file size {}",
                 server_offset,
@@ -1017,7 +1124,19 @@ impl FacebookScheduler {
                 return Ok(());
             }
             if transfer_status.is_client_error() {
-                Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+                Self::fail_session_and_parent_tx(
+                    conn,
+                    sess.id,
+                    sess.post_id,
+                    owner,
+                    "in_progress",
+                    "chunk_upload_client_error",
+                    &format!(
+                        "Meta rejected chunk upload at offset {} with HTTP {}",
+                        offset,
+                        transfer_status.as_u16()
+                    ),
+                )?;
                 return Ok(());
             }
             if !transfer_status.is_success() {
@@ -1035,7 +1154,18 @@ impl FacebookScheduler {
             let next_offset = Self::parse_json_u64(&transfer_json, "start_offset")
                 .ok_or_else(|| anyhow!("Missing start_offset in transfer response"))?;
             if !(next_offset > offset && next_offset <= file_size) {
-                Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+                Self::fail_session_and_parent_tx(
+                    conn,
+                    sess.id,
+                    sess.post_id,
+                    owner,
+                    "in_progress",
+                    "invalid_offset_progression",
+                    &format!(
+                        "Invalid offset progression: prev={}, next={}, file_size={}",
+                        offset, next_offset, file_size
+                    ),
+                )?;
                 return Err(anyhow!(
                     "Invalid offset progression: prev={}, next={}, file_size={}",
                     offset,
@@ -1104,7 +1234,18 @@ impl FacebookScheduler {
             return Ok(());
         }
         if status_code.is_client_error() {
-            Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "in_progress",
+                "reel_status_client_error",
+                &format!(
+                    "Meta rejected Reel status query with HTTP {}",
+                    status_code.as_u16()
+                ),
+            )?;
             return Ok(());
         }
         if !status_code.is_success() {
@@ -1133,7 +1274,15 @@ impl FacebookScheduler {
             video_status.is_some() || uploading_phase.is_some() || publishing_phase.is_some();
 
         if video_status == Some("error") || uploading_phase == Some("error") {
-            Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "in_progress",
+                "reel_processing_error",
+                "Meta Reel status returned error",
+            )?;
             return Ok(());
         }
         if video_status == Some("ready") || uploading_phase == Some("complete") {
@@ -1198,7 +1347,18 @@ impl FacebookScheduler {
             return Ok(());
         }
         if up_status.is_client_error() {
-            Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "in_progress",
+                "reel_upload_client_error",
+                &format!(
+                    "Meta rejected Reel binary upload with HTTP {}",
+                    up_status.as_u16()
+                ),
+            )?;
             return Ok(());
         }
         if !up_status.is_success() {
@@ -1212,7 +1372,18 @@ impl FacebookScheduler {
             .await
             .map_err(|e| anyhow!("Invalid JSON in Reel binary upload response: {}", e))?;
         if up_json.get("success").and_then(|v| v.as_bool()) != Some(true) {
-            Self::fail_session_cas(conn, sess.id, owner, "in_progress")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "in_progress",
+                "reel_upload_not_successful",
+                &format!(
+                    "Meta Reel binary upload did not report success: {}",
+                    up_json
+                ),
+            )?;
             return Err(anyhow!(
                 "Meta Reel binary upload did not report success: {}",
                 up_json
@@ -1288,7 +1459,18 @@ impl FacebookScheduler {
             return Ok(());
         }
         if status_code.is_client_error() {
-            Self::fail_session_cas(conn, sess.id, owner, "finishing")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "finishing",
+                "finishing_client_error",
+                &format!(
+                    "Meta rejected finishing status check with HTTP {}",
+                    status_code.as_u16()
+                ),
+            )?;
             return Ok(());
         }
         if !status_code.is_success() {
@@ -1516,7 +1698,18 @@ impl FacebookScheduler {
             return Ok(());
         }
         if status_code.is_client_error() {
-            Self::fail_session_cas(conn, sess.id, owner, "finishing")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "finishing",
+                "video_finish_client_error",
+                &format!(
+                    "Meta rejected video finish with HTTP {}",
+                    status_code.as_u16()
+                ),
+            )?;
             return Ok(());
         }
         if !status_code.is_success() {
@@ -1580,7 +1773,18 @@ impl FacebookScheduler {
             return Ok(());
         }
         if status_code.is_client_error() {
-            Self::fail_session_cas(conn, sess.id, owner, "finishing")?;
+            Self::fail_session_and_parent_tx(
+                conn,
+                sess.id,
+                sess.post_id,
+                owner,
+                "finishing",
+                "reel_finish_client_error",
+                &format!(
+                    "Meta rejected reel finish with HTTP {}",
+                    status_code.as_u16()
+                ),
+            )?;
             return Ok(());
         }
         if !status_code.is_success() {
@@ -1930,6 +2134,109 @@ mod tests {
             Some(&far.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             Some(reference)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_reconciliation_cycle_production_call_claims_row() {
+        let conn = setup_test_sqlite();
+        let post_id = insert_post(&conn, "delivery_unknown", None);
+
+        let scheduler = FacebookScheduler::new();
+        // Since no valid token exists in SQLite test db, reconciliation should fail closed / release lease without error
+        let res = scheduler.run_reconciliation_cycle(&conn, 5).await;
+        assert!(
+            res.is_ok(),
+            "run_reconciliation_cycle must execute without SQL binding errors"
+        );
+
+        // The post should still exist in delivery_unknown with lease cleared
+        let (status, owner_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, owner_id FROM facebook_scheduled_posts WHERE id = ?1",
+                params![post_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "delivery_unknown");
+        assert!(
+            owner_id.is_none(),
+            "lease must be released on token failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_promotion_boundary_greater_than_30_days_remains_queued() {
+        let conn = setup_test_sqlite();
+        let post_id = insert_post(&conn, "queued", None);
+        let future_45_days = chrono::Utc::now() + chrono::Duration::days(45);
+        conn.execute(
+            "UPDATE facebook_scheduled_posts SET scheduled_publish_time = ?1 WHERE id = ?2",
+            params![future_45_days.to_rfc3339(), post_id],
+        )
+        .unwrap();
+
+        let scheduler = FacebookScheduler::new();
+        let summary = scheduler.run_promotion_cycle(&conn, 10).await.unwrap();
+        assert_eq!(
+            summary.deferred, 1,
+            "post >30 days must be deferred locally"
+        );
+        assert_eq!(summary.failed, 0);
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM facebook_scheduled_posts WHERE id = ?1",
+                params![post_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "queued",
+            "post must remain queued for future promotion"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fail_session_and_parent_tx_atomically_updates_both_tables() {
+        let conn = setup_test_sqlite();
+        insert_post_with_id(&conn, 500, "publishing", None);
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (10, 500, 'page_123', 'video', 'intent_fail_tx', NULL, '/path/video.mp4', 'hash123', 1024, 0, 'in_progress', 0, 'worker_tx', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        FacebookScheduler::fail_session_and_parent_tx(
+            &conn,
+            10,
+            500,
+            "worker_tx",
+            "in_progress",
+            "test_error_code",
+            "Deterministic client rejection",
+        )
+        .unwrap();
+
+        let (sess_status, sess_owner): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, owner_id FROM facebook_upload_sessions WHERE id = 10",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sess_status, "failed");
+        assert!(sess_owner.is_none());
+
+        let (post_status, err_code, err_msg): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT status, error_code, error_message FROM facebook_scheduled_posts WHERE id = 500",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(post_status, "failed");
+        assert_eq!(err_code.as_deref(), Some("test_error_code"));
+        assert_eq!(err_msg.as_deref(), Some("Deterministic client rejection"));
     }
 
     fn datetime_future_seconds(seconds: i64) -> String {

@@ -47,6 +47,14 @@ impl Default for FacebookPublisher {
     }
 }
 
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> u64 {
+    headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(60)
+}
+
 impl FacebookPublisher {
     pub fn new() -> Self {
         Self {
@@ -356,10 +364,11 @@ impl FacebookPublisher {
                     }
                 };
                 let status_code = resp.status();
+                let retry_after = parse_retry_after(resp.headers());
                 if status_code.as_u16() == 429 {
                     let err_body = resp.text().await.unwrap_or_default();
                     return PublishApiResult::RateLimited {
-                        retry_after_secs: 60,
+                        retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited: {}", err_body),
                     };
                 }
@@ -384,7 +393,7 @@ impl FacebookPublisher {
                             || is_transient
                         {
                             return PublishApiResult::RateLimited {
-                                retry_after_secs: 60,
+                                retry_after_secs: retry_after,
                                 error_message: format!(
                                     "Meta rate limit error (code {}): {}",
                                     code, err_body
@@ -468,10 +477,11 @@ impl FacebookPublisher {
                     }
                 };
                 let status_code = resp.status();
+                let retry_after = parse_retry_after(resp.headers());
                 if status_code.as_u16() == 429 {
                     let err_body = resp.text().await.unwrap_or_default();
                     return PublishApiResult::RateLimited {
-                        retry_after_secs: 60,
+                        retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited: {}", err_body),
                     };
                 }
@@ -496,7 +506,7 @@ impl FacebookPublisher {
                             || is_transient
                         {
                             return PublishApiResult::RateLimited {
-                                retry_after_secs: 60,
+                                retry_after_secs: retry_after,
                                 error_message: format!(
                                     "Meta rate limit error (code {}): {}",
                                     code, err_body
@@ -599,10 +609,11 @@ impl FacebookPublisher {
                     }
                 };
                 let status_code = resp.status();
+                let retry_after = parse_retry_after(resp.headers());
                 if status_code.as_u16() == 429 {
                     let err_body = resp.text().await.unwrap_or_default();
                     return PublishApiResult::RateLimited {
-                        retry_after_secs: 60,
+                        retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited: {}", err_body),
                     };
                 }
@@ -627,7 +638,7 @@ impl FacebookPublisher {
                             || is_transient
                         {
                             return PublishApiResult::RateLimited {
-                                retry_after_secs: 60,
+                                retry_after_secs: retry_after,
                                 error_message: format!(
                                     "Meta rate limit error (code {}): {}",
                                     code, err_body
@@ -727,10 +738,11 @@ impl FacebookPublisher {
                         }
                     };
                     let status_code = resp.status();
+                    let retry_after = parse_retry_after(resp.headers());
                     if status_code.as_u16() == 429 {
                         let err_body = resp.text().await.unwrap_or_default();
                         return PublishApiResult::RateLimited {
-                            retry_after_secs: 60,
+                            retry_after_secs: retry_after,
                             error_message: format!("HTTP 429 Rate limited: {}", err_body),
                         };
                     }
@@ -755,7 +767,7 @@ impl FacebookPublisher {
                                 || is_transient
                             {
                                 return PublishApiResult::RateLimited {
-                                    retry_after_secs: 60,
+                                    retry_after_secs: retry_after,
                                     error_message: format!(
                                         "Meta rate limit error (code {}): {}",
                                         code, err_body
@@ -840,10 +852,11 @@ impl FacebookPublisher {
                     }
                 };
                 let status_code = resp.status();
+                let retry_after = parse_retry_after(resp.headers());
                 if status_code.as_u16() == 429 {
                     let err_body = resp.text().await.unwrap_or_default();
                     return PublishApiResult::RateLimited {
-                        retry_after_secs: 60,
+                        retry_after_secs: retry_after,
                         error_message: format!("HTTP 429 Rate limited: {}", err_body),
                     };
                 }
@@ -868,7 +881,7 @@ impl FacebookPublisher {
                             || is_transient
                         {
                             return PublishApiResult::RateLimited {
-                                retry_after_secs: 60,
+                                retry_after_secs: retry_after,
                                 error_message: format!(
                                     "Meta rate limit error (code {}): {}",
                                     code, err_body
