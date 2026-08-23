@@ -12,6 +12,7 @@ pub enum PublishOutcome {
     Published { remote_post_id: String },
     ScheduledOnMeta { remote_post_id: String },
     StillProcessing { upload_session_id: String },
+    DeferredLocally { scheduled_epoch: i64 },
 }
 
 #[derive(Debug)]
@@ -181,10 +182,23 @@ impl FacebookPublisher {
 
         let now_ts = chrono::Utc::now().timestamp();
         let effective_scheduled_epoch = match scheduled_publish_time_epoch {
-            Some(st) if st <= now_ts => None, // Target timestamp arrived: publish immediately
+            Some(st) if st <= now_ts => None, // Target timestamp arrived or in past: publish immediately
             Some(st) if st < now_ts + 600 => {
-                // Within 10m lower bound: Meta rejects <10m scheduled posts
-                None
+                // Within 10m lower bound: Meta rejects <10m scheduled posts, and publishing now would be premature!
+                // Safely defer locally in queued status until exact target timestamp arrives.
+                let _ = conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET status = 'queued',
+                         scheduling_mode = 'local_queued',
+                         owner_id = NULL,
+                         claim_deadline = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?1 AND owner_id = ?2 AND status = 'publishing'",
+                    params![post_id, worker_owner],
+                );
+                return Ok(PublishOutcome::DeferredLocally {
+                    scheduled_epoch: st,
+                });
             }
             Some(st) => Some(st),
             None => None,
@@ -1006,7 +1020,17 @@ mod tests {
     fn setup_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE facebook_scheduled_posts (
+            "CREATE TABLE facebook_page_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_account_id INTEGER NOT NULL,
+                page_id TEXT NOT NULL UNIQUE,
+                access_token_encrypted TEXT NOT NULL,
+                token_status TEXT NOT NULL DEFAULT 'valid',
+                granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE facebook_scheduled_posts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 draft_group_id TEXT NOT NULL,
                 channel_account_id INTEGER NOT NULL,
@@ -1032,6 +1056,8 @@ mod tests {
             );",
         )
         .unwrap();
+        FacebookTokenVault::encrypt_and_upsert_page_token(&conn, 1, "page-1", "dummy_token", &[])
+            .unwrap();
         conn
     }
 
@@ -1251,6 +1277,8 @@ mod tests {
     #[tokio::test]
     async fn publish_claims_then_fails_closed_when_no_page_token_exists() {
         let conn = setup_conn();
+        conn.execute("DELETE FROM facebook_page_tokens", [])
+            .unwrap();
         let post_id = insert_post(&conn, "queued", None, None);
 
         let err = FacebookPublisher::new()
@@ -1299,6 +1327,41 @@ mod tests {
         assert!(
             deadline.is_none(),
             "claim deadline must be cleared after failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_post_sub_10_minutes_defers_locally_without_publishing() {
+        let conn = setup_conn();
+        let target_ts = chrono::Utc::now() + chrono::Duration::minutes(5);
+        let target_str = target_ts.to_rfc3339();
+        let post_id = insert_post(&conn, "queued", None, Some(&target_str));
+
+        let outcome = FacebookPublisher::new()
+            .publish_post(&conn, post_id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            PublishOutcome::DeferredLocally {
+                scheduled_epoch: target_ts.timestamp()
+            }
+        );
+
+        let (status, scheduling_mode, owner_id): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT status, scheduling_mode, owner_id FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(status, "queued");
+        assert_eq!(scheduling_mode, "local_queued");
+        assert!(
+            owner_id.is_none(),
+            "Claim lease must be released on local deferral"
         );
     }
 }

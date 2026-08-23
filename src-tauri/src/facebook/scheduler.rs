@@ -215,7 +215,8 @@ impl FacebookScheduler {
                     crate::facebook::publisher::PublishOutcome::ScheduledOnMeta { .. } => {
                         summary.scheduled_on_meta += 1;
                     }
-                    crate::facebook::publisher::PublishOutcome::StillProcessing { .. } => {
+                    crate::facebook::publisher::PublishOutcome::StillProcessing { .. }
+                    | crate::facebook::publisher::PublishOutcome::DeferredLocally { .. } => {
                         summary.deferred += 1;
                     }
                 },
@@ -600,7 +601,7 @@ impl FacebookScheduler {
             },
             None => return false,
         };
-        (graph_ts - reference).abs() <= 60
+        (graph_ts - reference).abs() <= 180
     }
 
     fn post_type_matches(post_type: &str, status_type: &str) -> bool {
@@ -627,6 +628,31 @@ impl FacebookScheduler {
         max_sessions: usize,
     ) -> Result<usize> {
         let mut resolved = 0usize;
+
+        // Crash-recovery: Repair stranded parent posts whose foreground upload sessions already terminated
+        let _ = conn.execute(
+            "UPDATE facebook_scheduled_posts
+             SET status = 'published',
+                 remote_post_id = (SELECT video_id FROM facebook_upload_sessions WHERE post_id = facebook_scheduled_posts.id AND status = 'completed' AND video_id IS NOT NULL LIMIT 1),
+                 owner_id = NULL,
+                 claim_deadline = NULL,
+                 updated_at = datetime('now')
+             WHERE status = 'publishing'
+               AND id IN (SELECT post_id FROM facebook_upload_sessions WHERE status = 'completed' AND video_id IS NOT NULL)",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE facebook_scheduled_posts
+             SET status = 'failed',
+                 error_code = 'UPLOAD_SESSION_FAILED',
+                 error_message = 'Upload session completed with failure in foreground',
+                 owner_id = NULL,
+                 claim_deadline = NULL,
+                 updated_at = datetime('now')
+             WHERE status = 'publishing'
+               AND id IN (SELECT post_id FROM facebook_upload_sessions WHERE status = 'failed')",
+            [],
+        );
 
         for _ in 0..max_sessions {
             let worker_owner = format!(
@@ -840,9 +866,32 @@ impl FacebookScheduler {
             params![error_code, error_message, post_id],
         );
         match (rows_sess, rows_post) {
-            (Ok(1), Ok(_)) => {
+            (Ok(1), Ok(1)) => {
                 conn.execute_batch("RELEASE SAVEPOINT fb_fail_tx;")?;
                 Ok(())
+            }
+            (Ok(1), Ok(0)) => {
+                let parent_status: Option<String> = conn
+                    .query_row(
+                        "SELECT status FROM facebook_scheduled_posts WHERE id = ?1",
+                        params![post_id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None);
+                if let Some(ref st) = parent_status {
+                    if st == "failed" || st == "delivery_unknown" {
+                        conn.execute_batch("RELEASE SAVEPOINT fb_fail_tx;")?;
+                        return Ok(());
+                    }
+                }
+                let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT fb_fail_tx;");
+                let _ = conn.execute_batch("RELEASE SAVEPOINT fb_fail_tx;");
+                Err(anyhow!(
+                    "Parent post {} could not be transitioned to failed and was in non-terminal status {:?}",
+                    post_id,
+                    parent_status
+                ))
             }
             (Ok(_), Ok(_)) => {
                 let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT fb_fail_tx;");
@@ -2397,6 +2446,74 @@ mod tests {
             .unwrap();
         assert_eq!(status, "overdue_prompt");
         assert_eq!(err_code.as_deref(), Some("overdue_schedule"));
+    }
+
+    #[tokio::test]
+    async fn test_fail_session_and_parent_tx_rolls_back_when_parent_is_not_publishing() {
+        let conn = setup_test_sqlite();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+             VALUES (601, 'grp1', 1, 'page1', 'video', 'msg', 'idem_601', 'draft', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
+             VALUES (21, 601, 'upl_21', 'video_chunked', 'page1', '/tmp/vid.mp4', 'hash21', 1000, 0, 'in_progress', 'w21', datetime('now', '+5 minutes'), 0, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Parent post is in 'draft' status (not 'publishing' or 'delivery_unknown'), so parent update will affect 0 rows
+        let res = FacebookScheduler::fail_session_and_parent_tx(
+            &conn,
+            21,
+            601,
+            "w21",
+            "in_progress",
+            "ERR_TEST",
+            "Test parent mismatch",
+        );
+        assert!(
+            res.is_err(),
+            "Must error and rollback when parent row cannot be updated"
+        );
+
+        // Verify session remains in_progress (rolled back)
+        let sess_status: String = conn
+            .query_row(
+                "SELECT status FROM facebook_upload_sessions WHERE id = 21",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sess_status, "in_progress");
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_upload_sessions_repairs_stranded_parent_post() {
+        let mut conn = setup_test_sqlite();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
+             VALUES (701, 'grp1', 1, 'page1', 'video', 'msg', 'idem_701', 'publishing', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
+             VALUES (31, 701, 'upl_31', 'video_chunked', 'page1', 'vid_701_remote', '/tmp/vid.mp4', 'hash31', 1000, 0, 'completed', NULL, NULL, 0, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let scheduler = FacebookScheduler::new();
+        let _ = scheduler.reconcile_upload_sessions(&mut conn, 5).await;
+
+        let (parent_status, remote_post_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, remote_post_id FROM facebook_scheduled_posts WHERE id = 701",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(parent_status, "published");
+        assert_eq!(remote_post_id.as_deref(), Some("vid_701_remote"));
     }
 
     fn datetime_future_seconds(seconds: i64) -> String {
