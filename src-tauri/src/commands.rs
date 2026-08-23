@@ -1,7 +1,7 @@
 use crate::conversation::commands::ConversationState;
 use crate::models::{
-    Activity, Category, Deal, EmailTemplate, Lead, ManagedSmtpAccount, ManagedZaloAccount,
-    SmtpServer, ZaloSessionStatus,
+    Activity, Category, Deal, EmailTemplate, Lead, ManagedFacebookAccount, ManagedSmtpAccount,
+    ManagedZaloAccount, SmtpServer, ZaloSessionStatus,
 };
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
@@ -1694,6 +1694,101 @@ pub fn get_managed_smtp_accounts_internal(
                 .collect()
         })
         .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn get_managed_facebook_accounts(
+    state: tauri::State<DbState>,
+) -> Result<Vec<ManagedFacebookAccount>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_managed_facebook_accounts_internal(&conn)
+}
+
+pub fn get_managed_facebook_accounts_internal(
+    conn: &Connection,
+) -> Result<Vec<ManagedFacebookAccount>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT fpt.channel_account_id,
+                    fpt.page_id,
+                    COALESCE(ca.display_name, fpt.page_id),
+                    ca.avatar_url,
+                    fpt.token_status,
+                    fpt.granted_scopes_json,
+                    COALESCE(ca.connection_status, 'connected'),
+                    ca.last_connected_at,
+                    ca.last_error,
+                    fpt.updated_at
+             FROM facebook_page_tokens fpt
+             LEFT JOIN channel_accounts ca ON ca.id = fpt.channel_account_id
+             ORDER BY lower(COALESCE(ca.display_name, fpt.page_id)), fpt.page_id",
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let scopes_json: String = row.get(5)?;
+            let granted_scopes: Vec<String> =
+                serde_json::from_str(&scopes_json).unwrap_or_default();
+            Ok(ManagedFacebookAccount {
+                channel_account_id: row.get(0)?,
+                page_id: row.get(1)?,
+                page_name: row.get(2)?,
+                avatar_url: row.get(3)?,
+                token_status: row.get(4)?,
+                granted_scopes,
+                runtime_status: row.get(6)?,
+                last_connected_at: row.get(7)?,
+                last_error: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_facebook_account(
+    state: tauri::State<DbState>,
+    page_id: String,
+) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    delete_facebook_account_internal(&conn, &page_id)
+}
+
+pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Result<(), String> {
+    let channel_account_id: Option<i64> = conn
+        .query_row(
+            "SELECT channel_account_id FROM facebook_page_tokens WHERE page_id = ?1",
+            rusqlite::params![page_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    conn.execute(
+        "DELETE FROM facebook_page_tokens WHERE page_id = ?1",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error deleting page token: {}", e))?;
+
+    if let Some(ca_id) = channel_account_id {
+        conn.execute(
+            "DELETE FROM channel_accounts WHERE id = ?1",
+            rusqlite::params![ca_id],
+        )
+        .map_err(|e| format!("Database error deleting channel account: {}", e))?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

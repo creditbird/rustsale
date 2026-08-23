@@ -35,6 +35,21 @@ const smtpAccounts = [
   }
 ];
 
+const facebookAccounts = [
+  {
+    channelAccountId: 101,
+    pageId: 'page_123',
+    pageName: 'RustSale Official Page',
+    avatarUrl: null,
+    tokenStatus: 'valid',
+    grantedScopes: ['pages_messaging', 'pages_manage_posts'],
+    runtimeStatus: 'connected',
+    lastConnectedAt: '2026-08-21T08:00:00Z',
+    lastError: null,
+    updatedAt: '2026-08-21T08:00:00Z'
+  }
+];
+
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: Record<string, any>) => {
     invokedCommands.push({ command, args });
@@ -49,6 +64,10 @@ mock.module('@tauri-apps/api/core', () => ({
         );
       case 'get_managed_smtp_accounts':
         return structuredClone(smtpAccounts);
+      case 'get_managed_facebook_accounts':
+        return structuredClone(facebookAccounts);
+      case 'delete_facebook_account':
+        return undefined;
       case 'verify_zalo_session':
         return {
           imei: args?.imei,
@@ -98,16 +117,46 @@ afterEach(() => {
 });
 
 describe('Settings', () => {
-  test('renders Zalo and Email account tabs with disabled future channels', async () => {
+  test('renders Zalo, Email, and Facebook account tabs with enabled Facebook channel', async () => {
     render(Settings);
 
     expect(screen.getByRole('tab', { name: /Zalo/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Email/i })).toBeTruthy();
 
-    const facebookTab = screen.getByRole('tab', { name: /Facebook.*Coming soon/i });
+    const facebookTab = screen.getByRole('tab', { name: /^Facebook$/i });
+    expect((facebookTab as HTMLButtonElement).disabled).toBe(false);
+
     const whatsappTab = screen.getByRole('tab', { name: /WhatsApp.*Coming soon/i });
-    expect((facebookTab as HTMLButtonElement).disabled).toBe(true);
     expect((whatsappTab as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test('renders Facebook tab content with connected fanpage and valid token badge', async () => {
+    render(Settings);
+    await selectTab(/^Facebook$/i);
+
+    expect(await screen.findByText('RustSale Official Page')).toBeTruthy();
+    expect(screen.getByText('ID: page_123')).toBeTruthy();
+    expect(screen.getByText('Token Valid')).toBeTruthy();
+    expect(screen.getByText('Runtime Connected')).toBeTruthy();
+    expect(screen.getByText('pages_messaging')).toBeTruthy();
+  });
+
+  test('disconnects a Facebook page through delete confirmation modal', async () => {
+    render(Settings);
+    await selectTab(/^Facebook$/i);
+
+    const disconnectBtn = await screen.findByRole('button', { name: /Disconnect/i });
+    await fireEvent.click(disconnectBtn);
+
+    const confirmBtn = await screen.findByRole('button', { name: /Confirm Disconnect/i });
+    await fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(invokedCommands).toContainEqual({
+        command: 'delete_facebook_account',
+        args: { pageId: 'page_123' }
+      });
+    });
   });
 
   test('shows authentication and realtime runtime as independent statuses', async () => {

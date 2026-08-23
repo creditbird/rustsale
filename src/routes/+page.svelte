@@ -223,7 +223,7 @@
         <KanbanBoard />
       </div>
       <div class={activeTab === 'settings' ? '' : 'hidden'}>
-        <Settings bind:this={settingsRef} />
+        <Settings bind:this={settingsRef} onNavigateToHub={() => (activeTab = 'facebook_hub')} />
       </div>
     </div>
   </main>

@@ -600,6 +600,47 @@ mod tests {
     }
 
     #[test]
+    fn test_facebook_managed_accounts_list_and_deletion() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        // 1. Insert channel account for Facebook Messenger
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, avatar_url, connection_status, created_at, updated_at)
+             VALUES (101, 'messenger', 'page_123', 'RustSale Page', 'https://example.com/page.png', 'connected', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 2. Insert page token
+        conn.execute(
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, created_at, updated_at)
+             VALUES (101, 'page_123', 'enc_token_abc', 'valid', '[\"pages_messaging\",\"pages_manage_posts\"]', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 3. List managed accounts
+        let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(accounts.len(), 1);
+        let acc = &accounts[0];
+        assert_eq!(acc.page_id, "page_123");
+        assert_eq!(acc.page_name.as_deref(), Some("RustSale Page"));
+        assert_eq!(
+            acc.avatar_url.as_deref(),
+            Some("https://example.com/page.png")
+        );
+        assert_eq!(acc.token_status, "valid");
+        assert_eq!(acc.runtime_status, "connected");
+        assert_eq!(
+            acc.granted_scopes,
+            vec!["pages_messaging", "pages_manage_posts"]
+        );
+
+        // 4. Delete account
+        commands::delete_facebook_account_internal(&conn, "page_123").unwrap();
+        let remaining = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(remaining.len(), 0);
+    }
+
+    #[test]
     fn test_zalo_qr_session_rejects_callback_without_device_imei() {
         let conn = db::init_db(":memory:").unwrap();
         let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".to_string();
