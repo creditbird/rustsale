@@ -35,12 +35,10 @@ pub struct CreateFacebookPostRequest {
     pub scheduled_publish_time: Option<String>,
 }
 
-#[tauri::command]
-pub fn schedule_facebook_post(
-    state: tauri::State<DbState>,
+pub fn schedule_facebook_post_impl(
+    conn: &rusqlite::Connection,
     request: CreateFacebookPostRequest,
 ) -> Result<i64, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let draft_group_id = request
         .draft_group_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -48,26 +46,27 @@ pub fn schedule_facebook_post(
         .unwrap_or_else(|_| "[]".to_string());
     let idempotency_key = uuid::Uuid::new_v4().to_string();
 
-    let scheduling_mode = if let Some(ref ts) = request.scheduled_publish_time {
+    let (scheduling_mode, initial_status) = if let Some(ref ts) = request.scheduled_publish_time {
         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
             let now = chrono::Utc::now();
             let diff = dt.signed_duration_since(now).num_seconds();
             if diff > 30 * 86400 {
-                "local_queued".to_string()
+                ("local_queued".to_string(), "queued")
+            } else if diff >= 600 {
+                ("meta".to_string(), "queued")
+            } else if diff >= 0 {
+                // Within 10 minutes: Meta rejects <10min API schedules, so queue locally until exact target time
+                ("local_queued".to_string(), "queued")
             } else {
-                "meta".to_string()
+                // Scheduled time is in the past
+                ("local_queued".to_string(), "overdue_prompt")
             }
         } else {
             return Err("Invalid RFC3339 scheduled_publish_time format".to_string());
         }
     } else {
-        "immediate".to_string()
-    };
-
-    let initial_status = if request.scheduled_publish_time.is_some() {
-        "queued"
-    } else {
-        "draft"
+        // Immediate post created in draft state
+        ("meta".to_string(), "draft")
     };
 
     conn.execute(
@@ -97,21 +96,29 @@ pub fn schedule_facebook_post(
 }
 
 #[tauri::command]
-pub fn publish_facebook_post_now(
+pub fn schedule_facebook_post(
     state: tauri::State<DbState>,
+    request: CreateFacebookPostRequest,
+) -> Result<i64, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    schedule_facebook_post_impl(&conn, request)
+}
+
+pub fn publish_facebook_post_now_impl(
+    conn: &rusqlite::Connection,
     post_id: i64,
 ) -> Result<bool, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let rows = conn
         .execute(
             "UPDATE facebook_scheduled_posts
              SET status = 'queued',
                  scheduled_publish_time = NULL,
+                 scheduling_mode = 'meta',
                  owner_id = NULL,
                  claim_deadline = NULL,
                  next_retry_at = NULL,
                  updated_at = datetime('now')
-             WHERE id = ?1 AND status IN ('draft', 'failed', 'queued')",
+             WHERE id = ?1 AND status IN ('draft', 'failed', 'queued', 'overdue_prompt')",
             params![post_id],
         )
         .map_err(|e| e.to_string())?;
@@ -119,11 +126,18 @@ pub fn publish_facebook_post_now(
 }
 
 #[tauri::command]
-pub fn list_facebook_scheduled_posts(
+pub fn publish_facebook_post_now(
     state: tauri::State<DbState>,
+    post_id: i64,
+) -> Result<bool, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    publish_facebook_post_now_impl(&conn, post_id)
+}
+
+pub fn list_facebook_scheduled_posts_impl(
+    conn: &rusqlite::Connection,
     page_id: Option<String>,
 ) -> Result<Vec<FacebookScheduledPostDto>, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let mut sql = "SELECT id, draft_group_id, channel_account_id, page_id, post_type, message, link_url, media_paths_json, scheduling_mode, scheduled_publish_time, remote_post_id, status, error_code, error_message, created_at, updated_at FROM facebook_scheduled_posts".to_string();
     if page_id.is_some() {
         sql.push_str(" WHERE page_id = ?1");
@@ -169,16 +183,223 @@ pub fn list_facebook_scheduled_posts(
 }
 
 #[tauri::command]
+pub fn list_facebook_scheduled_posts(
+    state: tauri::State<DbState>,
+    page_id: Option<String>,
+) -> Result<Vec<FacebookScheduledPostDto>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    list_facebook_scheduled_posts_impl(&conn, page_id)
+}
+
+pub fn cancel_facebook_scheduled_post_impl(
+    conn: &rusqlite::Connection,
+    post_id: i64,
+) -> Result<bool, String> {
+    let rows = conn
+        .execute(
+            "DELETE FROM facebook_scheduled_posts WHERE id = ?1 AND status IN ('draft', 'queued', 'overdue_prompt')",
+            params![post_id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(rows > 0)
+}
+
+#[tauri::command]
 pub fn cancel_facebook_scheduled_post(
     state: tauri::State<DbState>,
     post_id: i64,
 ) -> Result<bool, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let rows = conn
-        .execute(
-            "UPDATE facebook_scheduled_posts SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?1 AND status IN ('draft', 'queued')",
-            params![post_id],
+    cancel_facebook_scheduled_post_impl(&conn, post_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{Connection, OptionalExtension};
+
+    fn setup_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE channel_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_type TEXT NOT NULL,
+                account_id TEXT NOT NULL UNIQUE,
+                account_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+            INSERT INTO channel_accounts (id, channel_type, account_id, account_name)
+            VALUES (1, 'facebook', 'act_100', 'Test Page');
+
+            CREATE TABLE facebook_scheduled_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                draft_group_id TEXT NOT NULL,
+                channel_account_id INTEGER NOT NULL,
+                page_id TEXT NOT NULL,
+                post_type TEXT NOT NULL CHECK (post_type IN ('status', 'link', 'photo', 'multi_photo', 'video', 'reel')),
+                message TEXT NOT NULL,
+                link_url TEXT,
+                media_paths_json TEXT NOT NULL DEFAULT '[]',
+                scheduling_mode TEXT NOT NULL DEFAULT 'meta' CHECK (scheduling_mode IN ('meta', 'local_queued')),
+                scheduled_publish_time TEXT,
+                next_retry_at TEXT,
+                remote_post_id TEXT,
+                upload_session_id TEXT,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'queued', 'publishing', 'scheduled_on_meta', 'published', 'failed', 'delivery_unknown', 'overdue_prompt')),
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                owner_id TEXT,
+                claim_deadline TEXT,
+                error_code TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+            );"
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_schedule_post_immediate_creates_valid_draft() {
+        let conn = setup_test_db();
+        let req = CreateFacebookPostRequest {
+            draft_group_id: None,
+            channel_account_id: 1,
+            page_id: "page_123".to_string(),
+            post_type: "status".to_string(),
+            message: "Hello world immediate".to_string(),
+            link_url: None,
+            media_paths: None,
+            scheduled_publish_time: None,
+        };
+
+        let post_id = schedule_facebook_post_impl(&conn, req)
+            .expect("Must insert immediate post without CHECK violation");
+        assert!(post_id > 0);
+
+        let (status, scheduling_mode): (String, String) = conn
+            .query_row(
+                "SELECT status, scheduling_mode FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "draft");
+        assert_eq!(scheduling_mode, "meta");
+    }
+
+    #[test]
+    fn test_schedule_post_meta_and_local_queued_boundaries() {
+        let conn = setup_test_db();
+
+        // 1. > 30 days -> local_queued
+        let future_35d = (chrono::Utc::now() + chrono::Duration::days(35)).to_rfc3339();
+        let post_id_35d = schedule_facebook_post_impl(
+            &conn,
+            CreateFacebookPostRequest {
+                draft_group_id: None,
+                channel_account_id: 1,
+                page_id: "page_123".to_string(),
+                post_type: "status".to_string(),
+                message: "Future post".to_string(),
+                link_url: None,
+                media_paths: None,
+                scheduled_publish_time: Some(future_35d),
+            },
         )
-        .map_err(|e| e.to_string())?;
-    Ok(rows > 0)
+        .unwrap();
+
+        // 2. 2 hours -> meta
+        let future_2h = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let post_id_2h = schedule_facebook_post_impl(
+            &conn,
+            CreateFacebookPostRequest {
+                draft_group_id: None,
+                channel_account_id: 1,
+                page_id: "page_123".to_string(),
+                post_type: "status".to_string(),
+                message: "Meta scheduled post".to_string(),
+                link_url: None,
+                media_paths: None,
+                scheduled_publish_time: Some(future_2h),
+            },
+        )
+        .unwrap();
+
+        // 3. 5 minutes (<10m) -> local_queued
+        let future_5m = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        let post_id_5m = schedule_facebook_post_impl(
+            &conn,
+            CreateFacebookPostRequest {
+                draft_group_id: None,
+                channel_account_id: 1,
+                page_id: "page_123".to_string(),
+                post_type: "status".to_string(),
+                message: "Sub-10m post".to_string(),
+                link_url: None,
+                media_paths: None,
+                scheduled_publish_time: Some(future_5m),
+            },
+        )
+        .unwrap();
+
+        let mode_35d: String = conn
+            .query_row(
+                "SELECT scheduling_mode FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id_35d],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mode_2h: String = conn
+            .query_row(
+                "SELECT scheduling_mode FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id_2h],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mode_5m: String = conn
+            .query_row(
+                "SELECT scheduling_mode FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id_5m],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(mode_35d, "local_queued");
+        assert_eq!(mode_2h, "meta");
+        assert_eq!(mode_5m, "local_queued");
+    }
+
+    #[test]
+    fn test_cancel_facebook_scheduled_post_succeeds() {
+        let conn = setup_test_db();
+        let post_id = schedule_facebook_post_impl(
+            &conn,
+            CreateFacebookPostRequest {
+                draft_group_id: None,
+                channel_account_id: 1,
+                page_id: "page_123".to_string(),
+                post_type: "status".to_string(),
+                message: "To be cancelled".to_string(),
+                link_url: None,
+                media_paths: None,
+                scheduled_publish_time: None,
+            },
+        )
+        .unwrap();
+
+        let cancelled = cancel_facebook_scheduled_post_impl(&conn, post_id).unwrap();
+        assert!(cancelled);
+
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(exists.is_none());
+    }
 }

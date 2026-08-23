@@ -138,14 +138,36 @@ impl FacebookScheduler {
                 None
             };
 
-            // >30-day local scheduling contract: If scheduled_publish_time is > 30 days in the future,
-            // Meta Graph API rejects it. Leave in queued state until within 30 days.
+            // Meta scheduling bounds:
+            // Meta Graph API permits scheduling between 10 minutes (600s) and 30 days (30 * 86400s).
             let now_epoch = chrono::Utc::now().timestamp();
             const META_MAX_SCHEDULE_SECS: i64 = 30 * 86400; // 30 days
+            const META_MIN_SCHEDULE_SECS: i64 = 600; // 10 minutes
 
             if let Some(target_epoch) = parsed_epoch {
-                if target_epoch > now_epoch + META_MAX_SCHEDULE_SECS {
+                let diff = target_epoch - now_epoch;
+                if diff > META_MAX_SCHEDULE_SECS {
+                    // >30 days: wait locally in queued status
                     summary.deferred += 1;
+                    continue;
+                } else if diff > 0 && diff < META_MIN_SCHEDULE_SECS {
+                    // Within 10 minutes: wait in queued status until exact target timestamp arrives (diff <= 0)
+                    summary.deferred += 1;
+                    continue;
+                } else if diff < -86400 {
+                    // Overdue by >24 hours
+                    let _ = conn.execute(
+                        "UPDATE facebook_scheduled_posts
+                         SET status = 'overdue_prompt',
+                             error_code = 'overdue_schedule',
+                             error_message = 'Post is overdue by more than 24 hours',
+                             owner_id = NULL,
+                             claim_deadline = NULL,
+                             updated_at = datetime('now')
+                         WHERE id = ?1 AND status = 'queued'",
+                        params![post_id],
+                    );
+                    summary.failed += 1;
                     continue;
                 }
             }
@@ -247,6 +269,7 @@ impl FacebookScheduler {
                 String,
                 Option<String>,
                 Option<String>,
+                String,
             )> = conn
                 .query_row(
                     "UPDATE facebook_scheduled_posts
@@ -260,7 +283,7 @@ impl FacebookScheduler {
                          ORDER BY id LIMIT 1
                      )
                      AND status = 'delivery_unknown'
-                     RETURNING id, channel_account_id, page_id, post_type, message, remote_post_id, scheduled_publish_time",
+                     RETURNING id, channel_account_id, page_id, post_type, message, remote_post_id, scheduled_publish_time, updated_at",
                     params![worker_owner],
                     |r| {
                         Ok((
@@ -271,6 +294,7 @@ impl FacebookScheduler {
                             r.get(4)?,
                             r.get(5)?,
                             r.get(6)?,
+                            r.get(7)?,
                         ))
                     },
                 )
@@ -284,6 +308,7 @@ impl FacebookScheduler {
                 message,
                 remote_post_id,
                 scheduled_publish_time,
+                updated_at_str,
             ) = match claimed {
                 Some(row) => row,
                 None => break,
@@ -309,8 +334,24 @@ impl FacebookScheduler {
 
             let reference_epoch: Option<i64> = scheduled_publish_time
                 .as_deref()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.timestamp());
+                .and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|dt| dt.timestamp())
+                })
+                .or_else(|| {
+                    chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+                        .ok()
+                        .map(|dt| dt.timestamp())
+                        .or_else(|| {
+                            chrono::NaiveDateTime::parse_from_str(
+                                &updated_at_str,
+                                "%Y-%m-%d %H:%M:%S",
+                            )
+                            .ok()
+                            .map(|ndt| ndt.and_utc().timestamp())
+                        })
+                });
 
             let mut matched_status: Option<(&str, String)> = None;
 
@@ -505,9 +546,9 @@ impl FacebookScheduler {
                     reference_epoch,
                 );
                 let type_ok =
-                    status_type.is_empty() || Self::post_type_matches(post_type, status_type);
-                let msg_ok = graph_message.is_empty()
-                    || Self::message_hash(graph_message) == Self::message_hash(message);
+                    !status_type.is_empty() && Self::post_type_matches(post_type, status_type);
+                let msg_ok = !graph_message.is_empty()
+                    && Self::message_hash(graph_message) == Self::message_hash(message);
                 if time_ok && type_ok && msg_ok {
                     matches.push(bare_id);
                 }
@@ -713,14 +754,16 @@ impl FacebookScheduler {
                             &format!("Upload reconciler exceeded max retries: {}", err),
                         );
                     } else {
+                        let backoff_secs =
+                            (2u64.pow(session.retry_count.min(6) as u32) * 15) as i64;
                         let _ = conn.execute(
                             "UPDATE facebook_upload_sessions
                              SET owner_id = NULL,
                                  retry_count = retry_count + 1,
-                                 lease_deadline = datetime('now', '+30 seconds'),
+                                 lease_deadline = datetime('now', '+' || ?1 || ' seconds'),
                                  updated_at = datetime('now')
-                             WHERE id = ?1 AND owner_id = ?2",
-                            params![session.id, &worker_owner],
+                             WHERE id = ?2 AND owner_id = ?3",
+                            params![backoff_secs, session.id, &worker_owner],
                         );
                     }
                 }
@@ -776,26 +819,46 @@ impl FacebookScheduler {
         error_code: &str,
         error_message: &str,
     ) -> Result<()> {
+        conn.execute_batch("SAVEPOINT fb_fail_tx;")?;
         let rows_sess = conn.execute(
             "UPDATE facebook_upload_sessions
              SET status = 'failed', owner_id = NULL, lease_deadline = NULL, updated_at = datetime('now')
              WHERE id = ?1 AND owner_id = ?2 AND status = ?3",
             params![session_id, owner_id, from_status],
-        )?;
-        if rows_sess == 1 {
-            conn.execute(
-                "UPDATE facebook_scheduled_posts
-                 SET status = 'failed',
-                     error_code = ?1,
-                     error_message = ?2,
-                     owner_id = NULL,
-                     claim_deadline = NULL,
-                     updated_at = datetime('now')
-                 WHERE id = ?3 AND status IN ('publishing', 'delivery_unknown')",
-                params![error_code, error_message, post_id],
-            )?;
+        );
+        let rows_post = conn.execute(
+            "UPDATE facebook_scheduled_posts
+             SET status = 'failed',
+                 error_code = ?1,
+                 error_message = ?2,
+                 owner_id = NULL,
+                 claim_deadline = NULL,
+                 updated_at = datetime('now')
+             WHERE id = ?3 AND status IN ('publishing', 'delivery_unknown')",
+            params![error_code, error_message, post_id],
+        );
+        match (rows_sess, rows_post) {
+            (Ok(s), Ok(_)) if s == 1 => {
+                conn.execute_batch("RELEASE SAVEPOINT fb_fail_tx;")?;
+                Ok(())
+            }
+            (Ok(_), Ok(_)) => {
+                let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT fb_fail_tx;");
+                let _ = conn.execute_batch("RELEASE SAVEPOINT fb_fail_tx;");
+                Err(anyhow!(
+                    "Upload session lease lost for session {}",
+                    session_id
+                ))
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                let _ = conn.execute_batch("ROLLBACK TO SAVEPOINT fb_fail_tx;");
+                let _ = conn.execute_batch("RELEASE SAVEPOINT fb_fail_tx;");
+                Err(anyhow!(
+                    "Transaction error during failure propagation: {}",
+                    e
+                ))
+            }
         }
-        Ok(())
     }
 
     async fn resolve_parent_token(
@@ -2237,6 +2300,101 @@ mod tests {
         assert_eq!(post_status, "failed");
         assert_eq!(err_code.as_deref(), Some("test_error_code"));
         assert_eq!(err_msg.as_deref(), Some("Deterministic client rejection"));
+    }
+
+    #[tokio::test]
+    async fn test_fail_session_and_parent_tx_rolls_back_on_lease_mismatch() {
+        let conn = setup_test_sqlite();
+        insert_post_with_id(&conn, 501, "publishing", None);
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, retry_count, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (11, 501, 'page_123', 'video', 'intent_fail_tx2', NULL, '/path/video.mp4', 'hash123', 1024, 0, 'in_progress', 0, 'actual_owner', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Attempt failure propagation with mismatched owner
+        let res = FacebookScheduler::fail_session_and_parent_tx(
+            &conn,
+            11,
+            501,
+            "stolen_worker",
+            "in_progress",
+            "test_error",
+            "failure message",
+        );
+        assert!(res.is_err(), "Must error on lease mismatch");
+
+        // Verify session remains in_progress and parent remains publishing (rolled back)
+        let sess_status: String = conn
+            .query_row(
+                "SELECT status FROM facebook_upload_sessions WHERE id = 11",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let post_status: String = conn
+            .query_row(
+                "SELECT status FROM facebook_scheduled_posts WHERE id = 501",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sess_status, "in_progress");
+        assert_eq!(post_status, "publishing");
+    }
+
+    #[tokio::test]
+    async fn test_promotion_boundary_sub_10_minutes_remains_queued() {
+        let conn = setup_test_sqlite();
+        let post_id = insert_post(&conn, "queued", None);
+        let future_5m = chrono::Utc::now() + chrono::Duration::minutes(5);
+        conn.execute(
+            "UPDATE facebook_scheduled_posts SET scheduled_publish_time = ?1 WHERE id = ?2",
+            params![future_5m.to_rfc3339(), post_id],
+        )
+        .unwrap();
+
+        let scheduler = FacebookScheduler::new();
+        let summary = scheduler.run_promotion_cycle(&conn, 10).await.unwrap();
+        assert_eq!(
+            summary.deferred, 1,
+            "Sub-10m post must be deferred until target time arrives"
+        );
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "queued");
+    }
+
+    #[tokio::test]
+    async fn test_promotion_boundary_overdue_greater_than_24h_marked_overdue_prompt() {
+        let conn = setup_test_sqlite();
+        let post_id = insert_post(&conn, "queued", None);
+        let past_30h = chrono::Utc::now() - chrono::Duration::hours(30);
+        conn.execute(
+            "UPDATE facebook_scheduled_posts SET scheduled_publish_time = ?1 WHERE id = ?2",
+            params![past_30h.to_rfc3339(), post_id],
+        )
+        .unwrap();
+
+        let scheduler = FacebookScheduler::new();
+        let summary = scheduler.run_promotion_cycle(&conn, 10).await.unwrap();
+        assert_eq!(summary.failed, 1);
+
+        let (status, err_code): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, error_code FROM facebook_scheduled_posts WHERE id = ?1",
+                [post_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "overdue_prompt");
+        assert_eq!(err_code.as_deref(), Some("overdue_schedule"));
     }
 
     fn datetime_future_seconds(seconds: i64) -> String {

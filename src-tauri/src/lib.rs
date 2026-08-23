@@ -200,9 +200,21 @@ pub fn run() {
                         loop {
                             tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                             if let Ok(mut conn) = rusqlite::Connection::open(&fb_db_path) {
-                                let _ = scheduler.run_promotion_cycle(&conn, 10).await;
-                                let _ = scheduler.run_reconciliation_cycle(&conn, 10).await;
-                                let _ = scheduler.reconcile_upload_sessions(&mut conn, 10).await;
+                                let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+                                let _ = conn.execute_batch(
+                                    "PRAGMA foreign_keys = ON;
+                                     PRAGMA journal_mode = WAL;
+                                     PRAGMA synchronous = NORMAL;",
+                                );
+                                if let Err(e) = scheduler.run_promotion_cycle(&conn, 10).await {
+                                    tracing::warn!(target: "facebook_scheduler", error = %e, "promotion cycle error");
+                                }
+                                if let Err(e) = scheduler.run_reconciliation_cycle(&conn, 10).await {
+                                    tracing::warn!(target: "facebook_scheduler", error = %e, "reconciliation cycle error");
+                                }
+                                if let Err(e) = scheduler.reconcile_upload_sessions(&mut conn, 10).await {
+                                    tracing::warn!(target: "facebook_scheduler", error = %e, "upload session reconciler error");
+                                }
                             }
                         }
                     });

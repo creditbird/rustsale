@@ -179,6 +179,17 @@ impl FacebookPublisher {
                 }
             };
 
+        let now_ts = chrono::Utc::now().timestamp();
+        let effective_scheduled_epoch = match scheduled_publish_time_epoch {
+            Some(st) if st <= now_ts => None, // Target timestamp arrived: publish immediately
+            Some(st) if st < now_ts + 600 => {
+                // Within 10m lower bound: Meta rejects <10m scheduled posts
+                None
+            }
+            Some(st) => Some(st),
+            None => None,
+        };
+
         let publish_result = self
             .execute_publish_network_flow(
                 conn,
@@ -190,15 +201,13 @@ impl FacebookPublisher {
                 &message,
                 link_url.as_deref(),
                 &media_paths_json,
-                scheduled_publish_time_epoch,
+                effective_scheduled_epoch,
             )
             .await;
 
         match publish_result {
             PublishApiResult::Success { remote_post_id } => {
-                let is_future_scheduled = scheduled_publish_time_epoch
-                    .map(|t| t > chrono::Utc::now().timestamp())
-                    .unwrap_or(false);
+                let is_future_scheduled = effective_scheduled_epoch.is_some();
                 let target_status = if is_future_scheduled {
                     "scheduled_on_meta"
                 } else {
