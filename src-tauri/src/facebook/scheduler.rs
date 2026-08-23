@@ -271,6 +271,7 @@ impl FacebookScheduler {
                 String,
                 Option<String>,
                 Option<String>,
+                Option<String>,
                 String,
             )> = conn
                 .query_row(
@@ -285,7 +286,7 @@ impl FacebookScheduler {
                          ORDER BY id LIMIT 1
                      )
                      AND status = 'delivery_unknown'
-                     RETURNING id, channel_account_id, page_id, post_type, message, remote_post_id, scheduled_publish_time, created_at",
+                     RETURNING id, channel_account_id, page_id, post_type, message, remote_post_id, scheduled_publish_time, publish_attempted_at, created_at",
                     params![worker_owner],
                     |r| {
                         Ok((
@@ -297,6 +298,7 @@ impl FacebookScheduler {
                             r.get(5)?,
                             r.get(6)?,
                             r.get(7)?,
+                            r.get(8)?,
                         ))
                     },
                 )
@@ -310,6 +312,7 @@ impl FacebookScheduler {
                 message,
                 remote_post_id,
                 scheduled_publish_time,
+                publish_attempted_at_str,
                 created_at_str,
             ) = match claimed {
                 Some(row) => row,
@@ -340,18 +343,23 @@ impl FacebookScheduler {
                     chrono::DateTime::parse_from_rfc3339(s)
                         .ok()
                         .map(|dt| dt.timestamp())
+                        .or_else(|| {
+                            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                                .ok()
+                                .map(|ndt| ndt.and_utc().timestamp())
+                        })
                 })
                 .or_else(|| {
-                    chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                    let ts_str = publish_attempted_at_str
+                        .as_deref()
+                        .unwrap_or(created_at_str.as_str());
+                    chrono::DateTime::parse_from_rfc3339(ts_str)
                         .ok()
                         .map(|dt| dt.timestamp())
                         .or_else(|| {
-                            chrono::NaiveDateTime::parse_from_str(
-                                &created_at_str,
-                                "%Y-%m-%d %H:%M:%S",
-                            )
-                            .ok()
-                            .map(|ndt| ndt.and_utc().timestamp())
+                            chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%d %H:%M:%S")
+                                .ok()
+                                .map(|ndt| ndt.and_utc().timestamp())
                         })
                 });
 
@@ -629,16 +637,20 @@ impl FacebookScheduler {
     ) -> Result<usize> {
         let mut resolved = 0usize;
 
-        // Crash-recovery: Repair stranded parent posts whose foreground upload sessions already terminated
+        // Crash-recovery: Repair stranded parent posts whose current authoritative foreground upload sessions already terminated
         let _ = conn.execute(
             "UPDATE facebook_scheduled_posts
-             SET status = 'published',
-                 remote_post_id = (SELECT video_id FROM facebook_upload_sessions WHERE post_id = facebook_scheduled_posts.id AND status = 'completed' AND video_id IS NOT NULL LIMIT 1),
+             SET status = CASE
+                     WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now') THEN 'scheduled_on_meta'
+                     ELSE 'published'
+                 END,
+                 remote_post_id = (SELECT video_id FROM facebook_upload_sessions WHERE upload_session_id = facebook_scheduled_posts.upload_session_id AND status = 'completed' AND video_id IS NOT NULL LIMIT 1),
                  owner_id = NULL,
                  claim_deadline = NULL,
                  updated_at = datetime('now')
              WHERE status = 'publishing'
-               AND id IN (SELECT post_id FROM facebook_upload_sessions WHERE status = 'completed' AND video_id IS NOT NULL)",
+               AND upload_session_id IS NOT NULL
+               AND upload_session_id IN (SELECT upload_session_id FROM facebook_upload_sessions WHERE status = 'completed' AND video_id IS NOT NULL)",
             [],
         );
         let _ = conn.execute(
@@ -650,7 +662,8 @@ impl FacebookScheduler {
                  claim_deadline = NULL,
                  updated_at = datetime('now')
              WHERE status = 'publishing'
-               AND id IN (SELECT post_id FROM facebook_upload_sessions WHERE status = 'failed')",
+               AND upload_session_id IS NOT NULL
+               AND upload_session_id IN (SELECT upload_session_id FROM facebook_upload_sessions WHERE status = 'failed')",
             [],
         );
 
@@ -1781,9 +1794,12 @@ impl FacebookScheduler {
             "description": parent.message,
         });
         if let Some(epoch) = parent.scheduled_epoch {
-            if epoch > chrono::Utc::now().timestamp() {
+            let now_ts = chrono::Utc::now().timestamp();
+            if epoch > now_ts + 600 {
                 finish_body["published"] = json!(false);
                 finish_body["scheduled_publish_time"] = json!(epoch);
+            } else {
+                finish_body["published"] = json!(true);
             }
         }
 
@@ -1856,9 +1872,12 @@ impl FacebookScheduler {
             "description": parent.message,
         });
         if let Some(epoch) = parent.scheduled_epoch {
-            if epoch > chrono::Utc::now().timestamp() {
+            let now_ts = chrono::Utc::now().timestamp();
+            if epoch > now_ts + 600 {
                 finish_body["video_state"] = json!("SCHEDULED");
                 finish_body["scheduled_publish_time"] = json!(epoch);
+            } else {
+                finish_body["video_state"] = json!("PUBLISHED");
             }
         }
 
@@ -1968,6 +1987,7 @@ mod tests {
                 media_paths_json TEXT NOT NULL DEFAULT '[]',
                 scheduling_mode TEXT NOT NULL DEFAULT 'meta',
                 scheduled_publish_time TEXT,
+                publish_attempted_at TEXT,
                 next_retry_at TEXT,
                 remote_post_id TEXT,
                 upload_session_id TEXT,
@@ -2492,13 +2512,13 @@ mod tests {
     async fn test_reconcile_upload_sessions_repairs_stranded_parent_post() {
         let mut conn = setup_test_sqlite();
         conn.execute(
-            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, idempotency_key, status, created_at, updated_at)
-             VALUES (701, 'grp1', 1, 'page1', 'video', 'msg', 'idem_701', 'publishing', datetime('now'), datetime('now'))",
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, upload_session_id, idempotency_key, status, created_at, updated_at)
+             VALUES (701, 'grp1', 1, 'page1', 'video', 'msg', 'upl_31', 'idem_701', 'publishing', datetime('now'), datetime('now'))",
             [],
         ).unwrap();
         conn.execute(
             "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
-             VALUES (31, 701, 'upl_31', 'video_chunked', 'page1', 'vid_701_remote', '/tmp/vid.mp4', 'hash31', 1000, 0, 'completed', NULL, NULL, 0, datetime('now'), datetime('now'))",
+             VALUES (31, 701, 'upl_31', 'video', 'page1', 'vid_701_remote', '/tmp/vid.mp4', 'hash31', 1000, 0, 'completed', NULL, NULL, 0, datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
@@ -2514,6 +2534,71 @@ mod tests {
             .unwrap();
         assert_eq!(parent_status, "published");
         assert_eq!(remote_post_id.as_deref(), Some("vid_701_remote"));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_upload_sessions_repairs_future_scheduled_video_to_scheduled_on_meta() {
+        let mut conn = setup_test_sqlite();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, scheduled_publish_time, upload_session_id, idempotency_key, status, created_at, updated_at)
+             VALUES (702, 'grp1', 1, 'page1', 'video', 'msg', datetime('now', '+2 hours'), 'upl_32', 'idem_702', 'publishing', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
+             VALUES (32, 702, 'upl_32', 'video', 'page1', 'vid_702_remote', '/tmp/vid.mp4', 'hash32', 1000, 0, 'completed', NULL, NULL, 0, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let scheduler = FacebookScheduler::new();
+        let _ = scheduler.reconcile_upload_sessions(&mut conn, 5).await;
+
+        let (parent_status, remote_post_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, remote_post_id FROM facebook_scheduled_posts WHERE id = 702",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(parent_status, "scheduled_on_meta");
+        assert_eq!(remote_post_id.as_deref(), Some("vid_702_remote"));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_upload_sessions_ignores_historical_failed_session_when_new_retry_active(
+    ) {
+        let mut conn = setup_test_sqlite();
+        // Post has active upload session 'upl_active'
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, upload_session_id, idempotency_key, status, created_at, updated_at)
+             VALUES (703, 'grp1', 1, 'page1', 'video', 'msg', 'upl_active', 'idem_703', 'publishing', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        // Historical session from previous attempt that failed
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
+             VALUES (33, 703, 'upl_historical_failed', 'video', 'page1', NULL, '/tmp/vid.mp4', 'hash33', 1000, 0, 'failed', NULL, NULL, 0, datetime('now', '-10 minutes'), datetime('now', '-10 minutes'))",
+            [],
+        ).unwrap();
+        // Active session for retry currently in progress
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
+             VALUES (34, 703, 'upl_active', 'video', 'page1', NULL, '/tmp/vid.mp4', 'hash34', 1000, 500, 'in_progress', 'w_active', datetime('now', '+5 minutes'), 0, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let scheduler = FacebookScheduler::new();
+        let _ = scheduler.reconcile_upload_sessions(&mut conn, 5).await;
+
+        let parent_status: String = conn
+            .query_row(
+                "SELECT status FROM facebook_scheduled_posts WHERE id = 703",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Must NOT be marked failed by the historical session because upload_session_id is 'upl_active'
+        assert_eq!(parent_status, "publishing");
     }
 
     fn datetime_future_seconds(seconds: i64) -> String {

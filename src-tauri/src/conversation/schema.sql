@@ -481,6 +481,7 @@ CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
     media_paths_json TEXT NOT NULL DEFAULT '[]',
     scheduling_mode TEXT NOT NULL DEFAULT 'meta' CHECK (scheduling_mode IN ('meta', 'local_queued')),
     scheduled_publish_time TEXT,
+    publish_attempted_at TEXT,
     next_retry_at TEXT,
     remote_post_id TEXT,
     upload_session_id TEXT,

@@ -1092,8 +1092,13 @@ impl FacebookUploader {
         });
 
         if let Some(st) = scheduled_publish_time {
-            finish_body["published"] = json!(false);
-            finish_body["scheduled_publish_time"] = json!(st);
+            let now_ts = chrono::Utc::now().timestamp();
+            if st > now_ts + 600 {
+                finish_body["published"] = json!(false);
+                finish_body["scheduled_publish_time"] = json!(st);
+            } else {
+                finish_body["published"] = json!(true);
+            }
         }
 
         let finish_resp = match self.client.post(&start_url).json(&finish_body).send().await {
@@ -2225,9 +2230,12 @@ impl FacebookUploader {
             "description": description,
         });
         if let Some(scheduled_epoch) = scheduled_publish_time {
-            if scheduled_epoch > chrono::Utc::now().timestamp() {
+            let now_ts = chrono::Utc::now().timestamp();
+            if scheduled_epoch > now_ts + 600 {
                 finish_body["video_state"] = serde_json::json!("SCHEDULED");
                 finish_body["scheduled_publish_time"] = serde_json::json!(scheduled_epoch);
+            } else {
+                finish_body["video_state"] = serde_json::json!("PUBLISHED");
             }
         }
 

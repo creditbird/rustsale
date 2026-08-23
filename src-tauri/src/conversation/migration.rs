@@ -159,6 +159,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "INTEGER NOT NULL DEFAULT 1",
     )?;
     add_column_if_missing(conn, "facebook_scheduled_posts", "next_retry_at", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "facebook_scheduled_posts",
+        "publish_attempted_at",
+        "TEXT",
+    )?;
     ensure_facebook_upload_sessions_schema_v2(conn)?;
 
     reconcile_duplicate_zalo_channel_accounts(conn)?;

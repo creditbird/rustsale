@@ -128,6 +128,7 @@ impl FacebookPublisher {
              SET status = 'publishing',
                  owner_id = ?1,
                  claim_deadline = datetime('now', '+5 minutes'),
+                 publish_attempted_at = datetime('now'),
                  updated_at = datetime('now')
              WHERE id = ?2 AND status = 'queued'
                AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now'))",
@@ -1041,6 +1042,7 @@ mod tests {
                 media_paths_json TEXT NOT NULL DEFAULT '[]',
                 scheduling_mode TEXT NOT NULL DEFAULT 'meta',
                 scheduled_publish_time TEXT,
+                publish_attempted_at TEXT,
                 next_retry_at TEXT,
                 remote_post_id TEXT,
                 upload_session_id TEXT,

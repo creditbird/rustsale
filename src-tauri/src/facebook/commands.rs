@@ -117,6 +117,7 @@ pub fn publish_facebook_post_now_impl(
                  owner_id = NULL,
                  claim_deadline = NULL,
                  next_retry_at = NULL,
+                 publish_attempted_at = datetime('now'),
                  updated_at = datetime('now')
              WHERE id = ?1 AND status IN ('draft', 'failed', 'queued', 'overdue_prompt')",
             params![post_id],
