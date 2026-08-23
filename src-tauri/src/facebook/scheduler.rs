@@ -337,9 +337,22 @@ impl FacebookScheduler {
                 }
             };
 
-            let reference_epoch: Option<i64> = scheduled_publish_time
-                .as_deref()
-                .and_then(|s| {
+            let feed_reference_epoch: Option<i64> = {
+                let ts_str = publish_attempted_at_str
+                    .as_deref()
+                    .unwrap_or(created_at_str.as_str());
+                chrono::DateTime::parse_from_rfc3339(ts_str)
+                    .ok()
+                    .map(|dt| dt.timestamp())
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%d %H:%M:%S")
+                            .ok()
+                            .map(|ndt| ndt.and_utc().timestamp())
+                    })
+            };
+
+            let scheduled_reference_epoch: Option<i64> =
+                scheduled_publish_time.as_deref().and_then(|s| {
                     chrono::DateTime::parse_from_rfc3339(s)
                         .ok()
                         .map(|dt| dt.timestamp())
@@ -348,25 +361,18 @@ impl FacebookScheduler {
                                 .ok()
                                 .map(|ndt| ndt.and_utc().timestamp())
                         })
-                })
-                .or_else(|| {
-                    let ts_str = publish_attempted_at_str
-                        .as_deref()
-                        .unwrap_or(created_at_str.as_str());
-                    chrono::DateTime::parse_from_rfc3339(ts_str)
-                        .ok()
-                        .map(|dt| dt.timestamp())
-                        .or_else(|| {
-                            chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%d %H:%M:%S")
-                                .ok()
-                                .map(|ndt| ndt.and_utc().timestamp())
-                        })
                 });
 
             let mut matched_status: Option<(&str, String)> = None;
 
             if let Some(remote_id) = self
-                .find_feed_match(&page_id, &page_token, &post_type, &message, reference_epoch)
+                .find_feed_match(
+                    &page_id,
+                    &page_token,
+                    &post_type,
+                    &message,
+                    feed_reference_epoch,
+                )
                 .await?
             {
                 matched_status = Some(("published", remote_id));
@@ -377,7 +383,7 @@ impl FacebookScheduler {
                     remote_post_id.as_deref(),
                     &post_type,
                     &message,
-                    reference_epoch,
+                    scheduled_reference_epoch,
                 )
                 .await?
             {
@@ -638,7 +644,7 @@ impl FacebookScheduler {
         let mut resolved = 0usize;
 
         // Crash-recovery: Repair stranded parent posts whose current authoritative foreground upload sessions already terminated
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE facebook_scheduled_posts
              SET status = CASE
                      WHEN scheduled_publish_time IS NOT NULL AND datetime(scheduled_publish_time) > datetime('now') THEN 'scheduled_on_meta'
@@ -652,8 +658,10 @@ impl FacebookScheduler {
                AND upload_session_id IS NOT NULL
                AND upload_session_id IN (SELECT upload_session_id FROM facebook_upload_sessions WHERE status = 'completed' AND video_id IS NOT NULL)",
             [],
-        );
-        let _ = conn.execute(
+        ) {
+            tracing::warn!(target: "facebook_scheduler", event = "reconcile_upload_stranded_completed_error", error = %e);
+        }
+        if let Err(e) = conn.execute(
             "UPDATE facebook_scheduled_posts
              SET status = 'failed',
                  error_code = 'UPLOAD_SESSION_FAILED',
@@ -665,7 +673,9 @@ impl FacebookScheduler {
                AND upload_session_id IS NOT NULL
                AND upload_session_id IN (SELECT upload_session_id FROM facebook_upload_sessions WHERE status = 'failed')",
             [],
-        );
+        ) {
+            tracing::warn!(target: "facebook_scheduler", event = "reconcile_upload_stranded_failed_error", error = %e);
+        }
 
         for _ in 0..max_sessions {
             let worker_owner = format!(
@@ -1798,6 +1808,18 @@ impl FacebookScheduler {
             if epoch > now_ts + 600 {
                 finish_body["published"] = json!(false);
                 finish_body["scheduled_publish_time"] = json!(epoch);
+            } else if epoch > now_ts {
+                // Target is in near future (1..=600s away): do not publish early!
+                // Defer finish retry until target timestamp arrives so content is published on schedule.
+                let delay_secs = (epoch - now_ts) as u64;
+                Self::record_session_backoff_with_status(
+                    conn,
+                    sess.id,
+                    owner,
+                    delay_secs.max(1),
+                    "finishing",
+                )?;
+                return Ok(());
             } else {
                 finish_body["published"] = json!(true);
             }
@@ -1876,6 +1898,18 @@ impl FacebookScheduler {
             if epoch > now_ts + 600 {
                 finish_body["video_state"] = json!("SCHEDULED");
                 finish_body["scheduled_publish_time"] = json!(epoch);
+            } else if epoch > now_ts {
+                // Target is in near future (1..=600s away): do not publish early!
+                // Defer finish retry until target timestamp arrives so content is published on schedule.
+                let delay_secs = (epoch - now_ts) as u64;
+                Self::record_session_backoff_with_status(
+                    conn,
+                    sess.id,
+                    owner,
+                    delay_secs.max(1),
+                    "finishing",
+                )?;
+                return Ok(());
             } else {
                 finish_body["video_state"] = json!("PUBLISHED");
             }
@@ -2599,6 +2633,68 @@ mod tests {
             .unwrap();
         // Must NOT be marked failed by the historical session because upload_session_id is 'upl_active'
         assert_eq!(parent_status, "publishing");
+    }
+
+    #[tokio::test]
+    async fn test_execute_video_finish_defers_when_scheduled_epoch_is_sub_10_minutes() {
+        let conn = setup_test_sqlite();
+        let target_future = chrono::Utc::now().timestamp() + 300; // 5 minutes in future (<10m)
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, upload_session_id, scheduled_publish_time, idempotency_key, status, created_at, updated_at)
+             VALUES (801, 'grp1', 1, 'page1', 'video', 'msg', 'upl_801', datetime('now', '+5 minutes'), 'idem_801', 'publishing', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
+             VALUES (81, 801, 'upl_801', 'video', 'page1', 'vid_801', '/tmp/vid.mp4', 'hash801', 1000, 1000, 'finishing', 'owner_81', datetime('now', '+5 minutes'), 0, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let sess = ClaimedUploadSession {
+            id: 81,
+            post_id: 801,
+            upload_session_id: "upl_801".to_string(),
+            upload_type: "video".to_string(),
+            page_id: "page1".to_string(),
+            video_id: Some("vid_801".to_string()),
+            file_path: "/tmp/vid.mp4".to_string(),
+            file_hash: "hash801".to_string(),
+            file_size_bytes: 1000,
+            start_offset: 1000,
+            status: "finishing".to_string(),
+            retry_count: 0,
+        };
+        let parent = ParentPostContext {
+            channel_account_id: 1,
+            page_id: "page1".to_string(),
+            message: "msg".to_string(),
+            scheduled_publish_time: Some(datetime_future_seconds(300)),
+            scheduled_epoch: Some(target_future),
+        };
+
+        let scheduler = FacebookScheduler::new();
+        let res = scheduler
+            .execute_video_finish(&conn, &sess, &parent, "owner_81", "valid_token", "vid_801")
+            .await;
+        assert!(res.is_ok(), "Deferred finish must return Ok without error");
+
+        // Verify session was NOT finished or published prematurely, but deferred with backoff in finishing state
+        let (sess_status, lease_deadline, _next_retry_at): (
+            String,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT s.status, s.lease_deadline, p.next_retry_at FROM facebook_upload_sessions s JOIN facebook_scheduled_posts p ON s.post_id = p.id WHERE s.id = 81",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(sess_status, "finishing");
+        assert!(
+            lease_deadline.is_some(),
+            "Lease deadline must be populated with target timestamp backoff"
+        );
     }
 
     fn datetime_future_seconds(seconds: i64) -> String {

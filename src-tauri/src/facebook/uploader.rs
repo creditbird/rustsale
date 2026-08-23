@@ -1096,6 +1096,11 @@ impl FacebookUploader {
             if st > now_ts + 600 {
                 finish_body["published"] = json!(false);
                 finish_body["scheduled_publish_time"] = json!(st);
+            } else if st > now_ts {
+                // Target is within 10 minutes: wait until exact target time arrives so content is not published early
+                let wait_secs = (st - now_ts) as u64;
+                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                finish_body["published"] = json!(true);
             } else {
                 finish_body["published"] = json!(true);
             }
@@ -2234,6 +2239,11 @@ impl FacebookUploader {
             if scheduled_epoch > now_ts + 600 {
                 finish_body["video_state"] = serde_json::json!("SCHEDULED");
                 finish_body["scheduled_publish_time"] = serde_json::json!(scheduled_epoch);
+            } else if scheduled_epoch > now_ts {
+                // Target is within 10 minutes: wait until exact target time arrives so content is not published early
+                let wait_secs = (scheduled_epoch - now_ts) as u64;
+                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                finish_body["video_state"] = serde_json::json!("PUBLISHED");
             } else {
                 finish_body["video_state"] = serde_json::json!("PUBLISHED");
             }
