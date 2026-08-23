@@ -134,7 +134,15 @@ describe('FacebookAccountsSettings', () => {
     const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
     await fireEvent.click(openLoginBtn);
 
-    const stateMatch = capturedAuthUrl.match(/state=([^&]+)/);
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/state=([^&]+)/);
+    });
+
+    const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+    const authUrl = String(openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl);
+    const stateMatch = authUrl.match(/state=([^&]+)/);
     expect(stateMatch).toBeTruthy();
 
     const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);

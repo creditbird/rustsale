@@ -19,6 +19,7 @@
     Check,
     CheckCircle2,
     Clock3,
+    Copy,
     ExternalLink,
     KeyRound,
     LoaderCircle,
@@ -30,6 +31,7 @@
     Wifi,
     WifiOff
   } from 'lucide-svelte';
+  import { openExternalUrl } from '$lib/components/conversation/messageMedia';
 
   let { onNavigateToHub }: { onNavigateToHub?: () => void } = $props();
 
@@ -179,14 +181,41 @@
     return { token: trimmed };
   }
 
-  function handleOpenMetaOAuth() {
+  let oauthAuthUrl = $state<string | null>(null);
+  let copiedAuthUrl = $state(false);
+
+  function getOrGenerateAuthUrl(): string {
     const metaAppId = '1075678647572774';
     const redirectUri = 'https://facebook.com/connect/login_success.html';
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
-    const nonce = generateCryptoNonce();
-    oauthStateNonce = nonce;
-    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${metaAppId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(nonce)}&scope=${encodeURIComponent(scope)}`;
-    window.open(authUrl, '_blank');
+    if (!oauthStateNonce) {
+      oauthStateNonce = generateCryptoNonce();
+    }
+    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${metaAppId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(oauthStateNonce)}&scope=${encodeURIComponent(scope)}`;
+    oauthAuthUrl = authUrl;
+    return authUrl;
+  }
+
+  async function handleOpenMetaOAuth() {
+    const authUrl = getOrGenerateAuthUrl();
+    modalError = null;
+    modalSuccess = 'Opened Meta Login in your default browser. Please complete authorization, then copy the address bar URL or access token and paste below.';
+    await openExternalUrl(authUrl);
+  }
+
+  async function handleCopyAuthUrl() {
+    const authUrl = getOrGenerateAuthUrl();
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(authUrl);
+        copiedAuthUrl = true;
+        setTimeout(() => {
+          copiedAuthUrl = false;
+        }, 2500);
+      }
+    } catch {
+      modalError = 'Failed to copy URL to clipboard.';
+    }
   }
 
   async function handleDiscoverPages() {
@@ -563,20 +592,38 @@
     {#if connectTab === 'oauth'}
       <div class="flex flex-col gap-3 py-1 text-xs">
         <div class="rounded-lg bg-muted/40 p-3 border border-border flex flex-col gap-2">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <span class="font-semibold text-foreground">Step 1: Authorize on Facebook</span>
-            <Button
-              type="button"
-              size="sm"
-              onclick={handleOpenMetaOAuth}
-              class="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 gap-1 px-2.5"
-            >
-              <ExternalLink class="size-3" />
-              Open Meta Login
-            </Button>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onclick={handleCopyAuthUrl}
+                class="text-xs h-7 gap-1 px-2 border-border"
+                title="Copy authorization link to paste into your browser"
+              >
+                {#if copiedAuthUrl}
+                  <Check class="size-3 text-emerald-600 dark:text-emerald-400" />
+                  Copied
+                {:else}
+                  <Copy class="size-3" />
+                  Copy Link
+                {/if}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onclick={handleOpenMetaOAuth}
+                class="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 gap-1 px-2.5"
+              >
+                <ExternalLink class="size-3" />
+                Open Meta Login
+              </Button>
+            </div>
           </div>
           <p class="text-[11px] text-muted-foreground">
-            Clicking the button opens the official Meta login screen in your browser. Grant permissions to the Fanpages you want to manage.
+            Clicking the button opens the official Meta login screen in your default browser. Grant permissions to the Fanpages you want to manage.
           </p>
         </div>
 
