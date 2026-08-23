@@ -25,7 +25,7 @@ impl FacebookUploader {
         }
     }
 
-    async fn verify_feed_publication(
+    pub(crate) async fn verify_feed_publication(
         client: &Client,
         page_id: &str,
         page_token: &str,
@@ -89,7 +89,7 @@ impl FacebookUploader {
         false
     }
 
-    async fn verify_scheduled_publication(
+    pub(crate) async fn verify_scheduled_publication(
         client: &Client,
         page_id: &str,
         page_token: &str,
