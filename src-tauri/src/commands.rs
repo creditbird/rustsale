@@ -2127,7 +2127,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
     // 1. Query /me/accounts (User Token managing multiple pages) with Bearer auth (never in query string)
     let mut pages = Vec::new();
     let mut next_url = Some(
-        "https://graph.facebook.com/v26.0/me/accounts?fields=id,name,access_token,category,tasks,perms,picture.type(large)&limit=100".to_string()
+        "https://graph.facebook.com/v26.0/me/accounts?fields=id,name,access_token,category,tasks,picture.type(large)&limit=100".to_string()
     );
     let mut page_count_limit = 0;
 
