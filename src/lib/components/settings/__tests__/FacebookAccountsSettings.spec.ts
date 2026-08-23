@@ -83,6 +83,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  if (typeof document !== 'undefined') {
+    document.body.innerHTML = '';
+    document.body.removeAttribute('style');
+  }
   mockListError = null;
   mockDeleteError = null;
   mockFetchError = null;
@@ -211,18 +215,93 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Copied')).toBeTruthy();
   });
 
-  test('validates and prompts for Meta App ID when App ID is empty in OAuth tab', async () => {
+  test('validates and prompts for input when Access Token is empty in OAuth tab', async () => {
     render(FacebookAccountsSettings);
 
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
 
-    const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
-    await fireEvent.input(appIdInput, { target: { value: '' } });
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
 
-    const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
-    await fireEvent.click(openLoginBtn);
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
 
-    expect(await screen.findByText(/Please enter your Meta App ID above/i)).toBeTruthy();
+    expect(await screen.findByText(/Please enter or paste an Access Token/i)).toBeTruthy();
+  });
+
+  test('copies Supabase OAuth callback redirect URI to clipboard', async () => {
+    let clipboardText = '';
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: async (text: string) => {
+          clipboardText = text;
+        }
+      }
+    });
+
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    const copyCallbackBtn = screen.getByRole('button', { name: /Copy Callback URL/i });
+    await fireEvent.click(copyCallbackBtn);
+
+    expect(clipboardText).toContain('/auth/v1/callback');
+    expect(await screen.findByText(/Copied Callback URL/i)).toBeTruthy();
+  });
+
+  test('extracts provider_token from Supabase OAuth redirect URL', async () => {
+    mockDiscoveredPages = [
+      {
+        id: 'page_supabase_1',
+        name: 'Supabase Connected Page',
+        category: 'Business',
+        avatarUrl: null,
+        accessToken: 'EAAB_provider_token_123',
+        permissions: ['pages_messaging', 'pages_read_engagement']
+      }
+    ];
+
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    expect(await screen.findByText(/Connect Facebook Fanpage/i)).toBeTruthy();
+
+    let capturedAuthUrl = '';
+    window.open = (url?: string | URL) => {
+      capturedAuthUrl = String(url);
+      return null;
+    };
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/state=([^&]+)/);
+    });
+
+    const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+    const authUrl = String(openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl);
+    const stateMatch = authUrl.match(/state=([^&]+)/);
+    expect(stateMatch).toBeTruthy();
+
+    const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    await fireEvent.input(tokenInput, {
+      target: {
+        value: `https://xyzcompany.supabase.co/auth/v1/callback#provider_token=EAAB_provider_token_123&state=${stateMatch![1]}`
+      }
+    });
+
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
+
+    expect(await screen.findByText('Supabase Connected Page')).toBeTruthy();
   });
 
   test('connects via manual tab with Page ID and Access Token', async () => {

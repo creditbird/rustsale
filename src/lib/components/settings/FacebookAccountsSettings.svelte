@@ -32,6 +32,7 @@
     WifiOff
   } from 'lucide-svelte';
   import { openExternalUrl } from '$lib/components/conversation/messageMedia';
+  import { getSupabaseConfig } from '$lib/services/supabaseClient';
 
   let { onNavigateToHub }: { onNavigateToHub?: () => void } = $props();
 
@@ -137,6 +138,11 @@
     oauthStateNonce = null;
     oauthAuthUrl = null;
     copiedAuthUrl = false;
+    customAppId =
+      (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
+      import.meta.env.VITE_FACEBOOK_APP_ID ||
+      '';
+    customRedirectUri = getDefaultRedirectUri();
     discoveredPages = [];
     selectedPageIds = new Set();
     modalError = null;
@@ -175,6 +181,11 @@
       }
     }
 
+    const providerTokenMatch = trimmed.match(/[#&?]provider_token=([^&]+)/);
+    if (providerTokenMatch && providerTokenMatch[1]) {
+      return { token: decodeURIComponent(providerTokenMatch[1]) };
+    }
+
     const tokenMatch = trimmed.match(/[#&?]access_token=([^&]+)/);
     if (tokenMatch && tokenMatch[1]) {
       return { token: decodeURIComponent(tokenMatch[1]) };
@@ -183,11 +194,25 @@
     return { token: trimmed };
   }
 
+  function getDefaultRedirectUri(): string {
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem('rustsale_facebook_redirect_uri');
+      if (saved) return saved;
+    }
+    const { url } = getSupabaseConfig();
+    if (url) {
+      return `${url.replace(/\/$/, '')}/auth/v1/callback`;
+    }
+    return 'https://rustsale.trantrongtri.com/oauth/callback.html';
+  }
+
   let customAppId = $state(
     (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
       import.meta.env.VITE_FACEBOOK_APP_ID ||
       ''
   );
+  let customRedirectUri = $state(getDefaultRedirectUri());
+  let copiedRedirectUri = $state(false);
   let oauthAuthUrl = $state<string | null>(null);
   let copiedAuthUrl = $state(false);
 
@@ -200,13 +225,36 @@
     oauthStateNonce = null;
   }
 
+  function handleRedirectUriChange(val: string) {
+    customRedirectUri = val.trim();
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('rustsale_facebook_redirect_uri', customRedirectUri);
+    }
+    oauthAuthUrl = null;
+    oauthStateNonce = null;
+  }
+
+  async function handleCopyRedirectUri() {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(customRedirectUri);
+        copiedRedirectUri = true;
+        setTimeout(() => {
+          copiedRedirectUri = false;
+        }, 2500);
+      }
+    } catch {
+      modalError = 'Failed to copy Redirect URI to clipboard.';
+    }
+  }
+
   function getOrGenerateAuthUrl(): string | null {
     const appId = customAppId.trim() || import.meta.env.VITE_FACEBOOK_APP_ID || '';
     if (!appId) {
       modalError = 'Please enter your Meta App ID above (or set VITE_FACEBOOK_APP_ID in .env), or switch to the "Manual Access Token" tab to connect directly without creating an App.';
       return null;
     }
-    const redirectUri = 'https://facebook.com/connect/login_success.html';
+    const redirectUri = customRedirectUri.trim() || getDefaultRedirectUri();
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
     if (!oauthStateNonce) {
       oauthStateNonce = generateCryptoNonce();
@@ -561,7 +609,7 @@
 
 <!-- Connect Fanpage Modal -->
 <Dialog.Root bind:open={connectModalOpen}>
-  <Dialog.Content class="max-w-lg">
+  <Dialog.Content class="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2 text-base">
         <MessagesSquare class="size-5 text-blue-600" />
@@ -632,11 +680,47 @@
           <Input
             id="meta-app-id-input"
             type="text"
-            value={customAppId}
+            bind:value={customAppId}
             oninput={(e) => handleAppIdChange(e.currentTarget.value)}
             placeholder="Enter App ID (e.g. 102938475610293) or set VITE_FACEBOOK_APP_ID in .env"
             class="text-xs font-mono"
           />
+        </div>
+
+        <!-- OAuth Redirect URI / Callback URL -->
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center justify-between">
+            <label for="redirect-uri-input" class="text-xs font-medium text-foreground">
+              Valid OAuth Redirect URI (Supabase / Callback)
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onclick={handleCopyRedirectUri}
+              class="h-5 px-1.5 text-[11px] text-blue-600 dark:text-blue-400 gap-1 hover:bg-transparent"
+              title="Copy to paste into Meta Developer -> Valid OAuth Redirect URIs"
+            >
+              {#if copiedRedirectUri}
+                <Check class="size-2.5 text-emerald-600 dark:text-emerald-400" />
+                Copied Callback URL
+              {:else}
+                <Copy class="size-2.5" />
+                Copy Callback URL
+              {/if}
+            </Button>
+          </div>
+          <Input
+            id="redirect-uri-input"
+            type="text"
+            bind:value={customRedirectUri}
+            oninput={(e) => handleRedirectUriChange(e.currentTarget.value)}
+            placeholder="https://<project-ref>.supabase.co/auth/v1/callback"
+            class="text-xs font-mono"
+          />
+          <span class="text-[10px] text-muted-foreground">
+            Make sure this exact URL is added to <strong>Meta Developer ➜ Facebook Login ➜ Valid OAuth Redirect URIs</strong>.
+          </span>
         </div>
 
         <div class="rounded-lg bg-muted/40 p-3 border border-border flex flex-col gap-2">
