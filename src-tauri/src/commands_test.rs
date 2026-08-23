@@ -938,6 +938,52 @@ mod tests {
         assert_eq!(unknown_scopes, vec!["pages_show_list".to_string()]);
     }
 
+    #[test]
+    fn test_parse_meta_app_permissions() {
+        let json = serde_json::json!({
+            "data": [
+                { "permission": "pages_show_list", "status": "granted" },
+                { "permission": "pages_messaging", "status": "granted" },
+                { "permission": "pages_manage_posts", "status": "declined" },
+                { "permission": "user_friends", "status": "expired" },
+            ]
+        });
+
+        let perms = commands::parse_meta_app_permissions(&json);
+        assert_eq!(perms, vec!["pages_show_list", "pages_messaging"]);
+    }
+
+    #[test]
+    fn test_intersect_tasks_and_app_permissions_enforces_dual_authorization() {
+        let full_task_scopes = vec![
+            "pages_show_list".to_string(),
+            "pages_messaging".to_string(),
+            "pages_manage_posts".to_string(),
+            "pages_read_engagement".to_string(),
+        ];
+
+        // 1. App only granted pages_messaging: effective scopes MUST ONLY include pages_messaging
+        let app_perms_messaging_only = vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
+        let effective1 = commands::intersect_tasks_and_app_permissions(&full_task_scopes, &app_perms_messaging_only);
+        assert_eq!(effective1, vec!["pages_show_list".to_string(), "pages_messaging".to_string()]);
+
+        // 2. App granted all permissions, but Page task only grants pages_messaging:
+        let messaging_task_only = vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
+        let app_perms_all = vec![
+            "pages_show_list".to_string(),
+            "pages_messaging".to_string(),
+            "pages_manage_posts".to_string(),
+            "pages_read_engagement".to_string(),
+        ];
+        let effective2 = commands::intersect_tasks_and_app_permissions(&messaging_task_only, &app_perms_all);
+        assert_eq!(effective2, vec!["pages_show_list".to_string(), "pages_messaging".to_string()]);
+
+        // 3. Zero intersection outside pages_show_list: fails closed
+        let posts_task_only = vec!["pages_show_list".to_string(), "pages_manage_posts".to_string()];
+        let effective3 = commands::intersect_tasks_and_app_permissions(&posts_task_only, &app_perms_messaging_only);
+        assert_eq!(effective3, vec!["pages_show_list".to_string()]);
+    }
+
     #[tokio::test]
     async fn test_fetch_facebook_pages_empty_token_validation() {
         let err = commands::fetch_facebook_pages_from_token_internal("   ")

@@ -30,10 +30,11 @@ RustSale Desktop provides secure Facebook Page & Messenger connectivity without 
    - All Meta Graph API calls exclusively transmit access tokens via the HTTP `Authorization: Bearer <token>` header. Tokens are never included in query strings to prevent leakage into error URLs, logs, or diagnostic dumps.
 2. **Principal Identity Verification**:
    - Before saving a Page connection, the backend queries the token-relative `GET https://graph.facebook.com/v26.0/me?fields=id,name,category,tasks`.
-   - The returned principal `id` must strictly match the target `page_id`. Non-matching principals (such as personal user accounts) are rejected.
-3. **Fail-Closed Capability Resolution**:
-   - Granted scopes (`pages_messaging`, `pages_manage_posts`, `pages_read_engagement`) are exclusively extracted from Meta's verified `tasks` array.
-   - Missing tasks/permissions never default to full capabilities; unverified scopes are omitted (fail-closed).
+   - The returned principal `id` must strictly match the target `page_id`. Non-matching principals (such as personal user accounts lacking a Page `category`) are rejected.
+3. **Dual-Authorization Capability Resolution**:
+   - Meta requires both App OAuth permissions and Page-level administrative tasks for platform operations.
+   - The system retrieves active granted App permissions (`GET /v26.0/me/permissions`) and exact Page administrative tasks (`PROFILE_PLUS_*` / legacy tasks).
+   - Only the strict mathematical intersection of granted App permissions and verified Page tasks is persisted (fail-closed). Unverified or non-intersecting permissions are omitted.
 
 ---
 

@@ -1915,9 +1915,28 @@ pub async fn save_managed_facebook_account(
         return Err("Access token represents a personal Facebook User profile, not a Facebook Fanpage. Please provide a Page Access Token.".to_string());
     }
 
-    // Strict fail-closed capability resolution: only capabilities directly proven by Meta are saved
-    let verified_scopes = if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
+    // Fetch granted App OAuth permissions from /me/permissions
+    let mut app_permissions = Vec::new();
+    let perms_url = "https://graph.facebook.com/v26.0/me/permissions";
+    if let Ok(perms_resp) = client.get(perms_url).bearer_auth(access_token).send().await {
+        if perms_resp.status().is_success() {
+            if let Ok(perms_body) = perms_resp.json::<serde_json::Value>().await {
+                app_permissions = parse_meta_app_permissions(&perms_body);
+            }
+        }
+    }
+
+    // Strict fail-closed capability resolution: intersect Page tasks with granted App OAuth permissions
+    let task_scopes = if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
         map_facebook_tasks_to_scopes(tasks)
+    } else {
+        vec!["pages_show_list".to_string()]
+    };
+
+    let verified_scopes = if !app_permissions.is_empty() {
+        intersect_tasks_and_app_permissions(&task_scopes, &app_permissions)
+    } else if let Some(req_scopes) = request.granted_scopes.as_ref() {
+        intersect_tasks_and_app_permissions(&task_scopes, req_scopes)
     } else {
         vec!["pages_show_list".to_string()]
     };
@@ -1930,6 +1949,38 @@ pub async fn save_managed_facebook_account(
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
     save_managed_facebook_account_internal(&conn, final_request)
+}
+
+pub fn parse_meta_app_permissions(permissions_json: &serde_json::Value) -> Vec<String> {
+    let mut granted = Vec::new();
+    if let Some(data) = permissions_json.get("data").and_then(|d| d.as_array()) {
+        for item in data {
+            if let (Some(perm), Some(status)) = (
+                item.get("permission").and_then(|v| v.as_str()),
+                item.get("status").and_then(|v| v.as_str()),
+            ) {
+                if status == "granted" {
+                    granted.push(perm.to_string());
+                }
+            }
+        }
+    }
+    granted
+}
+
+pub fn intersect_tasks_and_app_permissions(
+    task_scopes: &[String],
+    app_permissions: &[String],
+) -> Vec<String> {
+    let mut effective = vec!["pages_show_list".to_string()];
+    for scope in task_scopes {
+        if scope != "pages_show_list" && app_permissions.iter().any(|p| p == scope) {
+            if !effective.iter().any(|s| s == scope) {
+                effective.push(scope.clone());
+            }
+        }
+    }
+    effective
 }
 
 pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> {
@@ -2068,6 +2119,17 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
+    // Query /me/permissions to retrieve granted App OAuth permissions
+    let mut app_permissions = Vec::new();
+    let perms_url = "https://graph.facebook.com/v26.0/me/permissions";
+    if let Ok(perms_resp) = client.get(perms_url).bearer_auth(clean_token).send().await {
+        if perms_resp.status().is_success() {
+            if let Ok(perms_body) = perms_resp.json::<serde_json::Value>().await {
+                app_permissions = parse_meta_app_permissions(&perms_body);
+            }
+        }
+    }
+
     // 1. Query /me/accounts (User Token managing multiple pages) with Bearer auth (never in query string)
     let mut pages = Vec::new();
     let mut next_url = Some(
@@ -2112,7 +2174,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 .map(String::from);
 
                             // Extract actual granted tasks or permissions accurately (supports New Pages Experience & legacy tasks)
-                            let perms = if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
+                            let raw_task_scopes = if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
                                 map_facebook_tasks_to_scopes(tasks)
                             } else if let Some(p_arr) = item.get("perms").and_then(|p| p.as_array()) {
                                 let mut p_scopes = vec!["pages_show_list".to_string()];
@@ -2134,6 +2196,12 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 p_scopes
                             } else {
                                 vec!["pages_show_list".to_string()]
+                            };
+
+                            let perms = if !app_permissions.is_empty() {
+                                intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions)
+                            } else {
+                                raw_task_scopes
                             };
 
                             pages.push(DiscoveredFacebookPage {
@@ -2195,10 +2263,16 @@ pub async fn fetch_facebook_pages_from_token_internal(
                         .and_then(|u| u.as_str())
                         .map(String::from);
 
-                    let perms = if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
+                    let raw_task_scopes = if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
                         map_facebook_tasks_to_scopes(tasks)
                     } else {
                         vec!["pages_show_list".to_string()]
+                    };
+
+                    let perms = if !app_permissions.is_empty() {
+                        intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions)
+                    } else {
+                        raw_task_scopes
                     };
 
                     return Ok(vec![DiscoveredFacebookPage {
