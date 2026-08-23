@@ -284,7 +284,7 @@ impl FacebookScheduler {
                          ORDER BY id LIMIT 1
                      )
                      AND status = 'delivery_unknown'
-                     RETURNING id, channel_account_id, page_id, post_type, message, remote_post_id, scheduled_publish_time, updated_at",
+                     RETURNING id, channel_account_id, page_id, post_type, message, remote_post_id, scheduled_publish_time, created_at",
                     params![worker_owner],
                     |r| {
                         Ok((
@@ -309,7 +309,7 @@ impl FacebookScheduler {
                 message,
                 remote_post_id,
                 scheduled_publish_time,
-                updated_at_str,
+                created_at_str,
             ) = match claimed {
                 Some(row) => row,
                 None => break,
@@ -341,12 +341,12 @@ impl FacebookScheduler {
                         .map(|dt| dt.timestamp())
                 })
                 .or_else(|| {
-                    chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+                    chrono::DateTime::parse_from_rfc3339(&created_at_str)
                         .ok()
                         .map(|dt| dt.timestamp())
                         .or_else(|| {
                             chrono::NaiveDateTime::parse_from_str(
-                                &updated_at_str,
+                                &created_at_str,
                                 "%Y-%m-%d %H:%M:%S",
                             )
                             .ok()
