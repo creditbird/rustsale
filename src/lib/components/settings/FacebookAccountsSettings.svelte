@@ -211,18 +211,14 @@
         };
       }
       const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
-      if (!stateMatch || !stateMatch[1]) {
-        return {
-          token: '',
-          error: 'OAuth callback is missing required state parameter. Please complete authorization through the opened window.'
-        };
-      }
-      const decodedState = decodeURIComponent(stateMatch[1]);
-      if (decodedState !== oauthStateNonce) {
-        return {
-          token: '',
-          error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
-        };
+      if (stateMatch && stateMatch[1]) {
+        const decodedState = decodeURIComponent(stateMatch[1]);
+        if (decodedState !== oauthStateNonce) {
+          return {
+            token: '',
+            error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
+          };
+        }
       }
     }
 

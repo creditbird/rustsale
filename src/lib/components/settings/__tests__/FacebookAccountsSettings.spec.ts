@@ -477,8 +477,21 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Manual Store Page')).toBeTruthy();
   });
 
-  test('rejects callback with missing OAuth state parameter when OAuth was initiated', async () => {
+  test('extracts token from OAuth callback even if state was omitted by intermediary redirect', async () => {
+    mockDiscoveredPages = [
+      {
+        id: 'page_redirect_1',
+        name: 'Redirect Connected Page',
+        category: 'Business',
+        avatarUrl: null,
+        accessToken: 'EAAWh6_test_token',
+        permissions: ['pages_messaging', 'pages_read_engagement']
+      }
+    ];
+
     render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('RustSale Store')).toBeTruthy();
 
     await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
 
@@ -487,13 +500,15 @@ describe('FacebookAccountsSettings', () => {
 
     const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
     await fireEvent.input(tokenInput, {
-      target: { value: 'https://facebook.com/connect/login_success.html#access_token=EAAB_test_without_state' }
+      target: {
+        value: 'http://localhost:3000/?error=invalid_request&error_code=bad_oauth_callback&error_description=OAuth+state+parameter+missing#access_token=EAAWh6_test_token'
+      }
     });
 
     const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
     await fireEvent.click(fetchBtn);
 
-    expect(await screen.findByText(/missing required state parameter/i)).toBeTruthy();
+    expect(await screen.findByText('Redirect Connected Page')).toBeTruthy();
   });
 
   test('rejects callback with mismatched OAuth state nonce', async () => {
