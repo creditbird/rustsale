@@ -1066,6 +1066,37 @@ impl FacebookUploader {
         }
 
         // 3. Finish Phase
+        if let Some(st) = scheduled_publish_time {
+            let now_ts = chrono::Utc::now().timestamp();
+            if st > now_ts && st <= now_ts + 600 {
+                // Target is within 1..=600s in the future.
+                // We cannot send Meta-scheduled finish (Meta requires >10m) and we must NOT publish early.
+                // All chunks are transferred, so keep session in 'in_progress', set session lease_deadline
+                // to target scheduled time, release foreground lease, and defer FINISH to background reconciler.
+                let defer_secs = (st - now_ts).max(1);
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions
+                     SET owner_id = NULL,
+                         lease_deadline = datetime('now', '+' || ?3 || ' seconds'),
+                         updated_at = datetime('now')
+                     WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                    params![upload_session_id, owner_id, defer_secs],
+                );
+                let _ = conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET owner_id = NULL,
+                         claim_deadline = NULL,
+                         next_retry_at = datetime('now', '+' || ?2 || ' seconds'),
+                         updated_at = datetime('now')
+                     WHERE id = ?1 AND owner_id = ?3",
+                    params![post_id, defer_secs, owner_id],
+                );
+                return PublishApiResult::StillProcessing {
+                    upload_session_id: upload_session_id.to_string(),
+                };
+            }
+        }
+
         let finish_rows = match conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now') WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
             params![upload_session_id, owner_id],
@@ -1096,11 +1127,6 @@ impl FacebookUploader {
             if st > now_ts + 600 {
                 finish_body["published"] = json!(false);
                 finish_body["scheduled_publish_time"] = json!(st);
-            } else if st > now_ts {
-                // Target is within 10 minutes: wait until exact target time arrives so content is not published early
-                let wait_secs = (st - now_ts) as u64;
-                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
-                finish_body["published"] = json!(true);
             } else {
                 finish_body["published"] = json!(true);
             }
@@ -2204,6 +2230,37 @@ impl FacebookUploader {
             };
         }
 
+        if let Some(scheduled_epoch) = scheduled_publish_time {
+            let now_ts = chrono::Utc::now().timestamp();
+            if scheduled_epoch > now_ts && scheduled_epoch <= now_ts + 600 {
+                // Target is within 1..=600s in the future.
+                // We cannot send Meta-scheduled finish (Meta requires >10m) and we must NOT publish early.
+                // Binary streaming is complete, so keep session in 'in_progress', set session lease_deadline
+                // to target scheduled time, release foreground lease, and defer FINISH to background reconciler.
+                let defer_secs = (scheduled_epoch - now_ts).max(1);
+                let _ = conn.execute(
+                    "UPDATE facebook_upload_sessions
+                     SET owner_id = NULL,
+                         lease_deadline = datetime('now', '+' || ?3 || ' seconds'),
+                         updated_at = datetime('now')
+                     WHERE upload_session_id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+                    params![video_id, owner_id, defer_secs],
+                );
+                let _ = conn.execute(
+                    "UPDATE facebook_scheduled_posts
+                     SET owner_id = NULL,
+                         claim_deadline = NULL,
+                         next_retry_at = datetime('now', '+' || ?2 || ' seconds'),
+                         updated_at = datetime('now')
+                     WHERE id = ?1 AND owner_id = ?3",
+                    params![post_id, defer_secs, owner_id],
+                );
+                return PublishApiResult::StillProcessing {
+                    upload_session_id: video_id.to_string(),
+                };
+            }
+        }
+
         let finishing_rows = match conn.execute(
             "UPDATE facebook_upload_sessions
              SET status = 'finishing', updated_at = datetime('now')
@@ -2239,11 +2296,6 @@ impl FacebookUploader {
             if scheduled_epoch > now_ts + 600 {
                 finish_body["video_state"] = serde_json::json!("SCHEDULED");
                 finish_body["scheduled_publish_time"] = serde_json::json!(scheduled_epoch);
-            } else if scheduled_epoch > now_ts {
-                // Target is within 10 minutes: wait until exact target time arrives so content is not published early
-                let wait_secs = (scheduled_epoch - now_ts) as u64;
-                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
-                finish_body["video_state"] = serde_json::json!("PUBLISHED");
             } else {
                 finish_body["video_state"] = serde_json::json!("PUBLISHED");
             }

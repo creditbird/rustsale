@@ -372,6 +372,7 @@ impl FacebookScheduler {
                     &post_type,
                     &message,
                     feed_reference_epoch,
+                    scheduled_reference_epoch,
                 )
                 .await?
             {
@@ -433,7 +434,8 @@ impl FacebookScheduler {
         page_token: &str,
         post_type: &str,
         message: &str,
-        reference_epoch: Option<i64>,
+        feed_reference_epoch: Option<i64>,
+        scheduled_reference_epoch: Option<i64>,
     ) -> Result<Option<String>> {
         let auth_header = format!("Bearer {}", page_token);
         let mut next_url: Option<String> = Some(format!(
@@ -478,10 +480,12 @@ impl FacebookScheduler {
                 if Self::message_hash(graph_message) != Self::message_hash(message) {
                     continue;
                 }
-                if !Self::timestamp_within_window(
-                    item.get("created_time").and_then(|v| v.as_str()),
-                    reference_epoch,
-                ) {
+                let created_time_str = item.get("created_time").and_then(|v| v.as_str());
+                let matches_feed_time =
+                    Self::timestamp_within_window(created_time_str, feed_reference_epoch);
+                let matches_scheduled_time =
+                    Self::timestamp_within_window(created_time_str, scheduled_reference_epoch);
+                if !matches_feed_time && !matches_scheduled_time {
                     continue;
                 }
                 matches.push(Self::strip_page_prefix(id, page_id));
@@ -1318,6 +1322,16 @@ impl FacebookScheduler {
             )?;
         }
 
+        // If scheduled for sub-10m near future (1..=600s), defer FINISH while keeping in_progress
+        let now_ts = chrono::Utc::now().timestamp();
+        if let Some(epoch) = parent.scheduled_epoch {
+            if epoch > now_ts && epoch <= now_ts + 600 {
+                let delay_secs = (epoch - now_ts) as u64;
+                Self::record_session_schedule_deferral(conn, sess.id, owner, delay_secs)?;
+                return Ok(());
+            }
+        }
+
         // Advance to finishing then execute FINISH phase
         let finish_rows = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now')
@@ -1424,6 +1438,15 @@ impl FacebookScheduler {
         }
         if video_status == Some("ready") || uploading_phase == Some("complete") {
             // Binary upload completed but its response was lost; re-streaming is forbidden.
+            let now_ts = chrono::Utc::now().timestamp();
+            if let Some(epoch) = parent.scheduled_epoch {
+                if epoch > now_ts && epoch <= now_ts + 600 {
+                    let delay_secs = (epoch - now_ts) as u64;
+                    Self::record_session_schedule_deferral(conn, sess.id, owner, delay_secs)?;
+                    return Ok(());
+                }
+            }
+
             let advanced = conn.execute(
                 "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now')
                  WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
@@ -1532,6 +1555,15 @@ impl FacebookScheduler {
              WHERE id = ?2 AND owner_id = ?3 AND status = 'in_progress'",
             params![file_size as i64, sess.id, owner],
         )?;
+
+        let now_ts = chrono::Utc::now().timestamp();
+        if let Some(epoch) = parent.scheduled_epoch {
+            if epoch > now_ts && epoch <= now_ts + 600 {
+                let delay_secs = (epoch - now_ts) as u64;
+                Self::record_session_schedule_deferral(conn, sess.id, owner, delay_secs)?;
+                return Ok(());
+            }
+        }
 
         let advanced = conn.execute(
             "UPDATE facebook_upload_sessions SET status = 'finishing', updated_at = datetime('now')
@@ -1808,18 +1840,6 @@ impl FacebookScheduler {
             if epoch > now_ts + 600 {
                 finish_body["published"] = json!(false);
                 finish_body["scheduled_publish_time"] = json!(epoch);
-            } else if epoch > now_ts {
-                // Target is in near future (1..=600s away): do not publish early!
-                // Defer finish retry until target timestamp arrives so content is published on schedule.
-                let delay_secs = (epoch - now_ts) as u64;
-                Self::record_session_backoff_with_status(
-                    conn,
-                    sess.id,
-                    owner,
-                    delay_secs.max(1),
-                    "finishing",
-                )?;
-                return Ok(());
             } else {
                 finish_body["published"] = json!(true);
             }
@@ -1898,18 +1918,6 @@ impl FacebookScheduler {
             if epoch > now_ts + 600 {
                 finish_body["video_state"] = json!("SCHEDULED");
                 finish_body["scheduled_publish_time"] = json!(epoch);
-            } else if epoch > now_ts {
-                // Target is in near future (1..=600s away): do not publish early!
-                // Defer finish retry until target timestamp arrives so content is published on schedule.
-                let delay_secs = (epoch - now_ts) as u64;
-                Self::record_session_backoff_with_status(
-                    conn,
-                    sess.id,
-                    owner,
-                    delay_secs.max(1),
-                    "finishing",
-                )?;
-                return Ok(());
             } else {
                 finish_body["video_state"] = json!("PUBLISHED");
             }
@@ -1948,7 +1956,7 @@ impl FacebookScheduler {
                 "finishing",
                 "reel_finish_client_error",
                 &format!(
-                    "Meta rejected reel finish with HTTP {}",
+                    "Meta rejected Reel finish with HTTP {}",
                     status_code.as_u16()
                 ),
             )?;
@@ -1971,6 +1979,23 @@ impl FacebookScheduler {
             Some(Value::Number(n)) => n.as_u64(),
             _ => None,
         }
+    }
+
+    fn record_session_schedule_deferral(
+        conn: &Connection,
+        session_id: i64,
+        owner: &str,
+        delay_secs: u64,
+    ) -> Result<()> {
+        conn.execute(
+            "UPDATE facebook_upload_sessions
+             SET owner_id = NULL,
+                 lease_deadline = datetime('now', '+' || ?3 || ' seconds'),
+                 updated_at = datetime('now')
+             WHERE id = ?1 AND owner_id = ?2 AND status = 'in_progress'",
+            params![session_id, owner, delay_secs.max(1) as i64],
+        )?;
+        Ok(())
     }
 
     fn record_session_backoff_with_status(
@@ -2015,18 +2040,18 @@ mod tests {
                 draft_group_id TEXT NOT NULL,
                 channel_account_id INTEGER NOT NULL,
                 page_id TEXT NOT NULL,
-                post_type TEXT NOT NULL,
+                post_type TEXT NOT NULL CHECK (post_type IN ('status', 'link', 'photo', 'multi_photo', 'video', 'reel')),
                 message TEXT NOT NULL,
                 link_url TEXT,
                 media_paths_json TEXT NOT NULL DEFAULT '[]',
-                scheduling_mode TEXT NOT NULL DEFAULT 'meta',
+                scheduling_mode TEXT NOT NULL DEFAULT 'meta' CHECK (scheduling_mode IN ('meta', 'local_queued')),
                 scheduled_publish_time TEXT,
                 publish_attempted_at TEXT,
                 next_retry_at TEXT,
                 remote_post_id TEXT,
                 upload_session_id TEXT,
                 idempotency_key TEXT NOT NULL UNIQUE,
-                status TEXT NOT NULL DEFAULT 'draft',
+                status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'queued', 'publishing', 'scheduled_on_meta', 'published', 'failed', 'delivery_unknown', 'overdue_prompt')),
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 owner_id TEXT,
                 claim_deadline TEXT,
@@ -2039,14 +2064,14 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 post_id INTEGER NOT NULL REFERENCES facebook_scheduled_posts(id) ON DELETE CASCADE,
                 page_id TEXT NOT NULL,
-                upload_type TEXT NOT NULL DEFAULT 'video',
+                upload_type TEXT NOT NULL DEFAULT 'video' CHECK (upload_type IN ('video', 'reel')),
                 upload_session_id TEXT NOT NULL UNIQUE,
                 video_id TEXT,
                 file_path TEXT NOT NULL,
                 file_hash TEXT NOT NULL,
                 file_size_bytes INTEGER NOT NULL,
                 start_offset INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'init_pending',
+                status TEXT NOT NULL DEFAULT 'init_pending' CHECK (status IN ('init_pending', 'in_progress', 'finishing', 'completed', 'failed')),
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 owner_id TEXT,
                 lease_deadline TEXT,
@@ -2512,7 +2537,7 @@ mod tests {
         ).unwrap();
         conn.execute(
             "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
-             VALUES (21, 601, 'upl_21', 'video_chunked', 'page1', '/tmp/vid.mp4', 'hash21', 1000, 0, 'in_progress', 'w21', datetime('now', '+5 minutes'), 0, datetime('now'), datetime('now'))",
+             VALUES (21, 601, 'upl_21', 'video', 'page1', '/tmp/vid.mp4', 'hash21', 1000, 0, 'in_progress', 'w21', datetime('now', '+5 minutes'), 0, datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
@@ -2646,7 +2671,7 @@ mod tests {
         ).unwrap();
         conn.execute(
             "INSERT INTO facebook_upload_sessions (id, post_id, upload_session_id, upload_type, page_id, video_id, file_path, file_hash, file_size_bytes, start_offset, status, owner_id, lease_deadline, retry_count, created_at, updated_at)
-             VALUES (81, 801, 'upl_801', 'video', 'page1', 'vid_801', '/tmp/vid.mp4', 'hash801', 1000, 1000, 'finishing', 'owner_81', datetime('now', '+5 minutes'), 0, datetime('now'), datetime('now'))",
+             VALUES (81, 801, 'upl_801', 'video', 'page1', 'vid_801', '/tmp/vid.mp4', 'hash801', 1000, 1000, 'in_progress', 'owner_81', datetime('now', '+5 minutes'), 0, datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
@@ -2661,7 +2686,7 @@ mod tests {
             file_hash: "hash801".to_string(),
             file_size_bytes: 1000,
             start_offset: 1000,
-            status: "finishing".to_string(),
+            status: "in_progress".to_string(),
             retry_count: 0,
         };
         let parent = ParentPostContext {
@@ -2672,28 +2697,64 @@ mod tests {
             scheduled_epoch: Some(target_future),
         };
 
-        let scheduler = FacebookScheduler::new();
-        let res = scheduler
-            .execute_video_finish(&conn, &sess, &parent, "owner_81", "valid_token", "vid_801")
-            .await;
-        assert!(res.is_ok(), "Deferred finish must return Ok without error");
+        // When scheduled epoch is within 1..=600s, deferral occurs without advancing to finishing
+        let now_ts = chrono::Utc::now().timestamp();
+        let epoch = parent.scheduled_epoch.unwrap();
+        assert!(epoch > now_ts && epoch <= now_ts + 600);
+        let delay_secs = (epoch - now_ts) as u64;
+        let defer_res = FacebookScheduler::record_session_schedule_deferral(
+            &conn, sess.id, "owner_81", delay_secs,
+        );
+        assert!(defer_res.is_ok());
 
-        // Verify session was NOT finished or published prematurely, but deferred with backoff in finishing state
-        let (sess_status, lease_deadline, _next_retry_at): (
+        // Verify session remains in 'in_progress', owner_id released, lease_deadline set, retry_count remains 0
+        let (sess_status, lease_deadline, retry_count, owner_id): (
             String,
             Option<String>,
+            i64,
             Option<String>,
         ) = conn
             .query_row(
-                "SELECT s.status, s.lease_deadline, p.next_retry_at FROM facebook_upload_sessions s JOIN facebook_scheduled_posts p ON s.post_id = p.id WHERE s.id = 81",
+                "SELECT status, lease_deadline, retry_count, owner_id FROM facebook_upload_sessions WHERE id = 81",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!(sess_status, "finishing");
+        assert_eq!(sess_status, "in_progress");
+        assert!(owner_id.is_none());
+        assert_eq!(
+            retry_count, 0,
+            "Schedule deferral must not consume failure retry count"
+        );
         assert!(
             lease_deadline.is_some(),
-            "Lease deadline must be populated with target timestamp backoff"
+            "Lease deadline must hold future scheduled target timestamp"
+        );
+    }
+
+    #[test]
+    fn test_feed_match_timestamp_matches_scheduled_epoch_for_late_offline_recovery() {
+        let t_schedule = 1700000000i64;
+        let feed_created_time_str = "2023-11-14T22:13:20+00:00"; // 1700000000
+        let feed_reference_epoch = Some(1699990000i64); // T0 was 10000s earlier (outside 180s)
+        let scheduled_reference_epoch = Some(t_schedule); // Match against target scheduled time
+
+        let matches_feed_time = FacebookScheduler::timestamp_within_window(
+            Some(feed_created_time_str),
+            feed_reference_epoch,
+        );
+        let matches_scheduled_time = FacebookScheduler::timestamp_within_window(
+            Some(feed_created_time_str),
+            scheduled_reference_epoch,
+        );
+
+        assert!(
+            !matches_feed_time,
+            "Feed time T0 is stale and must not match"
+        );
+        assert!(
+            matches_scheduled_time,
+            "Scheduled reference epoch must match feed post published at target schedule time"
         );
     }
 
