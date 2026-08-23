@@ -9,6 +9,7 @@
   import EmailOutreach from '$lib/components/EmailOutreach.svelte';
   import CategoryManager from '$lib/components/CategoryManager.svelte';
   import ConversationWorkspace from '$lib/components/conversation/ConversationWorkspace.svelte';
+  import FacebookHub from '$lib/components/facebook/FacebookHub.svelte';
   import Settings from '$lib/components/Settings.svelte';
   import LicenseModal from '$lib/components/LicenseModal.svelte';
   import { verifyDeviceAndSubscription } from '$lib/services/licenseService';
@@ -38,6 +39,7 @@
     get leads() { return { title: m.tab_leads_title(), subtitle: m.tab_leads_subtitle() }; },
     get categories() { return { title: m.tab_categories_title(), subtitle: m.tab_categories_subtitle() }; },
     get conversation() { return { title: m.tab_conversation_title(), subtitle: m.tab_conversation_subtitle() }; },
+    get facebook_hub() { return { title: m.tab_facebook_hub_title(), subtitle: m.tab_facebook_hub_subtitle() }; },
     get outreach() { return { title: m.tab_outreach_title(), subtitle: m.tab_outreach_subtitle() }; },
     get email_outreach() { return { title: m.tab_email_outreach_title(), subtitle: m.tab_email_outreach_subtitle() }; },
     get pipeline() { return { title: m.tab_pipeline_title(), subtitle: m.tab_pipeline_subtitle() }; },
@@ -192,6 +194,9 @@
 
       <div class={activeTab === 'conversation' ? 'h-full' : 'hidden'}>
         <ConversationWorkspace {activeTab} targetLead={targetLeadForConversation} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
+      </div>
+      <div class={activeTab === 'facebook_hub' ? '' : 'hidden'}>
+        <FacebookHub />
       </div>
       <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
         <Dashboard {activeTab} />
