@@ -251,6 +251,7 @@ impl FacebookScheduler {
     // Reconciliation Engine: claims rows with status='delivery_unknown'
     // ------------------------------------------------------------------
 
+    #[allow(clippy::type_complexity)]
     pub async fn run_reconciliation_cycle(
         &self,
         conn: &Connection,
@@ -619,6 +620,7 @@ impl FacebookScheduler {
     // Upload Session Background Reconciler
     // ------------------------------------------------------------------
 
+    #[allow(clippy::type_complexity)]
     pub async fn reconcile_upload_sessions(
         &self,
         conn: &mut Connection,
@@ -838,7 +840,7 @@ impl FacebookScheduler {
             params![error_code, error_message, post_id],
         );
         match (rows_sess, rows_post) {
-            (Ok(s), Ok(_)) if s == 1 => {
+            (Ok(1), Ok(_)) => {
                 conn.execute_batch("RELEASE SAVEPOINT fb_fail_tx;")?;
                 Ok(())
             }
