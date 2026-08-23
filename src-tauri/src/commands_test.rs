@@ -867,6 +867,14 @@ mod tests {
         assert!(err_token.contains("Access Token cannot be empty"));
     }
 
+    #[tokio::test]
+    async fn test_fetch_facebook_pages_empty_token_validation() {
+        let err = commands::fetch_facebook_pages_from_token_internal("   ")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Access token cannot be empty"));
+    }
+
     #[test]
     fn test_zalo_qr_session_rejects_callback_without_device_imei() {
         let conn = db::init_db(":memory:").unwrap();

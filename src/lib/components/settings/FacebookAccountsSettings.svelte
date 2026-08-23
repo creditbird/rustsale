@@ -36,6 +36,7 @@
   let accounts = $state<ManagedFacebookAccount[]>([]);
   let loading = $state(true);
   let isPolling = $state(false);
+  let loadRequestId = 0;
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   let deleting = $state(new Set<string>());
@@ -44,6 +45,7 @@
   let connectModalOpen = $state(false);
   let connectTab = $state<'oauth' | 'manual'>('oauth');
   let oauthTokenOrUrl = $state('');
+  let oauthStateNonce = $state<string | null>(null);
   let isFetchingPages = $state(false);
   let isSavingPages = $state(false);
   let modalError = $state<string | null>(null);
@@ -92,19 +94,23 @@
   export async function loadAccounts(silent = false) {
     if (silent && isPolling) return;
     isPolling = true;
+    const thisRequestId = ++loadRequestId;
     if (!silent) {
       loading = true;
       loadError = null;
     }
     try {
-      accounts = await listManagedFacebookAccounts();
-      loadError = null;
+      const fetched = await listManagedFacebookAccounts();
+      if (thisRequestId === loadRequestId) {
+        accounts = fetched;
+        loadError = null;
+      }
     } catch (error) {
-      if (!silent) {
+      if (!silent && thisRequestId === loadRequestId) {
         loadError = error instanceof Error ? error.message : String(error);
       }
     } finally {
-      if (!silent) {
+      if (!silent && thisRequestId === loadRequestId) {
         loading = false;
       }
       isPolling = false;
@@ -114,6 +120,7 @@
   function openConnectModal() {
     connectTab = 'oauth';
     oauthTokenOrUrl = '';
+    oauthStateNonce = null;
     discoveredPages = [];
     selectedPageIds = new Set();
     modalError = null;
@@ -125,27 +132,43 @@
     connectModalOpen = true;
   }
 
-  function extractToken(raw: string): string {
+  function extractTokenAndValidateState(raw: string): { token: string; error?: string } {
     const trimmed = raw.trim();
-    if (!trimmed) return '';
-    // If user pasted a full callback URL like https://...#access_token=EAAB... or ?access_token=EAAB...
-    const hashMatch = trimmed.match(/[#?]access_token=([^&]+)/);
-    if (hashMatch && hashMatch[1]) {
-      return decodeURIComponent(hashMatch[1]);
+    if (!trimmed) return { token: '' };
+
+    // If state is included in URL callback, verify against nonce to prevent CSRF
+    const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
+    if (stateMatch && stateMatch[1] && oauthStateNonce) {
+      const decodedState = decodeURIComponent(stateMatch[1]);
+      if (decodedState !== oauthStateNonce) {
+        return { token: '', error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.' };
+      }
     }
-    return trimmed;
+
+    const tokenMatch = trimmed.match(/[#&?]access_token=([^&]+)/);
+    if (tokenMatch && tokenMatch[1]) {
+      return { token: decodeURIComponent(tokenMatch[1]) };
+    }
+
+    return { token: trimmed };
   }
 
   function handleOpenMetaOAuth() {
-    const metaAppId = '1075678647572774'; // Meta App ID or default
+    const metaAppId = '1075678647572774';
     const redirectUri = 'https://facebook.com/connect/login_success.html';
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
-    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${metaAppId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(scope)}`;
+    const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    oauthStateNonce = nonce;
+    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${metaAppId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(nonce)}&scope=${encodeURIComponent(scope)}`;
     window.open(authUrl, '_blank');
   }
 
   async function handleDiscoverPages() {
-    const cleanToken = extractToken(oauthTokenOrUrl);
+    const { token: cleanToken, error: stateError } = extractTokenAndValidateState(oauthTokenOrUrl);
+    if (stateError) {
+      modalError = stateError;
+      return;
+    }
     if (!cleanToken) {
       modalError = 'Please enter or paste an Access Token or Meta Callback URL';
       return;

@@ -1974,78 +1974,123 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
-    // 1. Try querying /me/accounts (User Token managing multiple pages)
-    let url = format!(
-        "https://graph.facebook.com/v26.0/me/accounts?fields=id,name,access_token,category,picture.type(large)&limit=100&access_token={}",
-        urlencoding::encode(clean_token)
+    // 1. Query /me/accounts (User Token managing multiple pages) with Bearer auth (never in query string)
+    let mut pages = Vec::new();
+    let mut next_url = Some(
+        "https://graph.facebook.com/v26.0/me/accounts?fields=id,name,access_token,category,tasks,perms,picture.type(large)&limit=100".to_string()
     );
+    let mut page_count_limit = 0;
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to connect to Meta Graph API: {}", e))?;
+    while let Some(url) = next_url.take() {
+        if page_count_limit >= 5 {
+            // Cap at 500 pages (5 pages of 100) to prevent unbounded loops
+            break;
+        }
+        page_count_limit += 1;
 
-    let status = resp.status();
-    let resp_text = resp.text().await.unwrap_or_default();
+        let resp = match client.get(&url).bearer_auth(clean_token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                // Redact any potential query parameters/tokens from error
+                let safe_err = e.to_string().replace(clean_token, "[REDACTED]");
+                return Err(format!("Failed to connect to Meta Graph API: {}", safe_err));
+            }
+        };
 
-    if status.is_success() {
-        if let Ok(body) = serde_json::from_str::<serde_json::Value>(&resp_text) {
-            let mut pages = Vec::new();
-            if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
-                for item in data {
-                    if let (Some(id), Some(name), Some(access_token)) = (
-                        item.get("id").and_then(|v| v.as_str()),
-                        item.get("name").and_then(|v| v.as_str()),
-                        item.get("access_token").and_then(|v| v.as_str()),
-                    ) {
-                        let category = item.get("category").and_then(|v| v.as_str()).map(String::from);
-                        let avatar_url = item
-                            .get("picture")
-                            .and_then(|p| p.get("data"))
-                            .and_then(|d| d.get("url"))
-                            .and_then(|u| u.as_str())
-                            .map(String::from);
+        let status = resp.status();
+        let resp_text = resp.text().await.unwrap_or_default();
 
-                        pages.push(DiscoveredFacebookPage {
-                            id: id.to_string(),
-                            name: name.to_string(),
-                            category,
-                            avatar_url,
-                            access_token: access_token.to_string(),
-                            permissions: vec![
+        if status.is_success() {
+            if let Ok(body) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+                if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+                    for item in data {
+                        if let (Some(id), Some(name), Some(access_token)) = (
+                            item.get("id").and_then(|v| v.as_str()),
+                            item.get("name").and_then(|v| v.as_str()),
+                            item.get("access_token").and_then(|v| v.as_str()),
+                        ) {
+                            let category = item.get("category").and_then(|v| v.as_str()).map(String::from);
+                            let avatar_url = item
+                                .get("picture")
+                                .and_then(|p| p.get("data"))
+                                .and_then(|d| d.get("url"))
+                                .and_then(|u| u.as_str())
+                                .map(String::from);
+
+                            // Extract actual granted tasks or permissions
+                            let mut perms = vec![
                                 "pages_show_list".to_string(),
                                 "pages_read_engagement".to_string(),
                                 "pages_manage_posts".to_string(),
                                 "pages_messaging".to_string(),
-                            ],
-                        });
+                            ];
+                            if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
+                                for task in tasks {
+                                    if let Some(t_str) = task.as_str() {
+                                        let scope_name = match t_str {
+                                            "MESSAGING" => "pages_messaging",
+                                            "MANAGE" | "CREATE_CONTENT" => "pages_manage_posts",
+                                            "MODERATE" => "pages_read_engagement",
+                                            _ => "",
+                                        };
+                                        if !scope_name.is_empty() && !perms.iter().any(|p| p == scope_name) {
+                                            perms.push(scope_name.to_string());
+                                        }
+                                    }
+                                }
+                            }
+
+                            pages.push(DiscoveredFacebookPage {
+                                id: id.to_string(),
+                                name: name.to_string(),
+                                category,
+                                avatar_url,
+                                access_token: access_token.to_string(),
+                                permissions: perms,
+                            });
+                        }
                     }
                 }
-            }
 
-            if !pages.is_empty() {
-                return Ok(pages);
+                // Handle pagination if more than 100 pages exist
+                if let Some(next) = body
+                    .get("paging")
+                    .and_then(|p| p.get("next"))
+                    .and_then(|n| n.as_str())
+                {
+                    next_url = Some(next.to_string());
+                }
             }
+        } else {
+            // Check if error response has a specific message
+            if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+                if let Some(err_msg) = err_json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                    // If error is not merely "empty", return the Meta error
+                    return Err(format!("Meta Graph API error: {}", err_msg));
+                }
+            }
+            break;
         }
     }
 
-    // 2. If /me/accounts returned empty or was not successful, check if token is a direct Page Access Token via /me
-    let me_url = format!(
-        "https://graph.facebook.com/v26.0/me?fields=id,name,category,picture.type(large)&access_token={}",
-        urlencoding::encode(clean_token)
-    );
+    if !pages.is_empty() {
+        return Ok(pages);
+    }
 
-    if let Ok(me_resp) = client.get(&me_url).send().await {
+    // 2. If /me/accounts returned no pages (empty data), check if token was a direct Page Access Token via GET /me
+    let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,tasks,picture.type(large)";
+    if let Ok(me_resp) = client.get(me_url).bearer_auth(clean_token).send().await {
         let me_status = me_resp.status();
         let me_text = me_resp.text().await.unwrap_or_default();
         if me_status.is_success() {
             if let Ok(me_body) = serde_json::from_str::<serde_json::Value>(&me_text) {
-                if let (Some(id), Some(name)) = (
+                // Positively verify that this is a Page (Pages have a non-empty `category` field in Meta Graph API; Users do not)
+                let category_opt = me_body.get("category").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+                if let (Some(id), Some(name), Some(category)) = (
                     me_body.get("id").and_then(|v| v.as_str()),
                     me_body.get("name").and_then(|v| v.as_str()),
+                    category_opt,
                 ) {
-                    let category = me_body.get("category").and_then(|v| v.as_str()).map(String::from);
                     let avatar_url = me_body
                         .get("picture")
                         .and_then(|p| p.get("data"))
@@ -2053,32 +2098,42 @@ pub async fn fetch_facebook_pages_from_token_internal(
                         .and_then(|u| u.as_str())
                         .map(String::from);
 
+                    let mut perms = vec![
+                        "pages_show_list".to_string(),
+                        "pages_read_engagement".to_string(),
+                        "pages_manage_posts".to_string(),
+                        "pages_messaging".to_string(),
+                    ];
+                    if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
+                        for task in tasks {
+                            if let Some(t_str) = task.as_str() {
+                                let scope_name = match t_str {
+                                    "MESSAGING" => "pages_messaging",
+                                    "MANAGE" | "CREATE_CONTENT" => "pages_manage_posts",
+                                    "MODERATE" => "pages_read_engagement",
+                                    _ => "",
+                                };
+                                if !scope_name.is_empty() && !perms.iter().any(|p| p == scope_name) {
+                                    perms.push(scope_name.to_string());
+                                }
+                            }
+                        }
+                    }
+
                     return Ok(vec![DiscoveredFacebookPage {
                         id: id.to_string(),
                         name: name.to_string(),
-                        category,
+                        category: Some(category.to_string()),
                         avatar_url,
                         access_token: clean_token.to_string(),
-                        permissions: vec![
-                            "pages_show_list".to_string(),
-                            "pages_read_engagement".to_string(),
-                            "pages_manage_posts".to_string(),
-                            "pages_messaging".to_string(),
-                        ],
+                        permissions: perms,
                     }]);
                 }
             }
         }
     }
 
-    // 3. If neither worked, extract error message from Meta response
-    if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
-        if let Some(err_msg) = err_json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
-            return Err(format!("Meta Graph API: {}", err_msg));
-        }
-    }
-
-    Err(format!("Meta Graph API error ({}): {}", status, resp_text))
+    Err("No Facebook Fanpages found for this account. Ensure you have admin access to at least one Fanpage and granted 'pages_show_list' permission.".to_string())
 }
 
 #[tauri::command]
