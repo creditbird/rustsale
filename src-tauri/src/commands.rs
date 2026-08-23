@@ -1906,28 +1906,34 @@ pub async fn save_managed_facebook_account(
         ));
     }
 
+    // Positively verify principal type: Pages have a non-empty category in Meta Graph API; personal Users do not
+    let category_opt = body
+        .get("category")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty());
+    if category_opt.is_none() {
+        return Err("Access token represents a personal Facebook User profile, not a Facebook Fanpage. Please provide a Page Access Token.".to_string());
+    }
+
     // Strict fail-closed capability resolution: only capabilities directly proven by Meta are saved
     let mut verified_scopes = vec!["pages_show_list".to_string()];
     if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
         for task in tasks {
             if let Some(t_str) = task.as_str() {
-                match t_str {
-                    "MESSAGING" => {
-                        if !verified_scopes.iter().any(|s| s == "pages_messaging") {
-                            verified_scopes.push("pages_messaging".to_string());
-                        }
+                if t_str.contains("MESSAGING") {
+                    if !verified_scopes.iter().any(|s| s == "pages_messaging") {
+                        verified_scopes.push("pages_messaging".to_string());
                     }
-                    "MANAGE" | "CREATE_CONTENT" => {
-                        if !verified_scopes.iter().any(|s| s == "pages_manage_posts") {
-                            verified_scopes.push("pages_manage_posts".to_string());
-                        }
+                }
+                if t_str.contains("MANAGE") || t_str.contains("CREATE_CONTENT") {
+                    if !verified_scopes.iter().any(|s| s == "pages_manage_posts") {
+                        verified_scopes.push("pages_manage_posts".to_string());
                     }
-                    "MODERATE" | "ANALYZE" => {
-                        if !verified_scopes.iter().any(|s| s == "pages_read_engagement") {
-                            verified_scopes.push("pages_read_engagement".to_string());
-                        }
+                }
+                if t_str.contains("MODERATE") || t_str.contains("ANALYZE") || t_str.contains("ADVERTISE") {
+                    if !verified_scopes.iter().any(|s| s == "pages_read_engagement") {
+                        verified_scopes.push("pages_read_engagement".to_string());
                     }
-                    _ => {}
                 }
             }
         }
@@ -2084,28 +2090,25 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 .and_then(|u| u.as_str())
                                 .map(String::from);
 
-                            // Extract actual granted tasks or permissions accurately
+                            // Extract actual granted tasks or permissions accurately (supports New Pages Experience & legacy tasks)
                             let mut perms = vec!["pages_show_list".to_string()];
                             if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
                                 for task in tasks {
                                     if let Some(t_str) = task.as_str() {
-                                        match t_str {
-                                            "MESSAGING" => {
-                                                if !perms.iter().any(|p| p == "pages_messaging") {
-                                                    perms.push("pages_messaging".to_string());
-                                                }
+                                        if t_str.contains("MESSAGING") {
+                                            if !perms.iter().any(|p| p == "pages_messaging") {
+                                                perms.push("pages_messaging".to_string());
                                             }
-                                            "MANAGE" | "CREATE_CONTENT" => {
-                                                if !perms.iter().any(|p| p == "pages_manage_posts") {
-                                                    perms.push("pages_manage_posts".to_string());
-                                                }
+                                        }
+                                        if t_str.contains("MANAGE") || t_str.contains("CREATE_CONTENT") {
+                                            if !perms.iter().any(|p| p == "pages_manage_posts") {
+                                                perms.push("pages_manage_posts".to_string());
                                             }
-                                            "MODERATE" | "ANALYZE" | "ADVERTISE" => {
-                                                if !perms.iter().any(|p| p == "pages_read_engagement") {
-                                                    perms.push("pages_read_engagement".to_string());
-                                                }
+                                        }
+                                        if t_str.contains("MODERATE") || t_str.contains("ANALYZE") || t_str.contains("ADVERTISE") {
+                                            if !perms.iter().any(|p| p == "pages_read_engagement") {
+                                                perms.push("pages_read_engagement".to_string());
                                             }
-                                            _ => {}
                                         }
                                     }
                                 }
@@ -2125,10 +2128,6 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                         }
                                     }
                                 }
-                            } else {
-                                perms.push("pages_read_engagement".to_string());
-                                perms.push("pages_manage_posts".to_string());
-                                perms.push("pages_messaging".to_string());
                             }
 
                             pages.push(DiscoveredFacebookPage {
@@ -2194,30 +2193,23 @@ pub async fn fetch_facebook_pages_from_token_internal(
                     if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
                         for task in tasks {
                             if let Some(t_str) = task.as_str() {
-                                match t_str {
-                                    "MESSAGING" => {
-                                        if !perms.iter().any(|p| p == "pages_messaging") {
-                                            perms.push("pages_messaging".to_string());
-                                        }
+                                if t_str.contains("MESSAGING") {
+                                    if !perms.iter().any(|p| p == "pages_messaging") {
+                                        perms.push("pages_messaging".to_string());
                                     }
-                                    "MANAGE" | "CREATE_CONTENT" => {
-                                        if !perms.iter().any(|p| p == "pages_manage_posts") {
-                                            perms.push("pages_manage_posts".to_string());
-                                        }
+                                }
+                                if t_str.contains("MANAGE") || t_str.contains("CREATE_CONTENT") {
+                                    if !perms.iter().any(|p| p == "pages_manage_posts") {
+                                        perms.push("pages_manage_posts".to_string());
                                     }
-                                    "MODERATE" | "ANALYZE" => {
-                                        if !perms.iter().any(|p| p == "pages_read_engagement") {
-                                            perms.push("pages_read_engagement".to_string());
-                                        }
+                                }
+                                if t_str.contains("MODERATE") || t_str.contains("ANALYZE") || t_str.contains("ADVERTISE") {
+                                    if !perms.iter().any(|p| p == "pages_read_engagement") {
+                                        perms.push("pages_read_engagement".to_string());
                                     }
-                                    _ => {}
                                 }
                             }
                         }
-                    } else {
-                        perms.push("pages_read_engagement".to_string());
-                        perms.push("pages_manage_posts".to_string());
-                        perms.push("pages_messaging".to_string());
                     }
 
                     return Ok(vec![DiscoveredFacebookPage {
