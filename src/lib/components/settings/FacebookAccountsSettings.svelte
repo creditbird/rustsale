@@ -154,6 +154,25 @@
     connectModalOpen = true;
   }
 
+  export function isValidOAuthRedirectUri(uri: string): boolean {
+    if (!uri) return false;
+    try {
+      const parsed = new URL(uri.trim());
+      if (parsed.protocol === 'https:') {
+        return true;
+      }
+      if (
+        parsed.protocol === 'http:' &&
+        (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
+      ) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   function extractTokenAndValidateState(raw: string): { token: string; error?: string } {
     const trimmed = raw.trim();
     if (!trimmed) return { token: '' };
@@ -183,6 +202,19 @@
 
     const providerTokenMatch = trimmed.match(/[#&?]provider_token=([^&]+)/);
     if (providerTokenMatch && providerTokenMatch[1]) {
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        try {
+          const urlObj = new URL(trimmed);
+          if (!isValidOAuthRedirectUri(urlObj.origin)) {
+            return {
+              token: '',
+              error: 'OAuth callback origin is not recognized as a valid secure domain.'
+            };
+          }
+        } catch {
+          // ignore parsing error and proceed with token extraction
+        }
+      }
       return { token: decodeURIComponent(providerTokenMatch[1]) };
     }
 
@@ -197,10 +229,10 @@
   function getDefaultRedirectUri(): string {
     if (typeof localStorage !== 'undefined') {
       const saved = localStorage.getItem('rustsale_facebook_redirect_uri');
-      if (saved) return saved;
+      if (saved && isValidOAuthRedirectUri(saved)) return saved;
     }
     const { url } = getSupabaseConfig();
-    if (url) {
+    if (url && isValidOAuthRedirectUri(url)) {
       return `${url.replace(/\/$/, '')}/auth/v1/callback`;
     }
     return 'https://rustsale.trantrongtri.com/oauth/callback.html';
@@ -226,9 +258,12 @@
   }
 
   function handleRedirectUriChange(val: string) {
-    customRedirectUri = val.trim();
+    const trimmed = val.trim();
+    customRedirectUri = trimmed;
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('rustsale_facebook_redirect_uri', customRedirectUri);
+      if (!trimmed || isValidOAuthRedirectUri(trimmed)) {
+        localStorage.setItem('rustsale_facebook_redirect_uri', trimmed);
+      }
     }
     oauthAuthUrl = null;
     oauthStateNonce = null;
@@ -236,13 +271,22 @@
 
   async function handleCopyRedirectUri() {
     try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(customRedirectUri);
-        copiedRedirectUri = true;
-        setTimeout(() => {
-          copiedRedirectUri = false;
-        }, 2500);
+      } else if (typeof document !== 'undefined') {
+        const textarea = document.createElement('textarea');
+        textarea.value = customRedirectUri;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
       }
+      copiedRedirectUri = true;
+      setTimeout(() => {
+        copiedRedirectUri = false;
+      }, 2500);
     } catch {
       modalError = 'Failed to copy Redirect URI to clipboard.';
     }
@@ -255,11 +299,21 @@
       return null;
     }
     const redirectUri = customRedirectUri.trim() || getDefaultRedirectUri();
+    if (!isValidOAuthRedirectUri(redirectUri)) {
+      modalError = 'Invalid OAuth Redirect URI. Must be a valid HTTPS URL (e.g. Supabase callback or *.trantrongtri.com).';
+      return null;
+    }
     const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
     if (!oauthStateNonce) {
       oauthStateNonce = generateCryptoNonce();
     }
-    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${encodeURIComponent(appId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&state=${encodeURIComponent(oauthStateNonce)}&scope=${encodeURIComponent(scope)}`;
+    const authUrl = `https://www.facebook.com/v26.0/dialog/oauth?client_id=${encodeURIComponent(
+      appId
+    )}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&scope=${encodeURIComponent(scope)}&response_type=token&state=${encodeURIComponent(
+      oauthStateNonce
+    )}`;
     oauthAuthUrl = authUrl;
     return authUrl;
   }
