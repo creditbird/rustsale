@@ -179,6 +179,28 @@ describe('FacebookAccountsSettings', () => {
     });
   });
 
+  test('copies OAuth authorization link to clipboard', async () => {
+    let clipboardText = '';
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: async (text: string) => {
+          clipboardText = text;
+        }
+      }
+    });
+
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    const copyBtn = screen.getByRole('button', { name: /Copy Link/i });
+    await fireEvent.click(copyBtn);
+
+    expect(clipboardText).toMatch(/^https:\/\/www\.facebook\.com\/v26\.0\/dialog\/oauth\?client_id=1075678647572774/);
+    expect(clipboardText).toMatch(/state=([^&]+)/);
+    expect(await screen.findByText('Copied')).toBeTruthy();
+  });
+
   test('connects via manual tab with Page ID and Access Token', async () => {
     render(FacebookAccountsSettings);
 

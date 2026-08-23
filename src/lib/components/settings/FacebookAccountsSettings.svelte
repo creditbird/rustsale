@@ -135,6 +135,8 @@
     connectTab = 'oauth';
     oauthTokenOrUrl = '';
     oauthStateNonce = null;
+    oauthAuthUrl = null;
+    copiedAuthUrl = false;
     discoveredPages = [];
     selectedPageIds = new Set();
     modalError = null;
