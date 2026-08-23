@@ -884,6 +884,60 @@ mod tests {
         assert_eq!(saved.granted_scopes, vec!["pages_show_list".to_string()]);
     }
 
+    #[test]
+    fn test_map_facebook_tasks_to_scopes_exact_and_failclosed() {
+        // 1. NPE Profile Plus Full Control grants full page management scopes
+        let full_control_tasks = vec![serde_json::json!("PROFILE_PLUS_FULL_CONTROL")];
+        let scopes = commands::map_facebook_tasks_to_scopes(&full_control_tasks);
+        assert!(scopes.contains(&"pages_show_list".to_string()));
+        assert!(scopes.contains(&"pages_messaging".to_string()));
+        assert!(scopes.contains(&"pages_manage_posts".to_string()));
+        assert!(scopes.contains(&"pages_read_engagement".to_string()));
+
+        // 2. Exact NPE granular tasks
+        let npe_tasks = vec![
+            serde_json::json!("PROFILE_PLUS_MESSAGING"),
+            serde_json::json!("PROFILE_PLUS_CREATE_CONTENT"),
+            serde_json::json!("PROFILE_PLUS_ANALYZE"),
+        ];
+        let npe_scopes = commands::map_facebook_tasks_to_scopes(&npe_tasks);
+        assert_eq!(
+            npe_scopes,
+            vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string(),
+                "pages_read_engagement".to_string(),
+            ]
+        );
+
+        // 3. Legacy task names
+        let legacy_tasks = vec![
+            serde_json::json!("MESSAGING"),
+            serde_json::json!("MANAGE"),
+            serde_json::json!("MODERATE"),
+        ];
+        let legacy_scopes = commands::map_facebook_tasks_to_scopes(&legacy_tasks);
+        assert_eq!(
+            legacy_scopes,
+            vec![
+                "pages_show_list".to_string(),
+                "pages_messaging".to_string(),
+                "pages_manage_posts".to_string(),
+                "pages_read_engagement".to_string(),
+            ]
+        );
+
+        // 4. Unknown task names and lookalikes fail closed strictly to pages_show_list
+        let unknown_tasks = vec![
+            serde_json::json!("PROFILE_PLUS_NOT_MESSAGING"),
+            serde_json::json!("UNKNOWN_FUTURE_CAPABILITY"),
+            serde_json::json!("MANAGE_PAYMENTS_ONLY"),
+        ];
+        let unknown_scopes = commands::map_facebook_tasks_to_scopes(&unknown_tasks);
+        assert_eq!(unknown_scopes, vec!["pages_show_list".to_string()]);
+    }
+
     #[tokio::test]
     async fn test_fetch_facebook_pages_empty_token_validation() {
         let err = commands::fetch_facebook_pages_from_token_internal("   ")

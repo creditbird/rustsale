@@ -39,7 +39,7 @@ RustSale Desktop provides secure Facebook Page & Messenger connectivity without 
 
 ## 3. Storage & Encryption (AES-256 Keyring Token Vault)
 
-1. **Hardware-backed OS Keyring**:
+1. **OS-protected Keyring Credential Storage**:
    - A master cryptographic key is generated and stored in the OS Keyring (Linux Secret Service / Windows Credential Manager / macOS Keychain).
 2. **Authenticated Encryption (AES-256-GCM)**:
    - Each page token is encrypted using AES-256-GCM with a unique 96-bit nonce per encryption.

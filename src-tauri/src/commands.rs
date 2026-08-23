@@ -1916,28 +1916,11 @@ pub async fn save_managed_facebook_account(
     }
 
     // Strict fail-closed capability resolution: only capabilities directly proven by Meta are saved
-    let mut verified_scopes = vec!["pages_show_list".to_string()];
-    if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
-        for task in tasks {
-            if let Some(t_str) = task.as_str() {
-                if t_str.contains("MESSAGING") {
-                    if !verified_scopes.iter().any(|s| s == "pages_messaging") {
-                        verified_scopes.push("pages_messaging".to_string());
-                    }
-                }
-                if t_str.contains("MANAGE") || t_str.contains("CREATE_CONTENT") {
-                    if !verified_scopes.iter().any(|s| s == "pages_manage_posts") {
-                        verified_scopes.push("pages_manage_posts".to_string());
-                    }
-                }
-                if t_str.contains("MODERATE") || t_str.contains("ANALYZE") || t_str.contains("ADVERTISE") {
-                    if !verified_scopes.iter().any(|s| s == "pages_read_engagement") {
-                        verified_scopes.push("pages_read_engagement".to_string());
-                    }
-                }
-            }
-        }
-    }
+    let verified_scopes = if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
+        map_facebook_tasks_to_scopes(tasks)
+    } else {
+        vec!["pages_show_list".to_string()]
+    };
 
     let mut final_request = request;
     final_request.granted_scopes = Some(verified_scopes);
@@ -1947,6 +1930,44 @@ pub async fn save_managed_facebook_account(
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
     save_managed_facebook_account_internal(&conn, final_request)
+}
+
+pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> {
+    let mut scopes = vec!["pages_show_list".to_string()];
+    for t in tasks {
+        if let Some(s) = t.as_str() {
+            match s {
+                "PROFILE_PLUS_FULL_CONTROL" | "FULL_CONTROL" | "ADMINISTER" => {
+                    if !scopes.iter().any(|x| x == "pages_messaging") {
+                        scopes.push("pages_messaging".to_string());
+                    }
+                    if !scopes.iter().any(|x| x == "pages_manage_posts") {
+                        scopes.push("pages_manage_posts".to_string());
+                    }
+                    if !scopes.iter().any(|x| x == "pages_read_engagement") {
+                        scopes.push("pages_read_engagement".to_string());
+                    }
+                }
+                "PROFILE_PLUS_MESSAGING" | "MESSAGING" => {
+                    if !scopes.iter().any(|x| x == "pages_messaging") {
+                        scopes.push("pages_messaging".to_string());
+                    }
+                }
+                "PROFILE_PLUS_CREATE_CONTENT" | "CREATE_CONTENT" | "PROFILE_PLUS_MANAGE" | "MANAGE" => {
+                    if !scopes.iter().any(|x| x == "pages_manage_posts") {
+                        scopes.push("pages_manage_posts".to_string());
+                    }
+                }
+                "PROFILE_PLUS_MODERATE" | "MODERATE" | "PROFILE_PLUS_ANALYZE" | "ANALYZE" | "PROFILE_PLUS_ADVERTISE" | "ADVERTISE" => {
+                    if !scopes.iter().any(|x| x == "pages_read_engagement") {
+                        scopes.push("pages_read_engagement".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    scopes
 }
 
 pub fn save_managed_facebook_account_internal(
@@ -2091,44 +2112,29 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 .map(String::from);
 
                             // Extract actual granted tasks or permissions accurately (supports New Pages Experience & legacy tasks)
-                            let mut perms = vec!["pages_show_list".to_string()];
-                            if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
-                                for task in tasks {
-                                    if let Some(t_str) = task.as_str() {
-                                        if t_str.contains("MESSAGING") {
-                                            if !perms.iter().any(|p| p == "pages_messaging") {
-                                                perms.push("pages_messaging".to_string());
-                                            }
-                                        }
-                                        if t_str.contains("MANAGE") || t_str.contains("CREATE_CONTENT") {
-                                            if !perms.iter().any(|p| p == "pages_manage_posts") {
-                                                perms.push("pages_manage_posts".to_string());
-                                            }
-                                        }
-                                        if t_str.contains("MODERATE") || t_str.contains("ANALYZE") || t_str.contains("ADVERTISE") {
-                                            if !perms.iter().any(|p| p == "pages_read_engagement") {
-                                                perms.push("pages_read_engagement".to_string());
-                                            }
-                                        }
-                                    }
-                                }
+                            let perms = if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
+                                map_facebook_tasks_to_scopes(tasks)
                             } else if let Some(p_arr) = item.get("perms").and_then(|p| p.as_array()) {
+                                let mut p_scopes = vec!["pages_show_list".to_string()];
                                 for p in p_arr {
                                     if let Some(p_str) = p.as_str() {
                                         if p_str == "ADMINISTER" || p_str == "EDIT_PROFILE" {
-                                            if !perms.iter().any(|s| s == "pages_messaging") {
-                                                perms.push("pages_messaging".to_string());
+                                            if !p_scopes.iter().any(|s| s == "pages_messaging") {
+                                                p_scopes.push("pages_messaging".to_string());
                                             }
-                                            if !perms.iter().any(|s| s == "pages_manage_posts") {
-                                                perms.push("pages_manage_posts".to_string());
+                                            if !p_scopes.iter().any(|s| s == "pages_manage_posts") {
+                                                p_scopes.push("pages_manage_posts".to_string());
                                             }
-                                            if !perms.iter().any(|s| s == "pages_read_engagement") {
-                                                perms.push("pages_read_engagement".to_string());
+                                            if !p_scopes.iter().any(|s| s == "pages_read_engagement") {
+                                                p_scopes.push("pages_read_engagement".to_string());
                                             }
                                         }
                                     }
                                 }
-                            }
+                                p_scopes
+                            } else {
+                                vec!["pages_show_list".to_string()]
+                            };
 
                             pages.push(DiscoveredFacebookPage {
                                 id: id.to_string(),
@@ -2189,28 +2195,11 @@ pub async fn fetch_facebook_pages_from_token_internal(
                         .and_then(|u| u.as_str())
                         .map(String::from);
 
-                    let mut perms = vec!["pages_show_list".to_string()];
-                    if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
-                        for task in tasks {
-                            if let Some(t_str) = task.as_str() {
-                                if t_str.contains("MESSAGING") {
-                                    if !perms.iter().any(|p| p == "pages_messaging") {
-                                        perms.push("pages_messaging".to_string());
-                                    }
-                                }
-                                if t_str.contains("MANAGE") || t_str.contains("CREATE_CONTENT") {
-                                    if !perms.iter().any(|p| p == "pages_manage_posts") {
-                                        perms.push("pages_manage_posts".to_string());
-                                    }
-                                }
-                                if t_str.contains("MODERATE") || t_str.contains("ANALYZE") || t_str.contains("ADVERTISE") {
-                                    if !perms.iter().any(|p| p == "pages_read_engagement") {
-                                        perms.push("pages_read_engagement".to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let perms = if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
+                        map_facebook_tasks_to_scopes(tasks)
+                    } else {
+                        vec!["pages_show_list".to_string()]
+                    };
 
                     return Ok(vec![DiscoveredFacebookPage {
                         id: id.to_string(),
