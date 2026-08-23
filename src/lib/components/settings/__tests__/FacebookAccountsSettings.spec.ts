@@ -134,7 +134,15 @@ describe('FacebookAccountsSettings', () => {
     const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
     await fireEvent.click(openLoginBtn);
 
-    const stateMatch = capturedAuthUrl.match(/state=([^&]+)/);
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/state=([^&]+)/);
+    });
+
+    const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+    const authUrl = String(openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl);
+    const stateMatch = authUrl.match(/state=([^&]+)/);
     expect(stateMatch).toBeTruthy();
 
     const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
@@ -169,6 +177,28 @@ describe('FacebookAccountsSettings', () => {
     await waitFor(() => {
       expect(screen.getByText(/page_discovered_999/)).toBeTruthy();
     });
+  });
+
+  test('copies OAuth authorization link to clipboard', async () => {
+    let clipboardText = '';
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: async (text: string) => {
+          clipboardText = text;
+        }
+      }
+    });
+
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    const copyBtn = screen.getByRole('button', { name: /Copy Link/i });
+    await fireEvent.click(copyBtn);
+
+    expect(clipboardText).toMatch(/^https:\/\/www\.facebook\.com\/v26\.0\/dialog\/oauth\?client_id=1075678647572774/);
+    expect(clipboardText).toMatch(/state=([^&]+)/);
+    expect(await screen.findByText('Copied')).toBeTruthy();
   });
 
   test('connects via manual tab with Page ID and Access Token', async () => {
