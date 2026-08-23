@@ -1926,20 +1926,14 @@ pub async fn save_managed_facebook_account(
         }
     }
 
-    // Strict fail-closed capability resolution: intersect Page tasks with granted App OAuth permissions
+    // Strict fail-closed capability resolution: strictly intersect Page tasks with verified App OAuth permissions
     let task_scopes = if let Some(tasks) = body.get("tasks").and_then(|t| t.as_array()) {
         map_facebook_tasks_to_scopes(tasks)
     } else {
         vec!["pages_show_list".to_string()]
     };
 
-    let verified_scopes = if !app_permissions.is_empty() {
-        intersect_tasks_and_app_permissions(&task_scopes, &app_permissions)
-    } else if let Some(req_scopes) = request.granted_scopes.as_ref() {
-        intersect_tasks_and_app_permissions(&task_scopes, req_scopes)
-    } else {
-        vec!["pages_show_list".to_string()]
-    };
+    let verified_scopes = intersect_tasks_and_app_permissions(&task_scopes, &app_permissions);
 
     let mut final_request = request;
     final_request.granted_scopes = Some(verified_scopes);
@@ -1972,9 +1966,9 @@ pub fn intersect_tasks_and_app_permissions(
     task_scopes: &[String],
     app_permissions: &[String],
 ) -> Vec<String> {
-    let mut effective = vec!["pages_show_list".to_string()];
+    let mut effective = Vec::new();
     for scope in task_scopes {
-        if scope != "pages_show_list" && app_permissions.iter().any(|p| p == scope) {
+        if app_permissions.iter().any(|p| p == scope) {
             if !effective.iter().any(|s| s == scope) {
                 effective.push(scope.clone());
             }
@@ -2047,7 +2041,7 @@ pub fn save_managed_facebook_account_internal(
         .filter(|s| !s.is_empty());
     let granted_scopes = request
         .granted_scopes
-        .unwrap_or_else(|| vec!["pages_show_list".to_string()]);
+        .unwrap_or_default();
 
     let tx = conn
         .unchecked_transaction()
@@ -2198,11 +2192,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 vec!["pages_show_list".to_string()]
                             };
 
-                            let perms = if !app_permissions.is_empty() {
-                                intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions)
-                            } else {
-                                raw_task_scopes
-                            };
+                            let perms = intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions);
 
                             pages.push(DiscoveredFacebookPage {
                                 id: id.to_string(),
@@ -2269,11 +2259,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
                         vec!["pages_show_list".to_string()]
                     };
 
-                    let perms = if !app_permissions.is_empty() {
-                        intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions)
-                    } else {
-                        raw_task_scopes
-                    };
+                    let perms = intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions);
 
                     return Ok(vec![DiscoveredFacebookPage {
                         id: id.to_string(),
