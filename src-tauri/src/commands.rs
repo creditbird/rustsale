@@ -1,7 +1,7 @@
 use crate::conversation::commands::ConversationState;
 use crate::models::{
-    Activity, Category, Deal, EmailTemplate, Lead, ManagedSmtpAccount, ManagedZaloAccount,
-    SmtpServer, ZaloSessionStatus,
+    Activity, Category, Deal, EmailTemplate, Lead, ManagedFacebookAccount, ManagedSmtpAccount,
+    ManagedZaloAccount, SmtpServer, ZaloSessionStatus,
 };
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
@@ -1694,6 +1694,168 @@ pub fn get_managed_smtp_accounts_internal(
                 .collect()
         })
         .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn get_managed_facebook_accounts(
+    state: tauri::State<DbState>,
+) -> Result<Vec<ManagedFacebookAccount>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_managed_facebook_accounts_internal(&conn)
+}
+
+pub fn get_managed_facebook_accounts_internal(
+    conn: &Connection,
+) -> Result<Vec<ManagedFacebookAccount>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT fpt.channel_account_id,
+                    fpt.page_id,
+                    COALESCE(ca.display_name, fpt.page_id),
+                    ca.avatar_url,
+                    fpt.token_status,
+                    fpt.granted_scopes_json,
+                    COALESCE(ca.connection_status, 'connected'),
+                    ca.last_connected_at,
+                    ca.last_error,
+                    fpt.updated_at
+             FROM facebook_page_tokens fpt
+             LEFT JOIN channel_accounts ca ON ca.id = fpt.channel_account_id
+             ORDER BY lower(COALESCE(ca.display_name, fpt.page_id)), fpt.page_id",
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let page_id: String = row.get(1)?;
+            let scopes_json: String = row.get(5)?;
+            let granted_scopes: Vec<String> = match serde_json::from_str(&scopes_json) {
+                Ok(scopes) => scopes,
+                Err(_) => {
+                    tracing::warn!(page_id = %page_id, "Malformed granted_scopes_json in page token vault");
+                    vec!["invalid_scope_metadata".to_string()]
+                }
+            };
+            Ok(ManagedFacebookAccount {
+                channel_account_id: row.get(0)?,
+                page_id,
+                page_name: row.get(2)?,
+                avatar_url: row.get(3)?,
+                token_status: row.get(4)?,
+                granted_scopes,
+                runtime_status: row.get(6)?,
+                last_connected_at: row.get(7)?,
+                last_error: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_facebook_account(
+    state: tauri::State<DbState>,
+    page_id: String,
+) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    delete_facebook_account_internal(&conn, &page_id)
+}
+
+pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Database transaction error: {}", e))?;
+
+    // 1. Remove encrypted access token record from the token vault
+    tx.execute(
+        "DELETE FROM facebook_page_tokens WHERE page_id = ?1",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error deleting page token: {}", e))?;
+
+    // 2. Mark the channel account disconnected while safely preserving conversation history & identities
+    tx.execute(
+        "UPDATE channel_accounts
+         SET connection_status = 'disconnected',
+             last_error = 'Page disconnected by user',
+             updated_at = datetime('now')
+         WHERE channel = 'messenger' AND provider_account_key = ?1",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error updating channel account: {}", e))?;
+
+    // 3. Revoke any active resumable upload sessions to halt background video/reel chunk uploads
+    tx.execute(
+        "UPDATE facebook_upload_sessions
+         SET status = 'failed',
+             owner_id = NULL,
+             lease_deadline = NULL,
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status IN ('init_pending', 'in_progress', 'finishing')",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error revoking facebook upload sessions: {}", e))?;
+
+    // 4. Mark local queued, draft, publishing, and overdue scheduled posts failed & clear worker leases
+    tx.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'failed',
+             owner_id = NULL,
+             claim_deadline = NULL,
+             error_code = 'page_disconnected',
+             error_message = 'Page disconnected by user',
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status IN ('draft', 'queued', 'publishing', 'overdue_prompt')",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error updating local scheduled posts: {}", e))?;
+
+    // 5. Explicitly handle scheduled_on_meta posts (remote Meta-side schedule)
+    tx.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'failed',
+             owner_id = NULL,
+             claim_deadline = NULL,
+             error_code = 'page_disconnected',
+             error_message = 'Page disconnected by user; remote schedule retained on Meta',
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status = 'scheduled_on_meta'",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error updating meta scheduled posts: {}", e))?;
+
+    // 6. Explicitly handle delivery_unknown posts (unreconciled transport ambiguity at disconnect)
+    tx.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'failed',
+             owner_id = NULL,
+             claim_deadline = NULL,
+             error_code = 'page_disconnected',
+             error_message = 'Page disconnected by user before delivery confirmation',
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status = 'delivery_unknown'",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| {
+        format!(
+            "Database error updating delivery_unknown scheduled posts: {}",
+            e
+        )
+    })?;
+
+    tx.commit()
+        .map_err(|e| format!("Database commit error: {}", e))?;
+
+    Ok(())
 }
 
 #[tauri::command]

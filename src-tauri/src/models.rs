@@ -124,6 +124,21 @@ pub struct ManagedZaloAccount {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct ManagedFacebookAccount {
+    pub channel_account_id: i64,
+    pub page_id: String,
+    pub page_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub token_status: String,
+    pub granted_scopes: Vec<String>,
+    pub runtime_status: String,
+    pub last_connected_at: Option<String>,
+    pub last_error: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ManagedSmtpAccount {
     pub id: i32,
     pub name: String,

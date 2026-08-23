@@ -600,6 +600,192 @@ mod tests {
     }
 
     #[test]
+    fn test_facebook_managed_accounts_list_and_deletion() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        // 1. Insert channel account for Facebook Messenger
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, avatar_url, connection_status, created_at, updated_at)
+             VALUES (101, 'messenger', 'page_123', 'RustSale Page', 'https://example.com/page.png', 'connected', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 2. Insert page token
+        conn.execute(
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, created_at, updated_at)
+             VALUES (101, 'page_123', 'enc_token_abc', 'valid', '[\"pages_messaging\",\"pages_manage_posts\"]', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 3. Insert historical conversation and message
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+             VALUES (201, 101, 'thread_fb_1', 'direct', 'Customer Chat', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at)
+             VALUES (301, 201, 'inbound', 'text', 'Hello Facebook', datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 4. Insert scheduled posts across various lifecycles: queued, scheduled_on_meta, publishing (leased), delivery_unknown
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, idempotency_key, status, created_at, updated_at)
+             VALUES (401, 'grp_1', 101, 'page_123', 'status', 'Queued Post', '[]', 'local_queued', 'idem_1', 'queued', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, remote_post_id, idempotency_key, status, created_at, updated_at)
+             VALUES (402, 'grp_2', 101, 'page_123', 'status', 'Meta Scheduled Post', '[]', 'meta', 'remote_meta_999', 'idem_2', 'scheduled_on_meta', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, owner_id, claim_deadline, idempotency_key, status, created_at, updated_at)
+             VALUES (403, 'grp_3', 101, 'page_123', 'status', 'In Flight Post', '[]', 'meta', 'worker_xyz', datetime('now', '+5 minutes'), 'idem_3', 'publishing', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, idempotency_key, status, created_at, updated_at)
+             VALUES (404, 'grp_4', 101, 'page_123', 'status', 'Ambiguous Post', '[]', 'meta', 'idem_4', 'delivery_unknown', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 5. Insert active upload session
+        conn.execute(
+            "INSERT INTO facebook_upload_sessions (id, post_id, page_id, upload_type, upload_session_id, file_path, file_hash, file_size_bytes, status, owner_id, lease_deadline, created_at, updated_at)
+             VALUES (501, 403, 'page_123', 'video', 'sess_abc', '/tmp/vid.mp4', 'hash123', 1024, 'in_progress', 'upload_worker_1', datetime('now', '+5 minutes'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 6. List managed accounts
+        let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(accounts.len(), 1);
+        let acc = &accounts[0];
+        assert_eq!(acc.page_id, "page_123");
+        assert_eq!(acc.page_name.as_deref(), Some("RustSale Page"));
+        assert_eq!(
+            acc.avatar_url.as_deref(),
+            Some("https://example.com/page.png")
+        );
+        assert_eq!(acc.token_status, "valid");
+        assert_eq!(acc.runtime_status, "connected");
+        assert_eq!(
+            acc.granted_scopes,
+            vec!["pages_messaging", "pages_manage_posts"]
+        );
+
+        // 7. Disconnect account (non-destructive)
+        commands::delete_facebook_account_internal(&conn, "page_123").unwrap();
+
+        // 8. Verify no longer returned in managed accounts list (token removed)
+        let remaining = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(remaining.len(), 0);
+
+        // 9. Verify historical conversation and messages were NOT deleted
+        let conv_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE id = 201",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            conv_count, 1,
+            "Historical conversations must be preserved upon disconnect"
+        );
+
+        let msg_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE id = 301", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            msg_count, 1,
+            "Historical messages must be preserved upon disconnect"
+        );
+
+        // 10. Verify channel account is marked disconnected
+        let ca_status: String = conn
+            .query_row(
+                "SELECT connection_status FROM channel_accounts WHERE id = 101",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ca_status, "disconnected");
+
+        // 11. Verify active upload session is failed and leases cleared
+        let (upload_status, upload_owner, upload_lease): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT status, owner_id, lease_deadline FROM facebook_upload_sessions WHERE id = 501",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(upload_status, "failed", "Upload session must be failed");
+        assert!(upload_owner.is_none(), "Upload owner lease must be cleared");
+        assert!(
+            upload_lease.is_none(),
+            "Upload lease deadline must be cleared"
+        );
+
+        // 12. Verify queued, scheduled_on_meta, publishing (lease cleared), and delivery_unknown posts are all marked failed with error_code
+        for post_id in [401, 402, 403, 404] {
+            let (status, error_code, owner_id, claim_deadline): (
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = conn
+                .query_row(
+                    "SELECT status, error_code, owner_id, claim_deadline FROM facebook_scheduled_posts WHERE id = ?1",
+                    [post_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(status, "failed", "Post {} must be failed", post_id);
+            assert_eq!(
+                error_code.as_deref(),
+                Some("page_disconnected"),
+                "Post {} must have error_code page_disconnected",
+                post_id
+            );
+            assert!(
+                owner_id.is_none(),
+                "Post {} owner lease must be cleared",
+                post_id
+            );
+            assert!(
+                claim_deadline.is_none(),
+                "Post {} claim deadline must be cleared",
+                post_id
+            );
+        }
+    }
+
+    #[test]
+    fn test_facebook_managed_accounts_handles_corrupted_scopes() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+             VALUES (102, 'messenger', 'page_bad_scopes', 'Corrupted Scope Page', 'connected', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, created_at, updated_at)
+             VALUES (102, 'page_bad_scopes', 'enc_token', 'valid', 'INVALID_JSON_STRING', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].granted_scopes, vec!["invalid_scope_metadata"]);
+    }
+
+    #[test]
     fn test_zalo_qr_session_rejects_callback_without_device_imei() {
         let conn = db::init_db(":memory:").unwrap();
         let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".to_string();

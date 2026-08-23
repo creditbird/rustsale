@@ -53,6 +53,25 @@ export interface SmtpServerInput {
   created_at: string;
 }
 
+export interface ManagedFacebookAccount {
+  channelAccountId: number;
+  pageId: string;
+  pageName: string | null;
+  avatarUrl: string | null;
+  tokenStatus: 'valid' | 'expired' | 'invalid' | 'revoked';
+  grantedScopes: string[];
+  runtimeStatus: AccountRuntimeStatus;
+  lastConnectedAt: string | null;
+  lastError: string | null;
+  updatedAt: string;
+}
+
+export const listManagedFacebookAccounts = () =>
+  invoke<ManagedFacebookAccount[]>('get_managed_facebook_accounts');
+
+export const deleteFacebookAccount = (pageId: string) =>
+  invoke<void>('delete_facebook_account', { pageId });
+
 export const listManagedZaloAccounts = () =>
   invoke<ManagedZaloAccount[]>('get_managed_zalo_accounts');
 

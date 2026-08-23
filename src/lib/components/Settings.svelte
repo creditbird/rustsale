@@ -1,6 +1,7 @@
 <script lang="ts">
   import ZaloAccountsSettings from './settings/ZaloAccountsSettings.svelte';
   import EmailAccountsSettings from './settings/EmailAccountsSettings.svelte';
+  import FacebookAccountsSettings from './settings/FacebookAccountsSettings.svelte';
   import AppUpdateSettings from './settings/AppUpdateSettings.svelte';
   import LanguageSettings from './settings/LanguageSettings.svelte';
   import * as Card from '$lib/components/ui/card';
@@ -10,6 +11,8 @@
   import { m } from '$lib/i18n';
   import { tick } from 'svelte';
 
+  let { onNavigateToHub }: { onNavigateToHub?: () => void } = $props();
+
   let activeChannel = $state('zalo');
   let zaloSettingsRef = $state<{ triggerQrLogin?: () => void } | null>(null);
 
@@ -18,6 +21,10 @@
     tick().then(() => {
       zaloSettingsRef?.triggerQrLogin?.();
     });
+  }
+
+  export function openFacebookTab() {
+    activeChannel = 'facebook';
   }
 </script>
 
@@ -44,8 +51,8 @@
       <Tabs.Trigger value="email" class="min-h-11 gap-2">
         <Mail class="size-4 text-sky-600" /> Email
       </Tabs.Trigger>
-      <Tabs.Trigger value="facebook" class="min-h-11 gap-2" disabled>
-        <MessagesSquare class="size-4 text-blue-600" /> Facebook <Badge variant="outline" class="text-[9px]">{m.common_coming_soon()}</Badge>
+      <Tabs.Trigger value="facebook" class="min-h-11 gap-2">
+        <MessagesSquare class="size-4 text-blue-600" /> Facebook
       </Tabs.Trigger>
       <Tabs.Trigger value="whatsapp" class="min-h-11 gap-2" disabled>
         <MessageCircleMore class="size-4 text-emerald-600" /> WhatsApp <Badge variant="outline" class="text-[9px]">{m.common_coming_soon()}</Badge>
@@ -54,6 +61,7 @@
 
     <Tabs.Content value="zalo" class="min-h-0"><ZaloAccountsSettings bind:this={zaloSettingsRef} /></Tabs.Content>
     <Tabs.Content value="email" class="min-h-0"><EmailAccountsSettings /></Tabs.Content>
+    <Tabs.Content value="facebook" class="min-h-0"><FacebookAccountsSettings {onNavigateToHub} /></Tabs.Content>
   </Tabs.Root>
 
   <div>
