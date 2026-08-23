@@ -617,7 +617,26 @@ mod tests {
             [],
         ).unwrap();
 
-        // 3. List managed accounts
+        // 3. Insert historical conversation and message
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+             VALUES (201, 101, 'thread_fb_1', 'direct', 'Customer Chat', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, ingested_at)
+             VALUES (301, 201, 'inbound', 'text', 'Hello Facebook', datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 4. Insert pending scheduled post
+        conn.execute(
+            "INSERT INTO facebook_scheduled_posts (id, draft_group_id, channel_account_id, page_id, post_type, message, media_paths_json, scheduling_mode, idempotency_key, status, created_at, updated_at)
+             VALUES (401, 'grp_1', 101, 'page_123', 'status', 'Pending Post', '[]', 'local_queued', 'idem_1', 'queued', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 5. List managed accounts
         let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
         assert_eq!(accounts.len(), 1);
         let acc = &accounts[0];
@@ -634,10 +653,76 @@ mod tests {
             vec!["pages_messaging", "pages_manage_posts"]
         );
 
-        // 4. Delete account
+        // 6. Disconnect account (non-destructive)
         commands::delete_facebook_account_internal(&conn, "page_123").unwrap();
+
+        // 7. Verify no longer returned in managed accounts list (token removed)
         let remaining = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
         assert_eq!(remaining.len(), 0);
+
+        // 8. Verify historical conversation and messages were NOT deleted
+        let conv_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_conversations WHERE id = 201",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            conv_count, 1,
+            "Historical conversations must be preserved upon disconnect"
+        );
+
+        let msg_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE id = 301", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            msg_count, 1,
+            "Historical messages must be preserved upon disconnect"
+        );
+
+        // 9. Verify channel account is marked disconnected
+        let ca_status: String = conn
+            .query_row(
+                "SELECT connection_status FROM channel_accounts WHERE id = 101",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ca_status, "disconnected");
+
+        // 10. Verify queued scheduled post is marked failed with error message
+        let post_status: String = conn
+            .query_row(
+                "SELECT status FROM facebook_scheduled_posts WHERE id = 401",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_status, "failed");
+    }
+
+    #[test]
+    fn test_facebook_managed_accounts_handles_corrupted_scopes() {
+        let conn = db::init_db(":memory:").unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+             VALUES (102, 'messenger', 'page_bad_scopes', 'Corrupted Scope Page', 'connected', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO facebook_page_tokens (channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, created_at, updated_at)
+             VALUES (102, 'page_bad_scopes', 'enc_token', 'valid', 'INVALID_JSON_STRING', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let accounts = commands::get_managed_facebook_accounts_internal(&conn).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].granted_scopes, vec!["invalid_scope_metadata"]);
     }
 
     #[test]

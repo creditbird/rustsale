@@ -1730,12 +1730,18 @@ pub fn get_managed_facebook_accounts_internal(
 
     let rows = stmt
         .query_map([], |row| {
+            let page_id: String = row.get(1)?;
             let scopes_json: String = row.get(5)?;
-            let granted_scopes: Vec<String> =
-                serde_json::from_str(&scopes_json).unwrap_or_default();
+            let granted_scopes: Vec<String> = match serde_json::from_str(&scopes_json) {
+                Ok(scopes) => scopes,
+                Err(_) => {
+                    tracing::warn!(page_id = %page_id, "Malformed granted_scopes_json in page token vault");
+                    vec!["invalid_scope_metadata".to_string()]
+                }
+            };
             Ok(ManagedFacebookAccount {
                 channel_account_id: row.get(0)?,
-                page_id: row.get(1)?,
+                page_id,
                 page_name: row.get(2)?,
                 avatar_url: row.get(3)?,
                 token_status: row.get(4)?,
@@ -1765,28 +1771,41 @@ pub fn delete_facebook_account(
 }
 
 pub fn delete_facebook_account_internal(conn: &Connection, page_id: &str) -> Result<(), String> {
-    let channel_account_id: Option<i64> = conn
-        .query_row(
-            "SELECT channel_account_id FROM facebook_page_tokens WHERE page_id = ?1",
-            rusqlite::params![page_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("Database error: {}", e))?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Database transaction error: {}", e))?;
 
-    conn.execute(
+    // 1. Remove encrypted access token record from the token vault
+    tx.execute(
         "DELETE FROM facebook_page_tokens WHERE page_id = ?1",
         rusqlite::params![page_id],
     )
     .map_err(|e| format!("Database error deleting page token: {}", e))?;
 
-    if let Some(ca_id) = channel_account_id {
-        conn.execute(
-            "DELETE FROM channel_accounts WHERE id = ?1",
-            rusqlite::params![ca_id],
-        )
-        .map_err(|e| format!("Database error deleting channel account: {}", e))?;
-    }
+    // 2. Mark the channel account disconnected while safely preserving conversation history & identities
+    tx.execute(
+        "UPDATE channel_accounts
+         SET connection_status = 'disconnected',
+             last_error = 'Page disconnected by user',
+             updated_at = datetime('now')
+         WHERE channel = 'messenger' AND provider_account_key = ?1",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error updating channel account: {}", e))?;
+
+    // 3. Mark pending un-published scheduled posts failed to prevent publishers from firing without credentials
+    tx.execute(
+        "UPDATE facebook_scheduled_posts
+         SET status = 'failed',
+             error_message = 'Page disconnected by user',
+             updated_at = datetime('now')
+         WHERE page_id = ?1 AND status IN ('queued', 'draft')",
+        rusqlite::params![page_id],
+    )
+    .map_err(|e| format!("Database error updating pending scheduled posts: {}", e))?;
+
+    tx.commit()
+        .map_err(|e| format!("Database commit error: {}", e))?;
 
     Ok(())
 }

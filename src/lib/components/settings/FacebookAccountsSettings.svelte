@@ -30,6 +30,7 @@
 
   let accounts = $state<ManagedFacebookAccount[]>([]);
   let loading = $state(true);
+  let isPolling = $state(false);
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   let deleting = $state(new Set<string>());
@@ -67,6 +68,8 @@
   }
 
   export async function loadAccounts(silent = false) {
+    if (isPolling) return;
+    isPolling = true;
     if (!silent) {
       loading = true;
       loadError = null;
@@ -82,6 +85,7 @@
       if (!silent) {
         loading = false;
       }
+      isPolling = false;
     }
   }
 
@@ -94,7 +98,7 @@
     if (!pageToDelete) return;
     const pageId = pageToDelete.pageId;
     deleteConfirmOpen = false;
-    deleting.add(pageId);
+    deleting = new Set(deleting).add(pageId);
     actionError = null;
 
     try {
@@ -103,7 +107,9 @@
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     } finally {
-      deleting.delete(pageId);
+      const next = new Set(deleting);
+      next.delete(pageId);
+      deleting = next;
       pageToDelete = null;
     }
   }
@@ -346,7 +352,7 @@
       </Dialog.Title>
       <Dialog.Description class="text-xs">
         Are you sure you want to disconnect Page <strong>{pageToDelete?.pageName || pageToDelete?.pageId}</strong>?
-        This will remove the stored vault token and cease Messenger synchronization.
+        This will remove the stored vault token and pause Messenger synchronization. Your conversation history, customer contacts, and CRM records will remain safely preserved.
       </Dialog.Description>
     </Dialog.Header>
     <Dialog.Footer class="gap-2">
