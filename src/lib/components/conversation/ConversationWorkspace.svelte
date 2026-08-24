@@ -907,7 +907,12 @@
   }
 
   function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
-    if (event.conversationId === 0) return true;
+    if (event.conversationId === 0) {
+      if (event.channel) {
+        return item.replyTargets.some((target) => target.channel === event.channel);
+      }
+      return true;
+    }
     if (item.kind === 'customer') {
       return (
         (item.leadId !== null && event.leadId === item.leadId) ||

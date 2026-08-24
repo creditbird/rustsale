@@ -4,6 +4,35 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 
 let realtimeChannel: RealtimeChannel | null = null;
 let debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let inFlightSyncs = new Set<string>();
+let pendingFollowupSyncs = new Set<string>();
+
+/**
+ * Executes idempotent, serialized sync for a specific page.
+ * Prevents concurrent stampedes while guaranteeing that events arriving
+ * during an active sync trigger exactly one followup sync.
+ */
+async function executeSerializedSync(pageId?: string): Promise<void> {
+  const key = pageId || '__all__';
+
+  if (inFlightSyncs.has(key)) {
+    pendingFollowupSyncs.add(key);
+    return;
+  }
+
+  inFlightSyncs.add(key);
+  try {
+    await syncFacebookConversations(pageId);
+  } catch (err) {
+    console.warn(`[MetaRealtime] Serialized sync failed for ${key}:`, err);
+  } finally {
+    inFlightSyncs.delete(key);
+    if (pendingFollowupSyncs.has(key)) {
+      pendingFollowupSyncs.delete(key);
+      void executeSerializedSync(pageId);
+    }
+  }
+}
 
 /**
  * Trigger debounce-buffered sync for a specific page (or all pages if undefined).
@@ -17,9 +46,7 @@ function schedulePageSync(pageId?: string) {
 
   const timer = setTimeout(() => {
     debounceTimers.delete(key);
-    syncFacebookConversations(pageId).catch((err) => {
-      console.warn('[MetaRealtime] Background page sync failed:', err);
-    });
+    void executeSerializedSync(pageId);
   }, 100);
 
   debounceTimers.set(key, timer);
@@ -65,6 +92,9 @@ export function startMetaRealtimeListener(): () => void {
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           console.info('[MetaRealtime] Supabase Realtime subscribed successfully for Meta events');
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          console.warn('[MetaRealtime] Realtime disconnected or error, scheduling recovery sync');
+          schedulePageSync();
         }
       });
   } catch (err) {
@@ -89,4 +119,6 @@ export function stopMetaRealtimeListener(): void {
     clearTimeout(timer);
   }
   debounceTimers.clear();
+  inFlightSyncs.clear();
+  pendingFollowupSyncs.clear();
 }
