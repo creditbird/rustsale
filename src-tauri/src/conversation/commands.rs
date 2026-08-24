@@ -15,12 +15,14 @@ use super::types::{
     UpdateConversationQuickTemplateRequest,
 };
 
+use super::facebook::supervisor::FacebookMessengerSupervisor;
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
 
 pub struct ConversationState {
     pub service: Arc<ConversationService>,
     pub zalo_supervisor: Arc<ZaloSessionSupervisor>,
+    pub facebook_supervisor: Arc<FacebookMessengerSupervisor>,
 }
 
 #[tauri::command]
@@ -545,4 +547,27 @@ pub fn list_conversation_pinned_messages(
         .service
         .list_pinned_messages(conversation_id)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn sync_facebook_conversations(
+    state: tauri::State<'_, ConversationState>,
+    page_id: Option<String>,
+) -> Result<usize, String> {
+    match page_id {
+        Some(id) if !id.trim().is_empty() => {
+            state
+                .facebook_supervisor
+                .sync_page(id.trim())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        _ => {
+            state
+                .facebook_supervisor
+                .sync_all()
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
 }

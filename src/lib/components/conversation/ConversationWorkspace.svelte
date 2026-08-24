@@ -14,6 +14,7 @@
     pinConversationMessage,
     unpinConversationMessage,
     listConversationPinnedMessages,
+    syncFacebookConversations,
     type InboxItem,
 
     type Channel,
@@ -633,6 +634,10 @@
     } finally {
       inboxLoading = false;
       runtimeLoading = false;
+      // Trigger background sync for Facebook Messenger accounts
+      syncFacebookConversations().catch((err) => {
+        console.warn('Initial Facebook Messenger sync error:', err);
+      });
     }
   }
 

@@ -166,12 +166,24 @@ pub fn run() {
                     std::sync::Arc::new(conversation::zalo::client::RealZaloClientFactory),
                 ),
             );
+            let facebook_graph_client = std::sync::Arc::new(
+                conversation::facebook::client::RealFacebookGraphClient::new(),
+            );
+            let facebook_supervisor = std::sync::Arc::new(
+                conversation::facebook::supervisor::FacebookMessengerSupervisor::new(
+                    db_path_str.to_string(),
+                    conversation_events.clone(),
+                    facebook_graph_client,
+                ),
+            );
             app.manage(conversation::commands::ConversationState {
                 service: conversation_service.clone(),
                 zalo_supervisor: zalo_supervisor.clone(),
+                facebook_supervisor: facebook_supervisor.clone(),
             });
             conversation_events.spawn_tauri_forwarder(app.handle().clone());
             let startup_service = conversation_service.clone();
+            let startup_fb_supervisor = facebook_supervisor.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = startup_service.recover_outbox_startup() {
                     tracing::error!(target: "conversation", %error, "outbox recovery failed");
@@ -179,6 +191,10 @@ pub fn run() {
                 if let Err(error) = zalo_supervisor.start_all().await {
                     tracing::error!(target: "conversation", %error, "Zalo supervisor startup failed");
                 }
+                if let Err(error) = startup_fb_supervisor.sync_all().await {
+                    tracing::error!(target: "conversation", %error, "Facebook Messenger initial sync failed");
+                }
+                startup_fb_supervisor.start_background_loop(std::time::Duration::from_secs(20));
             });
 
             let fb_db_path = db_path_str.to_string();
@@ -332,6 +348,7 @@ pub fn run() {
             conversation::commands::pin_conversation_message,
             conversation::commands::unpin_conversation_message,
             conversation::commands::list_conversation_pinned_messages,
+            conversation::commands::sync_facebook_conversations,
             facebook::commands::schedule_facebook_post,
             facebook::commands::publish_facebook_post_now,
             facebook::commands::list_facebook_scheduled_posts,
