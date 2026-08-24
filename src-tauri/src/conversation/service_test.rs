@@ -2846,4 +2846,120 @@ mod group_member_import_events {
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
     }
+
+    #[tokio::test]
+    async fn test_process_next_messenger_outbox_job_resolves_correct_customer_psid() {
+        use crate::conversation::facebook::client::FacebookGraphClient;
+        use crate::conversation::facebook::client::SendFacebookMessageResponse;
+
+        struct MockGraphClient {
+            sent_recipient: std::sync::Mutex<Option<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl FacebookGraphClient for MockGraphClient {
+            async fn fetch_page_conversations(
+                &self,
+                _page_id: &str,
+                _page_token: &str,
+                _limit: usize,
+                _after: Option<&str>,
+            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookConversationsPage> {
+                unimplemented!()
+            }
+
+            async fn fetch_thread_messages(
+                &self,
+                _thread_id: &str,
+                _page_token: &str,
+                _limit: usize,
+                _after: Option<&str>,
+            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookMessagesPage> {
+                unimplemented!()
+            }
+
+            async fn send_messenger_message(
+                &self,
+                _page_id: &str,
+                _page_token: &str,
+                recipient_psid: &str,
+                _text: &str,
+                _message_tag: Option<&str>,
+            ) -> anyhow::Result<SendFacebookMessageResponse> {
+                *self.sent_recipient.lock().unwrap() = Some(recipient_psid.to_string());
+                Ok(SendFacebookMessageResponse {
+                    recipient_id: recipient_psid.to_string(),
+                    message_id: "m_test_123".to_string(),
+                })
+            }
+        }
+
+        let harness = ServiceHarness::new();
+        let conn = rusqlite::Connection::open(harness.repository.db_path()).unwrap();
+
+        // 1. Create channel account for Page
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, enabled, created_at, updated_at)
+             VALUES (999, 'messenger', 'PAGE_123', 'My Page', 'connected', 1, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 2. Create customer identity (PSID) and page identity
+        conn.execute(
+            "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES (101, 'messenger', 999, 'psid', 'CUSTOMER_PSID_777', 'Customer Name', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES (102, 'messenger', 999, 'psid', 'PAGE_123', 'My Page', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // 3. Create conversation and link participants
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (500, 999, 't_1383466303165641', 'direct', 'Customer', 'active', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+             VALUES (500, 102, 'member', '2026-08-24 10:00:00')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+             VALUES (500, 101, 'member', '2026-08-24 10:01:00')",
+            [],
+        ).unwrap();
+
+        // 4. Create an outbound message and outbox job
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (888, 500, 'outbound', 'client_msg_1', 'text', 'Hello customer', '{}', 'queued', datetime('now'))",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_888', 999, 888, 'pending', 0, datetime('now'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let mock_client = MockGraphClient {
+            sent_recipient: std::sync::Mutex::new(None),
+        };
+
+        let dispatched = harness
+            .service
+            .process_next_messenger_outbox_job(999, &mock_client, "PAGE_123", "TOKEN_XYZ")
+            .await
+            .unwrap();
+
+        assert!(dispatched);
+        let sent_psid = mock_client.sent_recipient.lock().unwrap().clone();
+        assert_eq!(sent_psid, Some("CUSTOMER_PSID_777".to_string()));
+    }
 }
+

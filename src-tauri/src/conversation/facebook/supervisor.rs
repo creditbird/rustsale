@@ -23,6 +23,7 @@ pub struct FacebookMessengerSupervisor {
     events: Arc<ConversationEventPublisher>,
     client: Arc<dyn FacebookGraphClient>,
     cancellation_token: CancellationToken,
+    service: std::sync::RwLock<Option<Arc<crate::conversation::service::ConversationService>>>,
 }
 
 impl FacebookMessengerSupervisor {
@@ -36,6 +37,13 @@ impl FacebookMessengerSupervisor {
             events,
             client,
             cancellation_token: CancellationToken::new(),
+            service: std::sync::RwLock::new(None),
+        }
+    }
+
+    pub fn with_service(&self, service: Arc<crate::conversation::service::ConversationService>) {
+        if let Ok(mut guard) = self.service.write() {
+            *guard = Some(service);
         }
     }
 
@@ -90,6 +98,20 @@ impl FacebookMessengerSupervisor {
             }
         };
 
+        // Drain pending outbox jobs for this Messenger account
+        let maybe_service = self.service.read().ok().and_then(|g| g.as_ref().cloned());
+        if let Some(service) = maybe_service {
+            while let Ok(true) = service
+                .process_next_messenger_outbox_job(
+                    account.id,
+                    self.client.as_ref(),
+                    &account.page_id,
+                    &page_token,
+                )
+                .await
+            {}
+        }
+
         let mut all_new_messages = 0;
         let mut total_conversations = 0;
         let mut after_cursor: Option<String> = None;
@@ -99,11 +121,33 @@ impl FacebookMessengerSupervisor {
 
         loop {
             page_count += 1;
-            let conversations_page = self
+            let conversations_page = match self
                 .client
                 .fetch_page_conversations(&account.page_id, &page_token, 50, after_cursor.as_deref())
                 .await
-                .map_err(|e| anyhow!("Failed fetching conversations for page {}: {}", account.page_id, e))?;
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    let err_msg = format!("Failed fetching conversations for page {}: {}", account.page_id, e);
+                    warn!(target: "facebook_sync", "{}", err_msg);
+                    let is_token_error = err_msg.contains("OAuthException")
+                        || err_msg.contains("expired")
+                        || err_msg.contains("Error validating access token")
+                        || err_msg.contains("code 190")
+                        || err_msg.contains("status 401");
+                    let _ = conn.execute(
+                        "UPDATE channel_accounts SET last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+                        rusqlite::params![err_msg, account.id],
+                    );
+                    if is_token_error {
+                        let _ = conn.execute(
+                            "UPDATE facebook_page_tokens SET token_status = 'expired', updated_at = datetime('now') WHERE channel_account_id = ?1",
+                            rusqlite::params![account.id],
+                        );
+                    }
+                    return Err(anyhow!(err_msg));
+                }
+            };
 
             let has_threads = !conversations_page.data.is_empty();
             if has_threads {
@@ -211,9 +255,9 @@ impl FacebookMessengerSupervisor {
         self.sync_account_internal(&account).await
     }
 
-    pub fn start_background_loop(self: Arc<Self>, poll_interval: Duration) -> tokio::task::JoinHandle<()> {
+    pub fn start_background_loop(self: Arc<Self>, poll_interval: Duration) -> tauri::async_runtime::JoinHandle<()> {
         let cancel = self.cancellation_token.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             info!(target: "facebook_sync", "Facebook Messenger sync supervisor background loop started");
             loop {
                 tokio::select! {

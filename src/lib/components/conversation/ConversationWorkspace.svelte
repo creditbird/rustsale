@@ -27,6 +27,7 @@
     type ConversationReactionGroup,
     type PinnedMessage
   } from '$lib/services/conversationService';
+  import { startMetaRealtimeListener } from '$lib/services/metaRealtimeService';
   import {
     TimelineCache,
     channelSetKey,
@@ -482,13 +483,27 @@
   });
 
   $effect(() => {
-    if (activeTab !== 'conversation' || runtimeRefreshIntervalMs <= 0) return;
+    if (activeTab !== 'conversation') return;
+
+    const stopRealtime = startMetaRealtimeListener();
+
+    const onWindowFocus = () => {
+      void syncFacebookConversations().catch(() => {});
+    };
+    window.addEventListener('focus', onWindowFocus);
 
     const interval = setInterval(() => {
-      void refreshRuntimeStatus(true);
-    }, runtimeRefreshIntervalMs);
+      if (runtimeRefreshIntervalMs > 0) {
+        void refreshRuntimeStatus(true);
+      }
+      void syncFacebookConversations().catch(() => {});
+    }, Math.max(4000, runtimeRefreshIntervalMs));
 
-    return () => clearInterval(interval);
+    return () => {
+      stopRealtime();
+      window.removeEventListener('focus', onWindowFocus);
+      clearInterval(interval);
+    };
   });
 
   let newChatOpen = $state(false);
@@ -892,6 +907,12 @@
   }
 
   function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
+    if (event.conversationId === 0) {
+      if (event.channel) {
+        return item.replyTargets.some((target) => target.channel === event.channel);
+      }
+      return true;
+    }
     if (item.kind === 'customer') {
       return (
         (item.leadId !== null && event.leadId === item.leadId) ||

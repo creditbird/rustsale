@@ -324,3 +324,85 @@ async fn test_supervisor_background_loop_cancellation() {
     let res = tokio::time::timeout(std::time::Duration::from_secs(1), handle).await;
     assert!(res.is_ok());
 }
+
+struct FailingMockFacebookGraphClient {
+    error_message: String,
+}
+
+#[async_trait]
+impl FacebookGraphClient for FailingMockFacebookGraphClient {
+    async fn fetch_page_conversations(
+        &self,
+        _page_id: &str,
+        _page_token: &str,
+        _limit: usize,
+        _after: Option<&str>,
+    ) -> anyhow::Result<FacebookConversationsPage> {
+        Err(anyhow::anyhow!("{}", self.error_message))
+    }
+
+    async fn fetch_thread_messages(
+        &self,
+        _thread_id: &str,
+        _page_token: &str,
+        _limit: usize,
+        _after: Option<&str>,
+    ) -> anyhow::Result<FacebookMessagesPage> {
+        Err(anyhow::anyhow!("{}", self.error_message))
+    }
+
+    async fn send_messenger_message(
+        &self,
+        _page_id: &str,
+        _page_token: &str,
+        _recipient_psid: &str,
+        _text: &str,
+        _message_tag: Option<&str>,
+    ) -> anyhow::Result<SendFacebookMessageResponse> {
+        Err(anyhow::anyhow!("{}", self.error_message))
+    }
+}
+
+#[tokio::test]
+async fn test_supervisor_sync_records_token_expired_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("test_fb_sup_err.db").to_str().unwrap().to_string();
+    create_supervisor_test_db(&db_path);
+
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (1, 'messenger', 'page_sup_err_123', 'Error Fanpage', 'connected', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    crate::facebook::vault::FacebookTokenVault::encrypt_and_upsert_page_token(
+        &conn,
+        1,
+        "page_sup_err_123",
+        "mock_valid_token_value",
+        &["pages_messaging".to_string()],
+    ).unwrap();
+
+    let events = Arc::new(ConversationEventPublisher::new(64));
+    let client = Arc::new(FailingMockFacebookGraphClient {
+        error_message: "Meta Graph API error (code 190): OAuthException Error validating access token: Session has expired".to_string(),
+    });
+
+    let supervisor = FacebookMessengerSupervisor::new(db_path.clone(), events, client);
+    let sync_res = supervisor.sync_all().await;
+    assert!(sync_res.is_ok()); // sync_all logs errors per account and returns total new
+
+    let conn_verify = Connection::open(&db_path).unwrap();
+    let last_error: Option<String> = conn_verify
+        .query_row("SELECT last_error FROM channel_accounts WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert!(last_error.is_some());
+    assert!(last_error.unwrap().contains("OAuthException"));
+
+    let token_status: String = conn_verify
+        .query_row("SELECT token_status FROM facebook_page_tokens WHERE channel_account_id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(token_status, "expired");
+}
+
