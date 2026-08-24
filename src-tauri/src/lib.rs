@@ -184,6 +184,7 @@ pub fn run() {
             conversation_events.spawn_tauri_forwarder(app.handle().clone());
             let startup_service = conversation_service.clone();
             let startup_fb_supervisor = facebook_supervisor.clone();
+            facebook_supervisor.with_service(conversation_service.clone());
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = startup_service.recover_outbox_startup() {
                     tracing::error!(target: "conversation", %error, "outbox recovery failed");
@@ -194,7 +195,7 @@ pub fn run() {
                 if let Err(error) = startup_fb_supervisor.sync_all().await {
                     tracing::error!(target: "conversation", %error, "Facebook Messenger initial sync failed");
                 }
-                startup_fb_supervisor.start_background_loop(std::time::Duration::from_secs(20));
+                let _ = startup_fb_supervisor.start_background_loop(std::time::Duration::from_secs(5));
             });
 
             let fb_db_path = db_path_str.to_string();

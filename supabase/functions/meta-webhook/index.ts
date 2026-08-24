@@ -264,6 +264,22 @@ serve(async (req: Request) => {
             return new Response("Internal Server Error: Database ingestion failed", { status: 500 });
           }
         }
+
+        // Broadcast realtime notification to connected clients for instant UI update
+        try {
+          const broadcastChannel = supabaseAdmin.channel("meta-realtime-channel");
+          await broadcastChannel.send({
+            type: "broadcast",
+            event: "meta_message",
+            payload: {
+              page_id: pageId,
+              event_count: events.length,
+              timestamp: new Date().toISOString(),
+            },
+          });
+        } catch (bErr) {
+          console.warn("[meta-webhook] Failed to broadcast realtime event:", bErr);
+        }
       }
     }
 

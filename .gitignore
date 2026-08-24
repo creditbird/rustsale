@@ -17,3 +17,6 @@ src-tauri/vendor/zca-rs/target/
 .gstack/
 scratch/
 /src/lib/paraglide/
+supabase/.temp/
+.agents/skills/opencode-review/
+

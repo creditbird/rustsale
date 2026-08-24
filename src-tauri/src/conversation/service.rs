@@ -1239,7 +1239,33 @@ impl ConversationService {
             None => return Ok(false),
         };
 
-        let recipient_psid = job.external_thread_id.clone();
+        let recipient_psid = {
+            let conn_res = rusqlite::Connection::open(self.repository.db_path());
+            let psid_opt = conn_res.ok().and_then(|conn| {
+                conn.query_row(
+                    "SELECT ci.external_id
+                     FROM conversation_participants cp
+                     JOIN channel_identities ci ON ci.id = cp.identity_id
+                     WHERE cp.conversation_id = ?1 AND ci.channel = 'messenger' AND ci.external_id != ?2
+                     ORDER BY cp.joined_at ASC
+                     LIMIT 1",
+                    rusqlite::params![job.conversation_id, page_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            });
+
+            match psid_opt {
+                Some(p) if !p.trim().is_empty() => p,
+                _ => {
+                    if job.external_thread_id.starts_with("t_") {
+                        job.external_thread_id[2..].to_string()
+                    } else {
+                        job.external_thread_id.clone()
+                    }
+                }
+            }
+        };
 
         let message_tag = job
             .content_json
