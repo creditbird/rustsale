@@ -265,3 +265,55 @@ fn test_ingest_conversations_batch_success() {
     let msg_count_after: i64 = conn.query_row("SELECT count(*) FROM messages", [], |r| r.get(0)).unwrap();
     assert_eq!(msg_count_after, 2);
 }
+
+#[test]
+fn test_unresolved_participant_skipped_without_corrupting_identity() {
+    let mut conn = create_test_db();
+
+    // Thread has only the page itself as participant (e.g. self-chat or malformed thread)
+    let thread_no_customer = FacebookConversationThread {
+        id: "t_corrupt".to_string(),
+        updated_time: "2026-08-24T02:00:00+0000".to_string(),
+        participants: Some(FacebookParticipantsContainer {
+            data: vec![FacebookParticipantNode {
+                id: "page_123".to_string(),
+                name: Some("My Fanpage".to_string()),
+                email: None,
+            }],
+        }),
+        messages: Some(FacebookMessagesContainer {
+            data: vec![FacebookMessageNode {
+                id: "m_corrupt_1".to_string(),
+                created_time: "2026-08-24T02:00:00+0000".to_string(),
+                from: Some(FacebookParticipantNode {
+                    id: "page_123".to_string(),
+                    name: Some("My Fanpage".to_string()),
+                    email: None,
+                }),
+                to: None,
+                message: Some("Only page in thread".to_string()),
+                attachments: None,
+            }],
+            paging: None,
+        }),
+    };
+
+    let summary = FacebookMessengerNormalizer::ingest_conversations_batch(
+        &mut conn,
+        1,
+        "page_123",
+        &[thread_no_customer],
+    )
+    .unwrap();
+
+    // Should skip cleanly
+    assert_eq!(summary.conversations_synced, 0);
+    assert_eq!(summary.messages_inserted, 0);
+    assert_eq!(summary.new_messages_count, 0);
+
+    // Ensure NO synthetic identity or conversation was created
+    let id_count: i64 = conn.query_row("SELECT count(*) FROM channel_identities", [], |r| r.get(0)).unwrap();
+    assert_eq!(id_count, 0);
+    let conv_count: i64 = conn.query_row("SELECT count(*) FROM channel_conversations", [], |r| r.get(0)).unwrap();
+    assert_eq!(conv_count, 0);
+}

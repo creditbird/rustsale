@@ -10,6 +10,7 @@ pub struct IngestSummary {
     pub conversations_synced: usize,
     pub messages_inserted: usize,
     pub new_messages_count: usize,
+    pub affected_conversation_ids: Vec<i64>,
 }
 
 pub struct FacebookMessengerNormalizer;
@@ -78,13 +79,14 @@ impl FacebookMessengerNormalizer {
 
             let customer = Self::find_customer_participant(participants, page_id);
             let customer_psid = match customer {
-                Some(c) => c.id.clone(),
-                None => {
-                    // Fallback to thread ID suffix or first non-empty ID
-                    participants
-                        .first()
-                        .map(|p| p.id.clone())
-                        .unwrap_or_else(|| thread.id.clone())
+                Some(c) if !c.id.trim().is_empty() => c.id.trim().to_string(),
+                _ => {
+                    tracing::warn!(
+                        "Skipping Facebook thread {} for page {}: unable to resolve customer PSID",
+                        thread.id,
+                        page_id
+                    );
+                    continue;
                 }
             };
             let customer_name = customer
@@ -103,7 +105,7 @@ impl FacebookMessengerNormalizer {
             )?;
 
             let identity_id: i64 = tx.query_row(
-                "SELECT id FROM channel_identities
+                "SELECT id FROM channel_identities 
                  WHERE channel = 'messenger' AND channel_account_id = ?1 AND identity_namespace = 'psid' AND external_id = ?2",
                 params![channel_account_id, customer_psid],
                 |row| row.get(0),
@@ -133,6 +135,10 @@ impl FacebookMessengerNormalizer {
                 params![channel_account_id, thread.id],
                 |row| row.get(0),
             )?;
+
+            if !summary.affected_conversation_ids.contains(&conversation_id) {
+                summary.affected_conversation_ids.push(conversation_id);
+            }
 
             // 3. Ensure conversation_participants
             tx.execute(

@@ -18,11 +18,27 @@ impl FacebookGraphClient for MockFacebookGraphClient {
         _page_id: &str,
         _page_token: &str,
         _limit: usize,
+        after: Option<&str>,
     ) -> anyhow::Result<FacebookConversationsPage> {
-        Ok(FacebookConversationsPage {
-            data: self.conversations.clone(),
-            paging: None,
-        })
+        if after.is_some() {
+            // Return empty for second page
+            Ok(FacebookConversationsPage {
+                data: vec![],
+                paging: None,
+            })
+        } else {
+            Ok(FacebookConversationsPage {
+                data: self.conversations.clone(),
+                paging: Some(FacebookPaging {
+                    cursors: Some(FacebookCursors {
+                        before: None,
+                        after: Some("next_cursor_page_2".to_string()),
+                    }),
+                    next: None,
+                    previous: None,
+                }),
+            })
+        }
     }
 
     async fn fetch_thread_messages(
@@ -30,8 +46,12 @@ impl FacebookGraphClient for MockFacebookGraphClient {
         _thread_id: &str,
         _page_token: &str,
         _limit: usize,
-    ) -> anyhow::Result<Vec<FacebookMessageNode>> {
-        Ok(vec![])
+        _after: Option<&str>,
+    ) -> anyhow::Result<FacebookMessagesPage> {
+        Ok(FacebookMessagesPage {
+            data: vec![],
+            paging: None,
+        })
     }
 
     async fn send_messenger_message(
@@ -281,4 +301,26 @@ async fn test_supervisor_sync_all_with_connected_page() {
 
     let title: String = conn_verify.query_row("SELECT title FROM channel_conversations WHERE external_thread_id = 't_sup_100'", [], |r| r.get(0)).unwrap();
     assert_eq!(title, "Customer Seven");
+}
+
+#[tokio::test]
+async fn test_supervisor_background_loop_cancellation() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("test_fb_sup_cancel.db").to_str().unwrap().to_string();
+    create_supervisor_test_db(&db_path);
+
+    let events = Arc::new(ConversationEventPublisher::new(64));
+    let client = Arc::new(MockFacebookGraphClient {
+        conversations: vec![],
+    });
+
+    let supervisor = Arc::new(FacebookMessengerSupervisor::new(db_path, events, client));
+    let handle = supervisor.clone().start_background_loop(std::time::Duration::from_millis(50));
+
+    // Cancel loop
+    supervisor.stop();
+
+    // The handle should resolve promptly
+    let res = tokio::time::timeout(std::time::Duration::from_secs(1), handle).await;
+    assert!(res.is_ok());
 }

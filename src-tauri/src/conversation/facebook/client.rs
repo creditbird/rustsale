@@ -114,6 +114,7 @@ pub trait FacebookGraphClient: Send + Sync {
         page_id: &str,
         page_token: &str,
         limit: usize,
+        after: Option<&str>,
     ) -> Result<FacebookConversationsPage>;
 
     async fn fetch_thread_messages(
@@ -121,7 +122,8 @@ pub trait FacebookGraphClient: Send + Sync {
         thread_id: &str,
         page_token: &str,
         limit: usize,
-    ) -> Result<Vec<FacebookMessageNode>>;
+        after: Option<&str>,
+    ) -> Result<FacebookMessagesPage>;
 
     async fn send_messenger_message(
         &self,
@@ -160,18 +162,24 @@ impl FacebookGraphClient for RealFacebookGraphClient {
         page_id: &str,
         page_token: &str,
         limit: usize,
+        after: Option<&str>,
     ) -> Result<FacebookConversationsPage> {
         let limit_clamped = limit.clamp(1, 100);
-        let url = format!(
-            "https://graph.facebook.com/v26.0/{}/conversations?fields=id,updated_time,participants,messages{{id,created_time,from,to,message,attachments}}&limit={}&access_token={}",
+        let mut url = format!(
+            "https://graph.facebook.com/v26.0/{}/conversations?fields=id,updated_time,participants,messages{{id,created_time,from,to,message,attachments}}&limit={}",
             urlencoding::encode(page_id),
-            limit_clamped,
-            urlencoding::encode(page_token)
+            limit_clamped
         );
+        if let Some(cursor) = after {
+            if !cursor.trim().is_empty() {
+                url.push_str(&format!("&after={}", urlencoding::encode(cursor.trim())));
+            }
+        }
 
         let resp = self
             .client
             .get(&url)
+            .header("Authorization", format!("Bearer {}", page_token))
             .send()
             .await
             .map_err(|e| anyhow!("Network error fetching conversations for page {}: {}", page_id, e))?;
@@ -199,18 +207,24 @@ impl FacebookGraphClient for RealFacebookGraphClient {
         thread_id: &str,
         page_token: &str,
         limit: usize,
-    ) -> Result<Vec<FacebookMessageNode>> {
+        after: Option<&str>,
+    ) -> Result<FacebookMessagesPage> {
         let limit_clamped = limit.clamp(1, 100);
-        let url = format!(
-            "https://graph.facebook.com/v26.0/{}/messages?fields=id,created_time,from,to,message,attachments&limit={}&access_token={}",
+        let mut url = format!(
+            "https://graph.facebook.com/v26.0/{}/messages?fields=id,created_time,from,to,message,attachments&limit={}",
             urlencoding::encode(thread_id),
-            limit_clamped,
-            urlencoding::encode(page_token)
+            limit_clamped
         );
+        if let Some(cursor) = after {
+            if !cursor.trim().is_empty() {
+                url.push_str(&format!("&after={}", urlencoding::encode(cursor.trim())));
+            }
+        }
 
         let resp = self
             .client
             .get(&url)
+            .header("Authorization", format!("Bearer {}", page_token))
             .send()
             .await
             .map_err(|e| anyhow!("Network error fetching thread {}: {}", thread_id, e))?;
@@ -230,7 +244,7 @@ impl FacebookGraphClient for RealFacebookGraphClient {
             .await
             .map_err(|e| anyhow!("Failed to parse thread messages response JSON: {}", e))?;
 
-        Ok(page.data)
+        Ok(page)
     }
 
     async fn send_messenger_message(

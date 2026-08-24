@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use anyhow::{anyhow, Result};
 use rusqlite::Connection;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use super::client::FacebookGraphClient;
@@ -21,6 +22,7 @@ pub struct FacebookMessengerSupervisor {
     db_path: String,
     events: Arc<ConversationEventPublisher>,
     client: Arc<dyn FacebookGraphClient>,
+    cancellation_token: CancellationToken,
 }
 
 impl FacebookMessengerSupervisor {
@@ -33,7 +35,16 @@ impl FacebookMessengerSupervisor {
             db_path,
             events,
             client,
+            cancellation_token: CancellationToken::new(),
         }
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
+    }
+
+    pub fn stop(&self) {
+        self.cancellation_token.cancel();
     }
 
     pub fn get_connected_accounts(&self, conn: &Connection) -> Result<Vec<ConnectedMessengerAccount>> {
@@ -79,18 +90,51 @@ impl FacebookMessengerSupervisor {
             }
         };
 
-        let conversations_page = self
-            .client
-            .fetch_page_conversations(&account.page_id, &page_token, 50)
-            .await
-            .map_err(|e| anyhow!("Failed fetching conversations from Meta for page {}: {}", account.page_id, e))?;
+        let mut all_new_messages = 0;
+        let mut total_conversations = 0;
+        let mut after_cursor: Option<String> = None;
+        let max_pages = 25;
+        let mut page_count = 0;
+        let mut all_affected_conversations: Vec<i64> = Vec::new();
 
-        let summary = FacebookMessengerNormalizer::ingest_conversations_batch(
-            &mut conn,
-            account.id,
-            &account.page_id,
-            &conversations_page.data,
-        )?;
+        loop {
+            page_count += 1;
+            let conversations_page = self
+                .client
+                .fetch_page_conversations(&account.page_id, &page_token, 50, after_cursor.as_deref())
+                .await
+                .map_err(|e| anyhow!("Failed fetching conversations for page {}: {}", account.page_id, e))?;
+
+            let has_threads = !conversations_page.data.is_empty();
+            if has_threads {
+                let summary = FacebookMessengerNormalizer::ingest_conversations_batch(
+                    &mut conn,
+                    account.id,
+                    &account.page_id,
+                    &conversations_page.data,
+                )?;
+                all_new_messages += summary.new_messages_count;
+                total_conversations += summary.conversations_synced;
+                for cid in summary.affected_conversation_ids {
+                    if !all_affected_conversations.contains(&cid) {
+                        all_affected_conversations.push(cid);
+                    }
+                }
+            }
+
+            let next_cursor = conversations_page
+                .paging
+                .and_then(|p| p.cursors)
+                .and_then(|c| c.after)
+                .filter(|s| !s.trim().is_empty());
+
+            match next_cursor {
+                Some(cursor) if has_threads && page_count < max_pages => {
+                    after_cursor = Some(cursor);
+                }
+                _ => break,
+            }
+        }
 
         // Clear error and mark last_connected_at
         let _ = conn.execute(
@@ -98,17 +142,29 @@ impl FacebookMessengerSupervisor {
             rusqlite::params![account.id],
         );
 
-        if summary.new_messages_count > 0 || summary.conversations_synced > 0 {
-            self.events.publish(ConversationInvalidatedEvent {
-                conversation_id: 0,
-                lead_id: None,
-                channel: Channel::Messenger,
-                reason: ConversationInvalidationReason::Message,
-                message_id: None,
-            });
+        if all_new_messages > 0 || total_conversations > 0 {
+            if all_affected_conversations.is_empty() {
+                self.events.publish(ConversationInvalidatedEvent {
+                    conversation_id: 0,
+                    lead_id: None,
+                    channel: Channel::Messenger,
+                    reason: ConversationInvalidationReason::Message,
+                    message_id: None,
+                });
+            } else {
+                for cid in &all_affected_conversations {
+                    self.events.publish(ConversationInvalidatedEvent {
+                        conversation_id: *cid,
+                        lead_id: None,
+                        channel: Channel::Messenger,
+                        reason: ConversationInvalidationReason::Message,
+                        message_id: None,
+                    });
+                }
+            }
         }
 
-        Ok(summary.new_messages_count)
+        Ok(all_new_messages)
     }
 
     pub async fn sync_all(&self) -> Result<usize> {
@@ -156,14 +212,23 @@ impl FacebookMessengerSupervisor {
     }
 
     pub fn start_background_loop(self: Arc<Self>, poll_interval: Duration) -> tokio::task::JoinHandle<()> {
+        let cancel = self.cancellation_token.clone();
         tokio::spawn(async move {
             info!(target: "facebook_sync", "Facebook Messenger sync supervisor background loop started");
             loop {
-                if let Err(e) = self.sync_all().await {
-                    warn!(target: "facebook_sync", error = %e, "Messenger background sync cycle failed");
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        info!(target: "facebook_sync", "Facebook Messenger supervisor background loop received shutdown signal");
+                        break;
+                    }
+                    _ = tokio::time::sleep(poll_interval) => {
+                        if let Err(e) = self.sync_all().await {
+                            warn!(target: "facebook_sync", error = %e, "Messenger background sync cycle failed");
+                        }
+                    }
                 }
-                tokio::time::sleep(poll_interval).await;
             }
         })
     }
 }
+
