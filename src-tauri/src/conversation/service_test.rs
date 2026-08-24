@@ -2854,6 +2854,7 @@ mod group_member_import_events {
 
         struct MockGraphClient {
             sent_recipient: std::sync::Mutex<Option<String>>,
+            sent_message_tag: std::sync::Mutex<Option<Option<String>>>,
         }
 
         #[async_trait::async_trait]
@@ -2884,12 +2885,13 @@ mod group_member_import_events {
                 _page_token: &str,
                 recipient_psid: &str,
                 _text: &str,
-                _message_tag: Option<&str>,
+                message_tag: Option<&str>,
             ) -> anyhow::Result<SendFacebookMessageResponse> {
                 *self.sent_recipient.lock().unwrap() = Some(recipient_psid.to_string());
+                *self.sent_message_tag.lock().unwrap() = Some(message_tag.map(|s| s.to_string()));
                 Ok(SendFacebookMessageResponse {
                     recipient_id: recipient_psid.to_string(),
-                    message_id: "m_test_123".to_string(),
+                    message_id: format!("m_test_{}", rand::random::<u64>()),
                 })
             }
         }
@@ -2934,7 +2936,7 @@ mod group_member_import_events {
             [],
         ).unwrap();
 
-        // 4. Create an outbound message and outbox job
+        // 4. Create an outbound message (no tag) and outbox job
         conn.execute(
             "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
              VALUES (888, 500, 'outbound', 'client_msg_1', 'text', 'Hello customer', '{}', 'queued', datetime('now'))",
@@ -2949,6 +2951,7 @@ mod group_member_import_events {
 
         let mock_client = MockGraphClient {
             sent_recipient: std::sync::Mutex::new(None),
+            sent_message_tag: std::sync::Mutex::new(None),
         };
 
         let dispatched = harness
@@ -2960,6 +2963,35 @@ mod group_member_import_events {
         assert!(dispatched);
         let sent_psid = mock_client.sent_recipient.lock().unwrap().clone();
         assert_eq!(sent_psid, Some("CUSTOMER_PSID_777".to_string()));
+        let sent_tag = mock_client.sent_message_tag.lock().unwrap().clone();
+        assert_eq!(sent_tag, Some(None), "Standard message within 24h must NOT send any message tag");
+
+        // 5. Test message with HUMAN_AGENT tag
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (889, 500, 'outbound', 'client_msg_2', 'text', 'Hello after 24h', '{\"messageTag\":\"HUMAN_AGENT\"}', 'queued', datetime('now'))",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_889', 999, 889, 'pending', 0, datetime('now'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let mock_client_tag = MockGraphClient {
+            sent_recipient: std::sync::Mutex::new(None),
+            sent_message_tag: std::sync::Mutex::new(None),
+        };
+
+        let dispatched_tag = harness
+            .service
+            .process_next_messenger_outbox_job(999, &mock_client_tag, "PAGE_123", "TOKEN_XYZ")
+            .await
+            .unwrap();
+
+        assert!(dispatched_tag);
+        let sent_tag_2 = mock_client_tag.sent_message_tag.lock().unwrap().clone();
+        assert_eq!(sent_tag_2, Some(Some("HUMAN_AGENT".to_string())), "Explicit HUMAN_AGENT tag message must pass HUMAN_AGENT tag");
     }
 }
-

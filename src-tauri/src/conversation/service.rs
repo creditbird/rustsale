@@ -1271,7 +1271,8 @@ impl ConversationService {
             .content_json
             .get("messageTag")
             .and_then(|v| v.as_str())
-            .or(Some("HUMAN_AGENT"));
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
 
         let text = job.text_content.as_deref().unwrap_or("");
 

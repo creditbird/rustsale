@@ -3183,6 +3183,91 @@ fn enqueue_batch_group_with_null_display_name_participant_succeeds() {
 }
 
 #[test]
+fn enqueue_batch_saves_message_tag_in_content_json_only_when_provided() {
+    use crate::conversation::types::{
+        ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest,
+    };
+
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at) VALUES (1, 'messenger', 'page-1', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, created_at, updated_at) VALUES (1, 1, 'psid-1', 'direct', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    // 1. Without message_tag
+    let req_no_tag = SendConversationBatchRequest {
+        conversation_id: 1,
+        client_batch_id: "batch-no-tag".to_string(),
+        reply_to_message_id: None,
+        parts: vec![ConversationSendPartRequest {
+            client_part_id: "p1".to_string(),
+            content: ConversationSendPartContent::Text {
+                text: "No tag message".to_string(),
+                mentions: Vec::new(),
+            },
+        }],
+        message_tag: None,
+    };
+
+    let res_no_tag = harness
+        .repository
+        .enqueue_outbound_batch(&req_no_tag, "2026-08-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(res_no_tag.messages.len(), 1);
+
+    let conn_check = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let json_no_tag_str: String = conn_check
+        .query_row(
+            "SELECT content_json FROM messages WHERE id = ?1",
+            [res_no_tag.messages[0].id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let json_no_tag: serde_json::Value = serde_json::from_str(&json_no_tag_str).unwrap();
+    assert_eq!(json_no_tag.get("messageTag"), None);
+
+    // 2. With message_tag: Some("HUMAN_AGENT")
+    let req_with_tag = SendConversationBatchRequest {
+        conversation_id: 1,
+        client_batch_id: "batch-with-tag".to_string(),
+        reply_to_message_id: None,
+        parts: vec![ConversationSendPartRequest {
+            client_part_id: "p2".to_string(),
+            content: ConversationSendPartContent::Text {
+                text: "Human agent tag message".to_string(),
+                mentions: Vec::new(),
+            },
+        }],
+        message_tag: Some("HUMAN_AGENT".to_string()),
+    };
+
+    let res_with_tag = harness
+        .repository
+        .enqueue_outbound_batch(&req_with_tag, "2026-08-01T00:00:01Z")
+        .unwrap();
+    assert_eq!(res_with_tag.messages.len(), 1);
+
+    let json_with_tag_str: String = conn_check
+        .query_row(
+            "SELECT content_json FROM messages WHERE id = ?1",
+            [res_with_tag.messages[0].id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let json_with_tag: serde_json::Value = serde_json::from_str(&json_with_tag_str).unwrap();
+    assert_eq!(
+        json_with_tag.get("messageTag").and_then(|v| v.as_str()),
+        Some("HUMAN_AGENT")
+    );
+}
+
+#[test]
 fn mention_incoming_mentions_upsert_without_duplicates() {
     let harness = Harness::new();
     let mut msg = direct_message("imei-a", "msg-mention-1");
