@@ -3,7 +3,10 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use super::client::{FacebookAttachmentNode, FacebookConversationThread, FacebookParticipantNode};
+use super::client::{
+    FacebookAttachmentNode, FacebookConversationThread, FacebookMessageNode,
+    FacebookParticipantNode,
+};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct IngestSummary {
@@ -37,6 +40,27 @@ impl FacebookMessengerNormalizer {
         participants
             .iter()
             .find(|p| p.id != page_id && !p.id.trim().is_empty())
+    }
+
+    pub fn find_customer_from_messages(
+        messages: &[FacebookMessageNode],
+        page_id: &str,
+    ) -> Option<(String, Option<String>)> {
+        for msg in messages {
+            if let Some(ref from) = msg.from {
+                if from.id != page_id && !from.id.trim().is_empty() {
+                    return Some((from.id.trim().to_string(), from.name.clone()));
+                }
+            }
+            if let Some(ref to) = msg.to {
+                for recipient in &to.data {
+                    if recipient.id != page_id && !recipient.id.trim().is_empty() {
+                        return Some((recipient.id.trim().to_string(), recipient.name.clone()));
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn detect_attachment_type(att: &FacebookAttachmentNode) -> &'static str {
@@ -77,21 +101,36 @@ impl FacebookMessengerNormalizer {
                 .map(|p| p.data.as_slice())
                 .unwrap_or(&[]);
 
+            let messages_slice = thread
+                .messages
+                .as_ref()
+                .map(|m| m.data.as_slice())
+                .unwrap_or(&[]);
+
             let customer = Self::find_customer_participant(participants, page_id);
-            let customer_psid = match customer {
-                Some(c) if !c.id.trim().is_empty() => c.id.trim().to_string(),
-                _ => {
-                    tracing::warn!(
-                        "Skipping Facebook thread {} for page {}: unable to resolve customer PSID",
-                        thread.id,
-                        page_id
-                    );
-                    continue;
+            let (customer_psid, customer_name) = match customer {
+                Some(c) if !c.id.trim().is_empty() => {
+                    let name = c
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("Facebook User {}", c.id.trim()));
+                    (c.id.trim().to_string(), name)
                 }
+                _ => match Self::find_customer_from_messages(messages_slice, page_id) {
+                    Some((psid, name_opt)) => {
+                        let name = name_opt.unwrap_or_else(|| format!("Facebook User {}", psid));
+                        (psid, name)
+                    }
+                    None => {
+                        tracing::warn!(
+                            "Skipping Facebook thread {} for page {}: unable to resolve customer PSID",
+                            thread.id,
+                            page_id
+                        );
+                        continue;
+                    }
+                },
             };
-            let customer_name = customer
-                .and_then(|c| c.name.clone())
-                .unwrap_or_else(|| format!("Facebook User {}", customer_psid));
 
             // 1. Upsert channel_identities
             tx.execute(

@@ -317,3 +317,68 @@ fn test_unresolved_participant_skipped_without_corrupting_identity() {
     let conv_count: i64 = conn.query_row("SELECT count(*) FROM channel_conversations", [], |r| r.get(0)).unwrap();
     assert_eq!(conv_count, 0);
 }
+
+#[test]
+fn test_fallback_customer_resolved_from_messages_when_participants_empty() {
+    let mut conn = create_test_db();
+
+    // Thread has NO participants, but messages contain customer PSID & name
+    let thread = FacebookConversationThread {
+        id: "t_fallback".to_string(),
+        updated_time: "2026-08-24T02:00:00+0000".to_string(),
+        participants: Some(FacebookParticipantsContainer {
+            data: vec![], // Empty participants list from Graph API
+        }),
+        messages: Some(FacebookMessagesContainer {
+            data: vec![
+                FacebookMessageNode {
+                    id: "m_fb_1".to_string(),
+                    created_time: "2026-08-24T02:00:00+0000".to_string(),
+                    from: Some(FacebookParticipantNode {
+                        id: "psid_customer_789".to_string(),
+                        name: Some("Khach Hang Cu".to_string()),
+                        email: None,
+                    }),
+                    to: None,
+                    message: Some("Gia san pham nay bao nhieu?".to_string()),
+                    attachments: None,
+                },
+            ],
+            paging: None,
+        }),
+    };
+
+    let summary = FacebookMessengerNormalizer::ingest_conversations_batch(
+        &mut conn,
+        1,
+        "page_123",
+        &[thread],
+    )
+    .unwrap();
+
+    assert_eq!(summary.conversations_synced, 1);
+    assert_eq!(summary.messages_inserted, 1);
+    assert_eq!(summary.new_messages_count, 1);
+
+    // Verify identity was resolved from messages
+    let (ext_id, display_name): (String, String) = conn
+        .query_row(
+            "SELECT external_id, display_name FROM channel_identities WHERE external_id = 'psid_customer_789'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(ext_id, "psid_customer_789");
+    assert_eq!(display_name, "Khach Hang Cu");
+
+    // Verify conversation was created
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM channel_conversations WHERE external_thread_id = 't_fallback'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Khach Hang Cu");
+}
+

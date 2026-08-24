@@ -179,8 +179,13 @@ serve(async (req: Request) => {
       const interactions: any[] = [];
       const leadInteractions: any[] = [];
 
-      if (entry.messaging) {
-        for (const msg of entry.messaging) {
+      const messagingEntries = [
+        ...(Array.isArray(entry.messaging) ? entry.messaging : []),
+        ...(Array.isArray(entry.standby) ? entry.standby : []),
+      ];
+
+      if (messagingEntries.length > 0) {
+        for (const msg of messagingEntries) {
           const senderId =
             typeof msg.sender?.id === "string" && msg.sender.id.length > 0 ? msg.sender.id : null;
           const timestamp = safeTimestampIso(msg.timestamp);
@@ -265,20 +270,48 @@ serve(async (req: Request) => {
           }
         }
 
-        // Broadcast realtime notification to connected clients for instant UI update
+        // Broadcast realtime notification to connected clients for instant UI update via REST API
         try {
-          const broadcastChannel = supabaseAdmin.channel("meta-realtime-channel");
-          await broadcastChannel.send({
-            type: "broadcast",
-            event: "meta_message",
-            payload: {
-              page_id: pageId,
-              event_count: events.length,
-              timestamp: new Date().toISOString(),
+          const realtimeUrl = `${SUPABASE_URL.replace(/\/$/, "")}/realtime/v1/api/broadcast`;
+          const broadcastResp = await fetch(realtimeUrl, {
+            method: "POST",
+            headers: {
+              "apikey": SUPABASE_SERVICE_ROLE_KEY,
+              "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+              "Content-Type": "application/json",
             },
+            body: JSON.stringify({
+              messages: [
+                {
+                  topic: "meta-realtime-channel",
+                  event: "meta_message",
+                  payload: {
+                    page_id: pageId,
+                    event_count: events.length,
+                    timestamp: new Date().toISOString(),
+                  },
+                },
+                {
+                  topic: "realtime:meta-realtime-channel",
+                  event: "meta_message",
+                  payload: {
+                    page_id: pageId,
+                    event_count: events.length,
+                    timestamp: new Date().toISOString(),
+                  },
+                },
+              ],
+            }),
           });
+          if (!broadcastResp.ok) {
+            logStructured({
+              event: "broadcast_http_failed",
+              status: broadcastResp.status,
+              statusText: broadcastResp.statusText,
+            });
+          }
         } catch (bErr) {
-          console.warn("[meta-webhook] Failed to broadcast realtime event:", bErr);
+          console.warn("[meta-webhook] Failed to broadcast realtime event via REST API:", bErr);
         }
       }
     }
