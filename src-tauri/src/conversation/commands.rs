@@ -571,3 +571,16 @@ pub async fn sync_facebook_conversations(
         }
     }
 }
+
+#[tauri::command]
+pub fn ingest_facebook_webhook_events(
+    state: tauri::State<'_, ConversationState>,
+    page_id: String,
+    events: Vec<serde_json::Value>,
+) -> Result<usize, String> {
+    state
+        .facebook_supervisor
+        .ingest_webhook_events(page_id.trim(), &events)
+        .map_err(|e| e.to_string())
+}
+

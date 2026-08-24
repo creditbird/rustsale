@@ -3,7 +3,10 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use super::client::{FacebookAttachmentNode, FacebookConversationThread, FacebookParticipantNode};
+use super::client::{
+    FacebookAttachmentNode, FacebookConversationThread, FacebookMessageNode,
+    FacebookParticipantNode,
+};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct IngestSummary {
@@ -37,6 +40,27 @@ impl FacebookMessengerNormalizer {
         participants
             .iter()
             .find(|p| p.id != page_id && !p.id.trim().is_empty())
+    }
+
+    pub fn find_customer_from_messages(
+        messages: &[FacebookMessageNode],
+        page_id: &str,
+    ) -> Option<(String, Option<String>)> {
+        for msg in messages {
+            if let Some(ref from) = msg.from {
+                if from.id != page_id && !from.id.trim().is_empty() {
+                    return Some((from.id.trim().to_string(), from.name.clone()));
+                }
+            }
+            if let Some(ref to) = msg.to {
+                for recipient in &to.data {
+                    if recipient.id != page_id && !recipient.id.trim().is_empty() {
+                        return Some((recipient.id.trim().to_string(), recipient.name.clone()));
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn detect_attachment_type(att: &FacebookAttachmentNode) -> &'static str {
@@ -77,21 +101,36 @@ impl FacebookMessengerNormalizer {
                 .map(|p| p.data.as_slice())
                 .unwrap_or(&[]);
 
+            let messages_slice = thread
+                .messages
+                .as_ref()
+                .map(|m| m.data.as_slice())
+                .unwrap_or(&[]);
+
             let customer = Self::find_customer_participant(participants, page_id);
-            let customer_psid = match customer {
-                Some(c) if !c.id.trim().is_empty() => c.id.trim().to_string(),
-                _ => {
-                    tracing::warn!(
-                        "Skipping Facebook thread {} for page {}: unable to resolve customer PSID",
-                        thread.id,
-                        page_id
-                    );
-                    continue;
+            let (customer_psid, customer_name) = match customer {
+                Some(c) if !c.id.trim().is_empty() => {
+                    let name = c
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("Facebook User {}", c.id.trim()));
+                    (c.id.trim().to_string(), name)
                 }
+                _ => match Self::find_customer_from_messages(messages_slice, page_id) {
+                    Some((psid, name_opt)) => {
+                        let name = name_opt.unwrap_or_else(|| format!("Facebook User {}", psid));
+                        (psid, name)
+                    }
+                    None => {
+                        tracing::warn!(
+                            "Skipping Facebook thread {} for page {}: unable to resolve customer PSID",
+                            thread.id,
+                            page_id
+                        );
+                        continue;
+                    }
+                },
             };
-            let customer_name = customer
-                .and_then(|c| c.name.clone())
-                .unwrap_or_else(|| format!("Facebook User {}", customer_psid));
 
             // 1. Upsert channel_identities
             tx.execute(
@@ -276,5 +315,252 @@ impl FacebookMessengerNormalizer {
 
         tx.commit()?;
         Ok(summary)
+    }
+
+    pub fn ingest_webhook_event(
+        conn: &mut Connection,
+        channel_account_id: i64,
+        page_id: &str,
+        payload: &serde_json::Value,
+    ) -> Result<Option<i64>> {
+        let tx = conn.transaction()?;
+        let now_str = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+
+        let msg_obj = if payload.get("message").is_some()
+            || payload.get("delivery").is_some()
+            || payload.get("read").is_some()
+            || payload.get("reaction").is_some()
+        {
+            payload
+        } else if let Some(inner) = payload.get("payload") {
+            inner
+        } else {
+            payload
+        };
+
+        let sender_id = msg_obj
+            .get("sender")
+            .and_then(|s| s.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+
+        let recipient_id = msg_obj
+            .get("recipient")
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+
+        // Authorization boundary: Webhook event MUST be addressed to or from this exact configured page_id
+        if sender_id != page_id && recipient_id != page_id {
+            tracing::warn!(
+                target: "facebook_sync",
+                sender_id = %sender_id,
+                recipient_id = %recipient_id,
+                page_id = %page_id,
+                "Rejecting webhook event: sender/recipient does not match authorized page_id"
+            );
+            return Ok(None);
+        }
+
+        let is_outbound = sender_id == page_id;
+        let customer_psid = if is_outbound {
+            recipient_id
+        } else {
+            sender_id
+        };
+
+        if customer_psid.is_empty() || customer_psid == page_id {
+            return Ok(None);
+        }
+
+        let customer_name = format!("Facebook User {}", customer_psid);
+
+        // 1. Upsert channel_identities
+        tx.execute(
+            "INSERT INTO channel_identities (
+                channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at
+            ) VALUES ('messenger', ?1, 'psid', ?2, ?3, ?4, ?4)
+            ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) WHERE channel_account_id IS NOT NULL DO UPDATE SET
+                updated_at = EXCLUDED.updated_at",
+            params![channel_account_id, customer_psid, customer_name, now_str],
+        )?;
+
+        let identity_id: i64 = tx.query_row(
+            "SELECT id FROM channel_identities 
+             WHERE channel = 'messenger' AND channel_account_id = ?1 AND identity_namespace = 'psid' AND external_id = ?2",
+            params![channel_account_id, customer_psid],
+            |row| row.get(0),
+        )?;
+
+        // 2. Find or create channel_conversations
+        let thread_external_id = format!("t_{}", customer_psid);
+        let timestamp_raw = msg_obj.get("timestamp");
+        let event_time = if let Some(ts_num) = timestamp_raw.and_then(|v| v.as_i64()) {
+            DateTime::from_timestamp_millis(ts_num)
+                .map(|dt| dt.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))
+                .unwrap_or_else(|| now_str.clone())
+        } else {
+            now_str.clone()
+        };
+
+        let existing_conv: Option<i64> = tx
+            .query_row(
+                "SELECT cc.id FROM channel_conversations cc
+                 JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                 WHERE cp.identity_id = ?1 AND cc.channel_account_id = ?2 AND cc.kind = 'direct'
+                 LIMIT 1",
+                params![identity_id, channel_account_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let conversation_id = match existing_conv {
+            Some(id) => {
+                tx.execute(
+                    "UPDATE channel_conversations SET
+                        last_message_at = CASE
+                            WHEN ?1 > COALESCE(last_message_at, '') THEN ?1
+                            ELSE last_message_at
+                        END,
+                        last_synced_at = ?2,
+                        updated_at = ?2
+                     WHERE id = ?3",
+                    params![event_time, now_str, id],
+                )?;
+                id
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO channel_conversations (
+                        channel_account_id, external_thread_id, kind, title, avatar_url, status, last_message_at, last_synced_at, created_at, updated_at
+                    ) VALUES (?1, ?2, 'direct', ?3, NULL, 'active', ?4, ?5, ?5, ?5)
+                    ON CONFLICT(channel_account_id, external_thread_id, kind) DO UPDATE SET
+                        last_message_at = CASE
+                            WHEN EXCLUDED.last_message_at IS NOT NULL AND (channel_conversations.last_message_at IS NULL OR EXCLUDED.last_message_at > channel_conversations.last_message_at)
+                            THEN EXCLUDED.last_message_at
+                            ELSE channel_conversations.last_message_at
+                        END,
+                        last_synced_at = EXCLUDED.last_synced_at,
+                        updated_at = EXCLUDED.updated_at",
+                    params![channel_account_id, thread_external_id, customer_name, event_time, now_str],
+                )?;
+                tx.query_row(
+                    "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'direct'",
+                    params![channel_account_id, thread_external_id],
+                    |row| row.get(0),
+                )?
+            }
+        };
+
+        // 3. Ensure conversation_participants
+        tx.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+             VALUES (?1, ?2, 'member', ?3)
+             ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+            params![conversation_id, identity_id, now_str],
+        )?;
+
+        // 4. Handle message payload
+        if let Some(msg) = msg_obj.get("message") {
+            let mid = msg.get("mid").and_then(|v| v.as_str()).unwrap_or("");
+            if !mid.is_empty() {
+                let text_content = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let (direction, sender_identity, status) = if is_outbound {
+                    ("outbound", None, "sent")
+                } else {
+                    ("inbound", Some(identity_id), "received")
+                };
+
+                let existing_msg: Option<i64> = tx
+                    .query_row(
+                        "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                        params![conversation_id, mid],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                if existing_msg.is_none() {
+                    let raw_json = msg_obj.to_string();
+                    let attachments = msg.get("attachments").and_then(|a| a.as_array());
+                    let content_type = if let Some(atts) = attachments {
+                        if !atts.is_empty() {
+                            atts[0].get("type").and_then(|t| t.as_str()).unwrap_or("file")
+                        } else {
+                            "text"
+                        }
+                    } else {
+                        "text"
+                    };
+
+                    tx.execute(
+                        "INSERT INTO messages (
+                            conversation_id, sender_identity_id, direction, provider_message_id,
+                            content_type, text_content, content_json, raw_payload_json,
+                            provider_timestamp, ingested_at, status
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', ?7, ?8, ?9, ?10)",
+                        params![
+                            conversation_id,
+                            sender_identity,
+                            direction,
+                            mid,
+                            content_type,
+                            text_content,
+                            raw_json,
+                            event_time,
+                            now_str,
+                            status
+                        ],
+                    )?;
+                    let message_id = tx.last_insert_rowid();
+
+                    if let Some(atts) = attachments {
+                        for att in atts {
+                            let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
+                            let payload_node = att.get("payload");
+                            let remote_url = payload_node.and_then(|p| p.get("url")).and_then(|u| u.as_str());
+                            if let Some(url) = remote_url {
+                                let att_json = att.to_string();
+                                tx.execute(
+                                    "INSERT INTO message_attachments (
+                                        message_id, provider_attachment_id, attachment_type, file_name,
+                                        mime_type, size_bytes, remote_url, thumbnail_url, metadata_json, created_at
+                                    ) VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, NULL, ?4, ?5)
+                                    ON CONFLICT(message_id, remote_url) WHERE remote_url IS NOT NULL DO NOTHING",
+                                    params![message_id, att_type, url, att_json, now_str],
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Handle delivery receipt
+        if let Some(delivery) = msg_obj.get("delivery") {
+            if let Some(mids) = delivery.get("mids").and_then(|m| m.as_array()) {
+                for mid_val in mids {
+                    if let Some(mid_str) = mid_val.as_str() {
+                        if let Err(err) = crate::conversation::facebook_sync::mark_messages_delivered(&tx, conversation_id, mid_str) {
+                            tracing::warn!(target: "facebook_sync", %err, mid = %mid_str, "Failed marking message delivered from webhook");
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Handle read receipt
+        if let Some(read) = msg_obj.get("read") {
+            if let Some(wm) = read.get("watermark") {
+                let wm_str = wm.to_string();
+                if let Err(err) = crate::conversation::facebook_sync::apply_read_receipt(&tx, conversation_id, &wm_str) {
+                    tracing::warn!(target: "facebook_sync", %err, watermark = %wm_str, "Failed applying read receipt from webhook");
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(Some(conversation_id))
     }
 }

@@ -350,6 +350,7 @@ pub fn run() {
             conversation::commands::unpin_conversation_message,
             conversation::commands::list_conversation_pinned_messages,
             conversation::commands::sync_facebook_conversations,
+            conversation::commands::ingest_facebook_webhook_events,
             facebook::commands::schedule_facebook_post,
             facebook::commands::publish_facebook_post_now,
             facebook::commands::list_facebook_scheduled_posts,

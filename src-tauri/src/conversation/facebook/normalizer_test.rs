@@ -317,3 +317,218 @@ fn test_unresolved_participant_skipped_without_corrupting_identity() {
     let conv_count: i64 = conn.query_row("SELECT count(*) FROM channel_conversations", [], |r| r.get(0)).unwrap();
     assert_eq!(conv_count, 0);
 }
+
+#[test]
+fn test_fallback_customer_resolved_from_messages_when_participants_empty() {
+    let mut conn = create_test_db();
+
+    // Thread has NO participants, but messages contain customer PSID & name
+    let thread = FacebookConversationThread {
+        id: "t_fallback".to_string(),
+        updated_time: "2026-08-24T02:00:00+0000".to_string(),
+        participants: Some(FacebookParticipantsContainer {
+            data: vec![], // Empty participants list from Graph API
+        }),
+        messages: Some(FacebookMessagesContainer {
+            data: vec![
+                FacebookMessageNode {
+                    id: "m_fb_1".to_string(),
+                    created_time: "2026-08-24T02:00:00+0000".to_string(),
+                    from: Some(FacebookParticipantNode {
+                        id: "psid_customer_789".to_string(),
+                        name: Some("Khach Hang Cu".to_string()),
+                        email: None,
+                    }),
+                    to: None,
+                    message: Some("Gia san pham nay bao nhieu?".to_string()),
+                    attachments: None,
+                },
+            ],
+            paging: None,
+        }),
+    };
+
+    let summary = FacebookMessengerNormalizer::ingest_conversations_batch(
+        &mut conn,
+        1,
+        "page_123",
+        &[thread],
+    )
+    .unwrap();
+
+    assert_eq!(summary.conversations_synced, 1);
+    assert_eq!(summary.messages_inserted, 1);
+    assert_eq!(summary.new_messages_count, 1);
+
+    // Verify identity was resolved from messages
+    let (ext_id, display_name): (String, String) = conn
+        .query_row(
+            "SELECT external_id, display_name FROM channel_identities WHERE external_id = 'psid_customer_789'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(ext_id, "psid_customer_789");
+    assert_eq!(display_name, "Khach Hang Cu");
+
+    // Verify conversation was created
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM channel_conversations WHERE external_thread_id = 't_fallback'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Khach Hang Cu");
+}
+
+#[test]
+fn test_ingest_webhook_event_inbound_message_delivery_and_read() {
+    let mut conn = create_test_db();
+
+    // 1. Ingest inbound message webhook event
+    let msg_payload = serde_json::json!({
+        "sender": { "id": "psid_999" },
+        "recipient": { "id": "page_123" },
+        "timestamp": 1724508965000_i64,
+        "message": {
+            "mid": "mid.webhook.001",
+            "text": "Quận 8 e ơi"
+        }
+    });
+
+    let conv_id = FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &msg_payload,
+    )
+    .unwrap();
+
+    assert!(conv_id.is_some());
+    let cid = conv_id.unwrap();
+
+    // Verify identity created
+    let ext_id: String = conn
+        .query_row(
+            "SELECT external_id FROM channel_identities WHERE external_id = 'psid_999'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ext_id, "psid_999");
+
+    // Verify message inserted
+    let (text, dir, status): (String, String, String) = conn
+        .query_row(
+            "SELECT text_content, direction, status FROM messages WHERE provider_message_id = 'mid.webhook.001'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(text, "Quận 8 e ơi");
+    assert_eq!(dir, "inbound");
+    assert_eq!(status, "received");
+
+    // 2. Insert an outbound message and apply delivery & read webhook
+    conn.execute(
+        "INSERT INTO messages (conversation_id, direction, provider_message_id, provider_timestamp, content_type, text_content, status, ingested_at)
+         VALUES (?1, 'outbound', 'mid.out.001', '2026-08-24T00:00:00.000Z', 'text', 'Dạ shop đây ạ', 'sent', datetime('now'))",
+        rusqlite::params![cid],
+    ).unwrap();
+
+    let delivery_payload = serde_json::json!({
+        "sender": { "id": "psid_999" },
+        "recipient": { "id": "page_123" },
+        "delivery": {
+            "mids": ["mid.out.001"],
+            "watermark": 1724508966000_i64
+        }
+    });
+
+    FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &delivery_payload,
+    )
+    .unwrap();
+
+    let out_status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE provider_message_id = 'mid.out.001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_status, "delivered");
+
+    let msg_time = chrono::DateTime::parse_from_rfc3339("2026-08-24T00:00:00.000Z").unwrap();
+    let watermark_ms = (msg_time + chrono::Duration::seconds(2)).timestamp_millis();
+
+    let read_payload = serde_json::json!({
+        "sender": { "id": "psid_999" },
+        "recipient": { "id": "page_123" },
+        "read": {
+            "watermark": watermark_ms
+        }
+    });
+
+    FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &read_payload,
+    )
+    .unwrap();
+
+    let out_status_read: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE provider_message_id = 'mid.out.001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_status_read, "read");
+}
+
+#[test]
+fn test_ingest_webhook_event_rejects_unauthorized_mismatched_page_id() {
+    let mut conn = create_test_db();
+
+    // Webhook event addressed between third-party identities (neither is page_123)
+    let unauthorized_payload = serde_json::json!({
+        "sender": { "id": "psid_stranger" },
+        "recipient": { "id": "other_page_456" },
+        "timestamp": 1724508965000_i64,
+        "message": {
+            "mid": "mid.hacker.001",
+            "text": "Unauthorized message"
+        }
+    });
+
+    let res = FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &unauthorized_payload,
+    )
+    .unwrap();
+
+    // Must reject cleanly (None)
+    assert!(res.is_none());
+
+    // Verify nothing written to DB
+    let msg_count: i64 = conn
+        .query_row("SELECT count(*) FROM messages WHERE provider_message_id = 'mid.hacker.001'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(msg_count, 0);
+
+    let id_count: i64 = conn
+        .query_row("SELECT count(*) FROM channel_identities WHERE external_id = 'psid_stranger'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(id_count, 0);
+}
+
+
+

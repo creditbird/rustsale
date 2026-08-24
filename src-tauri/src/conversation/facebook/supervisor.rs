@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use anyhow::{anyhow, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -130,11 +130,22 @@ impl FacebookMessengerSupervisor {
                 Err(e) => {
                     let err_msg = format!("Failed fetching conversations for page {}: {}", account.page_id, e);
                     warn!(target: "facebook_sync", "{}", err_msg);
-                    let is_token_error = err_msg.contains("OAuthException")
-                        || err_msg.contains("expired")
+                    let is_transient = err_msg.contains("is_transient")
+                        || err_msg.contains("code 2")
+                        || err_msg.contains("status 500")
+                        || err_msg.contains("status 502")
+                        || err_msg.contains("status 503")
+                        || err_msg.contains("status 504")
+                        || err_msg.contains("try again later")
+                        || err_msg.contains("Please retry");
+                    let is_token_error = !is_transient && (
+                        err_msg.contains("code 190")
+                        || err_msg.contains("code 102")
                         || err_msg.contains("Error validating access token")
-                        || err_msg.contains("code 190")
-                        || err_msg.contains("status 401");
+                        || err_msg.contains("Session has expired")
+                        || err_msg.contains("The access token could not be decrypted")
+                        || err_msg.contains("status 401")
+                    );
                     let _ = conn.execute(
                         "UPDATE channel_accounts SET last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
                         rusqlite::params![err_msg, account.id],
@@ -253,6 +264,59 @@ impl FacebookMessengerSupervisor {
         ).map_err(|e| anyhow!("No channel account found for Facebook page {}: {}", page_id, e))?;
 
         self.sync_account_internal(&account).await
+    }
+
+    pub fn ingest_webhook_events(&self, page_id: &str, events: &[serde_json::Value]) -> Result<usize> {
+        let mut conn = Connection::open(&self.db_path)
+            .map_err(|e| anyhow!("Failed to open DB connection: {}", e))?;
+
+        let account_id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM channel_accounts WHERE channel = 'messenger' AND provider_account_key = ?1 AND enabled = 1",
+                rusqlite::params![page_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let channel_account_id = match account_id {
+            Some(id) => id,
+            None => {
+                warn!(target: "facebook_sync", page_id = %page_id, "Rejecting webhook ingestion: No enabled connected channel account found for Facebook page");
+                return Ok(0);
+            }
+        };
+
+        let mut affected = Vec::new();
+        for event in events {
+            match FacebookMessengerNormalizer::ingest_webhook_event(
+                &mut conn,
+                channel_account_id,
+                page_id,
+                event,
+            ) {
+                Ok(Some(cid)) => {
+                    if !affected.contains(&cid) {
+                        affected.push(cid);
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(target: "facebook_sync", %err, "Failed ingesting webhook event");
+                }
+            }
+        }
+
+        for cid in &affected {
+            self.events.publish(ConversationInvalidatedEvent {
+                conversation_id: *cid,
+                lead_id: None,
+                channel: Channel::Messenger,
+                reason: ConversationInvalidationReason::Message,
+                message_id: None,
+            });
+        }
+
+        Ok(affected.len())
     }
 
     pub fn start_background_loop(self: Arc<Self>, poll_interval: Duration) -> tauri::async_runtime::JoinHandle<()> {

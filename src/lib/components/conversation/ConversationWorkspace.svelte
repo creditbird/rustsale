@@ -497,7 +497,7 @@
         void refreshRuntimeStatus(true);
       }
       void syncFacebookConversations().catch(() => {});
-    }, Math.max(4000, runtimeRefreshIntervalMs));
+    }, runtimeRefreshIntervalMs > 0 ? runtimeRefreshIntervalMs : 5000);
 
     return () => {
       stopRealtime();
