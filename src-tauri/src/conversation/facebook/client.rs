@@ -269,11 +269,9 @@ impl FacebookGraphClient for RealFacebookGraphClient {
             }
         });
 
-        if let Some(tag) = message_tag {
-            if !tag.trim().is_empty() {
-                payload["messaging_type"] = serde_json::json!("MESSAGE_TAG");
-                payload["tag"] = serde_json::json!(tag.trim());
-            }
+        if let Some(tag) = message_tag.map(|t| t.trim()).filter(|t| !t.is_empty()) {
+            payload["messaging_type"] = serde_json::json!("MESSAGE_TAG");
+            payload["tag"] = serde_json::json!(tag);
         } else {
             payload["messaging_type"] = serde_json::json!("RESPONSE");
         }

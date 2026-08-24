@@ -3215,39 +3215,70 @@ impl ConversationRepository {
             };
 
             let (content_type, text_content, content_json) = match &part.content {
-                ConversationSendPartContent::Text { text, .. } => (
-                    "text",
-                    Some(text.clone()),
-                    serde_json::json!({ "text": text }).to_string(),
-                ),
-                ConversationSendPartContent::Forward { source_message_id } => (
-                    "forward",
-                    None,
-                    serde_json::json!({ "sourceMessageId": source_message_id }).to_string(),
-                ),
+                ConversationSendPartContent::Text { text, .. } => {
+                    let mut json_val = serde_json::json!({ "text": text });
+                    if let Some(tag) = &request.message_tag {
+                        if !tag.trim().is_empty() {
+                            json_val["messageTag"] = serde_json::json!(tag.trim());
+                        }
+                    }
+                    (
+                        "text",
+                        Some(text.clone()),
+                        json_val.to_string(),
+                    )
+                }
+                ConversationSendPartContent::Forward { source_message_id } => {
+                    let mut json_val = serde_json::json!({ "sourceMessageId": source_message_id });
+                    if let Some(tag) = &request.message_tag {
+                        if !tag.trim().is_empty() {
+                            json_val["messageTag"] = serde_json::json!(tag.trim());
+                        }
+                    }
+                    (
+                        "forward",
+                        None,
+                        json_val.to_string(),
+                    )
+                }
                 ConversationSendPartContent::Sticker {
                     sticker_id,
                     cate_id,
                     sticker_type,
                     url,
-                } => (
-                    "sticker",
-                    None,
-                    serde_json::json!({
+                } => {
+                    let mut json_val = serde_json::json!({
                         "stickerId": sticker_id,
                         "cateId": cate_id,
                         "type": sticker_type,
                         "url": url,
-                    })
-                    .to_string(),
-                ),
+                    });
+                    if let Some(tag) = &request.message_tag {
+                        if !tag.trim().is_empty() {
+                            json_val["messageTag"] = serde_json::json!(tag.trim());
+                        }
+                    }
+                    (
+                        "sticker",
+                        None,
+                        json_val.to_string(),
+                    )
+                }
                 ConversationSendPartContent::Attachment {
                     staged_attachment_id,
-                } => (
-                    "attachment",
-                    None,
-                    serde_json::json!({ "stagedAttachmentId": staged_attachment_id }).to_string(),
-                ),
+                } => {
+                    let mut json_val = serde_json::json!({ "stagedAttachmentId": staged_attachment_id });
+                    if let Some(tag) = &request.message_tag {
+                        if !tag.trim().is_empty() {
+                            json_val["messageTag"] = serde_json::json!(tag.trim());
+                        }
+                    }
+                    (
+                        "attachment",
+                        None,
+                        json_val.to_string(),
+                    )
+                }
             };
 
             let message_id: i64 = tx.query_row(
