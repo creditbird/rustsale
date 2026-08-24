@@ -352,6 +352,18 @@ impl FacebookMessengerNormalizer {
             .map(str::trim)
             .unwrap_or("");
 
+        // Authorization boundary: Webhook event MUST be addressed to or from this exact configured page_id
+        if sender_id != page_id && recipient_id != page_id {
+            tracing::warn!(
+                target: "facebook_sync",
+                sender_id = %sender_id,
+                recipient_id = %recipient_id,
+                page_id = %page_id,
+                "Rejecting webhook event: sender/recipient does not match authorized page_id"
+            );
+            return Ok(None);
+        }
+
         let is_outbound = sender_id == page_id;
         let customer_psid = if is_outbound {
             recipient_id
@@ -530,7 +542,9 @@ impl FacebookMessengerNormalizer {
             if let Some(mids) = delivery.get("mids").and_then(|m| m.as_array()) {
                 for mid_val in mids {
                     if let Some(mid_str) = mid_val.as_str() {
-                        let _ = crate::conversation::facebook_sync::mark_messages_delivered(&tx, conversation_id, mid_str);
+                        if let Err(err) = crate::conversation::facebook_sync::mark_messages_delivered(&tx, conversation_id, mid_str) {
+                            tracing::warn!(target: "facebook_sync", %err, mid = %mid_str, "Failed marking message delivered from webhook");
+                        }
                     }
                 }
             }
@@ -540,7 +554,9 @@ impl FacebookMessengerNormalizer {
         if let Some(read) = msg_obj.get("read") {
             if let Some(wm) = read.get("watermark") {
                 let wm_str = wm.to_string();
-                let _ = crate::conversation::facebook_sync::apply_read_receipt(&tx, conversation_id, &wm_str);
+                if let Err(err) = crate::conversation::facebook_sync::apply_read_receipt(&tx, conversation_id, &wm_str) {
+                    tracing::warn!(target: "facebook_sync", %err, watermark = %wm_str, "Failed applying read receipt from webhook");
+                }
             }
         }
 

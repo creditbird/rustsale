@@ -491,4 +491,49 @@ async fn test_supervisor_ingest_webhook_events_emits_invalidation() {
     assert_eq!(event.channel, crate::conversation::types::Channel::Messenger);
 }
 
+#[tokio::test]
+async fn test_supervisor_ingest_webhook_events_rejects_unregistered_or_disabled_page() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("test_fb_sup_disabled.db").to_str().unwrap().to_string();
+    create_supervisor_test_db(&db_path);
+
+    let conn = Connection::open(&db_path).unwrap();
+    // Insert disabled channel account
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, enabled, connection_status, created_at, updated_at)
+         VALUES (1, 'messenger', 'page_disabled_123', 'Disabled Fanpage', 0, 'disconnected', datetime('now'), datetime('now'))",
+        [],
+    ).unwrap();
+
+    let events = Arc::new(ConversationEventPublisher::new(64));
+    let client = Arc::new(MockFacebookGraphClient {
+        conversations: vec![],
+    });
+
+    let supervisor = FacebookMessengerSupervisor::new(db_path.clone(), events, client);
+
+    let webhook_payload = serde_json::json!({
+        "sender": { "id": "psid_live_123" },
+        "recipient": { "id": "page_disabled_123" },
+        "timestamp": 1724508965000_i64,
+        "message": {
+            "mid": "mid.disabled.001",
+            "text": "Hello"
+        }
+    });
+
+    // Ingest for disabled account returns 0 and writes nothing
+    let count = supervisor
+        .ingest_webhook_events("page_disabled_123", &[webhook_payload.clone()])
+        .unwrap();
+    assert_eq!(count, 0);
+
+    // Ingest for completely unregistered page returns 0
+    let count_unregistered = supervisor
+        .ingest_webhook_events("page_unregistered_999", &[webhook_payload])
+        .unwrap();
+    assert_eq!(count_unregistered, 0);
+}
+
+
 

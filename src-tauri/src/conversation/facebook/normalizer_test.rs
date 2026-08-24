@@ -492,4 +492,43 @@ fn test_ingest_webhook_event_inbound_message_delivery_and_read() {
     assert_eq!(out_status_read, "read");
 }
 
+#[test]
+fn test_ingest_webhook_event_rejects_unauthorized_mismatched_page_id() {
+    let mut conn = create_test_db();
+
+    // Webhook event addressed between third-party identities (neither is page_123)
+    let unauthorized_payload = serde_json::json!({
+        "sender": { "id": "psid_stranger" },
+        "recipient": { "id": "other_page_456" },
+        "timestamp": 1724508965000_i64,
+        "message": {
+            "mid": "mid.hacker.001",
+            "text": "Unauthorized message"
+        }
+    });
+
+    let res = FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &unauthorized_payload,
+    )
+    .unwrap();
+
+    // Must reject cleanly (None)
+    assert!(res.is_none());
+
+    // Verify nothing written to DB
+    let msg_count: i64 = conn
+        .query_row("SELECT count(*) FROM messages WHERE provider_message_id = 'mid.hacker.001'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(msg_count, 0);
+
+    let id_count: i64 = conn
+        .query_row("SELECT count(*) FROM channel_identities WHERE external_id = 'psid_stranger'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(id_count, 0);
+}
+
+
 

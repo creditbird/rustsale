@@ -272,7 +272,7 @@ impl FacebookMessengerSupervisor {
 
         let account_id: Option<i64> = conn
             .query_row(
-                "SELECT id FROM channel_accounts WHERE channel = 'messenger' AND provider_account_key = ?1",
+                "SELECT id FROM channel_accounts WHERE channel = 'messenger' AND provider_account_key = ?1 AND enabled = 1",
                 rusqlite::params![page_id],
                 |row| row.get(0),
             )
@@ -281,7 +281,7 @@ impl FacebookMessengerSupervisor {
         let channel_account_id = match account_id {
             Some(id) => id,
             None => {
-                warn!(target: "facebook_sync", page_id = %page_id, "No connected account found for Facebook page during webhook ingestion");
+                warn!(target: "facebook_sync", page_id = %page_id, "Rejecting webhook ingestion: No enabled connected channel account found for Facebook page");
                 return Ok(0);
             }
         };
