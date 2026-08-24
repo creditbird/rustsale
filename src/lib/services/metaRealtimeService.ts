@@ -1,5 +1,8 @@
 import { getSupabaseClient } from '$lib/services/supabaseClient';
-import { syncFacebookConversations } from '$lib/services/conversationService';
+import {
+  syncFacebookConversations,
+  ingestFacebookWebhookEvents,
+} from '$lib/services/conversationService';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 let realtimeChannel: RealtimeChannel | null = null;
@@ -8,9 +11,57 @@ let inFlightSyncs = new Set<string>();
 let pendingFollowupSyncs = new Set<string>();
 
 /**
+ * Consumes and ACKs pending webhook buffer records from Supabase directly into SQLite.
+ */
+async function consumePendingWebhookBuffer(pageId?: string): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+    let query = supabase
+      .from('meta_webhook_buffer')
+      .select('id, field, event_key, payload, page_id')
+      .in('status', ['pending', 'processing'])
+      .order('id', { ascending: true })
+      .limit(50);
+
+    if (pageId) {
+      query = query.eq('page_id', pageId);
+    }
+
+    const { data: rows, error } = await query;
+    if (error || !rows || rows.length === 0) return;
+
+    const byPage = new Map<string, { ids: number[]; events: any[] }>();
+    for (const r of rows) {
+      const pId = r.page_id;
+      if (!pId) continue;
+      if (!byPage.has(pId)) {
+        byPage.set(pId, { ids: [], events: [] });
+      }
+      const group = byPage.get(pId)!;
+      group.ids.push(r.id);
+      group.events.push(r.payload);
+    }
+
+    for (const [pId, group] of byPage.entries()) {
+      try {
+        await ingestFacebookWebhookEvents(pId, group.events);
+        await supabase
+          .from('meta_webhook_buffer')
+          .update({ status: 'completed' })
+          .in('id', group.ids);
+      } catch (ingestErr) {
+        console.warn(`[MetaRealtime] Failed ingesting buffered events for page ${pId}:`, ingestErr);
+      }
+    }
+  } catch (err) {
+    console.warn('[MetaRealtime] Error consuming pending webhook buffer:', err);
+  }
+}
+
+/**
  * Executes idempotent, serialized sync for a specific page.
- * Prevents concurrent stampedes while guaranteeing that events arriving
- * during an active sync trigger exactly one followup sync.
+ * 1. Consumes & ACKs pending buffered webhook events directly into SQLite.
+ * 2. Triggers Graph API reconciliation in the background.
  */
 async function executeSerializedSync(pageId?: string): Promise<void> {
   const key = pageId || '__all__';
@@ -22,6 +73,9 @@ async function executeSerializedSync(pageId?: string): Promise<void> {
 
   inFlightSyncs.add(key);
   try {
+    // 1. Consume pending webhook buffer directly
+    await consumePendingWebhookBuffer(pageId);
+    // 2. Run Graph API reconciliation
     await syncFacebookConversations(pageId);
   } catch (err) {
     console.warn(`[MetaRealtime] Serialized sync failed for ${key}:`, err);
@@ -73,7 +127,13 @@ export function startMetaRealtimeListener(): () => void {
         'broadcast',
         { event: 'meta_message' },
         (event) => {
-          const pageId = (event.payload as { page_id?: string })?.page_id;
+          const payload = event.payload as { page_id?: string; events?: any[] };
+          const pageId = payload?.page_id;
+          if (pageId && Array.isArray(payload?.events) && payload.events.length > 0) {
+            void ingestFacebookWebhookEvents(pageId, payload.events).catch((err) => {
+              console.warn('[MetaRealtime] Fast-path webhook ingestion failed:', err);
+            });
+          }
           schedulePageSync(pageId);
         }
       )
@@ -86,12 +146,17 @@ export function startMetaRealtimeListener(): () => void {
         },
         (payload) => {
           const pageId = (payload.new as { page_id?: string })?.page_id;
+          const rawPayload = (payload.new as { payload?: any })?.payload;
+          if (pageId && rawPayload) {
+            void ingestFacebookWebhookEvents(pageId, [rawPayload]).catch(() => {});
+          }
           schedulePageSync(pageId);
         }
       )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           console.info('[MetaRealtime] Supabase Realtime subscribed successfully for Meta events');
+          void consumePendingWebhookBuffer();
         } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           console.warn('[MetaRealtime] Realtime disconnected or error, scheduling recovery sync');
           schedulePageSync();

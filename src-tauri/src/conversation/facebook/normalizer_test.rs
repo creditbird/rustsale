@@ -382,3 +382,114 @@ fn test_fallback_customer_resolved_from_messages_when_participants_empty() {
     assert_eq!(title, "Khach Hang Cu");
 }
 
+#[test]
+fn test_ingest_webhook_event_inbound_message_delivery_and_read() {
+    let mut conn = create_test_db();
+
+    // 1. Ingest inbound message webhook event
+    let msg_payload = serde_json::json!({
+        "sender": { "id": "psid_999" },
+        "recipient": { "id": "page_123" },
+        "timestamp": 1724508965000_i64,
+        "message": {
+            "mid": "mid.webhook.001",
+            "text": "Quận 8 e ơi"
+        }
+    });
+
+    let conv_id = FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &msg_payload,
+    )
+    .unwrap();
+
+    assert!(conv_id.is_some());
+    let cid = conv_id.unwrap();
+
+    // Verify identity created
+    let ext_id: String = conn
+        .query_row(
+            "SELECT external_id FROM channel_identities WHERE external_id = 'psid_999'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ext_id, "psid_999");
+
+    // Verify message inserted
+    let (text, dir, status): (String, String, String) = conn
+        .query_row(
+            "SELECT text_content, direction, status FROM messages WHERE provider_message_id = 'mid.webhook.001'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(text, "Quận 8 e ơi");
+    assert_eq!(dir, "inbound");
+    assert_eq!(status, "received");
+
+    // 2. Insert an outbound message and apply delivery & read webhook
+    conn.execute(
+        "INSERT INTO messages (conversation_id, direction, provider_message_id, provider_timestamp, content_type, text_content, status, ingested_at)
+         VALUES (?1, 'outbound', 'mid.out.001', '2026-08-24T00:00:00.000Z', 'text', 'Dạ shop đây ạ', 'sent', datetime('now'))",
+        rusqlite::params![cid],
+    ).unwrap();
+
+    let delivery_payload = serde_json::json!({
+        "sender": { "id": "psid_999" },
+        "recipient": { "id": "page_123" },
+        "delivery": {
+            "mids": ["mid.out.001"],
+            "watermark": 1724508966000_i64
+        }
+    });
+
+    FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &delivery_payload,
+    )
+    .unwrap();
+
+    let out_status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE provider_message_id = 'mid.out.001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_status, "delivered");
+
+    let msg_time = chrono::DateTime::parse_from_rfc3339("2026-08-24T00:00:00.000Z").unwrap();
+    let watermark_ms = (msg_time + chrono::Duration::seconds(2)).timestamp_millis();
+
+    let read_payload = serde_json::json!({
+        "sender": { "id": "psid_999" },
+        "recipient": { "id": "page_123" },
+        "read": {
+            "watermark": watermark_ms
+        }
+    });
+
+    FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &read_payload,
+    )
+    .unwrap();
+
+    let out_status_read: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE provider_message_id = 'mid.out.001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_status_read, "read");
+}
+
+

@@ -288,6 +288,7 @@ serve(async (req: Request) => {
                   payload: {
                     page_id: pageId,
                     event_count: events.length,
+                    events: events.map((e) => e.payload),
                     timestamp: new Date().toISOString(),
                   },
                 },
@@ -297,6 +298,7 @@ serve(async (req: Request) => {
                   payload: {
                     page_id: pageId,
                     event_count: events.length,
+                    events: events.map((e) => e.payload),
                     timestamp: new Date().toISOString(),
                   },
                 },

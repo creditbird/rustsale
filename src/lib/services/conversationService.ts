@@ -828,3 +828,7 @@ export const batchImportGroupMembersToLeads = (request: BatchImportGroupMembersR
 export const syncFacebookConversations = (pageId?: string) =>
   invoke<number>('sync_facebook_conversations', { pageId: pageId ?? null });
 
+export const ingestFacebookWebhookEvents = (pageId: string, events: any[]) =>
+  invoke<number>('ingest_facebook_webhook_events', { pageId, events });
+
+
