@@ -4,6 +4,7 @@ pub mod deletion_sync;
 pub mod echo_cache;
 pub mod error;
 pub mod events;
+pub mod facebook;
 pub mod facebook_sync;
 pub mod forwarding;
 pub mod lead_sync;

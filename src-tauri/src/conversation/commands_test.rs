@@ -55,6 +55,23 @@ impl ServiceHarness {
         }
     }
 
+    pub fn create_conv_state(
+        &self,
+        service: Arc<ConversationService>,
+        zalo_supervisor: Arc<crate::conversation::zalo::supervisor::ZaloSessionSupervisor>,
+    ) -> super::commands::ConversationState {
+        let facebook_supervisor = Arc::new(super::facebook::supervisor::FacebookMessengerSupervisor::new(
+            self.path.to_str().unwrap().to_string(),
+            self.events.clone(),
+            Arc::new(super::facebook::client::RealFacebookGraphClient::new()),
+        ));
+        super::commands::ConversationState {
+            service,
+            zalo_supervisor,
+            facebook_supervisor,
+        }
+    }
+
     pub fn insert_lead(&self, id: i64, name: &str) {
         let conn = open_db_connection(self.path.to_str().unwrap()).unwrap();
         conn.execute(
@@ -257,10 +274,7 @@ async fn test_conversation_state_commands_integration() {
         Arc::new(RealZaloClientFactory),
     ));
 
-    let conv_state = ConversationState {
-        service: conversation_service,
-        zalo_supervisor: zalo_supervisor.clone(),
-    };
+    let conv_state = harness.create_conv_state(conversation_service, zalo_supervisor);
 
     let app = mock_builder()
         .manage(conv_state)
@@ -319,10 +333,7 @@ async fn test_unlink_conversation_lead_command() {
         Arc::new(RealZaloClientFactory),
     ));
 
-    let conv_state = ConversationState {
-        service: conversation_service,
-        zalo_supervisor,
-    };
+    let conv_state = harness.create_conv_state(conversation_service, zalo_supervisor);
 
     let app = mock_builder()
         .manage(conv_state)
@@ -369,10 +380,7 @@ async fn test_unlink_conversation_identity_command() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -420,10 +428,7 @@ async fn test_relink_conversation_lead_command() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -478,10 +483,7 @@ async fn quick_template_command_list_active_and_all() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -575,10 +577,7 @@ async fn quick_template_command_create_success_and_conflict() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -631,10 +630,7 @@ async fn quick_template_command_update_validation() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -722,10 +718,7 @@ async fn quick_template_command_delete_success() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -794,10 +787,7 @@ async fn quick_template_command_mark_used_updates_usage() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -874,10 +864,7 @@ async fn phase2a_command_registration() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -1066,10 +1053,7 @@ async fn mention_candidates_query_matching_and_all() {
         Arc::new(RealZaloClientFactory),
     ));
     let app = mock_builder()
-        .manage(ConversationState {
-            service: conversation_service,
-            zalo_supervisor,
-        })
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
         .build(mock_context(noop_assets()))
         .unwrap();
     let state = app.state::<ConversationState>();
@@ -2029,4 +2013,38 @@ async fn test_delete_conversation_request_validation() {
         lead_id: None,
     };
     assert!(req3.validate().is_ok());
+}
+
+#[tokio::test]
+async fn test_sync_facebook_conversations_command() {
+    use super::commands::{sync_facebook_conversations, ConversationState};
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-fb-cmd"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    // With no connected Facebook accounts, sync returns 0 new messages
+    let res = sync_facebook_conversations(state.clone(), None).await.unwrap();
+    assert_eq!(res, 0);
+
+    // With non-existent page_id, returns error
+    let err = sync_facebook_conversations(state, Some("page_does_not_exist".to_string())).await;
+    assert!(err.is_err());
 }

@@ -1223,6 +1223,65 @@ impl ConversationService {
             }
         }
     }
+    pub async fn process_next_messenger_outbox_job(
+        &self,
+        channel_account_id: i64,
+        client: &dyn crate::conversation::facebook::client::FacebookGraphClient,
+        page_id: &str,
+        page_token: &str,
+    ) -> Result<bool> {
+        let now = crate::conversation::types::utc_now();
+        let job = match self
+            .repository
+            .claim_next_outbox_job(channel_account_id, &now)?
+        {
+            Some(job) => job,
+            None => return Ok(false),
+        };
+
+        let recipient_psid = job.external_thread_id.clone();
+
+        let message_tag = job
+            .content_json
+            .get("messageTag")
+            .and_then(|v| v.as_str())
+            .or(Some("HUMAN_AGENT"));
+
+        let text = job.text_content.as_deref().unwrap_or("");
+
+        match client
+            .send_messenger_message(page_id, page_token, &recipient_psid, text, message_tag)
+            .await
+        {
+            Ok(resp) => {
+                self.repository.complete_outbox_job(
+                    &job.job_id,
+                    &resp.message_id,
+                    "",
+                    &now,
+                )?;
+                self.publish_message_invalidation(
+                    job.message_id,
+                    ConversationInvalidationReason::Message,
+                )?;
+                Ok(true)
+            }
+            Err(err) => {
+                let err_msg = err.to_string();
+                self.repository.fail_outbox_job(
+                    &job.job_id,
+                    crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                    &err_msg,
+                    &now,
+                )?;
+                self.publish_message_invalidation(
+                    job.message_id,
+                    ConversationInvalidationReason::Message,
+                )?;
+                Ok(true)
+            }
+        }
+    }
 
     pub async fn set_conversation_reaction(
         &self,

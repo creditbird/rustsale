@@ -824,3 +824,7 @@ export const syncAndDeepScanGroupMembers = (conversationId: number) =>
 
 export const batchImportGroupMembersToLeads = (request: BatchImportGroupMembersRequest) =>
   invoke<BatchImportGroupMembersResult>('batch_import_group_members_to_leads', { request });
+
+export const syncFacebookConversations = (pageId?: string) =>
+  invoke<number>('sync_facebook_conversations', { pageId: pageId ?? null });
+
