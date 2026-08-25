@@ -2223,9 +2223,6 @@ pub async fn fetch_facebook_pages_from_token_internal(
         return Err("Access token cannot be empty".to_string());
     }
 
-    // Ensure environment variables from .env are available if present
-    crate::load_dotenv_if_present();
-
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -2246,27 +2243,29 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .or_else(|| std::env::var("FACEBOOK_APP_SECRET").ok())
         .or_else(|| std::env::var("META_APP_SECRET").ok());
 
-    // If App ID and App Secret are available, exchange Short-Lived Token for Long-Lived Token (60-day / permanent) via POST form (no secrets in URL)
+    // If App ID and App Secret are available, attempt exchange of Short-Lived Token for Long-Lived Token (60-day / permanent) via POST form.
+    // If exchange fails (e.g. token is already long-lived, or Meta API returns an error), gracefully fall back to the provided token.
     let mut working_token = clean_token.to_string();
     if let (Some(aid), Some(asec)) = (effective_app_id.as_ref(), effective_app_secret.as_ref()) {
         let trimmed_aid = aid.trim();
         let trimmed_asec = asec.trim();
         if !trimmed_aid.is_empty() && !trimmed_asec.is_empty() {
-            let long_token = exchange_facebook_long_lived_token_internal(
+            match exchange_facebook_long_lived_token_internal(
                 &client,
                 clean_token,
                 trimmed_aid,
                 trimmed_asec,
             )
             .await
-            .map_err(|err| {
-                format!(
-                    "Permanent token exchange failed: {}. Cannot acquire non-expiring Page token.",
-                    err
-                )
-            })?;
-            tracing::info!(target: "facebook_auth", "Successfully exchanged short-lived token for long-lived Meta token");
-            working_token = long_token;
+            {
+                Ok(long_token) => {
+                    tracing::info!(target: "facebook_auth", "Successfully exchanged short-lived token for long-lived Meta token");
+                    working_token = long_token;
+                }
+                Err(err) => {
+                    tracing::warn!(target: "facebook_auth", "Long-lived token exchange notice: {}. Continuing with provided token.", err);
+                }
+            }
         }
     }
 

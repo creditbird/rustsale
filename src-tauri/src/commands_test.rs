@@ -4482,4 +4482,19 @@ mod tests {
         assert!(!safe.contains("EAAB_token_xyz"));
         assert!(!safe.contains("secret_abc123"));
     }
+
+    #[tokio::test]
+    async fn test_concurrent_dotenv_and_fetch_facebook_pages() {
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            handles.push(tokio::spawn(async {
+                crate::load_dotenv_if_present();
+                let res = commands::fetch_facebook_pages_from_token_internal("   ", None).await;
+                assert!(res.is_err());
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
 }
