@@ -4913,3 +4913,417 @@ fn test_facebook_reel_post_finish_release_and_reconciler_parent_clock_eligibilit
         .unwrap();
     assert!(owner_after.is_none() && deadline_after.is_none());
 }
+
+#[test]
+fn test_timeline_hydrates_attachments_with_null_and_empty_mime_type() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute("INSERT INTO leads (id, name) VALUES (10, 'Lead Ten')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, enabled, connection_status, created_at, updated_at)
+         VALUES (101, 'messenger', 'fb_page_1', 'FB Page', 1, 'connected', '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, lead_id, channel, identity_namespace, external_id, display_name, link_source, link_confidence, created_at, updated_at)
+         VALUES (201, 10, 'messenger', 'psid', 'fb_user_1', 'FB User', 'manual', 1.0, '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, last_message_at, created_at, updated_at)
+         VALUES (301, 101, 't_123', 'direct', 'FB User', 'active', '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (301, 201, 'member', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // Insert 4 messages with various media types and null/empty/whitespace/valid MIME types
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (401, 301, 201, 'inbound', 'image', '', '{}', 'delivered', '2026-08-25T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (401, 'image', NULL, NULL, 'https://cdn.example.com/fb_pic.jpg', '2026-08-25T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (402, 301, 201, 'inbound', 'video', '', '{}', 'delivered', '2026-08-25T11:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (402, 'video', '', 'video.mp4', 'https://cdn.example.com/video.mp4', '2026-08-25T11:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (403, 301, 201, 'inbound', 'audio', '', '{}', 'delivered', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (403, 'audio', '   ', 'voice.mp3', 'https://cdn.example.com/voice.mp3', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (404, 301, 201, 'inbound', 'file', '', '{}', 'delivered', '2026-08-25T13:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (404, 'file', NULL, 'document.pdf', 'https://cdn.example.com/doc.pdf', '2026-08-25T13:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    drop(conn);
+
+    let page = harness
+        .repository
+        .get_contact_timeline(10, &[Channel::Messenger], None, 50)
+        .unwrap();
+    assert_eq!(page.items.len(), 4);
+
+    // Results in ascending chronological order of occurred_at
+    // Item 0: Msg 401 (image -> image/jpeg)
+    assert_eq!(page.items[0].id, 401);
+    assert_eq!(page.items[0].attachments[0].media_type, "image");
+    assert_eq!(page.items[0].attachments[0].mime_type, "image/jpeg");
+    assert_eq!(
+        page.items[0].attachments[0].remote_url.as_deref(),
+        Some("https://cdn.example.com/fb_pic.jpg")
+    );
+
+    // Item 1: Msg 402 (video -> video/mp4)
+    assert_eq!(page.items[1].id, 402);
+    assert_eq!(page.items[1].attachments[0].media_type, "video");
+    assert_eq!(page.items[1].attachments[0].mime_type, "video/mp4");
+
+    // Item 2: Msg 403 (audio -> audio/mpeg)
+    assert_eq!(page.items[2].id, 403);
+    assert_eq!(page.items[2].attachments[0].media_type, "audio");
+    assert_eq!(page.items[2].attachments[0].mime_type, "audio/mpeg");
+
+    // Item 3: Msg 404 (file -> application/octet-stream)
+    assert_eq!(page.items[3].id, 404);
+    assert_eq!(page.items[3].attachments[0].media_type, "file");
+    assert_eq!(
+        page.items[3].attachments[0].mime_type,
+        "application/octet-stream"
+    );
+}
+
+#[test]
+fn test_claim_next_outbox_job_resolves_null_and_empty_mime_type_attachments() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, enabled, connection_status, created_at, updated_at)
+         VALUES (101, 'messenger', 'fb_page_1', 'FB Page', 1, 'connected', '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, last_message_at, created_at, updated_at)
+         VALUES (301, 101, 't_123', 'direct', 'FB User', 'active', '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let test_cases = vec![
+        (501, "job_1", "image", None, "image/jpeg", "img.jpg"),
+        (502, "job_2", "video", Some(""), "video/mp4", "vid.mp4"),
+        (503, "job_3", "audio", Some("   "), "audio/mpeg", "aud.mp3"),
+        (
+            504,
+            "job_4",
+            "file",
+            None,
+            "application/octet-stream",
+            "data.bin",
+        ),
+        (
+            505,
+            "job_5",
+            "image",
+            Some("image/png"),
+            "image/png",
+            "icon.png",
+        ),
+    ];
+
+    for (msg_id, job_id, media_type, raw_mime, expected_mime, file_name) in test_cases {
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+             VALUES (?1, 301, NULL, 'outbound', ?2, '', '{}', 'queued', '2026-08-25T12:00:00Z')",
+            params![msg_id, media_type],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, local_path, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '2026-08-25T12:00:00Z')",
+            params![
+                msg_id,
+                media_type,
+                raw_mime,
+                file_name,
+                format!("/spool/{file_name}")
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs (id, message_id, channel_account_id, status, attempt_count, created_at, updated_at)
+             VALUES (?1, ?2, 101, 'pending', 0, '2026-08-25T12:00:00Z', '2026-08-25T12:00:00Z')",
+            params![job_id, msg_id],
+        )
+        .unwrap();
+
+        let claimed = harness
+            .repository
+            .claim_next_outbox_job(101, "2026-08-25T12:00:01Z")
+            .unwrap();
+        assert!(claimed.is_some(), "Job {job_id} must be claimed");
+        let job = claimed.unwrap();
+        assert_eq!(job.job_id, job_id);
+        assert_eq!(job.message_id, msg_id);
+
+        let att = job.attachment.expect("Attachment must be present");
+        assert_eq!(att.media_type, media_type);
+        assert_eq!(
+            att.mime_type, expected_mime,
+            "Claimed attachment mime_type mismatch for media_type={media_type}, raw={raw_mime:?}"
+        );
+        assert_eq!(att.file_name.as_deref(), Some(file_name));
+        assert_eq!(
+            att.local_path.as_deref(),
+            Some(format!("/spool/{file_name}").as_str())
+        );
+
+        // Mark completed to allow claiming next job in loop
+        conn.execute(
+            "UPDATE message_outbox_jobs SET status = 'completed' WHERE id = ?1",
+            params![job_id],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn test_contact_timeline_mixed_messenger_and_zalo_channels() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    // 1. Single Lead
+    conn.execute(
+        "INSERT INTO leads (id, name) VALUES (10, 'Omnichannel Lead')",
+        [],
+    )
+    .unwrap();
+
+    // 2. Channel Accounts: Messenger and Zalo
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, enabled, connection_status, created_at, updated_at)
+         VALUES (101, 'messenger', 'fb_page_1', 'Facebook Page', 1, 'connected', '2026-08-25T00:00:00Z', '2026-08-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, enabled, connection_status, created_at, updated_at)
+         VALUES (102, 'zalo', 'zalo_oa_1', 'Zalo OA', 1, 'connected', '2026-08-25T00:00:00Z', '2026-08-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // 3. Channel Identities linked to the same Lead
+    conn.execute(
+        "INSERT INTO channel_identities (id, lead_id, channel, identity_namespace, external_id, display_name, link_source, link_confidence, created_at, updated_at)
+         VALUES (201, 10, 'messenger', 'psid', 'fb_psid_1', 'FB Customer', 'manual', 1.0, '2026-08-25T00:00:00Z', '2026-08-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_identities (id, lead_id, channel, identity_namespace, external_id, display_name, link_source, link_confidence, created_at, updated_at)
+         VALUES (202, 10, 'zalo', 'uid', 'zalo_uid_1', 'Zalo Customer', 'manual', 1.0, '2026-08-25T00:00:00Z', '2026-08-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // 4. Direct Conversations for each channel
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, last_message_at, created_at, updated_at)
+         VALUES (301, 101, 'fb_thread_1', 'direct', 'FB Customer', 'active', '2026-08-25T14:00:00Z', '2026-08-25T00:00:00Z', '2026-08-25T14:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, last_message_at, created_at, updated_at)
+         VALUES (302, 102, 'zalo_thread_1', 'direct', 'Zalo Customer', 'active', '2026-08-25T13:00:00Z', '2026-08-25T00:00:00Z', '2026-08-25T13:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (301, 201, 'member', '2026-08-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (302, 202, 'member', '2026-08-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // 5. Interleaved messages across Messenger and Zalo
+    // Msg 401: Messenger, 10:00, image attachment with NULL mime_type
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (401, 301, 201, 'inbound', 'image', 'FB photo', '{}', 'delivered', '2026-08-25T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (401, 'image', NULL, 'photo.jpg', 'https://cdn.example.com/fb.jpg', '2026-08-25T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // Msg 402: Zalo, 11:00, video attachment with empty string mime_type
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (402, 302, 202, 'inbound', 'video', 'Zalo clip', '{}', 'delivered', '2026-08-25T11:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (402, 'video', '', 'clip.mp4', 'https://cdn.example.com/zalo.mp4', '2026-08-25T11:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // Msg 403: Messenger, 12:00, audio attachment with whitespace mime_type
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (403, 301, 201, 'inbound', 'audio', 'FB voice', '{}', 'delivered', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (403, 'audio', '   ', 'voice.mp3', 'https://cdn.example.com/fb_voice.mp3', '2026-08-25T12:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // Msg 404: Zalo, 13:00, file attachment with NULL mime_type
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (404, 302, 202, 'inbound', 'file', 'Zalo invoice', '{}', 'delivered', '2026-08-25T13:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (404, 'file', NULL, 'invoice.pdf', 'https://cdn.example.com/invoice.pdf', '2026-08-25T13:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // Msg 405: Messenger, 14:00, image attachment with valid MIME type
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, content_json, status, ingested_at)
+         VALUES (405, 301, 201, 'inbound', 'image', 'FB sticker', '{}', 'delivered', '2026-08-25T14:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (message_id, attachment_type, mime_type, file_name, remote_url, created_at)
+         VALUES (405, 'image', 'image/webp', 'sticker.webp', 'https://cdn.example.com/sticker.webp', '2026-08-25T14:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    drop(conn);
+
+    // Test A: Query with both Messenger and Zalo selected
+    let mixed_page = harness
+        .repository
+        .get_contact_timeline(10, &[Channel::Messenger, Channel::Zalo], None, 50)
+        .unwrap();
+    assert_eq!(mixed_page.items.len(), 5);
+
+    // Verify ascending chronological order and channel / attachment resolution:
+    // 0: Msg 401 (Messenger, 10:00) -> "image/jpeg"
+    assert_eq!(mixed_page.items[0].id, 401);
+    assert_eq!(mixed_page.items[0].channel, Channel::Messenger);
+    assert_eq!(mixed_page.items[0].attachments[0].mime_type, "image/jpeg");
+
+    // 1: Msg 402 (Zalo, 11:00) -> "video/mp4"
+    assert_eq!(mixed_page.items[1].id, 402);
+    assert_eq!(mixed_page.items[1].channel, Channel::Zalo);
+    assert_eq!(mixed_page.items[1].attachments[0].mime_type, "video/mp4");
+
+    // 2: Msg 403 (Messenger, 12:00) -> "audio/mpeg"
+    assert_eq!(mixed_page.items[2].id, 403);
+    assert_eq!(mixed_page.items[2].channel, Channel::Messenger);
+    assert_eq!(mixed_page.items[2].attachments[0].mime_type, "audio/mpeg");
+
+    // 3: Msg 404 (Zalo, 13:00) -> "application/octet-stream"
+    assert_eq!(mixed_page.items[3].id, 404);
+    assert_eq!(mixed_page.items[3].channel, Channel::Zalo);
+    assert_eq!(
+        mixed_page.items[3].attachments[0].mime_type,
+        "application/octet-stream"
+    );
+
+    // 4: Msg 405 (Messenger, 14:00) -> "image/webp"
+    assert_eq!(mixed_page.items[4].id, 405);
+    assert_eq!(mixed_page.items[4].channel, Channel::Messenger);
+    assert_eq!(mixed_page.items[4].attachments[0].mime_type, "image/webp");
+
+    // Test B: Filter Messenger only
+    let messenger_only = harness
+        .repository
+        .get_contact_timeline(10, &[Channel::Messenger], None, 50)
+        .unwrap();
+    assert_eq!(messenger_only.items.len(), 3);
+    assert_eq!(messenger_only.items[0].id, 401);
+    assert_eq!(messenger_only.items[1].id, 403);
+    assert_eq!(messenger_only.items[2].id, 405);
+
+    // Test C: Filter Zalo only
+    let zalo_only = harness
+        .repository
+        .get_contact_timeline(10, &[Channel::Zalo], None, 50)
+        .unwrap();
+    assert_eq!(zalo_only.items.len(), 2);
+    assert_eq!(zalo_only.items[0].id, 402);
+    assert_eq!(zalo_only.items[1].id, 404);
+}

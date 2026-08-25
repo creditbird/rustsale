@@ -25,8 +25,69 @@ pub(crate) fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+const ALLOWED_DOTENV_KEYS: &[&str] = &[
+    "APP_ID",
+    "APP_SECRET",
+    "FACEBOOK_APP_ID",
+    "FACEBOOK_APP_SECRET",
+    "META_APP_ID",
+    "META_APP_SECRET",
+    "VITE_FACEBOOK_APP_ID",
+    "VITE_FACEBOOK_APP_SECRET",
+];
+
+pub fn load_dotenv_if_present() {
+    let mut candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(".env"));
+        if let Some(parent) = cwd.parent() {
+            candidates.push(parent.join(".env"));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(p1) = exe.parent() {
+            candidates.push(p1.join(".env"));
+            if let Some(p2) = p1.parent() {
+                candidates.push(p2.join(".env"));
+            }
+        }
+    }
+
+    for path in candidates {
+        if path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    if let Some((key, val)) = trimmed.split_once('=') {
+                        let k = key.trim();
+                        let mut v = val.trim();
+                        if (v.starts_with('"') && v.ends_with('"'))
+                            || (v.starts_with('\'') && v.ends_with('\''))
+                        {
+                            if v.len() >= 2 {
+                                v = &v[1..v.len() - 1];
+                            }
+                        }
+                        if !k.is_empty()
+                            && ALLOWED_DOTENV_KEYS.contains(&k)
+                            && std::env::var(k).is_err()
+                        {
+                            std::env::set_var(k, v);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    load_dotenv_if_present();
     install_rustls_crypto_provider();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())

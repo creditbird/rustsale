@@ -1,7 +1,7 @@
 use crate::conversation::types::{
-    ConversationAttachment, ConversationMention, ConversationMessage, ConversationReactionActor,
-    ConversationReactionGroup, ConversationReplyTarget, ConversationSendBatchSummary,
-    MessageSendBatchStatus,
+    resolve_attachment_mime_type, ConversationAttachment, ConversationMention, ConversationMessage,
+    ConversationReactionActor, ConversationReactionGroup, ConversationReplyTarget,
+    ConversationSendBatchSummary, MessageSendBatchStatus,
 };
 use rusqlite::{Connection, Result};
 use std::collections::HashMap;
@@ -67,10 +67,14 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
             .and_then(|m| m.get("duration_seconds"))
             .and_then(|v| v.as_f64());
 
+        let media_type: String = row.get(2)?;
+        let raw_mime: Option<String> = row.get(3)?;
+        let mime_type = resolve_attachment_mime_type(&media_type, raw_mime.as_deref());
+
         let att = ConversationAttachment {
             id: row.get(1)?,
-            media_type: row.get(2)?,
-            mime_type: row.get(3)?,
+            media_type,
+            mime_type,
             file_name: row.get(4)?,
             size_bytes: row.get(5)?,
             local_path: row.get(6)?,

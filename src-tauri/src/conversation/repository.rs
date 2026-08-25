@@ -2,11 +2,11 @@ use crate::conversation::error::{ConversationError, ConversationErrorCode};
 use crate::conversation::reactions::{canonical_reaction_code, mark_reaction_removed};
 pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
-    utc_now, Channel, ChannelBadgeSummary, ConversationAccountRuntime, ConversationKind,
-    ConversationMessage, ConversationMessageActions, ConversationParticipantSummary,
-    ConversationReplyTarget, ConversationRuntimeStatus, ConversationSendPartContent, InboxItem,
-    InboxItemKind, MessageDirection, MessageStatus, SendConversationBatchRequest,
-    SendConversationBatchResult, TimelineCursor, TimelinePage,
+    resolve_attachment_mime_type, utc_now, Channel, ChannelBadgeSummary,
+    ConversationAccountRuntime, ConversationKind, ConversationMessage, ConversationMessageActions,
+    ConversationParticipantSummary, ConversationReplyTarget, ConversationRuntimeStatus,
+    ConversationSendPartContent, InboxItem, InboxItemKind, MessageDirection, MessageStatus,
+    SendConversationBatchRequest, SendConversationBatchResult, TimelineCursor, TimelinePage,
 };
 pub use crate::conversation::zalo::normalizer::{
     NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
@@ -4448,9 +4448,12 @@ impl ConversationRepository {
                  LIMIT 1",
                 [message_id],
                 |r| {
+                    let media_type: String = r.get(0)?;
+                    let raw_mime: Option<String> = r.get(1)?;
+                    let mime_type = resolve_attachment_mime_type(&media_type, raw_mime.as_deref());
                     Ok(ClaimedAttachment {
-                        media_type: r.get(0)?,
-                        mime_type: r.get(1)?,
+                        media_type,
+                        mime_type,
                         file_name: r.get(2)?,
                         size_bytes: r.get(3)?,
                         local_path: r.get(4)?,

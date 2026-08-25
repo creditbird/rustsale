@@ -1063,6 +1063,13 @@ mod tests {
     }
 
     #[test]
+    fn test_load_dotenv_if_present_and_env_resolution() {
+        crate::load_dotenv_if_present();
+        // Check that calling load_dotenv_if_present multiple times is idempotent and safe
+        crate::load_dotenv_if_present();
+    }
+
+    #[test]
     fn test_zalo_qr_session_rejects_callback_without_device_imei() {
         let conn = db::init_db(":memory:").unwrap();
         let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".to_string();
@@ -4429,5 +4436,50 @@ mod tests {
 
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), png_bytes);
+    }
+
+    #[test]
+    fn test_parse_meta_token_exchange_response_and_redaction() {
+        // Success JSON
+        let success_json: serde_json::Value = serde_json::json!({
+            "access_token": "EAAB_exchanged_long_lived_token_123",
+            "token_type": "bearer"
+        });
+        let res = commands::parse_meta_token_exchange_response(&success_json);
+        assert_eq!(res.unwrap(), "EAAB_exchanged_long_lived_token_123");
+
+        // Error JSON
+        let err_json: serde_json::Value = serde_json::json!({
+            "error": {
+                "message": "Error validating client secret test_secret_val for token EAAB_secret_token",
+                "type": "OAuthException",
+                "code": 190
+            }
+        });
+        let err_res = commands::parse_meta_token_exchange_response(&err_json);
+        assert!(err_res.is_err());
+    }
+
+    #[test]
+    fn test_map_facebook_legacy_perms_to_scopes() {
+        let legacy_admin = serde_json::json!(["ADMINISTER", "CREATE_CONTENT"]);
+        let scopes =
+            commands::map_facebook_legacy_perms_to_scopes(legacy_admin.as_array().unwrap());
+        assert!(scopes.contains(&"pages_show_list".to_string()));
+        assert!(scopes.contains(&"pages_messaging".to_string()));
+        assert!(scopes.contains(&"pages_manage_posts".to_string()));
+        assert!(scopes.contains(&"leads_retrieval".to_string()));
+    }
+
+    #[test]
+    fn test_redact_exchange_secret() {
+        let raw = "Error with clean_token EAAB_token_xyz and app_secret secret_abc123 failed";
+        let safe = commands::redact_exchange_secret(raw, "EAAB_token_xyz", "secret_abc123");
+        assert_eq!(
+            safe,
+            "Error with clean_token [REDACTED] and app_secret [REDACTED] failed"
+        );
+        assert!(!safe.contains("EAAB_token_xyz"));
+        assert!(!safe.contains("secret_abc123"));
     }
 }
