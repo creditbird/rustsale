@@ -1015,7 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_facebook_pages_empty_token_validation() {
-        let err = commands::fetch_facebook_pages_from_token_internal("   ", None, None)
+        let err = commands::fetch_facebook_pages_from_token_internal("   ", None)
             .await
             .unwrap_err();
         assert!(err.contains("Access token cannot be empty"));

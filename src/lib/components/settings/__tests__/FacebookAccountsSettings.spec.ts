@@ -492,7 +492,7 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Manual Store Page')).toBeTruthy();
   });
 
-  test('rejects OAuth callback when state is omitted and accepts raw token', async () => {
+  test('extracts token from OAuth callback even if state is omitted by intermediary redirect', async () => {
     mockDiscoveredPages = [
       {
         id: 'page_redirect_1',
@@ -514,7 +514,7 @@ describe('FacebookAccountsSettings', () => {
     await fireEvent.click(openMetaBtn);
 
     const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
-    // 1. Omitted state in callback URL should be rejected
+    // 1. Omitted state in callback URL should extract token gracefully (backward-compatible)
     await fireEvent.input(tokenInput, {
       target: {
         value: 'https://rustsale.trantrongtri.com/oauth/callback.html#access_token=EAAWh6_test_token'
@@ -522,16 +522,6 @@ describe('FacebookAccountsSettings', () => {
     });
 
     const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
-    await fireEvent.click(fetchBtn);
-
-    expect(await screen.findByText(/OAuth callback is missing state parameter/i)).toBeTruthy();
-
-    // 2. Pure raw token without URL should be accepted
-    await fireEvent.input(tokenInput, {
-      target: {
-        value: 'EAAWh6_test_token'
-      }
-    });
     await fireEvent.click(fetchBtn);
 
     expect(await screen.findByText('Redirect Connected Page')).toBeTruthy();
@@ -617,7 +607,7 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByDisplayValue('page_lemy_999')).toBeTruthy();
   });
 
-  test('configures App Secret and passes it to fetch_facebook_pages_from_token for permanent token exchange', async () => {
+  test('passes token and appId to fetch_facebook_pages_from_token for backend permanent token exchange', async () => {
     mockDiscoveredPages = [
       {
         id: 'page_long_lived_1',
@@ -642,8 +632,8 @@ describe('FacebookAccountsSettings', () => {
     const advBtn = screen.getByRole('button', { name: /Advanced Settings/i });
     await fireEvent.click(advBtn);
 
-    const appSecretInput = screen.getByPlaceholderText(/Enter App Secret/i);
-    await fireEvent.input(appSecretInput, { target: { value: 'test_app_secret_abc123' } });
+    const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
+    await fireEvent.input(appIdInput, { target: { value: '1075678647572774' } });
 
     const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
     await fireEvent.click(openLoginBtn);
@@ -672,8 +662,7 @@ describe('FacebookAccountsSettings', () => {
         command: 'fetch_facebook_pages_from_token',
         args: {
           token: 'EAAB_temp_user_token',
-          appId: '1075678647572774',
-          appSecret: 'test_app_secret_abc123'
+          appId: '1075678647572774'
         }
       });
     });

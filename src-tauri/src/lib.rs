@@ -40,16 +40,10 @@ pub fn load_dotenv_if_present() {
     let mut candidates = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join(".env"));
-        if let Some(parent) = cwd.parent() {
-            candidates.push(parent.join(".env"));
-        }
     }
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(p1) = exe.parent() {
-            candidates.push(p1.join(".env"));
-            if let Some(p2) = p1.parent() {
-                candidates.push(p2.join(".env"));
-            }
+        if let Some(p) = exe.parent() {
+            candidates.push(p.join(".env"));
         }
     }
 

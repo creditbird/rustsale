@@ -2210,15 +2210,13 @@ pub async fn exchange_facebook_long_lived_token_internal(
 pub async fn fetch_facebook_pages_from_token(
     token: String,
     app_id: Option<String>,
-    app_secret: Option<String>,
 ) -> Result<Vec<DiscoveredFacebookPage>, String> {
-    fetch_facebook_pages_from_token_internal(&token, app_id.as_deref(), app_secret.as_deref()).await
+    fetch_facebook_pages_from_token_internal(&token, app_id.as_deref()).await
 }
 
 pub async fn fetch_facebook_pages_from_token_internal(
     token: &str,
     app_id: Option<&str>,
-    app_secret: Option<&str>,
 ) -> Result<Vec<DiscoveredFacebookPage>, String> {
     let clean_token = token.trim();
     if clean_token.is_empty() {
@@ -2233,7 +2231,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
-    // Resolve effective App ID and App Secret from parameters or environment variables
+    // Resolve effective App ID and App Secret strictly from parameters and server-side environment variables
     let effective_app_id = app_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -2243,11 +2241,8 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .or_else(|| std::env::var("FACEBOOK_APP_ID").ok())
         .or_else(|| std::env::var("META_APP_ID").ok());
 
-    let effective_app_secret = app_secret
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .or_else(|| std::env::var("APP_SECRET").ok())
+    let effective_app_secret = std::env::var("APP_SECRET")
+        .ok()
         .or_else(|| std::env::var("FACEBOOK_APP_SECRET").ok())
         .or_else(|| std::env::var("META_APP_SECRET").ok());
 

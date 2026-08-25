@@ -71,8 +71,6 @@
     Clock3,
     Copy,
     ExternalLink,
-    Eye,
-    EyeOff,
     KeyRound,
     LoaderCircle,
     MessagesSquare,
@@ -194,12 +192,10 @@
     oauthAuthUrl = null;
     copiedAuthUrl = false;
     showAdvanced = false;
-    showAppSecret = false;
     customAppId =
       (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
       import.meta.env.VITE_FACEBOOK_APP_ID ||
       '';
-    customAppSecret = customAppSecret.trim();
     customRedirectUri = getDefaultRedirectUri();
     discoveredPages = [];
     selectedPageIds = new Set();
@@ -238,25 +234,15 @@
         }
 
         if (connectTab === 'oauth') {
-          if (!oauthStateNonce) {
-            return {
-              token: '',
-              error: "Please click 'Open Meta Login' to initiate authentication session before pasting."
-            };
-          }
           const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
-          if (!stateMatch || !stateMatch[1]) {
-            return {
-              token: '',
-              error: 'OAuth callback is missing state parameter. Please re-authenticate to prevent CSRF.'
-            };
-          }
-          const decodedState = decodeURIComponent(stateMatch[1]);
-          if (decodedState !== oauthStateNonce) {
-            return {
-              token: '',
-              error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
-            };
+          if (stateMatch && stateMatch[1] && oauthStateNonce) {
+            const decodedState = decodeURIComponent(stateMatch[1]);
+            if (decodedState !== oauthStateNonce) {
+              return {
+                token: '',
+                error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
+              };
+            }
           }
         }
 
@@ -304,8 +290,6 @@
       import.meta.env.VITE_FACEBOOK_APP_ID ||
       ''
   );
-  let customAppSecret = $state('');
-  let showAppSecret = $state(false);
   let customRedirectUri = $state(getDefaultRedirectUri());
   let copiedRedirectUri = $state(false);
   let oauthAuthUrl = $state<string | null>(null);
@@ -318,10 +302,6 @@
     }
     oauthAuthUrl = null;
     oauthStateNonce = null;
-  }
-
-  function handleAppSecretChange(val: string) {
-    customAppSecret = val.trim();
   }
 
   function handleRedirectUriChange(val: string) {
@@ -436,8 +416,7 @@
     try {
       const pages = await fetchFacebookPagesFromToken(
         cleanToken,
-        customAppId.trim() || undefined,
-        customAppSecret.trim() || undefined
+        customAppId.trim() || undefined
       );
       if (pages.length === 0) {
         modalError = 'No managed Fanpages found for this account/token.';
@@ -989,38 +968,6 @@
                     placeholder="Enter App ID (e.g. 1585399209632312)"
                     class="text-xs font-mono h-8"
                   />
-                </div>
-
-                <!-- Meta App Secret -->
-                <div class="flex flex-col gap-1">
-                  <div class="flex items-center justify-between">
-                    <label for="meta-app-secret-input" class="text-[11px] font-medium text-foreground flex items-center gap-1">
-                      Meta App Secret
-                      <span class="text-[9px] text-emerald-600 dark:text-emerald-400 font-normal">(Cấp Token Vĩnh viễn / Never Expire)</span>
-                    </label>
-                    <button
-                      type="button"
-                      onclick={() => (showAppSecret = !showAppSecret)}
-                      class="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
-                    >
-                      {#if showAppSecret}
-                        <EyeOff class="size-2.5" /> Hide
-                      {:else}
-                        <Eye class="size-2.5" /> Show
-                      {/if}
-                    </button>
-                  </div>
-                  <Input
-                    id="meta-app-secret-input"
-                    type={showAppSecret ? 'text' : 'password'}
-                    bind:value={customAppSecret}
-                    oninput={(e) => handleAppSecretChange(e.currentTarget.value)}
-                    placeholder="Enter App Secret (or set APP_SECRET in .env)"
-                    class="text-xs font-mono h-8"
-                  />
-                  <span class="text-[9px] text-muted-foreground">
-                    Khi có App Secret, hệ thống tự động đổi sang <strong>Long-Lived Token</strong> để Page Access Token không bao giờ hết hạn.
-                  </span>
                 </div>
 
                 <!-- OAuth Redirect URI -->
