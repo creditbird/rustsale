@@ -1988,14 +1988,17 @@ pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> 
         if let Some(s) = t.as_str() {
             match s {
                 "PROFILE_PLUS_FULL_CONTROL" | "FULL_CONTROL" | "ADMINISTER" => {
-                    if !scopes.iter().any(|x| x == "pages_messaging") {
-                        scopes.push("pages_messaging".to_string());
-                    }
-                    if !scopes.iter().any(|x| x == "pages_manage_posts") {
-                        scopes.push("pages_manage_posts".to_string());
-                    }
-                    if !scopes.iter().any(|x| x == "pages_read_engagement") {
-                        scopes.push("pages_read_engagement".to_string());
+                    for scope in &[
+                        "pages_messaging",
+                        "pages_manage_posts",
+                        "pages_read_engagement",
+                        "pages_manage_engagement",
+                        "pages_read_user_content",
+                        "leads_retrieval",
+                    ] {
+                        if !scopes.iter().any(|x| x == *scope) {
+                            scopes.push(scope.to_string());
+                        }
                     }
                 }
                 "PROFILE_PLUS_MESSAGING" | "MESSAGING" => {
@@ -2007,8 +2010,10 @@ pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> 
                 | "CREATE_CONTENT"
                 | "PROFILE_PLUS_MANAGE"
                 | "MANAGE" => {
-                    if !scopes.iter().any(|x| x == "pages_manage_posts") {
-                        scopes.push("pages_manage_posts".to_string());
+                    for scope in &["pages_manage_posts", "pages_manage_engagement"] {
+                        if !scopes.iter().any(|x| x == *scope) {
+                            scopes.push(scope.to_string());
+                        }
                     }
                 }
                 "PROFILE_PLUS_MODERATE"
@@ -2017,8 +2022,14 @@ pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> 
                 | "ANALYZE"
                 | "PROFILE_PLUS_ADVERTISE"
                 | "ADVERTISE" => {
-                    if !scopes.iter().any(|x| x == "pages_read_engagement") {
-                        scopes.push("pages_read_engagement".to_string());
+                    for scope in &[
+                        "pages_read_engagement",
+                        "pages_read_user_content",
+                        "leads_retrieval",
+                    ] {
+                        if !scopes.iter().any(|x| x == *scope) {
+                            scopes.push(scope.to_string());
+                        }
                     }
                 }
                 _ => {}
@@ -2107,12 +2118,16 @@ pub fn save_managed_facebook_account_internal(
 #[tauri::command]
 pub async fn fetch_facebook_pages_from_token(
     token: String,
+    app_id: Option<String>,
+    app_secret: Option<String>,
 ) -> Result<Vec<DiscoveredFacebookPage>, String> {
-    fetch_facebook_pages_from_token_internal(&token).await
+    fetch_facebook_pages_from_token_internal(&token, app_id.as_deref(), app_secret.as_deref()).await
 }
 
 pub async fn fetch_facebook_pages_from_token_internal(
     token: &str,
+    app_id: Option<&str>,
+    app_secret: Option<&str>,
 ) -> Result<Vec<DiscoveredFacebookPage>, String> {
     let clean_token = token.trim();
     if clean_token.is_empty() {
@@ -2124,10 +2139,56 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
+    // Resolve effective App ID and App Secret from parameters or environment variables
+    let effective_app_id = app_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("APP_ID").ok())
+        .or_else(|| std::env::var("VITE_FACEBOOK_APP_ID").ok())
+        .or_else(|| std::env::var("FACEBOOK_APP_ID").ok())
+        .or_else(|| std::env::var("META_APP_ID").ok());
+
+    let effective_app_secret = app_secret
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("APP_SECRET").ok())
+        .or_else(|| std::env::var("FACEBOOK_APP_SECRET").ok())
+        .or_else(|| std::env::var("META_APP_SECRET").ok())
+        .or_else(|| std::env::var("VITE_FACEBOOK_APP_SECRET").ok());
+
+    // If App ID and App Secret are available, exchange Short-Lived Token for Long-Lived Token (60-day / permanent)
+    let mut working_token = clean_token.to_string();
+    if let (Some(aid), Some(asec)) = (effective_app_id.as_ref(), effective_app_secret.as_ref()) {
+        if !aid.trim().is_empty() && !asec.trim().is_empty() {
+            let exchange_url = format!(
+                "https://graph.facebook.com/v26.0/oauth/access_token?grant_type=fb_exchange_token&client_id={}&client_secret={}&fb_exchange_token={}",
+                urlencoding::encode(aid.trim()),
+                urlencoding::encode(asec.trim()),
+                urlencoding::encode(clean_token)
+            );
+
+            if let Ok(exchange_resp) = client.get(&exchange_url).send().await {
+                if exchange_resp.status().is_success() {
+                    if let Ok(exchange_json) = exchange_resp.json::<serde_json::Value>().await {
+                        if let Some(long_token) =
+                            exchange_json.get("access_token").and_then(|t| t.as_str())
+                        {
+                            if !long_token.trim().is_empty() {
+                                working_token = long_token.trim().to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Query /me/permissions to retrieve granted App OAuth permissions
     let mut app_permissions = Vec::new();
     let perms_url = "https://graph.facebook.com/v26.0/me/permissions";
-    if let Ok(perms_resp) = client.get(perms_url).bearer_auth(clean_token).send().await {
+    if let Ok(perms_resp) = client.get(perms_url).bearer_auth(&working_token).send().await {
         if perms_resp.status().is_success() {
             if let Ok(perms_body) = perms_resp.json::<serde_json::Value>().await {
                 app_permissions = parse_meta_app_permissions(&perms_body);
@@ -2149,11 +2210,14 @@ pub async fn fetch_facebook_pages_from_token_internal(
         }
         page_count_limit += 1;
 
-        let resp = match client.get(&url).bearer_auth(clean_token).send().await {
+        let resp = match client.get(&url).bearer_auth(&working_token).send().await {
             Ok(r) => r,
             Err(e) => {
                 // Redact any potential query parameters/tokens from error
-                let safe_err = e.to_string().replace(clean_token, "[REDACTED]");
+                let safe_err = e
+                    .to_string()
+                    .replace(clean_token, "[REDACTED]")
+                    .replace(&working_token, "[REDACTED]");
                 return Err(format!("Failed to connect to Meta Graph API: {}", safe_err));
             }
         };
@@ -2192,17 +2256,17 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 for p in p_arr {
                                     if let Some(p_str) = p.as_str() {
                                         if p_str == "ADMINISTER" || p_str == "EDIT_PROFILE" {
-                                            if !p_scopes.iter().any(|s| s == "pages_messaging") {
-                                                p_scopes.push("pages_messaging".to_string());
-                                            }
-                                            if !p_scopes.iter().any(|s| s == "pages_manage_posts") {
-                                                p_scopes.push("pages_manage_posts".to_string());
-                                            }
-                                            if !p_scopes
-                                                .iter()
-                                                .any(|s| s == "pages_read_engagement")
-                                            {
-                                                p_scopes.push("pages_read_engagement".to_string());
+                                            for s in &[
+                                                "pages_messaging",
+                                                "pages_manage_posts",
+                                                "pages_read_engagement",
+                                                "pages_manage_engagement",
+                                                "pages_read_user_content",
+                                                "leads_retrieval",
+                                            ] {
+                                                if !p_scopes.iter().any(|x| x == *s) {
+                                                    p_scopes.push(s.to_string());
+                                                }
                                             }
                                         }
                                     }
@@ -2261,7 +2325,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
 
     // 2. If /me/accounts returned no pages (empty data), check if token was a direct Page Access Token via GET /me
     let me_url = "https://graph.facebook.com/v26.0/me?fields=id,name,category,picture.type(large)";
-    if let Ok(me_resp) = client.get(me_url).bearer_auth(clean_token).send().await {
+    if let Ok(me_resp) = client.get(me_url).bearer_auth(&working_token).send().await {
         let me_status = me_resp.status();
         let me_text = me_resp.text().await.unwrap_or_default();
         if me_status.is_success() {
@@ -2298,7 +2362,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
                         name: name.to_string(),
                         category: Some(category.to_string()),
                         avatar_url,
-                        access_token: clean_token.to_string(),
+                        access_token: working_token.to_string(),
                         permissions: perms,
                     }]);
                 }

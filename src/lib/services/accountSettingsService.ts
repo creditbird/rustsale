@@ -89,8 +89,12 @@ export const listManagedFacebookAccounts = () =>
 export const saveManagedFacebookAccount = (request: SaveFacebookAccountPayload) =>
   invoke<ManagedFacebookAccount>('save_managed_facebook_account', { request });
 
-export const fetchFacebookPagesFromToken = (token: string) =>
-  invoke<DiscoveredFacebookPage[]>('fetch_facebook_pages_from_token', { token });
+export const fetchFacebookPagesFromToken = (token: string, appId?: string, appSecret?: string) =>
+  invoke<DiscoveredFacebookPage[]>('fetch_facebook_pages_from_token', {
+    token,
+    appId: appId || null,
+    appSecret: appSecret || null
+  });
 
 export const deleteFacebookAccount = (pageId: string) =>
   invoke<void>('delete_facebook_account', { pageId });
