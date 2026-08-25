@@ -4,6 +4,9 @@
     if (host === 'localhost' || host === '127.0.0.1') {
       return true;
     }
+    if (host === 'facebook.com' || host.endsWith('.facebook.com')) {
+      return true;
+    }
     if (host === 'trantrongtri.com' || host.endsWith('.trantrongtri.com')) {
       return true;
     }
@@ -182,8 +185,8 @@
 
   let showAdvanced = $state(false);
 
-  function openConnectModal() {
-    connectTab = 'oauth';
+  function resetModalState(tab: 'oauth' | 'manual', account?: ManagedFacebookAccount) {
+    connectTab = tab;
     oauthTokenOrUrl = '';
     oauthStateNonce = null;
     oauthAuthUrl = null;
@@ -198,81 +201,73 @@
     selectedPageIds = new Set();
     modalError = null;
     modalSuccess = null;
-    manualPageId = '';
-    manualPageName = '';
+    manualPageId = account ? account.pageId : '';
+    manualPageName = account?.pageName || '';
     manualAccessToken = '';
-    manualAvatarUrl = '';
+    manualAvatarUrl = account?.avatarUrl || '';
     connectModalOpen = true;
   }
 
+  function openConnectModal() {
+    resetModalState('oauth');
+  }
+
   function openReconnectModal(account: ManagedFacebookAccount) {
-    connectTab = 'manual';
-    oauthTokenOrUrl = '';
-    oauthStateNonce = null;
-    oauthAuthUrl = null;
-    copiedAuthUrl = false;
-    showAdvanced = false;
-    customAppId =
-      (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
-      import.meta.env.VITE_FACEBOOK_APP_ID ||
-      '';
-    customRedirectUri = getDefaultRedirectUri();
-    discoveredPages = [];
-    selectedPageIds = new Set();
-    modalError = null;
-    modalSuccess = null;
-    manualPageId = account.pageId;
-    manualPageName = account.pageName || '';
-    manualAccessToken = '';
-    manualAvatarUrl = account.avatarUrl || '';
-    connectModalOpen = true;
+    resetModalState('manual', account);
   }
 
   function extractTokenAndValidateState(raw: string): { token: string; error?: string } {
     const trimmed = raw.trim();
     if (!trimmed) return { token: '' };
 
-    if (connectTab === 'oauth') {
-      if (!oauthStateNonce) {
-        return {
-          token: '',
-          error: "Please click 'Open Meta Login' to initiate authentication session before pasting."
-        };
-      }
-      const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
-      if (stateMatch && stateMatch[1]) {
-        const decodedState = decodeURIComponent(stateMatch[1]);
-        if (decodedState !== oauthStateNonce) {
+    const isUrl = trimmed.startsWith('http://') || trimmed.startsWith('https://');
+
+    if (isUrl) {
+      try {
+        const urlObj = new URL(trimmed);
+        const { url: sbUrl } = getSupabaseConfig();
+        if (!isValidOAuthRedirectUri(urlObj.href, sbUrl)) {
           return {
             token: '',
-            error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
+            error: 'OAuth callback origin is not recognized as a valid secure domain.'
           };
         }
-      }
-    }
 
-    const providerTokenMatch = trimmed.match(/[#&?]provider_token=([^&]+)/);
-    if (providerTokenMatch && providerTokenMatch[1]) {
-      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-        try {
-          const urlObj = new URL(trimmed);
-          const { url: sbUrl } = getSupabaseConfig();
-          if (!isValidOAuthRedirectUri(urlObj.href, sbUrl)) {
-            return {
-              token: '',
-              error: 'OAuth callback origin is not recognized as a valid secure domain.'
-            };
+        if (connectTab === 'oauth') {
+          const stateMatch = trimmed.match(/[#&?]state=([^&]+)/);
+          if (stateMatch && stateMatch[1] && oauthStateNonce) {
+            const decodedState = decodeURIComponent(stateMatch[1]);
+            if (decodedState !== oauthStateNonce) {
+              return {
+                token: '',
+                error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
+              };
+            }
           }
-        } catch {
-          // ignore parsing error and proceed with token extraction
         }
-      }
-      return { token: decodeURIComponent(providerTokenMatch[1]) };
-    }
 
-    const tokenMatch = trimmed.match(/[#&?]access_token=([^&]+)/);
-    if (tokenMatch && tokenMatch[1]) {
-      return { token: decodeURIComponent(tokenMatch[1]) };
+        const providerTokenMatch = trimmed.match(/[#&?]provider_token=([^&]+)/);
+        if (providerTokenMatch && providerTokenMatch[1]) {
+          return { token: decodeURIComponent(providerTokenMatch[1]) };
+        }
+
+        const tokenMatch = trimmed.match(/[#&?]access_token=([^&]+)/);
+        if (tokenMatch && tokenMatch[1]) {
+          return { token: decodeURIComponent(tokenMatch[1]) };
+        }
+
+        return {
+          token: '',
+          error: 'No access token found in OAuth callback URL.'
+        };
+      } catch (err: any) {
+        return {
+          token: '',
+          error: err?.message?.includes('URI')
+            ? 'Malformed URI encoding in callback URL.'
+            : 'OAuth callback origin is not recognized as a valid secure domain.'
+        };
+      }
     }
 
     return { token: trimmed };
@@ -938,7 +933,7 @@
             >
               <span class="flex items-center gap-1.5 font-medium">
                 <Settings2 class="size-3 text-muted-foreground" />
-                Advanced Settings (App ID & OAuth Redirect URI)
+                Advanced Settings (App ID, App Secret & Redirect URI)
               </span>
               {#if showAdvanced}
                 <ChevronUp class="size-3.5 text-muted-foreground" />

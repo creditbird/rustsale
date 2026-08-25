@@ -163,6 +163,35 @@ pub struct ConversationAttachment {
     pub duration_seconds: Option<f64>,
 }
 
+impl ConversationAttachment {
+    /// Resolves and normalizes MIME type from raw DB / provider MIME string and media_type fallback.
+    ///
+    /// If raw_mime is present and non-empty after trimming, the trimmed MIME is returned.
+    /// Otherwise, falls back safely based on media_type:
+    /// - "image" -> "image/jpeg"
+    /// - "video" -> "video/mp4"
+    /// - "audio" -> "audio/mpeg"
+    /// - other / unrecognized -> "application/octet-stream"
+    pub fn resolve_mime_type(media_type: &str, raw_mime: Option<&str>) -> String {
+        if let Some(trimmed) = raw_mime.map(str::trim) {
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        match media_type.trim().to_ascii_lowercase().as_str() {
+            "image" => "image/jpeg".to_string(),
+            "video" => "video/mp4".to_string(),
+            "audio" => "audio/mpeg".to_string(),
+            _ => "application/octet-stream".to_string(),
+        }
+    }
+}
+
+/// Helper function to resolve attachment MIME type safely.
+pub fn resolve_attachment_mime_type(media_type: &str, raw_mime: Option<&str>) -> String {
+    ConversationAttachment::resolve_mime_type(media_type, raw_mime)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationReplyTarget {
@@ -1394,5 +1423,59 @@ mod tests {
         assert!(value.get("providerMessageId").is_none());
         assert!(value.get("providerClientMessageId").is_none());
         assert!(value["replyTarget"].get("providerMessageId").is_none());
+    }
+
+    #[test]
+    fn test_resolve_attachment_mime_type_table_driven() {
+        let test_cases = vec![
+            // Valid explicit MIME types (with/without whitespace)
+            ("image", Some("image/png"), "image/png"),
+            ("image", Some("  image/webp  "), "image/webp"),
+            ("video", Some("video/quicktime"), "video/quicktime"),
+            ("audio", Some("audio/wav"), "audio/wav"),
+            ("file", Some("application/pdf"), "application/pdf"),
+            (
+                "document",
+                Some("application/vnd.ms-excel"),
+                "application/vnd.ms-excel",
+            ),
+            // Null / None MIME type fallbacks for all four branches + case insensitivity
+            ("image", None, "image/jpeg"),
+            ("IMAGE", None, "image/jpeg"),
+            ("Image", None, "image/jpeg"),
+            ("  image  ", None, "image/jpeg"),
+            ("video", None, "video/mp4"),
+            ("VIDEO", None, "video/mp4"),
+            ("audio", None, "audio/mpeg"),
+            ("AUDIO", None, "audio/mpeg"),
+            ("file", None, "application/octet-stream"),
+            ("document", None, "application/octet-stream"),
+            ("sticker", None, "application/octet-stream"),
+            ("other", None, "application/octet-stream"),
+            ("", None, "application/octet-stream"),
+            ("unknown", None, "application/octet-stream"),
+            // Empty string MIME type fallbacks (treated as missing)
+            ("image", Some(""), "image/jpeg"),
+            ("IMAGE", Some(""), "image/jpeg"),
+            ("video", Some(""), "video/mp4"),
+            ("audio", Some(""), "audio/mpeg"),
+            ("file", Some(""), "application/octet-stream"),
+            ("other", Some(""), "application/octet-stream"),
+            // Whitespace-only string MIME type fallbacks (treated as missing)
+            ("image", Some("   "), "image/jpeg"),
+            ("video", Some(" \t\n "), "video/mp4"),
+            ("audio", Some("   "), "audio/mpeg"),
+            ("file", Some("   "), "application/octet-stream"),
+            ("other", Some("   "), "application/octet-stream"),
+        ];
+
+        for (media_type, raw_mime, expected) in test_cases {
+            let actual = resolve_attachment_mime_type(media_type, raw_mime);
+            assert_eq!(
+                actual, expected,
+                "Failed for media_type='{}', raw_mime={:?}: expected '{}', got '{}'",
+                media_type, raw_mime, expected, actual
+            );
+        }
     }
 }

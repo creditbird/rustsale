@@ -1982,20 +1982,22 @@ pub fn intersect_tasks_and_app_permissions(
     effective
 }
 
+pub const FULL_FACEBOOK_ADMIN_SCOPES: &[&str] = &[
+    "pages_messaging",
+    "pages_manage_posts",
+    "pages_read_engagement",
+    "pages_manage_engagement",
+    "pages_read_user_content",
+    "leads_retrieval",
+];
+
 pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> {
     let mut scopes = vec!["pages_show_list".to_string()];
     for t in tasks {
         if let Some(s) = t.as_str() {
             match s {
                 "PROFILE_PLUS_FULL_CONTROL" | "FULL_CONTROL" | "ADMINISTER" => {
-                    for scope in &[
-                        "pages_messaging",
-                        "pages_manage_posts",
-                        "pages_read_engagement",
-                        "pages_manage_engagement",
-                        "pages_read_user_content",
-                        "leads_retrieval",
-                    ] {
+                    for scope in FULL_FACEBOOK_ADMIN_SCOPES {
                         if !scopes.iter().any(|x| x == *scope) {
                             scopes.push(scope.to_string());
                         }
@@ -2033,6 +2035,22 @@ pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> 
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+    scopes
+}
+
+pub fn map_facebook_legacy_perms_to_scopes(perms: &[serde_json::Value]) -> Vec<String> {
+    let mut scopes = vec!["pages_show_list".to_string()];
+    for p in perms {
+        if let Some(p_str) = p.as_str() {
+            if p_str == "ADMINISTER" || p_str == "EDIT_PROFILE" {
+                for s in FULL_FACEBOOK_ADMIN_SCOPES {
+                    if !scopes.iter().any(|x| x == *s) {
+                        scopes.push(s.to_string());
+                    }
+                }
             }
         }
     }
@@ -2123,11 +2141,26 @@ pub fn parse_meta_token_exchange_response(json: &serde_json::Value) -> Result<St
         }
     }
 
-    if let Some(err) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+    if let Some(err) = json
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+    {
         return Err(format!("Meta token exchange error: {}", err));
     }
 
     Err("Invalid response from Meta token exchange endpoint".to_string())
+}
+
+pub fn redact_exchange_secret(msg: &str, clean_token: &str, app_secret: &str) -> String {
+    let mut safe = msg.to_string();
+    if !clean_token.is_empty() {
+        safe = safe.replace(clean_token, "[REDACTED]");
+    }
+    if !app_secret.is_empty() {
+        safe = safe.replace(app_secret, "[REDACTED]");
+    }
+    safe
 }
 
 pub async fn exchange_facebook_long_lived_token_internal(
@@ -2148,13 +2181,16 @@ pub async fn exchange_facebook_long_lived_token_internal(
         .form(&params)
         .send()
         .await
-        .map_err(|e| format!("HTTP request to Meta token exchange failed: {}", e))?;
+        .map_err(|e| {
+            let raw_err = format!("HTTP request to Meta token exchange failed: {}", e);
+            redact_exchange_secret(&raw_err, clean_token, app_secret)
+        })?;
 
     let status = resp.status();
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Meta token exchange JSON response: {}", e))?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        let raw_err = format!("Failed to parse Meta token exchange JSON response: {}", e);
+        redact_exchange_secret(&raw_err, clean_token, app_secret)
+    })?;
 
     if !status.is_success() {
         let err_msg = body
@@ -2162,10 +2198,12 @@ pub async fn exchange_facebook_long_lived_token_internal(
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
             .unwrap_or("Unknown Meta API error");
-        return Err(format!("Meta returned HTTP {}: {}", status, err_msg));
+        let raw_err = format!("Meta returned HTTP {}: {}", status, err_msg);
+        return Err(redact_exchange_secret(&raw_err, clean_token, app_secret));
     }
 
     parse_meta_token_exchange_response(&body)
+        .map_err(|err| redact_exchange_secret(&err, clean_token, app_secret))
 }
 
 #[tauri::command]
@@ -2173,13 +2211,12 @@ pub async fn fetch_facebook_pages_from_token(
     token: String,
     app_id: Option<String>,
 ) -> Result<Vec<DiscoveredFacebookPage>, String> {
-    fetch_facebook_pages_from_token_internal(&token, app_id.as_deref(), None).await
+    fetch_facebook_pages_from_token_internal(&token, app_id.as_deref()).await
 }
 
 pub async fn fetch_facebook_pages_from_token_internal(
     token: &str,
     app_id: Option<&str>,
-    app_secret: Option<&str>,
 ) -> Result<Vec<DiscoveredFacebookPage>, String> {
     let clean_token = token.trim();
     if clean_token.is_empty() {
@@ -2191,7 +2228,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
-    // Resolve effective App ID and App Secret from parameters or environment variables
+    // Resolve effective App ID and App Secret strictly from parameters and server-side environment variables
     let effective_app_id = app_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -2201,27 +2238,32 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .or_else(|| std::env::var("FACEBOOK_APP_ID").ok())
         .or_else(|| std::env::var("META_APP_ID").ok());
 
-    let effective_app_secret = app_secret
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .or_else(|| std::env::var("APP_SECRET").ok())
+    let effective_app_secret = std::env::var("APP_SECRET")
+        .ok()
         .or_else(|| std::env::var("FACEBOOK_APP_SECRET").ok())
-        .or_else(|| std::env::var("META_APP_SECRET").ok())
-        .or_else(|| std::env::var("VITE_FACEBOOK_APP_SECRET").ok());
+        .or_else(|| std::env::var("META_APP_SECRET").ok());
 
-    // If App ID and App Secret are available, exchange Short-Lived Token for Long-Lived Token (60-day / permanent) via POST form (no secrets in URL)
+    // If App ID and App Secret are available, attempt exchange of Short-Lived Token for Long-Lived Token (60-day / permanent) via POST form.
+    // If exchange fails (e.g. token is already long-lived, or Meta API returns an error), gracefully fall back to the provided token.
     let mut working_token = clean_token.to_string();
     if let (Some(aid), Some(asec)) = (effective_app_id.as_ref(), effective_app_secret.as_ref()) {
         let trimmed_aid = aid.trim();
         let trimmed_asec = asec.trim();
         if !trimmed_aid.is_empty() && !trimmed_asec.is_empty() {
-            match exchange_facebook_long_lived_token_internal(&client, clean_token, trimmed_aid, trimmed_asec).await {
+            match exchange_facebook_long_lived_token_internal(
+                &client,
+                clean_token,
+                trimmed_aid,
+                trimmed_asec,
+            )
+            .await
+            {
                 Ok(long_token) => {
+                    tracing::info!(target: "facebook_auth", "Successfully exchanged short-lived token for long-lived Meta token");
                     working_token = long_token;
                 }
                 Err(err) => {
-                    eprintln!("[Facebook Auth] Notice: Long-lived token exchange could not be completed ({err}). Continuing with provided token.");
+                    tracing::warn!(target: "facebook_auth", "Long-lived token exchange notice: {}. Continuing with provided token.", err);
                 }
             }
         }
@@ -2230,7 +2272,12 @@ pub async fn fetch_facebook_pages_from_token_internal(
     // Query /me/permissions to retrieve granted App OAuth permissions
     let mut app_permissions = Vec::new();
     let perms_url = "https://graph.facebook.com/v26.0/me/permissions";
-    if let Ok(perms_resp) = client.get(perms_url).bearer_auth(&working_token).send().await {
+    if let Ok(perms_resp) = client
+        .get(perms_url)
+        .bearer_auth(&working_token)
+        .send()
+        .await
+    {
         if perms_resp.status().is_success() {
             if let Ok(perms_body) = perms_resp.json::<serde_json::Value>().await {
                 app_permissions = parse_meta_app_permissions(&perms_body);
@@ -2294,26 +2341,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 map_facebook_tasks_to_scopes(tasks)
                             } else if let Some(p_arr) = item.get("perms").and_then(|p| p.as_array())
                             {
-                                let mut p_scopes = vec!["pages_show_list".to_string()];
-                                for p in p_arr {
-                                    if let Some(p_str) = p.as_str() {
-                                        if p_str == "ADMINISTER" || p_str == "EDIT_PROFILE" {
-                                            for s in &[
-                                                "pages_messaging",
-                                                "pages_manage_posts",
-                                                "pages_read_engagement",
-                                                "pages_manage_engagement",
-                                                "pages_read_user_content",
-                                                "leads_retrieval",
-                                            ] {
-                                                if !p_scopes.iter().any(|x| x == *s) {
-                                                    p_scopes.push(s.to_string());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                p_scopes
+                                map_facebook_legacy_perms_to_scopes(p_arr)
                             } else {
                                 vec!["pages_show_list".to_string()]
                             };
@@ -2335,14 +2363,32 @@ pub async fn fetch_facebook_pages_from_token_internal(
                     }
                 }
 
-                // Handle pagination if more than 100 pages exist (with origin validation)
+                // Handle pagination if more than 100 pages exist (with origin validation and token query stripping)
                 if let Some(next) = body
                     .get("paging")
                     .and_then(|p| p.get("next"))
                     .and_then(|n| n.as_str())
                 {
-                    if next.starts_with("https://graph.facebook.com/") {
-                        next_url = Some(next.to_string());
+                    if let Ok(mut parsed_next) = url::Url::parse(next) {
+                        if parsed_next.scheme() == "https"
+                            && parsed_next.host_str() == Some("graph.facebook.com")
+                        {
+                            let clean_pairs: Vec<(String, String)> = parsed_next
+                                .query_pairs()
+                                .filter(|(k, _)| k != "access_token" && k != "client_secret")
+                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .collect();
+                            parsed_next.set_query(None);
+                            if !clean_pairs.is_empty() {
+                                let mut serializer =
+                                    url::form_urlencoded::Serializer::new(String::new());
+                                for (k, v) in clean_pairs {
+                                    serializer.append_pair(&k, &v);
+                                }
+                                parsed_next.set_query(Some(&serializer.finish()));
+                            }
+                            next_url = Some(parsed_next.to_string());
+                        }
                     }
                 }
             }

@@ -492,7 +492,7 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Manual Store Page')).toBeTruthy();
   });
 
-  test('extracts token from OAuth callback even if state was omitted by intermediary redirect', async () => {
+  test('extracts token from OAuth callback even if state is omitted by intermediary redirect', async () => {
     mockDiscoveredPages = [
       {
         id: 'page_redirect_1',
@@ -514,9 +514,10 @@ describe('FacebookAccountsSettings', () => {
     await fireEvent.click(openMetaBtn);
 
     const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    // 1. Omitted state in callback URL should extract token gracefully (backward-compatible)
     await fireEvent.input(tokenInput, {
       target: {
-        value: 'http://localhost:3000/?error=invalid_request&error_code=bad_oauth_callback&error_description=OAuth+state+parameter+missing#access_token=EAAWh6_test_token'
+        value: 'https://rustsale.trantrongtri.com/oauth/callback.html#access_token=EAAWh6_test_token'
       }
     });
 
@@ -604,5 +605,68 @@ describe('FacebookAccountsSettings', () => {
 
     // Modal opens on Manual Tab with prefilled pageId
     expect(await screen.findByDisplayValue('page_lemy_999')).toBeTruthy();
+  });
+
+  test('passes token and appId to fetch_facebook_pages_from_token for backend permanent token exchange', async () => {
+    mockDiscoveredPages = [
+      {
+        id: 'page_long_lived_1',
+        name: 'Long Lived Fanpage',
+        category: 'Business',
+        avatarUrl: null,
+        accessToken: 'EAAB_permanent_token_123',
+        permissions: ['pages_messaging']
+      }
+    ];
+
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    let capturedAuthUrl = '';
+    window.open = (url?: string | URL) => {
+      capturedAuthUrl = String(url);
+      return null;
+    };
+
+    const advBtn = screen.getByRole('button', { name: /Advanced Settings/i });
+    await fireEvent.click(advBtn);
+
+    const appIdInput = screen.getByPlaceholderText(/Enter App ID/i);
+    await fireEvent.input(appIdInput, { target: { value: '1075678647572774' } });
+
+    const openLoginBtn = screen.getByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openLoginBtn);
+
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/state=([^&]+)/);
+    });
+
+    const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+    const authUrl = String(openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl);
+    const stateMatch = authUrl.match(/state=([^&]+)/);
+    expect(stateMatch).toBeTruthy();
+
+    const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    await fireEvent.input(tokenInput, {
+      target: { value: `https://facebook.com/connect/login_success.html#access_token=EAAB_temp_user_token&state=${stateMatch![1]}` }
+    });
+
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
+
+    await waitFor(() => {
+      expect(invokedCommands).toContainEqual({
+        command: 'fetch_facebook_pages_from_token',
+        args: {
+          token: 'EAAB_temp_user_token',
+          appId: '1075678647572774'
+        }
+      });
+    });
+
+    expect(await screen.findByText('Long Lived Fanpage')).toBeTruthy();
   });
 });
