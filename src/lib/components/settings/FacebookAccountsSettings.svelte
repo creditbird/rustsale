@@ -363,7 +363,8 @@
       modalError = 'Invalid OAuth Redirect URI. Must be a valid HTTPS URL on an approved domain (e.g. Supabase callback *.supabase.co or *.trantrongtri.com).';
       return null;
     }
-    const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging,leads_retrieval';
+    const scope =
+      'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging,pages_manage_engagement,pages_read_user_content,leads_retrieval';
     if (!oauthStateNonce) {
       oauthStateNonce = generateCryptoNonce();
     }
@@ -418,7 +419,10 @@
     isFetchingPages = true;
 
     try {
-      const pages = await fetchFacebookPagesFromToken(cleanToken);
+      const pages = await fetchFacebookPagesFromToken(
+        cleanToken,
+        customAppId.trim() || undefined
+      );
       if (pages.length === 0) {
         modalError = 'No managed Fanpages found for this account/token.';
       } else {

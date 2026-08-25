@@ -907,7 +907,10 @@ mod tests {
                 "pages_show_list".to_string(),
                 "pages_messaging".to_string(),
                 "pages_manage_posts".to_string(),
+                "pages_manage_engagement".to_string(),
                 "pages_read_engagement".to_string(),
+                "pages_read_user_content".to_string(),
+                "leads_retrieval".to_string(),
             ]
         );
 
@@ -924,7 +927,10 @@ mod tests {
                 "pages_show_list".to_string(),
                 "pages_messaging".to_string(),
                 "pages_manage_posts".to_string(),
+                "pages_manage_engagement".to_string(),
                 "pages_read_engagement".to_string(),
+                "pages_read_user_content".to_string(),
+                "leads_retrieval".to_string(),
             ]
         );
 
@@ -1009,10 +1015,51 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_facebook_pages_empty_token_validation() {
-        let err = commands::fetch_facebook_pages_from_token_internal("   ")
+        let err = commands::fetch_facebook_pages_from_token_internal("   ", None, None)
             .await
             .unwrap_err();
         assert!(err.contains("Access token cannot be empty"));
+    }
+
+    #[test]
+    fn test_map_facebook_tasks_to_scopes_comprehensive() {
+        let full_control_tasks = vec![serde_json::json!("PROFILE_PLUS_FULL_CONTROL")];
+        let scopes = commands::map_facebook_tasks_to_scopes(&full_control_tasks);
+        assert!(scopes.contains(&"pages_show_list".to_string()));
+        assert!(scopes.contains(&"pages_messaging".to_string()));
+        assert!(scopes.contains(&"pages_manage_posts".to_string()));
+        assert!(scopes.contains(&"pages_read_engagement".to_string()));
+        assert!(scopes.contains(&"pages_manage_engagement".to_string()));
+        assert!(scopes.contains(&"pages_read_user_content".to_string()));
+        assert!(scopes.contains(&"leads_retrieval".to_string()));
+    }
+
+    #[test]
+    fn test_parse_meta_token_exchange_response_success_and_error() {
+        // Success case
+        let success_json = serde_json::json!({
+            "access_token": "EAAXxLongLivedToken123456",
+            "token_type": "bearer",
+            "expires_in": 5184000
+        });
+        let token = commands::parse_meta_token_exchange_response(&success_json).unwrap();
+        assert_eq!(token, "EAAXxLongLivedToken123456");
+
+        // Error case from Meta API
+        let error_json = serde_json::json!({
+            "error": {
+                "message": "Error validating client secret.",
+                "type": "OAuthException",
+                "code": 1
+            }
+        });
+        let err = commands::parse_meta_token_exchange_response(&error_json).unwrap_err();
+        assert!(err.contains("Error validating client secret"));
+
+        // Malformed / Empty response
+        let empty_json = serde_json::json!({});
+        let err2 = commands::parse_meta_token_exchange_response(&empty_json).unwrap_err();
+        assert!(err2.contains("Invalid response"));
     }
 
     #[test]
