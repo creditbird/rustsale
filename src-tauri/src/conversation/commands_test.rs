@@ -60,11 +60,13 @@ impl ServiceHarness {
         service: Arc<ConversationService>,
         zalo_supervisor: Arc<crate::conversation::zalo::supervisor::ZaloSessionSupervisor>,
     ) -> super::commands::ConversationState {
-        let facebook_supervisor = Arc::new(super::facebook::supervisor::FacebookMessengerSupervisor::new(
-            self.path.to_str().unwrap().to_string(),
-            self.events.clone(),
-            Arc::new(super::facebook::client::RealFacebookGraphClient::new()),
-        ));
+        let facebook_supervisor = Arc::new(
+            super::facebook::supervisor::FacebookMessengerSupervisor::new(
+                self.path.to_str().unwrap().to_string(),
+                self.events.clone(),
+                Arc::new(super::facebook::client::RealFacebookGraphClient::new()),
+            ),
+        );
         super::commands::ConversationState {
             service,
             zalo_supervisor,
@@ -2041,7 +2043,9 @@ async fn test_sync_facebook_conversations_command() {
     let state = app.state::<ConversationState>();
 
     // With no connected Facebook accounts, sync returns 0 new messages
-    let res = sync_facebook_conversations(state.clone(), None).await.unwrap();
+    let res = sync_facebook_conversations(state.clone(), None)
+        .await
+        .unwrap();
     assert_eq!(res, 0);
 
     // With non-existent page_id, returns error

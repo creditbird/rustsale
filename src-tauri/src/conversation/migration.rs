@@ -122,6 +122,47 @@ fn ensure_facebook_upload_sessions_schema_v2(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_facebook_page_tokens_schema_v2(conn: &Connection) -> Result<()> {
+    let table_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='facebook_page_tokens'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if let Some(sql) = table_sql {
+        if !sql.contains("'expired'") {
+            conn.execute_batch(
+                "CREATE TABLE facebook_page_tokens_v2 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_account_id INTEGER NOT NULL UNIQUE,
+                    page_id TEXT NOT NULL UNIQUE,
+                    access_token_encrypted TEXT NOT NULL,
+                    token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'expired', 'revoked')),
+                    granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+                    last_validated_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE
+                );
+
+                INSERT INTO facebook_page_tokens_v2 (
+                    id, channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, last_validated_at, created_at, updated_at
+                )
+                SELECT id, channel_account_id, page_id, access_token_encrypted, token_status, granted_scopes_json, last_validated_at, created_at, updated_at
+                FROM facebook_page_tokens;
+
+                DROP TABLE facebook_page_tokens;
+
+                ALTER TABLE facebook_page_tokens_v2 RENAME TO facebook_page_tokens;",
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     super::migration_v2::apply_migration_v4(conn)?;
 
@@ -166,6 +207,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "TEXT",
     )?;
     ensure_facebook_upload_sessions_schema_v2(conn)?;
+    ensure_facebook_page_tokens_schema_v2(conn)?;
 
     reconcile_duplicate_zalo_channel_accounts(conn)?;
 

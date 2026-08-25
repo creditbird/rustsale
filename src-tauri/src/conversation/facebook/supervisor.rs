@@ -1,13 +1,15 @@
-use std::sync::Arc;
-use std::time::Duration;
 use anyhow::{anyhow, Result};
 use rusqlite::{Connection, OptionalExtension};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use super::client::FacebookGraphClient;
 use super::normalizer::FacebookMessengerNormalizer;
-use crate::conversation::events::{ConversationEventPublisher, ConversationInvalidatedEvent, ConversationInvalidationReason};
+use crate::conversation::events::{
+    ConversationEventPublisher, ConversationInvalidatedEvent, ConversationInvalidationReason,
+};
 use crate::conversation::types::Channel;
 use crate::facebook::vault::FacebookTokenVault;
 
@@ -55,7 +57,10 @@ impl FacebookMessengerSupervisor {
         self.cancellation_token.cancel();
     }
 
-    pub fn get_connected_accounts(&self, conn: &Connection) -> Result<Vec<ConnectedMessengerAccount>> {
+    pub fn get_connected_accounts(
+        &self,
+        conn: &Connection,
+    ) -> Result<Vec<ConnectedMessengerAccount>> {
         let mut stmt = conn.prepare(
             "SELECT id, provider_account_key, display_name
              FROM channel_accounts
@@ -85,13 +90,20 @@ impl FacebookMessengerSupervisor {
         let mut conn = Connection::open(&self.db_path)
             .map_err(|e| anyhow!("Failed to open DB connection for messenger sync: {}", e))?;
 
-        let page_token = match FacebookTokenVault::get_valid_page_token(&conn, account.id, &account.page_id) {
+        let page_token = match FacebookTokenVault::get_valid_page_token(
+            &conn,
+            account.id,
+            &account.page_id,
+        ) {
             Ok(token) => token,
             Err(e) => {
-                let err_msg = format!("Token resolution failed for page {}: {}", account.page_id, e);
+                let err_msg = format!(
+                    "Token resolution failed for page {}: {}",
+                    account.page_id, e
+                );
                 warn!(target: "facebook_sync", "{}", err_msg);
                 let _ = conn.execute(
-                    "UPDATE channel_accounts SET last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+                    "UPDATE channel_accounts SET connection_status = 'invalid', last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
                     rusqlite::params![err_msg, account.id],
                 );
                 return Err(anyhow!(err_msg));
@@ -123,37 +135,50 @@ impl FacebookMessengerSupervisor {
             page_count += 1;
             let conversations_page = match self
                 .client
-                .fetch_page_conversations(&account.page_id, &page_token, 50, after_cursor.as_deref())
+                .fetch_page_conversations(
+                    &account.page_id,
+                    &page_token,
+                    50,
+                    after_cursor.as_deref(),
+                )
                 .await
             {
                 Ok(p) => p,
                 Err(e) => {
-                    let err_msg = format!("Failed fetching conversations for page {}: {}", account.page_id, e);
+                    let err_msg = format!(
+                        "Failed fetching conversations for page {}: {}",
+                        account.page_id, e
+                    );
                     warn!(target: "facebook_sync", "{}", err_msg);
-                    let is_transient = err_msg.contains("is_transient")
-                        || err_msg.contains("code 2")
-                        || err_msg.contains("status 500")
-                        || err_msg.contains("status 502")
-                        || err_msg.contains("status 503")
-                        || err_msg.contains("status 504")
-                        || err_msg.contains("try again later")
-                        || err_msg.contains("Please retry");
-                    let is_token_error = !is_transient && (
-                        err_msg.contains("code 190")
-                        || err_msg.contains("code 102")
-                        || err_msg.contains("Error validating access token")
-                        || err_msg.contains("Session has expired")
-                        || err_msg.contains("The access token could not be decrypted")
-                        || err_msg.contains("status 401")
-                    );
-                    let _ = conn.execute(
-                        "UPDATE channel_accounts SET last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
-                        rusqlite::params![err_msg, account.id],
-                    );
-                    if is_token_error {
+                    let is_auth_failure =
+                        if let Some(meta_err) = e.downcast_ref::<super::error::MetaGraphError>() {
+                            meta_err.is_auth_failure()
+                        } else {
+                            let msg = e.to_string();
+                            msg.contains("code 190")
+                                || msg.contains("code 102")
+                                || msg.contains("status 401")
+                                || msg.contains("Error validating access token")
+                                || msg.contains("Session has expired")
+                                || msg.contains("The access token could not be decrypted")
+                        };
+
+                    if is_auth_failure {
+                        if let Ok(tx) = conn.transaction() {
+                            let _ = tx.execute(
+                                "UPDATE channel_accounts SET connection_status = 'invalid', last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+                                rusqlite::params![err_msg, account.id],
+                            );
+                            let _ = tx.execute(
+                                "UPDATE facebook_page_tokens SET token_status = 'expired', updated_at = datetime('now') WHERE channel_account_id = ?1",
+                                rusqlite::params![account.id],
+                            );
+                            let _ = tx.commit();
+                        }
+                    } else {
                         let _ = conn.execute(
-                            "UPDATE facebook_page_tokens SET token_status = 'expired', updated_at = datetime('now') WHERE channel_account_id = ?1",
-                            rusqlite::params![account.id],
+                            "UPDATE channel_accounts SET last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+                            rusqlite::params![err_msg, account.id],
                         );
                     }
                     return Err(anyhow!(err_msg));
@@ -249,24 +274,36 @@ impl FacebookMessengerSupervisor {
         let conn = Connection::open(&self.db_path)
             .map_err(|e| anyhow!("Failed to open DB connection: {}", e))?;
 
-        let account = conn.query_row(
-            "SELECT id, provider_account_key, display_name
+        let account = conn
+            .query_row(
+                "SELECT id, provider_account_key, display_name
              FROM channel_accounts
              WHERE channel = 'messenger' AND provider_account_key = ?1",
-            rusqlite::params![page_id],
-            |row| {
-                Ok(ConnectedMessengerAccount {
-                    id: row.get(0)?,
-                    page_id: row.get(1)?,
-                    display_name: row.get(2)?,
-                })
-            },
-        ).map_err(|e| anyhow!("No channel account found for Facebook page {}: {}", page_id, e))?;
+                rusqlite::params![page_id],
+                |row| {
+                    Ok(ConnectedMessengerAccount {
+                        id: row.get(0)?,
+                        page_id: row.get(1)?,
+                        display_name: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(|e| {
+                anyhow!(
+                    "No channel account found for Facebook page {}: {}",
+                    page_id,
+                    e
+                )
+            })?;
 
         self.sync_account_internal(&account).await
     }
 
-    pub fn ingest_webhook_events(&self, page_id: &str, events: &[serde_json::Value]) -> Result<usize> {
+    pub fn ingest_webhook_events(
+        &self,
+        page_id: &str,
+        events: &[serde_json::Value],
+    ) -> Result<usize> {
         let mut conn = Connection::open(&self.db_path)
             .map_err(|e| anyhow!("Failed to open DB connection: {}", e))?;
 
@@ -319,7 +356,10 @@ impl FacebookMessengerSupervisor {
         Ok(affected.len())
     }
 
-    pub fn start_background_loop(self: Arc<Self>, poll_interval: Duration) -> tauri::async_runtime::JoinHandle<()> {
+    pub fn start_background_loop(
+        self: Arc<Self>,
+        poll_interval: Duration,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         let cancel = self.cancellation_token.clone();
         tauri::async_runtime::spawn(async move {
             info!(target: "facebook_sync", "Facebook Messenger sync supervisor background loop started");
@@ -339,4 +379,3 @@ impl FacebookMessengerSupervisor {
         })
     }
 }
-

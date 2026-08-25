@@ -25,10 +25,14 @@ impl FacebookMessengerNormalizer {
         }
         // Meta format: "2026-08-24T02:00:00+0000" or ISO 8601
         if let Ok(dt) = DateTime::parse_from_str(meta_time, "%Y-%m-%dT%H:%M:%S%z") {
-            return dt.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true);
+            return dt
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::Millis, true);
         }
         if let Ok(dt) = DateTime::parse_from_rfc3339(meta_time) {
-            return dt.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true);
+            return dt
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::Millis, true);
         }
         Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
     }
@@ -193,11 +197,7 @@ impl FacebookMessengerNormalizer {
             if let Some(ref messages_container) = thread.messages {
                 for msg in &messages_container.data {
                     let msg_created_time = Self::normalize_iso_timestamp(&msg.created_time);
-                    let is_outbound = msg
-                        .from
-                        .as_ref()
-                        .map(|f| f.id == page_id)
-                        .unwrap_or(false);
+                    let is_outbound = msg.from.as_ref().map(|f| f.id == page_id).unwrap_or(false);
 
                     let (direction, sender_id, status) = if is_outbound {
                         ("outbound", None, "sent")
@@ -271,9 +271,14 @@ impl FacebookMessengerNormalizer {
                             .image_data
                             .as_ref()
                             .and_then(|i| i.preview_url.as_deref())
-                            .or_else(|| att.video_data.as_ref().and_then(|v| v.preview_url.as_deref()));
+                            .or_else(|| {
+                                att.video_data
+                                    .as_ref()
+                                    .and_then(|v| v.preview_url.as_deref())
+                            });
 
-                        let att_json = serde_json::to_string(att).unwrap_or_else(|_| "{}".to_string());
+                        let att_json =
+                            serde_json::to_string(att).unwrap_or_else(|_| "{}".to_string());
 
                         if let Some(url) = remote_url {
                             tx.execute(
@@ -365,11 +370,7 @@ impl FacebookMessengerNormalizer {
         }
 
         let is_outbound = sender_id == page_id;
-        let customer_psid = if is_outbound {
-            recipient_id
-        } else {
-            sender_id
-        };
+        let customer_psid = if is_outbound { recipient_id } else { sender_id };
 
         if customer_psid.is_empty() || customer_psid == page_id {
             return Ok(None);
@@ -399,7 +400,10 @@ impl FacebookMessengerNormalizer {
         let timestamp_raw = msg_obj.get("timestamp");
         let event_time = if let Some(ts_num) = timestamp_raw.and_then(|v| v.as_i64()) {
             DateTime::from_timestamp_millis(ts_num)
-                .map(|dt| dt.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))
+                .map(|dt| {
+                    dt.with_timezone(&Utc)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true)
+                })
                 .unwrap_or_else(|| now_str.clone())
         } else {
             now_str.clone()
@@ -486,7 +490,10 @@ impl FacebookMessengerNormalizer {
                     let attachments = msg.get("attachments").and_then(|a| a.as_array());
                     let content_type = if let Some(atts) = attachments {
                         if !atts.is_empty() {
-                            atts[0].get("type").and_then(|t| t.as_str()).unwrap_or("file")
+                            atts[0]
+                                .get("type")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("file")
                         } else {
                             "text"
                         }
@@ -517,9 +524,12 @@ impl FacebookMessengerNormalizer {
 
                     if let Some(atts) = attachments {
                         for att in atts {
-                            let att_type = att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
+                            let att_type =
+                                att.get("type").and_then(|t| t.as_str()).unwrap_or("file");
                             let payload_node = att.get("payload");
-                            let remote_url = payload_node.and_then(|p| p.get("url")).and_then(|u| u.as_str());
+                            let remote_url = payload_node
+                                .and_then(|p| p.get("url"))
+                                .and_then(|u| u.as_str());
                             if let Some(url) = remote_url {
                                 let att_json = att.to_string();
                                 tx.execute(
@@ -542,7 +552,13 @@ impl FacebookMessengerNormalizer {
             if let Some(mids) = delivery.get("mids").and_then(|m| m.as_array()) {
                 for mid_val in mids {
                     if let Some(mid_str) = mid_val.as_str() {
-                        if let Err(err) = crate::conversation::facebook_sync::mark_messages_delivered(&tx, conversation_id, mid_str) {
+                        if let Err(err) =
+                            crate::conversation::facebook_sync::mark_messages_delivered(
+                                &tx,
+                                conversation_id,
+                                mid_str,
+                            )
+                        {
                             tracing::warn!(target: "facebook_sync", %err, mid = %mid_str, "Failed marking message delivered from webhook");
                         }
                     }
@@ -554,7 +570,11 @@ impl FacebookMessengerNormalizer {
         if let Some(read) = msg_obj.get("read") {
             if let Some(wm) = read.get("watermark") {
                 let wm_str = wm.to_string();
-                if let Err(err) = crate::conversation::facebook_sync::apply_read_receipt(&tx, conversation_id, &wm_str) {
+                if let Err(err) = crate::conversation::facebook_sync::apply_read_receipt(
+                    &tx,
+                    conversation_id,
+                    &wm_str,
+                ) {
                     tracing::warn!(target: "facebook_sync", %err, watermark = %wm_str, "Failed applying read receipt from webhook");
                 }
             }

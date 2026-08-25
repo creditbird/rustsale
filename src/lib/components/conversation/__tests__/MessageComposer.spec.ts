@@ -451,6 +451,49 @@ describe('MessageComposer', () => {
     expect(mockRestart).not.toHaveBeenCalled();
   });
 
+  test('Facebook Messenger auth failure displays Cấp lại quyền Meta button and locks send', async () => {
+    const onOpenSettings = mock(() => {});
+    const fbReplyTarget = {
+      conversationId: 202,
+      channelAccountId: 200,
+      channel: 'messenger' as const,
+      accountDisplayName: 'Lemy Fanpage',
+      conversationKind: 'direct' as const,
+      lastInboundAt: new Date().toISOString(),
+      lastMessageAt: new Date().toISOString()
+    };
+    const runtime: ConversationRuntimeStatus = {
+      accounts: [
+        {
+          channelAccountId: 200,
+          channel: 'messenger' as const,
+          providerAccountKey: 'page_lemy_123',
+          displayName: 'Lemy Fanpage',
+          capabilities: richCapabilities,
+          status: 'invalid',
+          lastConnectedAt: null,
+          lastError: 'Meta Graph API error (code 190): Session has expired'
+        }
+      ]
+    };
+
+    render(MessageComposer, {
+      item: { ...baseItem, replyTargets: [fbReplyTarget] },
+      runtime,
+      onOpenSettings
+    });
+
+    const reauthBtn = screen.getByRole('button', { name: 'Cấp lại quyền Meta' });
+    expect(reauthBtn).toBeTruthy();
+
+    await fireEvent.click(reauthBtn);
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+
+    // Send button must be disabled when status is invalid
+    const sendBtn = screen.getByRole('button', { name: 'Send' });
+    expect((sendBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+
   test('stages clipboard images and drag-drop paths through platform bridges', async () => {
     mockReadClipboardImage.mockImplementationOnce(async () => ({
       fileName: 'clipboard.png',

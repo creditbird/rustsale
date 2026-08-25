@@ -182,16 +182,19 @@ impl FacebookGraphClient for RealFacebookGraphClient {
             .header("Authorization", format!("Bearer {}", page_token))
             .send()
             .await
-            .map_err(|e| anyhow!("Network error fetching conversations for page {}: {}", page_id, e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Network error fetching conversations for page {}: {}",
+                    page_id,
+                    e
+                )
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Meta Graph API error (status {}): {}",
-                status,
-                body
-            ));
+            let body_val: Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+            let meta_err = super::error::MetaGraphError::parse(status.as_u16(), &body_val);
+            return Err(anyhow!(meta_err));
         }
 
         let parsed: FacebookConversationsPage = resp
@@ -231,12 +234,9 @@ impl FacebookGraphClient for RealFacebookGraphClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Meta Graph API error (status {}): {}",
-                status,
-                body
-            ));
+            let body_val: Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+            let meta_err = super::error::MetaGraphError::parse(status.as_u16(), &body_val);
+            return Err(anyhow!(meta_err));
         }
 
         let page: FacebookMessagesPage = resp
@@ -261,15 +261,11 @@ impl FacebookGraphClient for RealFacebookGraphClient {
         );
 
         let mut payload = serde_json::json!({
-            "recipient": {
-                "id": recipient_psid
-            },
-            "message": {
-                "text": text
-            }
+            "recipient": { "id": recipient_psid },
+            "message": { "text": text }
         });
 
-        if let Some(tag) = message_tag.map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        if let Some(tag) = message_tag {
             payload["messaging_type"] = serde_json::json!("MESSAGE_TAG");
             payload["tag"] = serde_json::json!(tag);
         } else {
@@ -287,23 +283,9 @@ impl FacebookGraphClient for RealFacebookGraphClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body: Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
-            let error_msg = body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("Unknown Meta API error");
-            let error_code = body
-                .get("error")
-                .and_then(|e| e.get("code"))
-                .and_then(|c| c.as_i64())
-                .unwrap_or(status.as_u16() as i64);
-
-            return Err(anyhow!(
-                "Meta Graph API error (code {}): {}",
-                error_code,
-                error_msg
-            ));
+            let body_val: Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+            let meta_err = super::error::MetaGraphError::parse(status.as_u16(), &body_val);
+            return Err(anyhow!(meta_err));
         }
 
         let body: Value = resp

@@ -1026,7 +1026,7 @@ mod tests {
                 channel_account_id INTEGER NOT NULL,
                 page_id TEXT NOT NULL UNIQUE,
                 access_token_encrypted TEXT NOT NULL,
-                token_status TEXT NOT NULL DEFAULT 'valid',
+                token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'expired', 'revoked')),
                 granted_scopes_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL

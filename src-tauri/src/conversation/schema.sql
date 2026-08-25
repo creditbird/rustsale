@@ -409,7 +409,7 @@ CREATE TABLE IF NOT EXISTS facebook_page_tokens (
     channel_account_id INTEGER NOT NULL UNIQUE,
     page_id TEXT NOT NULL UNIQUE,
     access_token_encrypted TEXT NOT NULL,
-    token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'revoked')),
+    token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'expired', 'revoked')),
     granted_scopes_json TEXT NOT NULL DEFAULT '[]',
     last_validated_at TEXT,
     created_at TEXT NOT NULL,

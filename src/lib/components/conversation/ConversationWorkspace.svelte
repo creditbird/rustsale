@@ -926,6 +926,9 @@
   }
 
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
+    if (event.reason === 'account_status') {
+      void refreshRuntimeStatus(true);
+    }
     const isActive = activeTab === 'conversation';
     const affectedItems = inbox.filter((item) => eventAffectsItem(item, event));
 

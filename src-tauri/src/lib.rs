@@ -195,7 +195,7 @@ pub fn run() {
                 if let Err(error) = startup_fb_supervisor.sync_all().await {
                     tracing::error!(target: "conversation", %error, "Facebook Messenger initial sync failed");
                 }
-                let _ = startup_fb_supervisor.start_background_loop(std::time::Duration::from_secs(5));
+                drop(startup_fb_supervisor.start_background_loop(std::time::Duration::from_secs(5)));
             });
 
             let fb_db_path = db_path_str.to_string();

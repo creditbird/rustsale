@@ -967,24 +967,39 @@ mod tests {
         ];
 
         // 1. App only granted pages_messaging and pages_show_list: effective scopes MUST ONLY include those two
-        let app_perms_messaging_only = vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
-        let effective1 = commands::intersect_tasks_and_app_permissions(&full_task_scopes, &app_perms_messaging_only);
-        assert_eq!(effective1, vec!["pages_show_list".to_string(), "pages_messaging".to_string()]);
+        let app_perms_messaging_only =
+            vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
+        let effective1 = commands::intersect_tasks_and_app_permissions(
+            &full_task_scopes,
+            &app_perms_messaging_only,
+        );
+        assert_eq!(
+            effective1,
+            vec!["pages_show_list".to_string(), "pages_messaging".to_string()]
+        );
 
         // 2. App granted all permissions, but Page task only grants pages_messaging:
-        let messaging_task_only = vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
+        let messaging_task_only =
+            vec!["pages_show_list".to_string(), "pages_messaging".to_string()];
         let app_perms_all = vec![
             "pages_show_list".to_string(),
             "pages_messaging".to_string(),
             "pages_manage_posts".to_string(),
             "pages_read_engagement".to_string(),
         ];
-        let effective2 = commands::intersect_tasks_and_app_permissions(&messaging_task_only, &app_perms_all);
-        assert_eq!(effective2, vec!["pages_show_list".to_string(), "pages_messaging".to_string()]);
+        let effective2 =
+            commands::intersect_tasks_and_app_permissions(&messaging_task_only, &app_perms_all);
+        assert_eq!(
+            effective2,
+            vec!["pages_show_list".to_string(), "pages_messaging".to_string()]
+        );
 
         // 3. App permissions missing pages_show_list: strict mathematical intersection does not include pages_show_list
         let app_perms_no_show_list = vec!["pages_messaging".to_string()];
-        let effective3 = commands::intersect_tasks_and_app_permissions(&full_task_scopes, &app_perms_no_show_list);
+        let effective3 = commands::intersect_tasks_and_app_permissions(
+            &full_task_scopes,
+            &app_perms_no_show_list,
+        );
         assert_eq!(effective3, vec!["pages_messaging".to_string()]);
 
         // 4. Empty app permissions (e.g. API/network failure, zero grants): strictly empty (fails closed)

@@ -205,6 +205,29 @@
     connectModalOpen = true;
   }
 
+  function openReconnectModal(account: ManagedFacebookAccount) {
+    connectTab = 'manual';
+    oauthTokenOrUrl = '';
+    oauthStateNonce = null;
+    oauthAuthUrl = null;
+    copiedAuthUrl = false;
+    showAdvanced = false;
+    customAppId =
+      (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
+      import.meta.env.VITE_FACEBOOK_APP_ID ||
+      '';
+    customRedirectUri = getDefaultRedirectUri();
+    discoveredPages = [];
+    selectedPageIds = new Set();
+    modalError = null;
+    modalSuccess = null;
+    manualPageId = account.pageId;
+    manualPageName = account.pageName || '';
+    manualAccessToken = '';
+    manualAvatarUrl = account.avatarUrl || '';
+    connectModalOpen = true;
+  }
+
   function extractTokenAndValidateState(raw: string): { token: string; error?: string } {
     const trimmed = raw.trim();
     if (!trimmed) return { token: '' };
@@ -340,7 +363,7 @@
       modalError = 'Invalid OAuth Redirect URI. Must be a valid HTTPS URL on an approved domain (e.g. Supabase callback *.supabase.co or *.trantrongtri.com).';
       return null;
     }
-    const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging';
+    const scope = 'pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging,leads_retrieval';
     if (!oauthStateNonce) {
       oauthStateNonce = generateCryptoNonce();
     }
@@ -691,16 +714,29 @@
                 <ShieldCheck class="size-3 text-emerald-600" />
                 AES-256 Keyring Vault
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onclick={() => promptDelete(account)}
-                disabled={deleting.has(account.pageId)}
-                class="h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive text-xs gap-1"
-              >
-                <Trash2 class="size-3" />
-                Disconnect
-              </Button>
+              <div class="flex items-center gap-1.5">
+                {#if account.tokenStatus !== 'valid' || account.runtimeStatus !== 'connected' || account.lastError}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onclick={() => openReconnectModal(account)}
+                    class="h-7 px-2 text-blue-600 border-blue-200 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-xs gap-1"
+                  >
+                    <KeyRound class="size-3" />
+                    Cấp lại quyền
+                  </Button>
+                {/if}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => promptDelete(account)}
+                  disabled={deleting.has(account.pageId)}
+                  class="h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive text-xs gap-1"
+                >
+                  <Trash2 class="size-3" />
+                  Disconnect
+                </Button>
+              </div>
             </div>
           </Card.Content>
         </Card.Root>

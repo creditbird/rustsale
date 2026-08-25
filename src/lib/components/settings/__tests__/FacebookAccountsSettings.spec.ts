@@ -574,4 +574,35 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Database connection locked')).toBeTruthy();
     mockListError = null;
   });
+
+  test('displays Token Expired, Runtime Invalid badges and opens Reconnect modal with prefilled pageId', async () => {
+    mockAccounts = [
+      {
+        channelAccountId: 102,
+        pageId: 'page_lemy_999',
+        pageName: 'Lemy Fanpage',
+        avatarUrl: null,
+        tokenStatus: 'expired',
+        grantedScopes: ['pages_messaging'],
+        runtimeStatus: 'invalid',
+        lastConnectedAt: '2026-08-24T09:00:00Z',
+        lastError: 'Meta Graph API error (code 190): Session has expired',
+        updatedAt: '2026-08-24T09:15:00Z'
+      }
+    ];
+
+    render(FacebookAccountsSettings);
+
+    expect(await screen.findByText('Token Expired')).toBeTruthy();
+    expect(screen.getByText('Runtime Invalid')).toBeTruthy();
+    expect(screen.getByText(/Meta Graph API error \(code 190\)/i)).toBeTruthy();
+
+    const reconnectBtn = screen.getByRole('button', { name: /Cấp lại quyền/i });
+    expect(reconnectBtn).toBeTruthy();
+
+    await fireEvent.click(reconnectBtn);
+
+    // Modal opens on Manual Tab with prefilled pageId
+    expect(await screen.findByDisplayValue('page_lemy_999')).toBeTruthy();
+  });
 });
