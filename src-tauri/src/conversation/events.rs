@@ -11,6 +11,7 @@ pub enum ConversationInvalidationReason {
     Reaction,
     Metadata,
     Link,
+    AccountStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

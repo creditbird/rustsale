@@ -3222,11 +3222,7 @@ impl ConversationRepository {
                             json_val["messageTag"] = serde_json::json!(tag.trim());
                         }
                     }
-                    (
-                        "text",
-                        Some(text.clone()),
-                        json_val.to_string(),
-                    )
+                    ("text", Some(text.clone()), json_val.to_string())
                 }
                 ConversationSendPartContent::Forward { source_message_id } => {
                     let mut json_val = serde_json::json!({ "sourceMessageId": source_message_id });
@@ -3235,11 +3231,7 @@ impl ConversationRepository {
                             json_val["messageTag"] = serde_json::json!(tag.trim());
                         }
                     }
-                    (
-                        "forward",
-                        None,
-                        json_val.to_string(),
-                    )
+                    ("forward", None, json_val.to_string())
                 }
                 ConversationSendPartContent::Sticker {
                     sticker_id,
@@ -3258,26 +3250,19 @@ impl ConversationRepository {
                             json_val["messageTag"] = serde_json::json!(tag.trim());
                         }
                     }
-                    (
-                        "sticker",
-                        None,
-                        json_val.to_string(),
-                    )
+                    ("sticker", None, json_val.to_string())
                 }
                 ConversationSendPartContent::Attachment {
                     staged_attachment_id,
                 } => {
-                    let mut json_val = serde_json::json!({ "stagedAttachmentId": staged_attachment_id });
+                    let mut json_val =
+                        serde_json::json!({ "stagedAttachmentId": staged_attachment_id });
                     if let Some(tag) = &request.message_tag {
                         if !tag.trim().is_empty() {
                             json_val["messageTag"] = serde_json::json!(tag.trim());
                         }
                     }
-                    (
-                        "attachment",
-                        None,
-                        json_val.to_string(),
-                    )
+                    ("attachment", None, json_val.to_string())
                 }
             };
 

@@ -399,7 +399,7 @@ export interface ConversationInvalidatedEvent {
   conversationId: number;
   leadId: number | null;
   channel: Channel;
-  reason: 'message' | 'receipt' | 'reaction' | 'metadata' | 'link';
+  reason: 'message' | 'receipt' | 'reaction' | 'metadata' | 'link' | 'account_status';
   messageId?: number;
 }
 

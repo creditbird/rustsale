@@ -1,6 +1,6 @@
-use rusqlite::Connection;
 use super::client::*;
 use super::normalizer::*;
+use rusqlite::Connection;
 
 fn create_test_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -214,38 +214,62 @@ fn test_ingest_conversations_batch_success() {
         }),
     }];
 
-    let summary = FacebookMessengerNormalizer::ingest_conversations_batch(
-        &mut conn,
-        1,
-        "page_123",
-        &threads,
-    )
-    .unwrap();
+    let summary =
+        FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &threads)
+            .unwrap();
 
     assert_eq!(summary.conversations_synced, 1);
     assert_eq!(summary.messages_inserted, 2);
     assert_eq!(summary.new_messages_count, 2);
 
     // Verify channel_identities
-    let count: i64 = conn.query_row("SELECT count(*) FROM channel_identities WHERE external_id = 'psid_456'", [], |r| r.get(0)).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM channel_identities WHERE external_id = 'psid_456'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(count, 1);
 
     // Verify channel_conversations
-    let title: String = conn.query_row("SELECT title FROM channel_conversations WHERE external_thread_id = 't_100'", [], |r| r.get(0)).unwrap();
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM channel_conversations WHERE external_thread_id = 't_100'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(title, "Tran Thi B");
 
     // Verify messages
-    let msg_count: i64 = conn.query_row("SELECT count(*) FROM messages", [], |r| r.get(0)).unwrap();
+    let msg_count: i64 = conn
+        .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(msg_count, 2);
 
-    let m1_dir: String = conn.query_row("SELECT direction FROM messages WHERE provider_message_id = 'm_1'", [], |r| r.get(0)).unwrap();
+    let m1_dir: String = conn
+        .query_row(
+            "SELECT direction FROM messages WHERE provider_message_id = 'm_1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(m1_dir, "inbound");
 
-    let m2_dir: String = conn.query_row("SELECT direction FROM messages WHERE provider_message_id = 'm_2'", [], |r| r.get(0)).unwrap();
+    let m2_dir: String = conn
+        .query_row(
+            "SELECT direction FROM messages WHERE provider_message_id = 'm_2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(m2_dir, "outbound");
 
     // Verify attachment
-    let att_count: i64 = conn.query_row("SELECT count(*) FROM message_attachments", [], |r| r.get(0)).unwrap();
+    let att_count: i64 = conn
+        .query_row("SELECT count(*) FROM message_attachments", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(att_count, 1);
 
     // Verify checkpoint
@@ -253,16 +277,14 @@ fn test_ingest_conversations_batch_success() {
     assert_eq!(cp_count, 1);
 
     // Idempotency: Ingesting again should not add duplicate rows
-    let summary2 = FacebookMessengerNormalizer::ingest_conversations_batch(
-        &mut conn,
-        1,
-        "page_123",
-        &threads,
-    )
-    .unwrap();
+    let summary2 =
+        FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &threads)
+            .unwrap();
     assert_eq!(summary2.new_messages_count, 0);
 
-    let msg_count_after: i64 = conn.query_row("SELECT count(*) FROM messages", [], |r| r.get(0)).unwrap();
+    let msg_count_after: i64 = conn
+        .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(msg_count_after, 2);
 }
 
@@ -312,9 +334,15 @@ fn test_unresolved_participant_skipped_without_corrupting_identity() {
     assert_eq!(summary.new_messages_count, 0);
 
     // Ensure NO synthetic identity or conversation was created
-    let id_count: i64 = conn.query_row("SELECT count(*) FROM channel_identities", [], |r| r.get(0)).unwrap();
+    let id_count: i64 = conn
+        .query_row("SELECT count(*) FROM channel_identities", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(id_count, 0);
-    let conv_count: i64 = conn.query_row("SELECT count(*) FROM channel_conversations", [], |r| r.get(0)).unwrap();
+    let conv_count: i64 = conn
+        .query_row("SELECT count(*) FROM channel_conversations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(conv_count, 0);
 }
 
@@ -330,20 +358,18 @@ fn test_fallback_customer_resolved_from_messages_when_participants_empty() {
             data: vec![], // Empty participants list from Graph API
         }),
         messages: Some(FacebookMessagesContainer {
-            data: vec![
-                FacebookMessageNode {
-                    id: "m_fb_1".to_string(),
-                    created_time: "2026-08-24T02:00:00+0000".to_string(),
-                    from: Some(FacebookParticipantNode {
-                        id: "psid_customer_789".to_string(),
-                        name: Some("Khach Hang Cu".to_string()),
-                        email: None,
-                    }),
-                    to: None,
-                    message: Some("Gia san pham nay bao nhieu?".to_string()),
-                    attachments: None,
-                },
-            ],
+            data: vec![FacebookMessageNode {
+                id: "m_fb_1".to_string(),
+                created_time: "2026-08-24T02:00:00+0000".to_string(),
+                from: Some(FacebookParticipantNode {
+                    id: "psid_customer_789".to_string(),
+                    name: Some("Khach Hang Cu".to_string()),
+                    email: None,
+                }),
+                to: None,
+                message: Some("Gia san pham nay bao nhieu?".to_string()),
+                attachments: None,
+            }],
             paging: None,
         }),
     };
@@ -397,13 +423,9 @@ fn test_ingest_webhook_event_inbound_message_delivery_and_read() {
         }
     });
 
-    let conv_id = FacebookMessengerNormalizer::ingest_webhook_event(
-        &mut conn,
-        1,
-        "page_123",
-        &msg_payload,
-    )
-    .unwrap();
+    let conv_id =
+        FacebookMessengerNormalizer::ingest_webhook_event(&mut conn, 1, "page_123", &msg_payload)
+            .unwrap();
 
     assert!(conv_id.is_some());
     let cid = conv_id.unwrap();
@@ -446,13 +468,8 @@ fn test_ingest_webhook_event_inbound_message_delivery_and_read() {
         }
     });
 
-    FacebookMessengerNormalizer::ingest_webhook_event(
-        &mut conn,
-        1,
-        "page_123",
-        &delivery_payload,
-    )
-    .unwrap();
+    FacebookMessengerNormalizer::ingest_webhook_event(&mut conn, 1, "page_123", &delivery_payload)
+        .unwrap();
 
     let out_status: String = conn
         .query_row(
@@ -474,13 +491,8 @@ fn test_ingest_webhook_event_inbound_message_delivery_and_read() {
         }
     });
 
-    FacebookMessengerNormalizer::ingest_webhook_event(
-        &mut conn,
-        1,
-        "page_123",
-        &read_payload,
-    )
-    .unwrap();
+    FacebookMessengerNormalizer::ingest_webhook_event(&mut conn, 1, "page_123", &read_payload)
+        .unwrap();
 
     let out_status_read: String = conn
         .query_row(
@@ -520,15 +532,20 @@ fn test_ingest_webhook_event_rejects_unauthorized_mismatched_page_id() {
 
     // Verify nothing written to DB
     let msg_count: i64 = conn
-        .query_row("SELECT count(*) FROM messages WHERE provider_message_id = 'mid.hacker.001'", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM messages WHERE provider_message_id = 'mid.hacker.001'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(msg_count, 0);
 
     let id_count: i64 = conn
-        .query_row("SELECT count(*) FROM channel_identities WHERE external_id = 'psid_stranger'", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM channel_identities WHERE external_id = 'psid_stranger'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(id_count, 0);
 }
-
-
-

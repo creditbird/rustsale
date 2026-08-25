@@ -100,7 +100,8 @@ pub fn schedule_facebook_post_impl(
         ("meta".to_string(), "draft")
     };
 
-    let channel_account_id = resolve_facebook_channel_account_id(conn, request.channel_account_id, &request.page_id)?;
+    let channel_account_id =
+        resolve_facebook_channel_account_id(conn, request.channel_account_id, &request.page_id)?;
 
     conn.execute(
         "INSERT INTO facebook_scheduled_posts (
@@ -334,7 +335,8 @@ pub fn create_comment_automation_impl(
     let auto_like = if req.auto_like.unwrap_or(true) { 1 } else { 0 };
     let is_enabled = if req.is_enabled.unwrap_or(true) { 1 } else { 0 };
 
-    let channel_account_id = resolve_facebook_channel_account_id(conn, req.channel_account_id, &req.page_id)?;
+    let channel_account_id =
+        resolve_facebook_channel_account_id(conn, req.channel_account_id, &req.page_id)?;
 
     conn.execute(
         "INSERT INTO facebook_comment_automations
@@ -636,7 +638,7 @@ mod tests {
                 channel_account_id INTEGER NOT NULL,
                 page_id TEXT NOT NULL UNIQUE,
                 access_token_encrypted TEXT NOT NULL,
-                token_status TEXT NOT NULL DEFAULT 'valid',
+                token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'expired', 'revoked')),
                 granted_scopes_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -927,7 +929,9 @@ mod tests {
         // 3. Unknown page_id fails closed with explicit error
         let res_err = resolve_facebook_channel_account_id(&conn, 0, "page_unknown");
         assert!(res_err.is_err());
-        assert!(res_err.unwrap_err().contains("No linked Facebook channel account found for page_id 'page_unknown'"));
+        assert!(res_err
+            .unwrap_err()
+            .contains("No linked Facebook channel account found for page_id 'page_unknown'"));
 
         // 4. Invalid channel_account_id and unknown page_id fails closed
         let res_err2 = resolve_facebook_channel_account_id(&conn, 999, "page_unknown");
@@ -938,7 +942,8 @@ mod tests {
             "INSERT INTO channel_accounts (id, channel, provider_account_key, name)
              VALUES (2, 'facebook', 'page_456', 'Second Page')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // When passing account 1 with page_456, it must resolve to account 2 (the true owner of page_456)
         let res_mismatch = resolve_facebook_channel_account_id(&conn, 1, "page_456");

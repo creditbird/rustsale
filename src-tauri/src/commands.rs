@@ -1975,10 +1975,8 @@ pub fn intersect_tasks_and_app_permissions(
 ) -> Vec<String> {
     let mut effective = Vec::new();
     for scope in task_scopes {
-        if app_permissions.iter().any(|p| p == scope) {
-            if !effective.iter().any(|s| s == scope) {
-                effective.push(scope.clone());
-            }
+        if app_permissions.iter().any(|p| p == scope) && !effective.iter().any(|s| s == scope) {
+            effective.push(scope.clone());
         }
     }
     effective
@@ -2005,12 +2003,20 @@ pub fn map_facebook_tasks_to_scopes(tasks: &[serde_json::Value]) -> Vec<String> 
                         scopes.push("pages_messaging".to_string());
                     }
                 }
-                "PROFILE_PLUS_CREATE_CONTENT" | "CREATE_CONTENT" | "PROFILE_PLUS_MANAGE" | "MANAGE" => {
+                "PROFILE_PLUS_CREATE_CONTENT"
+                | "CREATE_CONTENT"
+                | "PROFILE_PLUS_MANAGE"
+                | "MANAGE" => {
                     if !scopes.iter().any(|x| x == "pages_manage_posts") {
                         scopes.push("pages_manage_posts".to_string());
                     }
                 }
-                "PROFILE_PLUS_MODERATE" | "MODERATE" | "PROFILE_PLUS_ANALYZE" | "ANALYZE" | "PROFILE_PLUS_ADVERTISE" | "ADVERTISE" => {
+                "PROFILE_PLUS_MODERATE"
+                | "MODERATE"
+                | "PROFILE_PLUS_ANALYZE"
+                | "ANALYZE"
+                | "PROFILE_PLUS_ADVERTISE"
+                | "ADVERTISE" => {
                     if !scopes.iter().any(|x| x == "pages_read_engagement") {
                         scopes.push("pages_read_engagement".to_string());
                     }
@@ -2046,9 +2052,7 @@ pub fn save_managed_facebook_account_internal(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let granted_scopes = request
-        .granted_scopes
-        .unwrap_or_default();
+    let granted_scopes = request.granted_scopes.unwrap_or_default();
 
     let tx = conn
         .unchecked_transaction()
@@ -2166,7 +2170,10 @@ pub async fn fetch_facebook_pages_from_token_internal(
                             item.get("name").and_then(|v| v.as_str()),
                             item.get("access_token").and_then(|v| v.as_str()),
                         ) {
-                            let category = item.get("category").and_then(|v| v.as_str()).map(String::from);
+                            let category = item
+                                .get("category")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
                             let avatar_url = item
                                 .get("picture")
                                 .and_then(|p| p.get("data"))
@@ -2175,9 +2182,12 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 .map(String::from);
 
                             // Extract actual granted tasks or permissions accurately (supports New Pages Experience & legacy tasks)
-                            let raw_task_scopes = if let Some(tasks) = item.get("tasks").and_then(|t| t.as_array()) {
+                            let raw_task_scopes = if let Some(tasks) =
+                                item.get("tasks").and_then(|t| t.as_array())
+                            {
                                 map_facebook_tasks_to_scopes(tasks)
-                            } else if let Some(p_arr) = item.get("perms").and_then(|p| p.as_array()) {
+                            } else if let Some(p_arr) = item.get("perms").and_then(|p| p.as_array())
+                            {
                                 let mut p_scopes = vec!["pages_show_list".to_string()];
                                 for p in p_arr {
                                     if let Some(p_str) = p.as_str() {
@@ -2188,7 +2198,10 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                             if !p_scopes.iter().any(|s| s == "pages_manage_posts") {
                                                 p_scopes.push("pages_manage_posts".to_string());
                                             }
-                                            if !p_scopes.iter().any(|s| s == "pages_read_engagement") {
+                                            if !p_scopes
+                                                .iter()
+                                                .any(|s| s == "pages_read_engagement")
+                                            {
                                                 p_scopes.push("pages_read_engagement".to_string());
                                             }
                                         }
@@ -2199,7 +2212,10 @@ pub async fn fetch_facebook_pages_from_token_internal(
                                 vec!["pages_show_list".to_string()]
                             };
 
-                            let perms = intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions);
+                            let perms = intersect_tasks_and_app_permissions(
+                                &raw_task_scopes,
+                                &app_permissions,
+                            );
 
                             pages.push(DiscoveredFacebookPage {
                                 id: id.to_string(),
@@ -2227,7 +2243,11 @@ pub async fn fetch_facebook_pages_from_token_internal(
         } else {
             // Check if error response has a specific message
             if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
-                if let Some(err_msg) = err_json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                if let Some(err_msg) = err_json
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                {
                     return Err(format!("Meta Graph API error: {}", err_msg));
                 }
             }
@@ -2247,7 +2267,10 @@ pub async fn fetch_facebook_pages_from_token_internal(
         if me_status.is_success() {
             if let Ok(me_body) = serde_json::from_str::<serde_json::Value>(&me_text) {
                 // Positively verify that this is a Page (Pages have a non-empty `category` field in Meta Graph API; Users do not)
-                let category_opt = me_body.get("category").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+                let category_opt = me_body
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty());
                 if let (Some(id), Some(name), Some(category)) = (
                     me_body.get("id").and_then(|v| v.as_str()),
                     me_body.get("name").and_then(|v| v.as_str()),
@@ -2260,13 +2283,15 @@ pub async fn fetch_facebook_pages_from_token_internal(
                         .and_then(|u| u.as_str())
                         .map(String::from);
 
-                    let raw_task_scopes = if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
-                        map_facebook_tasks_to_scopes(tasks)
-                    } else {
-                        vec!["pages_show_list".to_string()]
-                    };
+                    let raw_task_scopes =
+                        if let Some(tasks) = me_body.get("tasks").and_then(|t| t.as_array()) {
+                            map_facebook_tasks_to_scopes(tasks)
+                        } else {
+                            vec!["pages_show_list".to_string()]
+                        };
 
-                    let perms = intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions);
+                    let perms =
+                        intersect_tasks_and_app_permissions(&raw_task_scopes, &app_permissions);
 
                     return Ok(vec![DiscoveredFacebookPage {
                         id: id.to_string(),

@@ -31,7 +31,7 @@
   import * as Select from '$lib/components/ui/select';
   import * as Popover from '$lib/components/ui/popover';
   import { Badge } from '$lib/components/ui/badge';
-  import { AlertCircle, QrCode, RefreshCw, Send, Settings2 } from 'lucide-svelte';
+  import { AlertCircle, KeyRound, QrCode, RefreshCw, Send, Settings2 } from 'lucide-svelte';
   import AttachmentDropOverlay from './AttachmentDropOverlay.svelte';
   import AttachmentPreviewQueue from './AttachmentPreviewQueue.svelte';
   import ComposerReplyBar from './ComposerReplyBar.svelte';
@@ -1150,7 +1150,18 @@
         <span>{statusReason}</span>
       </div>
       <div class="flex shrink-0 items-center gap-1.5">
-        {#if isSessionKeyExpired}
+        {#if selectedOption?.target?.channel === 'messenger'}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            class="h-7 gap-1 text-xs font-medium text-blue-600 border-blue-200 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+            aria-label="Cấp lại quyền Meta"
+            onclick={onOpenSettings}
+          >
+            <KeyRound class="size-3" /> Cấp lại quyền Meta
+          </Button>
+        {:else if isSessionKeyExpired}
           <Button
             type="button"
             variant="outline"

@@ -2865,7 +2865,8 @@ mod group_member_import_events {
                 _page_token: &str,
                 _limit: usize,
                 _after: Option<&str>,
-            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookConversationsPage> {
+            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookConversationsPage>
+            {
                 unimplemented!()
             }
 
@@ -2875,7 +2876,8 @@ mod group_member_import_events {
                 _page_token: &str,
                 _limit: usize,
                 _after: Option<&str>,
-            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookMessagesPage> {
+            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookMessagesPage>
+            {
                 unimplemented!()
             }
 
@@ -2964,7 +2966,11 @@ mod group_member_import_events {
         let sent_psid = mock_client.sent_recipient.lock().unwrap().clone();
         assert_eq!(sent_psid, Some("CUSTOMER_PSID_777".to_string()));
         let sent_tag = mock_client.sent_message_tag.lock().unwrap().clone();
-        assert_eq!(sent_tag, Some(None), "Standard message within 24h must NOT send any message tag");
+        assert_eq!(
+            sent_tag,
+            Some(None),
+            "Standard message within 24h must NOT send any message tag"
+        );
 
         // 5. Test message with HUMAN_AGENT tag
         conn.execute(
@@ -2992,6 +2998,190 @@ mod group_member_import_events {
 
         assert!(dispatched_tag);
         let sent_tag_2 = mock_client_tag.sent_message_tag.lock().unwrap().clone();
-        assert_eq!(sent_tag_2, Some(Some("HUMAN_AGENT".to_string())), "Explicit HUMAN_AGENT tag message must pass HUMAN_AGENT tag");
+        assert_eq!(
+            sent_tag_2,
+            Some(Some("HUMAN_AGENT".to_string())),
+            "Explicit HUMAN_AGENT tag message must pass HUMAN_AGENT tag"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_next_messenger_outbox_job_circuit_breaker_on_auth_failure() {
+        use crate::conversation::facebook::client::{
+            FacebookConversationsPage, FacebookGraphClient, FacebookMessagesPage,
+            SendFacebookMessageResponse,
+        };
+        use crate::conversation::facebook::error::{MetaErrorKind, MetaGraphError};
+        use crate::facebook::vault::FacebookTokenVault;
+        use rusqlite::Connection;
+
+        let harness = ServiceHarness::new();
+        let conn = Connection::open(harness.service.repository.db_path()).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+             VALUES (999, 'messenger', 'PAGE_123', 'My Page', 'connected', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        FacebookTokenVault::encrypt_and_upsert_page_token(
+            &conn,
+            999,
+            "PAGE_123",
+            "TOKEN_EXPIRED",
+            &["pages_messaging".to_string()],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES (101, 'messenger', 999, 'psid', 'CUSTOMER_PSID_777', 'Customer Name', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES (102, 'messenger', 999, 'psid', 'PAGE_123', 'My Page', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (500, 999, 't_12345', 'direct', 'Customer Chat', 'active', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+             VALUES (500, 102, 'member', '2026-08-24 10:00:00')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+             VALUES (500, 101, 'member', '2026-08-24 10:01:00')",
+            [],
+        ).unwrap();
+
+        // Queue Job 1
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (888, 500, 'outbound', 'client_msg_1', 'text', 'Job 1', '{}', 'queued', datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO message_outbox_jobs (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_888', 999, 888, 'pending', 0, datetime('now'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Queue Job 2
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (889, 500, 'outbound', 'client_msg_2', 'text', 'Job 2', '{}', 'queued', datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO message_outbox_jobs (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_889', 999, 889, 'pending', 0, datetime('now'), datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        struct FailingAuthClient;
+        #[async_trait::async_trait]
+        impl FacebookGraphClient for FailingAuthClient {
+            async fn fetch_page_conversations(
+                &self,
+                _page_id: &str,
+                _page_token: &str,
+                _limit: usize,
+                _after: Option<&str>,
+            ) -> anyhow::Result<FacebookConversationsPage> {
+                unimplemented!()
+            }
+            async fn fetch_thread_messages(
+                &self,
+                _thread_id: &str,
+                _page_token: &str,
+                _limit: usize,
+                _after: Option<&str>,
+            ) -> anyhow::Result<FacebookMessagesPage> {
+                unimplemented!()
+            }
+            async fn send_messenger_message(
+                &self,
+                _page_id: &str,
+                _page_token: &str,
+                _recipient_psid: &str,
+                _text: &str,
+                _message_tag: Option<&str>,
+            ) -> anyhow::Result<SendFacebookMessageResponse> {
+                Err(anyhow::anyhow!(MetaGraphError {
+                    http_status: 400,
+                    code: Some(190),
+                    subcode: Some(463),
+                    message: "Error validating access token: Session has expired".to_string(),
+                    error_type: Some("OAuthException".to_string()),
+                    fbtrace_id: None,
+                    is_transient: false,
+                    kind: MetaErrorKind::AuthFailure,
+                }))
+            }
+        }
+
+        let failing_client = FailingAuthClient;
+
+        // Run outbox drain
+        let continues = harness
+            .service
+            .process_next_messenger_outbox_job(999, &failing_client, "PAGE_123", "TOKEN_EXPIRED")
+            .await
+            .unwrap();
+
+        // Circuit breaker: must return false on auth failure
+        assert!(
+            !continues,
+            "process_next_messenger_outbox_job must return false on auth error to halt queue drain"
+        );
+
+        // Verify Job 1 failed with provider_auth
+        let (job1_status, msg1_err_code): (String, String) = conn.query_row(
+            "SELECT oj.status, m.error_code FROM message_outbox_jobs oj JOIN messages m ON m.id = oj.message_id WHERE oj.id = 'job_888'",
+            [],
+            |r: &rusqlite::Row| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(job1_status, "failed");
+        assert_eq!(msg1_err_code, "provider_auth");
+
+        // Verify Job 2 remained pending (not drained into failure)
+        let job2_status: String = conn
+            .query_row(
+                "SELECT status FROM message_outbox_jobs WHERE id = 'job_889'",
+                [],
+                |r: &rusqlite::Row| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            job2_status, "pending",
+            "Second job must stay pending due to circuit breaker"
+        );
+
+        // Verify channel_accounts was marked invalid
+        let connection_status: String = conn
+            .query_row(
+                "SELECT connection_status FROM channel_accounts WHERE id = 999",
+                [],
+                |r: &rusqlite::Row| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(connection_status, "invalid");
+
+        // Verify token_status was marked expired
+        let token_status: String = conn
+            .query_row(
+                "SELECT token_status FROM facebook_page_tokens WHERE channel_account_id = 999",
+                [],
+                |r: &rusqlite::Row| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(token_status, "expired");
     }
 }

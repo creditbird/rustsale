@@ -1281,12 +1281,8 @@ impl ConversationService {
             .await
         {
             Ok(resp) => {
-                self.repository.complete_outbox_job(
-                    &job.job_id,
-                    &resp.message_id,
-                    "",
-                    &now,
-                )?;
+                self.repository
+                    .complete_outbox_job(&job.job_id, &resp.message_id, "", &now)?;
                 self.publish_message_invalidation(
                     job.message_id,
                     ConversationInvalidationReason::Message,
@@ -1295,16 +1291,58 @@ impl ConversationService {
             }
             Err(err) => {
                 let err_msg = err.to_string();
-                self.repository.fail_outbox_job(
-                    &job.job_id,
-                    crate::conversation::error::ConversationErrorCode::ProviderFailure,
-                    &err_msg,
-                    &now,
-                )?;
+                let is_auth_failure = if let Some(meta_err) =
+                    err.downcast_ref::<crate::conversation::facebook::error::MetaGraphError>()
+                {
+                    meta_err.is_auth_failure()
+                } else {
+                    let msg = err.to_string();
+                    msg.contains("code 190")
+                        || msg.contains("code 102")
+                        || msg.contains("status 401")
+                        || msg.contains("Error validating access token")
+                        || msg.contains("Session has expired")
+                        || msg.contains("The access token could not be decrypted")
+                };
+
+                let error_code = if is_auth_failure {
+                    crate::conversation::error::ConversationErrorCode::ProviderAuth
+                } else {
+                    crate::conversation::error::ConversationErrorCode::ProviderFailure
+                };
+
+                self.repository
+                    .fail_outbox_job(&job.job_id, error_code, &err_msg, &now)?;
                 self.publish_message_invalidation(
                     job.message_id,
                     ConversationInvalidationReason::Message,
                 )?;
+
+                if is_auth_failure {
+                    if let Ok(mut conn) = rusqlite::Connection::open(self.repository.db_path()) {
+                        if let Ok(tx) = conn.transaction() {
+                            let _ = tx.execute(
+                                "UPDATE channel_accounts SET connection_status = 'invalid', last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+                                rusqlite::params![err_msg, channel_account_id],
+                            );
+                            let _ = tx.execute(
+                                "UPDATE facebook_page_tokens SET token_status = 'expired', updated_at = datetime('now') WHERE channel_account_id = ?1",
+                                rusqlite::params![channel_account_id],
+                            );
+                            let _ = tx.commit();
+                        }
+                    }
+                    self.events.publish(ConversationInvalidatedEvent {
+                        conversation_id: job.conversation_id,
+                        lead_id: None,
+                        channel: Channel::Messenger,
+                        reason: ConversationInvalidationReason::AccountStatus,
+                        message_id: None,
+                    });
+                    // Circuit breaker: halt draining remaining jobs for this account
+                    return Ok(false);
+                }
+
                 Ok(true)
             }
         }

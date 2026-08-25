@@ -146,9 +146,8 @@ pub async fn get_conversation_runtime_status(
     state: tauri::State<'_, ConversationState>,
 ) -> Result<ConversationRuntimeStatus, String> {
     state
-        .zalo_supervisor
+        .service
         .runtime_status()
-        .await
         .map_err(|error| error.to_string())
 }
 
@@ -555,20 +554,16 @@ pub async fn sync_facebook_conversations(
     page_id: Option<String>,
 ) -> Result<usize, String> {
     match page_id {
-        Some(id) if !id.trim().is_empty() => {
-            state
-                .facebook_supervisor
-                .sync_page(id.trim())
-                .await
-                .map_err(|e| e.to_string())
-        }
-        _ => {
-            state
-                .facebook_supervisor
-                .sync_all()
-                .await
-                .map_err(|e| e.to_string())
-        }
+        Some(id) if !id.trim().is_empty() => state
+            .facebook_supervisor
+            .sync_page(id.trim())
+            .await
+            .map_err(|e| e.to_string()),
+        _ => state
+            .facebook_supervisor
+            .sync_all()
+            .await
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -583,4 +578,3 @@ pub fn ingest_facebook_webhook_events(
         .ingest_webhook_events(page_id.trim(), &events)
         .map_err(|e| e.to_string())
 }
-

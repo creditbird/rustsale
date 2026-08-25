@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use async_trait::async_trait;
 use rusqlite::Connection;
+use std::sync::Arc;
 
 use super::client::*;
 use super::supervisor::*;
@@ -214,7 +214,7 @@ fn create_supervisor_test_db(db_path: &str) {
             channel_account_id INTEGER NOT NULL,
             page_id TEXT NOT NULL UNIQUE,
             access_token_encrypted TEXT NOT NULL,
-            token_status TEXT NOT NULL DEFAULT 'valid',
+            token_status TEXT NOT NULL DEFAULT 'valid' CHECK (token_status IN ('valid', 'invalid', 'expired', 'revoked')),
             granted_scopes_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -225,7 +225,12 @@ fn create_supervisor_test_db(db_path: &str) {
 #[tokio::test]
 async fn test_supervisor_sync_all_with_connected_page() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("test_fb_sup.db").to_str().unwrap().to_string();
+    let db_path = temp_dir
+        .path()
+        .join("test_fb_sup.db")
+        .to_str()
+        .unwrap()
+        .to_string();
     create_supervisor_test_db(&db_path);
 
     let conn = Connection::open(&db_path).unwrap();
@@ -242,7 +247,8 @@ async fn test_supervisor_sync_all_with_connected_page() {
         "page_sup_123",
         "mock_valid_token_value",
         &["pages_messaging".to_string()],
-    ).unwrap();
+    )
+    .unwrap();
 
     let events = Arc::new(ConversationEventPublisher::new(64));
     let mut rx = events.subscribe();
@@ -296,17 +302,34 @@ async fn test_supervisor_sync_all_with_connected_page() {
 
     // Verify message inserted in DB
     let conn_verify = Connection::open(&db_path).unwrap();
-    let count: i64 = conn_verify.query_row("SELECT count(*) FROM messages WHERE provider_message_id = 'm_sup_001'", [], |r| r.get(0)).unwrap();
+    let count: i64 = conn_verify
+        .query_row(
+            "SELECT count(*) FROM messages WHERE provider_message_id = 'm_sup_001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(count, 1);
 
-    let title: String = conn_verify.query_row("SELECT title FROM channel_conversations WHERE external_thread_id = 't_sup_100'", [], |r| r.get(0)).unwrap();
+    let title: String = conn_verify
+        .query_row(
+            "SELECT title FROM channel_conversations WHERE external_thread_id = 't_sup_100'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(title, "Customer Seven");
 }
 
 #[tokio::test]
 async fn test_supervisor_background_loop_cancellation() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("test_fb_sup_cancel.db").to_str().unwrap().to_string();
+    let db_path = temp_dir
+        .path()
+        .join("test_fb_sup_cancel.db")
+        .to_str()
+        .unwrap()
+        .to_string();
     create_supervisor_test_db(&db_path);
 
     let events = Arc::new(ConversationEventPublisher::new(64));
@@ -315,7 +338,9 @@ async fn test_supervisor_background_loop_cancellation() {
     });
 
     let supervisor = Arc::new(FacebookMessengerSupervisor::new(db_path, events, client));
-    let handle = supervisor.clone().start_background_loop(std::time::Duration::from_millis(50));
+    let handle = supervisor
+        .clone()
+        .start_background_loop(std::time::Duration::from_millis(50));
 
     // Cancel loop
     supervisor.stop();
@@ -366,7 +391,12 @@ impl FacebookGraphClient for FailingMockFacebookGraphClient {
 #[tokio::test]
 async fn test_supervisor_sync_records_token_expired_error() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("test_fb_sup_err.db").to_str().unwrap().to_string();
+    let db_path = temp_dir
+        .path()
+        .join("test_fb_sup_err.db")
+        .to_str()
+        .unwrap()
+        .to_string();
     create_supervisor_test_db(&db_path);
 
     let conn = Connection::open(&db_path).unwrap();
@@ -382,7 +412,8 @@ async fn test_supervisor_sync_records_token_expired_error() {
         "page_sup_err_123",
         "mock_valid_token_value",
         &["pages_messaging".to_string()],
-    ).unwrap();
+    )
+    .unwrap();
 
     let events = Arc::new(ConversationEventPublisher::new(64));
     let client = Arc::new(FailingMockFacebookGraphClient {
@@ -395,13 +426,30 @@ async fn test_supervisor_sync_records_token_expired_error() {
 
     let conn_verify = Connection::open(&db_path).unwrap();
     let last_error: Option<String> = conn_verify
-        .query_row("SELECT last_error FROM channel_accounts WHERE id = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT last_error FROM channel_accounts WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert!(last_error.is_some());
     assert!(last_error.unwrap().contains("OAuthException"));
 
+    let connection_status: String = conn_verify
+        .query_row(
+            "SELECT connection_status FROM channel_accounts WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(connection_status, "invalid");
+
     let token_status: String = conn_verify
-        .query_row("SELECT token_status FROM facebook_page_tokens WHERE channel_account_id = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT token_status FROM facebook_page_tokens WHERE channel_account_id = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(token_status, "expired");
 }
@@ -409,7 +457,12 @@ async fn test_supervisor_sync_records_token_expired_error() {
 #[tokio::test]
 async fn test_supervisor_sync_transient_error_does_not_expire_token() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("test_fb_sup_transient.db").to_str().unwrap().to_string();
+    let db_path = temp_dir
+        .path()
+        .join("test_fb_sup_transient.db")
+        .to_str()
+        .unwrap()
+        .to_string();
     create_supervisor_test_db(&db_path);
 
     let conn = Connection::open(&db_path).unwrap();
@@ -425,7 +478,8 @@ async fn test_supervisor_sync_transient_error_does_not_expire_token() {
         "page_sup_trans_123",
         "mock_valid_token_value",
         &["pages_messaging".to_string()],
-    ).unwrap();
+    )
+    .unwrap();
 
     let events = Arc::new(ConversationEventPublisher::new(64));
     // Meta returns 500 with OAuthException, code: 2, is_transient: true
@@ -439,13 +493,21 @@ async fn test_supervisor_sync_transient_error_does_not_expire_token() {
 
     let conn_verify = Connection::open(&db_path).unwrap();
     let last_error: Option<String> = conn_verify
-        .query_row("SELECT last_error FROM channel_accounts WHERE id = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT last_error FROM channel_accounts WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert!(last_error.is_some());
 
     // Token status MUST remain 'valid', NOT 'expired'
     let token_status: String = conn_verify
-        .query_row("SELECT token_status FROM facebook_page_tokens WHERE channel_account_id = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT token_status FROM facebook_page_tokens WHERE channel_account_id = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(token_status, "valid");
 }
@@ -453,7 +515,12 @@ async fn test_supervisor_sync_transient_error_does_not_expire_token() {
 #[tokio::test]
 async fn test_supervisor_ingest_webhook_events_emits_invalidation() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("test_fb_sup_ingest.db").to_str().unwrap().to_string();
+    let db_path = temp_dir
+        .path()
+        .join("test_fb_sup_ingest.db")
+        .to_str()
+        .unwrap()
+        .to_string();
     create_supervisor_test_db(&db_path);
 
     let conn = Connection::open(&db_path).unwrap();
@@ -488,13 +555,21 @@ async fn test_supervisor_ingest_webhook_events_emits_invalidation() {
 
     // Invalidation event must be emitted
     let event = rx.try_recv().expect("Expected invalidation event");
-    assert_eq!(event.channel, crate::conversation::types::Channel::Messenger);
+    assert_eq!(
+        event.channel,
+        crate::conversation::types::Channel::Messenger
+    );
 }
 
 #[tokio::test]
 async fn test_supervisor_ingest_webhook_events_rejects_unregistered_or_disabled_page() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("test_fb_sup_disabled.db").to_str().unwrap().to_string();
+    let db_path = temp_dir
+        .path()
+        .join("test_fb_sup_disabled.db")
+        .to_str()
+        .unwrap()
+        .to_string();
     create_supervisor_test_db(&db_path);
 
     let conn = Connection::open(&db_path).unwrap();
@@ -534,6 +609,3 @@ async fn test_supervisor_ingest_webhook_events_rejects_unregistered_or_disabled_
         .unwrap();
     assert_eq!(count_unregistered, 0);
 }
-
-
-
