@@ -193,10 +193,6 @@
       (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
       import.meta.env.VITE_FACEBOOK_APP_ID ||
       '';
-    customAppSecret =
-      (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_secret') : null) ||
-      import.meta.env.VITE_FACEBOOK_APP_SECRET ||
-      '';
     customRedirectUri = getDefaultRedirectUri();
     discoveredPages = [];
     selectedPageIds = new Set();
@@ -219,10 +215,6 @@
     customAppId =
       (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_id') : null) ||
       import.meta.env.VITE_FACEBOOK_APP_ID ||
-      '';
-    customAppSecret =
-      (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_secret') : null) ||
-      import.meta.env.VITE_FACEBOOK_APP_SECRET ||
       '';
     customRedirectUri = getDefaultRedirectUri();
     discoveredPages = [];
@@ -303,11 +295,6 @@
       import.meta.env.VITE_FACEBOOK_APP_ID ||
       ''
   );
-  let customAppSecret = $state(
-    (typeof localStorage !== 'undefined' ? localStorage.getItem('rustsale_meta_app_secret') : null) ||
-      import.meta.env.VITE_FACEBOOK_APP_SECRET ||
-      ''
-  );
   let customRedirectUri = $state(getDefaultRedirectUri());
   let copiedRedirectUri = $state(false);
   let oauthAuthUrl = $state<string | null>(null);
@@ -320,13 +307,6 @@
     }
     oauthAuthUrl = null;
     oauthStateNonce = null;
-  }
-
-  function handleAppSecretChange(val: string) {
-    customAppSecret = val.trim();
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('rustsale_meta_app_secret', customAppSecret);
-    }
   }
 
   function handleRedirectUriChange(val: string) {
@@ -441,8 +421,7 @@
     try {
       const pages = await fetchFacebookPagesFromToken(
         cleanToken,
-        customAppId.trim() || undefined,
-        customAppSecret.trim() || undefined
+        customAppId.trim() || undefined
       );
       if (pages.length === 0) {
         modalError = 'No managed Fanpages found for this account/token.';
@@ -994,27 +973,6 @@
                     placeholder="Enter App ID (e.g. 1585399209632312)"
                     class="text-xs font-mono h-8"
                   />
-                </div>
-
-                <!-- Meta App Secret (Optional - for Long-Lived Permanent Token Exchange) -->
-                <div class="flex flex-col gap-1">
-                  <div class="flex items-center justify-between">
-                    <label for="meta-app-secret-input" class="text-[11px] font-medium text-foreground">
-                      Meta App Secret (Tùy chọn - Dùng để lấy Token vĩnh viễn)
-                    </label>
-                    <span class="text-[10px] text-muted-foreground">Bảo mật trên máy</span>
-                  </div>
-                  <Input
-                    id="meta-app-secret-input"
-                    type="password"
-                    bind:value={customAppSecret}
-                    oninput={(e) => handleAppSecretChange(e.currentTarget.value)}
-                    placeholder="Enter App Secret (tự động đổi Token không hết hạn)"
-                    class="text-xs font-mono h-8"
-                  />
-                  <span class="text-[9px] text-muted-foreground">
-                    Khi có App Secret, RustSale sẽ tự động đổi Short Token thành <strong>Token vĩnh viễn (Never Expire)</strong>.
-                  </span>
                 </div>
 
                 <!-- OAuth Redirect URI -->

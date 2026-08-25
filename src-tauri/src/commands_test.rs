@@ -1035,6 +1035,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_meta_token_exchange_response_success_and_error() {
+        // Success case
+        let success_json = serde_json::json!({
+            "access_token": "EAAXxLongLivedToken123456",
+            "token_type": "bearer",
+            "expires_in": 5184000
+        });
+        let token = commands::parse_meta_token_exchange_response(&success_json).unwrap();
+        assert_eq!(token, "EAAXxLongLivedToken123456");
+
+        // Error case from Meta API
+        let error_json = serde_json::json!({
+            "error": {
+                "message": "Error validating client secret.",
+                "type": "OAuthException",
+                "code": 1
+            }
+        });
+        let err = commands::parse_meta_token_exchange_response(&error_json).unwrap_err();
+        assert!(err.contains("Error validating client secret"));
+
+        // Malformed / Empty response
+        let empty_json = serde_json::json!({});
+        let err2 = commands::parse_meta_token_exchange_response(&empty_json).unwrap_err();
+        assert!(err2.contains("Invalid response"));
+    }
+
+    #[test]
     fn test_zalo_qr_session_rejects_callback_without_device_imei() {
         let conn = db::init_db(":memory:").unwrap();
         let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".to_string();

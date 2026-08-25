@@ -2115,13 +2115,65 @@ pub fn save_managed_facebook_account_internal(
         .ok_or_else(|| "Failed to retrieve saved facebook account".to_string())
 }
 
+pub fn parse_meta_token_exchange_response(json: &serde_json::Value) -> Result<String, String> {
+    if let Some(token) = json.get("access_token").and_then(|t| t.as_str()) {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(err) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+        return Err(format!("Meta token exchange error: {}", err));
+    }
+
+    Err("Invalid response from Meta token exchange endpoint".to_string())
+}
+
+pub async fn exchange_facebook_long_lived_token_internal(
+    client: &reqwest::Client,
+    clean_token: &str,
+    app_id: &str,
+    app_secret: &str,
+) -> Result<String, String> {
+    let params = [
+        ("grant_type", "fb_exchange_token"),
+        ("client_id", app_id),
+        ("client_secret", app_secret),
+        ("fb_exchange_token", clean_token),
+    ];
+
+    let resp = client
+        .post("https://graph.facebook.com/v26.0/oauth/access_token")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request to Meta token exchange failed: {}", e))?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Meta token exchange JSON response: {}", e))?;
+
+    if !status.is_success() {
+        let err_msg = body
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown Meta API error");
+        return Err(format!("Meta returned HTTP {}: {}", status, err_msg));
+    }
+
+    parse_meta_token_exchange_response(&body)
+}
+
 #[tauri::command]
 pub async fn fetch_facebook_pages_from_token(
     token: String,
     app_id: Option<String>,
-    app_secret: Option<String>,
 ) -> Result<Vec<DiscoveredFacebookPage>, String> {
-    fetch_facebook_pages_from_token_internal(&token, app_id.as_deref(), app_secret.as_deref()).await
+    fetch_facebook_pages_from_token_internal(&token, app_id.as_deref(), None).await
 }
 
 pub async fn fetch_facebook_pages_from_token_internal(
@@ -2158,28 +2210,18 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .or_else(|| std::env::var("META_APP_SECRET").ok())
         .or_else(|| std::env::var("VITE_FACEBOOK_APP_SECRET").ok());
 
-    // If App ID and App Secret are available, exchange Short-Lived Token for Long-Lived Token (60-day / permanent)
+    // If App ID and App Secret are available, exchange Short-Lived Token for Long-Lived Token (60-day / permanent) via POST form (no secrets in URL)
     let mut working_token = clean_token.to_string();
     if let (Some(aid), Some(asec)) = (effective_app_id.as_ref(), effective_app_secret.as_ref()) {
-        if !aid.trim().is_empty() && !asec.trim().is_empty() {
-            let exchange_url = format!(
-                "https://graph.facebook.com/v26.0/oauth/access_token?grant_type=fb_exchange_token&client_id={}&client_secret={}&fb_exchange_token={}",
-                urlencoding::encode(aid.trim()),
-                urlencoding::encode(asec.trim()),
-                urlencoding::encode(clean_token)
-            );
-
-            if let Ok(exchange_resp) = client.get(&exchange_url).send().await {
-                if exchange_resp.status().is_success() {
-                    if let Ok(exchange_json) = exchange_resp.json::<serde_json::Value>().await {
-                        if let Some(long_token) =
-                            exchange_json.get("access_token").and_then(|t| t.as_str())
-                        {
-                            if !long_token.trim().is_empty() {
-                                working_token = long_token.trim().to_string();
-                            }
-                        }
-                    }
+        let trimmed_aid = aid.trim();
+        let trimmed_asec = asec.trim();
+        if !trimmed_aid.is_empty() && !trimmed_asec.is_empty() {
+            match exchange_facebook_long_lived_token_internal(&client, clean_token, trimmed_aid, trimmed_asec).await {
+                Ok(long_token) => {
+                    working_token = long_token;
+                }
+                Err(err) => {
+                    eprintln!("[Facebook Auth] Notice: Long-lived token exchange could not be completed ({err}). Continuing with provided token.");
                 }
             }
         }
