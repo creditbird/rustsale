@@ -12,6 +12,23 @@ fn setup_test_db() -> Connection {
 }
 
 #[tokio::test]
+async fn test_start_qr_login_public_api() {
+    let dir = tempdir().unwrap();
+    let manager = WhatsAppLoginManager::new(dir.path().to_path_buf(), None);
+    let attempt_id = "test-prod-attempt-1";
+
+    manager.start_qr_login(attempt_id).await.unwrap();
+    assert!(manager.is_active(attempt_id));
+
+    let temp_db_path = manager.get_temp_db_path(attempt_id);
+    assert!(temp_db_path.exists());
+
+    manager.cancel_qr_login(attempt_id).unwrap();
+    assert!(!manager.is_active(attempt_id));
+    assert!(!temp_db_path.exists());
+}
+
+#[tokio::test]
 async fn test_login_attempt_cancellation() {
     let dir = tempdir().unwrap();
     let manager = WhatsAppLoginManager::new_mock_with_dir(dir.path().to_path_buf());

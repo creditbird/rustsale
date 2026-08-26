@@ -159,6 +159,11 @@ impl WhatsAppLoginManager {
         }
     }
 
+    /// Starts a production QR login pairing attempt.
+    pub async fn start_qr_login(&self, attempt_id: &str) -> Result<(), String> {
+        self.init_attempt_internal(attempt_id, false).await
+    }
+
     /// Starts a mock login attempt for testing without a live WebSocket connection.
     pub async fn start_mock_login(&self, attempt_id: &str) -> Result<(), String> {
         self.init_attempt_internal(attempt_id, true).await
@@ -430,13 +435,20 @@ impl WhatsAppLoginManager {
     }
 
     fn clean_temp_db_sidecars(temp_db_path: &Path) {
-        let wal_path = temp_db_path.with_extension("db-wal");
-        if wal_path.exists() {
-            let _ = fs::remove_file(wal_path);
+        let wal_path1 = temp_db_path.with_extension("db-wal");
+        let wal_path2 = PathBuf::from(format!("{}-wal", temp_db_path.display()));
+        for wal_path in [&wal_path1, &wal_path2] {
+            if wal_path.exists() {
+                let _ = fs::remove_file(wal_path);
+            }
         }
-        let shm_path = temp_db_path.with_extension("db-shm");
-        if shm_path.exists() {
-            let _ = fs::remove_file(shm_path);
+
+        let shm_path1 = temp_db_path.with_extension("db-shm");
+        let shm_path2 = PathBuf::from(format!("{}-shm", temp_db_path.display()));
+        for shm_path in [&shm_path1, &shm_path2] {
+            if shm_path.exists() {
+                let _ = fs::remove_file(shm_path);
+            }
         }
     }
 }
