@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import {
     discardConversationStagedAttachment,
     listConversationQuickTemplates,
@@ -26,7 +26,6 @@
     openFilePicker,
     readClipboardImage
   } from '$lib/services/conversationPlatform';
-  import { Textarea } from '$lib/components/ui/textarea';
   import { Button } from '$lib/components/ui/button';
   import * as Select from '$lib/components/ui/select';
   import * as Popover from '$lib/components/ui/popover';
@@ -127,6 +126,7 @@
 
   const draftCache = new ComposerDraftCache();
   let text = $state('');
+  let lastProcessedText = '';
   let attachments = $state<ComposerAttachmentItem[]>([]);
   let activeDraftKey = $state<string | null>(null);
   let activePopover = $state<'emoji' | 'sticker' | null>(null);
@@ -316,6 +316,7 @@
   $effect(() => {
     if (item.key !== currentItemKey) {
       currentItemKey = item.key;
+      lastProcessedText = '';
       selectionTouched = false;
       selectedChannelAccountId = null;
       activePopover = null;
@@ -366,21 +367,26 @@
   });
 
   $effect(() => {
-    if (nextDraftKey === activeDraftKey) return;
-    if (activeDraftKey) {
-      draftCache.update(activeDraftKey, { text, attachments: [...attachments], mentions: [...mentions] });
-    }
-    activeDraftKey = nextDraftKey;
-    if (!activeDraftKey) {
-      text = '';
-      attachments = [];
-      mentions = [];
-      return;
-    }
-    const draft = draftCache.get(activeDraftKey);
-    text = draft.text;
-    attachments = [...draft.attachments];
-    mentions = [...draft.mentions];
+    const draftKey = nextDraftKey;
+    if (draftKey === activeDraftKey) return;
+    untrack(() => {
+      if (activeDraftKey) {
+        draftCache.update(activeDraftKey, { text, attachments: [...attachments], mentions: [...mentions] });
+      }
+      activeDraftKey = draftKey;
+      if (!activeDraftKey) {
+        text = '';
+        lastProcessedText = '';
+        attachments = [];
+        mentions = [];
+        return;
+      }
+      const draft = draftCache.get(activeDraftKey);
+      text = draft.text;
+      lastProcessedText = draft.text;
+      attachments = [...draft.attachments];
+      mentions = [...draft.mentions];
+    });
   });
 
   $effect(() => {
@@ -661,14 +667,14 @@
     }
   }
 
-  function checkQuickTemplates(): void {
-    if (!selectedCapabilities.quickTemplates?.enabled || !textareaElement) {
+  function checkQuickTemplates(caretOverride?: number): void {
+    if (!selectedCapabilities.quickTemplates?.enabled) {
       showQuickTemplatePopover = false;
       quickTemplateSlashToken = null;
       return;
     }
 
-    const caret = textareaElement.selectionStart || text.length;
+    const caret = caretOverride ?? (textareaElement?.selectionStart || text.length);
     const token = findSlashToken(text, caret);
     if (token) {
       quickTemplateSlashToken = token;
@@ -690,6 +696,7 @@
 
     const result = replaceSlashToken(text, quickTemplateSlashToken, template.bodyText);
     text = result.value;
+    lastProcessedText = result.value;
     persistDraft();
     showQuickTemplatePopover = false;
     quickTemplateSlashToken = null;
@@ -704,14 +711,14 @@
     });
   }
 
-  function checkMentions(): void {
-    if (!selectedCapabilities.mentions?.enabled || !isGroupMode || !textareaElement) {
+  function checkMentions(caretOverride?: number): void {
+    if (!selectedCapabilities.mentions?.enabled || !isGroupMode) {
       showMentionPopover = false;
       mentionToken = null;
       return;
     }
 
-    const caret = textareaElement.selectionStart || text.length;
+    const caret = caretOverride ?? (textareaElement?.selectionStart || text.length);
     const token = findMentionToken(text, caret);
     if (token) {
       mentionToken = token;
@@ -728,6 +735,7 @@
 
     const result = insertMention(text, mentionToken, candidate, mentions);
     text = result.value;
+    lastProcessedText = result.value;
     mentions = result.mentions;
     persistDraft();
     showMentionPopover = false;
@@ -742,11 +750,11 @@
   }
 
   function handleTextInput(event: Event): void {
-    const el = event.currentTarget as HTMLTextAreaElement;
-    const nextText = el.value;
-    const caret = el.selectionStart || nextText.length;
+    const el = (event.currentTarget || event.target) as HTMLTextAreaElement;
+    const nextText = el.value ?? '';
+    const caret = typeof el.selectionStart === 'number' ? el.selectionStart : nextText.length;
 
-    const prevText = text;
+    const prevText = lastProcessedText;
     const lenDiff = nextText.length - prevText.length;
     const edit = {
       start: lenDiff < 0 ? caret : Math.max(0, caret - lenDiff),
@@ -754,12 +762,32 @@
       insertedText: lenDiff > 0 ? nextText.slice(Math.max(0, caret - lenDiff), caret) : ''
     };
 
-    mentions = applyTextEditToMentions(prevText, nextText, edit, mentions);
-    text = nextText;
+    if (mentions.length > 0) {
+      mentions = applyTextEditToMentions(prevText, nextText, edit, mentions);
+    }
+    lastProcessedText = nextText;
+    if (text !== nextText) {
+      text = nextText;
+    }
+    if (sendError) {
+      sendError = null;
+    }
+
+    if (selectedCapabilities.quickTemplates?.enabled && nextText.includes('/')) {
+      checkQuickTemplates(caret);
+    } else if (showQuickTemplatePopover) {
+      showQuickTemplatePopover = false;
+      quickTemplateSlashToken = null;
+    }
+
+    if (selectedCapabilities.mentions?.enabled && isGroupMode && nextText.includes('@')) {
+      checkMentions(caret);
+    } else if (showMentionPopover) {
+      showMentionPopover = false;
+      mentionToken = null;
+    }
+
     persistDraft();
-    sendError = null;
-    checkQuickTemplates();
-    checkMentions();
   }
 
   function handleEmojiSelect(emoji: string): void {
@@ -770,6 +798,7 @@
     const inserted = insertTextAtSelection(currentText, emoji, start, end);
 
     text = inserted.value;
+    lastProcessedText = inserted.value;
     if (el) {
       el.value = inserted.value;
       el.focus();
@@ -907,6 +936,7 @@
     draftCache.clearSnapshot(activeDraftKey, snapshot);
     const nextDraft = draftCache.get(activeDraftKey);
     text = nextDraft.text;
+    lastProcessedText = nextDraft.text;
     attachments = [...nextDraft.attachments];
     mentions = [...nextDraft.mentions];
     sendError = null;
@@ -937,6 +967,7 @@
       });
       const restored = draftCache.get(activeDraftKey);
       text = restored.text;
+      lastProcessedText = restored.text;
       attachments = [...restored.attachments];
       mentions = [...restored.mentions];
       sendError = formatError(error);
@@ -1015,6 +1046,10 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
+    if (event.isComposing || event.keyCode === 229) {
+      return;
+    }
+
     if (showMentionPopover && mentionToken) {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -1288,8 +1323,8 @@
   {/if}
 
   <div class="flex items-center gap-2.5">
-    <Textarea
-      bind:ref={textareaElement}
+    <textarea
+      bind:this={textareaElement}
       bind:value={text}
       oninput={handleTextInput}
       onkeydown={handleKeydown}
@@ -1297,8 +1332,9 @@
       maxlength={selectedCapabilities.maxTextLength > 0 ? selectedCapabilities.maxTextLength + 1 : undefined}
       placeholder="Type a message..."
       disabled={disabled || (selectedOption !== null && !selectedOption.isEligible)}
-      class="min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-full border border-input/80 bg-background text-sm text-foreground focus-visible:ring-1 focus-visible:ring-primary shadow-2xs resize-none"
-    />
+      rows="1"
+      class="flex-1 min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-full border border-input/80 bg-background text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary shadow-2xs resize-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+    ></textarea>
     <Button
       type="button"
       onclick={handleSend}

@@ -246,6 +246,13 @@
           }
         }
 
+        const longLivedMatch = trimmed.match(
+          /[#&?](?:long_lived_token|long_lived_access_token|long_token|fb_exchange_token)=([^&]+)/
+        );
+        if (longLivedMatch && longLivedMatch[1]) {
+          return { token: decodeURIComponent(longLivedMatch[1]) };
+        }
+
         const providerTokenMatch = trimmed.match(/[#&?]provider_token=([^&]+)/);
         if (providerTokenMatch && providerTokenMatch[1]) {
           return { token: decodeURIComponent(providerTokenMatch[1]) };

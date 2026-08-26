@@ -618,7 +618,7 @@
         void refreshRuntimeStatus(true);
       }
       void syncFacebookConversations().catch(() => {});
-    }, runtimeRefreshIntervalMs > 0 ? runtimeRefreshIntervalMs : 5000);
+    }, runtimeRefreshIntervalMs > 0 ? runtimeRefreshIntervalMs : 30_000);
 
     return () => {
       stopRealtime();
@@ -821,7 +821,6 @@
       if (selectedKey && !inbox.some((i) => i.key === selectedKey) && inbox.length > 0) {
         selectItem(inbox[0]);
       }
-      void prefetchInboxTimelines(inbox);
     } catch (err) {
       console.error('Failed to refresh inbox', err);
     }

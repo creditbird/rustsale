@@ -2228,7 +2228,7 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
-    // Resolve effective App ID and App Secret strictly from parameters and server-side environment variables
+    // Resolve effective App ID and App Secret strictly from parameters, environment variables, or build-time embedded envs
     let effective_app_id = app_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -2236,12 +2236,21 @@ pub async fn fetch_facebook_pages_from_token_internal(
         .or_else(|| std::env::var("APP_ID").ok())
         .or_else(|| std::env::var("VITE_FACEBOOK_APP_ID").ok())
         .or_else(|| std::env::var("FACEBOOK_APP_ID").ok())
-        .or_else(|| std::env::var("META_APP_ID").ok());
+        .or_else(|| std::env::var("META_APP_ID").ok())
+        .or_else(|| option_env!("APP_ID").map(String::from))
+        .or_else(|| option_env!("VITE_FACEBOOK_APP_ID").map(String::from))
+        .or_else(|| option_env!("FACEBOOK_APP_ID").map(String::from))
+        .or_else(|| option_env!("META_APP_ID").map(String::from));
 
     let effective_app_secret = std::env::var("APP_SECRET")
         .ok()
+        .or_else(|| std::env::var("VITE_FACEBOOK_APP_SECRET").ok())
         .or_else(|| std::env::var("FACEBOOK_APP_SECRET").ok())
-        .or_else(|| std::env::var("META_APP_SECRET").ok());
+        .or_else(|| std::env::var("META_APP_SECRET").ok())
+        .or_else(|| option_env!("APP_SECRET").map(String::from))
+        .or_else(|| option_env!("VITE_FACEBOOK_APP_SECRET").map(String::from))
+        .or_else(|| option_env!("FACEBOOK_APP_SECRET").map(String::from))
+        .or_else(|| option_env!("META_APP_SECRET").map(String::from));
 
     // If App ID and App Secret are available, attempt exchange of Short-Lived Token for Long-Lived Token (60-day / permanent) via POST form.
     // If exchange fails (e.g. token is already long-lived, or Meta API returns an error), gracefully fall back to the provided token.

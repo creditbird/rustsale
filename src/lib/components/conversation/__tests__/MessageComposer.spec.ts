@@ -739,5 +739,30 @@ describe('MessageComposer', () => {
         expect(request.parts[0].mentions ?? []).toEqual([]);
       }
     });
+
+    test('IME composition events (isComposing or keyCode 229) do not trigger send on Enter', async () => {
+      const onBatchQueued = mock();
+      render(MessageComposer, { item: baseItem, runtime: baseRuntime, onBatchQueued });
+
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: 'việc' } });
+      await tick();
+
+      // Enter key with isComposing = true (IME finalizing a word)
+      await fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+      await tick();
+
+      // Enter key with keyCode = 229 (IME key processing)
+      await fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 });
+      await tick();
+
+      expect(mockSendConversationBatch).not.toHaveBeenCalled();
+
+      // Normal Enter without composing sends the message
+      await fireEvent.keyDown(textarea, { key: 'Enter', isComposing: false });
+      await tick();
+
+      expect(mockSendConversationBatch).toHaveBeenCalledTimes(1);
+    });
   });
 });
