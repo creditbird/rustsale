@@ -38,6 +38,7 @@
   import EmojiPicker from './EmojiPicker.svelte';
   import MentionCandidatePopover from './MentionCandidatePopover.svelte';
   import QuickTemplateManagerDialog from './QuickTemplateManagerDialog.svelte';
+  import { m } from '$lib/i18n';
   import QuickTemplatePopover from './QuickTemplatePopover.svelte';
   import ZaloStickerPicker from './ZaloStickerPicker.svelte';
   import {
@@ -1063,9 +1064,9 @@
       const fresh = evaluateFacebookWindow(facebookPolicy.lastInboundAtMs, Date.now());
       if (!fresh.freeWindow) {
         if (!(fresh.humanAgentEligible && facebookPolicy.selectedTag === 'HUMAN_AGENT')) {
-          sendError =
-            'Không thể gửi: đã quá cửa sổ cho phép của Meta' +
-            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày — không thể gửi tin tự do).');
+          sendError = fresh.humanAgentEligible
+            ? m.facebook_policy_err_require_tag()
+            : m.facebook_policy_err_outside_7d();
           return;
         }
         outboundMessageTag = 'HUMAN_AGENT';
@@ -1149,9 +1150,9 @@
       const fresh = evaluateFacebookWindow(facebookPolicy.lastInboundAtMs, Date.now());
       if (!fresh.freeWindow) {
         if (!(fresh.humanAgentEligible && facebookPolicy.selectedTag === 'HUMAN_AGENT')) {
-          sendError =
-            'Không thể gửi: đã quá cửa sổ cho phép của Meta' +
-            (fresh.humanAgentEligible ? ' — hãy chọn thẻ HUMAN_AGENT.' : ' (quá 7 ngày — không thể gửi tin tự do).');
+          sendError = fresh.humanAgentEligible
+            ? m.facebook_policy_err_require_tag()
+            : m.facebook_policy_err_outside_7d();
           return;
         }
         stickerMessageTag = 'HUMAN_AGENT';
@@ -1399,10 +1400,10 @@
             variant="outline"
             size="sm"
             class="h-7 gap-1 text-xs font-medium text-blue-600 border-blue-200 hover:bg-blue-50 dark:hover:bg-blue-950/30"
-            aria-label="Cấp lại quyền Meta"
+            aria-label={m.conversation_reauth_meta()}
             onclick={onOpenSettings}
           >
-            <KeyRound class="size-3" /> Cấp lại quyền Meta
+            <KeyRound class="size-3" /> {m.conversation_reauth_meta()}
           </Button>
         {:else if isSessionKeyExpired}
           <Button
@@ -1410,10 +1411,10 @@
             variant="outline"
             size="sm"
             class="h-7 gap-1 text-xs font-medium"
-            aria-label="Re-authenticate Zalo QR"
+            aria-label={m.conversation_relogin_qr()}
             onclick={() => onOpenQrLogin(selectedOption?.account?.providerAccountKey)}
           >
-            <QrCode class="size-3" /> Re-login via QR
+            <QrCode class="size-3" /> {m.conversation_relogin_qr()}
           </Button>
         {:else if selectedOption?.account?.providerAccountKey}
           <Button
@@ -1421,12 +1422,12 @@
             variant="outline"
             size="sm"
             class="h-7 gap-1 text-xs"
-            aria-label={`Reconnect ${selectedOption.account.displayName || selectedOption.label}`}
+            aria-label={`${m.conversation_reconnect()} ${selectedOption.account.displayName || selectedOption.label}`}
             onclick={handleReconnect}
             disabled={reconnecting}
           >
             <RefreshCw class="size-3 {reconnecting ? 'animate-spin' : ''}" />
-            Reconnect
+            {m.conversation_reconnect()}
           </Button>
         {/if}
         <Button

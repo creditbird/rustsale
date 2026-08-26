@@ -445,7 +445,7 @@ describe('MessageComposer', () => {
       onOpenQrLogin
     });
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Re-authenticate Zalo QR' }));
+    await fireEvent.click(screen.getByRole('button', { name: /Re-login via QR|Re-authenticate Zalo QR|Đăng nhập lại/i }));
 
     expect(onOpenQrLogin).toHaveBeenCalledWith('zalo-1');
     expect(mockRestart).not.toHaveBeenCalled();
@@ -483,7 +483,7 @@ describe('MessageComposer', () => {
       onOpenSettings
     });
 
-    const reauthBtn = screen.getByRole('button', { name: 'Cấp lại quyền Meta' });
+    const reauthBtn = screen.getByRole('button', { name: /Cấp lại quyền Meta|Re-authenticate/i });
     expect(reauthBtn).toBeTruthy();
 
     await fireEvent.click(reauthBtn);

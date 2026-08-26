@@ -78,7 +78,7 @@ describe('validateOutboundPolicy', () => {
     const status = evaluateFacebookWindow(NOW - 8 * DAY, NOW);
     const v = validateOutboundPolicy(status, 'HUMAN_AGENT');
     expect(v.allowed).toBe(false);
-    expect(v.reason).toContain('7 ngày');
+    expect(v.reason).toMatch(/7 (days|ngày)/i);
   });
 });
 
@@ -102,7 +102,7 @@ describe('Facebook24hPolicyBanner component', () => {
     render(Facebook24hPolicyBanner, {
       props: { lastInboundAt: new Date(NOW - HOUR).toISOString(), nowMs: NOW }
     });
-    expect(screen.getByText(/cửa sổ 24h của Meta/)).toBeTruthy();
+    expect(screen.getByText(/cửa sổ 24h của Meta|24-hour messaging window/i)).toBeTruthy();
     expect(screen.getByText(/23h 00m/)).toBeTruthy();
   });
 
@@ -110,7 +110,7 @@ describe('Facebook24hPolicyBanner component', () => {
     render(Facebook24hPolicyBanner, {
       props: { lastInboundAt: new Date(NOW - 25 * HOUR).toISOString(), nowMs: NOW }
     });
-    expect(screen.getByText(/chỉ có thể gửi bằng thẻ HUMAN_AGENT/)).toBeTruthy();
+    expect(screen.getByTestId('facebook-policy-outside')).toBeTruthy();
 
     const select = screen.getByRole('combobox') as HTMLSelectElement;
     expect(select.value).toBe('');
@@ -138,7 +138,7 @@ describe('Facebook24hPolicyBanner component', () => {
     render(Facebook24hPolicyBanner, {
       props: { lastInboundAt: new Date(NOW - 8 * DAY).toISOString(), nowMs: NOW }
     });
-    expect(screen.getByText(/không thể gửi tin nhắn tự do/)).toBeTruthy();
+    expect(screen.getByTestId('facebook-policy-expired')).toBeTruthy();
     expect(screen.queryByRole('combobox')).toBeNull();
   });
 });

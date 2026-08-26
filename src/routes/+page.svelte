@@ -192,11 +192,11 @@
         </div>
       {/if}
 
-      {#if activeTab === 'conversation'}
-        <div class="h-full">
-          <ConversationWorkspace {activeTab} targetLead={targetLeadForConversation} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
-        </div>
-      {:else if activeTab === 'facebook_hub'}
+      <div class={activeTab === 'conversation' ? 'h-full' : 'hidden'}>
+        <ConversationWorkspace {activeTab} targetLead={targetLeadForConversation} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
+      </div>
+
+      {#if activeTab === 'facebook_hub'}
         <FacebookHub {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       {:else if activeTab === 'dashboard'}
         <Dashboard {activeTab} />
