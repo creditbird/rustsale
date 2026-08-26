@@ -2,6 +2,7 @@
   import ZaloAccountsSettings from './settings/ZaloAccountsSettings.svelte';
   import EmailAccountsSettings from './settings/EmailAccountsSettings.svelte';
   import FacebookAccountsSettings from './settings/FacebookAccountsSettings.svelte';
+  import WhatsAppAccountsSettings from './settings/WhatsAppAccountsSettings.svelte';
   import AppUpdateSettings from './settings/AppUpdateSettings.svelte';
   import NotificationSettings from './settings/NotificationSettings.svelte';
   import LanguageSettings from './settings/LanguageSettings.svelte';
@@ -16,6 +17,7 @@
 
   let activeChannel = $state('zalo');
   let zaloSettingsRef = $state<{ triggerQrLogin?: () => void } | null>(null);
+  let whatsappSettingsRef = $state<{ triggerQrLogin?: () => void } | null>(null);
 
   export function openQrLogin() {
     activeChannel = 'zalo';
@@ -26,6 +28,17 @@
 
   export function openFacebookTab() {
     activeChannel = 'facebook';
+  }
+
+  export function openWhatsAppTab() {
+    activeChannel = 'whatsapp';
+  }
+
+  export function openWhatsAppQrLogin() {
+    activeChannel = 'whatsapp';
+    tick().then(() => {
+      whatsappSettingsRef?.triggerQrLogin?.();
+    });
   }
 </script>
 
@@ -60,9 +73,8 @@
           <Tabs.Trigger value="facebook" class="h-10 gap-2 rounded-lg text-xs font-semibold data-[state=active]:bg-background data-[state=active]:shadow-xs">
             <MessagesSquare class="size-4 text-blue-600 shrink-0" /> Facebook
           </Tabs.Trigger>
-          <Tabs.Trigger value="whatsapp" class="h-10 gap-2 rounded-lg text-xs font-semibold" disabled>
-            <MessageCircleMore class="size-4 text-emerald-600/50 shrink-0" /> WhatsApp
-            <Badge variant="outline" class="text-[9px] px-1 py-0 h-4">{m.common_coming_soon()}</Badge>
+          <Tabs.Trigger value="whatsapp" class="h-10 gap-2 rounded-lg text-xs font-semibold data-[state=active]:bg-background data-[state=active]:shadow-xs">
+            <MessageCircleMore class="size-4 text-emerald-600 shrink-0" /> WhatsApp
           </Tabs.Trigger>
         </Tabs.List>
 
@@ -70,6 +82,7 @@
           <Tabs.Content value="zalo"><ZaloAccountsSettings bind:this={zaloSettingsRef} /></Tabs.Content>
           <Tabs.Content value="email"><EmailAccountsSettings /></Tabs.Content>
           <Tabs.Content value="facebook"><FacebookAccountsSettings {onNavigateToHub} /></Tabs.Content>
+          <Tabs.Content value="whatsapp"><WhatsAppAccountsSettings bind:this={whatsappSettingsRef} /></Tabs.Content>
         </div>
       </Tabs.Root>
     </Card.Content>

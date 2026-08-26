@@ -123,3 +123,6 @@ export const deleteSmtpAccount = (id: number) =>
 
 export const testSmtpConnection = (host: string, port: number) =>
   invoke<string>('test_smtp_connection', { host, port });
+
+export * from './whatsappService';
+

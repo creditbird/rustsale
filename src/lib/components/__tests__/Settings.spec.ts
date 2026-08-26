@@ -66,6 +66,8 @@ mock.module('@tauri-apps/api/core', () => ({
         return structuredClone(smtpAccounts);
       case 'get_managed_facebook_accounts':
         return structuredClone(facebookAccounts);
+      case 'get_managed_whatsapp_accounts':
+        return [];
       case 'delete_facebook_account':
         return undefined;
       case 'verify_zalo_session':
@@ -117,7 +119,7 @@ afterEach(() => {
 });
 
 describe('Settings', () => {
-  test('renders Zalo, Email, and Facebook account tabs with enabled Facebook channel', async () => {
+  test('renders Zalo, Email, Facebook, and WhatsApp account tabs with enabled WhatsApp channel', async () => {
     render(Settings);
 
     expect(screen.getByRole('tab', { name: /Zalo/i })).toBeTruthy();
@@ -126,8 +128,8 @@ describe('Settings', () => {
     const facebookTab = screen.getByRole('tab', { name: /^Facebook$/i });
     expect((facebookTab as HTMLButtonElement).disabled).toBe(false);
 
-    const whatsappTab = screen.getByRole('tab', { name: /WhatsApp.*Coming soon/i });
-    expect((whatsappTab as HTMLButtonElement).disabled).toBe(true);
+    const whatsappTab = screen.getByRole('tab', { name: /^WhatsApp$/i });
+    expect((whatsappTab as HTMLButtonElement).disabled).toBe(false);
   });
 
   test('renders Facebook tab content with connected fanpage and valid token badge', async () => {
