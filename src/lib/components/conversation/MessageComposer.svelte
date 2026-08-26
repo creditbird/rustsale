@@ -154,7 +154,9 @@
 
   $effect(() => {
     if (selectedCapabilities.quickTemplates?.enabled) {
-      void loadQuickTemplates();
+      untrack(() => {
+        void loadQuickTemplates();
+      });
     }
   });
 
@@ -229,7 +231,9 @@
   }
 
   let selectedChannelAccountId = $state<number | null>(null);
-  let selectedAccountIdString = $state('');
+  let selectedAccountIdString = $derived(
+    selectedChannelAccountId === null ? '' : String(selectedChannelAccountId)
+  );
   let selectionTouched = $state(false);
   let currentItemKey = $state('');
   let lastResolvedTargetKey = $state('');
@@ -352,21 +356,6 @@
   });
 
   $effect(() => {
-    if (selectedAccountIdString) {
-      const id = Number(selectedAccountIdString);
-      if (Number.isFinite(id) && id !== selectedChannelAccountId) {
-        selectedChannelAccountId = id;
-        selectionTouched = true;
-      }
-    }
-  });
-
-  $effect(() => {
-    const nextValue = selectedChannelAccountId === null ? '' : String(selectedChannelAccountId);
-    if (selectedAccountIdString !== nextValue) selectedAccountIdString = nextValue;
-  });
-
-  $effect(() => {
     const draftKey = nextDraftKey;
     if (draftKey === activeDraftKey) return;
     untrack(() => {
@@ -420,7 +409,7 @@
 
   function persistDraft(): void {
     if (!activeDraftKey) return;
-    draftCache.update(activeDraftKey, { text, attachments: [...attachments], mentions: [...mentions] });
+    draftCache.update(activeDraftKey, { text, attachments, mentions });
   }
 
   function updateAttachments(nextItems: ComposerAttachmentItem[]): void {
@@ -1124,7 +1113,20 @@
         <span class="truncate">{selectedOption.label}</span>
       </div>
     {:else if options.length > 0}
-      <Select.Root type="single" bind:value={selectedAccountIdString} disabled={disabled || isSending}>
+      <Select.Root
+        type="single"
+        value={selectedAccountIdString}
+        onValueChange={(val) => {
+          if (val) {
+            const id = Number(val);
+            if (Number.isFinite(id)) {
+              selectedChannelAccountId = id;
+              selectionTouched = true;
+            }
+          }
+        }}
+        disabled={disabled || isSending}
+      >
         <Select.Trigger class="w-[260px]" data-testid="channel-account-select">
           <span>{selectedOption?.label ?? 'Select sending account...'}</span>
         </Select.Trigger>
@@ -1325,7 +1327,7 @@
   <div class="flex items-center gap-2.5">
     <textarea
       bind:this={textareaElement}
-      bind:value={text}
+      value={text}
       oninput={handleTextInput}
       onkeydown={handleKeydown}
       onpaste={() => void handlePaste()}

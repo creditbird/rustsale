@@ -465,7 +465,7 @@
   <ScrollArea bind:viewportRef={viewportEl} class="flex-1 min-h-0 w-full h-full">
     {#if loading}
       <div class="space-y-3 p-3">
-        {#each Array(5) as _, i}
+        {#each Array(5) as _, i (i)}
           <div class="flex items-center gap-3">
             <Skeleton class="w-10 h-10 rounded-full shrink-0" />
             <div class="flex-1 space-y-2">
