@@ -764,5 +764,55 @@ describe('MessageComposer', () => {
 
       expect(mockSendConversationBatch).toHaveBeenCalledTimes(1);
     });
+
+    test('full IME composition cycle (compositionstart -> intermediate input -> compositionend) correctly reconciles mentions and sends payload', async () => {
+      const onBatchQueued = mock();
+      render(MessageComposer, {
+        item: groupItem,
+        runtime: runtimeWithMentions,
+        onBatchQueued
+      });
+
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+
+      // 1. Type @ to open mention popover
+      await fireEvent.input(textarea, { target: { value: '@Nguyễn', selectionStart: 7, selectionEnd: 7 } });
+      await tick();
+      await waitFor(() => expect(screen.getByTestId('mention-candidate-501')).toBeTruthy());
+
+      // 2. Select candidate via click -> text becomes "@Nguyễn Văn A "
+      await fireEvent.click(screen.getByTestId('mention-candidate-501'));
+      await tick();
+      expect(textarea.value).toBe('@Nguyễn Văn A ');
+
+      // 3. Start IME composition to type Vietnamese "việc" (v -> vi -> vie -> viec -> việc)
+      await fireEvent.compositionStart(textarea);
+      await fireEvent.input(textarea, { target: { value: '@Nguyễn Văn A viec' } });
+      await tick();
+
+      // 4. End IME composition with final word "việc"
+      textarea.value = '@Nguyễn Văn A việc';
+      await fireEvent.compositionEnd(textarea);
+      await tick();
+
+      // 5. Send message
+      await fireEvent.keyDown(textarea, { key: 'Enter', isComposing: false });
+      await tick();
+
+      expect(mockSendConversationBatch).toHaveBeenCalled();
+      const lastCall = mockSendConversationBatch.mock.calls[mockSendConversationBatch.mock.calls.length - 1][0];
+      const textPart = lastCall.parts[0];
+      expect(textPart.type).toBe('text');
+      if (textPart.type === 'text') {
+        expect(textPart.text).toBe('@Nguyễn Văn A việc');
+        expect(textPart.mentions).toHaveLength(1);
+        expect(textPart.mentions?.[0]).toEqual({
+          pos: 0,
+          len: 13,
+          targetIdentityId: 501,
+          isAll: false
+        });
+      }
+    });
   });
 });

@@ -341,9 +341,26 @@
       }
       if (selectedItem && selectedItem.key === found.key) {
         const prev = selectedItem;
-        // Shallow compare cheap fields that affect header/composer; deeper replyTargets
-        // identity is handled by composer via options memo, but header fields are critical
-        const sameHeader =
+        const sameTargets =
+          prev.replyTargets.length === found.replyTargets.length &&
+          prev.replyTargets.every((t, idx) => {
+            const f = found.replyTargets[idx];
+            return (
+              f !== undefined &&
+              t.conversationId === f.conversationId &&
+              t.channelAccountId === f.channelAccountId &&
+              t.channel === f.channel &&
+              t.accountDisplayName === f.accountDisplayName &&
+              t.conversationKind === f.conversationKind &&
+              t.lastInboundAt === f.lastInboundAt &&
+              t.lastMessageAt === f.lastMessageAt
+            );
+          });
+        const sameChannels =
+          prev.channels.length === found.channels.length &&
+          prev.channels.every((c, idx) => c === found.channels[idx]);
+
+        const sameItem =
           prev.title === found.title &&
           prev.lastMessageAt === found.lastMessageAt &&
           prev.lastMessagePreview === found.lastMessagePreview &&
@@ -351,10 +368,10 @@
           prev.kind === found.kind &&
           prev.leadId === found.leadId &&
           prev.conversationId === found.conversationId &&
-          prev.channels.length === found.channels.length &&
-          prev.replyTargets.length === found.replyTargets.length &&
-          prev.participantCount === found.participantCount;
-        if (sameHeader) return; // keep previous reference — no downstream re-render
+          prev.participantCount === found.participantCount &&
+          sameChannels &&
+          sameTargets;
+        if (sameItem) return; // keep previous reference — no downstream re-render
       }
       selectedItem = found;
     });
@@ -1170,6 +1187,15 @@
     return ae.tagName === 'TEXTAREA' && ae.getAttribute('placeholder') === 'Type a message...';
   }
 
+  function scheduleIdleWork(callback: () => void): void {
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      (window as unknown as { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => number })
+        .requestIdleCallback(callback, { timeout: 2000 });
+    } else {
+      setTimeout(callback, 0);
+    }
+  }
+
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     if (event.reason === 'account_status') {
       void refreshRuntimeStatus(true);
@@ -1207,8 +1233,7 @@
         if (IS_TEST_WORKSPACE) {
           void refreshInbox();
         } else {
-          // Use rAF to let pending input events flush before heavy list_inbox JSON parse + 6 sorts
-          requestAnimationFrame(() => {
+          scheduleIdleWork(() => {
             void refreshInbox();
           });
         }
@@ -1225,7 +1250,7 @@
           if (IS_TEST_WORKSPACE) {
             void refreshOpenTimeline();
           } else {
-            requestAnimationFrame(() => {
+            scheduleIdleWork(() => {
               void refreshOpenTimeline();
             });
           }

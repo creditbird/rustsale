@@ -825,8 +825,18 @@ export const syncAndDeepScanGroupMembers = (conversationId: number) =>
 export const batchImportGroupMembersToLeads = (request: BatchImportGroupMembersRequest) =>
   invoke<BatchImportGroupMembersResult>('batch_import_group_members_to_leads', { request });
 
-export const syncFacebookConversations = (pageId?: string) =>
-  invoke<number>('sync_facebook_conversations', { pageId: pageId ?? null });
+let activeSyncPromise: Promise<number> | null = null;
+
+export const syncFacebookConversations = (pageId?: string): Promise<number> => {
+  if (activeSyncPromise) {
+    return activeSyncPromise;
+  }
+  activeSyncPromise = invoke<number>('sync_facebook_conversations', { pageId: pageId ?? null })
+    .finally(() => {
+      activeSyncPromise = null;
+    });
+  return activeSyncPromise;
+};
 
 export const ingestFacebookWebhookEvents = (pageId: string, events: any[]) =>
   invoke<number>('ingest_facebook_webhook_events', { pageId, events });

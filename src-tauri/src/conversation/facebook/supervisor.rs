@@ -125,7 +125,6 @@ impl FacebookMessengerSupervisor {
         }
 
         let mut all_new_messages = 0;
-        let mut total_conversations = 0;
         let mut after_cursor: Option<String> = None;
         let max_pages = 25;
         let mut page_count = 0;
@@ -194,7 +193,6 @@ impl FacebookMessengerSupervisor {
                     &conversations_page.data,
                 )?;
                 all_new_messages += summary.new_messages_count;
-                total_conversations += summary.conversations_synced;
                 for cid in summary.affected_conversation_ids {
                     if !all_affected_conversations.contains(&cid) {
                         all_affected_conversations.push(cid);
@@ -222,25 +220,15 @@ impl FacebookMessengerSupervisor {
             rusqlite::params![account.id],
         );
 
-        if all_new_messages > 0 || total_conversations > 0 {
-            if all_affected_conversations.is_empty() {
+        if all_new_messages > 0 && !all_affected_conversations.is_empty() {
+            for cid in &all_affected_conversations {
                 self.events.publish(ConversationInvalidatedEvent {
-                    conversation_id: 0,
+                    conversation_id: *cid,
                     lead_id: None,
                     channel: Channel::Messenger,
                     reason: ConversationInvalidationReason::Message,
                     message_id: None,
                 });
-            } else {
-                for cid in &all_affected_conversations {
-                    self.events.publish(ConversationInvalidatedEvent {
-                        conversation_id: *cid,
-                        lead_id: None,
-                        channel: Channel::Messenger,
-                        reason: ConversationInvalidationReason::Message,
-                        message_id: None,
-                    });
-                }
             }
         }
 

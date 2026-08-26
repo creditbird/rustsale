@@ -431,10 +431,49 @@
     isComposing = false;
     const el = event.target as HTMLTextAreaElement | null;
     const targetEl = el ?? textareaElement;
-    if (targetEl && targetEl.value !== lastProcessedText) {
-      // Process the final composed value exactly once, now that IME is done
-      const synthetic = { currentTarget: targetEl, target: targetEl } as unknown as Event;
-      handleTextInput(synthetic);
+    if (targetEl) {
+      const finalNextText = targetEl.value ?? '';
+      const caret = typeof targetEl.selectionStart === 'number' ? targetEl.selectionStart : finalNextText.length;
+      const prevText = lastProcessedText;
+      const lenDiff = finalNextText.length - prevText.length;
+      const edit = {
+        start: lenDiff < 0 ? caret : Math.max(0, caret - lenDiff),
+        deleteCount: lenDiff < 0 ? Math.abs(lenDiff) : 0,
+        insertedText: lenDiff > 0 ? finalNextText.slice(Math.max(0, caret - lenDiff), caret) : ''
+      };
+
+      if (mentions.length > 0) {
+        mentions = applyTextEditToMentions(prevText, finalNextText, edit, mentions);
+      }
+      lastProcessedText = finalNextText;
+      text = finalNextText;
+
+      const nextHasText = finalNextText.trim().length > 0;
+      if (hasText !== nextHasText) {
+        hasText = nextHasText;
+      }
+
+      const maxLen = selectedCapabilities.maxTextLength;
+      const nextExceeded = maxLen > 0 && finalNextText.length > maxLen;
+      if (textLengthExceeded !== nextExceeded) {
+        textLengthExceeded = nextExceeded;
+      }
+
+      if (selectedCapabilities.quickTemplates?.enabled && finalNextText.includes('/')) {
+        checkQuickTemplates(caret);
+      } else if (showQuickTemplatePopover) {
+        showQuickTemplatePopover = false;
+        quickTemplateSlashToken = null;
+      }
+
+      if (selectedCapabilities.mentions?.enabled && isGroupMode && finalNextText.includes('@')) {
+        checkMentions(caret);
+      } else if (showMentionPopover) {
+        showMentionPopover = false;
+        mentionToken = null;
+      }
+
+      persistDraft(true);
     }
     scheduleAutoResize();
   }
@@ -832,7 +871,6 @@
       const nextTextCo = elCo.value ?? '';
       // Keep raw text in sync so hasText/send enable stays accurate, but don't
       // run mention/template ranking or applyTextEditToMentions during composition.
-      lastProcessedText = nextTextCo;
       text = nextTextCo;
       const nextHasTextCo = nextTextCo.trim().length > 0;
       if (hasText !== nextHasTextCo) hasText = nextHasTextCo;

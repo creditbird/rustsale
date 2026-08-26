@@ -179,10 +179,6 @@ impl FacebookMessengerNormalizer {
                 |row| row.get(0),
             )?;
 
-            if !summary.affected_conversation_ids.contains(&conversation_id) {
-                summary.affected_conversation_ids.push(conversation_id);
-            }
-
             // 3. Ensure conversation_participants
             tx.execute(
                 "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
@@ -192,6 +188,8 @@ impl FacebookMessengerNormalizer {
             )?;
 
             summary.conversations_synced += 1;
+
+            let mut thread_new_messages = 0;
 
             // 4. Ingest messages
             if let Some(ref messages_container) = thread.messages {
@@ -252,6 +250,7 @@ impl FacebookMessengerNormalizer {
                                 ],
                             )?;
                             summary.new_messages_count += 1;
+                            thread_new_messages += 1;
                             tx.last_insert_rowid()
                         }
                     };
@@ -303,6 +302,10 @@ impl FacebookMessengerNormalizer {
                         }
                     }
                 }
+            }
+
+            if thread_new_messages > 0 && !summary.affected_conversation_ids.contains(&conversation_id) {
+                summary.affected_conversation_ids.push(conversation_id);
             }
         }
 
