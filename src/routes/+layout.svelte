@@ -8,12 +8,12 @@
   let { children } = $props();
 
   onMount(() => {
-    // Non-blocking silent background check after 3 seconds
+    // Non-blocking silent background check after 30 seconds
     const timer = setTimeout(() => {
       updaterService.checkForUpdate({ silent: true }).catch((err) => {
         console.warn('[Updater] Background check error:', err);
       });
-    }, 3000);
+    }, 30_000);
 
     return () => clearTimeout(timer);
   });

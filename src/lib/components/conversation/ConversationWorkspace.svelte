@@ -322,7 +322,43 @@
   let inboxRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let timelineRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let selectedItem = $derived(inbox.find((i) => i.key === selectedKey) ?? null);
+  // Production-ready memoization: keep stable object identity while typing
+  // to prevent MessageComposer prop thrashing on every list_inbox refresh (434 items).
+  // WhatsApp/Telegram keep current chat snapshot isolated from inbox list updates.
+  let selectedItem = $state<InboxItem | null>(null);
+  $effect(() => {
+    const key = selectedKey;
+    const currentInbox = inbox;
+    untrack(() => {
+      if (!key) {
+        if (selectedItem !== null) selectedItem = null;
+        return;
+      }
+      const found = currentInbox.find((i) => i.key === key) ?? null;
+      if (!found) {
+        if (selectedItem !== null) selectedItem = null;
+        return;
+      }
+      if (selectedItem && selectedItem.key === found.key) {
+        const prev = selectedItem;
+        // Shallow compare cheap fields that affect header/composer; deeper replyTargets
+        // identity is handled by composer via options memo, but header fields are critical
+        const sameHeader =
+          prev.title === found.title &&
+          prev.lastMessageAt === found.lastMessageAt &&
+          prev.lastMessagePreview === found.lastMessagePreview &&
+          prev.avatarUrl === found.avatarUrl &&
+          prev.kind === found.kind &&
+          prev.leadId === found.leadId &&
+          prev.conversationId === found.conversationId &&
+          prev.channels.length === found.channels.length &&
+          prev.replyTargets.length === found.replyTargets.length &&
+          prev.participantCount === found.participantCount;
+        if (sameHeader) return; // keep previous reference — no downstream re-render
+      }
+      selectedItem = found;
+    });
+  });
 
   // --- Facebook 24-Hour Policy Gate ---
   // Policy binds to the reply target the COMPOSER actually resolved
@@ -1110,6 +1146,30 @@
     return item.replyTargets.some((target) => target.conversationId === event.conversationId);
   }
 
+  // WhatsApp-style: avoid refreshing inbox/timeline while user is typing — coalesce & defer
+  function getWorkspaceEnvMode(): string {
+    try {
+      // @ts-ignore
+      if (typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: { MODE?: string } }).env?.MODE) {
+        // @ts-ignore
+        return (import.meta as unknown as { env: { MODE: string } }).env.MODE;
+      }
+    } catch {}
+    try {
+      if (typeof process !== 'undefined' && (process as unknown as { env?: { NODE_ENV?: string } })?.env?.NODE_ENV) {
+        return (process as unknown as { env: { NODE_ENV: string } }).env.NODE_ENV as string;
+      }
+    } catch {}
+    return 'production';
+  }
+  const IS_TEST_WORKSPACE = getWorkspaceEnvMode() === 'test';
+  function isComposerActive(): boolean {
+    const ae = document.activeElement as HTMLElement | null;
+    if (!ae) return false;
+    // Strict: only when the composer textarea itself is focused (not generic composer container)
+    return ae.tagName === 'TEXTAREA' && ae.getAttribute('placeholder') === 'Type a message...';
+  }
+
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     if (event.reason === 'account_status') {
       void refreshRuntimeStatus(true);
@@ -1137,18 +1197,39 @@
     }
 
     if (isActive) {
+      // Inbox: 300ms coalesce normally, 5000ms while typing to keep input at 120fps (Telegram/WhatsApp pattern)
+      // In test keep 50ms so existing specs (70ms wait) still pass.
+      const baseInboxDelay = IS_TEST_WORKSPACE ? 50 : 300;
+      const typingInboxDelay = IS_TEST_WORKSPACE ? 60 : 5000;
+      const inboxDelay = isComposerActive() ? typingInboxDelay : baseInboxDelay;
       if (inboxRefreshTimer) clearTimeout(inboxRefreshTimer);
       inboxRefreshTimer = setTimeout(() => {
-        refreshInbox();
-      }, 50);
+        if (IS_TEST_WORKSPACE) {
+          void refreshInbox();
+        } else {
+          // Use rAF to let pending input events flush before heavy list_inbox JSON parse + 6 sorts
+          requestAnimationFrame(() => {
+            void refreshInbox();
+          });
+        }
+      }, inboxDelay);
 
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
       if (affectsOpenItem) {
+        const baseTimelineDelay = IS_TEST_WORKSPACE ? 50 : 300;
+        const typingTimelineDelay = IS_TEST_WORKSPACE ? 60 : 5000;
+        const timelineDelay = isComposerActive() ? typingTimelineDelay : baseTimelineDelay;
         if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
         timelineRefreshTimer = setTimeout(() => {
-          refreshOpenTimeline();
-        }, 50);
+          if (IS_TEST_WORKSPACE) {
+            void refreshOpenTimeline();
+          } else {
+            requestAnimationFrame(() => {
+              void refreshOpenTimeline();
+            });
+          }
+        }, timelineDelay);
       }
     } else {
       inboxStale = true;

@@ -141,6 +141,8 @@
   let isVoiceRecording = $state(false);
   let textareaElement = $state<HTMLTextAreaElement | null>(null);
   let draftPersistTimer: ReturnType<typeof setTimeout> | null = null;
+  let isComposing = $state(false);
+  let rafResizeId: number | null = null;
 
 
   let quickTemplates = $state<ConversationQuickTemplate[]>([]);
@@ -361,6 +363,8 @@
   $effect(() => {
     const draftKey = nextDraftKey;
     if (draftKey === activeDraftKey) return;
+    // Never clobber the textarea mid-composition (Vietnamese IME) — defer until compositionend
+    if (isComposing && document.activeElement === textareaElement) return;
     untrack(() => {
       if (activeDraftKey) {
         persistDraft(true);
@@ -374,6 +378,7 @@
         attachments = [];
         mentions = [];
         if (textareaElement) textareaElement.value = '';
+        scheduleAutoResize();
         return;
       }
       const draft = draftCache.get(activeDraftKey);
@@ -385,6 +390,7 @@
       attachments = [...draft.attachments];
       mentions = [...draft.mentions];
       if (textareaElement) textareaElement.value = draft.text;
+      scheduleAutoResize();
     });
   });
 
@@ -402,10 +408,43 @@
     }
   });
 
+  // WhatsApp/Telegram-style rAF autosize: avoids field-sizing:content layout thrash
+  function scheduleAutoResize(): void {
+    if (!textareaElement) return;
+    if (rafResizeId !== null) cancelAnimationFrame(rafResizeId);
+    rafResizeId = requestAnimationFrame(() => {
+      rafResizeId = null;
+      const el = textareaElement;
+      if (!el) return;
+      el.style.height = 'auto';
+      const newH = Math.min(el.scrollHeight, 140);
+      el.style.height = `${Math.max(newH, 44)}px`;
+      el.style.overflowY = el.scrollHeight > 140 ? 'auto' : 'hidden';
+    });
+  }
+
+  function handleCompositionStart(): void {
+    isComposing = true;
+  }
+
+  function handleCompositionEnd(event: CompositionEvent): void {
+    isComposing = false;
+    const el = event.target as HTMLTextAreaElement | null;
+    const targetEl = el ?? textareaElement;
+    if (targetEl && targetEl.value !== lastProcessedText) {
+      // Process the final composed value exactly once, now that IME is done
+      const synthetic = { currentTarget: targetEl, target: targetEl } as unknown as Event;
+      handleTextInput(synthetic);
+    }
+    scheduleAutoResize();
+  }
+
   onMount(() => {
     if (textareaElement && textareaElement.value !== text) {
       textareaElement.value = text;
     }
+    // Initial rAF sizing for prefilled draft
+    scheduleAutoResize();
     const unlisten = onDragDropEvent(
       (paths) => {
         isDragActive = false;
@@ -419,6 +458,10 @@
       if (draftPersistTimer) {
         clearTimeout(draftPersistTimer);
         draftPersistTimer = null;
+      }
+      if (rafResizeId !== null) {
+        cancelAnimationFrame(rafResizeId);
+        rafResizeId = null;
       }
       persistDraft(true);
       unlisten();
@@ -722,6 +765,7 @@
     textLengthExceeded =
       selectedCapabilities.maxTextLength > 0 && result.value.length > selectedCapabilities.maxTextLength;
     if (textareaElement) textareaElement.value = result.value;
+    scheduleAutoResize();
     persistDraft(true);
     showQuickTemplatePopover = false;
     quickTemplateSlashToken = null;
@@ -766,6 +810,7 @@
       selectedCapabilities.maxTextLength > 0 && result.value.length > selectedCapabilities.maxTextLength;
     if (textareaElement) textareaElement.value = result.value;
     mentions = result.mentions;
+    scheduleAutoResize();
     persistDraft(true);
     showMentionPopover = false;
     mentionToken = null;
@@ -779,6 +824,26 @@
   }
 
   function handleTextInput(event: Event): void {
+    const inputEvent = event as InputEvent;
+    // Production-ready IME guard: skip expensive work while composing (Unikey/EVKey Telex).
+    // Telegram/WhatsApp both suspend slash/mention parsing until compositionend.
+    if (isComposing || (inputEvent as unknown as { isComposing?: boolean })?.isComposing) {
+      const elCo = (event.currentTarget || event.target) as HTMLTextAreaElement;
+      const nextTextCo = elCo.value ?? '';
+      // Keep raw text in sync so hasText/send enable stays accurate, but don't
+      // run mention/template ranking or applyTextEditToMentions during composition.
+      lastProcessedText = nextTextCo;
+      text = nextTextCo;
+      const nextHasTextCo = nextTextCo.trim().length > 0;
+      if (hasText !== nextHasTextCo) hasText = nextHasTextCo;
+      const maxLenCo = selectedCapabilities.maxTextLength;
+      const nextExceededCo = maxLenCo > 0 && nextTextCo.length > maxLenCo;
+      if (textLengthExceeded !== nextExceededCo) textLengthExceeded = nextExceededCo;
+      scheduleAutoResize();
+      persistDraft();
+      return;
+    }
+
     const el = (event.currentTarget || event.target) as HTMLTextAreaElement;
     const nextText = el.value ?? '';
     const caret = typeof el.selectionStart === 'number' ? el.selectionStart : nextText.length;
@@ -826,6 +891,7 @@
       mentionToken = null;
     }
 
+    scheduleAutoResize();
     persistDraft();
   }
 
@@ -846,6 +912,7 @@
       el.focus();
       el.setSelectionRange(inserted.caret, inserted.caret);
     }
+    scheduleAutoResize();
     persistDraft(true);
   }
 
@@ -982,6 +1049,7 @@
     hasText = nextDraft.text.trim().length > 0;
     textLengthExceeded = false;
     if (textareaElement) textareaElement.value = nextDraft.text;
+    scheduleAutoResize();
     attachments = [...nextDraft.attachments];
     mentions = [...nextDraft.mentions];
     sendError = null;
@@ -1017,6 +1085,7 @@
       textLengthExceeded =
         selectedCapabilities.maxTextLength > 0 && restored.text.length > selectedCapabilities.maxTextLength;
       if (textareaElement) textareaElement.value = restored.text;
+      scheduleAutoResize();
       attachments = [...restored.attachments];
       mentions = [...restored.mentions];
       sendError = formatError(error);
@@ -1388,13 +1457,16 @@
     <textarea
       bind:this={textareaElement}
       oninput={handleTextInput}
+      oncompositionstart={handleCompositionStart}
+      oncompositionend={handleCompositionEnd}
       onkeydown={handleKeydown}
       onpaste={() => void handlePaste()}
       maxlength={selectedCapabilities.maxTextLength > 0 ? selectedCapabilities.maxTextLength + 1 : undefined}
       placeholder="Type a message..."
       disabled={disabled || (selectedOption !== null && !selectedOption.isEligible)}
       rows="1"
-      class="flex-1 min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-3xl border border-input/80 bg-background text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00a884] [field-sizing:content] shadow-2xs resize-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed transition-colors"
+      style="height:44px;"
+      class="flex-1 min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-3xl border border-input/80 bg-background text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00a884] shadow-2xs resize-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed overflow-y-hidden will-change-[height]"
     ></textarea>
     <button
       type="button"

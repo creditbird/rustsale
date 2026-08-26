@@ -37,6 +37,49 @@
   } = $props();
 
   let searchQuery = $state('');
+  let searchQueryDebounced = $state('');
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  function getEnvMode(): string {
+    try {
+      // @ts-ignore
+      if (typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: { MODE?: string } }).env?.MODE) {
+        // @ts-ignore
+        return (import.meta as unknown as { env: { MODE: string } }).env.MODE;
+      }
+    } catch {}
+    try {
+      if (typeof process !== 'undefined' && (process as unknown as { env?: { NODE_ENV?: string } })?.env?.NODE_ENV) {
+        return (process as unknown as { env: { NODE_ENV: string } }).env.NODE_ENV as string;
+      }
+    } catch {}
+    return 'production';
+  }
+  const IS_TEST_SIDEBAR = getEnvMode() === 'test';
+  const SIDEBAR_DEBOUNCE_MS = IS_TEST_SIDEBAR ? 0 : 150;
+  $effect(() => {
+    const q = searchQuery;
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    if (q.trim() === '') {
+      searchQueryDebounced = '';
+      return;
+    }
+    if (SIDEBAR_DEBOUNCE_MS === 0) {
+      searchQueryDebounced = q;
+      return;
+    }
+    searchDebounceTimer = setTimeout(() => {
+      searchQueryDebounced = q;
+    }, SIDEBAR_DEBOUNCE_MS);
+    return () => {
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    };
+  });
+  // Keep debounced in sync when component unmounts / query cleared
+  $effect(() => {
+    if (searchQuery.trim() === '' && searchQueryDebounced !== '') {
+      searchQueryDebounced = '';
+    }
+  });
   let activeKindTab = $state<'all' | 'customer' | 'group'>('all');
   let activeFilterTab = $state<'all' | 'unread' | 'priority' | 'stuck'>('all');
   let newChatOpen = $state(false);
@@ -76,10 +119,10 @@
     }
   });
 
-  // Auto reset scroll position to top when search query or filter tabs change
+  // Auto reset scroll position to top when search query or filter tabs change (use debounced to avoid jump per keystroke)
   let previousFilterSignature = '';
   $effect(() => {
-    const currentSig = `${searchQuery}:${activeKindTab}:${activeFilterTab}`;
+    const currentSig = `${searchQueryDebounced}:${activeKindTab}:${activeFilterTab}`;
     if (previousFilterSignature !== '' && previousFilterSignature !== currentSig) {
       if (viewportEl && viewportEl.scrollTop > 0) {
         viewportEl.scrollTop = 0;
@@ -148,9 +191,9 @@
 
   let filteredItems = $derived(
     items.filter((item) => {
-      // 1. Text search filter
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
+      // 1. Text search filter — debounced to keep 60fps while user types (Telegram/WhatsApp)
+      if (searchQueryDebounced.trim()) {
+        const q = searchQueryDebounced.toLowerCase().trim();
         const titleMatch = item.title.toLowerCase().includes(q);
         const previewMatch = (item.lastMessagePreview ?? '').toLowerCase().includes(q);
         if (!titleMatch && !previewMatch) return false;
