@@ -87,7 +87,7 @@ describe('timelineState', () => {
     it('defines expected timeline constants', () => {
       expect(TIMELINE_PAGE_SIZE).toBe(50);
       expect(MAX_CACHED_MESSAGES).toBe(200);
-      expect(MAX_CHANNEL_VARIANTS).toBe(4);
+      expect(MAX_CHANNEL_VARIANTS).toBe(100);
     });
   });
 
@@ -275,8 +275,8 @@ describe('timelineState', () => {
   });
 
   describe('TimelineCache', () => {
-    it('enforces maximum 4 channel variants with LRU eviction', () => {
-      const cache = new TimelineCache();
+    it('enforces maximum 4 channel variants with LRU eviction when configured', () => {
+      const cache = new TimelineCache(4);
 
       const variant = (id: number) => ({
         items: [createMessage(id, '2026-07-31T10:00:00Z')],

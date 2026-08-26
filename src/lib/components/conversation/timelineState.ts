@@ -7,7 +7,7 @@ import type {
 
 export const TIMELINE_PAGE_SIZE = 50;
 export const MAX_CACHED_MESSAGES = 200;
-export const MAX_CHANNEL_VARIANTS = 4;
+export const MAX_CHANNEL_VARIANTS = 100;
 
 export interface TimelineVariant {
   items: ConversationMessage[];

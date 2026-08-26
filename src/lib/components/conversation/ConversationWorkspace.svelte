@@ -362,20 +362,135 @@
       : null
   );
 
+  const pinnedMessagesCache = new Map<number, PinnedMessage[]>();
+  const pinnedMessagesInFlight = new Map<number, Promise<PinnedMessage[]>>();
+  const pinnedFetchGeneration = new Map<number, number>();
+  const pinnedPendingForced = new Map<number, boolean>();
+  let pinnedItemRequestEpoch = 0;
+
+  function getItemConversationIds(item: InboxItem | null): number[] {
+    if (!item) return [];
+    if (item.conversationId !== null) return [item.conversationId];
+    return (item.replyTargets || [])
+      .map((t) => t.conversationId)
+      .filter((id): id is number => typeof id === 'number' && id > 0);
+  }
+
+  function mergeAndSortPins(pins: PinnedMessage[]): PinnedMessage[] {
+    const seen = new Set<number>();
+    const unique: PinnedMessage[] = [];
+    for (const p of pins) {
+      if (!seen.has(p.id)) {
+        seen.add(p.id);
+        unique.push(p);
+      }
+    }
+    return unique.sort((a, b) => {
+      const ta = Date.parse(a.pinnedAt) || 0;
+      const tb = Date.parse(b.pinnedAt) || 0;
+      return tb - ta;
+    });
+  }
+
   $effect(() => {
-    const convId = selectedItem?.conversationId;
-    if (convId) {
-      void loadPinnedMessages(convId);
+    const item = selectedItem;
+    if (item) {
+      void loadPinnedMessagesForItem(item);
     } else {
       pinnedMessages = [];
     }
   });
 
-  async function loadPinnedMessages(conversationId: number) {
+  async function fetchPinnedMessagesForConv(
+    conversationId: number,
+    forceRefresh = false
+  ): Promise<PinnedMessage[]> {
+    if (pinnedMessagesCache.has(conversationId) && !forceRefresh) {
+      return pinnedMessagesCache.get(conversationId)!;
+    }
+
+    if (pinnedMessagesInFlight.has(conversationId)) {
+      if (forceRefresh) {
+        pinnedPendingForced.set(conversationId, true);
+      }
+      try {
+        await pinnedMessagesInFlight.get(conversationId);
+      } catch {}
+      if (pinnedPendingForced.get(conversationId)) {
+        pinnedPendingForced.delete(conversationId);
+        return fetchPinnedMessagesForConv(conversationId, true);
+      }
+      return pinnedMessagesCache.get(conversationId) ?? [];
+    }
+
+    const generation = (pinnedFetchGeneration.get(conversationId) ?? 0) + 1;
+    pinnedFetchGeneration.set(conversationId, generation);
+
+    const promise = (async () => {
+      try {
+        const list = await listConversationPinnedMessages(conversationId);
+        if (pinnedFetchGeneration.get(conversationId) === generation) {
+          pinnedMessagesCache.set(conversationId, list);
+        }
+        return list;
+      } catch (err) {
+        console.error('Failed to fetch pinned messages for conversation', conversationId, err);
+        return pinnedMessagesCache.get(conversationId) ?? [];
+      }
+    })();
+
+    pinnedMessagesInFlight.set(conversationId, promise);
     try {
-      pinnedMessages = await listConversationPinnedMessages(conversationId);
+      await promise;
+    } finally {
+      if (pinnedMessagesInFlight.get(conversationId) === promise) {
+        pinnedMessagesInFlight.delete(conversationId);
+      }
+    }
+
+    if (pinnedPendingForced.get(conversationId)) {
+      pinnedPendingForced.delete(conversationId);
+      return fetchPinnedMessagesForConv(conversationId, true);
+    }
+
+    return pinnedMessagesCache.get(conversationId) ?? [];
+  }
+
+  async function loadPinnedMessagesForItem(item: InboxItem, forceRefresh = false) {
+    const itemKey = item.key;
+    const epoch = ++pinnedItemRequestEpoch;
+    const convIds = getItemConversationIds(item);
+
+    if (convIds.length === 0) {
+      if (selectedItem?.key === itemKey && epoch === pinnedItemRequestEpoch) {
+        pinnedMessages = [];
+      }
+      return;
+    }
+
+    const instantPins: PinnedMessage[] = [];
+    let hasAllCached = true;
+    for (const cid of convIds) {
+      if (pinnedMessagesCache.has(cid)) {
+        instantPins.push(...pinnedMessagesCache.get(cid)!);
+      } else {
+        hasAllCached = false;
+      }
+    }
+    if (selectedItem?.key === itemKey) {
+      pinnedMessages = mergeAndSortPins(instantPins);
+    }
+    if (hasAllCached && !forceRefresh) return;
+
+    try {
+      const results = await Promise.all(
+        convIds.map((cid) => fetchPinnedMessagesForConv(cid, forceRefresh))
+      );
+      if (selectedItem?.key === itemKey && epoch === pinnedItemRequestEpoch) {
+        pinnedMessages = mergeAndSortPins(results.flat());
+      }
     } catch {
-      pinnedMessages = [];
+      // Ignored
     }
   }
 
@@ -389,18 +504,25 @@
       } else {
         await pinConversationMessage(convId, message.id, 'user');
       }
-      await loadPinnedMessages(convId);
+      pinnedMessagesCache.delete(convId);
+      if (selectedItem) {
+        await loadPinnedMessagesForItem(selectedItem, true);
+      }
     } catch (err) {
       console.error('Failed to pin/unpin message', err);
     }
   }
 
   async function handleUnpinMessage(messageId: number) {
-    const convId = selectedItem?.conversationId;
+    const pin = pinnedMessages.find((p) => p.messageId === messageId);
+    const convId = pin?.conversationId ?? selectedItem?.conversationId;
     if (!convId) return;
     try {
       await unpinConversationMessage(convId, messageId);
-      await loadPinnedMessages(convId);
+      pinnedMessagesCache.delete(convId);
+      if (selectedItem) {
+        await loadPinnedMessagesForItem(selectedItem, true);
+      }
     } catch (err) {
       console.error('Failed to unpin message', err);
     }
@@ -474,7 +596,6 @@
             refreshInbox();
           }
           if (selectedItem && currentVariantKey && timelineStale.has(currentVariantKey)) {
-            timelineStale.delete(currentVariantKey);
             refreshOpenTimeline();
           }
         }
@@ -636,6 +757,7 @@
         if (!handledTarget && !selectedKey && inbox.length > 0) {
           selectItem(inbox[0]);
         }
+        void prefetchInboxTimelines(inbox);
       }
 
       if (runtimeRes.status === 'fulfilled') {
@@ -653,6 +775,27 @@
       syncFacebookConversations().catch((err) => {
         console.warn('Initial Facebook Messenger sync error:', err);
       });
+    }
+  }
+
+  const inFlightVariantFetches = new Map<string, Promise<void>>();
+
+  async function prefetchInboxTimelines(items: InboxItem[]) {
+    if (!items || items.length === 0) return;
+    const targets = items.slice(0, 10);
+    for (const target of targets) {
+      const channels =
+        target.kind === 'group' || target.leadId === null
+          ? []
+          : (activeChannelsPerKey.get(target.key) ?? target.channels.map((c) => c.channel));
+      const key =
+        target.kind === 'group' || target.leadId === null
+          ? `${target.key}:group`
+          : `${target.key}:${channelSetKey(channels)}`;
+
+      if (!variantsCache.has(key) && !inFlightVariantFetches.has(key)) {
+        void fetchVariantFirstPage(target, channels, key, null);
+      }
     }
   }
 
@@ -678,6 +821,7 @@
       if (selectedKey && !inbox.some((i) => i.key === selectedKey) && inbox.length > 0) {
         selectItem(inbox[0]);
       }
+      void prefetchInboxTimelines(inbox);
     } catch (err) {
       console.error('Failed to refresh inbox', err);
     }
@@ -764,13 +908,9 @@
         const survivingId = nearestSurvivingAnchor(currentVariant.items, cached.items, anchor.messageId);
         if (survivingId !== null) {
           timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
-        } else {
-          tick().then(() => timelineRef?.scrollToBottom());
         }
-      } else {
-        tick().then(() => timelineRef?.scrollToBottom());
       }
-      if ((timelineStale.has(key) || !cached.hasLoaded) && !cached.loading) {
+      if ((timelineStale.has(key) || !cached.hasLoaded) && !inFlightVariantFetches.has(key)) {
         fetchVariantFirstPage(item, channels, key, anchor);
       }
     } else {
@@ -802,59 +942,98 @@
     }
   }
 
+  const variantInvalidationEpoch = new Map<string, number>();
+
   async function fetchVariantFirstPage(
     item: InboxItem,
     channels: Channel[],
     key: string,
     anchor: { messageId: number; offsetTop: number } | null
   ) {
-    const existing = variantsCache.get(key) || currentVariant;
-    currentVariant = { ...existing, loading: true };
-    variantsCache.set(key, currentVariant);
+    const existing = variantsCache.get(key) ?? {
+      items: [],
+      nextCursor: null,
+      hasLoaded: false,
+      loading: true
+    };
 
-    try {
-      let page;
-      if (item.kind === 'group') {
-        if (item.conversationId === null) throw new Error('Group conversation ID is missing');
-        page = await getConversationTimeline(item.conversationId, null, 50);
-      } else if (item.kind === 'unknown') {
-        if (item.identityId === null) throw new Error('Unknown contact identity ID is missing');
-        page = await getIdentityTimeline(item.identityId, null, 50);
-      } else {
-        if (item.leadId === null) throw new Error('Customer lead ID is missing');
-        page = await getContactTimeline(item.leadId, channels, null, 50);
+    const loadingState: TimelineVariant = {
+      ...existing,
+      loading: existing.hasLoaded ? false : true
+    };
+    variantsCache.set(key, loadingState);
+    if (currentVariantKey === key) {
+      currentVariant = loadingState;
+    }
+
+    if (inFlightVariantFetches.has(key)) {
+      try {
+        await inFlightVariantFetches.get(key);
+      } catch {
+        // Handled by original caller
       }
+      if (timelineStale.has(key)) {
+        return fetchVariantFirstPage(item, channels, key, anchor);
+      }
+      return;
+    }
 
-      const updated = mergeTimelinePage(currentVariant, page, 'refresh');
-      variantsCache.set(key, updated);
-      timelineStale.delete(key);
-
-      if (currentVariantKey === key) {
-        currentVariant = updated;
-        if (anchor) {
-          const survivingId = nearestSurvivingAnchor(
-            existing.items,
-            updated.items,
-            anchor.messageId
-          );
-          if (survivingId !== null) {
-            timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
+    const fetchPromise = (async () => {
+      while (true) {
+        const startEpoch = variantInvalidationEpoch.get(key) ?? 0;
+        try {
+          let page;
+          if (item.kind === 'group') {
+            if (item.conversationId === null) throw new Error('Group conversation ID is missing');
+            page = await getConversationTimeline(item.conversationId, null, 50);
+          } else if (item.kind === 'unknown') {
+            if (item.identityId === null) throw new Error('Unknown contact identity ID is missing');
+            page = await getIdentityTimeline(item.identityId, null, 50);
           } else {
-            tick().then(() => timelineRef?.scrollToBottom());
+            if (item.leadId === null) throw new Error('Customer lead ID is missing');
+            page = await getContactTimeline(item.leadId, channels, null, 50);
           }
-        } else {
-          tick().then(() => timelineRef?.scrollToBottom());
+
+          const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
+          if (currentEpoch === startEpoch) {
+            const latestExisting = variantsCache.get(key) || existing;
+            const updated = mergeTimelinePage(latestExisting, page, 'refresh');
+            variantsCache.set(key, updated);
+            timelineStale.delete(key);
+
+            if (currentVariantKey === key) {
+              currentVariant = updated;
+              if (anchor) {
+                const survivingId = nearestSurvivingAnchor(
+                  existing.items,
+                  updated.items,
+                  anchor.messageId
+                );
+                if (survivingId !== null) {
+                  timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
+                }
+              }
+            }
+            break;
+          }
+        } catch (err) {
+          console.error('Failed to fetch timeline variant', err);
+          const latestExisting = variantsCache.get(key) || existing;
+          const failed = { ...latestExisting, loading: false };
+          variantsCache.set(key, failed);
+          timelineStale.add(key);
+          if (currentVariantKey === key) {
+            currentVariant = failed;
+          }
+          break;
         }
       }
-    } catch (err) {
-      console.error('Failed to fetch timeline variant', err);
-      const failed = { ...currentVariant, loading: false };
-      variantsCache.set(key, failed);
-      timelineStale.add(key);
-      if (currentVariantKey === key) {
-        currentVariant = failed;
-      }
-    }
+    })().finally(() => {
+      inFlightVariantFetches.delete(key);
+    });
+
+    inFlightVariantFetches.set(key, fetchPromise);
+    await fetchPromise;
   }
 
   async function handleLoadOlder() {
@@ -886,8 +1065,10 @@
         );
       }
 
-      const updated = mergeTimelinePage(currentVariant, page, 'older');
+      const latestExisting = variantsCache.get(key) || currentVariant;
+      const updated = mergeTimelinePage(latestExisting, page, 'older');
       variantsCache.set(key, updated);
+
       if (currentVariantKey === key) {
         currentVariant = updated;
       }
@@ -935,7 +1116,18 @@
     for (const item of affectedItems) {
       for (const key of variantsCache.keys()) {
         if (key.startsWith(`${item.key}:`)) {
+          variantInvalidationEpoch.set(key, (variantInvalidationEpoch.get(key) ?? 0) + 1);
           timelineStale.add(key);
+        }
+      }
+    }
+
+    if (event.conversationId > 0) {
+      pinnedMessagesCache.delete(event.conversationId);
+      if (selectedItem) {
+        const itemConvIds = getItemConversationIds(selectedItem);
+        if (itemConvIds.includes(event.conversationId)) {
+          void loadPinnedMessagesForItem(selectedItem, true);
         }
       }
     }
@@ -949,7 +1141,6 @@
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
       if (affectsOpenItem) {
-        timelineStale.delete(currentVariantKey);
         if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
         timelineRefreshTimer = setTimeout(() => {
           refreshOpenTimeline();
@@ -961,6 +1152,10 @@
         const affectsOpenItem = eventAffectsItem(selectedItem, event);
 
         if (affectsOpenItem && currentVariantKey) {
+          variantInvalidationEpoch.set(
+            currentVariantKey,
+            (variantInvalidationEpoch.get(currentVariantKey) ?? 0) + 1
+          );
           timelineStale.add(currentVariantKey);
         }
       }

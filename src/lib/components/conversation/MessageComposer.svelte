@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     discardConversationStagedAttachment,
     listConversationQuickTemplates,
@@ -184,11 +184,47 @@
     };
   });
 
-  async function loadQuickTemplates(): Promise<void> {
-    try {
-      quickTemplates = await listConversationQuickTemplates({ includeInactive: false });
-    } catch {
-      quickTemplates = [];
+  let cachedQuickTemplates: ConversationQuickTemplate[] | null = null;
+  let quickTemplatesInFlight: Promise<ConversationQuickTemplate[]> | null = null;
+  let pendingForcedRefresh = false;
+
+  async function loadQuickTemplates(forceRefresh = false): Promise<void> {
+    if (cachedQuickTemplates !== null && !forceRefresh) {
+      quickTemplates = cachedQuickTemplates;
+      return;
+    }
+
+    if (quickTemplatesInFlight) {
+      if (forceRefresh) {
+        pendingForcedRefresh = true;
+      }
+      await quickTemplatesInFlight;
+      if (pendingForcedRefresh) {
+        pendingForcedRefresh = false;
+        return loadQuickTemplates(true);
+      }
+      return;
+    }
+
+    const p = (async () => {
+      try {
+        const list = await listConversationQuickTemplates({ includeInactive: false });
+        cachedQuickTemplates = list;
+        quickTemplates = list;
+        return list;
+      } catch {
+        quickTemplates = cachedQuickTemplates ?? [];
+        return quickTemplates;
+      } finally {
+        quickTemplatesInFlight = null;
+      }
+    })();
+
+    quickTemplatesInFlight = p;
+    await p;
+    if (pendingForcedRefresh) {
+      pendingForcedRefresh = false;
+      return loadQuickTemplates(true);
     }
   }
 
@@ -361,8 +397,8 @@
     }
   });
 
-  $effect(() =>
-    onDragDropEvent(
+  onMount(() => {
+    const unlisten = onDragDropEvent(
       (paths) => {
         isDragActive = false;
         void stagePaths(paths);
@@ -370,8 +406,11 @@
       (active) => {
         isDragActive = active && !disabled && selectedCapabilities.maxAttachmentsPerBatch > 0;
       }
-    )
-  );
+    );
+    return () => {
+      unlisten();
+    };
+  });
 
   function persistDraft(): void {
     if (!activeDraftKey) return;
@@ -1279,6 +1318,6 @@
 {#if showQuickTemplateManager}
   <QuickTemplateManagerDialog
     bind:open={showQuickTemplateManager}
-    onTemplatesChanged={loadQuickTemplates}
+    onTemplatesChanged={() => loadQuickTemplates(true)}
   />
 {/if}
