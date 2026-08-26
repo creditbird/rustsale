@@ -13,6 +13,7 @@
   import Settings from '$lib/components/Settings.svelte';
   import LicenseModal from '$lib/components/LicenseModal.svelte';
   import { verifyDeviceAndSubscription } from '$lib/services/licenseService';
+  import { initDesktopNotificationBridge } from '$lib/services/desktopNotificationService';
   import * as crmService from '$lib/services/crmService';
   import type { Lead } from '$lib/services/crmService';
   import { AlertCircle, Search, Bell } from 'lucide-svelte';
@@ -97,6 +98,17 @@
 
   onMount(() => {
     const unsubBridge = crmService.initScraperEventBridge();
+    let unsubNotifBridge: (() => void) | null = null;
+
+    initDesktopNotificationBridge({
+      onNavigate: (conversationId, leadId) => {
+        targetLeadForConversation = leadId ? { leadId } : null;
+        activeTab = 'conversation';
+      }
+    }).then((cleanup) => {
+      unsubNotifBridge = cleanup;
+    });
+
     const unsub = crmService.onLeadsChanged(() => {
       if (activeTab === 'leads' || activeTab === 'contacts') {
         debouncedLoadLeads();
@@ -127,6 +139,7 @@
     return () => {
       unsub();
       unsubBridge();
+      if (unsubNotifBridge) unsubNotifBridge();
       if (reloadTimer) clearTimeout(reloadTimer);
     };
   });

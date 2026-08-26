@@ -14,7 +14,9 @@ mod db_test;
 pub mod facebook;
 pub mod google_maps_jobs;
 mod models;
+pub mod notification;
 pub mod scrapers;
+pub mod tray;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -87,13 +89,20 @@ pub fn load_dotenv_if_present() {
 pub fn run() {
     load_dotenv_if_present();
     install_rustls_crypto_provider();
+    let tray_state = tray::TrayState::default();
+    let notification_manager = std::sync::Arc::new(notification::NotificationManager::default());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .plugin(tauri_plugin_notification::init())
+        .manage(tray_state)
+        .manage(notification_manager.clone())
+        .setup(move |app| {
+            let _ = tray::init_tray(app.handle());
             let app_data_dir = app
                 .path()
                 .app_data_dir()
@@ -214,7 +223,7 @@ pub fn run() {
                 std::sync::Arc::new(conversation::events::ConversationEventPublisher::new(256));
             let conversation_service =
                 std::sync::Arc::new(conversation::service::ConversationService::new(
-                    conversation_repository,
+                    conversation_repository.clone(),
                     conversation_events.clone(),
                     app_data_dir.join("attachments-spool"),
                 ));
@@ -240,7 +249,48 @@ pub fn run() {
                 zalo_supervisor: zalo_supervisor.clone(),
                 facebook_supervisor: facebook_supervisor.clone(),
             });
-            conversation_events.spawn_tauri_forwarder(app.handle().clone());
+            conversation_events.clone().spawn_tauri_forwarder(app.handle().clone());
+            let notif_service = notification_manager.clone();
+            let notif_repo = conversation_repository.clone();
+            let notif_app = app.handle().clone();
+            let mut notif_events = conversation_events.subscribe();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match notif_events.recv().await {
+                        Ok(event) => {
+                            if event.reason == conversation::events::ConversationInvalidationReason::Message {
+                                if let Some(msg_id) = event.message_id {
+                                    let repo = notif_repo.clone();
+                                    let mgr = notif_service.clone();
+                                    let handle = notif_app.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        if let Ok(Some(msg)) = repo.get_message_by_id(msg_id) {
+                                            if msg.direction == conversation::types::MessageDirection::Inbound {
+                                                let sender = msg.sender_display_name.as_deref().unwrap_or("Khách hàng");
+                                                let text = msg.text_content.as_deref().unwrap_or("");
+                                                mgr.notify_inbound(
+                                                    &handle,
+                                                    msg.conversation_id,
+                                                    event.lead_id,
+                                                    msg.channel,
+                                                    sender,
+                                                    text,
+                                                    &msg.content_type,
+                                                    false,
+                                                    None,
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+
             let startup_service = conversation_service.clone();
             let startup_fb_supervisor = facebook_supervisor.clone();
             facebook_supervisor.with_service(conversation_service.clone());
@@ -426,12 +476,25 @@ pub fn run() {
             commands::get_hardware_id,
             commands::export_leads_csv_file,
             commands::save_image_file,
-            commands::install_portable_linux_update
+            commands::install_portable_linux_update,
+            tray::get_tray_state,
+            tray::set_close_to_tray,
+            tray::set_tray_dnd,
+            notification::get_notification_settings,
+            notification::update_notification_settings,
+            notification::set_active_conversation_focus,
+            notification::test_desktop_notification
         ])
-
-
-
-
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let Some(tray_state) = window.app_handle().try_state::<tray::TrayState>() {
+                    if tray_state.is_close_to_tray_enabled() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
