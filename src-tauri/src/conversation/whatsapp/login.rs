@@ -1,10 +1,10 @@
+use chrono::Utc;
+use rusqlite::{params, Connection, Result as SqlResult};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use chrono::Utc;
-use rusqlite::{params, Connection, Result as SqlResult};
-use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -87,7 +87,8 @@ impl WhatsAppLoginManager {
 
     /// Creates a mock instance for testing with a temporary directory.
     pub fn new_mock() -> Self {
-        let temp_dir = std::env::temp_dir().join(format!("wa_mock_sessions_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("wa_mock_sessions_{}", uuid::Uuid::new_v4()));
         let _ = fs::create_dir_all(&temp_dir);
         Self::new_mock_with_dir(temp_dir)
     }
@@ -120,7 +121,8 @@ impl WhatsAppLoginManager {
 
     /// Returns the path to the permanent session database file for a paired account.
     pub fn get_session_db_path(&self, account_key: &str) -> PathBuf {
-        self.sessions_dir.join(format!("session_{}.db", account_key))
+        self.sessions_dir
+            .join(format!("session_{}.db", account_key))
     }
 
     /// Checks if a login attempt is currently active.
@@ -136,13 +138,7 @@ impl WhatsAppLoginManager {
     }
 
     /// Emits a QR code event to broadcast channel and Tauri app handle (if present).
-    pub fn emit_qr_code(
-        &self,
-        attempt_id: &str,
-        qr_raw: &str,
-        expires_in_sec: u32,
-        sequence: u32,
-    ) {
+    pub fn emit_qr_code(&self, attempt_id: &str, qr_raw: &str, expires_in_sec: u32, sequence: u32) {
         let payload = WhatsAppQrCodePayload {
             attempt_id: attempt_id.to_string(),
             qr_raw: qr_raw.to_string(),
@@ -150,7 +146,9 @@ impl WhatsAppLoginManager {
             sequence,
         };
 
-        let _ = self.event_sender.send(WhatsAppLoginEvent::QrCode(payload.clone()));
+        let _ = self
+            .event_sender
+            .send(WhatsAppLoginEvent::QrCode(payload.clone()));
 
         if let Some(app_handle) = &self.app_handle {
             if let Err(err) = app_handle.emit(EVENT_WHATSAPP_QR_CODE, &payload) {
@@ -273,7 +271,9 @@ impl WhatsAppLoginManager {
             error: error_message.to_string(),
         };
 
-        let _ = self.event_sender.send(WhatsAppLoginEvent::Error(payload.clone()));
+        let _ = self
+            .event_sender
+            .send(WhatsAppLoginEvent::Error(payload.clone()));
 
         if let Some(app_handle) = &self.app_handle {
             if let Err(err) = app_handle.emit(EVENT_WHATSAPP_LOGIN_ERROR, &payload) {
@@ -287,6 +287,7 @@ impl WhatsAppLoginManager {
     /// 2. Upserts `channel_accounts` and `whatsapp_sessions` records in the CRM database.
     /// 3. Emits the success event.
     /// 4. Returns the created/updated `channel_account_id`.
+    #[allow(clippy::too_many_arguments)]
     pub fn finalize_login_success(
         &self,
         conn: &Connection,
@@ -316,8 +317,12 @@ impl WhatsAppLoginManager {
             if final_db_path.exists() {
                 let _ = fs::remove_file(&final_db_path);
             }
-            fs::rename(&temp_db_path, &final_db_path)
-                .map_err(|e| format!("Failed to rename session DB from {:?} to {:?}: {}", temp_db_path, final_db_path, e))?;
+            fs::rename(&temp_db_path, &final_db_path).map_err(|e| {
+                format!(
+                    "Failed to rename session DB from {:?} to {:?}: {}",
+                    temp_db_path, final_db_path, e
+                )
+            })?;
 
             // Also clean up any leftover temp wal/shm
             Self::clean_temp_db_sidecars(&temp_db_path);
@@ -329,7 +334,9 @@ impl WhatsAppLoginManager {
 
         let session_db_filename = format!("session_{}.db", account_key);
         let now = Utc::now().to_rfc3339();
-        let display_name = push_name.map(|s| s.to_string()).or_else(|| Some(phone_number.to_string()));
+        let display_name = push_name
+            .map(|s| s.to_string())
+            .or_else(|| Some(phone_number.to_string()));
 
         // Perform atomic CRM database update
         let account_id = (|| -> SqlResult<i64> {
@@ -415,7 +422,9 @@ impl WhatsAppLoginManager {
             avatar_url: avatar_url.map(str::to_string),
         };
 
-        let _ = self.event_sender.send(WhatsAppLoginEvent::Success(payload.clone()));
+        let _ = self
+            .event_sender
+            .send(WhatsAppLoginEvent::Success(payload.clone()));
 
         if let Some(app_handle) = &self.app_handle {
             if let Err(err) = app_handle.emit(EVENT_WHATSAPP_LOGIN_SUCCESS, &payload) {

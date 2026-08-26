@@ -1348,6 +1348,349 @@ impl ConversationService {
         }
     }
 
+    pub async fn process_next_whatsapp_outbox_job(
+        &self,
+        channel_account_id: i64,
+        client: &dyn crate::conversation::whatsapp::client::WhatsAppClient,
+    ) -> Result<bool> {
+        let now = crate::conversation::types::utc_now();
+        let job = match self
+            .repository
+            .claim_next_outbox_job(channel_account_id, &now)?
+        {
+            Some(job) => job,
+            None => return Ok(false),
+        };
+
+        // 1. Resolve recipient JID
+        let recipient_jid = if job.external_thread_id.contains('@') {
+            job.external_thread_id.clone()
+        } else {
+            crate::conversation::whatsapp::phone::phone_to_direct_jid(&job.external_thread_id)
+        };
+
+        // 2. Resolve quote reference if replying
+        let quote_opt = if let Some(ref q) = job.quote {
+            let stanza_id = if !q.provider_message_id.is_empty() {
+                q.provider_message_id.clone()
+            } else {
+                q.provider_client_message_id.clone()
+            };
+            let participant = if !q.sender_external_id.is_empty() {
+                if q.sender_external_id.contains('@') {
+                    q.sender_external_id.clone()
+                } else {
+                    crate::conversation::whatsapp::phone::phone_to_direct_jid(&q.sender_external_id)
+                }
+            } else {
+                recipient_jid.clone()
+            };
+            Some(
+                crate::conversation::whatsapp::normalizer::RawWhatsAppQuote {
+                    stanza_id,
+                    participant_jid: participant,
+                    text: Some(q.content.clone()),
+                    media_type: None,
+                    timestamp: Some(q.provider_timestamp_ms.to_string()),
+                },
+            )
+        } else {
+            let conn_res = rusqlite::Connection::open(self.repository.db_path());
+            let parent_info = conn_res.ok().and_then(|conn| {
+                conn.query_row(
+                    "SELECT parent.provider_message_id, parent.provider_client_message_id, parent.text_content, parent.content_type, COALESCE(parent.sent_at, parent.ingested_at)
+                     FROM messages m
+                     JOIN messages parent ON parent.id = m.reply_to_message_id
+                     WHERE m.id = ?1",
+                    rusqlite::params![job.message_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                ).ok()
+            });
+
+            parent_info.map(|(p_msg_id, p_cli_id, text, content_type, occurred_at)| {
+                let stanza_id = p_msg_id.or(p_cli_id).unwrap_or_default();
+                crate::conversation::whatsapp::normalizer::RawWhatsAppQuote {
+                    stanza_id,
+                    participant_jid: recipient_jid.clone(),
+                    text,
+                    media_type: if content_type != "text" {
+                        Some(content_type)
+                    } else {
+                        None
+                    },
+                    timestamp: occurred_at,
+                }
+            })
+        };
+
+        // 3. Dispatch based on content_type
+        let dispatch_result = match job.content_type.as_str() {
+            "text" | "plain_text" => {
+                let text = job.text_content.as_deref().unwrap_or("");
+                client
+                    .send_text_message(&recipient_jid, text, quote_opt.as_ref())
+                    .await
+            }
+            "media" | "image" | "video" | "audio" | "file" | "document" | "sticker" => {
+                let media_url = job
+                    .content_json
+                    .get("url")
+                    .or_else(|| job.content_json.get("file_url"))
+                    .or_else(|| job.content_json.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let caption = job
+                    .text_content
+                    .as_deref()
+                    .or_else(|| job.content_json.get("caption").and_then(|v| v.as_str()));
+                client
+                    .send_media_message(
+                        &recipient_jid,
+                        &job.content_type,
+                        media_url,
+                        caption,
+                        quote_opt.as_ref(),
+                    )
+                    .await
+            }
+            "reaction" => {
+                let emoji = job
+                    .content_json
+                    .get("emoji")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let target_msg_id = job
+                    .content_json
+                    .get("target_message_id")
+                    .or_else(|| job.content_json.get("targetMessageId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&job.external_thread_id);
+                let target_sender = job
+                    .content_json
+                    .get("target_sender_jid")
+                    .or_else(|| job.content_json.get("targetSenderJid"))
+                    .and_then(|v| v.as_str());
+
+                match client
+                    .send_reaction(&recipient_jid, target_msg_id, target_sender, emoji)
+                    .await
+                {
+                    Ok(()) => Ok(
+                        crate::conversation::whatsapp::client::WhatsAppSendResponse {
+                            provider_message_id: format!("react-{}", job.job_id),
+                            timestamp: Some(now.clone()),
+                        },
+                    ),
+                    Err(e) => Err(e),
+                }
+            }
+            "forward" => {
+                let fwd_text = job
+                    .content_json
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .or(job.text_content.as_deref())
+                    .unwrap_or("");
+                let is_media = job
+                    .content_json
+                    .get("mediaType")
+                    .or_else(|| job.content_json.get("media_type"))
+                    .is_some();
+                if is_media {
+                    let media_type = job
+                        .content_json
+                        .get("mediaType")
+                        .or_else(|| job.content_json.get("media_type"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("image");
+                    let media_url = job
+                        .content_json
+                        .get("url")
+                        .or_else(|| job.content_json.get("file_url"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let caption = job
+                        .content_json
+                        .get("caption")
+                        .and_then(|v| v.as_str())
+                        .or(job.text_content.as_deref());
+                    client
+                        .send_media_message(&recipient_jid, media_type, media_url, caption, None)
+                        .await
+                } else {
+                    client
+                        .send_text_message(&recipient_jid, fwd_text, None)
+                        .await
+                }
+            }
+            _ => {
+                if let Some(ref text) = job.text_content {
+                    client
+                        .send_text_message(&recipient_jid, text, quote_opt.as_ref())
+                        .await
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Unsupported content type for WhatsApp: {}",
+                        job.content_type
+                    ))
+                }
+            }
+        };
+
+        match dispatch_result {
+            Ok(send_res) => {
+                self.repository.complete_outbox_job(
+                    &job.job_id,
+                    &send_res.provider_message_id,
+                    &job.provider_client_message_id,
+                    &now,
+                )?;
+                self.publish_message_invalidation(
+                    job.message_id,
+                    ConversationInvalidationReason::Message,
+                )?;
+                Ok(true)
+            }
+            Err(err) => {
+                let err_msg = err.to_string();
+                let error_kind =
+                    crate::conversation::whatsapp::client::categorize_whatsapp_error(err.as_ref());
+
+                match error_kind {
+                    crate::conversation::whatsapp::client::WhatsAppErrorKind::AuthFailure => {
+                        self.repository.fail_outbox_job(
+                            &job.job_id,
+                            crate::conversation::error::ConversationErrorCode::ProviderAuth,
+                            &err_msg,
+                            &now,
+                        )?;
+                        self.publish_message_invalidation(
+                            job.message_id,
+                            ConversationInvalidationReason::Message,
+                        )?;
+
+                        if let Ok(mut conn) = rusqlite::Connection::open(self.repository.db_path())
+                        {
+                            if let Ok(tx) = conn.transaction() {
+                                let _ = tx.execute(
+                                    "UPDATE channel_accounts SET connection_status = 'invalid', last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+                                    rusqlite::params![err_msg, channel_account_id],
+                                );
+                                let _ = tx.execute(
+                                    "UPDATE whatsapp_sessions SET is_valid = 0, last_error = ?1, updated_at = datetime('now') WHERE channel_account_id = ?2",
+                                    rusqlite::params![err_msg, channel_account_id],
+                                );
+                                let _ = tx.commit();
+                            }
+                        }
+
+                        self.events.publish(ConversationInvalidatedEvent {
+                            conversation_id: job.conversation_id,
+                            lead_id: None,
+                            channel: Channel::WhatsApp,
+                            reason: ConversationInvalidationReason::AccountStatus,
+                            message_id: None,
+                        });
+
+                        // Halt queue drain on auth failure
+                        Ok(false)
+                    }
+                    crate::conversation::whatsapp::client::WhatsAppErrorKind::InvalidRecipient => {
+                        self.repository.fail_outbox_job(
+                            &job.job_id,
+                            crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                            &err_msg,
+                            &now,
+                        )?;
+                        self.publish_message_invalidation(
+                            job.message_id,
+                            ConversationInvalidationReason::Message,
+                        )?;
+
+                        // Add to suppression list if valid phone extracted
+                        if let Some(phone) =
+                            crate::conversation::whatsapp::phone::jid_to_phone(&recipient_jid)
+                        {
+                            if let Ok(conn) = rusqlite::Connection::open(self.repository.db_path())
+                            {
+                                let _ = conn.execute(
+                                    "INSERT OR IGNORE INTO contact_suppression_list (channel, phone_or_email, reason, source, created_at)
+                                     VALUES ('whatsapp', ?1, 'invalid_number', 'dispatch_error', ?2)",
+                                    rusqlite::params![phone, now],
+                                );
+                            }
+                        }
+
+                        Ok(true)
+                    }
+                    crate::conversation::whatsapp::client::WhatsAppErrorKind::AmbiguousTimeout => {
+                        self.repository.fail_outbox_job(
+                            &job.job_id,
+                            crate::conversation::error::ConversationErrorCode::DeliveryUnknown,
+                            &err_msg,
+                            &now,
+                        )?;
+                        self.publish_message_invalidation(
+                            job.message_id,
+                            ConversationInvalidationReason::Message,
+                        )?;
+                        Ok(true)
+                    }
+                    crate::conversation::whatsapp::client::WhatsAppErrorKind::RateLimited
+                    | crate::conversation::whatsapp::client::WhatsAppErrorKind::NetworkTransient => {
+                        if job.attempt_count < 3 {
+                            let backoff_secs = 5 * (2_i64.pow(job.attempt_count));
+                            let retry_dt =
+                                chrono::Utc::now() + chrono::Duration::seconds(backoff_secs);
+                            let retry_at = retry_dt.to_rfc3339();
+
+                            self.repository.schedule_outbox_retry(
+                                &job.job_id,
+                                &retry_at,
+                                crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                                &err_msg,
+                                &now,
+                            )?;
+                        } else {
+                            self.repository.fail_outbox_job(
+                                &job.job_id,
+                                crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                                &format!("Max retries exceeded: {}", err_msg),
+                                &now,
+                            )?;
+                        }
+                        self.publish_message_invalidation(
+                            job.message_id,
+                            ConversationInvalidationReason::Message,
+                        )?;
+                        Ok(true)
+                    }
+                    crate::conversation::whatsapp::client::WhatsAppErrorKind::Permanent => {
+                        self.repository.fail_outbox_job(
+                            &job.job_id,
+                            crate::conversation::error::ConversationErrorCode::ProviderFailure,
+                            &err_msg,
+                            &now,
+                        )?;
+                        self.publish_message_invalidation(
+                            job.message_id,
+                            ConversationInvalidationReason::Message,
+                        )?;
+                        Ok(true)
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn set_conversation_reaction(
         &self,
         request: &super::types::SetConversationReactionRequest,

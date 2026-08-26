@@ -10,7 +10,7 @@ use crate::conversation::repository::{
 };
 use crate::conversation::types::{Channel, ConversationKind, MessageDirection, MessageStatus};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RawWhatsAppAttachment {
     pub media_type: String, // "image", "video", "audio", "file" / "document", "sticker"
     pub mime_type: Option<String>,
@@ -21,7 +21,7 @@ pub struct RawWhatsAppAttachment {
     pub direct_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RawWhatsAppQuote {
     pub stanza_id: String,
     pub participant_jid: String,
@@ -45,7 +45,7 @@ pub struct RawWhatsAppMessage {
     pub raw_json: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RawWhatsAppReaction {
     pub message_id: String,
     pub chat_jid: String,
@@ -55,7 +55,7 @@ pub struct RawWhatsAppReaction {
     pub is_from_me: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RawWhatsAppReceipt {
     pub message_ids: Vec<String>,
     pub chat_jid: String,
@@ -225,10 +225,7 @@ impl WhatsAppNormalizer {
         };
 
         let participant = if !msg.is_from_me {
-            let sender_jid = msg
-                .sender_jid
-                .as_deref()
-                .unwrap_or_else(|| msg.chat_jid.as_str());
+            let sender_jid = msg.sender_jid.as_deref().unwrap_or(msg.chat_jid.as_str());
             let sender_phone = phone::jid_to_phone(sender_jid)
                 .or_else(|| phone::normalize_e164(sender_jid, Some("84")));
             let ext_id = sender_phone.unwrap_or_else(|| sender_jid.to_string());
