@@ -167,6 +167,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     super::migration_v2::apply_migration_v4(conn)?;
 
     conn.execute_batch(include_str!("schema.sql"))?;
+    super::whatsapp::migration::apply_whatsapp_migrations(conn)?;
 
     add_column_if_missing(conn, "channel_identities", "profile_synced_at", "TEXT")?;
     add_column_if_missing(conn, "channel_identities", "profile_sync_error", "TEXT")?;
