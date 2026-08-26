@@ -31,10 +31,12 @@ export function onDragDropEvent(
   onActiveChange: (active: boolean) => void = () => {}
 ): () => void {
   let unlisten: (() => void) | null = null;
+  let disposed = false;
 
   try {
     const webview = getCurrentWebview();
     webview.onDragDropEvent((event) => {
+      if (disposed) return;
       if (event.payload.type === 'enter' || event.payload.type === 'over') {
         onActiveChange(true);
       } else if (event.payload.type === 'drop') {
@@ -44,7 +46,11 @@ export function onDragDropEvent(
         onActiveChange(false);
       }
     }).then((fn) => {
-      unlisten = fn;
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
     }).catch(() => {
       onActiveChange(false);
     });
@@ -53,9 +59,11 @@ export function onDragDropEvent(
   }
 
   return () => {
+    disposed = true;
     onActiveChange(false);
     if (unlisten) {
       unlisten();
+      unlisten = null;
     }
   };
 }

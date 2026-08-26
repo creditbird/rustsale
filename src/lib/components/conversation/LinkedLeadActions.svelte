@@ -50,10 +50,18 @@
   let isCreatingCategory = $state(false);
   let categoryError = $state<string | null>(null);
 
+  const leadCategoriesCache = new Map<number, Category[]>();
+  const leadCategoriesInFlight = new Map<number, Promise<Category[]>>();
+  const categoryFetchGeneration = new Map<number, number>();
+  const categoryPendingForced = new Map<number, boolean>();
+  let visibleLeadRequestEpoch = 0;
+
   $effect(() => {
     const leadId = item.leadId;
+    isCategoryModalOpen = false;
+    categoryError = null;
     if (leadId) {
-      loadLeadCategories(leadId);
+      void loadLeadCategories(leadId);
     } else {
       assignedCategories = [];
     }
@@ -61,18 +69,77 @@
 
   onMount(() => {
     return crmService.onLeadsChanged(() => {
+      leadCategoriesCache.clear();
       if (item.leadId) {
-        loadLeadCategories(item.leadId);
+        void loadLeadCategories(item.leadId, true);
       }
     });
   });
 
-  async function loadLeadCategories(leadId: number) {
-    try {
-      assignedCategories = await crmService.getCategoriesForLead(leadId);
-    } catch (err) {
-      console.error('Failed to load lead categories', err);
+  async function loadLeadCategories(leadId: number, forceRefresh = false): Promise<Category[]> {
+    const epoch = ++visibleLeadRequestEpoch;
+    if (leadCategoriesCache.has(leadId)) {
+      if (item.leadId === leadId) {
+        assignedCategories = leadCategoriesCache.get(leadId)!;
+      }
+      if (!forceRefresh) return leadCategoriesCache.get(leadId)!;
     }
+
+    if (leadCategoriesInFlight.has(leadId)) {
+      if (forceRefresh) {
+        categoryPendingForced.set(leadId, true);
+      }
+      try {
+        const res = await leadCategoriesInFlight.get(leadId)!;
+        if (item.leadId === leadId && epoch === visibleLeadRequestEpoch) {
+          assignedCategories = res;
+        }
+      } catch {}
+      if (categoryPendingForced.get(leadId)) {
+        categoryPendingForced.delete(leadId);
+        return loadLeadCategories(leadId, true);
+      }
+      return leadCategoriesCache.get(leadId) ?? [];
+    }
+
+    const generation = (categoryFetchGeneration.get(leadId) ?? 0) + 1;
+    categoryFetchGeneration.set(leadId, generation);
+
+    const promise = (async () => {
+      try {
+        const res = await crmService.getCategoriesForLead(leadId);
+        if (categoryFetchGeneration.get(leadId) === generation) {
+          leadCategoriesCache.set(leadId, res);
+        }
+        if (item.leadId === leadId && epoch === visibleLeadRequestEpoch) {
+          assignedCategories = res;
+        }
+        return res;
+      } catch (err) {
+        console.error('Failed to load lead categories', err);
+        if (!leadCategoriesCache.has(leadId) && item.leadId === leadId && epoch === visibleLeadRequestEpoch) {
+          assignedCategories = [];
+        }
+        return [];
+      }
+    })();
+
+    leadCategoriesInFlight.set(leadId, promise);
+    let result: Category[] = [];
+    try {
+      result = await promise;
+    } finally {
+      if (leadCategoriesInFlight.get(leadId) === promise) {
+        leadCategoriesInFlight.delete(leadId);
+      }
+    }
+
+    if (categoryPendingForced.get(leadId)) {
+      categoryPendingForced.delete(leadId);
+      return loadLeadCategories(leadId, true);
+    }
+
+    return result;
   }
 
   let filteredLeads = $derived.by(() => {
@@ -103,17 +170,24 @@
     newCategoryName = '';
     isCategoryModalOpen = true;
     isLoadingCategories = true;
+    const targetLeadId = item.leadId;
     try {
       const [all, assigned] = await Promise.all([
         crmService.getCategories(),
-        item.leadId ? crmService.getCategoriesForLead(item.leadId) : Promise.resolve([])
+        targetLeadId ? loadLeadCategories(targetLeadId, true) : Promise.resolve([])
       ]);
-      allCategories = all;
-      assignedCategories = assigned;
+      if (item.leadId === targetLeadId) {
+        allCategories = all;
+        assignedCategories = assigned;
+      }
     } catch (err) {
-      categoryError = err instanceof Error ? err.message : String(err);
+      if (item.leadId === targetLeadId) {
+        categoryError = err instanceof Error ? err.message : String(err);
+      }
     } finally {
-      isLoadingCategories = false;
+      if (item.leadId === targetLeadId) {
+        isLoadingCategories = false;
+      }
     }
   }
 
@@ -130,6 +204,7 @@
         await crmService.addLeadsToCategory([item.leadId], catId);
         assignedCategories = [...assignedCategories, category];
       }
+      leadCategoriesCache.set(item.leadId, assignedCategories);
     } catch (err) {
       categoryError = err instanceof Error ? err.message : String(err);
     }
@@ -146,6 +221,7 @@
       const newCat: Category = { id: catId, name };
       allCategories = [...allCategories, newCat];
       assignedCategories = [...assignedCategories, newCat];
+      leadCategoriesCache.set(item.leadId, assignedCategories);
       newCategoryName = '';
     } catch (err) {
       categoryError = err instanceof Error ? err.message : String(err);
