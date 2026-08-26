@@ -49,6 +49,7 @@
     listManagedFacebookAccounts,
     type ManagedFacebookAccount
   } from '$lib/services/accountSettingsService';
+  import { m } from '$lib/i18n';
 
   let {
     activeTab = 'facebook_hub',
@@ -249,11 +250,11 @@
     postError = null;
     postSuccess = null;
     if (!selectedPageId || !currentAccount?.channelAccountId) {
-      postError = 'Vui lòng kết nối và chọn Fanpage Facebook hợp lệ trước khi đăng bài.';
+      postError = m.facebook_hub_err_no_page();
       return;
     }
     if (!postMessage.trim()) {
-      postError = 'Message content cannot be empty';
+      postError = m.facebook_hub_err_empty_message();
       return;
     }
 
@@ -275,9 +276,9 @@
 
       if (!isScheduled) {
         await publishFacebookPostNow(postId);
-        postSuccess = 'Post submitted for immediate publishing!';
+        postSuccess = m.facebook_hub_msg_published_now();
       } else {
-        postSuccess = 'Post scheduled successfully!';
+        postSuccess = m.facebook_hub_msg_scheduled_success();
       }
 
       postMessage = '';
@@ -287,7 +288,7 @@
       const reqId = ++activeRequestId;
       await loadPageData(selectedPageId, reqId);
     } catch (e: any) {
-      postError = e?.message || String(e) || 'Failed to submit post';
+      postError = e?.message || String(e) || m.facebook_hub_err_submit_failed();
     } finally {
       isSubmittingPost = false;
     }
@@ -298,7 +299,7 @@
       await cancelFacebookScheduledPost(id);
       await loadScheduledPosts();
     } catch (e) {
-      alert(`Failed to cancel: ${errToString(e)}`);
+      alert(m.facebook_hub_err_cancel_failed({ error: errToString(e) }));
     }
   }
 
@@ -307,7 +308,7 @@
       await publishFacebookPostNow(id);
       await loadScheduledPosts();
     } catch (e) {
-      alert(`Failed to publish: ${errToString(e)}`);
+      alert(m.facebook_hub_err_publish_failed({ error: errToString(e) }));
     }
   }
 
@@ -318,8 +319,8 @@
     ruleKeywords = '';
     ruleMatchMode = 'contains';
     ruleAutoLike = true;
-    rulePublicReply = 'Chào {{name}}, cảm ơn bạn đã quan tâm!';
-    rulePrivateReply = 'Chào {{name}}, shop đã gửi thông tin chi tiết qua tin nhắn cho bạn ạ!';
+    rulePublicReply = m.facebook_hub_rule_modal_public_reply_placeholder({ name: '{{name}}' });
+    rulePrivateReply = m.facebook_hub_rule_modal_private_reply_placeholder({ name: '{{name}}' });
     ruleIsEnabled = true;
     showRuleModal = true;
   }
@@ -339,11 +340,11 @@
 
   async function handleSaveRule() {
     if (!selectedPageId || !currentAccount?.channelAccountId) {
-      alert('Vui lòng kết nối và chọn Fanpage Facebook hợp lệ trước khi lưu quy tắc.');
+      alert(m.facebook_hub_err_select_page_rule());
       return;
     }
     if (!ruleName.trim()) {
-      alert('Rule name is required');
+      alert(m.facebook_hub_err_rule_name_req());
       return;
     }
 
@@ -387,18 +388,18 @@
       const reqId = ++activeRequestId;
       await loadPageData(selectedPageId, reqId);
     } catch (e) {
-      alert(`Failed to save rule: ${errToString(e)}`);
+      alert(m.facebook_hub_err_save_rule({ error: errToString(e) }));
     }
   }
 
   async function handleDeleteRule(id: number) {
-    if (confirm('Are you sure you want to delete this automation rule?')) {
+    if (confirm(m.facebook_hub_confirm_delete_rule())) {
       try {
         await deleteCommentAutomation(id);
         const reqId = ++activeRequestId;
         await loadPageData(selectedPageId, reqId);
       } catch (e) {
-        alert(`Failed to delete rule: ${errToString(e)}`);
+        alert(m.facebook_hub_err_delete_rule({ error: errToString(e) }));
       }
     }
   }
@@ -418,9 +419,9 @@
         f
       </div>
       <div class="max-w-md flex flex-col gap-1.5">
-        <h3 class="text-base font-bold text-foreground">Chưa kết nối Facebook Fanpage</h3>
+        <h3 class="text-base font-bold text-foreground">{m.facebook_hub_zero_title()}</h3>
         <p class="text-xs text-muted-foreground leading-relaxed">
-          Kết nối Fanpage của bạn trong mục Cài đặt Hệ thống để quản lý bài viết, lên lịch tiếp thị và kích hoạt kịch bản trả lời bình luận tự động.
+          {m.facebook_hub_zero_desc()}
         </p>
       </div>
       <button
@@ -429,7 +430,7 @@
         class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-xs font-semibold shadow-xs transition-colors"
       >
         <Settings2 class="w-4 h-4" />
-        Đi tới Cài đặt & Kết nối Fanpage
+        {m.facebook_hub_zero_goto_settings()}
       </button>
     </div>
   {:else}
@@ -454,20 +455,20 @@
             </h2>
             {#if pageHealth?.token_status === 'valid' || currentAccount?.tokenStatus === 'valid'}
               <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                <CheckCircle2 class="w-3 h-3" /> Token Active (Keyring Vault)
+                <CheckCircle2 class="w-3 h-3" /> {m.facebook_hub_token_active()}
               </span>
             {:else}
               <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                <AlertTriangle class="w-3 h-3" /> Token Missing / Expired
+                <AlertTriangle class="w-3 h-3" /> {m.facebook_hub_token_invalid()}
               </span>
             {/if}
           </div>
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             {#if connectedAccounts.length > 1}
               <div class="flex items-center gap-1.5">
-                <span class="font-medium text-foreground">Chọn Page:</span>
+                <span class="font-medium text-foreground">{m.facebook_hub_select_page()}</span>
                 <select
-                  aria-label="Chọn Fanpage Facebook"
+                  aria-label={m.facebook_hub_select_page_aria()}
                   value={selectedPageId}
                   onchange={handlePageSelectChange}
                   class="px-2 py-0.5 rounded-md border border-input bg-background text-xs text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-ring"
@@ -481,9 +482,9 @@
               <span>ID: <span class="font-mono text-foreground font-medium">{currentAccount?.pageId || selectedPageId}</span></span>
             {/if}
             <span>•</span>
-            <span>Active Automations: <span class="font-semibold text-foreground">{pageHealth?.active_automations_count ?? (automationRules || []).filter(r => r?.is_enabled).length}</span></span>
+            <span>{m.facebook_hub_active_automations({ count: pageHealth?.active_automations_count ?? (automationRules || []).filter(r => r?.is_enabled).length })}</span>
             <span>•</span>
-            <span>Pending Posts: <span class="font-semibold text-foreground">{pageHealth?.active_scheduled_count ?? (scheduledPosts || []).filter(p => p?.status === 'queued' || p?.status === 'scheduled_on_meta').length}</span></span>
+            <span>{m.facebook_hub_pending_posts({ count: pageHealth?.active_scheduled_count ?? (scheduledPosts || []).filter(p => p?.status === 'queued' || p?.status === 'scheduled_on_meta').length })}</span>
           </div>
         </div>
       </div>
@@ -495,19 +496,19 @@
             loadAccounts();
           }}
           class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-input bg-background hover:bg-accent text-foreground transition-colors shadow-2xs"
-          title="Làm mới trạng thái"
+          title={m.facebook_hub_refresh_status()}
         >
           <RefreshCw class="w-3.5 h-3.5 {isLoadingHealth || isLoadingAccounts ? 'animate-spin' : ''}" />
-          Refresh
+          {m.common_refresh()}
         </button>
         <button
           type="button"
           onclick={() => onOpenSettings?.()}
           class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors shadow-2xs"
-          title="Quản lý tài khoản Facebook trong Cài đặt"
+          title={m.facebook_hub_settings_title()}
         >
           <Settings2 class="w-3.5 h-3.5 text-muted-foreground" />
-          Settings
+          {m.facebook_hub_settings_btn()}
         </button>
       </div>
     </div>
@@ -521,7 +522,7 @@
       class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all {activeSubTab === 'composer' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
     >
       <Calendar class="w-4 h-4" />
-      Post Composer & Scheduler
+      {m.facebook_hub_tab_composer()}
     </button>
     <button
       type="button"
@@ -529,7 +530,7 @@
       class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all {activeSubTab === 'automations' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
     >
       <Bot class="w-4 h-4" />
-      Comment Automations
+      {m.facebook_hub_tab_automations()}
     </button>
     <button
       type="button"
@@ -537,7 +538,7 @@
       class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all {activeSubTab === 'compliance' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
     >
       <ShieldCheck class="w-4 h-4" />
-      Compliance & Multi-Device
+      {m.facebook_hub_tab_compliance()}
     </button>
   </div>
 
@@ -548,56 +549,56 @@
       <div class="lg:col-span-7 flex flex-col gap-6">
         <div class="bg-card border border-border rounded-xl p-6 shadow-2xs flex flex-col gap-5">
           <div class="flex items-center justify-between">
-            <h3 class="text-sm font-bold text-foreground">Create Facebook Post</h3>
+            <h3 class="text-sm font-bold text-foreground">{m.facebook_hub_create_post_title()}</h3>
             <div class="flex items-center gap-1.5 bg-muted/60 p-1 rounded-lg border border-border">
               <button
                 type="button"
                 onclick={() => (postType = 'status')}
                 class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors {postType === 'status' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
               >
-                Status
+                {m.facebook_hub_post_type_status()}
               </button>
               <button
                 type="button"
                 onclick={() => (postType = 'link')}
                 class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors {postType === 'link' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
               >
-                Link
+                {m.facebook_hub_post_type_link()}
               </button>
               <button
                 type="button"
                 onclick={() => (postType = 'photo')}
                 class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors {postType === 'photo' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
               >
-                Photo
+                {m.facebook_hub_post_type_photo()}
               </button>
               <button
                 type="button"
                 onclick={() => (postType = 'multi_photo')}
                 class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors {postType === 'multi_photo' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
               >
-                Multi
+                {m.facebook_hub_post_type_multi_photo()}
               </button>
               <button
                 type="button"
                 onclick={() => (postType = 'video')}
                 class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors {postType === 'video' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
               >
-                Video
+                {m.facebook_hub_post_type_video()}
               </button>
               <button
                 type="button"
                 onclick={() => (postType = 'reel')}
                 class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors {postType === 'reel' ? 'bg-background text-foreground shadow-2xs font-semibold' : 'text-muted-foreground hover:text-foreground'}"
               >
-                Reel
+                {m.facebook_hub_post_type_reel()}
               </button>
             </div>
           </div>
 
           <!-- Message Textarea -->
           <div class="flex flex-col gap-1.5">
-            <label for="post-msg-input" class="text-xs font-semibold text-foreground">Post Content</label>
+            <label for="post-msg-input" class="text-xs font-semibold text-foreground">{m.facebook_hub_post_content_label()}</label>
             <textarea
               id="post-msg-input"
               bind:value={postMessage}
@@ -606,7 +607,7 @@
                 if (target) postMessage = target.value;
               }}
               rows="4"
-              placeholder="What's on your mind? Type your post message here..."
+              placeholder={m.facebook_hub_post_content_placeholder()}
               class="w-full rounded-lg border border-input bg-background p-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
             ></textarea>
           </div>
@@ -614,14 +615,14 @@
           <!-- Link URL Input (If link type) -->
           {#if postType === 'link'}
             <div class="flex flex-col gap-1.5">
-              <label for="post-link-input" class="text-xs font-semibold text-foreground">Destination Link URL</label>
+              <label for="post-link-input" class="text-xs font-semibold text-foreground">{m.facebook_hub_link_url_label()}</label>
               <div class="relative">
                 <LinkIcon class="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
                 <input
                   id="post-link-input"
                   type="url"
                   bind:value={postLinkUrl}
-                  placeholder="https://example.com/product"
+                  placeholder={m.facebook_hub_link_url_placeholder()}
                   class="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
                 />
               </div>
@@ -631,13 +632,13 @@
           <!-- Media Paths / URLs (If photo/multi/video/reel) -->
           {#if postType !== 'status' && postType !== 'link'}
             <div class="flex flex-col gap-2">
-              <label for="post-media-input" class="text-xs font-semibold text-foreground">Media Files / URLs</label>
+              <label for="post-media-input" class="text-xs font-semibold text-foreground">{m.facebook_hub_media_label()}</label>
               <div class="flex gap-2">
                 <input
                   id="post-media-input"
                   type="text"
                   bind:value={mediaInput}
-                  placeholder="Paste local file path or image/video URL..."
+                  placeholder={m.facebook_hub_media_placeholder()}
                   class="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
                   onkeydown={(e) => e.key === 'Enter' && addMediaPath()}
                 />
@@ -646,7 +647,7 @@
                   onclick={addMediaPath}
                   class="px-3 py-2 bg-secondary text-secondary-foreground text-xs font-medium rounded-lg hover:bg-secondary/80"
                 >
-                  Add Media
+                  {m.facebook_hub_add_media_btn()}
                 </button>
               </div>
 
@@ -680,19 +681,19 @@
                   class="rounded border-input text-blue-600 focus:ring-blue-500"
                 />
                 <label for="schedule-toggle" class="text-sm font-semibold text-foreground cursor-pointer">
-                  Schedule for future publishing
+                  {m.facebook_hub_schedule_toggle()}
                 </label>
               </div>
               {#if isScheduled}
                 <span class="text-xs text-muted-foreground">
-                  (10 min to 30 days published via Meta; >30d queued locally)
+                  {m.facebook_hub_schedule_hint()}
                 </span>
               {/if}
             </div>
 
             {#if isScheduled}
               <div class="flex flex-col gap-1.5">
-                <label for="schedule-dt-input" class="text-xs font-semibold text-foreground">Target Date & Time</label>
+                <label for="schedule-dt-input" class="text-xs font-semibold text-foreground">{m.facebook_hub_target_datetime()}</label>
                 <input
                   id="schedule-dt-input"
                   type="datetime-local"
@@ -725,13 +726,13 @@
           >
             {#if isSubmittingPost}
               <RefreshCw class="w-4 h-4 animate-spin" />
-              Submitting...
+              {m.facebook_hub_submitting()}
             {:else if isScheduled}
               <Clock class="w-4 h-4" />
-              Schedule Post
+              {m.facebook_hub_schedule_btn()}
             {:else}
               <Send class="w-4 h-4" />
-              Publish Now
+              {m.facebook_hub_publish_now_btn()}
             {/if}
           </button>
         </div>
@@ -740,13 +741,13 @@
       <!-- Live Feed Preview (Right 5 Cols) -->
       <div class="lg:col-span-5 flex flex-col gap-4">
         <div class="flex items-center justify-between">
-          <h3 class="text-sm font-bold text-foreground">Live Feed Mockup</h3>
+          <h3 class="text-sm font-bold text-foreground">{m.facebook_hub_mockup_title()}</h3>
           <div class="flex items-center gap-1 bg-muted p-1 rounded-lg border border-border">
             <button
               type="button"
               onclick={() => (previewDevice = 'desktop')}
               class="p-1.5 rounded-md transition-colors {previewDevice === 'desktop' ? 'bg-background text-foreground shadow-2xs' : 'text-muted-foreground hover:text-foreground'}"
-              title="Desktop View"
+              title={m.facebook_hub_view_desktop()}
             >
               <Monitor class="w-3.5 h-3.5" />
             </button>
@@ -754,7 +755,7 @@
               type="button"
               onclick={() => (previewDevice = 'mobile')}
               class="p-1.5 rounded-md transition-colors {previewDevice === 'mobile' ? 'bg-background text-foreground shadow-2xs' : 'text-muted-foreground hover:text-foreground'}"
-              title="Mobile View"
+              title={m.facebook_hub_view_mobile()}
             >
               <Smartphone class="w-3.5 h-3.5" />
             </button>
@@ -782,14 +783,14 @@
                 <span class="text-blue-500 text-xs">✓</span>
               </div>
               <div class="text-[11px] text-muted-foreground flex items-center gap-1">
-                <span>Just now</span> • <span>Sponsored</span> • <span>🌐</span>
+                <span>{m.common_just_now()}</span> • <span>{m.facebook_hub_sponsored()}</span> • <span>🌐</span>
               </div>
             </div>
           </div>
 
           <!-- Post Content Text -->
           <div class="px-4 pb-3 text-sm text-foreground whitespace-pre-wrap">
-            {postMessage || 'Your post message preview will appear here in real time...'}
+            {postMessage || m.facebook_hub_preview_placeholder()}
           </div>
 
           <!-- Media / Link Preview Placeholder -->
@@ -799,41 +800,41 @@
                 {postLinkUrl ? new URL(postLinkUrl).hostname : 'EXAMPLE.COM'}
               </div>
               <div class="font-bold text-sm text-foreground mt-0.5">
-                Special Offer & Details
+                {m.facebook_hub_preview_offer_title()}
               </div>
               <div class="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-                Click to explore our latest collection and promotional offers.
+                {m.facebook_hub_preview_offer_desc()}
               </div>
             </div>
           {:else if postType === 'photo' || postType === 'multi_photo'}
             <div class="bg-muted/60 aspect-video flex flex-col items-center justify-center text-muted-foreground border-y border-border">
               <Image class="w-10 h-10 stroke-[1.5]" />
               <span class="text-xs mt-1 font-medium">
-                {postMediaPaths.length > 0 ? `${postMediaPaths.length} Photo(s) Attached` : 'Photo Preview Placeholder'}
+                {postMediaPaths.length > 0 ? m.facebook_hub_preview_photos_count({ count: postMediaPaths.length }) : m.facebook_hub_preview_photo_placeholder()}
               </span>
             </div>
           {:else if postType === 'video'}
             <div class="bg-slate-950 aspect-video flex flex-col items-center justify-center text-slate-400 border-y border-border">
               <Video class="w-12 h-12 stroke-[1.5] text-white/80" />
-              <span class="text-xs mt-1 font-medium text-white/70">HD Video Player Preview</span>
+              <span class="text-xs mt-1 font-medium text-white/70">{m.facebook_hub_preview_video_placeholder()}</span>
             </div>
           {:else if postType === 'reel'}
             <div class="bg-slate-950 aspect-[9/16] max-h-72 mx-auto flex flex-col items-center justify-center text-slate-400 border-y border-border rounded-lg my-2">
               <Film class="w-10 h-10 stroke-[1.5] text-white/80" />
-              <span class="text-xs mt-1 font-medium text-white/70">9:16 Vertical Reel Preview</span>
+              <span class="text-xs mt-1 font-medium text-white/70">{m.facebook_hub_preview_reel_placeholder()}</span>
             </div>
           {/if}
 
           <!-- Post Actions Bar -->
           <div class="px-4 py-2.5 border-t border-border flex items-center justify-between text-muted-foreground text-xs font-medium">
             <button type="button" class="flex items-center gap-1.5 hover:text-blue-600 transition-colors">
-              <ThumbsUp class="w-4 h-4" /> Like
+              <ThumbsUp class="w-4 h-4" /> {m.facebook_hub_like_btn()}
             </button>
             <button type="button" class="flex items-center gap-1.5 hover:text-foreground transition-colors">
-              <MessageCircle class="w-4 h-4" /> Comment
+              <MessageCircle class="w-4 h-4" /> {m.facebook_hub_comment_btn()}
             </button>
             <button type="button" class="flex items-center gap-1.5 hover:text-foreground transition-colors">
-              <Share2 class="w-4 h-4" /> Share
+              <Share2 class="w-4 h-4" /> {m.facebook_hub_share_btn()}
             </button>
           </div>
         </div>
@@ -844,8 +845,8 @@
     <div class="bg-card border border-border rounded-xl p-6 shadow-2xs flex flex-col gap-4 mt-6">
       <div class="flex items-center justify-between">
         <div>
-          <h3 class="text-base font-bold text-foreground">Scheduled & Recent Posts</h3>
-          <p class="text-xs text-muted-foreground">Manage pending queue, monitor Meta status, and perform instant overrides</p>
+          <h3 class="text-base font-bold text-foreground">{m.facebook_hub_scheduled_posts_title()}</h3>
+          <p class="text-xs text-muted-foreground">{m.facebook_hub_scheduled_posts_desc()}</p>
         </div>
         <button
           type="button"
@@ -860,20 +861,20 @@
         <table class="w-full text-left text-xs border-collapse">
           <thead>
             <tr class="border-b border-border text-muted-foreground font-semibold">
-              <th class="py-2.5 px-3">ID</th>
-              <th class="py-2.5 px-3">Type</th>
-              <th class="py-2.5 px-3">Message Excerpt</th>
-              <th class="py-2.5 px-3">Mode</th>
-              <th class="py-2.5 px-3">Target Time</th>
-              <th class="py-2.5 px-3">Status</th>
-              <th class="py-2.5 px-3 text-right">Actions</th>
+              <th class="py-2.5 px-3">{m.facebook_hub_col_id()}</th>
+              <th class="py-2.5 px-3">{m.facebook_hub_col_type()}</th>
+              <th class="py-2.5 px-3">{m.facebook_hub_col_excerpt()}</th>
+              <th class="py-2.5 px-3">{m.facebook_hub_col_mode()}</th>
+              <th class="py-2.5 px-3">{m.facebook_hub_col_target_time()}</th>
+              <th class="py-2.5 px-3">{m.facebook_hub_col_status()}</th>
+              <th class="py-2.5 px-3 text-right">{m.facebook_hub_col_actions()}</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-border">
             {#if scheduledPosts.length === 0}
               <tr>
                 <td colspan="7" class="py-8 text-center text-muted-foreground">
-                  No scheduled or recent posts found.
+                  {m.facebook_hub_no_posts()}
                 </td>
               </tr>
             {:else}
@@ -892,24 +893,24 @@
                     {post.scheduling_mode}
                   </td>
                   <td class="py-2.5 px-3 text-muted-foreground">
-                    {post.scheduled_publish_time ? new Date(post.scheduled_publish_time).toLocaleString() : 'Immediate'}
+                    {post.scheduled_publish_time ? new Date(post.scheduled_publish_time).toLocaleString() : m.facebook_hub_time_immediate()}
                   </td>
                   <td class="py-2.5 px-3">
                     {#if post.status === 'published'}
                       <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                        Published
+                        {m.facebook_hub_status_published()}
                       </span>
                     {:else if post.status === 'scheduled_on_meta'}
                       <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 border border-blue-500/20">
-                        Meta Scheduled
+                        {m.facebook_hub_status_scheduled_meta()}
                       </span>
                     {:else if post.status === 'queued'}
                       <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                        Local Queued
+                        {m.facebook_hub_status_queued()}
                       </span>
                     {:else if post.status === 'failed'}
                       <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20" title={post.error_message || ''}>
-                        Failed
+                        {m.facebook_hub_status_failed()}
                       </span>
                     {:else}
                       <span class="px-2 py-0.5 rounded-md bg-muted text-muted-foreground text-[10px]">
@@ -925,14 +926,14 @@
                           onclick={() => handlePublishNow(post.id)}
                           class="px-2 py-1 bg-blue-600 text-white rounded text-[11px] font-medium hover:bg-blue-700"
                         >
-                          Publish Now
+                          {m.facebook_hub_publish_now_btn()}
                         </button>
                         <button
                           type="button"
                           onclick={() => handleCancelPost(post.id)}
                           class="px-2 py-1 bg-destructive/10 text-destructive rounded text-[11px] font-medium hover:bg-destructive/20"
                         >
-                          Cancel
+                          {m.common_cancel()}
                         </button>
                       {/if}
                     </div>
@@ -952,8 +953,8 @@
       <div class="bg-card border border-border rounded-xl p-6 shadow-2xs flex flex-col gap-4">
         <div class="flex items-center justify-between">
           <div>
-            <h3 class="text-base font-bold text-foreground">Active Automation Rules</h3>
-            <p class="text-xs text-muted-foreground">Automatically like, public reply, and private message customers based on comment keywords</p>
+            <h3 class="text-base font-bold text-foreground">{m.facebook_hub_automations_title()}</h3>
+            <p class="text-xs text-muted-foreground">{m.facebook_hub_automations_desc()}</p>
           </div>
           <button
             type="button"
@@ -961,7 +962,7 @@
             class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-600 text-white font-semibold text-xs hover:bg-blue-700 transition-colors shadow-2xs"
           >
             <Plus class="w-4 h-4" />
-            Add Rule
+            {m.facebook_hub_add_rule_btn()}
           </button>
         </div>
 
@@ -969,20 +970,20 @@
           <table class="w-full text-left text-xs border-collapse">
             <thead>
               <tr class="border-b border-border text-muted-foreground font-semibold">
-                <th class="py-2.5 px-3">Rule Name</th>
-                <th class="py-2.5 px-3">Keywords</th>
-                <th class="py-2.5 px-3">Match Mode</th>
-                <th class="py-2.5 px-3">Auto-Like</th>
-                <th class="py-2.5 px-3">Private Reply</th>
-                <th class="py-2.5 px-3">Status</th>
-                <th class="py-2.5 px-3 text-right">Actions</th>
+                <th class="py-2.5 px-3">{m.facebook_hub_rule_name_col()}</th>
+                <th class="py-2.5 px-3">{m.facebook_hub_rule_keywords_col()}</th>
+                <th class="py-2.5 px-3">{m.facebook_hub_rule_match_mode_col()}</th>
+                <th class="py-2.5 px-3">{m.facebook_hub_rule_auto_like_col()}</th>
+                <th class="py-2.5 px-3">{m.facebook_hub_rule_private_reply_col()}</th>
+                <th class="py-2.5 px-3">{m.facebook_hub_rule_status_col()}</th>
+                <th class="py-2.5 px-3 text-right">{m.facebook_hub_col_actions()}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-border">
               {#if automationRules.length === 0}
                 <tr>
                   <td colspan="7" class="py-8 text-center text-muted-foreground">
-                    No comment automation rules configured. Click "Add Rule" to get started!
+                    {m.facebook_hub_no_rules()}
                   </td>
                 </tr>
               {:else}
@@ -1005,13 +1006,13 @@
                       {/if}
                     </td>
                     <td class="py-2.5 px-3 max-w-[200px] truncate text-muted-foreground">
-                      {rule.private_reply_template || 'None'}
+                      {rule.private_reply_template || m.facebook_hub_rule_none()}
                     </td>
                     <td class="py-2.5 px-3">
                       {#if rule.is_enabled}
-                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600">Enabled</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600">{m.facebook_hub_rule_enabled()}</span>
                       {:else}
-                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-muted text-muted-foreground">Disabled</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-muted text-muted-foreground">{m.facebook_hub_rule_disabled()}</span>
                       {/if}
                     </td>
                     <td class="py-2.5 px-3 text-right">
@@ -1021,7 +1022,7 @@
                           onclick={() => openEditRuleModal(rule)}
                           class="px-2 py-1 rounded hover:bg-accent text-xs text-foreground font-medium"
                         >
-                          Edit
+                          {m.common_edit()}
                         </button>
                         <button
                           type="button"
@@ -1044,8 +1045,8 @@
       <div class="bg-card border border-border rounded-xl p-6 shadow-2xs flex flex-col gap-4">
         <div class="flex items-center justify-between">
           <div>
-            <h3 class="text-base font-bold text-foreground">Comment Activity Audit Logs</h3>
-            <p class="text-xs text-muted-foreground">Real-time audit log of processed comments, auto-likes, and private send delivery statuses</p>
+            <h3 class="text-base font-bold text-foreground">{m.facebook_hub_audit_logs_title()}</h3>
+            <p class="text-xs text-muted-foreground">{m.facebook_hub_audit_logs_desc()}</p>
           </div>
           <button
             type="button"
@@ -1060,20 +1061,20 @@
           <table class="w-full text-left text-xs border-collapse">
             <thead>
               <tr class="border-b border-border text-muted-foreground font-semibold">
-                <th class="py-2 px-3">Comment ID</th>
-                <th class="py-2 px-3">Sender</th>
-                <th class="py-2 px-3">Comment</th>
-                <th class="py-2 px-3">Like</th>
-                <th class="py-2 px-3">Public Reply</th>
-                <th class="py-2 px-3">Private Send</th>
-                <th class="py-2 px-3">Time</th>
+                <th class="py-2 px-3">{m.facebook_hub_log_col_comment_id()}</th>
+                <th class="py-2 px-3">{m.facebook_hub_log_col_sender()}</th>
+                <th class="py-2 px-3">{m.facebook_hub_log_col_comment()}</th>
+                <th class="py-2 px-3">{m.facebook_hub_log_col_like()}</th>
+                <th class="py-2 px-3">{m.facebook_hub_log_col_public_reply()}</th>
+                <th class="py-2 px-3">{m.facebook_hub_log_col_private_send()}</th>
+                <th class="py-2 px-3">{m.facebook_hub_log_col_time()}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-border font-mono text-[11px]">
               {#if commentLogs.length === 0}
                 <tr>
                   <td colspan="7" class="py-6 text-center text-muted-foreground font-sans text-xs">
-                    No recent comment automation logs.
+                    {m.facebook_hub_no_logs()}
                   </td>
                 </tr>
               {:else}
@@ -1112,37 +1113,37 @@
   {#if activeSubTab === 'compliance'}
     <div class="flex flex-col gap-6 max-w-4xl">
       <div class="bg-card border border-border rounded-xl p-6 shadow-2xs flex flex-col gap-4">
-        <h3 class="text-base font-bold text-foreground">Meta Data Deletion & Multi-Device Architecture</h3>
+        <h3 class="text-base font-bold text-foreground">{m.facebook_hub_compliance_title()}</h3>
         <p class="text-xs text-muted-foreground leading-relaxed">
-          RustSale Pro is architected to ensure total compliance with Meta User Data Deletion policies across local-first multi-device deployments.
+          {m.facebook_hub_compliance_desc()}
         </p>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
           <div class="p-4 rounded-lg bg-muted/40 border border-border flex flex-col gap-2">
             <div class="flex items-center gap-2 font-semibold text-xs text-foreground">
               <ShieldCheck class="w-4 h-4 text-emerald-500" />
-              HMAC Signed-Request Gateway
+              {m.facebook_hub_compliance_hmac_title()}
             </div>
             <p class="text-xs text-muted-foreground leading-relaxed">
-              Meta deletion callbacks are securely received by Supabase Edge Functions with HMAC-SHA256 signature verification and registered into <code class="text-[11px] bg-muted px-1 rounded">meta_data_deletion_requests</code>.
+              {m.facebook_hub_compliance_hmac_desc()}
             </p>
           </div>
 
           <div class="p-4 rounded-lg bg-muted/40 border border-border flex flex-col gap-2">
             <div class="flex items-center gap-2 font-semibold text-xs text-foreground">
               <RefreshCw class="w-4 h-4 text-blue-500" />
-              Multi-Device Worker Task Fan-Out
+              {m.facebook_hub_compliance_fanout_title()}
             </div>
             <p class="text-xs text-muted-foreground leading-relaxed">
-              Enrolled desktop nodes claim device deletion tasks via lease tokens, transactionally scrub SQLite tables & disk spools, and complete requests atomically.
+              {m.facebook_hub_compliance_fanout_desc()}
             </p>
           </div>
         </div>
 
         <div class="border-t border-border pt-4 mt-2 flex flex-col gap-3">
-          <h4 class="text-xs font-bold text-foreground">Deletion Callback Status Endpoint</h4>
+          <h4 class="text-xs font-bold text-foreground">{m.facebook_hub_compliance_endpoint_title()}</h4>
           <p class="text-xs text-muted-foreground">
-            Meta users can verify the real-time completion status of their data deletion request via the public confirmation link:
+            {m.facebook_hub_compliance_endpoint_desc()}
           </p>
           <div class="p-2.5 rounded-lg bg-muted font-mono text-xs text-foreground select-all border border-border">
             https://&lt;project&gt;.supabase.co/functions/v1/meta-data-deletion/deletion-status?code=&lt;CONFIRMATION_CODE&gt;
@@ -1159,7 +1160,7 @@
     <div class="bg-card border border-border rounded-xl shadow-xl w-full max-w-lg p-6 flex flex-col gap-5">
       <div class="flex items-center justify-between">
         <h3 class="text-base font-bold text-foreground">
-          {editingRuleId ? 'Edit Automation Rule' : 'Create Comment Automation Rule'}
+          {editingRuleId ? m.facebook_hub_rule_modal_edit_title() : m.facebook_hub_rule_modal_create_title()}
         </h3>
         <button
           type="button"
@@ -1172,39 +1173,39 @@
 
       <div class="flex flex-col gap-4 text-xs">
         <div class="flex flex-col gap-1.5">
-          <label for="rule-name-input" class="font-semibold text-foreground">Rule Name</label>
+          <label for="rule-name-input" class="font-semibold text-foreground">{m.facebook_hub_rule_modal_name_label()}</label>
           <input
             id="rule-name-input"
             type="text"
             bind:value={ruleName}
-            placeholder="e.g. Price Inquiry Auto-Responder"
+            placeholder={m.facebook_hub_rule_modal_name_placeholder()}
             class="px-3 py-2 rounded-lg border border-input bg-background text-sm text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
           />
         </div>
 
         <div class="flex flex-col gap-1.5">
-          <label for="rule-keywords-input" class="font-semibold text-foreground">Trigger Keywords (comma separated)</label>
+          <label for="rule-keywords-input" class="font-semibold text-foreground">{m.facebook_hub_rule_modal_keywords_label()}</label>
           <input
             id="rule-keywords-input"
             type="text"
             bind:value={ruleKeywords}
-            placeholder="e.g. giá, bao nhiêu, inbox, tư vấn"
+            placeholder={m.facebook_hub_rule_modal_keywords_placeholder()}
             class="px-3 py-2 rounded-lg border border-input bg-background text-sm text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
           />
         </div>
 
         <div class="grid grid-cols-2 gap-3">
           <div class="flex flex-col gap-1.5">
-            <label for="rule-match-mode-select" class="font-semibold text-foreground">Match Mode</label>
+            <label for="rule-match-mode-select" class="font-semibold text-foreground">{m.facebook_hub_rule_modal_match_mode_label()}</label>
             <select
               id="rule-match-mode-select"
               bind:value={ruleMatchMode}
               class="px-3 py-2 rounded-lg border border-input bg-background text-sm text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
             >
-              <option value="contains">Contains (Any)</option>
-              <option value="all">Contains All</option>
-              <option value="exact">Exact Match</option>
-              <option value="regex">Regular Expression</option>
+              <option value="contains">{m.facebook_hub_rule_match_contains()}</option>
+              <option value="all">{m.facebook_hub_rule_match_all()}</option>
+              <option value="exact">{m.facebook_hub_rule_match_exact()}</option>
+              <option value="regex">{m.facebook_hub_rule_match_regex()}</option>
             </select>
           </div>
 
@@ -1216,35 +1217,35 @@
               class="rounded border-input text-blue-600 focus:ring-blue-500"
             />
             <label for="auto-like-check" class="font-semibold text-foreground cursor-pointer">
-              Auto-Like Comment
+              {m.facebook_hub_rule_modal_auto_like_label()}
             </label>
           </div>
         </div>
 
         <div class="flex flex-col gap-1.5">
           <div class="flex items-center justify-between">
-            <label for="rule-public-reply-input" class="font-semibold text-foreground">Public Reply Template (Optional)</label>
-            <span class="text-[10px] text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded font-mono">Use {"{{name}}"}</span>
+            <label for="rule-public-reply-input" class="font-semibold text-foreground">{m.facebook_hub_rule_modal_public_reply_label()}</label>
+            <span class="text-[10px] text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded font-mono">{m.facebook_hub_rule_modal_use_name_hint({ tag: '{{name}}' })}</span>
           </div>
           <textarea
             id="rule-public-reply-input"
             bind:value={rulePublicReply}
             rows="2"
-            placeholder="Chào {{name}}, shop đã gửi báo giá qua tin nhắn cho bạn nhé!"
+            placeholder={m.facebook_hub_rule_modal_public_reply_placeholder({ name: '{{name}}' })}
             class="px-3 py-2 rounded-lg border border-input bg-background text-sm text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
           ></textarea>
         </div>
 
         <div class="flex flex-col gap-1.5">
           <div class="flex items-center justify-between">
-            <label for="rule-private-reply-input" class="font-semibold text-foreground">1-Reply Private Message Template</label>
-            <span class="text-[10px] text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded font-mono">Use {"{{name}}"}</span>
+            <label for="rule-private-reply-input" class="font-semibold text-foreground">{m.facebook_hub_rule_modal_private_reply_label()}</label>
+            <span class="text-[10px] text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded font-mono">{m.facebook_hub_rule_modal_use_name_hint({ tag: '{{name}}' })}</span>
           </div>
           <textarea
             id="rule-private-reply-input"
             bind:value={rulePrivateReply}
             rows="3"
-            placeholder="Chào {{name}}, cảm ơn bạn đã quan tâm đến sản phẩm của shop! Giá sản phẩm là..."
+            placeholder={m.facebook_hub_rule_modal_private_reply_placeholder({ name: '{{name}}' })}
             class="px-3 py-2 rounded-lg border border-input bg-background text-sm text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
           ></textarea>
         </div>
@@ -1256,14 +1257,14 @@
           onclick={() => (showRuleModal = false)}
           class="px-4 py-2 rounded-lg border border-input hover:bg-accent text-foreground text-xs font-semibold"
         >
-          Cancel
+          {m.common_cancel()}
         </button>
         <button
           type="button"
           onclick={handleSaveRule}
           class="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-semibold"
         >
-          Save Rule
+          {m.facebook_hub_rule_modal_save_btn()}
         </button>
       </div>
     </div>

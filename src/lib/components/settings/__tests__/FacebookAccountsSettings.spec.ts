@@ -218,7 +218,7 @@ describe('FacebookAccountsSettings', () => {
 
     expect(clipboardText).toMatch(/^https:\/\/www\.facebook\.com\/v26\.0\/dialog\/oauth\?client_id=1075678647572774/);
     expect(clipboardText).toMatch(/state=([^&]+)/);
-    expect(await screen.findByText('Copied')).toBeTruthy();
+    expect(await screen.findByText(/Copied/i)).toBeTruthy();
   });
 
   test('validates and prompts for input when Access Token is empty in OAuth tab', async () => {
@@ -652,7 +652,7 @@ describe('FacebookAccountsSettings', () => {
     expect(screen.getByText('Runtime Invalid')).toBeTruthy();
     expect(screen.getByText(/Meta Graph API error \(code 190\)/i)).toBeTruthy();
 
-    const reconnectBtn = screen.getByRole('button', { name: /Cấp lại quyền/i });
+    const reconnectBtn = screen.getByRole('button', { name: /Re-authenticate|Cấp lại quyền/i });
     expect(reconnectBtn).toBeTruthy();
 
     await fireEvent.click(reconnectBtn);

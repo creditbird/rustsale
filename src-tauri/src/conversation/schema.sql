@@ -111,6 +111,18 @@ WHERE local_request_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_timeline
 ON messages(conversation_id, provider_timestamp, ingested_at, id);
 
+CREATE INDEX IF NOT EXISTS idx_messages_inbox_calc
+ON messages(conversation_id, direction, status, ingested_at);
+
+CREATE INDEX IF NOT EXISTS idx_messages_inbox_recent
+ON messages(conversation_id, provider_timestamp DESC, ingested_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_participants_active
+ON conversation_participants(conversation_id, left_at);
+
+CREATE INDEX IF NOT EXISTS idx_participants_identity
+ON conversation_participants(identity_id, conversation_id);
+
 CREATE TABLE IF NOT EXISTS message_attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     message_id INTEGER NOT NULL,

@@ -43,24 +43,6 @@ fn message_occurred_after_tombstone(message: &NormalizedMessage, deleted_at: &st
     occurred_at > deleted_at
 }
 
-type UnlinkedIdentityRow = (
-    i64,
-    Option<String>,
-    Option<String>,
-    String,
-    Option<String>,
-    bool,
-);
-type GroupConversationRow = (
-    i64,
-    i64,
-    Channel,
-    Option<String>,
-    ConversationKind,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
 
 pub fn next_provider_client_message_id() -> String {
     let now_ms = std::time::SystemTime::now()
@@ -1239,177 +1221,235 @@ impl ConversationRepository {
             rows.collect::<Result<Vec<i64>>>()?
         };
 
-        for lead_id in lead_ids {
-            let title: String = {
-                let lead_name: Option<String> = conn
-                    .query_row("SELECT name FROM leads WHERE id = ?1", [lead_id], |row| {
-                        row.get(0)
-                    })
-                    .optional()?
-                    .flatten();
-
-                let identity_name: Option<String> = conn
-                    .query_row(
-                        "SELECT display_name FROM channel_identities WHERE lead_id = ?1 AND display_name IS NOT NULL AND TRIM(display_name) != '' ORDER BY id ASC LIMIT 1",
-                        [lead_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .flatten();
-
-                match (lead_name, identity_name) {
-                    (Some(l), Some(i))
-                        if (l == "Hello World" || l.starts_with("Lead "))
-                            && !i.trim().is_empty() =>
-                    {
-                        i
-                    }
-                    (Some(l), _) if !l.trim().is_empty() => l,
-                    (_, Some(i)) => i,
-                    _ => format!("Lead {lead_id}"),
+        if !lead_ids.is_empty() {
+            // Bulk 1.1: Lead names
+            let mut lead_names_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare("SELECT id, name FROM leads WHERE name IS NOT NULL")?;
+                let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+                for r in rows {
+                    let (id, name) = r?;
+                    lead_names_map.insert(id, name);
                 }
-            };
+            }
 
-            let avatar_url: Option<String> = conn
-                .query_row(
-                    "SELECT avatar_url FROM channel_identities WHERE lead_id = ?1 AND avatar_url IS NOT NULL LIMIT 1",
-                    [lead_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .flatten();
+            // Bulk 1.2: Identity display names and avatar URLs (first by id ASC)
+            let mut identity_names_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            let mut avatar_urls_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare(
+                    "SELECT lead_id, display_name, avatar_url
+                     FROM channel_identities
+                     WHERE lead_id IS NOT NULL
+                     ORDER BY id ASC",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?;
+                for r in rows {
+                    let (lead_id, d_name, av_url) = r?;
+                    if let Some(name) = d_name {
+                        if !name.trim().is_empty() {
+                            identity_names_map.entry(lead_id).or_insert(name);
+                        }
+                    }
+                    if let Some(av) = av_url {
+                        avatar_urls_map.entry(lead_id).or_insert(av);
+                    }
+                }
+            }
 
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at
-                 FROM channel_conversations cc
-                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
-                 JOIN conversation_participants cp ON cp.conversation_id = cc.id
-                 JOIN channel_identities ci ON ci.id = cp.identity_id
-                 WHERE ci.lead_id = ?1 AND cc.kind IN ('direct', 'email_thread')
-                 ORDER BY cc.last_message_at DESC",
-            )?;
-
-            let conv_rows = stmt
-                .query_map([lead_id], |row| {
-                    let channel_str: String = row.get(2)?;
+            // Bulk 1.3: Reply targets for all leads
+            let mut reply_targets_map: std::collections::HashMap<i64, Vec<crate::conversation::types::InboxReplyTarget>> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare(
+                    "WITH LastInbound AS (
+                         SELECT conversation_id, MAX(COALESCE(provider_timestamp, ingested_at)) AS last_inbound_at
+                         FROM messages
+                         WHERE direction = 'inbound'
+                         GROUP BY conversation_id
+                     )
+                     SELECT DISTINCT ci.lead_id, cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at, li.last_inbound_at
+                     FROM channel_conversations cc
+                     JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                     JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                     JOIN channel_identities ci ON ci.id = cp.identity_id
+                     LEFT JOIN LastInbound li ON li.conversation_id = cc.id
+                     WHERE ci.lead_id IS NOT NULL AND cc.kind IN ('direct', 'email_thread')
+                     ORDER BY cc.last_message_at DESC",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    let lead_id: i64 = row.get(0)?;
+                    let channel_str: String = row.get(3)?;
                     let channel = Channel::from_str(&channel_str).unwrap_or(Channel::Zalo);
-                    let kind_str: String = row.get(4)?;
+                    let kind_str: String = row.get(5)?;
                     let kind = match kind_str.as_str() {
                         "group" => ConversationKind::Group,
                         "email_thread" => ConversationKind::EmailThread,
                         _ => ConversationKind::Direct,
                     };
                     Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        channel,
-                        row.get::<_, Option<String>>(3)?,
-                        kind,
-                        row.get::<_, Option<String>>(5)?,
+                        lead_id,
+                        crate::conversation::types::InboxReplyTarget {
+                            conversation_id: row.get(1)?,
+                            channel_account_id: row.get(2)?,
+                            channel,
+                            account_display_name: row.get(4)?,
+                            conversation_kind: kind,
+                            last_inbound_at: row.get(7)?,
+                            last_message_at: row.get(6)?,
+                        },
                     ))
-                })?
-                .collect::<Result<Vec<_>>>()?;
-
-            let mut reply_targets = Vec::new();
-            for (conv_id, account_id, channel, acc_name, kind, last_msg_at) in &conv_rows {
-                let last_inbound_at: Option<String> = conn
-                    .query_row(
-                        "SELECT COALESCE(provider_timestamp, ingested_at) FROM messages
-                         WHERE conversation_id = ?1 AND direction = 'inbound'
-                         ORDER BY COALESCE(provider_timestamp, ingested_at) DESC, id DESC LIMIT 1",
-                        [conv_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .flatten();
-
-                reply_targets.push(crate::conversation::types::InboxReplyTarget {
-                    conversation_id: *conv_id,
-                    channel_account_id: *account_id,
-                    channel: *channel,
-                    account_display_name: acc_name.clone(),
-                    conversation_kind: *kind,
-                    last_inbound_at,
-                    last_message_at: last_msg_at.clone(),
-                });
+                })?;
+                for r in rows {
+                    let (lead_id, target) = r?;
+                    reply_targets_map.entry(lead_id).or_default().push(target);
+                }
             }
 
-            let (last_message_preview, last_message_at) = conn
-                .query_row(
-                    "SELECT m.text_content, COALESCE(m.provider_timestamp, m.ingested_at)
-                     FROM messages m
-                     JOIN channel_conversations cc ON cc.id = m.conversation_id
-                     JOIN conversation_participants cp ON cp.conversation_id = cc.id
-                     JOIN channel_identities ci ON ci.id = cp.identity_id
-                     WHERE ci.lead_id = ?1 AND cc.kind IN ('direct', 'email_thread')
-                     ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
-                     LIMIT 1",
-                    [lead_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                        ))
-                    },
-                )
-                .optional()?
-                .unwrap_or((
-                    None,
-                    reply_targets
-                        .first()
-                        .and_then(|t| t.last_message_at.clone()),
-                ));
+            // Bulk 1.4: Last message previews & timestamps for all leads
+            let mut last_messages_map: std::collections::HashMap<i64, (Option<String>, Option<String>)> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare(
+                    "WITH RankedMessages AS (
+                         SELECT ci.lead_id, m.text_content, COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY ci.lead_id
+                                    ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
+                                ) AS rn
+                         FROM messages m
+                         JOIN channel_conversations cc ON cc.id = m.conversation_id
+                         JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                         JOIN channel_identities ci ON ci.id = cp.identity_id
+                         WHERE ci.lead_id IS NOT NULL AND cc.kind IN ('direct', 'email_thread')
+                     )
+                     SELECT lead_id, text_content, occurred_at
+                     FROM RankedMessages
+                     WHERE rn = 1",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?;
+                for r in rows {
+                    let (lead_id, text, at) = r?;
+                    last_messages_map.insert(lead_id, (text, at));
+                }
+            }
 
-            let mut badge_stmt = conn.prepare(
-                "SELECT ca.channel, COUNT(m.id),
-                        SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
-                                      AND (m.ingested_at > COALESCE((SELECT MAX(m2.ingested_at) FROM messages m2 WHERE m2.conversation_id = cc.id AND m2.direction = 'outbound'), ''))
-                                 THEN 1 ELSE 0 END)
-                 FROM channel_conversations cc
-                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
-                 JOIN conversation_participants cp ON cp.conversation_id = cc.id
-                 JOIN channel_identities ci ON ci.id = cp.identity_id
-                 LEFT JOIN messages m ON m.conversation_id = cc.id
-                 WHERE ci.lead_id = ?1 AND cc.kind IN ('direct', 'email_thread')
-                 GROUP BY ca.channel",
-            )?;
-
-            let channels = badge_stmt
-                .query_map([lead_id], |row| {
-                    let channel_str: String = row.get(0)?;
+            // Bulk 1.5: Channel badges and unread counts for all leads
+            let mut channel_badges_map: std::collections::HashMap<i64, Vec<ChannelBadgeSummary>> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare(
+                    "WITH OutboundMax AS (
+                         SELECT conversation_id, MAX(ingested_at) AS max_outbound_at
+                         FROM messages
+                         WHERE direction = 'outbound'
+                         GROUP BY conversation_id
+                     ),
+                     ConvCounts AS (
+                         SELECT ci.lead_id, ca.channel,
+                                COUNT(m.id) AS msg_count,
+                                SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
+                                              AND (m.ingested_at > COALESCE(om.max_outbound_at, ''))
+                                         THEN 1 ELSE 0 END) AS unread_count
+                         FROM channel_conversations cc
+                         JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                         JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                         JOIN channel_identities ci ON ci.id = cp.identity_id
+                         LEFT JOIN messages m ON m.conversation_id = cc.id
+                         LEFT JOIN OutboundMax om ON om.conversation_id = cc.id
+                         WHERE ci.lead_id IS NOT NULL AND cc.kind IN ('direct', 'email_thread')
+                         GROUP BY ci.lead_id, ca.channel
+                     )
+                     SELECT lead_id, channel, msg_count, COALESCE(unread_count, 0)
+                     FROM ConvCounts",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    let lead_id: i64 = row.get(0)?;
+                    let channel_str: String = row.get(1)?;
                     let channel = Channel::from_str(&channel_str).unwrap_or(Channel::Zalo);
-                    let count: i64 = row.get(1)?;
-                    let unread: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
-                    Ok(ChannelBadgeSummary {
-                        channel,
-                        message_count: count as u64,
-                        unread_count: unread as u64,
-                    })
-                })?
-                .collect::<Result<Vec<_>>>()?;
+                    let count: i64 = row.get(2)?;
+                    let unread: i64 = row.get(3)?;
+                    Ok((
+                        lead_id,
+                        ChannelBadgeSummary {
+                            channel,
+                            message_count: count as u64,
+                            unread_count: unread as u64,
+                        },
+                    ))
+                })?;
+                for r in rows {
+                    let (lead_id, badge) = r?;
+                    channel_badges_map.entry(lead_id).or_default().push(badge);
+                }
+            }
 
-            let unread_count: u64 = channels.iter().map(|c| c.unread_count).sum();
+            // Assemble Customer Items
+            for lead_id in lead_ids {
+                let lead_name = lead_names_map.get(&lead_id);
+                let identity_name = identity_names_map.get(&lead_id);
 
-            items.push(InboxItem {
-                key: format!("lead:{lead_id}"),
-                kind: InboxItemKind::Customer,
-                lead_id: Some(lead_id),
-                conversation_id: None,
-                identity_id: None,
-                title,
-                avatar_url,
-                last_message_preview,
-                last_message_at,
-                unread_count,
-                channels,
-                reply_targets,
-                participant_count: 0,
-                participants: Vec::new(),
-            });
+                let title = match (lead_name, identity_name) {
+                    (Some(l), Some(i))
+                        if (l == "Hello World" || l.starts_with("Lead "))
+                            && !i.trim().is_empty() =>
+                    {
+                        i.clone()
+                    }
+                    (Some(l), _) if !l.trim().is_empty() => l.clone(),
+                    (_, Some(i)) => i.clone(),
+                    _ => format!("Lead {lead_id}"),
+                };
+
+                let avatar_url = avatar_urls_map.get(&lead_id).cloned();
+                let reply_targets = reply_targets_map.remove(&lead_id).unwrap_or_default();
+                let (last_message_preview, last_message_at) = last_messages_map
+                    .remove(&lead_id)
+                    .unwrap_or_else(|| {
+                        (
+                            None,
+                            reply_targets
+                                .first()
+                                .and_then(|t| t.last_message_at.clone()),
+                        )
+                    });
+
+                let channels = channel_badges_map.remove(&lead_id).unwrap_or_default();
+                let unread_count: u64 = channels.iter().map(|c| c.unread_count).sum();
+
+                items.push(InboxItem {
+                    key: format!("lead:{lead_id}"),
+                    kind: InboxItemKind::Customer,
+                    lead_id: Some(lead_id),
+                    conversation_id: None,
+                    identity_id: None,
+                    title,
+                    avatar_url,
+                    last_message_preview,
+                    last_message_at,
+                    unread_count,
+                    channels,
+                    reply_targets,
+                    participant_count: 0,
+                    participants: Vec::new(),
+                });
+            }
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
-        let unlinked_identities: Vec<UnlinkedIdentityRow> = {
+        let unlinked_identities: Vec<(i64, Option<String>, Option<String>, String, Option<String>, bool)> = {
             let mut stmt = conn.prepare(
                 "SELECT ci.id,
                         ci.display_name,
@@ -1466,289 +1506,354 @@ impl ConversationRepository {
             rows.collect::<Result<Vec<_>>>()?
         };
 
-        for (
-            identity_id,
-            display_name,
-            avatar_url,
-            external_id,
-            latest_inbound_display_name,
-            matches_account_name,
-        ) in unlinked_identities
-        {
-            let stored_display_name = if matches_account_name {
-                None
-            } else {
-                display_name
-            };
-            let title = latest_inbound_display_name
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| stored_display_name.filter(|s| !s.trim().is_empty()))
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| format!("Unknown ({external_id})"));
-
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at
-                 FROM channel_conversations cc
-                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
-                 JOIN conversation_participants cp ON cp.conversation_id = cc.id
-                 WHERE cp.identity_id = ?1 AND cc.kind IN ('direct', 'email_thread')
-                 ORDER BY cc.last_message_at DESC",
-            )?;
-
-            let conv_rows = stmt
-                .query_map([identity_id], |row| {
-                    let channel_str: String = row.get(2)?;
+        if !unlinked_identities.is_empty() {
+            // Bulk 2.1: Reply targets for all unknown identities
+            let mut unlinked_reply_targets_map: std::collections::HashMap<i64, Vec<crate::conversation::types::InboxReplyTarget>> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare(
+                    "WITH LastInbound AS (
+                         SELECT conversation_id, MAX(COALESCE(provider_timestamp, ingested_at)) AS last_inbound_at
+                         FROM messages
+                         WHERE direction = 'inbound'
+                         GROUP BY conversation_id
+                     )
+                     SELECT DISTINCT cp.identity_id, cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at, li.last_inbound_at
+                     FROM channel_conversations cc
+                     JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                     JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                     JOIN channel_identities ci ON ci.id = cp.identity_id
+                     LEFT JOIN LastInbound li ON li.conversation_id = cc.id
+                     WHERE ci.lead_id IS NULL AND cc.kind IN ('direct', 'email_thread')
+                     ORDER BY cc.last_message_at DESC",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    let identity_id: i64 = row.get(0)?;
+                    let channel_str: String = row.get(3)?;
                     let channel = Channel::from_str(&channel_str).unwrap_or(Channel::Zalo);
-                    let kind_str: String = row.get(4)?;
+                    let kind_str: String = row.get(5)?;
                     let kind = match kind_str.as_str() {
                         "group" => ConversationKind::Group,
                         "email_thread" => ConversationKind::EmailThread,
                         _ => ConversationKind::Direct,
                     };
                     Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        channel,
-                        row.get::<_, Option<String>>(3)?,
-                        kind,
-                        row.get::<_, Option<String>>(5)?,
+                        identity_id,
+                        crate::conversation::types::InboxReplyTarget {
+                            conversation_id: row.get(1)?,
+                            channel_account_id: row.get(2)?,
+                            channel,
+                            account_display_name: row.get(4)?,
+                            conversation_kind: kind,
+                            last_inbound_at: row.get(7)?,
+                            last_message_at: row.get(6)?,
+                        },
                     ))
-                })?
-                .collect::<Result<Vec<_>>>()?;
-
-            let mut reply_targets = Vec::new();
-            for (conv_id, account_id, channel, acc_name, kind, last_msg_at) in &conv_rows {
-                let last_inbound_at: Option<String> = conn
-                    .query_row(
-                        "SELECT COALESCE(provider_timestamp, ingested_at) FROM messages
-                         WHERE conversation_id = ?1 AND direction = 'inbound'
-                         ORDER BY COALESCE(provider_timestamp, ingested_at) DESC, id DESC LIMIT 1",
-                        [conv_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .flatten();
-
-                reply_targets.push(crate::conversation::types::InboxReplyTarget {
-                    conversation_id: *conv_id,
-                    channel_account_id: *account_id,
-                    channel: *channel,
-                    account_display_name: acc_name.clone(),
-                    conversation_kind: *kind,
-                    last_inbound_at,
-                    last_message_at: last_msg_at.clone(),
-                });
+                })?;
+                for r in rows {
+                    let (identity_id, target) = r?;
+                    unlinked_reply_targets_map.entry(identity_id).or_default().push(target);
+                }
             }
 
-            let (last_message_preview, last_message_at) = conn
-                .query_row(
-                    "SELECT m.text_content, COALESCE(m.provider_timestamp, m.ingested_at)
-                     FROM messages m
-                     JOIN channel_conversations cc ON cc.id = m.conversation_id
-                     JOIN conversation_participants cp ON cp.conversation_id = cc.id
-                     WHERE cp.identity_id = ?1 AND cc.kind IN ('direct', 'email_thread')
-                     ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
-                     LIMIT 1",
-                    [identity_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                        ))
-                    },
-                )
-                .optional()?
-                .unwrap_or((
-                    None,
-                    reply_targets
-                        .first()
-                        .and_then(|t| t.last_message_at.clone()),
-                ));
+            // Bulk 2.2: Last message preview for all unknown identities
+            let mut unlinked_last_messages_map: std::collections::HashMap<i64, (Option<String>, Option<String>)> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare(
+                    "WITH RankedMessages AS (
+                         SELECT cp.identity_id, m.text_content, COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY cp.identity_id
+                                    ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
+                                ) AS rn
+                         FROM messages m
+                         JOIN channel_conversations cc ON cc.id = m.conversation_id
+                         JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                         JOIN channel_identities ci ON ci.id = cp.identity_id
+                         WHERE ci.lead_id IS NULL AND cc.kind IN ('direct', 'email_thread')
+                     )
+                     SELECT identity_id, text_content, occurred_at
+                     FROM RankedMessages
+                     WHERE rn = 1",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?;
+                for r in rows {
+                    let (identity_id, text, at) = r?;
+                    unlinked_last_messages_map.insert(identity_id, (text, at));
+                }
+            }
 
-            let mut badge_stmt = conn.prepare(
-                "SELECT ca.channel, COUNT(m.id),
-                        SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
-                                      AND (m.ingested_at > COALESCE((SELECT MAX(m2.ingested_at) FROM messages m2 WHERE m2.conversation_id = cc.id AND m2.direction = 'outbound'), ''))
-                                 THEN 1 ELSE 0 END)
-                 FROM channel_conversations cc
-                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
-                 JOIN conversation_participants cp ON cp.conversation_id = cc.id
-                 LEFT JOIN messages m ON m.conversation_id = cc.id
-                 WHERE cp.identity_id = ?1 AND cc.kind IN ('direct', 'email_thread')
-                 GROUP BY ca.channel",
-            )?;
-
-            let channels = badge_stmt
-                .query_map([identity_id], |row| {
-                    let channel_str: String = row.get(0)?;
+            // Bulk 2.3: Channel badges and unread count for all unknown identities
+            let mut unlinked_channel_badges_map: std::collections::HashMap<i64, Vec<ChannelBadgeSummary>> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = conn.prepare(
+                    "WITH OutboundMax AS (
+                         SELECT conversation_id, MAX(ingested_at) AS max_outbound_at
+                         FROM messages
+                         WHERE direction = 'outbound'
+                         GROUP BY conversation_id
+                     ),
+                     ConvCounts AS (
+                         SELECT cp.identity_id, ca.channel,
+                                COUNT(m.id) AS msg_count,
+                                SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
+                                              AND (m.ingested_at > COALESCE(om.max_outbound_at, ''))
+                                         THEN 1 ELSE 0 END) AS unread_count
+                         FROM channel_conversations cc
+                         JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                         JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                         JOIN channel_identities ci ON ci.id = cp.identity_id
+                         LEFT JOIN messages m ON m.conversation_id = cc.id
+                         LEFT JOIN OutboundMax om ON om.conversation_id = cc.id
+                         WHERE ci.lead_id IS NULL AND cc.kind IN ('direct', 'email_thread')
+                         GROUP BY cp.identity_id, ca.channel
+                     )
+                     SELECT identity_id, channel, msg_count, COALESCE(unread_count, 0)
+                     FROM ConvCounts",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    let identity_id: i64 = row.get(0)?;
+                    let channel_str: String = row.get(1)?;
                     let channel = Channel::from_str(&channel_str).unwrap_or(Channel::Zalo);
-                    let count: i64 = row.get(1)?;
-                    let unread: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
-                    Ok(ChannelBadgeSummary {
-                        channel,
-                        message_count: count as u64,
-                        unread_count: unread as u64,
-                    })
-                })?
-                .collect::<Result<Vec<_>>>()?;
+                    let count: i64 = row.get(2)?;
+                    let unread: i64 = row.get(3)?;
+                    Ok((
+                        identity_id,
+                        ChannelBadgeSummary {
+                            channel,
+                            message_count: count as u64,
+                            unread_count: unread as u64,
+                        },
+                    ))
+                })?;
+                for r in rows {
+                    let (identity_id, badge) = r?;
+                    unlinked_channel_badges_map.entry(identity_id).or_default().push(badge);
+                }
+            }
 
-            let unread_count: u64 = channels.iter().map(|c| c.unread_count).sum();
-
-            items.push(InboxItem {
-                key: format!("identity:{identity_id}"),
-                kind: InboxItemKind::Unknown,
-                lead_id: None,
-                conversation_id: None,
-                identity_id: Some(identity_id),
-                title,
+            // Assemble Unknown Items
+            for (
+                identity_id,
+                display_name,
                 avatar_url,
-                last_message_preview,
-                last_message_at,
-                unread_count,
-                channels,
-                reply_targets,
-                participant_count: 0,
-                participants: Vec::new(),
-            });
+                external_id,
+                latest_inbound_display_name,
+                matches_account_name,
+            ) in unlinked_identities
+            {
+                let stored_display_name = if matches_account_name {
+                    None
+                } else {
+                    display_name
+                };
+                let title = latest_inbound_display_name
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| stored_display_name.filter(|s| !s.trim().is_empty()))
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| format!("Unknown ({external_id})"));
+
+                let reply_targets = unlinked_reply_targets_map.remove(&identity_id).unwrap_or_default();
+                let (last_message_preview, last_message_at) = unlinked_last_messages_map
+                    .remove(&identity_id)
+                    .unwrap_or_else(|| {
+                        (
+                            None,
+                            reply_targets
+                                .first()
+                                .and_then(|t| t.last_message_at.clone()),
+                        )
+                    });
+
+                let channels = unlinked_channel_badges_map.remove(&identity_id).unwrap_or_default();
+                let unread_count: u64 = channels.iter().map(|c| c.unread_count).sum();
+
+                items.push(InboxItem {
+                    key: format!("identity:{identity_id}"),
+                    kind: InboxItemKind::Unknown,
+                    lead_id: None,
+                    conversation_id: None,
+                    identity_id: Some(identity_id),
+                    title,
+                    avatar_url,
+                    last_message_preview,
+                    last_message_at,
+                    unread_count,
+                    channels,
+                    reply_targets,
+                    participant_count: 0,
+                    participants: Vec::new(),
+                });
+            }
         }
 
         // 3. Group rows: Group conversations (key: "conversation:{conversation_id}")
-        let group_convs: Vec<GroupConversationRow> = {
+        let mut group_participants_map: std::collections::HashMap<i64, Vec<ConversationParticipantSummary>> =
+            std::collections::HashMap::new();
+        {
+            let mut part_stmt = conn.prepare(
+                "WITH RankedParticipants AS (
+                     SELECT cp.conversation_id, cp.identity_id, ci.external_id, ci.display_name, ci.avatar_url, cp.participant_role,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY cp.conversation_id
+                                ORDER BY CASE WHEN cp.participant_role IN ('admin', 'owner') THEN 0 ELSE 1 END,
+                                         ci.display_name ASC
+                            ) AS rn
+                     FROM conversation_participants cp
+                     JOIN channel_identities ci ON ci.id = cp.identity_id
+                     JOIN channel_conversations cc ON cc.id = cp.conversation_id
+                     WHERE cc.kind = 'group' AND cp.left_at IS NULL
+                 )
+                 SELECT conversation_id, identity_id, external_id, display_name, avatar_url, participant_role
+                 FROM RankedParticipants
+                 WHERE rn <= 5",
+            )?;
+            let rows = part_stmt.query_map([], |row| {
+                let conv_id: i64 = row.get(0)?;
+                let summary = ConversationParticipantSummary {
+                    identity_id: row.get(1)?,
+                    external_id: row.get(2)?,
+                    display_name: row.get(3)?,
+                    avatar_url: row.get(4)?,
+                    participant_role: row.get(5)?,
+                };
+                Ok((conv_id, summary))
+            })?;
+            for r in rows {
+                let (conv_id, summary) = r?;
+                group_participants_map.entry(conv_id).or_default().push(summary);
+            }
+        }
+
+        {
             let mut stmt = conn.prepare(
-                "SELECT cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.title, cc.avatar_url, cc.last_message_at
+                "WITH LastInbound AS (
+                     SELECT conversation_id, MAX(COALESCE(provider_timestamp, ingested_at)) AS last_inbound_at
+                     FROM messages
+                     WHERE direction = 'inbound'
+                     GROUP BY conversation_id
+                 ),
+                 LastMessage AS (
+                     SELECT conversation_id, text_content, COALESCE(provider_timestamp, ingested_at) AS occurred_at,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY conversation_id
+                                ORDER BY COALESCE(provider_timestamp, ingested_at) DESC, id DESC
+                            ) AS rn
+                     FROM messages
+                 ),
+                 OutboundMax AS (
+                     SELECT conversation_id, MAX(ingested_at) AS max_outbound_at
+                     FROM messages
+                     WHERE direction = 'outbound'
+                     GROUP BY conversation_id
+                 ),
+                 MsgCounts AS (
+                     SELECT m.conversation_id, COUNT(*) AS total_count,
+                            SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
+                                          AND (m.ingested_at > COALESCE(om.max_outbound_at, ''))
+                                     THEN 1 ELSE 0 END) AS unread_count
+                     FROM messages m
+                     LEFT JOIN OutboundMax om ON om.conversation_id = m.conversation_id
+                     GROUP BY m.conversation_id
+                 ),
+                 PartCounts AS (
+                     SELECT conversation_id, COUNT(*) AS part_count
+                     FROM conversation_participants
+                     WHERE left_at IS NULL
+                     GROUP BY conversation_id
+                 )
+                 SELECT cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.title, cc.avatar_url, cc.last_message_at,
+                        li.last_inbound_at, lm.text_content, lm.occurred_at,
+                        COALESCE(mc.total_count, 0), COALESCE(mc.unread_count, 0),
+                        COALESCE(pc.part_count, 0)
                  FROM channel_conversations cc
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 LEFT JOIN LastInbound li ON li.conversation_id = cc.id
+                 LEFT JOIN LastMessage lm ON lm.conversation_id = cc.id AND lm.rn = 1
+                 LEFT JOIN MsgCounts mc ON mc.conversation_id = cc.id
+                 LEFT JOIN PartCounts pc ON pc.conversation_id = cc.id
                  WHERE cc.kind = 'group'
                  ORDER BY COALESCE(cc.last_message_at, cc.created_at) DESC
                  LIMIT 500",
             )?;
-            let rows = stmt.query_map([], |row| {
+
+            let group_rows = stmt.query_map([], |row| {
+                let conv_id: i64 = row.get(0)?;
+                let channel_account_id: i64 = row.get(1)?;
                 let channel_str: String = row.get(2)?;
                 let channel = Channel::from_str(&channel_str).unwrap_or(Channel::Zalo);
+                let acc_name: Option<String> = row.get(3)?;
                 let kind_str: String = row.get(4)?;
                 let kind = match kind_str.as_str() {
                     "group" => ConversationKind::Group,
                     "email_thread" => ConversationKind::EmailThread,
                     _ => ConversationKind::Direct,
                 };
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
+                let title_opt: Option<String> = row.get(5)?;
+                let avatar_url: Option<String> = row.get(6)?;
+                let last_msg_at: Option<String> = row.get(7)?;
+                let last_inbound_at: Option<String> = row.get(8)?;
+                let lm_text: Option<String> = row.get(9)?;
+                let lm_occurred_at: Option<String> = row.get(10)?;
+                let msg_count: i64 = row.get(11)?;
+                let unread_cnt: i64 = row.get(12)?;
+                let part_count: i64 = row.get(13)?;
+
+                let title = title_opt
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "Group Conversation".to_string());
+
+                let reply_target = crate::conversation::types::InboxReplyTarget {
+                    conversation_id: conv_id,
+                    channel_account_id,
                     channel,
-                    row.get::<_, Option<String>>(3)?,
-                    kind,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                ))
+                    account_display_name: acc_name,
+                    conversation_kind: kind,
+                    last_inbound_at,
+                    last_message_at: last_msg_at.clone(),
+                };
+
+                let channels = vec![ChannelBadgeSummary {
+                    channel,
+                    message_count: msg_count as u64,
+                    unread_count: unread_cnt as u64,
+                }];
+
+                Ok(InboxItem {
+                    key: format!("conversation:{conv_id}"),
+                    kind: InboxItemKind::Group,
+                    lead_id: None,
+                    conversation_id: Some(conv_id),
+                    identity_id: None,
+                    title,
+                    avatar_url,
+                    last_message_preview: lm_text,
+                    last_message_at: lm_occurred_at.or(last_msg_at),
+                    unread_count: unread_cnt as u64,
+                    channels,
+                    reply_targets: vec![reply_target],
+                    participant_count: part_count as u64,
+                    participants: Vec::new(),
+                })
             })?;
-            rows.collect::<Result<Vec<_>>>()?
-        };
 
-        for (conv_id, account_id, channel, acc_name, kind, title_opt, avatar_url, last_msg_at) in
-            group_convs
-        {
-            let title = title_opt
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "Group Conversation".to_string());
-
-            let last_inbound_at: Option<String> = conn
-                .query_row(
-                    "SELECT COALESCE(provider_timestamp, ingested_at) FROM messages
-                     WHERE conversation_id = ?1 AND direction = 'inbound'
-                     ORDER BY COALESCE(provider_timestamp, ingested_at) DESC, id DESC LIMIT 1",
-                    [conv_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .flatten();
-
-            let reply_target = crate::conversation::types::InboxReplyTarget {
-                conversation_id: conv_id,
-                channel_account_id: account_id,
-                channel,
-                account_display_name: acc_name,
-                conversation_kind: kind,
-                last_inbound_at,
-                last_message_at: last_msg_at.clone(),
-            };
-
-            let (last_message_preview, msg_last_at) = conn
-                .query_row(
-                    "SELECT text_content, COALESCE(provider_timestamp, ingested_at)
-                     FROM messages
-                     WHERE conversation_id = ?1
-                     ORDER BY COALESCE(provider_timestamp, ingested_at) DESC, id DESC
-                     LIMIT 1",
-                    [conv_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                        ))
-                    },
-                )
-                .optional()?
-                .unwrap_or((None, last_msg_at.clone()));
-
-            let (msg_count, unread_cnt): (i64, i64) = conn.query_row(
-                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN direction = 'inbound' AND status != 'read'
-                                                         AND (ingested_at > COALESCE((SELECT MAX(m2.ingested_at) FROM messages m2 WHERE m2.conversation_id = ?1 AND m2.direction = 'outbound'), ''))
-                                                    THEN 1 ELSE 0 END), 0)
-                 FROM messages WHERE conversation_id = ?1",
-                [conv_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-
-            let channels = vec![ChannelBadgeSummary {
-                channel,
-                message_count: msg_count as u64,
-                unread_count: unread_cnt as u64,
-            }];
-
-            let participant_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = ?1 AND left_at IS NULL",
-                [conv_id],
-                |row| row.get(0),
-            )?;
-
-            let mut part_stmt = conn.prepare(
-                "SELECT cp.identity_id, ci.external_id, ci.display_name, ci.avatar_url, cp.participant_role
-                 FROM conversation_participants cp
-                 JOIN channel_identities ci ON ci.id = cp.identity_id
-                 WHERE cp.conversation_id = ?1 AND cp.left_at IS NULL
-                 ORDER BY CASE WHEN cp.participant_role IN ('admin', 'owner') THEN 0 ELSE 1 END,
-                          ci.display_name ASC
-                 LIMIT 5",
-            )?;
-            let participants = part_stmt
-                .query_map([conv_id], |row| {
-                    Ok(ConversationParticipantSummary {
-                        identity_id: row.get(0)?,
-                        external_id: row.get(1)?,
-                        display_name: row.get(2)?,
-                        avatar_url: row.get(3)?,
-                        participant_role: row.get(4)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>>>()?;
-
-            items.push(InboxItem {
-                key: format!("conversation:{conv_id}"),
-                kind: InboxItemKind::Group,
-                lead_id: None,
-                conversation_id: Some(conv_id),
-                identity_id: None,
-                title,
-                avatar_url,
-                last_message_preview,
-                last_message_at: msg_last_at.or(last_msg_at),
-                unread_count: unread_cnt as u64,
-                channels,
-                reply_targets: vec![reply_target],
-                participant_count: participant_count as u64,
-                participants,
-            });
+            for item_res in group_rows {
+                let mut item = item_res?;
+                if let Some(cid) = item.conversation_id {
+                    if let Some(parts) = group_participants_map.remove(&cid) {
+                        item.participants = parts;
+                    }
+                }
+                items.push(item);
+            }
         }
 
         // Sort all aggregated rows by last_message_at DESC

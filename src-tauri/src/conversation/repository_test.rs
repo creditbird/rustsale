@@ -5327,3 +5327,149 @@ fn test_contact_timeline_mixed_messenger_and_zalo_channels() {
     assert_eq!(zalo_only.items[0].id, 402);
     assert_eq!(zalo_only.items[1].id, 404);
 }
+
+#[test]
+fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+
+    // 1. Create channel accounts
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (1, 'zalo', 'acc-zalo-1', 'Zalo Main', 'connected', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
+                (2, 'messenger', 'acc-fb-1', 'FB Page', 'connected', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // 2. Insert 100 Leads, 100 direct conversations
+    for i in 1..=100 {
+        conn.execute(
+            "INSERT INTO leads (id, name, phone) VALUES (?1, ?2, ?3)",
+            params![i, format!("Customer {i}"), format!("0901234{i:03}")],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_identities (id, lead_id, channel, channel_account_id, identity_namespace, external_id, display_name, avatar_url, created_at, updated_at)
+             VALUES (?1, ?2, 'zalo', 1, 'zalo_uid', ?3, ?4, ?5, '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![i, i, format!("zalo-uid-{i}"), format!("Customer Display {i}"), format!("https://avatar.example.com/{i}.jpg")],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, last_message_at, created_at, updated_at)
+             VALUES (?1, 1, ?2, 'direct', ?3, '2026-08-01T12:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![i, format!("zalo-uid-{i}"), format!("Customer {i}")],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (?1, ?2, 'member')",
+            params![i, i],
+        ).unwrap();
+
+        // 5 messages per lead
+        for m in 1..=5 {
+            let msg_id = (i - 1) * 5 + m;
+            let dir = if m % 2 == 0 { "outbound" } else { "inbound" };
+            let status = if dir == "inbound" && m == 5 { "received" } else { "read" };
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, provider_timestamp, ingested_at, status)
+                 VALUES (?1, ?2, ?3, ?4, 'text', ?5, '2026-08-01T12:00:00Z', '2026-08-01T12:00:00Z', ?6)",
+                params![msg_id, i, i, dir, format!("Msg {m} for lead {i}"), status],
+            ).unwrap();
+        }
+    }
+
+    // 3. Insert 50 Unknown direct conversations
+    for i in 101..=150 {
+        conn.execute(
+            "INSERT INTO channel_identities (id, lead_id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES (?1, NULL, 'zalo', 1, 'zalo_uid', ?2, ?3, '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![i, format!("unknown-uid-{i}"), format!("Unknown Person {i}")],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, last_message_at, created_at, updated_at)
+             VALUES (?1, 1, ?2, 'direct', ?3, '2026-08-01T11:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![i, format!("unknown-uid-{i}"), format!("Unknown {i}")],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (?1, ?2, 'member')",
+            params![i, i],
+        ).unwrap();
+
+        let msg_id = 500 + (i - 100);
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, provider_timestamp, ingested_at, status)
+             VALUES (?1, ?2, ?3, 'inbound', 'text', ?4, '2026-08-01T11:00:00Z', '2026-08-01T11:00:00Z', 'received')",
+            params![msg_id, i, i, format!("Hello from unknown {i}")],
+        ).unwrap();
+    }
+
+    // 4. Insert 50 Group conversations
+    for i in 151..=200 {
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, last_message_at, created_at, updated_at)
+             VALUES (?1, 1, ?2, 'group', ?3, '2026-08-01T10:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![i, format!("group-{i}"), format!("Group Chat {i}")],
+        ).unwrap();
+
+        // 3 participants per group
+        for p in 1..=3 {
+            let p_identity_id = 500 + (i - 150) * 3 + p;
+            conn.execute(
+                "INSERT INTO channel_identities (id, lead_id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+                 VALUES (?1, NULL, 'zalo', 1, 'zalo_uid', ?2, ?3, '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+                params![p_identity_id, format!("member-{p_identity_id}"), format!("Member {p_identity_id}")],
+            ).unwrap();
+
+            conn.execute(
+                "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role) VALUES (?1, ?2, ?3)",
+                params![i, p_identity_id, if p == 1 { "admin" } else { "member" }],
+            ).unwrap();
+        }
+
+        let msg_id = 600 + (i - 150);
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, content_type, text_content, provider_timestamp, ingested_at, status)
+             VALUES (?1, ?2, 'inbound', 'text', ?3, '2026-08-01T10:00:00Z', '2026-08-01T10:00:00Z', 'received')",
+            params![msg_id, i, format!("Group announcement in {i}")],
+        ).unwrap();
+    }
+
+    // Benchmark list_inbox
+    let start = std::time::Instant::now();
+    let items = harness.repository.list_inbox().unwrap();
+    let duration = start.elapsed();
+
+    println!("list_inbox() returned {} items in {:?}", items.len(), duration);
+
+    // Total items = 100 customer leads + 50 unknown + 50 groups = 200 items
+    assert_eq!(items.len(), 200);
+
+    // Verify Customer items
+    let customer_item = items.iter().find(|it| it.key == "lead:1").unwrap();
+    assert_eq!(customer_item.kind, InboxItemKind::Customer);
+    assert_eq!(customer_item.title, "Customer 1");
+    assert_eq!(customer_item.avatar_url, Some("https://avatar.example.com/1.jpg".to_string()));
+    assert_eq!(customer_item.last_message_preview, Some("Msg 5 for lead 1".to_string()));
+    assert_eq!(customer_item.channels[0].channel, Channel::Zalo);
+    assert_eq!(customer_item.channels[0].message_count, 5);
+    assert_eq!(customer_item.reply_targets.len(), 1);
+
+    // Verify Unknown items
+    let unknown_item = items.iter().find(|it| it.key == "identity:101").unwrap();
+    assert_eq!(unknown_item.kind, InboxItemKind::Unknown);
+    assert_eq!(unknown_item.title, "Unknown Person 101");
+    assert_eq!(unknown_item.last_message_preview, Some("Hello from unknown 101".to_string()));
+
+    // Verify Group items
+    let group_item = items.iter().find(|it| it.key == "conversation:151").unwrap();
+    assert_eq!(group_item.kind, InboxItemKind::Group);
+    assert_eq!(group_item.title, "Group Chat 151");
+    assert_eq!(group_item.participant_count, 3);
+    assert_eq!(group_item.participants.len(), 3);
+    assert_eq!(group_item.participants[0].participant_role, "admin");
+
+    // Performance assertion: 200 items with ~600 messages must load in under 100ms in debug mode
+    assert!(duration.as_millis() < 100, "list_inbox took too long: {:?}", duration);
+}

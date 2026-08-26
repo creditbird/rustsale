@@ -227,6 +227,14 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_messages_reply_sender_identity
            ON messages(reply_sender_identity_id)
            WHERE reply_sender_identity_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_messages_inbox_calc
+           ON messages(conversation_id, direction, status, ingested_at);
+         CREATE INDEX IF NOT EXISTS idx_messages_inbox_recent
+           ON messages(conversation_id, provider_timestamp DESC, ingested_at DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_participants_active
+           ON conversation_participants(conversation_id, left_at);
+         CREATE INDEX IF NOT EXISTS idx_participants_identity
+           ON conversation_participants(identity_id, conversation_id);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_accounts_zalo_self_ext_id
            ON channel_accounts(self_external_id)
            WHERE channel = 'zalo' AND self_external_id IS NOT NULL AND self_external_id != '';",

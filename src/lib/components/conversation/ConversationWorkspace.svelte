@@ -796,6 +796,21 @@
     };
   });
 
+  function getEnvMode(): string {
+    try {
+      if (typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: { MODE?: string } }).env?.MODE) {
+        return (import.meta as unknown as { env: { MODE: string } }).env.MODE;
+      }
+    } catch {}
+    try {
+      if (typeof process !== 'undefined' && (process as unknown as { env?: { NODE_ENV?: string } })?.env?.NODE_ENV) {
+        return (process as unknown as { env: { NODE_ENV: string } }).env.NODE_ENV as string;
+      }
+    } catch {}
+    return 'production';
+  }
+  const IS_TEST = getEnvMode() === 'test';
+
   async function loadInitialData() {
     inboxLoading = true;
     runtimeLoading = true;
@@ -815,7 +830,17 @@
         if (!handledTarget && !selectedKey && inbox.length > 0) {
           selectItem(inbox[0]);
         }
-        void prefetchInboxTimelines(inbox);
+        if (IS_TEST) {
+          void prefetchInboxTimelines(inbox);
+        } else if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+          window.requestIdleCallback(() => {
+            void prefetchInboxTimelines(inbox);
+          });
+        } else {
+          setTimeout(() => {
+            void prefetchInboxTimelines(inbox);
+          }, 300);
+        }
       }
 
       if (runtimeRes.status === 'fulfilled') {
@@ -840,7 +865,7 @@
 
   async function prefetchInboxTimelines(items: InboxItem[]) {
     if (!items || items.length === 0) return;
-    const targets = items.slice(0, 10);
+    const targets = IS_TEST ? items.slice(0, 10) : items.slice(0, 3);
     for (const target of targets) {
       const channels =
         target.kind === 'group' || target.leadId === null

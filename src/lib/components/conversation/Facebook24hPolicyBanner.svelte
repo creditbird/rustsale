@@ -9,6 +9,7 @@
     evaluateFacebookWindow,
     formatRemainingHm
   } from './facebookPolicyGate';
+  import { m } from '$lib/i18n';
 
   let {
     lastInboundAt = null,
@@ -38,29 +39,29 @@
     class="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-2.5 text-xs text-red-600 dark:text-red-400"
     data-testid="facebook-policy-expired"
   >
-    ⛔ Đã quá 7 ngày kể từ tương tác cuối — không thể gửi tin nhắn tự do qua ô chat này.
+    ⛔ {m.facebook_policy_expired()}
   </div>
 {:else if !status.freeWindow}
   <div
     class="flex items-center justify-between gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-400"
     data-testid="facebook-policy-outside"
   >
-    <span>⚠️ Đã quá 24h — chỉ có thể gửi bằng thẻ HUMAN_AGENT.</span>
+    <span>⚠️ {m.facebook_policy_outside_24h()}</span>
     <select
       class="rounded border border-border bg-background px-2 py-1 text-foreground"
-      aria-label="Chọn thẻ tin nhắn CSKH"
+      aria-label={m.facebook_policy_select_tag_aria()}
       value={selectedTag ?? ''}
       onchange={handleSelect}
     >
-      <option value="">— Chọn thẻ tin nhắn CSKH —</option>
+      <option value="">{m.facebook_policy_select_tag_placeholder()}</option>
       {#each FACEBOOK_MESSAGE_TAGS as tag (tag.value)}
-        <option value={tag.value}>{tag.value} ({tag.labelVi})</option>
+        <option value={tag.value}>{tag.value} ({m.facebook_policy_tag_human_agent_label()})</option>
       {/each}
     </select>
   </div>
 {:else}
   <div class="flex items-center gap-1.5 text-[11px] text-muted-foreground" data-testid="facebook-policy-inside">
     <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-    <span>Còn {formatRemainingHm(status.remainingMs)} trong cửa sổ 24h của Meta</span>
+    <span>{m.facebook_policy_inside_24h({ time: formatRemainingHm(status.remainingMs) })}</span>
   </div>
 {/if}

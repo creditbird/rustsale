@@ -12,12 +12,17 @@
 // Missing or unparseable interaction time FAILS CLOSED (treated as outside
 // every window).
 
+import { m } from '$lib/i18n';
+
 export const WINDOW_MS = 24 * 60 * 60 * 1000;
 export const HUMAN_AGENT_WINDOW_MS = 7 * WINDOW_MS;
 
 export const FACEBOOK_MESSAGE_TAGS = [
   {
     value: 'HUMAN_AGENT',
+    get label() {
+      return m.facebook_policy_tag_human_agent_label();
+    },
     labelVi: 'Nhân viên CSKH — cửa sổ 7 ngày (yêu cầu Meta phê duyệt scope)'
   }
 ] as const;
@@ -80,7 +85,7 @@ export function validateOutboundPolicy(
   if (!status.humanAgentEligible) {
     return {
       allowed: false,
-      reason: 'Đã quá 7 ngày kể từ tương tác cuối — không thể gửi tin nhắn tự do qua ô chat này.'
+      reason: m.facebook_policy_err_outside_7d()
     };
   }
   if (selectedTag === 'HUMAN_AGENT') {
@@ -88,7 +93,7 @@ export function validateOutboundPolicy(
   }
   return {
     allowed: false,
-    reason: 'Đã quá cửa sổ 24h — chỉ có thể gửi bằng thẻ HUMAN_AGENT.'
+    reason: m.facebook_policy_err_require_tag()
   };
 }
 

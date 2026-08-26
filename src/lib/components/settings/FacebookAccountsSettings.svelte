@@ -84,6 +84,7 @@
   } from 'lucide-svelte';
   import { openExternalUrl } from '$lib/components/conversation/messageMedia';
   import { getSupabaseConfig } from '$lib/services/supabaseClient';
+  import { m } from '$lib/i18n';
 
   let { onNavigateToHub }: { onNavigateToHub?: () => void } = $props();
 
@@ -125,11 +126,11 @@
   }
 
   function authLabel(status: string): string {
-    if (status === 'valid') return 'Token Valid';
-    if (status === 'expired') return 'Token Expired';
-    if (status === 'invalid') return 'Token Invalid';
-    if (status === 'revoked') return 'Token Revoked';
-    return 'Token Unknown';
+    if (status === 'valid') return m.facebook_settings_token_valid();
+    if (status === 'expired') return m.facebook_settings_token_expired();
+    if (status === 'invalid') return m.facebook_settings_token_invalid();
+    if (status === 'revoked') return m.facebook_settings_token_revoked();
+    return m.facebook_settings_token_unknown();
   }
 
   function runtimeVariant(status: AccountRuntimeStatus): 'default' | 'secondary' | 'outline' | 'destructive' {
@@ -139,11 +140,11 @@
   }
 
   function runtimeLabel(status: AccountRuntimeStatus): string {
-    if (status === 'connected') return 'Runtime Connected';
-    if (status === 'connecting') return 'Runtime Connecting';
-    if (status === 'degraded') return 'Runtime Degraded';
-    if (status === 'invalid') return 'Runtime Invalid';
-    return 'Runtime Disconnected';
+    if (status === 'connected') return m.facebook_settings_runtime_connected();
+    if (status === 'connecting') return m.facebook_settings_runtime_connecting();
+    if (status === 'degraded') return m.facebook_settings_runtime_degraded();
+    if (status === 'invalid') return m.facebook_settings_runtime_invalid();
+    return m.facebook_settings_runtime_disconnected();
   }
 
   export async function loadAccounts(silent = false) {
@@ -229,7 +230,7 @@
         if (!isValidOAuthRedirectUri(urlObj.href, sbUrl)) {
           return {
             token: '',
-            error: 'OAuth callback origin is not recognized as a valid secure domain.'
+            error: m.facebook_settings_err_invalid_domain()
           };
         }
 
@@ -240,7 +241,7 @@
             if (decodedState !== oauthStateNonce) {
               return {
                 token: '',
-                error: 'OAuth state nonce mismatch. Please re-authenticate to prevent CSRF.'
+                error: m.facebook_settings_err_state_mismatch()
               };
             }
           }
@@ -265,14 +266,14 @@
 
         return {
           token: '',
-          error: 'No access token found in OAuth callback URL.'
+          error: m.facebook_settings_err_no_token_in_url()
         };
       } catch (err: any) {
         return {
           token: '',
           error: err?.message?.includes('URI')
-            ? 'Malformed URI encoding in callback URL.'
-            : 'OAuth callback origin is not recognized as a valid secure domain.'
+            ? m.facebook_settings_err_malformed_url()
+            : m.facebook_settings_err_invalid_domain()
         };
       }
     }
@@ -346,23 +347,23 @@
           copiedRedirectUri = false;
         }, 2500);
       } else {
-        modalError = 'Failed to copy Redirect URI to clipboard.';
+        modalError = m.facebook_settings_err_copy_redirect();
       }
     } catch {
-      modalError = 'Failed to copy Redirect URI to clipboard.';
+      modalError = m.facebook_settings_err_copy_redirect();
     }
   }
 
   function getOrGenerateAuthUrl(): string | null {
     const appId = customAppId.trim() || import.meta.env.VITE_FACEBOOK_APP_ID || '';
     if (!appId) {
-      modalError = 'Please enter your Meta App ID above (or set VITE_FACEBOOK_APP_ID in .env), or switch to the "Manual Access Token" tab to connect directly without creating an App.';
+      modalError = m.facebook_settings_err_no_app_id();
       return null;
     }
     const { url } = getSupabaseConfig();
     const redirectUri = customRedirectUri.trim() || getDefaultRedirectUri();
     if (!isValidOAuthRedirectUri(redirectUri, url)) {
-      modalError = 'Invalid OAuth Redirect URI. Must be a valid HTTPS URL on an approved domain (e.g. Supabase callback *.supabase.co or *.trantrongtri.com).';
+      modalError = m.facebook_settings_err_invalid_redirect_uri();
       return null;
     }
     const scope =
@@ -385,7 +386,7 @@
     const authUrl = getOrGenerateAuthUrl();
     if (!authUrl) return;
     modalError = null;
-    modalSuccess = 'Opened Meta Login in your default browser. Please complete authorization, then copy the address bar URL or access token and paste below.';
+    modalSuccess = m.facebook_settings_msg_login_opened();
     await openExternalUrl(authUrl);
   }
 
@@ -401,7 +402,7 @@
         }, 2500);
       }
     } catch {
-      modalError = 'Failed to copy URL to clipboard.';
+      modalError = m.facebook_settings_err_copy_auth();
     }
   }
 
@@ -412,7 +413,7 @@
       return;
     }
     if (!cleanToken) {
-      modalError = 'Please enter or paste an Access Token or Meta Callback URL';
+      modalError = m.facebook_settings_err_enter_token();
       return;
     }
 
@@ -426,12 +427,12 @@
         customAppId.trim() || undefined
       );
       if (pages.length === 0) {
-        modalError = 'No managed Fanpages found for this account/token.';
+        modalError = m.facebook_settings_err_no_pages_found();
       } else {
         discoveredPages = pages;
         // Select all by default
         selectedPageIds = new Set(pages.map((p) => p.id));
-        modalSuccess = `Found ${pages.length} Fanpage(s). Select which pages to connect below:`;
+        modalSuccess = m.facebook_settings_msg_pages_found({ count: pages.length });
       }
     } catch (e) {
       modalError = e instanceof Error ? e.message : String(e);
@@ -461,7 +462,7 @@
 
   async function handleSaveDiscoveredPages() {
     if (selectedPageIds.size === 0) {
-      modalError = 'Please select at least one Fanpage to connect.';
+      modalError = m.facebook_settings_err_select_page_req();
       modalSuccess = null;
       return;
     }
@@ -496,11 +497,11 @@
     const pageId = manualPageId.trim();
     const token = manualAccessToken.trim();
     if (!pageId) {
-      modalError = 'Page ID is required';
+      modalError = m.facebook_settings_err_page_id_req();
       return;
     }
     if (!token) {
-      modalError = 'Page Access Token is required';
+      modalError = m.facebook_settings_err_token_req();
       return;
     }
 
@@ -576,9 +577,9 @@
 <div class="flex flex-col gap-4">
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
     <div>
-      <h3 class="text-sm font-semibold text-foreground">Facebook & Messenger Pages</h3>
+      <h3 class="text-sm font-semibold text-foreground">{m.facebook_settings_title()}</h3>
       <p class="text-xs text-muted-foreground">
-        Authentication health and 2-way Messenger synchronization are tracked securely via Token Vault.
+        {m.facebook_settings_desc()}
       </p>
     </div>
     <div class="flex items-center gap-2">
@@ -590,7 +591,7 @@
         class="gap-1.5 text-xs shadow-2xs"
       >
         <RefreshCw class="size-3.5 {loading ? 'animate-spin' : ''}" />
-        Refresh
+        {m.common_refresh()}
       </Button>
       <Button
         size="sm"
@@ -598,7 +599,7 @@
         class="gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white shadow-2xs"
       >
         <Plus class="size-3.5" />
-        Connect Fanpage
+        {m.facebook_settings_connect_btn()}
       </Button>
     </div>
   </div>
@@ -620,7 +621,7 @@
   {#if loading && accounts.length === 0}
     <div class="flex items-center justify-center p-12 text-muted-foreground text-xs gap-2">
       <LoaderCircle class="size-4 animate-spin text-primary" />
-      Loading connected Facebook accounts...
+      {m.facebook_settings_loading()}
     </div>
   {:else if accounts.length === 0}
     <Card.Root class="border-dashed">
@@ -629,9 +630,9 @@
           <MessagesSquare class="size-6" />
         </div>
         <div class="max-w-sm">
-          <h4 class="text-sm font-semibold text-foreground">No Facebook Pages Connected</h4>
+          <h4 class="text-sm font-semibold text-foreground">{m.facebook_settings_empty_title()}</h4>
           <p class="text-xs text-muted-foreground mt-1">
-            Connect your Facebook Fanpage to enable 2-way Messenger chat in Conversations, automated comment replies, and post scheduling.
+            {m.facebook_settings_empty_desc()}
           </p>
         </div>
         <Button
@@ -640,7 +641,7 @@
           class="gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white shadow-2xs mt-2"
         >
           <Plus class="size-3.5" />
-          Connect Facebook Page
+          {m.facebook_settings_empty_connect_btn()}
         </Button>
       </Card.Content>
     </Card.Root>
@@ -674,9 +675,9 @@
 
               <div class="flex items-center gap-1.5 shrink-0">
                 {#if account.runtimeStatus === 'connected'}
-                  <span title="Connected"><Wifi class="size-4 text-emerald-600" /></span>
+                  <span title={m.facebook_settings_status_connected_tooltip()}><Wifi class="size-4 text-emerald-600" /></span>
                 {:else}
-                  <span title="Disconnected"><WifiOff class="size-4 text-muted-foreground" /></span>
+                  <span title={m.facebook_settings_status_disconnected_tooltip()}><WifiOff class="size-4 text-muted-foreground" /></span>
                 {/if}
               </div>
             </div>
@@ -718,7 +719,7 @@
             <div class="flex items-center justify-between pt-1 border-t border-border/50 text-[11px] text-muted-foreground">
               <span class="flex items-center gap-1">
                 <ShieldCheck class="size-3 text-emerald-600" />
-                AES-256 Keyring Vault
+                {m.facebook_settings_keyring_vault()}
               </span>
               <div class="flex items-center gap-1.5">
                 {#if account.tokenStatus !== 'valid' || account.runtimeStatus !== 'connected' || account.lastError}
@@ -729,7 +730,7 @@
                     class="h-7 px-2 text-blue-600 border-blue-200 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-xs gap-1"
                   >
                     <KeyRound class="size-3" />
-                    Cấp lại quyền
+                    {m.facebook_settings_reauth_btn()}
                   </Button>
                 {/if}
                 <Button
@@ -740,7 +741,7 @@
                   class="h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive text-xs gap-1"
                 >
                   <Trash2 class="size-3" />
-                  Disconnect
+                  {m.facebook_settings_disconnect_btn()}
                 </Button>
               </div>
             </div>
@@ -757,10 +758,10 @@
     <Dialog.Header class="px-6 pt-5 pb-3 border-b border-border/50 shrink-0">
       <Dialog.Title class="flex items-center gap-2 text-base">
         <MessagesSquare class="size-5 text-blue-600" />
-        Connect Facebook Fanpage
+        {m.facebook_settings_modal_title()}
       </Dialog.Title>
       <Dialog.Description class="text-xs text-muted-foreground">
-        Link your Meta Fanpage to enable 2-way Messenger synchronization, post scheduling, and comment automations.
+        {m.facebook_settings_modal_desc()}
       </Dialog.Description>
 
       <!-- Tab Switcher -->
@@ -774,7 +775,7 @@
           }}
           class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'oauth' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
         >
-          Login with Facebook (OAuth)
+          {m.facebook_settings_tab_oauth()}
         </button>
         <button
           type="button"
@@ -786,7 +787,7 @@
           }}
           class="flex-1 py-2 font-medium border-b-2 transition-colors {connectTab === 'manual' ? 'border-blue-600 text-blue-600' : 'border-transparent text-muted-foreground hover:text-foreground'}"
         >
-          Manual Access Token
+          {m.facebook_settings_tab_manual()}
         </button>
       </div>
     </Dialog.Header>
@@ -811,7 +812,7 @@
             <div class="flex items-center justify-between gap-2">
               <span class="font-semibold text-foreground flex items-center gap-1.5">
                 <span class="size-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[11px] font-bold">1</span>
-                Authorize with Facebook
+                {m.facebook_settings_step_1_title()}
               </span>
               <div class="flex items-center gap-1.5 shrink-0">
                 <Button
@@ -824,10 +825,10 @@
                 >
                   {#if copiedAuthUrl}
                     <Check class="size-3 text-emerald-600 dark:text-emerald-400" />
-                    Copied
+                    {m.common_copied()}
                   {:else}
                     <Copy class="size-3" />
-                    Copy Link
+                    {m.facebook_settings_copy_link()}
                   {/if}
                 </Button>
                 <Button
@@ -837,12 +838,12 @@
                   class="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 gap-1.5 px-3 shadow-sm"
                 >
                   <ExternalLink class="size-3" />
-                  Open Meta Login
+                  {m.facebook_settings_open_login()}
                 </Button>
               </div>
             </div>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Click <strong>Open Meta Login</strong> to log in with your Facebook account and select the Fanpages you want to grant permissions to.
+              {m.facebook_settings_step_1_desc()}
             </p>
           </div>
 
@@ -850,14 +851,14 @@
           <div class="rounded-xl bg-muted/30 p-3.5 border border-border flex flex-col gap-2.5">
             <span class="font-semibold text-foreground flex items-center gap-1.5">
               <span class="size-5 rounded-full bg-slate-700 dark:bg-slate-300 text-white dark:text-slate-900 flex items-center justify-center text-[11px] font-bold">2</span>
-              Paste Access Token or Callback URL
+              {m.facebook_settings_step_2_title()}
             </span>
             <div class="flex gap-2">
               <Input
                 id="oauth-token-input"
                 type="text"
                 bind:value={oauthTokenOrUrl}
-                placeholder="Paste Access Token (EAAB...) or redirected address URL"
+                placeholder={m.facebook_settings_step_2_placeholder()}
                 class="text-xs flex-1 font-mono bg-background"
               />
               <Button
@@ -869,10 +870,10 @@
               >
                 {#if isFetchingPages}
                   <LoaderCircle class="size-3.5 animate-spin" />
-                  Scanning...
+                  {m.facebook_settings_scanning()}
                 {:else}
                   <RefreshCw class="size-3.5" />
-                  Fetch Pages
+                  {m.facebook_settings_fetch_pages()}
                 {/if}
               </Button>
             </div>
@@ -884,7 +885,7 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
                   <CheckCircle2 class="size-3.5 text-emerald-600" />
-                  Discovered Fanpages ({discoveredPages.length})
+                  {m.facebook_settings_discovered_title({ count: discoveredPages.length })}
                 </span>
                 <Button
                   type="button"
@@ -893,7 +894,7 @@
                   onclick={toggleSelectAllPages}
                   class="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
                 >
-                  {selectedPageIds.size === discoveredPages.length ? 'Deselect All' : 'Select All'}
+                  {selectedPageIds.size === discoveredPages.length ? m.facebook_settings_deselect_all() : m.facebook_settings_select_all()}
                 </Button>
               </div>
 
@@ -924,7 +925,7 @@
                         </div>
                       </div>
                     </div>
-                    <Badge variant="outline" class="text-[9px] px-1.5 py-0 shrink-0">Ready</Badge>
+                    <Badge variant="outline" class="text-[9px] px-1.5 py-0 shrink-0">{m.facebook_settings_ready()}</Badge>
                   </div>
                 {/each}
               </div>
@@ -940,7 +941,7 @@
             >
               <span class="flex items-center gap-1.5 font-medium">
                 <Settings2 class="size-3 text-muted-foreground" />
-                Advanced Settings (App ID, App Secret & Redirect URI)
+                {m.facebook_settings_advanced_toggle()}
               </span>
               {#if showAdvanced}
                 <ChevronUp class="size-3.5 text-muted-foreground" />
@@ -955,7 +956,7 @@
                 <div class="flex flex-col gap-1">
                   <div class="flex items-center justify-between">
                     <label for="meta-app-id-input" class="text-[11px] font-medium text-foreground">
-                      Meta App ID
+                      {m.facebook_settings_app_id_label()}
                     </label>
                     <a
                       href="https://developers.facebook.com/apps"
@@ -972,7 +973,7 @@
                     type="text"
                     bind:value={customAppId}
                     oninput={(e) => handleAppIdChange(e.currentTarget.value)}
-                    placeholder="Enter App ID (e.g. 1585399209632312)"
+                    placeholder={m.facebook_settings_app_id_placeholder()}
                     class="text-xs font-mono h-8"
                   />
                 </div>
@@ -981,7 +982,7 @@
                 <div class="flex flex-col gap-1">
                   <div class="flex items-center justify-between">
                     <label for="redirect-uri-input" class="text-[11px] font-medium text-foreground">
-                      Valid OAuth Redirect URI
+                      {m.facebook_settings_redirect_uri_label()}
                     </label>
                     <Button
                       type="button"
@@ -993,10 +994,10 @@
                     >
                       {#if copiedRedirectUri}
                         <Check class="size-2.5 text-emerald-600 dark:text-emerald-400" />
-                        Copied
+                        {m.common_copied()}
                       {:else}
                         <Copy class="size-2.5" />
-                        Copy Callback URL
+                        {m.facebook_settings_copy_callback()}
                       {/if}
                     </Button>
                   </div>
@@ -1009,7 +1010,7 @@
                     class="text-xs font-mono h-8"
                   />
                   <span class="text-[9px] text-muted-foreground">
-                    Must match an exact entry in <strong>Meta Developer ➜ Facebook Login ➜ Valid OAuth Redirect URIs</strong>.
+                    {m.facebook_settings_redirect_uri_hint()}
                   </span>
                 </div>
               </div>
@@ -1020,43 +1021,43 @@
         <div class="flex flex-col gap-3 text-xs">
           <div class="flex flex-col gap-1.5">
             <label for="manual-page-id" class="text-xs font-medium text-foreground">
-              Page ID <span class="text-destructive">*</span>
+              {m.facebook_settings_manual_page_id_label()} <span class="text-destructive">*</span>
             </label>
             <Input
               id="manual-page-id"
               type="text"
               bind:value={manualPageId}
-              placeholder="e.g. 102938475610293"
+              placeholder={m.facebook_settings_manual_page_id_placeholder()}
               class="text-xs font-mono"
             />
           </div>
 
           <div class="flex flex-col gap-1.5">
             <label for="manual-page-name" class="text-xs font-medium text-foreground">
-              Page Name (Optional)
+              {m.facebook_settings_manual_page_name_label()}
             </label>
             <Input
               id="manual-page-name"
               type="text"
               bind:value={manualPageName}
-              placeholder="e.g. RustSale Support Fanpage"
+              placeholder={m.facebook_settings_manual_page_name_placeholder()}
               class="text-xs"
             />
           </div>
 
           <div class="flex flex-col gap-1.5">
             <label for="manual-token" class="text-xs font-medium text-foreground">
-              Page Access Token <span class="text-destructive">*</span>
+              {m.facebook_settings_manual_token_label()} <span class="text-destructive">*</span>
             </label>
             <Input
               id="manual-token"
               type="password"
               bind:value={manualAccessToken}
-              placeholder="EAAB..."
+              placeholder={m.facebook_settings_manual_token_placeholder()}
               class="text-xs font-mono"
             />
             <span class="text-[10px] text-muted-foreground">
-              Token will be securely encrypted using AES-256-GCM in your OS Keyring Token Vault.
+              {m.facebook_settings_manual_token_hint()}
             </span>
           </div>
         </div>
@@ -1065,7 +1066,7 @@
 
     <Dialog.Footer class="px-6 py-3 border-t border-border bg-muted/20 flex items-center justify-between shrink-0">
       <Button variant="outline" size="sm" onclick={() => (connectModalOpen = false)}>
-        Cancel
+        {m.common_cancel()}
       </Button>
       {#if connectTab === 'oauth'}
         <Button
@@ -1076,10 +1077,10 @@
         >
           {#if isSavingPages}
             <LoaderCircle class="size-3.5 animate-spin" />
-            Connecting...
+            {m.facebook_settings_connecting()}
           {:else}
             <Check class="size-3.5" />
-            Connect Selected Pages ({selectedPageIds.size})
+            {m.facebook_settings_connect_selected({ count: selectedPageIds.size })}
           {/if}
         </Button>
       {:else}
@@ -1091,10 +1092,10 @@
         >
           {#if isSavingPages}
             <LoaderCircle class="size-3.5 animate-spin" />
-            Connecting...
+            {m.facebook_settings_connecting()}
           {:else}
             <Check class="size-3.5" />
-            Save & Connect Page
+            {m.facebook_settings_save_connect_btn()}
           {/if}
         </Button>
       {/if}
@@ -1108,19 +1109,18 @@
     <Dialog.Header>
       <Dialog.Title class="text-sm font-semibold text-destructive flex items-center gap-2">
         <AlertCircle class="size-4" />
-        Disconnect Facebook Page
+        {m.facebook_settings_disconnect_modal_title()}
       </Dialog.Title>
       <Dialog.Description class="text-xs">
-        Are you sure you want to disconnect Page <strong>{pageToDelete?.pageName || pageToDelete?.pageId}</strong>?
-        This will remove the stored vault token and pause Messenger synchronization. Your conversation history, customer contacts, and CRM records will remain safely preserved.
+        {m.facebook_settings_disconnect_modal_desc({ name: pageToDelete?.pageName || pageToDelete?.pageId || '' })}
       </Dialog.Description>
     </Dialog.Header>
     <Dialog.Footer class="gap-2">
       <Button variant="outline" size="sm" onclick={() => (deleteConfirmOpen = false)}>
-        Cancel
+        {m.common_cancel()}
       </Button>
       <Button variant="destructive" size="sm" onclick={confirmDelete}>
-        Confirm Disconnect
+        {m.facebook_settings_confirm_disconnect_btn()}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>

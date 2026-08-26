@@ -100,10 +100,10 @@ describe('FacebookHub Component', () => {
       }
     });
 
-    expect(await screen.findByText('Chưa kết nối Facebook Fanpage')).toBeTruthy();
-    expect(screen.getByText(/Kết nối Fanpage của bạn trong mục Cài đặt Hệ thống/i)).toBeTruthy();
+    expect(await screen.findByText(/Chưa kết nối Facebook Fanpage|No Facebook Fanpage Connected/i)).toBeTruthy();
+    expect(screen.getByText(/Cài đặt Hệ thống|System Settings/i)).toBeTruthy();
 
-    const ctaBtn = screen.getByRole('button', { name: /Đi tới Cài đặt & Kết nối Fanpage/i });
+    const ctaBtn = screen.getByRole('button', { name: /Đi tới Cài đặt & Kết nối Fanpage|Go to Settings & Connect Fanpage/i });
     await fireEvent.click(ctaBtn);
     expect(openedSettings).toBe(true);
   });
@@ -158,7 +158,7 @@ describe('FacebookHub Component', () => {
       }
     });
 
-    expect(await screen.findByText(/Chọn Page:/i)).toBeTruthy();
+    expect(await screen.findByText(/Chọn Page|Select Page/i)).toBeTruthy();
     await waitFor(() => {
       expect(document.body.textContent).toContain('Token Active (Keyring Vault)');
     });
@@ -216,7 +216,7 @@ describe('FacebookHub Component', () => {
       }
     });
 
-    expect(await screen.findByText('Chưa kết nối Facebook Fanpage')).toBeTruthy();
+    expect(await screen.findByText(/Chưa kết nối Facebook Fanpage|No Facebook Fanpage Connected/i)).toBeTruthy();
 
     const scheduleCalls = invokedCommands.filter((c) => c.command === 'schedule_facebook_post');
     expect(scheduleCalls.length).toBe(0);
