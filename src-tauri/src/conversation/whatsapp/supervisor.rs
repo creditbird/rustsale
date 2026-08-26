@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +12,7 @@ use super::client::WhatsAppClient;
 use crate::conversation::events::ConversationEventPublisher;
 
 /// Represents a connected and enabled WhatsApp account in the local CRM.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectedWhatsAppAccount {
     pub id: i64,
     pub provider_account_key: String,
@@ -39,6 +40,11 @@ impl WhatsAppSupervisor {
             cancellation_token: CancellationToken::new(),
             service: std::sync::RwLock::new(None),
         }
+    }
+
+    /// Returns the database path.
+    pub fn db_path(&self) -> &str {
+        &self.db_path
     }
 
     /// Attaches the core `ConversationService` for outbox draining.

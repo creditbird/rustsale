@@ -67,10 +67,24 @@ impl ServiceHarness {
                 Arc::new(super::facebook::client::RealFacebookGraphClient::new()),
             ),
         );
+        let whatsapp_supervisor = Arc::new(
+            crate::conversation::whatsapp::supervisor::WhatsAppSupervisor::new(
+                self.path.to_str().unwrap().to_string(),
+                self.events.clone(),
+            ),
+        );
+        let sessions_dir = self.path.parent().unwrap().join("whatsapp-sessions-harness");
+        let whatsapp_login_manager = Arc::new(
+            crate::conversation::whatsapp::login::WhatsAppLoginManager::new_mock_with_dir(
+                sessions_dir,
+            ),
+        );
         super::commands::ConversationState {
             service,
             zalo_supervisor,
             facebook_supervisor,
+            whatsapp_supervisor,
+            whatsapp_login_manager,
         }
     }
 
@@ -2051,4 +2065,222 @@ async fn test_sync_facebook_conversations_command() {
     // With non-existent page_id, returns error
     let err = sync_facebook_conversations(state, Some("page_does_not_exist".to_string())).await;
     assert!(err.is_err());
+}
+
+#[tokio::test]
+async fn test_whatsapp_commands_lifecycle() {
+    use super::commands::{cancel_whatsapp_qr_login, start_whatsapp_qr_login, ConversationState};
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-wa-cmd1"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    let attempt_id = "wa-attempt-unit-1".to_string();
+    let start_res = start_whatsapp_qr_login(state.clone(), attempt_id.clone()).await;
+    assert!(start_res.is_ok());
+
+    let cancel_res = cancel_whatsapp_qr_login(state, attempt_id);
+    assert!(cancel_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_get_managed_whatsapp_accounts() {
+    use super::commands::{
+        disconnect_whatsapp_account, get_managed_whatsapp_accounts, ConversationState,
+    };
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-wa-cmd2"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    // Initial state: no accounts
+    let accounts = get_managed_whatsapp_accounts(state.clone()).unwrap();
+    assert_eq!(accounts.len(), 0);
+
+    // Seed a connected WhatsApp account
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts (
+            channel, provider_account_key, display_name, avatar_url,
+            enabled, connection_status, last_connected_at, created_at, updated_at
+         ) VALUES ('whatsapp', 'wa-acc-1', 'WhatsApp Business 1', NULL, 1, 'connected', ?1, ?1, ?1)",
+        rusqlite::params![now],
+    )
+    .unwrap();
+    let acc_id = conn.last_insert_rowid();
+
+    conn.execute(
+        "INSERT INTO whatsapp_sessions (
+            channel_account_id, account_key, phone_number, session_db_filename, is_valid,
+            last_connected_at, created_at, updated_at
+         ) VALUES (?1, 'wa-acc-1', '+84987654321', 'session_wa-acc-1.db', 1, ?2, ?2, ?2)",
+        rusqlite::params![acc_id, now],
+    )
+    .unwrap();
+
+    let accounts = get_managed_whatsapp_accounts(state.clone()).unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].id, acc_id);
+    assert_eq!(accounts[0].provider_account_key, "wa-acc-1");
+    assert_eq!(
+        accounts[0].display_name.as_deref(),
+        Some("WhatsApp Business 1")
+    );
+    assert_eq!(accounts[0].phone_number.as_deref(), Some("+84987654321"));
+
+    // Disconnect account
+    disconnect_whatsapp_account(state.clone(), acc_id).await.unwrap();
+
+    let accounts_after = get_managed_whatsapp_accounts(state).unwrap();
+    assert_eq!(accounts_after.len(), 0);
+}
+
+#[tokio::test]
+async fn test_create_and_manage_whatsapp_campaign() {
+    use super::commands::{
+        cancel_whatsapp_campaign, create_whatsapp_campaign, get_whatsapp_campaign,
+        get_whatsapp_campaign_recipients, list_whatsapp_campaigns, pause_whatsapp_campaign,
+        populate_whatsapp_campaign_recipients, resume_whatsapp_campaign, start_whatsapp_campaign,
+        ConversationState,
+    };
+    use crate::conversation::whatsapp::campaign::{CampaignRecipientInput, CreateCampaignRequest};
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-wa-cmd3"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    // 1. Create campaign
+    let req = CreateCampaignRequest {
+        name: "Q3 Promotional Campaign".to_string(),
+        template_id: None,
+        assigned_account_ids: vec![1, 2],
+        rate_limit_min_delay_secs: Some(5),
+        rate_limit_max_delay_secs: Some(15),
+        burst_limit_per_batch: Some(20),
+        burst_pause_secs: Some(45),
+        quiet_hours_enabled: Some(true),
+        quiet_hours_start: Some("22:00".to_string()),
+        quiet_hours_end: Some("07:30".to_string()),
+        timezone: Some("Asia/Ho_Chi_Minh".to_string()),
+    };
+    let campaign_id = create_whatsapp_campaign(state.clone(), req).unwrap();
+    assert!(campaign_id > 0);
+
+    // 2. Populate recipients
+    let recipients = vec![
+        CampaignRecipientInput {
+            lead_id: None,
+            recipient_phone_raw: "0912345678".to_string(),
+            template: Some("Hello {name}, welcome!".to_string()),
+            lead_vars: Some(std::collections::HashMap::from([(
+                "name".to_string(),
+                "Alice".to_string(),
+            )])),
+        },
+        CampaignRecipientInput {
+            lead_id: None,
+            recipient_phone_raw: "+84987654321".to_string(),
+            template: None,
+            lead_vars: None,
+        },
+    ];
+    let inserted = populate_whatsapp_campaign_recipients(
+        state.clone(),
+        campaign_id,
+        recipients,
+        Some("Default template {name}".to_string()),
+    )
+    .unwrap();
+    assert_eq!(inserted, 2);
+
+    // 3. Verify get_campaign (draft status)
+    let camp = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp.id, campaign_id);
+    assert_eq!(camp.name, "Q3 Promotional Campaign");
+    assert_eq!(camp.status, "draft");
+    assert_eq!(camp.total_recipients, 2);
+    assert_eq!(camp.assigned_account_ids, vec![1, 2]);
+
+    // 4. Start campaign -> transitions to queued
+    start_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    let camp_queued = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_queued.status, "queued");
+
+    // 5. Pause campaign -> transitions to paused
+    pause_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    let camp_paused = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_paused.status, "paused");
+
+    // 6. Resume campaign -> transitions to queued
+    resume_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    let camp_resumed = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_resumed.status, "queued");
+
+    // 7. Get recipients
+    let recs = get_whatsapp_campaign_recipients(state.clone(), campaign_id, Some(10), Some(0)).unwrap();
+    assert_eq!(recs.len(), 2);
+    assert_eq!(recs[0].status, "pending");
+    assert_eq!(recs[0].recipient_phone_e164, "84912345678");
+
+    // 8. List campaigns
+    let all_camps = list_whatsapp_campaigns(state.clone()).unwrap();
+    assert!(!all_camps.is_empty());
+    assert!(all_camps.iter().any(|c| c.id == campaign_id));
+
+    // 9. Cancel campaign -> transitions to cancelled
+    cancel_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    let camp_cancelled = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_cancelled.status, "cancelled");
 }

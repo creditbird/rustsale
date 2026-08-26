@@ -16,6 +16,8 @@ use super::types::{
 };
 
 use super::facebook::supervisor::FacebookMessengerSupervisor;
+use super::whatsapp::login::WhatsAppLoginManager;
+use super::whatsapp::supervisor::WhatsAppSupervisor;
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
 
@@ -23,6 +25,8 @@ pub struct ConversationState {
     pub service: Arc<ConversationService>,
     pub zalo_supervisor: Arc<ZaloSessionSupervisor>,
     pub facebook_supervisor: Arc<FacebookMessengerSupervisor>,
+    pub whatsapp_supervisor: Arc<WhatsAppSupervisor>,
+    pub whatsapp_login_manager: Arc<WhatsAppLoginManager>,
 }
 
 #[tauri::command]
@@ -577,4 +581,173 @@ pub fn ingest_facebook_webhook_events(
         .facebook_supervisor
         .ingest_webhook_events(page_id.trim(), &events)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn start_whatsapp_qr_login(
+    state: tauri::State<'_, ConversationState>,
+    attempt_id: String,
+) -> Result<(), String> {
+    state.whatsapp_login_manager.start_qr_login(&attempt_id).await
+}
+
+#[tauri::command]
+pub fn cancel_whatsapp_qr_login(
+    state: tauri::State<'_, ConversationState>,
+    attempt_id: String,
+) -> Result<(), String> {
+    state.whatsapp_login_manager.cancel_qr_login(&attempt_id)
+}
+
+#[tauri::command]
+pub fn get_managed_whatsapp_accounts(
+    state: tauri::State<'_, ConversationState>,
+) -> Result<Vec<crate::conversation::whatsapp::supervisor::ConnectedWhatsAppAccount>, String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    state
+        .whatsapp_supervisor
+        .get_connected_accounts(&conn)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn disconnect_whatsapp_account(
+    state: tauri::State<'_, ConversationState>,
+    channel_account_id: i64,
+) -> Result<(), String> {
+    state
+        .whatsapp_supervisor
+        .unregister_client(channel_account_id)
+        .await;
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE channel_accounts 
+         SET connection_status = 'disconnected', enabled = 0, updated_at = ?1 
+         WHERE id = ?2 AND channel = 'whatsapp'",
+        rusqlite::params![now, channel_account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE whatsapp_sessions 
+         SET is_valid = 0, updated_at = ?1 
+         WHERE channel_account_id = ?2",
+        rusqlite::params![now, channel_account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_whatsapp_campaign(
+    state: tauri::State<'_, ConversationState>,
+    req: crate::conversation::whatsapp::campaign::CreateCampaignRequest,
+) -> Result<i64, String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::create_campaign(&conn, &req)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn populate_whatsapp_campaign_recipients(
+    state: tauri::State<'_, ConversationState>,
+    campaign_id: i64,
+    recipients: Vec<crate::conversation::whatsapp::campaign::CampaignRecipientInput>,
+    template: Option<String>,
+) -> Result<usize, String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::populate_recipients(
+        &conn,
+        campaign_id,
+        &recipients,
+        template.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn start_whatsapp_campaign(
+    state: tauri::State<'_, ConversationState>,
+    campaign_id: i64,
+) -> Result<(), String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::start_campaign(&conn, campaign_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn pause_whatsapp_campaign(
+    state: tauri::State<'_, ConversationState>,
+    campaign_id: i64,
+) -> Result<(), String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::pause_campaign(&conn, campaign_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resume_whatsapp_campaign(
+    state: tauri::State<'_, ConversationState>,
+    campaign_id: i64,
+) -> Result<(), String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::resume_campaign(&conn, campaign_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_whatsapp_campaign(
+    state: tauri::State<'_, ConversationState>,
+    campaign_id: i64,
+) -> Result<(), String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::cancel_campaign(&conn, campaign_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_whatsapp_campaign(
+    state: tauri::State<'_, ConversationState>,
+    campaign_id: i64,
+) -> Result<crate::conversation::whatsapp::campaign::WhatsAppCampaignRecord, String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::get_campaign(&conn, campaign_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_whatsapp_campaigns(
+    state: tauri::State<'_, ConversationState>,
+) -> Result<Vec<crate::conversation::whatsapp::campaign::WhatsAppCampaignRecord>, String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::list_campaigns(&conn)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_whatsapp_campaign_recipients(
+    state: tauri::State<'_, ConversationState>,
+    campaign_id: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<crate::conversation::whatsapp::campaign::CampaignRecipientRecord>, String> {
+    let conn = crate::db::open_db_connection(state.service.repository.db_path())
+        .map_err(|e| e.to_string())?;
+    crate::conversation::whatsapp::campaign::get_campaign_recipients(
+        &conn,
+        campaign_id,
+        limit,
+        offset,
+    )
+    .map_err(|e| e.to_string())
 }

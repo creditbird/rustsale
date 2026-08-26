@@ -69,6 +69,34 @@ pub struct CampaignCounters {
     pub skipped_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WhatsAppCampaignRecord {
+    pub id: i64,
+    pub name: String,
+    pub template_id: Option<i64>,
+    pub status: String,
+    pub total_recipients: i64,
+    pub sent_count: i64,
+    pub delivered_count: i64,
+    pub read_count: i64,
+    pub failed_count: i64,
+    pub skipped_count: i64,
+    pub assigned_account_ids: Vec<i64>,
+    pub rate_limit_min_delay_secs: i64,
+    pub rate_limit_max_delay_secs: i64,
+    pub burst_limit_per_batch: i64,
+    pub burst_pause_secs: i64,
+    pub quiet_hours_enabled: bool,
+    pub quiet_hours_start: String,
+    pub quiet_hours_end: String,
+    pub timezone: String,
+    pub last_heartbeat_at: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Evaluates whether a given HH:MM timestamp falls within quiet hours,
 /// properly handling wrap-around midnight (e.g. 22:00 -> 07:30).
 pub fn is_in_quiet_hours(start_hhmm: &str, end_hhmm: &str, current_hhmm: &str) -> bool {
@@ -495,6 +523,18 @@ pub fn refresh_campaign_counters(
     })
 }
 
+/// Starts a campaign, moving it from draft or paused to queued status.
+pub fn start_campaign(conn: &rusqlite::Connection, campaign_id: i64) -> rusqlite::Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE whatsapp_outreach_campaigns 
+         SET status = 'queued', started_at = COALESCE(started_at, ?1), updated_at = ?1 
+         WHERE id = ?2 AND status IN ('draft', 'paused', 'queued')",
+        rusqlite::params![now, campaign_id],
+    )?;
+    Ok(())
+}
+
 /// Pauses an active or queued campaign.
 pub fn pause_campaign(conn: &rusqlite::Connection, campaign_id: i64) -> rusqlite::Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -536,6 +576,149 @@ pub fn cancel_campaign(conn: &rusqlite::Connection, campaign_id: i64) -> rusqlit
     )?;
     refresh_campaign_counters(conn, campaign_id)?;
     Ok(())
+}
+
+/// Fetches a WhatsApp campaign record by its ID.
+pub fn get_campaign(
+    conn: &rusqlite::Connection,
+    campaign_id: i64,
+) -> rusqlite::Result<WhatsAppCampaignRecord> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, template_id, status, total_recipients, sent_count, delivered_count,
+                read_count, failed_count, skipped_count, assigned_account_ids_json,
+                rate_limit_min_delay_secs, rate_limit_max_delay_secs, burst_limit_per_batch,
+                burst_pause_secs, quiet_hours_enabled, quiet_hours_start, quiet_hours_end,
+                timezone, last_heartbeat_at, started_at, completed_at, created_at, updated_at
+         FROM whatsapp_outreach_campaigns
+         WHERE id = ?1",
+    )?;
+    stmt.query_row(rusqlite::params![campaign_id], |r| {
+        let accounts_json: String = r.get(10)?;
+        let assigned_account_ids: Vec<i64> =
+            serde_json::from_str(&accounts_json).unwrap_or_default();
+        let quiet_hours_val: i64 = r.get(15)?;
+        Ok(WhatsAppCampaignRecord {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            template_id: r.get(2)?,
+            status: r.get(3)?,
+            total_recipients: r.get(4)?,
+            sent_count: r.get(5)?,
+            delivered_count: r.get(6)?,
+            read_count: r.get(7)?,
+            failed_count: r.get(8)?,
+            skipped_count: r.get(9)?,
+            assigned_account_ids,
+            rate_limit_min_delay_secs: r.get(11)?,
+            rate_limit_max_delay_secs: r.get(12)?,
+            burst_limit_per_batch: r.get(13)?,
+            burst_pause_secs: r.get(14)?,
+            quiet_hours_enabled: quiet_hours_val != 0,
+            quiet_hours_start: r.get(16)?,
+            quiet_hours_end: r.get(17)?,
+            timezone: r.get(18)?,
+            last_heartbeat_at: r.get(19)?,
+            started_at: r.get(20)?,
+            completed_at: r.get(21)?,
+            created_at: r.get(22)?,
+            updated_at: r.get(23)?,
+        })
+    })
+}
+
+/// Lists all WhatsApp outreach campaigns ordered by ID descending.
+pub fn list_campaigns(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<Vec<WhatsAppCampaignRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, template_id, status, total_recipients, sent_count, delivered_count,
+                read_count, failed_count, skipped_count, assigned_account_ids_json,
+                rate_limit_min_delay_secs, rate_limit_max_delay_secs, burst_limit_per_batch,
+                burst_pause_secs, quiet_hours_enabled, quiet_hours_start, quiet_hours_end,
+                timezone, last_heartbeat_at, started_at, completed_at, created_at, updated_at
+         FROM whatsapp_outreach_campaigns
+         ORDER BY id DESC",
+    )?;
+    let records = stmt
+        .query_map([], |r| {
+            let accounts_json: String = r.get(10)?;
+            let assigned_account_ids: Vec<i64> =
+                serde_json::from_str(&accounts_json).unwrap_or_default();
+            let quiet_hours_val: i64 = r.get(15)?;
+            Ok(WhatsAppCampaignRecord {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                template_id: r.get(2)?,
+                status: r.get(3)?,
+                total_recipients: r.get(4)?,
+                sent_count: r.get(5)?,
+                delivered_count: r.get(6)?,
+                read_count: r.get(7)?,
+                failed_count: r.get(8)?,
+                skipped_count: r.get(9)?,
+                assigned_account_ids,
+                rate_limit_min_delay_secs: r.get(11)?,
+                rate_limit_max_delay_secs: r.get(12)?,
+                burst_limit_per_batch: r.get(13)?,
+                burst_pause_secs: r.get(14)?,
+                quiet_hours_enabled: quiet_hours_val != 0,
+                quiet_hours_start: r.get(16)?,
+                quiet_hours_end: r.get(17)?,
+                timezone: r.get(18)?,
+                last_heartbeat_at: r.get(19)?,
+                started_at: r.get(20)?,
+                completed_at: r.get(21)?,
+                created_at: r.get(22)?,
+                updated_at: r.get(23)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(records)
+}
+
+/// Retrieves campaign recipient records with optional pagination.
+pub fn get_campaign_recipients(
+    conn: &rusqlite::Connection,
+    campaign_id: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> rusqlite::Result<Vec<CampaignRecipientRecord>> {
+    let limit = limit.unwrap_or(100).min(1000) as i64;
+    let offset = offset.unwrap_or(0) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT id, campaign_id, lead_id, recipient_phone_raw, recipient_phone_e164, recipient_jid,
+                assigned_channel_account_id, status, skip_reason, rendered_text, rendered_image_url,
+                message_id, outbox_job_id, attempt_count, last_attempt_at, last_error, created_at, updated_at
+         FROM whatsapp_campaign_recipients
+         WHERE campaign_id = ?1
+         ORDER BY id ASC
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let records = stmt
+        .query_map(rusqlite::params![campaign_id, limit, offset], |r| {
+            Ok(CampaignRecipientRecord {
+                id: r.get(0)?,
+                campaign_id: r.get(1)?,
+                lead_id: r.get(2)?,
+                recipient_phone_raw: r.get(3)?,
+                recipient_phone_e164: r.get(4)?,
+                recipient_jid: r.get(5)?,
+                assigned_channel_account_id: r.get(6)?,
+                status: r.get(7)?,
+                skip_reason: r.get(8)?,
+                rendered_text: r.get(9)?,
+                rendered_image_url: r.get(10)?,
+                message_id: r.get(11)?,
+                outbox_job_id: r.get(12)?,
+                attempt_count: r.get(13)?,
+                last_attempt_at: r.get(14)?,
+                last_error: r.get(15)?,
+                created_at: r.get(16)?,
+                updated_at: r.get(17)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(records)
 }
 
 /// Recovers an interrupted campaign after crash or application restart (REQ-WA-10).
