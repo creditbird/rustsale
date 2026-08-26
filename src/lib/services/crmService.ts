@@ -18,6 +18,7 @@ export interface Lead {
   zalo_status?: string | null;
   zalo_uid?: string | null;
   currency?: 'VND' | 'USD' | null;
+  category_id?: number | null;
 }
 
 export interface OutreachLeadFilters {

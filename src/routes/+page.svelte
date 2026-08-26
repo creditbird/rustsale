@@ -6,6 +6,7 @@
   import KanbanBoard from '$lib/components/KanbanBoard.svelte';
   import GoogleMapsScraper from '$lib/components/GoogleMapsScraper.svelte';
   import ZaloOutreach from '$lib/components/ZaloOutreach.svelte';
+  import WhatsAppOutreach from '$lib/components/WhatsAppOutreach.svelte';
   import EmailOutreach from '$lib/components/EmailOutreach.svelte';
   import CategoryManager from '$lib/components/CategoryManager.svelte';
   import ConversationWorkspace from '$lib/components/conversation/ConversationWorkspace.svelte';
@@ -42,6 +43,7 @@
     get conversation() { return { title: m.tab_conversation_title(), subtitle: m.tab_conversation_subtitle() }; },
     get facebook_hub() { return { title: m.tab_facebook_hub_title(), subtitle: m.tab_facebook_hub_subtitle() }; },
     get outreach() { return { title: m.tab_outreach_title(), subtitle: m.tab_outreach_subtitle() }; },
+    get whatsapp_outreach() { return { title: m.tab_whatsapp_outreach_title(), subtitle: m.tab_whatsapp_outreach_subtitle() }; },
     get email_outreach() { return { title: m.tab_email_outreach_title(), subtitle: m.tab_email_outreach_subtitle() }; },
     get pipeline() { return { title: m.tab_pipeline_title(), subtitle: m.tab_pipeline_subtitle() }; },
     get contacts() { return { title: m.tab_contacts_title(), subtitle: m.tab_contacts_subtitle() }; },
@@ -223,6 +225,8 @@
         <CategoryManager {activeTab} />
       {:else if activeTab === 'outreach'}
         <ZaloOutreach {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
+      {:else if activeTab === 'whatsapp_outreach'}
+        <WhatsAppOutreach {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       {:else if activeTab === 'email_outreach'}
         <EmailOutreach {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       {:else if activeTab === 'pipeline'}

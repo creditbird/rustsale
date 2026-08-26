@@ -170,3 +170,59 @@ export const getWhatsAppCampaignRecipients = (
     limit: limit ?? null,
     offset: offset ?? null
   });
+
+/**
+ * Parses single-level or nested Spintax syntax: `{Option A|Option B|Option C}`.
+ */
+export function parseSpintax(input: string): string {
+  let text = input;
+  const regex = /\{([^{}]+)\}/;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const options = match[1].split('|');
+    const chosen = options.length > 0 ? options[Math.floor(Math.random() * options.length)] : '';
+    text = text.slice(0, match.index) + chosen + text.slice(match.index + match[0].length);
+  }
+  return text;
+}
+
+/**
+ * Replaces lead variable tokens like `[name]`, `[phone]`, `[company]`, `[email]`, `[notes]`
+ * and evaluates Spintax `{Option 1|Option 2}` variations.
+ */
+export function renderSpintaxTemplate(
+  template: string,
+  leadVars: Record<string, string> = {}
+): string {
+  let text = template;
+  for (const [key, val] of Object.entries(leadVars)) {
+    const regex = new RegExp(`\\[${key}\\]`, 'gi');
+    text = text.replace(regex, val);
+  }
+  return parseSpintax(text);
+}
+
+/**
+ * Normalizes raw phone strings to standard E.164 (+<country_code><subscriber_number>).
+ */
+export function normalizeWhatsAppPhone(raw: string, defaultCountry: string = '84'): string | null {
+  const digits = raw.replace(/[^\d+]/g, '');
+  if (!digits) return null;
+
+  let cleaned = digits;
+  if (cleaned.startsWith('+')) {
+    cleaned = cleaned.slice(1);
+  } else if (cleaned.startsWith('00')) {
+    cleaned = cleaned.slice(2);
+  } else if (cleaned.startsWith('0')) {
+    cleaned = defaultCountry + cleaned.slice(1);
+  } else if (!cleaned.startsWith(defaultCountry) && cleaned.length <= 10) {
+    cleaned = defaultCountry + cleaned;
+  }
+
+  if (cleaned.length >= 8 && cleaned.length <= 15) {
+    return '+' + cleaned;
+  }
+  return null;
+}
+

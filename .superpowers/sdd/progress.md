@@ -1,22 +1,12 @@
-# Zalo Rich Chat Phase 2A Interactions Progress Ledger
+# WhatsApp Multi-Device Integration Progress Ledger
 
-- Task 0: Verify Phase 1 and Establish Baseline — [x] complete
-- Task 1: Capture the Phase 2A Provider Contract — [x] complete
-- Task 2: Extend Vendored Zalo Mutation Contracts — [x] complete
-- Task 3: Add Phase 2A Contracts, Capabilities, and Errors — [x] complete
-- Task 4: Add the Additive Phase 2A Migration — [x] complete
-- Task 5: Implement Quick Template Repository and Ranking — [x] complete
-- Task 6: Add Quick Template Service and Commands — [x] complete
-- Task 7: Normalize, Validate, and Project Mentions — [x] complete
-- Task 8: Send Group Mentions Through the Batch Worker — [x] complete
-- Task 9: Implement Reaction Ledger and Echo Reconciliation — [x] complete
-- Task 10: Add Reaction Provider Service and Command — [x] complete
-- Task 11: Enqueue Native Forward Operations Atomically — [x] complete
-- Task 12: Dispatch Forward Parts and Recalculate Status — [x] complete
-- Task 13: Register Commands and Startup Recovery — [x] complete
-- Task 14: Add Frontend Contracts and IPC Wrappers — [x] complete
-- Task 15: Build Quick Template State, Popup, and Manager — [x] complete
-- Task 16: Build Mention State, Popup, and Rendering — [x] complete
-- Task 17: Add Reaction Write UI — [x] complete
-- Task 18: Add Native Forward Dialog and Target Results — [x] complete
-- Task 19: Full Verification and Live Gate — [ ] automated gates complete; live Heart and group-text Forward verified; 8 cases not run and 1 case partial
+- [x] Task 1: Dependencies & WhatsApp Phone Normalization Module (commits 20882e6..2e0d49d, review clean)
+- [x] Task 2: Database Schema & Migration for WhatsApp & Suppression List (commits 2e0d49d..b058776, review clean)
+- [x] Task 3: WhatsApp Login Manager & Multi-Device QR Pairing Engine (commits b058776..671bf53, review clean)
+- [x] Task 4: WhatsApp Normalizer, Inbound Message Ingestion & Lead Linker (commits 671bf53..2555552, review clean)
+- [x] Task 5: WhatsApp Supervisor & Concrete Outbox Worker (commits 2555552..dab188d, review clean)
+- [x] Task 6: Outreach Engine, Suppression Enforcement, Rate Limits & Quiet Hours (commits dab188d..d8b661f, review clean)
+- [x] Task 7: WhatsApp Tauri IPC Commands & Engine Registration (commits d8b661f..8092c3f, review clean)
+- [x] Task 8: WhatsApp Account Settings & QR Pairing UI (commits 8092c3f..03dc864, review clean)
+- [x] Task 9: WhatsApp Outreach Dashboard & Campaign UI (commits 03dc864..pending, review clean)
+- [ ] Task 10: Unified Conversation Workspace Integration & Full Verification
