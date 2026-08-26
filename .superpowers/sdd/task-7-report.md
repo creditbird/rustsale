@@ -1,38 +1,57 @@
-# Task 7 Completion Report: Normalize, Validate, and Project Mentions
+# Task 7: WhatsApp Tauri IPC Commands & Engine Registration Report
 
-## Overview
-Task 7 of Zalo Rich Chat Phase 2A has been fully implemented, tested, and verified according to TDD principles and project rules.
+## 1. Overview
+Successfully implemented and registered WhatsApp native Tauri IPC commands and wired the `WhatsAppSupervisor` and `WhatsAppLoginManager` into the app lifecycle and `ConversationState`.
 
-## Created Files
-- [`src-tauri/src/conversation/mentions.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/mentions.rs)
-  - Implemented `utf16_len(s: &str) -> usize` and `utf16_slice(s: &str, start: usize, len: usize) -> Option<String>`.
-  - Implemented `validate_mentions(text: &str, inputs: &[ConversationMentionInput], participants: &[MentionParticipant]) -> ConversationResult<Vec<ResolvedConversationMention>>`.
-  - Enforced validation rules: UTF-16 bounds, maximum 20 mentions per message, sorted & non-overlapping ranges, control character rejection, display name length <= 100, active group participant resolution, and rejection of direct conversations.
-- [`src-tauri/src/conversation/mentions_test.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/mentions_test.rs)
-  - Added unit tests for UTF-16 helpers (ASCII, combining characters, precomposed Vietnamese, emoji surrogate pairs, multiple tokens).
-  - Added unit tests verifying active group participant requirements and direct conversation mention rejection.
-  - Added unit test for backend resolution of frontend identity IDs to provider external UIDs.
+## 2. Changes Made
+1. **`src-tauri/src/conversation/commands.rs`**:
+   - Extended `ConversationState` with:
+     - `pub whatsapp_supervisor: Arc<crate::conversation::whatsapp::supervisor::WhatsAppSupervisor>`
+     - `pub whatsapp_login_manager: Arc<crate::conversation::whatsapp::login::WhatsAppLoginManager>`
+   - Implemented 13 Tauri commands:
+     - `start_whatsapp_qr_login(state, attempt_id: String) -> Result<(), String>`
+     - `cancel_whatsapp_qr_login(state, attempt_id: String) -> Result<(), String>`
+     - `get_managed_whatsapp_accounts(state) -> Result<Vec<ConnectedWhatsAppAccount>, String>`
+     - `disconnect_whatsapp_account(state, channel_account_id: i64) -> Result<(), String>`
+     - `create_whatsapp_campaign(state, req: CreateCampaignRequest) -> Result<i64, String>`
+     - `populate_whatsapp_campaign_recipients(state, campaign_id: i64, recipients: Vec<CampaignRecipientInput>, template: Option<String>) -> Result<usize, String>`
+     - `start_whatsapp_campaign(state, campaign_id: i64) -> Result<(), String>`
+     - `pause_whatsapp_campaign(state, campaign_id: i64) -> Result<(), String>`
+     - `resume_whatsapp_campaign(state, campaign_id: i64) -> Result<(), String>`
+     - `cancel_whatsapp_campaign(state, campaign_id: i64) -> Result<(), String>`
+     - `get_whatsapp_campaign(state, campaign_id: i64) -> Result<WhatsAppCampaignRecord, String>`
+     - `list_whatsapp_campaigns(state) -> Result<Vec<WhatsAppCampaignRecord>, String>`
+     - `get_whatsapp_campaign_recipients(state, campaign_id: i64, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<CampaignRecipientRecord>, String>`
 
-## Modified Files
-- [`src-tauri/src/conversation/mod.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/mod.rs)
-  - Registered `pub mod mentions;` and `mod mentions_test;`.
-- [`src-tauri/src/conversation/repository.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs)
-  - Added `NormalizedMention` struct and `mentions: Vec<NormalizedMention>` field to `NormalizedMessage`.
-  - Implemented `save_message_mentions_tx` helper to persist and replace rows in `message_mentions` table.
-  - Updated `apply_normalized_message` to process mentions during message insertion and authoritative echo updates.
-- [`src-tauri/src/conversation/repository_test.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs)
-  - Added unit tests for mention persistence, upsert idempotency (`mention_incoming_mentions_upsert_without_duplicates`), timeline message projection (`mention_message_projection_includes_mentions`), and authoritative echo replacement of stale mentions (`mention_authoritative_echo_replaces_stale_mentions`).
-- [`src-tauri/src/conversation/projection.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/projection.rs)
-  - Updated `hydrate_messages` to bulk hydrate `mentions: Vec<ConversationMention>` in timeline queries using a single SQL query (no N+1).
-- [`src-tauri/src/conversation/zalo/normalizer.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/zalo/normalizer.rs)
-  - Added `extract_zalo_mentions` to normalize inbound Zalo group message mentions into `NormalizedMention` structs.
-- [`src-tauri/src/conversation/zalo/normalizer_test.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/zalo/normalizer_test.rs)
-  - Added `mention_inbound_group_message_normalizes_mentions` test to verify inbound Zalo mention normalization.
+2. **`src-tauri/src/conversation/whatsapp/campaign.rs`**:
+   - Added `WhatsAppCampaignRecord` struct deriving `Debug, Clone, PartialEq, Eq, Serialize, Deserialize`.
+   - Implemented `start_campaign`, `get_campaign`, `list_campaigns`, and `get_campaign_recipients`.
 
-## Verification Results
-- **Mention unit test suite**:
-  `cargo test --manifest-path src-tauri/Cargo.toml mention_`
-  Result: **9 passed, 0 failed**.
-- **Full conversation module test suite**:
-  `cargo test --manifest-path src-tauri/Cargo.toml conversation::`
-  Result: **153 passed, 0 failed, 1 ignored**.
+3. **`src-tauri/src/conversation/whatsapp/supervisor.rs`**:
+   - Added `Serialize, Deserialize` to `ConnectedWhatsAppAccount`.
+   - Added `db_path(&self) -> &str` accessor on `WhatsAppSupervisor`.
+
+4. **`src-tauri/src/lib.rs`**:
+   - Initialized `whatsapp_supervisor` and `whatsapp_login_manager` in setup hook.
+   - Attached `whatsapp_supervisor.with_service(conversation_service.clone())`.
+   - Added background supervisor polling task `startup_wa_supervisor.run_loop(Duration::from_secs(60))`.
+   - Registered all 13 WhatsApp commands in `tauri::generate_handler![...]`.
+
+5. **`src-tauri/src/conversation/commands_test.rs`**:
+   - Updated `ServiceHarness::create_conv_state` to populate `whatsapp_supervisor` and `whatsapp_login_manager`.
+   - Added comprehensive tests:
+     - `test_whatsapp_commands_lifecycle`: tests QR login initiation and cancellation.
+     - `test_get_managed_whatsapp_accounts`: tests listing connected accounts and disconnecting accounts.
+     - `test_create_and_manage_whatsapp_campaign`: tests campaign creation, recipient population, start/pause/resume/cancel lifecycle, recipient inspection, and listing.
+
+## 3. Verification Evidence
+- **TDD Red Phase**: Confirmed compilation failure prior to command implementation (`ConversationState` missing fields and unresolved imports).
+- **TDD Green Phase**: `cargo test --manifest-path src-tauri/Cargo.toml --lib conversation::commands_test` passed (33 passed, 0 failed).
+- **Full Rust Workspace**: `cargo test --manifest-path src-tauri/Cargo.toml --lib` passed (733 passed, 0 failed, 1 ignored).
+- **Frontend Test Suite**: `bun test` passed (570 passed, 0 failed, 1 skipped across 66 files).
+- **Svelte / TypeScript Checks**: `bun run check` passed (0 errors, 6 warnings in 3 files).
+- **GitNexus Graph Sync**: Re-indexed successfully with `bunx gitnexus analyze` (7,186 nodes, 18,269 edges).
+
+## 4. Git Commit
+- **Commit**: `8092c3f`
+- **Message**: `feat(whatsapp): register Tauri IPC commands for WhatsApp`

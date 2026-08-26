@@ -1,45 +1,40 @@
-# Task 3 Report: Add Phase 2A Contracts, Capabilities, and Errors
+# Task 3 Report: WhatsApp Session Store & QR Login Manager
 
 ## Summary
-Task 3 of Zalo Rich Chat Phase 2A has been successfully implemented using Test-Driven Development (TDD) and verified with the full Rust conversation test suite.
+Implemented Task 3 for WhatsApp integration: `WhatsAppLoginManager` providing correlated login attempt tracking, isolated session file sandboxing (`temp_<attempt_id>.db` -> `session_<account_key>.db`), QR event emission with sequencing/expiry, asynchronous task cancellation with immediate temp file cleanup, atomic CRM database finalization (`channel_accounts` and `whatsapp_sessions`), and comprehensive mock testing capabilities.
 
-## Summary of Changes
+## Changes
+- **Created**: [`src-tauri/src/conversation/whatsapp/login.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/login.rs)
+  - `WhatsAppLoginManager`: Manages concurrent login attempts in thread-safe state map (`Arc<Mutex<HashMap<String, LoginAttemptState>>>`).
+  - Session Sandboxing: Generates isolated session databases (`temp_<attempt_id>.db`) during pairing, preventing multi-account session collisions.
+  - Event Stream & Tauri Emission: Dispatches `whatsapp-qr-code`, `whatsapp-login-success`, and `whatsapp-login-error` events via internal broadcast channel and Tauri `AppHandle`.
+  - Cancellation & Resource Cleanup: `cancel_qr_login` immediately signals `CancellationToken`, aborts background tasks, and purges temp `.db`, `.db-wal`, and `.db-shm` files from disk.
+  - Success Finalization: `finalize_login_success` atomically renames temporary session files to `session_<account_key>.db` and executes transactional upsert into `channel_accounts` and `whatsapp_sessions`.
+  - Error Handling: `handle_login_error` cleans up active attempt resources and emits structured failure payloads.
+  - Mock Capabilities: `new_mock()`, `new_mock_with_dir()`, `start_mock_login()`, and `emit_mock_qr()` for deterministic testing without external network dependencies.
+- **Created**: [`src-tauri/src/conversation/whatsapp/login_test.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/login_test.rs)
+  - Added comprehensive test suite:
+    - `test_login_attempt_cancellation`: Verifies attempt activation and immediate temp DB deletion upon cancel.
+    - `test_login_attempt_qr_emission`: Validates QR code payload formatting, sequence incrementing, and timeout metadata.
+    - `test_login_attempt_finalize_success`: Validates atomic DB rename, SQLite transaction commit in `channel_accounts` & `whatsapp_sessions`, and success event emission.
+    - `test_login_attempt_error_cleanup`: Verifies cleanup and event delivery on failure.
+    - `test_multiple_concurrent_login_attempts_isolation`: Tests multiple active attempts simultaneously without cross-talk or file conflicts.
+    - `test_finalize_login_upsert_existing_account`: Verifies idempotent account re-pairing and updating metadata.
+- **Modified**: [`src-tauri/src/conversation/whatsapp/mod.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/mod.rs)
+  - Exported `pub mod login;` and registered `#[cfg(test)] mod login_test;`.
 
-### 1. Extended Domain Contracts & Types (`src-tauri/src/conversation/types.rs`)
-- Added `ConversationReactionCode` enum (`Heart`, `Like`, `Haha`, `Wow`, `Cry`, `Angry`) with `snake_case` serde serialization.
-- Added Mentions domain types: `ConversationMentionInput`, `ConversationMention`, `ConversationMentionCandidate`, and `ConversationMentionCapabilities`.
-- Added Reactions mutation contracts: `SetConversationReactionRequest`, `ReactionMutationStatus`, `ConversationReactionMutationResult`, and `ConversationReactionCapabilities`.
-- Added Message Forwarding contracts: `ForwardConversationMessageRequest`, `ForwardOperationStatus`, `ForwardTargetStatus`, `ConversationForwardTargetResult`, `ForwardConversationMessageResult`, and `ConversationForwardCapabilities`.
-- Added Quick Templates contracts: `ConversationQuickTemplate`, `CreateConversationQuickTemplateRequest`, `UpdateConversationQuickTemplateRequest`, `ListConversationQuickTemplatesRequest`, `DeleteConversationQuickTemplateRequest`, `MarkConversationQuickTemplateUsedRequest`, and `ConversationQuickTemplateCapabilities`.
-- Extended `ConversationCapabilities` with `reactions`, `forward`, `mentions`, and `quick_templates`.
-  - `ConversationCapabilities::zalo_phase_one()` exposes 6 reaction codes, max 10 forward targets, max 20 mentions per message, and max 500 templates.
-  - `ConversationCapabilities::text_only()` exposes none / disabled for all Phase 2A capabilities.
-- Extended `ConversationMessage` with `mentions: Vec<ConversationMention>` and `actions: ConversationMessageActions` (with `forward`, `react`, `recall`, `reply`).
-- Extended `ConversationSendPartContent::Text` with `mentions: Vec<ConversationMentionInput>` and added `ConversationSendPartContent::Forward` variant for internal outbox processing.
+## Verification & TDD Evidence
+1. **RED phase**:
+   - Ran `cargo test --lib conversation::whatsapp::login_test` before implementation.
+   - Result: Failed with unresolved types (`WhatsAppLoginManager`, `WhatsAppLoginEvent`) as expected.
+2. **GREEN phase**:
+   - Ran `cargo test --lib conversation::whatsapp::login_test`.
+   - Result: 6 passed (cancellation, qr emission, finalize success, error cleanup, concurrent isolation, upsert idempotency).
+3. **Module & Full Regression Suite**:
+   - Ran `cargo test --lib conversation::whatsapp::`: 17 passed, 0 failed.
+   - Ran `cargo test --lib conversation::`: 375 passed, 0 failed, 1 ignored (live network probe).
+4. **GitNexus Scope Analysis**:
+   - Ran `gitnexus_detect_changes(repo: "RustSale_v2")`: Confirmed 0 affected processes / clean low-risk surface.
 
-### 2. Extended Error Codes (`src-tauri/src/conversation/error.rs`)
-Added 13 new `ConversationErrorCode` variants with `snake_case` serialization mapping:
-- `ReactionNotSupported` (`"reaction_not_supported"`)
-- `ReactionRemovalNotVerified` (`"reaction_removal_not_verified"`)
-- `ReactionDeliveryUnknown` (`"reaction_delivery_unknown"`)
-- `ForwardNotSupported` (`"forward_not_supported"`)
-- `ForwardSourceMissingProviderIds` (`"forward_source_missing_provider_ids"`)
-- `ForwardTargetAccountMismatch` (`"forward_target_account_mismatch"`)
-- `ForwardTargetLimitExceeded` (`"forward_target_limit_exceeded"`)
-- `ForwardDeliveryUnknown` (`"forward_delivery_unknown"`)
-- `TemplateLimitExceeded` (`"template_limit_exceeded"`)
-- `TemplateShortcutConflict` (`"template_shortcut_conflict"`)
-- `InvalidMentionRange` (`"invalid_mention_range"`)
-- `MentionParticipantNotFound` (`"mention_participant_not_found"`)
-- `MentionDirectConversationUnsupported` (`"mention_direct_conversation_unsupported"`)
-
-### 3. Extended Provider Adapter Interfaces (`src-tauri/src/conversation/adapter.rs`)
-- Added `ProviderReactionRequest`, `ProviderReactionResult`, `ProviderForwardRequest`, and `ProviderForwardResult`.
-- Extended `ChannelSender` trait with default async methods `set_reaction` and `forward_message` returning unsupported error for non-Zalo/mock adapters.
-
-### 4. Verification & Testing
-- **Contract Tests**: Added `phase2a_contract_capabilities` and `phase2a_contract_serialization` tests to `types.rs`.
-- **TDD Failure Check**: Confirmed build failure prior to type definitions.
-- **Contract Test Suite**: `cargo test --manifest-path src-tauri/Cargo.toml phase2a_contract` passed 2/2 tests.
-- **Full Conversation Suite**: `cargo test --manifest-path src-tauri/Cargo.toml conversation::` passed 126/126 tests cleanly.
-- **GitNexus Scope Verification**: Ran `gitnexus_detect_changes` to verify affected scope.
+## Commits
+- `c470b5d`: `feat(whatsapp): implement QR pairing manager with attempt correlation`

@@ -39,7 +39,10 @@ async fn test_login_attempt_cancellation() {
 
     // Ensure temporary session DB file exists
     let temp_db_path = manager.get_temp_db_path(attempt_id);
-    assert!(temp_db_path.exists(), "temp db file should exist while active");
+    assert!(
+        temp_db_path.exists(),
+        "temp db file should exist while active"
+    );
 
     manager.cancel_qr_login(attempt_id).unwrap();
     assert!(
@@ -272,7 +275,10 @@ async fn test_finalize_login_upsert_existing_account() {
         )
         .unwrap();
 
-    assert_eq!(account_id_1, account_id_2, "account id should remain the same on upsert");
+    assert_eq!(
+        account_id_1, account_id_2,
+        "account id should remain the same on upsert"
+    );
 
     let (display_name, lid, avatar): (Option<String>, Option<String>, Option<String>) = conn
         .query_row(

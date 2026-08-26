@@ -79,7 +79,7 @@ fn test_should_suppress_notification_when_focused() {
 #[test]
 fn test_should_suppress_notification_when_dnd_or_disabled() {
     let manager = NotificationManager::default();
-    
+
     // Default: not suppressed
     assert!(!manager.should_suppress(1, false));
 
@@ -100,13 +100,13 @@ fn test_should_suppress_notification_when_dnd_or_disabled() {
         mute_groups: true,
     });
     assert!(!manager.should_suppress(1, false)); // Direct chat is not suppressed
-    assert!(manager.should_suppress(1, true));  // Group chat is suppressed
+    assert!(manager.should_suppress(1, true)); // Group chat is suppressed
 }
 
 #[test]
 fn test_rate_limiting_debounces_rapid_burst() {
     let manager = NotificationManager::default();
-    
+
     // First message should be allowed
     assert!(manager.check_and_record_rate_limit(100));
 

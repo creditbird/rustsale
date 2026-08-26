@@ -5346,7 +5346,8 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
         conn.execute(
             "INSERT INTO leads (id, name, phone) VALUES (?1, ?2, ?3)",
             params![i, format!("Customer {i}"), format!("0901234{i:03}")],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO channel_identities (id, lead_id, channel, channel_account_id, identity_namespace, external_id, display_name, avatar_url, created_at, updated_at)
@@ -5369,7 +5370,11 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
         for m in 1..=5 {
             let msg_id = (i - 1) * 5 + m;
             let dir = if m % 2 == 0 { "outbound" } else { "inbound" };
-            let status = if dir == "inbound" && m == 5 { "received" } else { "read" };
+            let status = if dir == "inbound" && m == 5 {
+                "received"
+            } else {
+                "read"
+            };
             conn.execute(
                 "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, provider_timestamp, ingested_at, status)
                  VALUES (?1, ?2, ?3, ?4, 'text', ?5, '2026-08-01T12:00:00Z', '2026-08-01T12:00:00Z', ?6)",
@@ -5441,7 +5446,11 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
     let items = harness.repository.list_inbox().unwrap();
     let duration = start.elapsed();
 
-    println!("list_inbox() returned {} items in {:?}", items.len(), duration);
+    println!(
+        "list_inbox() returned {} items in {:?}",
+        items.len(),
+        duration
+    );
 
     // Total items = 100 customer leads + 50 unknown + 50 groups = 200 items
     assert_eq!(items.len(), 200);
@@ -5450,8 +5459,14 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
     let customer_item = items.iter().find(|it| it.key == "lead:1").unwrap();
     assert_eq!(customer_item.kind, InboxItemKind::Customer);
     assert_eq!(customer_item.title, "Customer 1");
-    assert_eq!(customer_item.avatar_url, Some("https://avatar.example.com/1.jpg".to_string()));
-    assert_eq!(customer_item.last_message_preview, Some("Msg 5 for lead 1".to_string()));
+    assert_eq!(
+        customer_item.avatar_url,
+        Some("https://avatar.example.com/1.jpg".to_string())
+    );
+    assert_eq!(
+        customer_item.last_message_preview,
+        Some("Msg 5 for lead 1".to_string())
+    );
     assert_eq!(customer_item.channels[0].channel, Channel::Zalo);
     assert_eq!(customer_item.channels[0].message_count, 5);
     assert_eq!(customer_item.reply_targets.len(), 1);
@@ -5460,10 +5475,16 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
     let unknown_item = items.iter().find(|it| it.key == "identity:101").unwrap();
     assert_eq!(unknown_item.kind, InboxItemKind::Unknown);
     assert_eq!(unknown_item.title, "Unknown Person 101");
-    assert_eq!(unknown_item.last_message_preview, Some("Hello from unknown 101".to_string()));
+    assert_eq!(
+        unknown_item.last_message_preview,
+        Some("Hello from unknown 101".to_string())
+    );
 
     // Verify Group items
-    let group_item = items.iter().find(|it| it.key == "conversation:151").unwrap();
+    let group_item = items
+        .iter()
+        .find(|it| it.key == "conversation:151")
+        .unwrap();
     assert_eq!(group_item.kind, InboxItemKind::Group);
     assert_eq!(group_item.title, "Group Chat 151");
     assert_eq!(group_item.participant_count, 3);
@@ -5471,5 +5492,9 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
     assert_eq!(group_item.participants[0].participant_role, "admin");
 
     // Performance assertion: 200 items with ~600 messages must load in under 100ms in debug mode
-    assert!(duration.as_millis() < 100, "list_inbox took too long: {:?}", duration);
+    assert!(
+        duration.as_millis() < 100,
+        "list_inbox took too long: {:?}",
+        duration
+    );
 }

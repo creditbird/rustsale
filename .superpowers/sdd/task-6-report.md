@@ -1,44 +1,45 @@
-# Task 6 Report - Quick Template Service and Commands
+# Task 6 Implementation Report: WhatsApp Campaign Engine, Suppression List & Spintax
 
-## Executive Summary
-Task 6 of Zalo Rich Chat Phase 2A has been successfully implemented using Test-Driven Development (TDD). The `ConversationService` was extended to delegate quick template operations to `QuickTemplateRepository`, 5 Tauri commands were exposed and registered, and unit tests were added to verify all command operations and error conditions.
+**Status:** VERIFIED READY
 
-## Modifications Summary
+## 1. Scope
+- **Requirement IDs delivered:**
+  - `REQ-WA-SPINTAX`: Implemented recursive/nested Spintax parser `parse_spintax` and template variable renderer `render_template` supporting case-insensitive keys (`[name]`, `[phone]`, `[company]`, `[email]`, `[address]`, `[notes]`, `[title]`, etc.).
+  - `REQ-WA-SUPPRESSION`: Integrated suppression list querying against `contact_suppression_list` table for channel `'whatsapp'` with E.164 and local phone matching.
+  - `REQ-WA-QUIET-HOURS`: Implemented quiet hours evaluator `is_in_quiet_hours` handling midnight wrap-around boundaries (e.g. 22:00 -> 07:30).
+  - `REQ-WA-CAMPAIGN-ENGINE`: Implemented `WhatsAppCampaignEngine` and database lifecycle methods (`create_campaign`, `populate_recipients`, `claim_next_recipients`, `update_recipient_status`, `refresh_campaign_counters`, `pause_campaign`, `resume_campaign`, `cancel_campaign`).
+  - `REQ-WA-10`: Interrupted campaign lease recovery (`recover_interrupted_campaign`) restoring dangling `running` recipients to `pending` without duplication.
+- **Files Created:**
+  - `src-tauri/src/conversation/whatsapp/spintax.rs`
+  - `src-tauri/src/conversation/whatsapp/spintax_test.rs`
+  - `src-tauri/src/conversation/whatsapp/campaign.rs`
+  - `src-tauri/src/conversation/whatsapp/campaign_test.rs`
+- **Files Modified:**
+  - `src-tauri/src/conversation/whatsapp/mod.rs`
 
-### 1. `src-tauri/src/conversation/repository.rs`
-- Exposed `pub fn db_path(&self) -> &str` on `ConversationRepository` so `ConversationService` can initialize `QuickTemplateRepository`.
+## 2. Invariants & Enforcements
+- **Authoritative Invariants:**
+  - Suppression lists are enforced directly at the pre-dispatch eligibility check and recipient population layers. Suppressed numbers cannot be marked `pending` or claimed by dispatch workers.
+  - Quiet hours evaluation accurately calculates time offsets across the midnight boundary (24h clock) and treats exact boundary end times as active.
+  - Spintax parser processes nested curly braces `{A|{B|C}}` iteratively from innermost to outermost and handles malformed/unbalanced braces without panicking or hanging.
+  - Template variable replacement is case-insensitive, preserving unmatched placeholders without data corruption.
+  - Interrupted campaign recovery resets recipients with unallocated outbox messages back to `pending`, avoiding duplicate message dispatch.
 
-### 2. `src-tauri/src/conversation/service.rs`
-- Added `pub quick_templates: QuickTemplateRepository` field to `ConversationService`.
-- Instantiated `QuickTemplateRepository::new(repository.db_path())` inside `ConversationService::new`.
-- Implemented delegation methods:
-  - `list_quick_templates(&self, request: ListConversationQuickTemplatesRequest) -> ConversationResult<Vec<ConversationQuickTemplate>>`
-  - `create_quick_template(&self, request: CreateConversationQuickTemplateRequest) -> ConversationResult<ConversationQuickTemplate>`
-  - `update_quick_template(&self, request: UpdateConversationQuickTemplateRequest) -> ConversationResult<ConversationQuickTemplate>`
-  - `delete_quick_template(&self, request: DeleteConversationQuickTemplateRequest) -> ConversationResult<()>`
-  - `mark_quick_template_used(&self, request: MarkConversationQuickTemplateUsedRequest) -> ConversationResult<()>`
+## 3. Evidence Ledger
+- `E2 / E3 Unit & Integration Tests (whatsapp)`:
+  - `cargo test --lib conversation::whatsapp::` -> 46 passed; 0 failed.
+- `E3 Full Backend Test Suite`:
+  - `cargo test --lib` -> 730 passed; 0 failed; 1 ignored.
+- `E2 Frontend Test Suite`:
+  - `bun test` -> 570 passed; 1 skipped; 0 failed.
+- `E1 Type & Linter Checks`:
+  - `bun run check` -> 0 errors.
+  - `cargo fmt --check` -> Clean, formatted.
 
-### 3. `src-tauri/src/conversation/commands.rs` & `src-tauri/src/lib.rs`
-- Added 5 Tauri command wrappers returning `Result<T, ConversationCommandError>`:
-  - `list_conversation_quick_templates`
-  - `create_conversation_quick_template`
-  - `update_conversation_quick_template`
-  - `delete_conversation_quick_template`
-  - `mark_conversation_quick_template_used`
-- Registered all 5 commands in Tauri `invoke_handler!` array in `lib.rs`.
+## 4. GitNexus Impact & Changes
+- Modified symbols: `conversation::whatsapp::*`
+- Newly exported modules: `spintax`, `campaign`
+- Git commit: `d8b661f feat(whatsapp): implement campaign engine, spintax, and suppression checking`
 
-### 4. `src-tauri/src/conversation/commands_test.rs`
-- Implemented 5 unit tests for command layer:
-  - `quick_template_command_list_active_and_all`: Verifies listing active templates and filtering by category & search query.
-  - `quick_template_command_create_success_and_conflict`: Verifies creating templates with shortcut normalization and error handling on duplicate shortcut conflicts.
-  - `quick_template_command_update_validation`: Verifies updating template fields and validation error handling.
-  - `quick_template_command_delete_success`: Verifies soft-deleting active templates and error handling on non-existent template deletion.
-  - `quick_template_command_mark_used_updates_usage`: Verifies usage counter increment and timestamp update on template usage.
-
-## Test Results
-- Command test run: `cargo test --manifest-path src-tauri/Cargo.toml quick_template_command_` passed (5 passed, 0 failed).
-- Full conversation test suite: `cargo test --manifest-path src-tauri/Cargo.toml conversation::` passed (147 passed, 0 failed).
-- Full repository test suite: `cargo test --manifest-path src-tauri/Cargo.toml --lib` passed (327 passed, 0 failed).
-
-## Conclusion
-Task 6 is complete, fully tested, and verified.
+## 5. Residual Risk
+- None. All requirements and invariant test cases verified green.

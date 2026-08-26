@@ -20,7 +20,14 @@ pub fn normalize_e164(raw: &str, default_country: Option<&str>) -> Option<String
 
     // Check for invalid characters
     for c in content.chars() {
-        if !c.is_ascii_digit() && c != ' ' && c != '-' && c != '(' && c != ')' && c != '.' && c != '/' {
+        if !c.is_ascii_digit()
+            && c != ' '
+            && c != '-'
+            && c != '('
+            && c != ')'
+            && c != '.'
+            && c != '/'
+        {
             return None;
         }
     }
@@ -64,7 +71,10 @@ pub fn normalize_e164(raw: &str, default_country: Option<&str>) -> Option<String
     };
 
     // E.164 length constraint: 7 to 15 digits
-    if final_digits.len() >= 7 && final_digits.len() <= 15 && final_digits.chars().all(|c| c.is_ascii_digit()) {
+    if final_digits.len() >= 7
+        && final_digits.len() <= 15
+        && final_digits.chars().all(|c| c.is_ascii_digit())
+    {
         Some(final_digits)
     } else {
         None

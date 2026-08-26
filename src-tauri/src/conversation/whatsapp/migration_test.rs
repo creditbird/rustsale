@@ -64,7 +64,10 @@ fn test_whatsapp_sessions_constraints() {
          )",
         [],
     );
-    assert!(dup_key.is_err(), "Duplicate account_key must violate unique constraint");
+    assert!(
+        dup_key.is_err(),
+        "Duplicate account_key must violate unique constraint"
+    );
 
     // Invalid is_valid value should fail CHECK constraint
     let invalid_check = conn.execute(
@@ -75,11 +78,17 @@ fn test_whatsapp_sessions_constraints() {
          )",
         [],
     );
-    assert!(invalid_check.is_err(), "is_valid not in (0,1) must fail check constraint");
+    assert!(
+        invalid_check.is_err(),
+        "is_valid not in (0,1) must fail check constraint"
+    );
 
     // Deleting referenced channel_account should be RESTRICTED
     let del_acc = conn.execute("DELETE FROM channel_accounts WHERE id = 1", []);
-    assert!(del_acc.is_err(), "ON DELETE RESTRICT must prevent channel_account deletion while session exists");
+    assert!(
+        del_acc.is_err(),
+        "ON DELETE RESTRICT must prevent channel_account deletion while session exists"
+    );
 }
 
 #[test]
@@ -102,7 +111,10 @@ fn test_contact_suppression_list_constraints() {
          VALUES ('whatsapp', '+84901234567', 'spam_report', 'system', '2026-08-26T00:00:00Z')",
         [],
     );
-    assert!(dup.is_err(), "Duplicate (channel, phone_or_email) must violate unique constraint");
+    assert!(
+        dup.is_err(),
+        "Duplicate (channel, phone_or_email) must violate unique constraint"
+    );
 
     // Same phone on different channel is allowed
     let diff_channel = conn.execute(
@@ -110,7 +122,10 @@ fn test_contact_suppression_list_constraints() {
          VALUES ('zalo', '+84901234567', 'opt_out', 'user_request', '2026-08-26T00:00:00Z')",
         [],
     );
-    assert!(diff_channel.is_ok(), "Same phone on different channel should be allowed");
+    assert!(
+        diff_channel.is_ok(),
+        "Same phone on different channel should be allowed"
+    );
 
     // Invalid channel value should fail CHECK constraint
     let invalid_channel = conn.execute(
@@ -118,7 +133,10 @@ fn test_contact_suppression_list_constraints() {
          VALUES ('telegram', '+84901234567', 'opt_out', 'user_request', '2026-08-26T00:00:00Z')",
         [],
     );
-    assert!(invalid_channel.is_err(), "Invalid channel must fail check constraint");
+    assert!(
+        invalid_channel.is_err(),
+        "Invalid channel must fail check constraint"
+    );
 
     // Verify index exists
     let idx_exists: bool = conn
@@ -135,7 +153,8 @@ fn test_contact_suppression_list_constraints() {
 fn test_whatsapp_outreach_campaigns_and_recipients_constraints() {
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", []).unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
     conn.execute_batch(include_str!("../schema.sql")).unwrap();
     apply_whatsapp_migrations(&conn).unwrap();
 
@@ -166,7 +185,8 @@ fn test_whatsapp_outreach_campaigns_and_recipients_constraints() {
     assert_eq!(quiet_enabled, 1);
 
     // Insert lead
-    conn.execute("INSERT INTO leads (id) VALUES (10)", []).unwrap();
+    conn.execute("INSERT INTO leads (id) VALUES (10)", [])
+        .unwrap();
 
     // Insert recipient
     conn.execute(
@@ -192,7 +212,10 @@ fn test_whatsapp_outreach_campaigns_and_recipients_constraints() {
          )",
         [],
     );
-    assert!(dup_recip.is_err(), "Duplicate (campaign_id, recipient_phone_e164) must fail unique constraint");
+    assert!(
+        dup_recip.is_err(),
+        "Duplicate (campaign_id, recipient_phone_e164) must fail unique constraint"
+    );
 
     // Invalid status should fail CHECK constraint
     let invalid_status = conn.execute(
@@ -205,12 +228,20 @@ fn test_whatsapp_outreach_campaigns_and_recipients_constraints() {
          )",
         [],
     );
-    assert!(invalid_status.is_err(), "Invalid status must fail check constraint");
+    assert!(
+        invalid_status.is_err(),
+        "Invalid status must fail check constraint"
+    );
 
     // CASCADE delete campaign deletes recipient
-    conn.execute("DELETE FROM whatsapp_outreach_campaigns WHERE id = 1", []).unwrap();
+    conn.execute("DELETE FROM whatsapp_outreach_campaigns WHERE id = 1", [])
+        .unwrap();
     let count: i64 = conn
-        .query_row("SELECT count(*) FROM whatsapp_campaign_recipients WHERE campaign_id = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM whatsapp_campaign_recipients WHERE campaign_id = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(count, 0, "Recipients should cascade delete with campaign");
 
@@ -222,7 +253,10 @@ fn test_whatsapp_outreach_campaigns_and_recipients_constraints() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(idx_exists, "idx_wa_campaign_recipients_claim index must exist");
+    assert!(
+        idx_exists,
+        "idx_wa_campaign_recipients_claim index must exist"
+    );
 }
 
 #[test]

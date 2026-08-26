@@ -8,5 +8,5 @@
 - [x] Task 6: Outreach Engine, Suppression Enforcement, Rate Limits & Quiet Hours (commits dab188d..d8b661f, review clean)
 - [x] Task 7: WhatsApp Tauri IPC Commands & Engine Registration (commits d8b661f..8092c3f, review clean)
 - [x] Task 8: WhatsApp Account Settings & QR Pairing UI (commits 8092c3f..03dc864, review clean)
-- [x] Task 9: WhatsApp Outreach Dashboard & Campaign UI (commits 03dc864..pending, review clean)
+- [x] Task 9: WhatsApp Outreach Dashboard & Campaign UI (commits 03dc864..6349bfc, review clean)
 - [ ] Task 10: Unified Conversation Workspace Integration & Full Verification

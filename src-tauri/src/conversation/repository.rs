@@ -43,7 +43,6 @@ fn message_occurred_after_tombstone(message: &NormalizedMessage, deleted_at: &st
     occurred_at > deleted_at
 }
 
-
 pub fn next_provider_client_message_id() -> String {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1223,10 +1222,13 @@ impl ConversationRepository {
 
         if !lead_ids.is_empty() {
             // Bulk 1.1: Lead names
-            let mut lead_names_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            let mut lead_names_map: std::collections::HashMap<i64, String> =
+                std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare("SELECT id, name FROM leads WHERE name IS NOT NULL")?;
-                let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
                 for r in rows {
                     let (id, name) = r?;
                     lead_names_map.insert(id, name);
@@ -1234,8 +1236,10 @@ impl ConversationRepository {
             }
 
             // Bulk 1.2: Identity display names and avatar URLs (first by id ASC)
-            let mut identity_names_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-            let mut avatar_urls_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            let mut identity_names_map: std::collections::HashMap<i64, String> =
+                std::collections::HashMap::new();
+            let mut avatar_urls_map: std::collections::HashMap<i64, String> =
+                std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
                     "SELECT lead_id, display_name, avatar_url
@@ -1264,8 +1268,10 @@ impl ConversationRepository {
             }
 
             // Bulk 1.3: Reply targets for all leads
-            let mut reply_targets_map: std::collections::HashMap<i64, Vec<crate::conversation::types::InboxReplyTarget>> =
-                std::collections::HashMap::new();
+            let mut reply_targets_map: std::collections::HashMap<
+                i64,
+                Vec<crate::conversation::types::InboxReplyTarget>,
+            > = std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
                     "WITH LastInbound AS (
@@ -1313,8 +1319,10 @@ impl ConversationRepository {
             }
 
             // Bulk 1.4: Last message previews & timestamps for all leads
-            let mut last_messages_map: std::collections::HashMap<i64, (Option<String>, Option<String>)> =
-                std::collections::HashMap::new();
+            let mut last_messages_map: std::collections::HashMap<
+                i64,
+                (Option<String>, Option<String>),
+            > = std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
                     "WITH RankedMessages AS (
@@ -1415,9 +1423,8 @@ impl ConversationRepository {
 
                 let avatar_url = avatar_urls_map.get(&lead_id).cloned();
                 let reply_targets = reply_targets_map.remove(&lead_id).unwrap_or_default();
-                let (last_message_preview, last_message_at) = last_messages_map
-                    .remove(&lead_id)
-                    .unwrap_or_else(|| {
+                let (last_message_preview, last_message_at) =
+                    last_messages_map.remove(&lead_id).unwrap_or_else(|| {
                         (
                             None,
                             reply_targets
@@ -1449,7 +1456,14 @@ impl ConversationRepository {
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
-        let unlinked_identities: Vec<(i64, Option<String>, Option<String>, String, Option<String>, bool)> = {
+        let unlinked_identities: Vec<(
+            i64,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            bool,
+        )> = {
             let mut stmt = conn.prepare(
                 "SELECT ci.id,
                         ci.display_name,
@@ -1508,8 +1522,10 @@ impl ConversationRepository {
 
         if !unlinked_identities.is_empty() {
             // Bulk 2.1: Reply targets for all unknown identities
-            let mut unlinked_reply_targets_map: std::collections::HashMap<i64, Vec<crate::conversation::types::InboxReplyTarget>> =
-                std::collections::HashMap::new();
+            let mut unlinked_reply_targets_map: std::collections::HashMap<
+                i64,
+                Vec<crate::conversation::types::InboxReplyTarget>,
+            > = std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
                     "WITH LastInbound AS (
@@ -1552,13 +1568,18 @@ impl ConversationRepository {
                 })?;
                 for r in rows {
                     let (identity_id, target) = r?;
-                    unlinked_reply_targets_map.entry(identity_id).or_default().push(target);
+                    unlinked_reply_targets_map
+                        .entry(identity_id)
+                        .or_default()
+                        .push(target);
                 }
             }
 
             // Bulk 2.2: Last message preview for all unknown identities
-            let mut unlinked_last_messages_map: std::collections::HashMap<i64, (Option<String>, Option<String>)> =
-                std::collections::HashMap::new();
+            let mut unlinked_last_messages_map: std::collections::HashMap<
+                i64,
+                (Option<String>, Option<String>),
+            > = std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
                     "WITH RankedMessages AS (
@@ -1591,8 +1612,10 @@ impl ConversationRepository {
             }
 
             // Bulk 2.3: Channel badges and unread count for all unknown identities
-            let mut unlinked_channel_badges_map: std::collections::HashMap<i64, Vec<ChannelBadgeSummary>> =
-                std::collections::HashMap::new();
+            let mut unlinked_channel_badges_map: std::collections::HashMap<
+                i64,
+                Vec<ChannelBadgeSummary>,
+            > = std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
                     "WITH OutboundMax AS (
@@ -1636,7 +1659,10 @@ impl ConversationRepository {
                 })?;
                 for r in rows {
                     let (identity_id, badge) = r?;
-                    unlinked_channel_badges_map.entry(identity_id).or_default().push(badge);
+                    unlinked_channel_badges_map
+                        .entry(identity_id)
+                        .or_default()
+                        .push(badge);
                 }
             }
 
@@ -1661,7 +1687,9 @@ impl ConversationRepository {
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| format!("Unknown ({external_id})"));
 
-                let reply_targets = unlinked_reply_targets_map.remove(&identity_id).unwrap_or_default();
+                let reply_targets = unlinked_reply_targets_map
+                    .remove(&identity_id)
+                    .unwrap_or_default();
                 let (last_message_preview, last_message_at) = unlinked_last_messages_map
                     .remove(&identity_id)
                     .unwrap_or_else(|| {
@@ -1673,7 +1701,9 @@ impl ConversationRepository {
                         )
                     });
 
-                let channels = unlinked_channel_badges_map.remove(&identity_id).unwrap_or_default();
+                let channels = unlinked_channel_badges_map
+                    .remove(&identity_id)
+                    .unwrap_or_default();
                 let unread_count: u64 = channels.iter().map(|c| c.unread_count).sum();
 
                 items.push(InboxItem {
@@ -1696,8 +1726,10 @@ impl ConversationRepository {
         }
 
         // 3. Group rows: Group conversations (key: "conversation:{conversation_id}")
-        let mut group_participants_map: std::collections::HashMap<i64, Vec<ConversationParticipantSummary>> =
-            std::collections::HashMap::new();
+        let mut group_participants_map: std::collections::HashMap<
+            i64,
+            Vec<ConversationParticipantSummary>,
+        > = std::collections::HashMap::new();
         {
             let mut part_stmt = conn.prepare(
                 "WITH RankedParticipants AS (
@@ -1729,7 +1761,10 @@ impl ConversationRepository {
             })?;
             for r in rows {
                 let (conv_id, summary) = r?;
-                group_participants_map.entry(conv_id).or_default().push(summary);
+                group_participants_map
+                    .entry(conv_id)
+                    .or_default()
+                    .push(summary);
             }
         }
 
