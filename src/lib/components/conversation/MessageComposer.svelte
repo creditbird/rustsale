@@ -125,7 +125,9 @@
   import { evaluateFacebookWindow } from './facebookPolicyGate';
 
   const draftCache = new ComposerDraftCache();
-  let text = $state('');
+  let text = '';
+  let hasText = $state(false);
+  let textLengthExceeded = $state(false);
   let lastProcessedText = '';
   let attachments = $state<ComposerAttachmentItem[]>([]);
   let activeDraftKey = $state<string | null>(null);
@@ -138,6 +140,7 @@
   let isDragActive = $state(false);
   let isVoiceRecording = $state(false);
   let textareaElement = $state<HTMLTextAreaElement | null>(null);
+  let draftPersistTimer: ReturnType<typeof setTimeout> | null = null;
 
 
   let quickTemplates = $state<ConversationQuickTemplate[]>([]);
@@ -360,12 +363,14 @@
     if (draftKey === activeDraftKey) return;
     untrack(() => {
       if (activeDraftKey) {
-        draftCache.update(activeDraftKey, { text, attachments: [...attachments], mentions: [...mentions] });
+        persistDraft(true);
       }
       activeDraftKey = draftKey;
       if (!activeDraftKey) {
         text = '';
         lastProcessedText = '';
+        hasText = false;
+        textLengthExceeded = false;
         attachments = [];
         mentions = [];
         if (textareaElement) textareaElement.value = '';
@@ -374,6 +379,9 @@
       const draft = draftCache.get(activeDraftKey);
       text = draft.text;
       lastProcessedText = draft.text;
+      hasText = draft.text.trim().length > 0;
+      textLengthExceeded =
+        selectedCapabilities.maxTextLength > 0 && draft.text.length > selectedCapabilities.maxTextLength;
       attachments = [...draft.attachments];
       mentions = [...draft.mentions];
       if (textareaElement) textareaElement.value = draft.text;
@@ -408,18 +416,37 @@
       }
     );
     return () => {
+      if (draftPersistTimer) {
+        clearTimeout(draftPersistTimer);
+        draftPersistTimer = null;
+      }
+      persistDraft(true);
       unlisten();
     };
   });
 
-  function persistDraft(): void {
+  function persistDraft(immediate = false): void {
     if (!activeDraftKey) return;
-    draftCache.update(activeDraftKey, { text, attachments, mentions });
+    if (immediate) {
+      if (draftPersistTimer) {
+        clearTimeout(draftPersistTimer);
+        draftPersistTimer = null;
+      }
+      draftCache.update(activeDraftKey, { text, attachments, mentions });
+      return;
+    }
+    if (draftPersistTimer) return;
+    draftPersistTimer = setTimeout(() => {
+      draftPersistTimer = null;
+      if (activeDraftKey) {
+        draftCache.update(activeDraftKey, { text, attachments, mentions });
+      }
+    }, 250);
   }
 
   function updateAttachments(nextItems: ComposerAttachmentItem[]): void {
     attachments = nextItems;
-    persistDraft();
+    persistDraft(true);
   }
 
   function formatError(error: unknown): string {
@@ -691,8 +718,11 @@
     const result = replaceSlashToken(text, quickTemplateSlashToken, template.bodyText);
     text = result.value;
     lastProcessedText = result.value;
+    hasText = result.value.trim().length > 0;
+    textLengthExceeded =
+      selectedCapabilities.maxTextLength > 0 && result.value.length > selectedCapabilities.maxTextLength;
     if (textareaElement) textareaElement.value = result.value;
-    persistDraft();
+    persistDraft(true);
     showQuickTemplatePopover = false;
     quickTemplateSlashToken = null;
 
@@ -731,9 +761,12 @@
     const result = insertMention(text, mentionToken, candidate, mentions);
     text = result.value;
     lastProcessedText = result.value;
+    hasText = result.value.trim().length > 0;
+    textLengthExceeded =
+      selectedCapabilities.maxTextLength > 0 && result.value.length > selectedCapabilities.maxTextLength;
     if (textareaElement) textareaElement.value = result.value;
     mentions = result.mentions;
-    persistDraft();
+    persistDraft(true);
     showMentionPopover = false;
     mentionToken = null;
 
@@ -762,9 +795,19 @@
       mentions = applyTextEditToMentions(prevText, nextText, edit, mentions);
     }
     lastProcessedText = nextText;
-    if (text !== nextText) {
-      text = nextText;
+    text = nextText;
+
+    const nextHasText = nextText.trim().length > 0;
+    if (hasText !== nextHasText) {
+      hasText = nextHasText;
     }
+
+    const maxLen = selectedCapabilities.maxTextLength;
+    const nextExceeded = maxLen > 0 && nextText.length > maxLen;
+    if (textLengthExceeded !== nextExceeded) {
+      textLengthExceeded = nextExceeded;
+    }
+
     if (sendError) {
       sendError = null;
     }
@@ -795,12 +838,15 @@
 
     text = inserted.value;
     lastProcessedText = inserted.value;
+    hasText = inserted.value.trim().length > 0;
+    textLengthExceeded =
+      selectedCapabilities.maxTextLength > 0 && inserted.value.length > selectedCapabilities.maxTextLength;
     if (el) {
       el.value = inserted.value;
       el.focus();
       el.setSelectionRange(inserted.caret, inserted.caret);
     }
-    persistDraft();
+    persistDraft(true);
   }
 
   let statusReason = $derived.by(() => {
@@ -828,12 +874,12 @@
   let totalBatchBytes = $derived(
     readyAttachments.reduce((sum, attachment) => sum + attachment.sizeBytes, 0)
   );
-  let partCount = $derived(readyAttachments.length + (text.trim() ? 1 : 0));
+  let partCount = $derived(readyAttachments.length + (hasText ? 1 : 0));
   let validationReason = $derived.by(() => {
     if (replyTarget && !selectedCapabilities.supportsQuoteReply) {
       return 'This account does not support quoted replies';
     }
-    if (text.length > selectedCapabilities.maxTextLength) {
+    if (textLengthExceeded) {
       return `Message exceeds ${selectedCapabilities.maxTextLength} characters`;
     }
     if (readyAttachments.length > selectedCapabilities.maxAttachmentsPerBatch) {
@@ -920,7 +966,7 @@
         outboundMessageTag = 'HUMAN_AGENT';
       }
     }
-    persistDraft();
+    persistDraft(true);
     const snapshot = draftCache.takeSnapshot(activeDraftKey);
     const parts = buildParts(snapshot.text, snapshot.stagedAttachmentIds, snapshot.mentions);
     if (parts.length === 0) return;
@@ -933,6 +979,8 @@
     const nextDraft = draftCache.get(activeDraftKey);
     text = nextDraft.text;
     lastProcessedText = nextDraft.text;
+    hasText = nextDraft.text.trim().length > 0;
+    textLengthExceeded = false;
     if (textareaElement) textareaElement.value = nextDraft.text;
     attachments = [...nextDraft.attachments];
     mentions = [...nextDraft.mentions];
@@ -965,6 +1013,9 @@
       const restored = draftCache.get(activeDraftKey);
       text = restored.text;
       lastProcessedText = restored.text;
+      hasText = restored.text.trim().length > 0;
+      textLengthExceeded =
+        selectedCapabilities.maxTextLength > 0 && restored.text.length > selectedCapabilities.maxTextLength;
       if (textareaElement) textareaElement.value = restored.text;
       attachments = [...restored.attachments];
       mentions = [...restored.mentions];
@@ -1343,21 +1394,21 @@
       placeholder="Type a message..."
       disabled={disabled || (selectedOption !== null && !selectedOption.isEligible)}
       rows="1"
-      class="flex-1 min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-full border border-input/80 bg-background text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary shadow-2xs resize-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+      class="flex-1 min-h-[44px] max-h-[140px] py-2.5 px-4 rounded-3xl border border-input/80 bg-background text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00a884] [field-sizing:content] shadow-2xs resize-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed transition-colors"
     ></textarea>
-    <Button
+    <button
       type="button"
       onclick={handleSend}
       disabled={!canSend}
       aria-label="Send"
       title="Send message (Enter)"
-      class="size-10 rounded-full shrink-0 bg-[#00a884] hover:bg-[#008f70] dark:bg-[#00a884] dark:hover:bg-[#008f70] text-white shadow-xs flex items-center justify-center transition-all duration-150 active:scale-95 disabled:opacity-40 disabled:active:scale-100 cursor-pointer p-0"
+      class="size-10 rounded-full shrink-0 bg-[#00a884] hover:bg-[#008f70] dark:bg-[#00a884] dark:hover:bg-[#008f70] text-white shadow-xs flex items-center justify-center transition-all duration-150 active:scale-95 disabled:opacity-40 disabled:active:scale-100 cursor-pointer disabled:cursor-not-allowed p-0"
     >
       <svg viewBox="0 0 24 24" class="size-5 fill-current text-white translate-x-[1.5px]" aria-hidden="true">
         <path d="M1.101 21.757L23.8 12.028 1.101 2.3v7.572l12.769 2.156-12.769 2.157v7.572z"></path>
       </svg>
       <span class="sr-only">Send</span>
-    </Button>
+    </button>
   </div>
 </div>
 
