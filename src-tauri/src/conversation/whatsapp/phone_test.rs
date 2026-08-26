@@ -40,7 +40,7 @@ fn test_jid_formatting() {
 #[test]
 fn test_jid_to_phone() {
     assert_eq!(jid_to_phone("84901234567@s.whatsapp.net"), Some("84901234567".to_string()));
-    assert_eq!(jid_to_phone("84901234567:1@s.whatsapp.net"), Some("849012345671".to_string()));
+    assert_eq!(jid_to_phone("84901234567:1@s.whatsapp.net"), Some("84901234567".to_string()));
 }
 
 #[test]

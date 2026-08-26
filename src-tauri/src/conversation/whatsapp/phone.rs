@@ -90,7 +90,8 @@ pub fn is_direct_jid(jid: &str) -> bool {
 /// Extracts the phone/user part from a direct WhatsApp JID if applicable.
 pub fn jid_to_phone(jid: &str) -> Option<String> {
     let user_part = jid.split('@').next()?;
-    let clean: String = user_part.chars().filter(|c| c.is_ascii_digit()).collect();
+    let user_base = user_part.split(':').next()?;
+    let clean: String = user_base.chars().filter(|c| c.is_ascii_digit()).collect();
     if !clean.is_empty() {
         Some(clean)
     } else {
