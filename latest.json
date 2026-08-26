@@ -1,11 +1,11 @@
 {
-  "version": "0.1.12",
-  "notes": "Bản phát hành v0.1.12: Tích hợp System Tray & Desktop Notification, tối ưu hiệu năng hội thoại, hỗ trợ bộ gõ tiếng Việt và nâng cấp hệ thống phát hành.",
-  "pub_date": "2026-08-26T12:52:26.159Z",
+  "version": "0.1.13",
+  "notes": "Vá lỗi giao diện tràn và đè tab trong trang Cài đặt (Settings), tối ưu Tabs primitive và đồng bộ hệ thống thông báo",
+  "pub_date": "2026-08-26T14:26:49.736Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUCs0dVdlT1FOR09rZUtZME92WUpiQ1NaaFJiU1VmZG44U3BUNjc1MEE4V2ljdmdHYmVsdW5kMU1qUWVSV21ZUHk2ZG5HNVlMNzEvNkQwY2NLS1pEUGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3NzQ4NzQ0CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xMl9hbWQ2NC5kZWIKVmMrOStBdU9VMHhMV0w1SWNqVDdlbUp1UFFQL0NVVHMySkxid3h5QmZRbW9CVUthMWFHRDRFZEFZODZoMWJHenRJYjh6RHJpTWJQOFdQRGJ4OE5RQkE9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.12/RustSale%20CRM_0.1.12_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDZSeDY1U0E1TlNNbkVPVDFDaUx6N0RaZWlveG45Zk1qTkxHL3M0VWdoNmVoblFuMW5aS2NTb1EwcysvUzExOG9LUGdvWDFpN3hPTDdURy9XTGxtMUFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3NzU0NDA4CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xM19hbWQ2NC5kZWIKb1UxOTJ1NFZ5ZGNmUWpNT2owZFRFdFk3UzEwTnVSQ09ubnpRSEIreS9BWWhkNmhZRjN3aUdESktjNVZLQ3lpc0hYZVowNzA1OW95RTk3eXpudUxJRFE9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.13/RustSale%20CRM_0.1.13_amd64.deb"
     }
   }
 }
