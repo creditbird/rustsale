@@ -121,6 +121,233 @@ pub trait WhatsAppClient: Send + Sync {
 
     /// Returns true if the client session is actively connected and ready for traffic.
     async fn is_connected(&self) -> bool;
+
+    /// Disconnects and shuts down the active connection/bot worker.
+    async fn disconnect(&self) -> Result<()>;
+}
+
+/// Real production WhatsApp client backed by `whatsapp-rust`.
+pub struct RealWhatsAppClient {
+    pub client: Arc<whatsapp_rust::Client>,
+    pub bot_handle: Arc<tokio::sync::Mutex<Option<whatsapp_rust::bot::BotHandle>>>,
+    pub account_key: String,
+}
+
+impl RealWhatsAppClient {
+    pub fn new(
+        client: Arc<whatsapp_rust::Client>,
+        bot_handle: Option<whatsapp_rust::bot::BotHandle>,
+        account_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            client,
+            bot_handle: Arc::new(tokio::sync::Mutex::new(bot_handle)),
+            account_key: account_key.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl WhatsAppClient for RealWhatsAppClient {
+    async fn send_text_message(
+        &self,
+        recipient_jid: &str,
+        text: &str,
+        quote: Option<&RawWhatsAppQuote>,
+    ) -> Result<WhatsAppSendResponse> {
+        let jid: whatsapp_rust::Jid = recipient_jid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid recipient JID '{}': {}", recipient_jid, e))?;
+
+        let mut msg = whatsapp_rust::prelude::wa::Message {
+            conversation: Some(text.to_string()),
+            ..Default::default()
+        };
+        if let Some(q) = quote {
+            let context = whatsapp_rust::prelude::wa::ContextInfo {
+                stanza_id: Some(q.stanza_id.clone()),
+                participant: Some(q.participant_jid.clone()),
+                quoted_message: whatsapp_rust::prelude::MessageField::some(
+                    whatsapp_rust::prelude::wa::Message {
+                        conversation: q.text.clone(),
+                        ..Default::default()
+                    },
+                ),
+                ..Default::default()
+            };
+            msg.extended_text_message = whatsapp_rust::prelude::MessageField::some(
+                whatsapp_rust::prelude::wa::message::ExtendedTextMessage {
+                    text: Some(text.to_string()),
+                    context_info: whatsapp_rust::prelude::MessageField::some(context),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let sent = self
+            .client
+            .send_message(jid, msg)
+            .await
+            .map_err(|e| anyhow::anyhow!("WhatsApp send error: {}", e))?;
+
+        Ok(WhatsAppSendResponse {
+            provider_message_id: sent.message_id,
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        })
+    }
+
+    async fn send_media_message(
+        &self,
+        recipient_jid: &str,
+        media_type: &str,
+        media_data_or_url: &str,
+        caption: Option<&str>,
+        _quote: Option<&RawWhatsAppQuote>,
+    ) -> Result<WhatsAppSendResponse> {
+        let jid: whatsapp_rust::Jid = recipient_jid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid recipient JID '{}': {}", recipient_jid, e))?;
+
+        let data = if std::path::Path::new(media_data_or_url).exists() {
+            tokio::fs::read(media_data_or_url).await?
+        } else if media_data_or_url.starts_with("http://")
+            || media_data_or_url.starts_with("https://")
+        {
+            let resp = reqwest::get(media_data_or_url).await?;
+            resp.bytes().await?.to_vec()
+        } else {
+            return Err(anyhow::anyhow!(
+                "Invalid media path or url: {}",
+                media_data_or_url
+            ));
+        };
+
+        let wa_media_type = match media_type.to_lowercase().as_str() {
+            "image" => whatsapp_rust::wacore::download::MediaType::Image,
+            "video" => whatsapp_rust::wacore::download::MediaType::Video,
+            "audio" => whatsapp_rust::wacore::download::MediaType::Audio,
+            _ => whatsapp_rust::wacore::download::MediaType::Document,
+        };
+
+        let data_len = data.len() as u64;
+        let upload_res = self
+            .client
+            .upload(
+                data,
+                wa_media_type,
+                whatsapp_rust::upload::UploadOptions::default(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Media upload failed: {}", e))?;
+
+        let mut msg = whatsapp_rust::prelude::wa::Message::default();
+        match wa_media_type {
+            whatsapp_rust::wacore::download::MediaType::Image => {
+                msg.image_message = whatsapp_rust::prelude::MessageField::some(
+                    whatsapp_rust::prelude::wa::message::ImageMessage {
+                        url: Some(upload_res.url),
+                        direct_path: Some(upload_res.direct_path),
+                        media_key: Some(upload_res.media_key.to_vec()),
+                        file_enc_sha256: Some(upload_res.file_enc_sha256.to_vec()),
+                        file_sha256: Some(upload_res.file_sha256.to_vec()),
+                        file_length: Some(data_len),
+                        caption: caption.map(str::to_string),
+                        ..Default::default()
+                    },
+                );
+            }
+            whatsapp_rust::wacore::download::MediaType::Video => {
+                msg.video_message = whatsapp_rust::prelude::MessageField::some(
+                    whatsapp_rust::prelude::wa::message::VideoMessage {
+                        url: Some(upload_res.url),
+                        direct_path: Some(upload_res.direct_path),
+                        media_key: Some(upload_res.media_key.to_vec()),
+                        file_enc_sha256: Some(upload_res.file_enc_sha256.to_vec()),
+                        file_sha256: Some(upload_res.file_sha256.to_vec()),
+                        file_length: Some(data_len),
+                        caption: caption.map(str::to_string),
+                        ..Default::default()
+                    },
+                );
+            }
+            whatsapp_rust::wacore::download::MediaType::Audio => {
+                msg.audio_message = whatsapp_rust::prelude::MessageField::some(
+                    whatsapp_rust::prelude::wa::message::AudioMessage {
+                        url: Some(upload_res.url),
+                        direct_path: Some(upload_res.direct_path),
+                        media_key: Some(upload_res.media_key.to_vec()),
+                        file_enc_sha256: Some(upload_res.file_enc_sha256.to_vec()),
+                        file_sha256: Some(upload_res.file_sha256.to_vec()),
+                        file_length: Some(data_len),
+                        ..Default::default()
+                    },
+                );
+            }
+            _ => {
+                msg.document_message = whatsapp_rust::prelude::MessageField::some(
+                    whatsapp_rust::prelude::wa::message::DocumentMessage {
+                        url: Some(upload_res.url),
+                        direct_path: Some(upload_res.direct_path),
+                        media_key: Some(upload_res.media_key.to_vec()),
+                        file_enc_sha256: Some(upload_res.file_enc_sha256.to_vec()),
+                        file_sha256: Some(upload_res.file_sha256.to_vec()),
+                        file_length: Some(data_len),
+                        caption: caption.map(str::to_string),
+                        title: caption.map(str::to_string),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        let sent = self
+            .client
+            .send_message(jid, msg)
+            .await
+            .map_err(|e| anyhow::anyhow!("WhatsApp media send error: {}", e))?;
+
+        Ok(WhatsAppSendResponse {
+            provider_message_id: sent.message_id,
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        })
+    }
+
+    async fn send_reaction(
+        &self,
+        chat_jid: &str,
+        target_message_id: &str,
+        target_sender_jid: Option<&str>,
+        emoji: &str,
+    ) -> Result<()> {
+        let chat: whatsapp_rust::Jid = chat_jid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid chat JID '{}': {}", chat_jid, e))?;
+
+        let key = whatsapp_rust::prelude::wa::MessageKey {
+            remote_jid: Some(chat.to_string()),
+            from_me: Some(false),
+            id: Some(target_message_id.to_string()),
+            participant: target_sender_jid.map(str::to_string),
+        };
+
+        self.client
+            .send_reaction(&chat, key, emoji)
+            .await
+            .map_err(|e| anyhow::anyhow!("WhatsApp send reaction error: {}", e))?;
+
+        Ok(())
+    }
+
+    async fn is_connected(&self) -> bool {
+        self.client.is_connected()
+    }
+
+    async fn disconnect(&self) -> Result<()> {
+        if let Some(handle) = self.bot_handle.lock().await.take() {
+            handle.shutdown().await;
+        }
+        Ok(())
+    }
 }
 
 /// Recorded payload for sent text message in `MockWhatsAppClient`.
@@ -297,5 +524,10 @@ impl WhatsAppClient for MockWhatsAppClient {
 
     async fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
+    }
+
+    async fn disconnect(&self) -> Result<()> {
+        self.connected.store(false, Ordering::SeqCst);
+        Ok(())
     }
 }

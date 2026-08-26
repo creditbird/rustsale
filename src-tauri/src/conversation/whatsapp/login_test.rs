@@ -14,7 +14,7 @@ fn setup_test_db() -> Connection {
 #[tokio::test]
 async fn test_start_qr_login_public_api() {
     let dir = tempdir().unwrap();
-    let manager = WhatsAppLoginManager::new(dir.path().to_path_buf(), None);
+    let manager = WhatsAppLoginManager::new(":memory:".to_string(), dir.path().to_path_buf(), None);
     let attempt_id = "test-prod-attempt-1";
 
     manager.start_qr_login(attempt_id).await.unwrap();

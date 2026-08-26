@@ -30,7 +30,8 @@ fn setup_test_supervisor_db() -> (String, tempfile::TempDir) {
 async fn test_supervisor_lifecycle_and_client_registration() {
     let (db_path, _dir) = setup_test_supervisor_db();
     let events = Arc::new(ConversationEventPublisher::new(100));
-    let supervisor = WhatsAppSupervisor::new(db_path, events);
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let supervisor = WhatsAppSupervisor::new(db_path, sessions_dir, events);
 
     let mock_client = Arc::new(MockWhatsAppClient::new());
     let account_id = 101;
@@ -55,7 +56,8 @@ fn test_supervisor_get_connected_accounts() {
     let (db_path, _dir) = setup_test_supervisor_db();
     let conn = open_db_connection(&db_path).unwrap();
     let events = Arc::new(ConversationEventPublisher::new(100));
-    let supervisor = WhatsAppSupervisor::new(db_path, events);
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let supervisor = WhatsAppSupervisor::new(db_path, sessions_dir, events);
 
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -131,7 +133,8 @@ async fn test_supervisor_sync_account_drains_outbox() {
         spool_root,
     ));
 
-    let supervisor = WhatsAppSupervisor::new(db_path.clone(), events);
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let supervisor = WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events);
     supervisor.with_service(service);
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -199,7 +202,8 @@ async fn test_supervisor_sync_account_drains_outbox() {
 async fn test_supervisor_sync_account_handles_disconnected_client() {
     let (db_path, _dir) = setup_test_supervisor_db();
     let events = Arc::new(ConversationEventPublisher::new(100));
-    let supervisor = WhatsAppSupervisor::new(db_path, events);
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let supervisor = WhatsAppSupervisor::new(db_path, sessions_dir, events);
 
     let mock_client = Arc::new(MockWhatsAppClient::new());
     mock_client.set_connected(false);
@@ -221,7 +225,8 @@ async fn test_supervisor_sync_account_handles_disconnected_client() {
 async fn test_supervisor_run_loop_stops_on_cancellation() {
     let (db_path, _dir) = setup_test_supervisor_db();
     let events = Arc::new(ConversationEventPublisher::new(100));
-    let supervisor = Arc::new(WhatsAppSupervisor::new(db_path, events));
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let supervisor = Arc::new(WhatsAppSupervisor::new(db_path, sessions_dir, events));
 
     let sup_clone = supervisor.clone();
     let handle = tokio::spawn(async move {

@@ -67,17 +67,18 @@ impl ServiceHarness {
                 Arc::new(super::facebook::client::RealFacebookGraphClient::new()),
             ),
         );
-        let whatsapp_supervisor = Arc::new(
-            crate::conversation::whatsapp::supervisor::WhatsAppSupervisor::new(
-                self.path.to_str().unwrap().to_string(),
-                self.events.clone(),
-            ),
-        );
         let sessions_dir = self
             .path
             .parent()
             .unwrap()
             .join("whatsapp-sessions-harness");
+        let whatsapp_supervisor = Arc::new(
+            crate::conversation::whatsapp::supervisor::WhatsAppSupervisor::new(
+                self.path.to_str().unwrap().to_string(),
+                sessions_dir.clone(),
+                self.events.clone(),
+            ),
+        );
         let whatsapp_login_manager = Arc::new(
             crate::conversation::whatsapp::login::WhatsAppLoginManager::new_mock_with_dir(
                 sessions_dir,
@@ -2260,7 +2261,9 @@ async fn test_create_and_manage_whatsapp_campaign() {
     assert_eq!(camp.assigned_account_ids, vec![1, 2]);
 
     // 4. Start campaign -> transitions to queued
-    start_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    start_whatsapp_campaign(state.clone(), campaign_id)
+        .await
+        .unwrap();
     let camp_queued = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
     assert_eq!(camp_queued.status, "queued");
 

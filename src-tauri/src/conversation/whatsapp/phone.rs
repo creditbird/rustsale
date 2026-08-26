@@ -3,8 +3,64 @@ pub use whatsapp_rust::Jid;
 
 pub const WHATSAPP_DIRECT_SERVER: &str = "s.whatsapp.net";
 pub const WHATSAPP_GROUP_SERVER: &str = "g.us";
+pub const WHATSAPP_LID_SERVER: &str = "lid";
 pub const WHATSAPP_BROADCAST_SERVER: &str = "broadcast";
 pub const WHATSAPP_NEWSLETTER_SERVER: &str = "newsletter";
+
+/// Checks whether a given JID is a WhatsApp Linked Identity (`@lid`).
+pub fn is_lid_jid(jid: &str) -> bool {
+    jid.ends_with(&format!("@{WHATSAPP_LID_SERVER}"))
+}
+
+/// Extracts the LID user string from a LID JID.
+pub fn extract_lid_user(jid: &str) -> Option<String> {
+    if !is_lid_jid(jid) {
+        return None;
+    }
+    let user_part = jid.split('@').next()?;
+    let user_base = user_part.split(':').next()?;
+    if !user_base.is_empty() {
+        Some(user_base.to_string())
+    } else {
+        None
+    }
+}
+
+/// Resolves a JID or LID to an E.164 phone string.
+/// For `@s.whatsapp.net` or `@c.us`, extracts the phone directly.
+/// For `@lid`, queries the `whatsapp_lid_pn_mappings` cache table.
+pub fn resolve_lid_or_jid_to_phone(conn: &rusqlite::Connection, jid: &str) -> Option<String> {
+    if is_direct_jid(jid) {
+        jid_to_phone(jid)
+    } else if is_lid_jid(jid) {
+        let lid_user = extract_lid_user(jid)?;
+        conn.query_row(
+            "SELECT phone_e164 FROM whatsapp_lid_pn_mappings WHERE lid = ?1",
+            rusqlite::params![lid_user],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    } else {
+        None
+    }
+}
+
+/// Saves or updates a LID -> Phone mapping into `whatsapp_lid_pn_mappings`.
+pub fn save_lid_pn_mapping(
+    conn: &rusqlite::Connection,
+    lid: &str,
+    phone_e164: &str,
+) -> rusqlite::Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let clean_lid = extract_lid_user(lid).unwrap_or_else(|| lid.to_string());
+    conn.execute(
+        "INSERT INTO whatsapp_lid_pn_mappings (lid, phone_e164, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(lid) DO UPDATE SET phone_e164 = EXCLUDED.phone_e164, updated_at = EXCLUDED.updated_at",
+        rusqlite::params![clean_lid, phone_e164, now],
+    )?;
+    Ok(())
+}
 
 /// Normalizes a raw phone number into E.164 digits format (without leading '+').
 /// Returns None if the input contains invalid characters or does not satisfy
@@ -99,6 +155,9 @@ pub fn is_direct_jid(jid: &str) -> bool {
 
 /// Extracts the phone/user part from a direct WhatsApp JID if applicable.
 pub fn jid_to_phone(jid: &str) -> Option<String> {
+    if !is_direct_jid(jid) {
+        return None;
+    }
     let user_part = jid.split('@').next()?;
     let user_base = user_part.split(':').next()?;
     let clean: String = user_base.chars().filter(|c| c.is_ascii_digit()).collect();

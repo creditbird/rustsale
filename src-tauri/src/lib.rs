@@ -244,19 +244,27 @@ pub fn run() {
                     facebook_graph_client,
                 ),
             );
+            let whatsapp_sessions_dir = app_data_dir.join("whatsapp-sessions");
             let whatsapp_supervisor = std::sync::Arc::new(
                 conversation::whatsapp::supervisor::WhatsAppSupervisor::new(
                     db_path_str.to_string(),
+                    whatsapp_sessions_dir.clone(),
                     conversation_events.clone(),
                 ),
             );
             let whatsapp_login_manager = std::sync::Arc::new(
                 conversation::whatsapp::login::WhatsAppLoginManager::new(
-                    app_data_dir.join("whatsapp-sessions"),
+                    db_path_str.to_string(),
+                    whatsapp_sessions_dir,
                     Some(app.handle().clone()),
                 ),
             );
             whatsapp_supervisor.with_service(conversation_service.clone());
+
+            let ws_startup = whatsapp_supervisor.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = ws_startup.load_active_sessions_on_startup().await;
+            });
             app.manage(conversation::commands::ConversationState {
                 service: conversation_service.clone(),
                 zalo_supervisor: zalo_supervisor.clone(),

@@ -80,15 +80,41 @@ fn test_jid_to_phone() {
 }
 
 #[test]
-fn test_parse_raw_jid() {
-    let direct = parse_raw_jid("84901234567@s.whatsapp.net");
-    assert!(direct.is_some());
-    let jid = direct.unwrap();
-    assert_eq!(jid.user.as_str(), "84901234567");
+fn test_lid_detection_and_resolution() {
+    assert!(is_lid_jid("123456789012345@lid"));
+    assert!(is_lid_jid("123456789012345:2@lid"));
+    assert!(!is_lid_jid("84901234567@s.whatsapp.net"));
+    assert_eq!(
+        extract_lid_user("123456789012345:2@lid"),
+        Some("123456789012345".to_string())
+    );
 
-    let group = parse_raw_jid("123456789-987654@g.us");
-    assert!(group.is_some());
+    // Test DB resolution
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
 
-    let invalid = parse_raw_jid("not_a_jid");
-    assert!(invalid.is_none());
+    // Prior to mapping: returns None for LID
+    assert_eq!(
+        resolve_lid_or_jid_to_phone(&conn, "123456789012345@lid"),
+        None
+    );
+
+    // Direct JID resolves immediately
+    assert_eq!(
+        resolve_lid_or_jid_to_phone(&conn, "84901234567@s.whatsapp.net"),
+        Some("84901234567".to_string())
+    );
+
+    // Save LID-PN mapping
+    save_lid_pn_mapping(&conn, "123456789012345", "84901234567").unwrap();
+
+    // After mapping: resolves to phone
+    assert_eq!(
+        resolve_lid_or_jid_to_phone(&conn, "123456789012345@lid"),
+        Some("84901234567".to_string())
+    );
+    assert_eq!(
+        resolve_lid_or_jid_to_phone(&conn, "123456789012345:1@lid"),
+        Some("84901234567".to_string())
+    );
 }

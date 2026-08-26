@@ -251,6 +251,34 @@ fn test_normalizer_leaves_ambiguous_leads_unlinked() {
 }
 
 #[test]
+fn test_normalizer_unlinks_when_match_becomes_ambiguous() {
+    let mut conn = setup_test_db();
+    // 1. Initial state: Exactly 1 matching lead
+    insert_test_lead(&conn, 101, "84901234567");
+
+    let raw1 = mock_incoming_text("84901234567@s.whatsapp.net", "First message");
+    let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw1)
+        .unwrap()
+        .unwrap();
+
+    let lead_id1: Option<i64> = get_conversation_lead_id(&conn, conv_id);
+    assert_eq!(lead_id1, Some(101));
+
+    // 2. A second duplicate lead with the same phone is added to CRM
+    insert_test_lead(&conn, 102, "84901234567");
+
+    // 3. Next message arrives -> resolution is now ambiguous (>1 matches)
+    let raw2 = mock_incoming_text("84901234567@s.whatsapp.net", "Second message");
+    WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw2)
+        .unwrap()
+        .unwrap();
+
+    // 4. Invariant: lead_id MUST be set back to None / unlinked
+    let lead_id2: Option<i64> = get_conversation_lead_id(&conn, conv_id);
+    assert_eq!(lead_id2, None);
+}
+
+#[test]
 fn test_normalizer_leaves_unknown_phone_unlinked() {
     let mut conn = setup_test_db();
     let raw = mock_incoming_text("84999999999@s.whatsapp.net", "Hello from stranger");
@@ -401,7 +429,7 @@ fn test_normalizer_attachments_parsing() {
         .unwrap();
     assert_eq!(c_type, "image");
 
-    let (att_type, mime, size, url): (String, Option<String>, Option<u64>, Option<String>) = conn
+    let (att_type, mime, size, url): (String, Option<String>, Option<i64>, Option<String>) = conn
         .query_row(
             "SELECT attachment_type, mime_type, size_bytes, remote_url FROM message_attachments WHERE message_id = ?1",
             [msg_id],
@@ -410,7 +438,7 @@ fn test_normalizer_attachments_parsing() {
         .unwrap();
     assert_eq!(att_type, "image");
     assert_eq!(mime, Some("image/jpeg".to_string()));
-    assert_eq!(size, Some(102400));
+    assert_eq!(size, Some(102400i64));
     assert_eq!(url, Some("https://example.com/product.jpg".to_string()));
 }
 

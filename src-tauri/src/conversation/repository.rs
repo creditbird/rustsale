@@ -328,7 +328,7 @@ impl ConversationRepository {
                 record.media_type,
                 record.mime_type,
                 record.file_name,
-                record.file_size_bytes,
+                record.file_size_bytes as i64,
                 record.local_path,
                 record.thumbnail_path,
                 record.width,
@@ -362,7 +362,7 @@ impl ConversationRepository {
                 media_type: row.get(3)?,
                 mime_type: row.get(4)?,
                 file_name: row.get(5)?,
-                file_size_bytes: row.get(6)?,
+                file_size_bytes: row.get::<_, i64>(6)? as u64,
                 local_path: row.get(7)?,
                 thumbnail_path: row.get(8)?,
                 width: row.get(9)?,
@@ -407,7 +407,7 @@ impl ConversationRepository {
                 media_type: row.get(3)?,
                 mime_type: row.get(4)?,
                 file_name: row.get(5)?,
-                file_size_bytes: row.get(6)?,
+                file_size_bytes: row.get::<_, i64>(6)? as u64,
                 local_path: row.get(7)?,
                 thumbnail_path: row.get(8)?,
                 width: row.get(9)?,
@@ -1057,7 +1057,7 @@ impl ConversationRepository {
                         att.media_type,
                         att.mime_type,
                         att.file_name,
-                        att.size_bytes,
+                        att.size_bytes.map(|v| v as i64),
                         att.remote_url,
                         att.thumbnail_url,
                         att.metadata_json.as_ref().map(serde_json::Value::to_string),
@@ -1075,7 +1075,7 @@ impl ConversationRepository {
                             att.media_type,
                             att.mime_type,
                             att.file_name,
-                            att.size_bytes,
+                            att.size_bytes.map(|v| v as i64),
                             att.remote_url,
                             att.thumbnail_url,
                             att.metadata_json.as_ref().map(serde_json::Value::to_string),
@@ -1147,7 +1147,7 @@ impl ConversationRepository {
                     att.media_type,
                     att.mime_type,
                     att.file_name,
-                    att.size_bytes,
+                    att.size_bytes.map(|v| v as i64),
                     att.remote_url,
                     att.thumbnail_url,
                     att.metadata_json.as_ref().map(serde_json::Value::to_string),
@@ -3474,13 +3474,13 @@ impl ConversationRepository {
                 staged_attachment_id,
             } = &part.content
             {
-                let rec: (String, String, String, u64, String, Option<String>) = tx
+                let rec: (String, String, String, i64, String, Option<String>) = tx
                     .query_row(
                         "SELECT media_type, mime_type, file_name, file_size_bytes, local_path, thumbnail_path
                          FROM conversation_staged_attachments
                          WHERE staged_attachment_id = ?1",
                         params![staged_attachment_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get::<_, i64>(3)?, row.get(4)?, row.get(5)?)),
                     )
                     .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
 
@@ -4595,7 +4595,7 @@ impl ConversationRepository {
                         media_type,
                         mime_type,
                         file_name: r.get(2)?,
-                        size_bytes: r.get(3)?,
+                        size_bytes: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
                         local_path: r.get(4)?,
                     })
                 },

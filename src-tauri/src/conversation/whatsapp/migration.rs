@@ -18,8 +18,18 @@ pub fn apply_whatsapp_migrations(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_phone 
+        CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_phone
         ON whatsapp_sessions(phone_number);
+
+        CREATE TABLE IF NOT EXISTS whatsapp_lid_pn_mappings (
+            lid TEXT PRIMARY KEY,
+            phone_e164 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_whatsapp_lid_pn_phone
+        ON whatsapp_lid_pn_mappings(phone_e164);
 
         CREATE TABLE IF NOT EXISTS contact_suppression_list (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +41,7 @@ pub fn apply_whatsapp_migrations(conn: &Connection) -> Result<()> {
             UNIQUE(channel, phone_or_email)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_suppression_lookup 
+        CREATE INDEX IF NOT EXISTS idx_suppression_lookup
         ON contact_suppression_list(channel, phone_or_email);
 
         CREATE TABLE IF NOT EXISTS whatsapp_outreach_campaigns (
@@ -61,7 +71,7 @@ pub fn apply_whatsapp_migrations(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_wa_outreach_campaigns_status 
+        CREATE INDEX IF NOT EXISTS idx_wa_outreach_campaigns_status
         ON whatsapp_outreach_campaigns(status, updated_at);
 
         CREATE TABLE IF NOT EXISTS whatsapp_campaign_recipients (

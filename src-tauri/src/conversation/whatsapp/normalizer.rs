@@ -395,7 +395,7 @@ impl WhatsAppNormalizer {
         let mut sender_identity_id: Option<i64> = None;
 
         if !is_group {
-            let peer_phone = phone::jid_to_phone(&msg.chat_jid)
+            let peer_phone = phone::resolve_lid_or_jid_to_phone(&tx, &msg.chat_jid)
                 .unwrap_or_else(|| msg.chat_jid.trim().to_string());
             let normalized_phone =
                 phone::normalize_e164(&peer_phone, Some("84")).unwrap_or(peer_phone);
@@ -421,9 +421,9 @@ impl WhatsAppNormalizer {
                     ?4, ?5, ?6, ?7, ?7
                 )
                 ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) WHERE channel_account_id IS NOT NULL DO UPDATE SET
-                    lead_id = CASE WHEN EXCLUDED.lead_id IS NOT NULL THEN EXCLUDED.lead_id ELSE channel_identities.lead_id END,
+                    lead_id = EXCLUDED.lead_id,
                     display_name = COALESCE(EXCLUDED.display_name, channel_identities.display_name),
-                    link_source = CASE WHEN EXCLUDED.lead_id IS NOT NULL THEN EXCLUDED.link_source ELSE channel_identities.link_source END,
+                    link_source = EXCLUDED.link_source,
                     updated_at = EXCLUDED.updated_at",
                 params![
                     lead_id,
@@ -456,7 +456,7 @@ impl WhatsAppNormalizer {
             }
         } else if let Some(ref sender_jid) = msg.sender_jid {
             if !msg.is_from_me {
-                let sender_phone = phone::jid_to_phone(sender_jid)
+                let sender_phone = phone::resolve_lid_or_jid_to_phone(&tx, sender_jid)
                     .or_else(|| phone::normalize_e164(sender_jid, Some("84")));
                 let ext_id = sender_phone.clone().unwrap_or_else(|| sender_jid.clone());
 
@@ -483,9 +483,9 @@ impl WhatsAppNormalizer {
                         ?4, ?5, ?6, ?7, ?7
                     )
                     ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) WHERE channel_account_id IS NOT NULL DO UPDATE SET
-                        lead_id = CASE WHEN EXCLUDED.lead_id IS NOT NULL THEN EXCLUDED.lead_id ELSE channel_identities.lead_id END,
+                        lead_id = EXCLUDED.lead_id,
                         display_name = COALESCE(EXCLUDED.display_name, channel_identities.display_name),
-                        link_source = CASE WHEN EXCLUDED.lead_id IS NOT NULL THEN EXCLUDED.link_source ELSE channel_identities.link_source END,
+                        link_source = EXCLUDED.link_source,
                         updated_at = EXCLUDED.updated_at",
                     params![
                         lead_id,
@@ -624,7 +624,7 @@ impl WhatsAppNormalizer {
                             att_type,
                             att.file_name,
                             mime,
-                            att.size_bytes,
+                            att.size_bytes.map(|v| v as i64),
                             att.url,
                             att.direct_path,
                             att.thumbnail_url,

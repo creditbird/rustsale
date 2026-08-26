@@ -621,26 +621,9 @@ pub async fn disconnect_whatsapp_account(
 ) -> Result<(), String> {
     state
         .whatsapp_supervisor
-        .unregister_client(channel_account_id)
-        .await;
-    let conn = crate::db::open_db_connection(state.service.repository.db_path())
-        .map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
-        "UPDATE channel_accounts 
-         SET connection_status = 'disconnected', enabled = 0, updated_at = ?1 
-         WHERE id = ?2 AND channel = 'whatsapp'",
-        rusqlite::params![now, channel_account_id],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE whatsapp_sessions 
-         SET is_valid = 0, updated_at = ?1 
-         WHERE channel_account_id = ?2",
-        rusqlite::params![now, channel_account_id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+        .disconnect_account(channel_account_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -672,14 +655,29 @@ pub fn populate_whatsapp_campaign_recipients(
 }
 
 #[tauri::command]
-pub fn start_whatsapp_campaign(
+pub async fn start_whatsapp_campaign(
     state: tauri::State<'_, ConversationState>,
     campaign_id: i64,
 ) -> Result<(), String> {
     let conn = crate::db::open_db_connection(state.service.repository.db_path())
         .map_err(|e| e.to_string())?;
     crate::conversation::whatsapp::campaign::start_campaign(&conn, campaign_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let db_path = state.service.repository.db_path().to_string();
+    let supervisor = state.whatsapp_supervisor.clone();
+    let cancel_token = supervisor.cancellation_token();
+    tokio::spawn(async move {
+        crate::conversation::whatsapp::campaign::run_campaign_worker(
+            db_path,
+            campaign_id,
+            supervisor,
+            cancel_token,
+        )
+        .await;
+    });
+
+    Ok(())
 }
 
 #[tauri::command]

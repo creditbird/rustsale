@@ -246,6 +246,34 @@ pub fn create_campaign(
     conn: &rusqlite::Connection,
     req: &CreateCampaignRequest,
 ) -> rusqlite::Result<i64> {
+    let name_trimmed = req.name.trim();
+    if name_trimmed.is_empty() {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Campaign name cannot be empty",
+            ),
+        )));
+    }
+    if req.assigned_account_ids.is_empty() {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "At least one WhatsApp account must be assigned",
+            ),
+        )));
+    }
+    let min_delay = req.rate_limit_min_delay_secs.unwrap_or(8);
+    let max_delay = req.rate_limit_max_delay_secs.unwrap_or(20);
+    if min_delay < 0 || max_delay < min_delay {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid rate limit delays: min_delay must be non-negative and <= max_delay",
+            ),
+        )));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let accounts_json =
         serde_json::to_string(&req.assigned_account_ids).unwrap_or_else(|_| "[]".to_string());
@@ -259,11 +287,11 @@ pub fn create_campaign(
             timezone, created_at, updated_at
          ) VALUES (?1, ?2, 'draft', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
         rusqlite::params![
-            req.name.trim(),
+            name_trimmed,
             req.template_id,
             accounts_json,
-            req.rate_limit_min_delay_secs.unwrap_or(8),
-            req.rate_limit_max_delay_secs.unwrap_or(20),
+            min_delay,
+            max_delay,
             req.burst_limit_per_batch.unwrap_or(25),
             req.burst_pause_secs.unwrap_or(60),
             if req.quiet_hours_enabled.unwrap_or(true) {
@@ -350,57 +378,50 @@ pub fn claim_next_recipients(
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut stmt = conn.prepare(
-        "SELECT id, campaign_id, lead_id, recipient_phone_raw, recipient_phone_e164, recipient_jid,
-                assigned_channel_account_id, status, skip_reason, rendered_text, rendered_image_url,
-                message_id, outbox_job_id, attempt_count, last_attempt_at, last_error, created_at, updated_at
-         FROM whatsapp_campaign_recipients
-         WHERE campaign_id = ?1 AND status = 'pending'
-         ORDER BY id ASC
-         LIMIT ?2",
+        "UPDATE whatsapp_campaign_recipients
+         SET status = 'running',
+             assigned_channel_account_id = ?1,
+             attempt_count = attempt_count + 1,
+             last_attempt_at = ?2,
+             updated_at = ?2
+         WHERE id IN (
+             SELECT id FROM whatsapp_campaign_recipients
+             WHERE campaign_id = ?3 AND status = 'pending'
+             ORDER BY id ASC
+             LIMIT ?4
+         )
+         RETURNING id, campaign_id, lead_id, recipient_phone_raw, recipient_phone_e164, recipient_jid,
+                   assigned_channel_account_id, status, skip_reason, rendered_text, rendered_image_url,
+                   message_id, outbox_job_id, attempt_count, last_attempt_at, last_error, created_at, updated_at",
     )?;
 
-    let mut records: Vec<CampaignRecipientRecord> = stmt
-        .query_map(rusqlite::params![campaign_id, limit as i64], |r| {
-            Ok(CampaignRecipientRecord {
-                id: r.get(0)?,
-                campaign_id: r.get(1)?,
-                lead_id: r.get(2)?,
-                recipient_phone_raw: r.get(3)?,
-                recipient_phone_e164: r.get(4)?,
-                recipient_jid: r.get(5)?,
-                assigned_channel_account_id: r.get(6)?,
-                status: r.get(7)?,
-                skip_reason: r.get(8)?,
-                rendered_text: r.get(9)?,
-                rendered_image_url: r.get(10)?,
-                message_id: r.get(11)?,
-                outbox_job_id: r.get(12)?,
-                attempt_count: r.get(13)?,
-                last_attempt_at: r.get(14)?,
-                last_error: r.get(15)?,
-                created_at: r.get(16)?,
-                updated_at: r.get(17)?,
-            })
-        })?
+    let records: Vec<CampaignRecipientRecord> = stmt
+        .query_map(
+            rusqlite::params![assigned_account_id, now, campaign_id, limit as i64],
+            |r| {
+                Ok(CampaignRecipientRecord {
+                    id: r.get(0)?,
+                    campaign_id: r.get(1)?,
+                    lead_id: r.get(2)?,
+                    recipient_phone_raw: r.get(3)?,
+                    recipient_phone_e164: r.get(4)?,
+                    recipient_jid: r.get(5)?,
+                    assigned_channel_account_id: r.get(6)?,
+                    status: r.get(7)?,
+                    skip_reason: r.get(8)?,
+                    rendered_text: r.get(9)?,
+                    rendered_image_url: r.get(10)?,
+                    message_id: r.get(11)?,
+                    outbox_job_id: r.get(12)?,
+                    attempt_count: r.get(13)?,
+                    last_attempt_at: r.get(14)?,
+                    last_error: r.get(15)?,
+                    created_at: r.get(16)?,
+                    updated_at: r.get(17)?,
+                })
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    for item in &mut records {
-        conn.execute(
-            "UPDATE whatsapp_campaign_recipients
-             SET status = 'running',
-                 assigned_channel_account_id = ?1,
-                 attempt_count = attempt_count + 1,
-                 last_attempt_at = ?2,
-                 updated_at = ?2
-             WHERE id = ?3",
-            rusqlite::params![assigned_account_id, now, item.id],
-        )?;
-        item.status = "running".to_string();
-        item.assigned_channel_account_id = assigned_account_id;
-        item.attempt_count += 1;
-        item.last_attempt_at = Some(now.clone());
-        item.updated_at = now.clone();
-    }
 
     Ok(records)
 }
@@ -733,12 +754,193 @@ pub fn recover_interrupted_campaign(
          SET status = 'pending',
              assigned_channel_account_id = NULL,
              updated_at = ?1
-         WHERE campaign_id = ?2 
-           AND status = 'running' 
-           AND message_id IS NULL 
+         WHERE campaign_id = ?2
+           AND status = 'running'
+           AND message_id IS NULL
            AND outbox_job_id IS NULL",
         rusqlite::params![now, campaign_id],
     )?;
     refresh_campaign_counters(conn, campaign_id)?;
     Ok(recovered)
+}
+
+/// Recovers all active or interrupted campaigns on application startup.
+pub fn recover_interrupted_campaigns_all(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM whatsapp_outreach_campaigns WHERE status IN ('running', 'queued', 'pausing')",
+    )?;
+    let campaign_ids: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut total_recovered = 0;
+    for cid in campaign_ids {
+        total_recovered += recover_interrupted_campaign(conn, cid)?;
+    }
+    Ok(total_recovered)
+}
+
+/// Runs the background campaign worker loop for a specified campaign.
+pub async fn run_campaign_worker(
+    db_path: String,
+    campaign_id: i64,
+    supervisor: std::sync::Arc<super::supervisor::WhatsAppSupervisor>,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    tracing::info!(target: "whatsapp_campaign", campaign_id, "Starting WhatsApp campaign worker");
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(target: "whatsapp_campaign", campaign_id, %e, "Failed to open database for campaign worker");
+            return;
+        }
+    };
+
+    // Mark campaign running
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = conn.execute(
+        "UPDATE whatsapp_outreach_campaigns SET status = 'running', started_at = COALESCE(started_at, ?1), updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, campaign_id],
+    );
+
+    let mut account_index = 0;
+    while !cancel_token.is_cancelled() {
+        let campaign = match get_campaign(&conn, campaign_id) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+
+        if campaign.status != "running" {
+            break;
+        }
+
+        // Check quiet hours
+        if campaign.quiet_hours_enabled {
+            let current_hhmm = chrono::Local::now().format("%H:%M").to_string();
+            if is_in_quiet_hours(
+                &campaign.quiet_hours_start,
+                &campaign.quiet_hours_end,
+                &current_hhmm,
+            ) {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                continue;
+            }
+        }
+
+        if campaign.assigned_account_ids.is_empty() {
+            break;
+        }
+
+        let account_id =
+            campaign.assigned_account_ids[account_index % campaign.assigned_account_ids.len()];
+        account_index += 1;
+
+        let client = match supervisor.get_client(account_id).await {
+            Some(c) if c.is_connected().await => c,
+            _ => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+
+        let batch_size = campaign.burst_limit_per_batch.clamp(1, 100) as usize;
+        let claimed = match claim_next_recipients(&conn, campaign_id, batch_size, Some(account_id))
+        {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+
+        if claimed.is_empty() {
+            let _ = refresh_campaign_counters(&conn, campaign_id);
+            break;
+        }
+
+        for recipient in claimed {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+
+            let is_suppressed: bool = conn
+                .query_row(
+                    "SELECT 1 FROM contact_suppression_list WHERE channel = 'whatsapp' AND phone_or_email = ?1",
+                    [&recipient.recipient_phone_e164],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if is_suppressed {
+                let _ = update_recipient_status(
+                    &conn,
+                    recipient.id,
+                    "skipped",
+                    Some("opt_out_suppressed"),
+                    None,
+                    None,
+                    None,
+                );
+                continue;
+            }
+
+            let text = recipient.rendered_text.as_deref().unwrap_or_default();
+            match client
+                .send_text_message(&recipient.recipient_jid, text, None)
+                .await
+            {
+                Ok(resp) => {
+                    let _ = update_recipient_status(
+                        &conn,
+                        recipient.id,
+                        "sent",
+                        None,
+                        None,
+                        None,
+                        Some(&resp.provider_message_id),
+                    );
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    let kind = super::client::categorize_whatsapp_error(e.as_ref());
+                    let status = match kind {
+                        super::client::WhatsAppErrorKind::InvalidRecipient => "blocked",
+                        super::client::WhatsAppErrorKind::AmbiguousTimeout => "delivery_unknown",
+                        _ => "failed",
+                    };
+                    let _ = update_recipient_status(
+                        &conn,
+                        recipient.id,
+                        status,
+                        None,
+                        Some(&err_str),
+                        None,
+                        None,
+                    );
+                }
+            }
+
+            let min_d = campaign.rate_limit_min_delay_secs.max(1);
+            let max_d = campaign.rate_limit_max_delay_secs.max(min_d);
+            let delay_secs = if max_d > min_d {
+                (rand::random::<u64>() % (max_d - min_d + 1) as u64) + min_d as u64
+            } else {
+                min_d as u64
+            };
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+        }
+
+        if campaign.burst_pause_secs > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                campaign.burst_pause_secs as u64,
+            ))
+            .await;
+        }
+
+        let now_hb = chrono::Utc::now().to_rfc3339();
+        let _ = conn.execute(
+            "UPDATE whatsapp_outreach_campaigns SET last_heartbeat_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_hb, campaign_id],
+        );
+    }
+
+    let _ = refresh_campaign_counters(&conn, campaign_id);
+    tracing::info!(target: "whatsapp_campaign", campaign_id, "WhatsApp campaign worker finished");
 }

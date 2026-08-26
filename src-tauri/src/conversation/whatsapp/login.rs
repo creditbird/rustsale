@@ -67,6 +67,7 @@ pub struct LoginAttemptState {
 /// Manages WhatsApp QR pairing login attempts, isolated session storage, and callbacks.
 #[derive(Clone)]
 pub struct WhatsAppLoginManager {
+    db_path: String,
     sessions_dir: PathBuf,
     active_attempts: Arc<Mutex<HashMap<String, LoginAttemptState>>>,
     event_sender: broadcast::Sender<WhatsAppLoginEvent>,
@@ -74,10 +75,15 @@ pub struct WhatsAppLoginManager {
 }
 
 impl WhatsAppLoginManager {
-    /// Creates a new `WhatsAppLoginManager` with the specified sessions storage directory.
-    pub fn new(sessions_dir: PathBuf, app_handle: Option<tauri::AppHandle>) -> Self {
+    /// Creates a new `WhatsAppLoginManager` with the specified database path and sessions directory.
+    pub fn new(
+        db_path: String,
+        sessions_dir: PathBuf,
+        app_handle: Option<tauri::AppHandle>,
+    ) -> Self {
         let (event_sender, _) = broadcast::channel(64);
         Self {
+            db_path,
             sessions_dir,
             active_attempts: Arc::new(Mutex::new(HashMap::new())),
             event_sender,
@@ -97,10 +103,20 @@ impl WhatsAppLoginManager {
     pub fn new_mock_with_dir(sessions_dir: PathBuf) -> Self {
         let (event_sender, _) = broadcast::channel(64);
         Self {
+            db_path: ":memory:".to_string(),
             sessions_dir,
             active_attempts: Arc::new(Mutex::new(HashMap::new())),
             event_sender,
             app_handle: None,
+        }
+    }
+
+    /// Validates that a string does not contain directory traversal characters.
+    pub fn validate_path_component(name: &str) -> Result<(), String> {
+        if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+            Err(format!("Invalid path component: '{}'", name))
+        } else {
+            Ok(())
         }
     }
 
@@ -116,13 +132,14 @@ impl WhatsAppLoginManager {
 
     /// Returns the path to the temporary database file for a login attempt.
     pub fn get_temp_db_path(&self, attempt_id: &str) -> PathBuf {
-        self.sessions_dir.join(format!("temp_{}.db", attempt_id))
+        let clean_id = attempt_id.replace(['/', '\\', '.'], "_");
+        self.sessions_dir.join(format!("temp_{}.db", clean_id))
     }
 
     /// Returns the path to the permanent session database file for a paired account.
     pub fn get_session_db_path(&self, account_key: &str) -> PathBuf {
-        self.sessions_dir
-            .join(format!("session_{}.db", account_key))
+        let clean_key = account_key.replace(['/', '\\', '.'], "_");
+        self.sessions_dir.join(format!("session_{}.db", clean_key))
     }
 
     /// Checks if a login attempt is currently active.
@@ -159,11 +176,91 @@ impl WhatsAppLoginManager {
 
     /// Starts a production QR login pairing attempt.
     pub async fn start_qr_login(&self, attempt_id: &str) -> Result<(), String> {
-        self.init_attempt_internal(attempt_id, false).await
+        Self::validate_path_component(attempt_id)?;
+        self.init_attempt_internal(attempt_id, false).await?;
+
+        let temp_db_path = self.get_temp_db_path(attempt_id);
+        let store = whatsapp_rust::prelude::SqliteStore::new(&temp_db_path.to_string_lossy())
+            .await
+            .map_err(|e| format!("Failed to open temp session store: {}", e))?;
+
+        let self_for_qr = self.clone();
+        let attempt_for_qr = attempt_id.to_string();
+        let self_for_conn = self.clone();
+        let attempt_for_conn = attempt_id.to_string();
+        let db_path_for_conn = self.db_path.clone();
+
+        let bot = whatsapp_rust::bot::Bot::builder()
+            .with_backend(store)
+            .on_qr_code(move |qr_str, timeout| {
+                let self_inner = self_for_qr.clone();
+                let attempt_id_inner = attempt_for_qr.clone();
+                let timeout_secs = timeout.as_secs() as u32;
+                async move {
+                    let seq = {
+                        let mut attempts = self_inner.active_attempts.lock().unwrap();
+                        if let Some(state) = attempts.get_mut(&attempt_id_inner) {
+                            state.last_qr_sequence += 1;
+                            state.last_qr_sequence
+                        } else {
+                            1
+                        }
+                    };
+                    self_inner.emit_qr_code(&attempt_id_inner, &qr_str, timeout_secs, seq);
+                }
+            })
+            .on_connected(move |client| {
+                let self_inner = self_for_conn.clone();
+                let attempt_id_inner = attempt_for_conn.clone();
+                let db_path = db_path_for_conn.clone();
+                async move {
+                    let push_name = client.push_name();
+                    let pn = client
+                        .pn()
+                        .map(|j| j.user.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let lid = client.lid().map(|j| j.user.to_string());
+                    let account_key = format!("wa_{}", pn);
+
+                    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                        let _ = self_inner.finalize_login_success(
+                            &conn,
+                            &attempt_id_inner,
+                            &account_key,
+                            &pn,
+                            if push_name.is_empty() {
+                                None
+                            } else {
+                                Some(&push_name)
+                            },
+                            lid.as_deref(),
+                            None,
+                        );
+                    }
+                }
+            })
+            .build()
+            .await
+            .map_err(|e| format!("Failed to build QR bot: {}", e))?;
+
+        let bot_handle = bot.spawn();
+        let task_handle = tokio::spawn(async move {
+            let _ = bot_handle.await;
+        });
+
+        {
+            let mut attempts = self.active_attempts.lock().unwrap();
+            if let Some(state) = attempts.get_mut(attempt_id) {
+                state.task_handle = Some(task_handle);
+            }
+        }
+
+        Ok(())
     }
 
     /// Starts a mock login attempt for testing without a live WebSocket connection.
     pub async fn start_mock_login(&self, attempt_id: &str) -> Result<(), String> {
+        Self::validate_path_component(attempt_id)?;
         self.init_attempt_internal(attempt_id, true).await
     }
 
