@@ -313,6 +313,60 @@ describe('FacebookAccountsSettings', () => {
     expect(await screen.findByText('Supabase Connected Page')).toBeTruthy();
   });
 
+  test('prioritizes long_lived_token over short-lived access_token in OAuth callback URL', async () => {
+    mockDiscoveredPages = [
+      {
+        id: 'page_long_lived_1',
+        name: 'Long Lived Fanpage',
+        category: 'Business',
+        avatarUrl: null,
+        accessToken: 'EAAB_permanent_page_token_abc',
+        permissions: ['pages_messaging', 'pages_read_engagement']
+      }
+    ];
+
+    render(FacebookAccountsSettings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Connect Fanpage/i }));
+
+    let capturedAuthUrl = '';
+    window.open = (url?: string | URL) => {
+      capturedAuthUrl = String(url);
+      return null;
+    };
+
+    const openMetaBtn = await screen.findByRole('button', { name: /Open Meta Login/i });
+    await fireEvent.click(openMetaBtn);
+
+    await waitFor(() => {
+      const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+      const url = openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl;
+      expect(url).toMatch(/state=([^&]+)/);
+    });
+
+    const openerCmd = invokedCommands.find((c) => c.command.includes('opener'));
+    const authUrl = String(openerCmd?.args?.path || openerCmd?.args?.url || capturedAuthUrl);
+    const stateMatch = authUrl.match(/state=([^&]+)/);
+    expect(stateMatch).toBeTruthy();
+
+    const tokenInput = screen.getByPlaceholderText(/Paste Access Token/i);
+    // User callback contains both short-lived access_token (expires_in=5424) and long_lived_token
+    await fireEvent.input(tokenInput, {
+      target: {
+        value: `http://localhost:3000/?error=invalid_request#access_token=EAAB_short_lived_123&expires_in=5424&long_lived_token=EAAB_long_lived_token_xyz&state=${stateMatch![1]}`
+      }
+    });
+
+    const fetchBtn = screen.getByRole('button', { name: /Fetch Pages/i });
+    await fireEvent.click(fetchBtn);
+
+    expect(await screen.findByText('Long Lived Fanpage')).toBeTruthy();
+
+    const fetchCall = invokedCommands.find((c) => c.command === 'fetch_facebook_pages_from_token');
+    expect(fetchCall).toBeTruthy();
+    expect(fetchCall?.args?.token).toBe('EAAB_long_lived_token_xyz');
+  });
+
   test('rejects unsafe OAuth redirect URIs such as javascript: or non-HTTPS schemes', async () => {
     render(FacebookAccountsSettings);
 
