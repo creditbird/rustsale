@@ -20,6 +20,7 @@ pub mod retry;
 pub mod service;
 pub mod staging;
 pub mod types;
+pub mod whatsapp;
 pub mod zalo;
 
 #[cfg(test)]
