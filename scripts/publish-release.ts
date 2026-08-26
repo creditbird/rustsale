@@ -354,13 +354,30 @@ const s3 = new S3Client({
     accessKeyId,
     secretAccessKey,
   },
+  maxAttempts: 5,
 });
+
+async function uploadWithRetry(command: PutObjectCommand, maxRetries = 5): Promise<void> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await s3.send(command);
+      return;
+    } catch (err: any) {
+      if (attempt === maxRetries) {
+        throw err;
+      }
+      const delayMs = attempt * 2000;
+      console.warn(`   ⚠️ Upload failed (attempt ${attempt}/${maxRetries}): ${err?.message || err}. Retrying in ${delayMs / 1000}s...`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
 
 for (const item of filesToUpload) {
   const body = readFileSync(item.path);
   const sizeMb = (body.length / 1024 / 1024).toFixed(2);
   console.log(`   📤 Uploading ${item.key} (${sizeMb} MB)...`);
-  await s3.send(
+  await uploadWithRetry(
     new PutObjectCommand({
       Bucket: bucketName,
       Key: item.key,
@@ -374,7 +391,7 @@ for (const item of filesToUpload) {
 // Upload latest.json with no-cache header
 const manifestBody = readFileSync(outputManifestPath);
 console.log(`   📤 Uploading latest.json (root)...`);
-await s3.send(
+await uploadWithRetry(
   new PutObjectCommand({
     Bucket: bucketName,
     Key: 'latest.json',
@@ -391,7 +408,7 @@ if (existsSync(installScriptPath)) {
   const rawContent = readFileSync(installScriptPath, 'utf-8');
   const installScriptBody = Buffer.from(rawContent.replace(/\r\n/g, '\n'), 'utf-8');
   console.log(`   📤 Uploading install-linux.sh (root, sanitized LF)...`);
-  await s3.send(
+  await uploadWithRetry(
     new PutObjectCommand({
       Bucket: bucketName,
       Key: 'install-linux.sh',
