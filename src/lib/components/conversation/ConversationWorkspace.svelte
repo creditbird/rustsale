@@ -77,7 +77,7 @@
     targetLead = null,
     onOpenSettings = () => {},
     onOpenQrLogin = () => {},
-    runtimeRefreshIntervalMs = 5_000
+    runtimeRefreshIntervalMs = 30_000
   }: {
     activeTab?: string;
     targetLead?: TargetLeadPayload | null;
@@ -617,7 +617,12 @@
       if (runtimeRefreshIntervalMs > 0) {
         void refreshRuntimeStatus(true);
       }
-      void syncFacebookConversations().catch(() => {});
+      const hasConnectedMessenger = runtime?.accounts?.some(
+        (a) => a.channel === 'messenger' && a.status === 'connected'
+      );
+      if (hasConnectedMessenger) {
+        void syncFacebookConversations().catch(() => {});
+      }
     }, runtimeRefreshIntervalMs > 0 ? runtimeRefreshIntervalMs : 30_000);
 
     return () => {
@@ -1493,7 +1498,7 @@
       <MessageComposer
         item={selectedItem}
         runtime={runtime}
-        disabled={runtimeLoading}
+        disabled={false}
         replyTarget={replySelection}
         onCancelReply={() => (replySelection = null)}
         onBatchQueued={handleBatchQueued}

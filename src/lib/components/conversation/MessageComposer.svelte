@@ -368,6 +368,7 @@
         lastProcessedText = '';
         attachments = [];
         mentions = [];
+        if (textareaElement) textareaElement.value = '';
         return;
       }
       const draft = draftCache.get(activeDraftKey);
@@ -375,6 +376,7 @@
       lastProcessedText = draft.text;
       attachments = [...draft.attachments];
       mentions = [...draft.mentions];
+      if (textareaElement) textareaElement.value = draft.text;
     });
   });
 
@@ -393,6 +395,9 @@
   });
 
   onMount(() => {
+    if (textareaElement && textareaElement.value !== text) {
+      textareaElement.value = text;
+    }
     const unlisten = onDragDropEvent(
       (paths) => {
         isDragActive = false;
@@ -686,6 +691,7 @@
     const result = replaceSlashToken(text, quickTemplateSlashToken, template.bodyText);
     text = result.value;
     lastProcessedText = result.value;
+    if (textareaElement) textareaElement.value = result.value;
     persistDraft();
     showQuickTemplatePopover = false;
     quickTemplateSlashToken = null;
@@ -725,6 +731,7 @@
     const result = insertMention(text, mentionToken, candidate, mentions);
     text = result.value;
     lastProcessedText = result.value;
+    if (textareaElement) textareaElement.value = result.value;
     mentions = result.mentions;
     persistDraft();
     showMentionPopover = false;
@@ -926,6 +933,7 @@
     const nextDraft = draftCache.get(activeDraftKey);
     text = nextDraft.text;
     lastProcessedText = nextDraft.text;
+    if (textareaElement) textareaElement.value = nextDraft.text;
     attachments = [...nextDraft.attachments];
     mentions = [...nextDraft.mentions];
     sendError = null;
@@ -957,6 +965,7 @@
       const restored = draftCache.get(activeDraftKey);
       text = restored.text;
       lastProcessedText = restored.text;
+      if (textareaElement) textareaElement.value = restored.text;
       attachments = [...restored.attachments];
       mentions = [...restored.mentions];
       sendError = formatError(error);
@@ -1327,7 +1336,6 @@
   <div class="flex items-center gap-2.5">
     <textarea
       bind:this={textareaElement}
-      value={text}
       oninput={handleTextInput}
       onkeydown={handleKeydown}
       onpaste={() => void handlePaste()}
