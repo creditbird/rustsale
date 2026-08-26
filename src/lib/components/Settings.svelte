@@ -29,51 +29,58 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col gap-5 overflow-y-auto pr-1">
-  <Card.Root class="shrink-0 overflow-hidden">
-    <Card.Header class="border-b border-border/70 bg-muted/20">
+<div class="flex flex-col gap-6 pb-8">
+  <!-- Channel & Account Settings Section -->
+  <Card.Root class="overflow-hidden border-border/80">
+    <Card.Header class="border-b border-border/60 bg-muted/10 pb-4">
       <div class="flex items-start gap-3">
-        <div class="rounded-xl bg-primary/10 p-2.5 text-primary"><Settings2 class="size-5" /></div>
+        <div class="rounded-xl bg-primary/10 p-2.5 text-primary shrink-0">
+          <Settings2 class="size-5" />
+        </div>
         <div>
-          <Card.Title class="text-base">{m.settings_channels_title()}</Card.Title>
-          <Card.Description class="mt-1 max-w-3xl text-xs">
+          <Card.Title class="text-base font-bold text-foreground">
+            {m.settings_channels_title()}
+          </Card.Title>
+          <Card.Description class="mt-0.5 text-xs text-muted-foreground">
             {m.settings_channels_desc()}
           </Card.Description>
         </div>
       </div>
     </Card.Header>
+
+    <Card.Content class="p-5 sm:p-6 flex flex-col gap-6">
+      <Tabs.Root bind:value={activeChannel} class="flex flex-col gap-5">
+        <Tabs.List class="grid h-auto w-full grid-cols-2 gap-1.5 rounded-xl bg-muted/50 p-1.5 sm:grid-cols-4" variant="default">
+          <Tabs.Trigger value="zalo" class="h-10 gap-2 rounded-lg text-xs font-semibold data-[state=active]:bg-background data-[state=active]:shadow-xs">
+            <MessageCircleMore class="size-4 text-emerald-600 shrink-0" /> Zalo
+          </Tabs.Trigger>
+          <Tabs.Trigger value="email" class="h-10 gap-2 rounded-lg text-xs font-semibold data-[state=active]:bg-background data-[state=active]:shadow-xs">
+            <Mail class="size-4 text-sky-600 shrink-0" /> Email
+          </Tabs.Trigger>
+          <Tabs.Trigger value="facebook" class="h-10 gap-2 rounded-lg text-xs font-semibold data-[state=active]:bg-background data-[state=active]:shadow-xs">
+            <MessagesSquare class="size-4 text-blue-600 shrink-0" /> Facebook
+          </Tabs.Trigger>
+          <Tabs.Trigger value="whatsapp" class="h-10 gap-2 rounded-lg text-xs font-semibold" disabled>
+            <MessageCircleMore class="size-4 text-emerald-600/50 shrink-0" /> WhatsApp
+            <Badge variant="outline" class="text-[9px] px-1 py-0 h-4">{m.common_coming_soon()}</Badge>
+          </Tabs.Trigger>
+        </Tabs.List>
+
+        <div class="pt-1">
+          <Tabs.Content value="zalo"><ZaloAccountsSettings bind:this={zaloSettingsRef} /></Tabs.Content>
+          <Tabs.Content value="email"><EmailAccountsSettings /></Tabs.Content>
+          <Tabs.Content value="facebook"><FacebookAccountsSettings {onNavigateToHub} /></Tabs.Content>
+        </div>
+      </Tabs.Root>
+    </Card.Content>
   </Card.Root>
 
-  <Tabs.Root bind:value={activeChannel} class="min-h-0 gap-4">
-    <Tabs.List class="grid h-auto w-full grid-cols-2 gap-1 lg:grid-cols-4" variant="default">
-      <Tabs.Trigger value="zalo" class="min-h-11 gap-2">
-        <MessageCircleMore class="size-4 text-emerald-600" /> Zalo
-      </Tabs.Trigger>
-      <Tabs.Trigger value="email" class="min-h-11 gap-2">
-        <Mail class="size-4 text-sky-600" /> Email
-      </Tabs.Trigger>
-      <Tabs.Trigger value="facebook" class="min-h-11 gap-2">
-        <MessagesSquare class="size-4 text-blue-600" /> Facebook
-      </Tabs.Trigger>
-      <Tabs.Trigger value="whatsapp" class="min-h-11 gap-2" disabled>
-        <MessageCircleMore class="size-4 text-emerald-600" /> WhatsApp <Badge variant="outline" class="text-[9px]">{m.common_coming_soon()}</Badge>
-      </Tabs.Trigger>
-    </Tabs.List>
+  <!-- Notification & System Tray Section -->
+  <NotificationSettings />
 
-    <Tabs.Content value="zalo" class="min-h-0"><ZaloAccountsSettings bind:this={zaloSettingsRef} /></Tabs.Content>
-    <Tabs.Content value="email" class="min-h-0"><EmailAccountsSettings /></Tabs.Content>
-    <Tabs.Content value="facebook" class="min-h-0"><FacebookAccountsSettings {onNavigateToHub} /></Tabs.Content>
-  </Tabs.Root>
+  <!-- Language & Localization Section -->
+  <LanguageSettings />
 
-  <div>
-    <NotificationSettings />
-  </div>
-
-  <div>
-    <LanguageSettings />
-  </div>
-
-  <div class="pt-2 pb-6">
-    <AppUpdateSettings />
-  </div>
+  <!-- App Update Section -->
+  <AppUpdateSettings />
 </div>
