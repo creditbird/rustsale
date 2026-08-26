@@ -1416,7 +1416,10 @@ impl ConversationService {
             });
 
             parent_info.map(|(p_msg_id, p_cli_id, text, content_type, occurred_at)| {
-                let stanza_id = p_msg_id.or(p_cli_id).unwrap_or_default();
+                let stanza_id = p_msg_id
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| p_cli_id.filter(|s| !s.trim().is_empty()))
+                    .unwrap_or_default();
                 crate::conversation::whatsapp::normalizer::RawWhatsAppQuote {
                     stanza_id,
                     participant_jid: recipient_jid.clone(),
