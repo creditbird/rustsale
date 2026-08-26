@@ -1163,7 +1163,7 @@
   }
 </script>
 
-<div class="relative flex flex-col gap-2 border-t p-3 bg-background">
+<div class="relative flex flex-col gap-2 border-t p-3 bg-background [contain:layout_style] [transform:translateZ(0)]">
   <AttachmentDropOverlay active={isDragActive} />
 
   <div class="flex items-center justify-between gap-2">

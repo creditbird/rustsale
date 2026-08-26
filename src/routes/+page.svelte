@@ -192,39 +192,31 @@
         </div>
       {/if}
 
-      <div class={activeTab === 'conversation' ? 'h-full' : 'hidden'}>
-        <ConversationWorkspace {activeTab} targetLead={targetLeadForConversation} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
-      </div>
-      <div class={activeTab === 'facebook_hub' ? '' : 'hidden'}>
+      {#if activeTab === 'conversation'}
+        <div class="h-full">
+          <ConversationWorkspace {activeTab} targetLead={targetLeadForConversation} onOpenSettings={() => (activeTab = 'settings')} onOpenQrLogin={handleOpenQrLogin} />
+        </div>
+      {:else if activeTab === 'facebook_hub'}
         <FacebookHub {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
-      </div>
-      <div class={activeTab === 'dashboard' ? '' : 'hidden'}>
+      {:else if activeTab === 'dashboard'}
         <Dashboard {activeTab} />
-      </div>
-      <div class={activeTab === 'scraper' ? '' : 'hidden'}>
+      {:else if activeTab === 'scraper'}
         <GoogleMapsScraper />
-      </div>
-      <div class={activeTab === 'leads' ? '' : 'hidden'}>
+      {:else if activeTab === 'leads'}
         <LeadsList entityType="leads" leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
-      </div>
-      <div class={activeTab === 'contacts' ? '' : 'hidden'}>
+      {:else if activeTab === 'contacts'}
         <LeadsList entityType="contacts" leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
-      </div>
-      <div class={activeTab === 'categories' ? '' : 'hidden'}>
+      {:else if activeTab === 'categories'}
         <CategoryManager {activeTab} />
-      </div>
-      <div class={activeTab === 'outreach' ? '' : 'hidden'}>
+      {:else if activeTab === 'outreach'}
         <ZaloOutreach {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
-      </div>
-      <div class={activeTab === 'email_outreach' ? '' : 'hidden'}>
+      {:else if activeTab === 'email_outreach'}
         <EmailOutreach {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
-      </div>
-      <div class={activeTab === 'pipeline' ? '' : 'hidden'}>
+      {:else if activeTab === 'pipeline'}
         <KanbanBoard />
-      </div>
-      <div class={activeTab === 'settings' ? '' : 'hidden'}>
+      {:else if activeTab === 'settings'}
         <Settings bind:this={settingsRef} onNavigateToHub={() => (activeTab = 'facebook_hub')} />
-      </div>
+      {/if}
     </div>
   </main>
 
