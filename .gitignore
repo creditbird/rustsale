@@ -12,7 +12,9 @@ vite.config.ts.timestamp-*
 /src-tauri/binaries/cloak-runtime-*
 !/src-tauri/binaries/.gitkeep
 target/
+target-*/
 src-tauri/target/
+src-tauri/target-*/
 src-tauri/vendor/zca-rs/target/
 .gstack/
 scratch/

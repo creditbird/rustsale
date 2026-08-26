@@ -3,6 +3,7 @@
   import EmailAccountsSettings from './settings/EmailAccountsSettings.svelte';
   import FacebookAccountsSettings from './settings/FacebookAccountsSettings.svelte';
   import AppUpdateSettings from './settings/AppUpdateSettings.svelte';
+  import NotificationSettings from './settings/NotificationSettings.svelte';
   import LanguageSettings from './settings/LanguageSettings.svelte';
   import * as Card from '$lib/components/ui/card';
   import * as Tabs from '$lib/components/ui/tabs';
@@ -63,6 +64,10 @@
     <Tabs.Content value="email" class="min-h-0"><EmailAccountsSettings /></Tabs.Content>
     <Tabs.Content value="facebook" class="min-h-0"><FacebookAccountsSettings {onNavigateToHub} /></Tabs.Content>
   </Tabs.Root>
+
+  <div>
+    <NotificationSettings />
+  </div>
 
   <div>
     <LanguageSettings />

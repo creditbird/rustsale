@@ -1,9 +1,14 @@
 /// <reference types="bun-types" />
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { setLocale } from '$lib/i18n';
 import FacebookHub from '../FacebookHub.svelte';
 import type { ManagedFacebookAccount } from '$lib/services/accountSettingsService';
 import type { FacebookScheduledPost, CommentAutomationRule, CommentLog, PageHealth } from '$lib/services/facebookService';
+
+beforeEach(() => {
+  setLocale('en');
+});
 
 afterEach(() => {
   cleanup();
