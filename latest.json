@@ -1,11 +1,11 @@
 {
-  "version": "0.1.10",
-  "notes": "Phát hành bản v0.1.10: Tích hợp công cụ phân tích ranh giới hành chính toàn cầu và lập kế hoạch quét lưới tự thích ứng cho Google Maps Scraper",
-  "pub_date": "2026-08-19T23:40:31.568Z",
+  "version": "0.1.12",
+  "notes": "Bản phát hành v0.1.12: Tích hợp System Tray & Desktop Notification, tối ưu hiệu năng hội thoại, hỗ trợ bộ gõ tiếng Việt và nâng cấp hệ thống phát hành.",
+  "pub_date": "2026-08-26T12:52:26.159Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDdYMnRRaUJMdWFRQ29VUytYaEw3bnZRYkJ4WXd4U3pQK2NFcFl6dXhsem40Z1RtcWhOUDdnSUFrMmF6aktnUHlSbnJGcnZHTDZqS1lIMDJGb29weVFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTgyODIxCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xMF9hbWQ2NC5kZWIKTmxTVjhEVHJUR0hWUnNWMVJrT1lMS0tEZkorRHNWWlp2c2VoK1RBZ1Q0L1RwTDJrWUx5SFl5YlgvZW12RHJidDc5N09MaXUyclExZ1FrZENJU0NoQXc9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.10/RustSale%20CRM_0.1.10_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUCs0dVdlT1FOR09rZUtZME92WUpiQ1NaaFJiU1VmZG44U3BUNjc1MEE4V2ljdmdHYmVsdW5kMU1qUWVSV21ZUHk2ZG5HNVlMNzEvNkQwY2NLS1pEUGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3NzQ4NzQ0CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xMl9hbWQ2NC5kZWIKVmMrOStBdU9VMHhMV0w1SWNqVDdlbUp1UFFQL0NVVHMySkxid3h5QmZRbW9CVUthMWFHRDRFZEFZODZoMWJHenRJYjh6RHJpTWJQOFdQRGJ4OE5RQkE9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.12/RustSale%20CRM_0.1.12_amd64.deb"
     }
   }
 }
