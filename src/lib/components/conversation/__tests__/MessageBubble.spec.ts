@@ -460,4 +460,74 @@ describe('MessageBubble Component', () => {
     expect(mentionSpans[0].textContent).toBe('@Nguyễn Văn A');
     expect(mentionSpans[0].getAttribute('data-mention-id')).toBe('501');
   });
+
+  test('renders WhatsApp channel message with emerald badge, sender phone number, and delivery receipts', () => {
+    const whatsappMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 701,
+      channel: 'whatsapp',
+      accountDisplayName: 'WA Business (+84987654321)',
+      senderDisplayName: '+84912345678',
+      direction: 'inbound',
+      textContent: 'Hello from WhatsApp user'
+    };
+
+    const { unmount } = render(MessageBubble, {
+      props: {
+        message: whatsappMsg,
+        isGroup: false
+      }
+    });
+
+    expect(screen.getByText('+84912345678')).toBeTruthy();
+    expect(screen.getByText('whatsapp')).toBeTruthy();
+    expect(screen.getByText('WA Business (+84987654321)')).toBeTruthy();
+    expect(screen.getByText('Hello from WhatsApp user')).toBeTruthy();
+    unmount();
+
+    // Outbound WhatsApp message with read delivery receipt
+    const outboundWa: ConversationMessage = {
+      ...whatsappMsg,
+      id: 702,
+      direction: 'outbound',
+      status: 'read'
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: outboundWa,
+        isGroup: false
+      }
+    });
+
+    expect(screen.getByText('Read')).toBeTruthy();
+  });
+
+  test('renders WhatsApp quoted reply preview correctly', () => {
+    const waReplyMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 703,
+      channel: 'whatsapp',
+      textContent: 'I agree with this proposal',
+      replyTarget: {
+        messageId: 700,
+        senderDisplayName: '+84912345678',
+        contentType: 'text',
+        textContent: 'Can you send the product catalog?',
+        mediaType: null,
+        occurredAt: '2026-08-02T10:00:00Z'
+      }
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: waReplyMsg,
+        isGroup: false
+      }
+    });
+
+    expect(screen.getByText('Can you send the product catalog?')).toBeTruthy();
+    expect(screen.getByText('+84912345678')).toBeTruthy();
+    expect(screen.getByText('I agree with this proposal')).toBeTruthy();
+  });
 });

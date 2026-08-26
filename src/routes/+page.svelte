@@ -146,12 +146,16 @@
     };
   });
 
-  let settingsRef = $state<{ openQrLogin?: () => void } | null>(null);
+  let settingsRef = $state<{ openQrLogin?: () => void; openWhatsAppQrLogin?: () => void } | null>(null);
 
-  function handleOpenQrLogin() {
+  function handleOpenQrLogin(accountKey?: string) {
     activeTab = 'settings';
     tick().then(() => {
-      settingsRef?.openQrLogin?.();
+      if (accountKey && accountKey.toLowerCase().includes('whatsapp')) {
+        settingsRef?.openWhatsAppQrLogin?.();
+      } else {
+        settingsRef?.openQrLogin?.();
+      }
     });
   }
 </script>

@@ -588,7 +588,10 @@ pub async fn start_whatsapp_qr_login(
     state: tauri::State<'_, ConversationState>,
     attempt_id: String,
 ) -> Result<(), String> {
-    state.whatsapp_login_manager.start_qr_login(&attempt_id).await
+    state
+        .whatsapp_login_manager
+        .start_qr_login(&attempt_id)
+        .await
 }
 
 #[tauri::command]
@@ -647,8 +650,7 @@ pub fn create_whatsapp_campaign(
 ) -> Result<i64, String> {
     let conn = crate::db::open_db_connection(state.service.repository.db_path())
         .map_err(|e| e.to_string())?;
-    crate::conversation::whatsapp::campaign::create_campaign(&conn, &req)
-        .map_err(|e| e.to_string())
+    crate::conversation::whatsapp::campaign::create_campaign(&conn, &req).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -730,8 +732,7 @@ pub fn list_whatsapp_campaigns(
 ) -> Result<Vec<crate::conversation::whatsapp::campaign::WhatsAppCampaignRecord>, String> {
     let conn = crate::db::open_db_connection(state.service.repository.db_path())
         .map_err(|e| e.to_string())?;
-    crate::conversation::whatsapp::campaign::list_campaigns(&conn)
-        .map_err(|e| e.to_string())
+    crate::conversation::whatsapp::campaign::list_campaigns(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

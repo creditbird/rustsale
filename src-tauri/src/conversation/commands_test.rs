@@ -73,7 +73,11 @@ impl ServiceHarness {
                 self.events.clone(),
             ),
         );
-        let sessions_dir = self.path.parent().unwrap().join("whatsapp-sessions-harness");
+        let sessions_dir = self
+            .path
+            .parent()
+            .unwrap()
+            .join("whatsapp-sessions-harness");
         let whatsapp_login_manager = Arc::new(
             crate::conversation::whatsapp::login::WhatsAppLoginManager::new_mock_with_dir(
                 sessions_dir,
@@ -2164,7 +2168,9 @@ async fn test_get_managed_whatsapp_accounts() {
     assert_eq!(accounts[0].phone_number.as_deref(), Some("+84987654321"));
 
     // Disconnect account
-    disconnect_whatsapp_account(state.clone(), acc_id).await.unwrap();
+    disconnect_whatsapp_account(state.clone(), acc_id)
+        .await
+        .unwrap();
 
     let accounts_after = get_managed_whatsapp_accounts(state).unwrap();
     assert_eq!(accounts_after.len(), 0);
@@ -2269,7 +2275,8 @@ async fn test_create_and_manage_whatsapp_campaign() {
     assert_eq!(camp_resumed.status, "queued");
 
     // 7. Get recipients
-    let recs = get_whatsapp_campaign_recipients(state.clone(), campaign_id, Some(10), Some(0)).unwrap();
+    let recs =
+        get_whatsapp_campaign_recipients(state.clone(), campaign_id, Some(10), Some(0)).unwrap();
     assert_eq!(recs.len(), 2);
     assert_eq!(recs[0].status, "pending");
     assert_eq!(recs[0].recipient_phone_e164, "84912345678");

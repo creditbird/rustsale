@@ -815,4 +815,69 @@ describe('MessageComposer', () => {
       }
     });
   });
+
+  describe('WhatsApp Channel Integration', () => {
+    test('supports selecting connected WhatsApp sender account and sending text', async () => {
+      const whatsappItem: InboxItem = {
+        ...baseItem,
+        key: 'lead:42',
+        replyTargets: [
+          {
+            conversationId: 501,
+            channelAccountId: 30,
+            channel: 'whatsapp',
+            accountDisplayName: 'WhatsApp Sales (+84987654321)',
+            conversationKind: 'direct',
+            lastInboundAt: '2026-08-02T10:00:00.000Z',
+            lastMessageAt: '2026-08-02T10:00:00.000Z'
+          }
+        ]
+      };
+
+      const whatsappRuntime: ConversationRuntimeStatus = {
+        accounts: [
+          {
+            channelAccountId: 30,
+            channel: 'whatsapp',
+            displayName: 'WhatsApp Sales (+84987654321)',
+            providerAccountKey: 'whatsapp-30',
+            status: 'connected',
+            lastConnectedAt: '2026-08-02T10:00:00.000Z',
+            lastError: null,
+            capabilities: richCapabilities
+          }
+        ]
+      };
+
+      render(MessageComposer, {
+        props: {
+          item: whatsappItem,
+          runtime: whatsappRuntime
+        }
+      });
+
+      const select = screen.getByTestId('channel-account-select');
+      expect(select.textContent).toContain('whatsapp #30');
+      expect(select.textContent).toContain('WhatsApp Sales');
+
+      const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: 'Hello from WhatsApp CRM!' } });
+      await tick();
+
+      const sendBtn = screen.getByRole('button', { name: 'Send' });
+      expect((sendBtn as HTMLButtonElement).disabled).toBe(false);
+
+      await fireEvent.click(sendBtn);
+      await tick();
+
+      expect(mockSendConversationBatch).toHaveBeenCalled();
+      const lastCall = mockSendConversationBatch.mock.calls[mockSendConversationBatch.mock.calls.length - 1][0];
+      expect(lastCall.conversationId).toBe(501);
+      expect(lastCall.parts[0]).toEqual({
+        clientPartId: expect.any(String),
+        type: 'text',
+        text: 'Hello from WhatsApp CRM!'
+      });
+    });
+  });
 });

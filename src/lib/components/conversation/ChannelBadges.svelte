@@ -3,6 +3,7 @@
   import type { Channel, ChannelBadgeSummary } from '$lib/services/conversationService';
   import MessageSquare from 'lucide-svelte/icons/message-square';
   import MessageCircle from 'lucide-svelte/icons/message-circle';
+  import MessageCircleMore from 'lucide-svelte/icons/message-circle-more';
   import Mail from 'lucide-svelte/icons/mail';
   import Phone from 'lucide-svelte/icons/phone';
 
@@ -18,7 +19,7 @@
 
   const channelIcons: Record<Channel, typeof MessageSquare> = {
     zalo: MessageSquare,
-    whatsapp: Phone,
+    whatsapp: MessageCircleMore,
     messenger: MessageCircle,
     email: Mail
   };
