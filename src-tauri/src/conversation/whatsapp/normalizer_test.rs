@@ -672,6 +672,29 @@ fn test_normalizer_reaction_and_receipt_ingestion() {
     assert_eq!(reaction_icon, "❤️");
     assert_eq!(count, 1);
 
+    // Ingest Second Reaction (replaces the first one)
+    let reaction2 = RawWhatsAppReaction {
+        message_id: "stanza_react_500".to_string(),
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: "84901234567@s.whatsapp.net".to_string(),
+        emoji: "🙏".to_string(),
+        timestamp: Some("2026-08-26T12:02:30.000Z".to_string()),
+        is_from_me: false,
+    };
+    WhatsAppNormalizer::ingest_reaction(&mut conn, 1, &reaction2).unwrap();
+
+    let reactions: Vec<(String, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT reaction, count FROM message_reactions WHERE message_id = 500")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    };
+    assert_eq!(reactions.len(), 1, "WhatsApp actor must have only 1 active reaction");
+    assert_eq!(reactions[0].0, "🙏");
+
     // 2. Ingest Delivery Receipt
     let delivery_receipt = RawWhatsAppReceipt {
         message_ids: vec!["stanza_react_500".to_string()],

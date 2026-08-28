@@ -1355,6 +1355,7 @@ impl ZaloClient for RealZaloClient {
             ConversationReactionCode::Angry => {
                 zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Angry)
             }
+            _ => zca_rs::models::ReactionType::Standard(zca_rs::models::Reactions::Like),
         });
 
         let client_id = request

@@ -1480,11 +1480,20 @@ impl ConversationService {
                     .await
             }
             "reaction" => {
-                let emoji = job
+                let emoji_raw = job
                     .content_json
                     .get("emoji")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let emoji = match emoji_raw {
+                    "heart" | "❤️" | "❤" => "❤️",
+                    "like" | "👍" => "👍",
+                    "haha" | "😆" | "😂" => "😂",
+                    "wow" | "😮" => "😮",
+                    "cry" | "😭" | "😢" => "😢",
+                    "angry" | "😡" => "😡",
+                    other => other,
+                };
                 let target_msg_id = job
                     .content_json
                     .get("target_message_id")
@@ -1496,9 +1505,15 @@ impl ConversationService {
                     .get("target_sender_jid")
                     .or_else(|| job.content_json.get("targetSenderJid"))
                     .and_then(|v| v.as_str());
+                let target_is_from_me = job
+                    .content_json
+                    .get("target_is_from_me")
+                    .or_else(|| job.content_json.get("targetIsFromMe"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 match client
-                    .send_reaction(&recipient_jid, target_msg_id, target_sender, emoji)
+                    .send_reaction(&recipient_jid, target_msg_id, target_sender, emoji, target_is_from_me)
                     .await
                 {
                     Ok(()) => Ok(
@@ -1831,7 +1846,7 @@ impl ConversationService {
             return Ok(ConversationReactionMutationResult {
                 client_mutation_id: mutation.client_mutation_id,
                 message_id: request.message_id,
-                reaction: request.reaction,
+                reaction: request.reaction.clone(),
                 requested_active: request.active,
                 status,
                 reactions: groups,
@@ -1921,7 +1936,7 @@ impl ConversationService {
                 external_thread_id: external_thread_id.clone(),
                 thread_type,
                 reaction_code: if request.active {
-                    Some(request.reaction)
+                    Some(request.reaction.clone())
                 } else {
                     None
                 },
@@ -2000,7 +2015,7 @@ impl ConversationService {
                     return Ok(ConversationReactionMutationResult {
                         client_mutation_id: mutation.client_mutation_id,
                         message_id: request.message_id,
-                        reaction: request.reaction,
+                        reaction: request.reaction.clone(),
                         requested_active: request.active,
                         status: mutation_status,
                         reactions: current_groups,
@@ -2020,7 +2035,7 @@ impl ConversationService {
         Ok(ConversationReactionMutationResult {
             client_mutation_id: mutation.client_mutation_id,
             message_id: request.message_id,
-            reaction: request.reaction,
+            reaction: request.reaction.clone(),
             requested_active: request.active,
             status: ReactionMutationStatus::Succeeded,
             reactions: groups,
@@ -2038,7 +2053,8 @@ impl ConversationService {
         use super::projection::load_message_reaction_groups;
         use super::reactions::ReactionMutationRepository;
         use super::types::{
-            ConversationCapabilities, ConversationReactionMutationResult, ReactionMutationStatus,
+            ConversationCapabilities, ConversationReactionCode,
+            ConversationReactionMutationResult, ReactionMutationStatus,
         };
         use crate::db::open_db_connection;
         use rusqlite::OptionalExtension;
@@ -2073,9 +2089,11 @@ impl ConversationService {
             .map(ConversationCapabilities::from_json)
             .unwrap_or_else(ConversationCapabilities::whatsapp);
 
+        let is_custom_or_supported = capabilities.reactions.supported.contains(&request.reaction)
+            || matches!(request.reaction, ConversationReactionCode::Custom(_));
         if !capabilities.supports_reactions
             || !capabilities.reactions.write
-            || !capabilities.reactions.supported.contains(&request.reaction)
+            || (!capabilities.reactions.supported.is_empty() && !is_custom_or_supported)
         {
             return Err(ConversationError::new(
                 ConversationErrorCode::ReactionNotSupported,
@@ -2105,7 +2123,7 @@ impl ConversationService {
             return Ok(ConversationReactionMutationResult {
                 client_mutation_id: mutation.client_mutation_id,
                 message_id: request.message_id,
-                reaction: request.reaction,
+                reaction: request.reaction.clone(),
                 requested_active: request.active,
                 status,
                 reactions: groups,
@@ -2131,8 +2149,18 @@ impl ConversationService {
             }
         };
 
+        let emoji_glyph = match request.reaction.as_str() {
+            "heart" | "❤️" | "❤" => "❤️",
+            "like" | "👍" => "👍",
+            "haha" | "😆" | "😂" => "😂",
+            "wow" | "😮" => "😮",
+            "cry" | "😭" | "😢" => "😢",
+            "angry" | "😡" => "😡",
+            other => other,
+        };
+
         let emoji_str = if request.active {
-            request.reaction.as_str()
+            emoji_glyph
         } else {
             ""
         };
@@ -2151,19 +2179,22 @@ impl ConversationService {
             None
         };
 
+        let is_from_me = msg.direction == crate::conversation::types::MessageDirection::Outbound;
+
         let send_res = client
             .send_reaction(
                 &external_thread_id,
                 &provider_message_id,
                 sender_jid.as_deref(),
                 emoji_str,
+                is_from_me,
             )
             .await;
 
         match send_res {
             Ok(_) => {
                 let now = crate::conversation::types::utc_now();
-                let groups = reaction_mutations.succeed(
+                let groups = reaction_mutations.succeed_single_active(
                     &mutation.client_mutation_id,
                     &self_external_id,
                     &now,
@@ -2175,7 +2206,7 @@ impl ConversationService {
                 Ok(ConversationReactionMutationResult {
                     client_mutation_id: mutation.client_mutation_id,
                     message_id: request.message_id,
-                    reaction: request.reaction,
+                    reaction: request.reaction.clone(),
                     requested_active: request.active,
                     status: ReactionMutationStatus::Succeeded,
                     reactions: groups,
@@ -2196,7 +2227,7 @@ impl ConversationService {
                 Ok(ConversationReactionMutationResult {
                     client_mutation_id: mutation.client_mutation_id,
                     message_id: request.message_id,
-                    reaction: request.reaction,
+                    reaction: request.reaction.clone(),
                     requested_active: request.active,
                     status: ReactionMutationStatus::Failed,
                     reactions: groups,

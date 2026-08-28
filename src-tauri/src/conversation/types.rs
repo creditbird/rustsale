@@ -304,7 +304,7 @@ pub struct InboxItem {
     pub participants: Vec<ConversationParticipantSummary>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationReactionCode {
     Heart,
@@ -313,10 +313,12 @@ pub enum ConversationReactionCode {
     Wow,
     Cry,
     Angry,
+    #[serde(untagged)]
+    Custom(String),
 }
 
 impl ConversationReactionCode {
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Heart => "heart",
             Self::Like => "like",
@@ -324,6 +326,7 @@ impl ConversationReactionCode {
             Self::Wow => "wow",
             Self::Cry => "cry",
             Self::Angry => "angry",
+            Self::Custom(custom) => custom.as_str(),
         }
     }
 }

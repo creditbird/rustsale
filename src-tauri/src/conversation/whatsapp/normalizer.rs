@@ -1036,16 +1036,17 @@ impl WhatsAppNormalizer {
                     .collect();
 
                 for (pending_id, actor, emoji, removed, reacted_at) in pending_reactions {
-                    if removed == 1 || emoji.trim().is_empty() {
-                        tx.execute(
-                            "DELETE FROM message_reactions WHERE message_id = ?1 AND actor_external_id = ?2",
-                            params![mid, actor],
-                        )?;
-                    } else {
+                    // WhatsApp semantics: each actor has at most 1 active reaction per message.
+                    tx.execute(
+                        "DELETE FROM message_reactions WHERE message_id = ?1 AND actor_external_id = ?2",
+                        params![mid, actor],
+                    )?;
+                    if removed != 1 && !emoji.trim().is_empty() {
                         tx.execute(
                             "INSERT INTO message_reactions (message_id, actor_external_id, reaction, count, reacted_at, removed_at)
                              VALUES (?1, ?2, ?3, 1, ?4, NULL)
                              ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
+                                 count = 1,
                                  reacted_at = EXCLUDED.reacted_at,
                                  removed_at = NULL",
                             params![mid, actor, emoji, reacted_at],
@@ -1117,16 +1118,17 @@ impl WhatsAppNormalizer {
         let is_removed = reaction.emoji.trim().is_empty();
 
         if let Some(msg_id) = target_message_id {
-            if is_removed {
-                tx.execute(
-                    "DELETE FROM message_reactions WHERE message_id = ?1 AND actor_external_id = ?2",
-                    params![msg_id, actor_phone],
-                )?;
-            } else {
+            // WhatsApp semantics: single-active reaction per actor. Always delete previous reactions for this actor first.
+            tx.execute(
+                "DELETE FROM message_reactions WHERE message_id = ?1 AND actor_external_id = ?2",
+                params![msg_id, actor_phone],
+            )?;
+            if !is_removed {
                 tx.execute(
                     "INSERT INTO message_reactions (message_id, actor_external_id, reaction, count, reacted_at, removed_at)
                      VALUES (?1, ?2, ?3, 1, ?4, NULL)
                      ON CONFLICT(message_id, actor_external_id, reaction) DO UPDATE SET
+                         count = 1,
                          reacted_at = EXCLUDED.reacted_at,
                          removed_at = NULL",
                     params![msg_id, actor_phone, reaction.emoji, occurred_at],

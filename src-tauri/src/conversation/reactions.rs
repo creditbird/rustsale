@@ -308,6 +308,75 @@ impl ReactionMutationRepository {
         Ok(groups)
     }
 
+    pub fn succeed_single_active(
+        &self,
+        client_id: &str,
+        self_external_id: &str,
+        occurred_at: &str,
+    ) -> ConversationResult<Vec<ConversationReactionGroup>> {
+        let mut conn = open_db_connection(self.db_path_str())?;
+        let tx = conn.transaction()?;
+
+        let row: Option<(i64, String, bool, u32, String)> = tx
+            .query_row(
+                "SELECT message_id, reaction_code, active, COALESCE(count, 1), status
+                 FROM reaction_mutations WHERE client_mutation_id = ?1",
+                params![client_id],
+                |r| {
+                    let active_int: i32 = r.get(2)?;
+                    let count_val: u32 = r.get(3)?;
+                    Ok((r.get(0)?, r.get(1)?, active_int != 0, count_val, r.get(4)?))
+                },
+            )
+            .optional()?;
+
+        let (message_id, reaction_code, active, _react_count, status) = match row {
+            Some(r) => r,
+            None => {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::InvalidRequest,
+                    format!("Mutation client_id '{}' not found", client_id),
+                ));
+            }
+        };
+
+        if status != "succeeded" {
+            let now = utc_now();
+            tx.execute(
+                "UPDATE reaction_mutations
+                 SET status = 'succeeded', error_code = NULL, error_message = NULL, updated_at = ?1
+                 WHERE client_mutation_id = ?2",
+                params![now, client_id],
+            )?;
+
+            // In single-active mode (e.g. WhatsApp, Messenger), delete any prior reaction of this actor on this message
+            mark_reaction_removed(
+                &tx,
+                message_id,
+                self_external_id,
+                None,
+                occurred_at,
+            )?;
+
+            if active {
+                apply_reaction_increment(
+                    &tx,
+                    message_id,
+                    self_external_id,
+                    &reaction_code,
+                    1,
+                    occurred_at,
+                )?;
+            }
+        }
+
+        tx.commit()?;
+
+        let read_conn = open_db_connection(self.db_path_str())?;
+        let groups = load_message_reaction_groups(&read_conn, message_id)?;
+        Ok(groups)
+    }
+
     pub(crate) fn fail_after_partial_success(
         &self,
         client_id: &str,
