@@ -58,8 +58,20 @@ impl TrayState {
 
 pub fn init_tray<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
     let open_i = MenuItem::with_id(app, "open_app", "Mở RustSale", true, None::<&str>)?;
-    let mark_read_i = MenuItem::with_id(app, "mark_all_read", "Đánh dấu tất cả đã đọc", true, None::<&str>)?;
-    let dnd_i = MenuItem::with_id(app, "toggle_dnd", "Bật/Tắt Không làm phiền (DND)", true, None::<&str>)?;
+    let mark_read_i = MenuItem::with_id(
+        app,
+        "mark_all_read",
+        "Đánh dấu tất cả đã đọc",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_i = MenuItem::with_id(
+        app,
+        "toggle_dnd",
+        "Bật/Tắt Không làm phiền (DND)",
+        true,
+        None::<&str>,
+    )?;
     let quit_i = MenuItem::with_id(app, "quit", "Thoát ứng dụng", true, None::<&str>)?;
     let separator_1 = PredefinedMenuItem::separator(app)?;
     let separator_2 = PredefinedMenuItem::separator(app)?;

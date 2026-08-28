@@ -1403,3 +1403,43 @@ fn test_is_terminal_auth_error_matches_valid_patterns_and_rejects_false_positive
         "Zalo network error: connection reset"
     ));
 }
+
+#[tokio::test]
+async fn test_sync_group_chat_history_behavior() {
+    let harness = SupervisorHarness::new().await;
+    harness.supervisor.start_all().await.unwrap();
+    harness.factory.wait_for_connect_count("imei-a", 1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let conv_id = {
+        let conn = crate::db::open_db_connection(&harness._db_path).unwrap();
+        let account_id: i64 = conn.query_row(
+            "SELECT id FROM channel_accounts WHERE channel = 'zalo' AND provider_account_key = 'imei-a'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations (channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+             VALUES (?1, 'group_sync_123', 'group', 'Test Sync Group', '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z')",
+            rusqlite::params![account_id],
+        ).unwrap();
+
+        conn.query_row(
+            "SELECT id FROM channel_conversations WHERE external_thread_id = 'group_sync_123'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+
+    // Calling sync_group_chat_history should succeed
+    let result = harness.supervisor.sync_group_chat_history(conv_id).await;
+    assert!(result.is_ok(), "Expected Ok but got: {:?}", result);
+
+    // Calling on non-existent group conversation returns error
+    let invalid_result = harness.supervisor.sync_group_chat_history(99999).await;
+    assert!(invalid_result.is_err());
+
+    harness.supervisor.stop_all().await;
+}

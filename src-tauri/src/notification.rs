@@ -50,11 +50,7 @@ pub fn format_notification_title(
     }
 }
 
-pub fn format_notification_body(
-    raw_text: &str,
-    content_type: &str,
-    privacy_mode: bool,
-) -> String {
+pub fn format_notification_body(raw_text: &str, content_type: &str, privacy_mode: bool) -> String {
     if privacy_mode {
         return "Bạn có tin nhắn mới".to_string();
     }

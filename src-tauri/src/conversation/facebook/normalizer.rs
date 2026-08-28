@@ -304,7 +304,9 @@ impl FacebookMessengerNormalizer {
                 }
             }
 
-            if thread_new_messages > 0 && !summary.affected_conversation_ids.contains(&conversation_id) {
+            if thread_new_messages > 0
+                && !summary.affected_conversation_ids.contains(&conversation_id)
+            {
                 summary.affected_conversation_ids.push(conversation_id);
             }
         }

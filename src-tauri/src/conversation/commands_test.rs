@@ -67,10 +67,29 @@ impl ServiceHarness {
                 Arc::new(super::facebook::client::RealFacebookGraphClient::new()),
             ),
         );
+        let sessions_dir = self
+            .path
+            .parent()
+            .unwrap()
+            .join("whatsapp-sessions-harness");
+        let whatsapp_supervisor = Arc::new(
+            crate::conversation::whatsapp::supervisor::WhatsAppSupervisor::new(
+                self.path.to_str().unwrap().to_string(),
+                sessions_dir.clone(),
+                self.events.clone(),
+            ),
+        );
+        let whatsapp_login_manager = Arc::new(
+            crate::conversation::whatsapp::login::WhatsAppLoginManager::new_mock_with_dir(
+                sessions_dir,
+            ),
+        );
         super::commands::ConversationState {
             service,
             zalo_supervisor,
             facebook_supervisor,
+            whatsapp_supervisor,
+            whatsapp_login_manager,
         }
     }
 
@@ -982,7 +1001,7 @@ async fn phase2a_command_registration() {
     .unwrap_err();
     assert_eq!(
         react_err.code,
-        crate::conversation::error::ConversationErrorCode::ProviderFailure
+        crate::conversation::error::ConversationErrorCode::InvalidRequest
     );
 }
 
@@ -2051,4 +2070,691 @@ async fn test_sync_facebook_conversations_command() {
     // With non-existent page_id, returns error
     let err = sync_facebook_conversations(state, Some("page_does_not_exist".to_string())).await;
     assert!(err.is_err());
+}
+
+#[tokio::test]
+async fn test_whatsapp_commands_lifecycle() {
+    use super::commands::{cancel_whatsapp_qr_login, start_whatsapp_qr_login, ConversationState};
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-wa-cmd1"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    let attempt_id = "wa-attempt-unit-1".to_string();
+    let start_res = start_whatsapp_qr_login(state.clone(), attempt_id.clone()).await;
+    assert!(start_res.is_ok());
+
+    let cancel_res = cancel_whatsapp_qr_login(state, attempt_id);
+    assert!(cancel_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_get_managed_whatsapp_accounts() {
+    use super::commands::{
+        disconnect_whatsapp_account, get_managed_whatsapp_accounts, ConversationState,
+    };
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-wa-cmd2"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    // Initial state: no accounts
+    let accounts = get_managed_whatsapp_accounts(state.clone()).unwrap();
+    assert_eq!(accounts.len(), 0);
+
+    // Seed a connected WhatsApp account
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts (
+            channel, provider_account_key, display_name, avatar_url,
+            enabled, connection_status, last_connected_at, created_at, updated_at
+         ) VALUES ('whatsapp', 'wa-acc-1', 'WhatsApp Business 1', NULL, 1, 'connected', ?1, ?1, ?1)",
+        rusqlite::params![now],
+    )
+    .unwrap();
+    let acc_id = conn.last_insert_rowid();
+
+    conn.execute(
+        "INSERT INTO whatsapp_sessions (
+            channel_account_id, account_key, phone_number, session_db_filename, is_valid,
+            last_connected_at, created_at, updated_at
+         ) VALUES (?1, 'wa-acc-1', '+84987654321', 'session_wa-acc-1.db', 1, ?2, ?2, ?2)",
+        rusqlite::params![acc_id, now],
+    )
+    .unwrap();
+
+    let accounts = get_managed_whatsapp_accounts(state.clone()).unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].id, acc_id);
+    assert_eq!(accounts[0].provider_account_key, "wa-acc-1");
+    assert_eq!(
+        accounts[0].display_name.as_deref(),
+        Some("WhatsApp Business 1")
+    );
+    assert_eq!(accounts[0].phone_number.as_deref(), Some("+84987654321"));
+
+    // Disconnect account
+    disconnect_whatsapp_account(state.clone(), acc_id)
+        .await
+        .unwrap();
+
+    let accounts_after = get_managed_whatsapp_accounts(state).unwrap();
+    assert_eq!(accounts_after.len(), 0);
+}
+
+#[tokio::test]
+async fn test_create_and_manage_whatsapp_campaign() {
+    use super::commands::{
+        cancel_whatsapp_campaign, create_whatsapp_campaign, get_whatsapp_campaign,
+        get_whatsapp_campaign_recipients, list_whatsapp_campaigns, pause_whatsapp_campaign,
+        populate_whatsapp_campaign_recipients, resume_whatsapp_campaign, start_whatsapp_campaign,
+        ConversationState,
+    };
+    use crate::conversation::whatsapp::campaign::{CampaignRecipientInput, CreateCampaignRequest};
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-wa-cmd3"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    // 1. Create campaign
+    let req = CreateCampaignRequest {
+        name: "Q3 Promotional Campaign".to_string(),
+        template_id: None,
+        assigned_account_ids: vec![1, 2],
+        rate_limit_min_delay_secs: Some(5),
+        rate_limit_max_delay_secs: Some(15),
+        burst_limit_per_batch: Some(20),
+        burst_pause_secs: Some(45),
+        quiet_hours_enabled: Some(true),
+        quiet_hours_start: Some("22:00".to_string()),
+        quiet_hours_end: Some("07:30".to_string()),
+        timezone: Some("Asia/Ho_Chi_Minh".to_string()),
+    };
+    let campaign_id = create_whatsapp_campaign(state.clone(), req).unwrap();
+    assert!(campaign_id > 0);
+
+    // 2. Populate recipients
+    let recipients = vec![
+        CampaignRecipientInput {
+            lead_id: None,
+            recipient_phone_raw: "0912345678".to_string(),
+            template: Some("Hello {name}, welcome!".to_string()),
+            lead_vars: Some(std::collections::HashMap::from([(
+                "name".to_string(),
+                "Alice".to_string(),
+            )])),
+        },
+        CampaignRecipientInput {
+            lead_id: None,
+            recipient_phone_raw: "+84987654321".to_string(),
+            template: None,
+            lead_vars: None,
+        },
+    ];
+    let inserted = populate_whatsapp_campaign_recipients(
+        state.clone(),
+        campaign_id,
+        recipients,
+        Some("Default template {name}".to_string()),
+    )
+    .unwrap();
+    assert_eq!(inserted, 2);
+
+    // 3. Verify get_campaign (draft status)
+    let camp = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp.id, campaign_id);
+    assert_eq!(camp.name, "Q3 Promotional Campaign");
+    assert_eq!(camp.status, "draft");
+    assert_eq!(camp.total_recipients, 2);
+    assert_eq!(camp.assigned_account_ids, vec![1, 2]);
+
+    // 4. Start campaign -> transitions to queued
+    start_whatsapp_campaign(state.clone(), campaign_id)
+        .await
+        .unwrap();
+    let camp_queued = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_queued.status, "queued");
+
+    // 5. Pause campaign -> transitions to paused
+    pause_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    let camp_paused = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_paused.status, "paused");
+
+    // 6. Resume campaign -> transitions to queued
+    resume_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    let camp_resumed = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_resumed.status, "queued");
+
+    // 7. Get recipients
+    let recs =
+        get_whatsapp_campaign_recipients(state.clone(), campaign_id, Some(10), Some(0)).unwrap();
+    assert_eq!(recs.len(), 2);
+    assert_eq!(recs[0].status, "pending");
+    assert_eq!(recs[0].recipient_phone_e164, "84912345678");
+
+    // 8. List campaigns
+    let all_camps = list_whatsapp_campaigns(state.clone()).unwrap();
+    assert!(!all_camps.is_empty());
+    assert!(all_camps.iter().any(|c| c.id == campaign_id));
+
+    // 9. Cancel campaign -> transitions to cancelled
+    cancel_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    let camp_cancelled = get_whatsapp_campaign(state.clone(), campaign_id).unwrap();
+    assert_eq!(camp_cancelled.status, "cancelled");
+}
+
+#[tokio::test]
+async fn download_conversation_attachment_command_flow() {
+    use super::commands::{download_conversation_attachment, ConversationState};
+    use crate::conversation::zalo::client::RealZaloClientFactory;
+    use crate::conversation::zalo::supervisor::ZaloSessionSupervisor;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    let harness = ServiceHarness::new();
+    let conversation_service = Arc::new(ConversationService::new(
+        harness.repository.clone(),
+        harness.events.clone(),
+        harness.path.parent().unwrap().join("spool-wa-dl-cmd"),
+    ));
+    let zalo_supervisor = Arc::new(ZaloSessionSupervisor::new(
+        harness.path.to_str().unwrap().to_string(),
+        conversation_service.clone(),
+        Arc::new(RealZaloClientFactory),
+    ));
+    let app = mock_builder()
+        .manage(harness.create_conv_state(conversation_service, zalo_supervisor))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<ConversationState>();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (
+            channel, provider_account_key, display_name, avatar_url,
+            enabled, connection_status, last_connected_at, created_at, updated_at
+         ) VALUES ('whatsapp', 'wa-acc-dl-1', 'WhatsApp Business DL', NULL, 1, 'connected', ?1, ?1, ?1)",
+        rusqlite::params![now],
+    )
+    .unwrap();
+    let acc_id = conn.last_insert_rowid();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (
+            channel_account_id, external_thread_id, kind, title, status, created_at, updated_at
+         ) VALUES (?1, '84901234567@s.whatsapp.net', 'direct', 'Peer', 'active', ?2, ?2)",
+        rusqlite::params![acc_id, now],
+    )
+    .unwrap();
+    let conv_id = conn.last_insert_rowid();
+
+    conn.execute(
+        "INSERT INTO messages (
+            conversation_id, direction, provider_message_id, content_type, text_content,
+            ingested_at, status
+         ) VALUES (?1, 'inbound', 'WA_MSG_DL_001', 'image', 'Image caption', ?2, 'received')",
+        rusqlite::params![conv_id, now],
+    )
+    .unwrap();
+    let msg_id = conn.last_insert_rowid();
+
+    // 1. Existing data URL attachment returns directly
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'photo.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/photo.jpg', 'data:image/jpeg;base64,/9j/4AAQSkZJRg==', '{\"width\":800,\"height\":600}', ?2)",
+        rusqlite::params![msg_id, now],
+    )
+    .unwrap();
+    let cached_att_id = conn.last_insert_rowid();
+
+    let res = download_conversation_attachment(state.clone(), cached_att_id)
+        .await
+        .unwrap();
+    assert_eq!(res.id, cached_att_id);
+    assert_eq!(
+        res.thumbnail_url.as_deref(),
+        Some("data:image/jpeg;base64,/9j/4AAQSkZJRg==")
+    );
+    assert_eq!(res.width, Some(800));
+    assert_eq!(res.height, Some(600));
+
+    // 2. Encrypted attachment missing media_key returns a stable non-retryable code
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'missing_key.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/missing_key.jpg', NULL, '{}', ?2)",
+        rusqlite::params![msg_id, now],
+    )
+    .unwrap();
+    let missing_key_att_id = conn.last_insert_rowid();
+
+    let err = download_conversation_attachment(state.clone(), missing_key_att_id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code.as_str(), "media_metadata_unavailable");
+
+    // 2b. Malformed key material is the same permanent metadata condition.
+    let invalid_key_metadata = serde_json::json!({
+        "direct_path": "/v/t62.7118-24/invalid-key.enc",
+        "media_key": "not-valid-base64"
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'invalid_key.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/invalid_key.jpg', NULL, ?2, ?3)",
+        rusqlite::params![msg_id, invalid_key_metadata, now],
+    )
+    .unwrap();
+    let invalid_key_att_id = conn.last_insert_rowid();
+    let invalid_key_error = download_conversation_attachment(state.clone(), invalid_key_att_id)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        invalid_key_error.code.as_str(),
+        "media_metadata_unavailable"
+    );
+
+    // 3. Encrypted attachment with valid media_key downloads and stores data URL
+    let mock_wa_client =
+        std::sync::Arc::new(crate::conversation::whatsapp::client::MockWhatsAppClient::new());
+    state
+        .whatsapp_supervisor
+        .register_client(acc_id, mock_wa_client.clone())
+        .await;
+
+    use base64::Engine as _;
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(vec![0x42; 32]);
+
+    // 2c. Reject a provider-declared payload over the application limit before downloading it.
+    let oversized_metadata = serde_json::json!({
+        "direct_path": "/v/t62.7118-24/oversized.enc",
+        "media_key": key_b64
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'oversized.jpg', 'image/jpeg', ?2,
+                   'https://mmg.whatsapp.net/v/oversized.jpg', NULL, ?3, ?4)",
+        rusqlite::params![
+            msg_id,
+            crate::conversation::staging::MAX_ATTACHMENT_BYTES as i64 + 1,
+            oversized_metadata,
+            now
+        ],
+    )
+    .unwrap();
+    let oversized_att_id = conn.last_insert_rowid();
+    let oversized_error = download_conversation_attachment(state.clone(), oversized_att_id)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        oversized_error.code,
+        crate::conversation::error::ConversationErrorCode::FileTooLarge
+    );
+
+    let meta_json = serde_json::json!({
+        "direct_path": "/v/t62.7118-24/img.enc",
+        "media_key": key_b64,
+        "width": 1024,
+        "height": 768
+    })
+    .to_string();
+
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'photo_enc.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/photo_enc.jpg', NULL, ?2, ?3)",
+        rusqlite::params![msg_id, meta_json, now],
+    )
+    .unwrap();
+    let enc_att_id = conn.last_insert_rowid();
+
+    let res_enc = download_conversation_attachment(state.clone(), enc_att_id)
+        .await
+        .unwrap();
+    assert_eq!(res_enc.id, enc_att_id);
+    assert!(res_enc
+        .thumbnail_url
+        .as_ref()
+        .unwrap()
+        .starts_with("data:image/"));
+    assert_eq!(res_enc.width, Some(1024));
+    assert_eq!(res_enc.height, Some(768));
+
+    // 3b. An expired CDN reference follows the WhatsApp Web media-retry flow,
+    // persists the refreshed direct path, then retries the download once.
+    mock_wa_client.set_download_results(vec![Err(anyhow::anyhow!(
+        "media URL expired with status: 404"
+    ))]);
+    let expired_meta_json = serde_json::json!({
+        "direct_path": "/v/t62.7118-24/expired.enc",
+        "media_key": key_b64,
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'expired.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/expired.jpg', NULL, ?2, ?3)",
+        rusqlite::params![msg_id, expired_meta_json, now],
+    )
+    .unwrap();
+    let expired_att_id = conn.last_insert_rowid();
+
+    let refreshed = download_conversation_attachment(state.clone(), expired_att_id)
+        .await
+        .unwrap();
+    assert!(refreshed
+        .thumbnail_url
+        .as_ref()
+        .unwrap()
+        .starts_with("data:image/"));
+    let reupload_requests = mock_wa_client.get_media_reupload_requests();
+    assert_eq!(reupload_requests.len(), 1);
+    assert_eq!(reupload_requests[0].provider_message_id, "WA_MSG_DL_001");
+    assert_eq!(reupload_requests[0].chat_jid, "84901234567@s.whatsapp.net");
+    let refreshed_metadata: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = ?1",
+            [expired_att_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let refreshed_metadata: serde_json::Value = serde_json::from_str(&refreshed_metadata).unwrap();
+    assert_eq!(
+        refreshed_metadata["direct_path"],
+        "/mock/refreshed-media.enc"
+    );
+
+    // 3c. WhatsApp confirming the media no longer exists is a permanent,
+    // non-retryable condition rather than an endless provider retry loop.
+    mock_wa_client.set_download_results(vec![Err(anyhow::anyhow!(
+        "media URL expired with status: 410"
+    ))]);
+    mock_wa_client.set_next_media_reupload_result(Ok(
+        crate::conversation::whatsapp::client::WhatsAppMediaReuploadResult::NotFound,
+    ));
+    let gone_metadata = serde_json::json!({
+        "direct_path": "/v/t62.7118-24/gone.enc",
+        "media_key": key_b64,
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'gone.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/gone.jpg', NULL, ?2, ?3)",
+        rusqlite::params![msg_id, gone_metadata, now],
+    )
+    .unwrap();
+    let gone_att_id = conn.last_insert_rowid();
+    let gone_error = download_conversation_attachment(state.clone(), gone_att_id)
+        .await
+        .unwrap_err();
+    assert_eq!(gone_error.code.as_str(), "media_metadata_unavailable");
+
+    // 3d. Group media retry must retain the exact participant JID from the
+    // original WhatsApp message key (especially a LID), not reconstruct it
+    // from the normalized CRM identity.
+    mock_wa_client.clear();
+    mock_wa_client.set_download_results(vec![Err(anyhow::anyhow!(
+        "media URL expired with status: 404"
+    ))]);
+    conn.execute(
+        "INSERT INTO channel_conversations (
+            channel_account_id, external_thread_id, kind, title, status, created_at, updated_at
+         ) VALUES (?1, '120363000000000000@g.us', 'group', 'Media Group', 'active', ?2, ?2)",
+        rusqlite::params![acc_id, now],
+    )
+    .unwrap();
+    let group_conv_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO channel_identities (
+            channel, channel_account_id, identity_namespace, external_id,
+            normalized_address, display_name, created_at, updated_at
+         ) VALUES ('whatsapp', ?1, 'phone', '84908887777', '84908887777', 'Group Sender', ?2, ?2)",
+        rusqlite::params![acc_id, now],
+    )
+    .unwrap();
+    let group_sender_id = conn.last_insert_rowid();
+    let exact_participant_jid = "120363099988877766@lid";
+    let group_raw_payload = serde_json::json!({
+        "id": "WA_GROUP_MEDIA_001",
+        "chat_jid": "120363000000000000@g.us",
+        "sender_jid": exact_participant_jid,
+        "attachments": [{
+            "media_type": "image",
+            "direct_path": "/v/t62.7118-24/group-expired.enc",
+            "media_key": key_b64,
+        }]
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO messages (
+            conversation_id, sender_identity_id, direction, provider_message_id,
+            content_type, raw_payload_json, ingested_at, status
+         ) VALUES (?1, ?2, 'inbound', 'WA_GROUP_MEDIA_001', 'image', ?3, ?4, 'received')",
+        rusqlite::params![group_conv_id, group_sender_id, group_raw_payload, now],
+    )
+    .unwrap();
+    let group_msg_id = conn.last_insert_rowid();
+    let group_metadata = serde_json::json!({
+        "direct_path": "/v/t62.7118-24/group-expired.enc",
+        "media_key": key_b64,
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'group-expired.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/group-expired.jpg', NULL, ?2, ?3)",
+        rusqlite::params![group_msg_id, group_metadata, now],
+    )
+    .unwrap();
+    let group_att_id = conn.last_insert_rowid();
+
+    download_conversation_attachment(state.clone(), group_att_id)
+        .await
+        .unwrap();
+    let group_reupload_requests = mock_wa_client.get_media_reupload_requests();
+    assert_eq!(group_reupload_requests.len(), 1);
+    assert_eq!(
+        group_reupload_requests[0].participant_jid.as_deref(),
+        Some(exact_participant_jid)
+    );
+
+    // 4. Local attachment with valid local_path generates preview data URL and stores it
+    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_img_path = temp_dir.path().join("outbound_local.png");
+    // Minimal 1x1 transparent PNG bytes
+    let png_bytes: Vec<u8> = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    std::fs::write(&temp_img_path, &png_bytes).unwrap();
+    let temp_path_str = temp_img_path.to_str().unwrap();
+
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            local_path, remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'outbound_local.png', 'image/png', ?2,
+                   ?3, NULL, NULL, '{}', ?4)",
+        rusqlite::params![msg_id, png_bytes.len() as i64, temp_path_str, now],
+    )
+    .unwrap();
+    let local_att_id = conn.last_insert_rowid();
+
+    let res_local = download_conversation_attachment(state.clone(), local_att_id)
+        .await
+        .unwrap();
+    assert_eq!(res_local.id, local_att_id);
+    assert!(res_local
+        .thumbnail_url
+        .as_ref()
+        .unwrap()
+        .starts_with("data:image/png;base64,"));
+
+    // Verify thumbnail_url was saved in DB
+    let saved_thumb: Option<String> = conn
+        .query_row(
+            "SELECT thumbnail_url FROM message_attachments WHERE id = ?1",
+            rusqlite::params![local_att_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(saved_thumb
+        .as_ref()
+        .unwrap()
+        .starts_with("data:image/png;base64,"));
+
+    // 4b. The bounded local reader checks the actual file size even when DB size is absent.
+    let oversized_local_path = temp_dir.path().join("oversized-local.jpg");
+    let oversized_local_file = std::fs::File::create(&oversized_local_path).unwrap();
+    oversized_local_file
+        .set_len(crate::conversation::staging::MAX_ATTACHMENT_BYTES + 1)
+        .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            local_path, remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'oversized-local.jpg', 'image/jpeg', NULL,
+                   ?2, NULL, NULL, '{}', ?3)",
+        rusqlite::params![msg_id, oversized_local_path.to_str().unwrap(), now],
+    )
+    .unwrap();
+    let oversized_local_att_id = conn.last_insert_rowid();
+    let oversized_local_error =
+        download_conversation_attachment(state.clone(), oversized_local_att_id)
+            .await
+            .unwrap_err();
+    assert_eq!(
+        oversized_local_error.code,
+        crate::conversation::error::ConversationErrorCode::FileTooLarge
+    );
+
+    // 5. Encrypted attachment missing media_key in metadata_json, but present in message raw_payload_json
+    let key_b64_raw = base64::engine::general_purpose::STANDARD.encode(vec![0x77; 32]);
+    let raw_payload_with_key = serde_json::json!({
+        "id": "MSG_RAW_KEY_001",
+        "attachments": [{
+            "media_type": "image",
+            "direct_path": "/v/t62.7118-24/raw_key.enc",
+            "media_key": key_b64_raw,
+        }]
+    })
+    .to_string();
+
+    conn.execute(
+        "INSERT INTO messages (
+            conversation_id, direction, provider_message_id,
+            content_type, text_content, content_json, raw_payload_json,
+            provider_timestamp, ingested_at, status
+         ) VALUES (?1, 'inbound', 'MSG_RAW_KEY_001', 'image', NULL, '{}', ?2, ?3, ?3, 'read')",
+        rusqlite::params![conv_id, raw_payload_with_key, now],
+    )
+    .unwrap();
+    let raw_key_msg_id = conn.last_insert_rowid();
+
+    conn.execute(
+        "INSERT INTO message_attachments (
+            message_id, attachment_type, file_name, mime_type, size_bytes,
+            remote_url, thumbnail_url, metadata_json, created_at
+         ) VALUES (?1, 'image', 'photo_raw_key.jpg', 'image/jpeg', 12345,
+                   'https://mmg.whatsapp.net/v/photo_raw_key.jpg', NULL, '{\"direct_path\":\"/v/t62.7118-24/raw_key.enc\"}', ?2)",
+        rusqlite::params![raw_key_msg_id, now],
+    )
+    .unwrap();
+    let raw_key_att_id = conn.last_insert_rowid();
+
+    let res_raw_key = download_conversation_attachment(state.clone(), raw_key_att_id)
+        .await
+        .unwrap();
+    assert_eq!(res_raw_key.id, raw_key_att_id);
+    assert!(res_raw_key
+        .thumbnail_url
+        .as_ref()
+        .unwrap()
+        .starts_with("data:image/"));
+
+    // 6. Non-existent attachment returns InvalidRequest
+    let err = download_conversation_attachment(state.clone(), 99999)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code,
+        crate::conversation::error::ConversationErrorCode::InvalidRequest
+    );
 }

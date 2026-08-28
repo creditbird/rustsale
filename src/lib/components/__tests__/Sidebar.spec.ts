@@ -18,6 +18,7 @@ test('renders Sidebar with CRM logo and options in English', () => {
   expect(screen.getByText('CRM & Outreach Pro')).toBeTruthy();
   expect(screen.getByText('Dashboard')).toBeTruthy();
   expect(screen.getByText('Conversations')).toBeTruthy();
+  expect(screen.getByText('WhatsApp Outreach')).toBeTruthy();
   expect(screen.getByText('Email Outreach')).toBeTruthy();
   expect(screen.getByText('Settings')).toBeTruthy();
 });
@@ -27,6 +28,7 @@ test('renders Sidebar with Vietnamese options when locale is vi', () => {
   render(Sidebar, { props: { activeTab: 'dashboard' } });
   expect(screen.getByText('Bảng điều khiển')).toBeTruthy();
   expect(screen.getByText('Hội thoại')).toBeTruthy();
+  expect(screen.getByText('Tiếp cận WhatsApp')).toBeTruthy();
   expect(screen.getByText('Tiếp cận Email')).toBeTruthy();
   expect(screen.getByText('Cài đặt Hệ thống')).toBeTruthy();
 });

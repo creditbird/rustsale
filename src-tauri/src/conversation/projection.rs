@@ -76,7 +76,7 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
             media_type,
             mime_type,
             file_name: row.get(4)?,
-            size_bytes: row.get(5)?,
+            size_bytes: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
             local_path: row.get(6)?,
             remote_url: row.get(7)?,
             thumbnail_url: row.get(8)?,
@@ -277,6 +277,8 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         let caps = if json_str.trim().is_empty() || json_str.trim() == "{}" {
             if channel == "zalo" {
                 crate::conversation::types::ConversationCapabilities::zalo_phase_one()
+            } else if channel == "whatsapp" {
+                crate::conversation::types::ConversationCapabilities::whatsapp()
             } else {
                 crate::conversation::types::ConversationCapabilities::text_only()
             }

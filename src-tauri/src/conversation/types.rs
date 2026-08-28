@@ -952,6 +952,71 @@ impl ConversationCapabilities {
             },
         }
     }
+
+    pub fn whatsapp() -> Self {
+        Self {
+            max_text_length: 65536,
+            max_attachments_per_batch: 30,
+            max_file_size_bytes: 104_857_600,
+            supported_image_types: vec![
+                "image/jpeg".into(),
+                "image/png".into(),
+                "image/webp".into(),
+                "image/gif".into(),
+            ],
+            supported_video_types: vec![
+                "video/mp4".into(),
+                "video/3gpp".into(),
+                "video/quicktime".into(),
+            ],
+            supported_audio_types: vec![
+                "audio/ogg".into(),
+                "audio/mp3".into(),
+                "audio/aac".into(),
+                "audio/m4a".into(),
+                "audio/opus".into(),
+            ],
+            supported_doc_types: vec![
+                "application/pdf".into(),
+                "application/zip".into(),
+                "text/plain".into(),
+                "application/msword".into(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+                "application/vnd.ms-excel".into(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
+            ],
+            supports_stickers: true,
+            supports_quote_reply: true,
+            supports_recall: true,
+            recall_window_seconds: Some(86400 * 2),
+            supports_reactions: true,
+            reactions: ConversationReactionCapabilities {
+                read: true,
+                write: true,
+                supported: vec![
+                    ConversationReactionCode::Heart,
+                    ConversationReactionCode::Like,
+                    ConversationReactionCode::Haha,
+                    ConversationReactionCode::Wow,
+                    ConversationReactionCode::Cry,
+                    ConversationReactionCode::Angry,
+                ],
+            },
+            forward: ConversationForwardCapabilities {
+                enabled: true,
+                max_targets_per_forward: 5,
+            },
+            mentions: ConversationMentionCapabilities {
+                enabled: true,
+                max_mentions_per_message: 50,
+                supports_all_mention: false,
+            },
+            quick_templates: ConversationQuickTemplateCapabilities {
+                enabled: true,
+                max_templates: 500,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1535,4 +1535,79 @@ describe('ConversationWorkspace Component', () => {
     const headerTitle = screen.getByRole('heading', { level: 2 });
     expect(headerTitle.textContent).toBe('Ktv Dung');
   });
+
+  test('20. Omnichannel WhatsApp conversation displays WhatsApp badges and renders timeline messages', async () => {
+    const whatsappLeadItem: InboxItem = {
+      key: 'lead:99',
+      kind: 'customer',
+      leadId: 99,
+      conversationId: null,
+      identityId: null,
+      title: 'WhatsApp Customer (+84988776655)',
+      avatarUrl: null,
+      lastMessagePreview: 'Inquiry via WhatsApp',
+      lastMessageAt: '2026-08-02T11:00:00Z',
+      channels: [
+        { channel: 'whatsapp', messageCount: 5 },
+        { channel: 'zalo', messageCount: 2 }
+      ],
+      replyTargets: [
+        {
+          conversationId: 990,
+          channelAccountId: 50,
+          channel: 'whatsapp',
+          accountDisplayName: 'WhatsApp Sales',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-08-02T11:00:00Z',
+          lastMessageAt: '2026-08-02T11:00:00Z'
+        }
+      ],
+      participantCount: 1,
+      participants: []
+    };
+
+    mockListConversationInbox.mockImplementation(async () => [whatsappLeadItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [
+        {
+          id: 9901,
+          conversationId: 990,
+          channelAccountId: 50,
+          channel: 'whatsapp',
+          accountDisplayName: 'WhatsApp Sales',
+          senderIdentityId: 990,
+          senderDisplayName: '+84988776655',
+          direction: 'inbound',
+          contentType: 'text',
+          textContent: 'Hi, I need pricing information.',
+          content: {},
+          occurredAt: '2026-08-02T11:00:00Z',
+          status: 'received',
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: null,
+          sendBatch: null,
+          mentions: [],
+          actions: { reply: true, recall: false, forward: true, react: true, copy: true }
+        }
+      ],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(screen.getAllByText('WhatsApp Customer (+84988776655)').length).toBeGreaterThan(0);
+    expect(screen.getByText('Hi, I need pricing information.')).toBeTruthy();
+
+    const waBadge = screen.getByRole('button', { name: 'whatsapp' });
+    expect(waBadge).toBeTruthy();
+    expect(waBadge.getAttribute('aria-pressed')).toBe('true');
+  });
 });

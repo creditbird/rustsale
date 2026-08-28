@@ -4,6 +4,7 @@
   import { cn } from '$lib/utils';
   import MessageSquare from 'lucide-svelte/icons/message-square';
   import MessageCircle from 'lucide-svelte/icons/message-circle';
+  import MessageCircleMore from 'lucide-svelte/icons/message-circle-more';
   import Mail from 'lucide-svelte/icons/mail';
   import Phone from 'lucide-svelte/icons/phone';
   import Users from 'lucide-svelte/icons/users';
@@ -14,7 +15,7 @@
 
   const channelIcons: Record<Channel, typeof MessageSquare> = {
     zalo: MessageSquare,
-    whatsapp: Phone,
+    whatsapp: MessageCircleMore,
     messenger: MessageCircle,
     email: Mail
   };

@@ -1,54 +1,32 @@
-# Task 2 Report: Extend Vendored Zalo Mutation Contracts (Zalo Rich Chat Phase 2A)
+# Task 2 Report: Database Migration & Canonical Schema Integration
 
-## Overview
-Implemented Task 2 of Zalo Rich Chat Phase 2A by extending the vendored `zca-rs` library contracts and API methods for message reactions, single-target message forwarding, and mention range serialization.
+## Summary
+Implemented Task 2 for WhatsApp integration: database migrations for WhatsApp session persistence, suppression lists, outreach campaigns, and recipient lifecycle tracking.
 
----
+## Changes
+- **Created**: [`src-tauri/src/conversation/whatsapp/migration.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/migration.rs)
+  - Implemented `apply_whatsapp_migrations` applying idempotent DDL for:
+    - `whatsapp_sessions`: Session metadata linked to `channel_accounts` with `ON DELETE RESTRICT`, unique `account_key`, and `is_valid` check.
+    - `contact_suppression_list`: Global multi-channel opt-out and suppression registry with `UNIQUE(channel, phone_or_email)` and `idx_suppression_lookup`.
+    - `whatsapp_outreach_campaigns`: Campaign state machine, burst/quiet hours limits, counter metrics, and `idx_wa_outreach_campaigns_status`.
+    - `whatsapp_campaign_recipients`: Per-recipient campaign execution state, FK relations, `UNIQUE(campaign_id, recipient_phone_e164)`, and `idx_wa_campaign_recipients_claim`.
+- **Created**: [`src-tauri/src/conversation/whatsapp/migration_test.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/migration_test.rs)
+  - Added unit test suite covering idempotency, foreign key cascades/restrictions, uniqueness constraints, check constraints, and full conversation migration integration.
+- **Modified**: [`src-tauri/src/conversation/whatsapp/mod.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/mod.rs)
+  - Exported `pub mod migration;` and wired `#[cfg(test)] mod migration_test;`.
+- **Modified**: [`src-tauri/src/conversation/migration.rs`](file:///home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/migration.rs)
+  - Invoked `super::whatsapp::migration::apply_whatsapp_migrations(conn)?;` in the canonical `migrate` function.
 
-## Changes Implemented
+## Verification & TDD Evidence
+1. **RED phase**:
+   - Executed `cargo test --lib conversation::whatsapp::migration_test` before implementation.
+   - Result: Failed with `unresolved import super::migration` as expected.
+2. **GREEN phase**:
+   - Executed `cargo test --lib conversation::whatsapp::migration_test`.
+   - Result: 5 passed (idempotency, session constraints, suppression constraints, campaign & recipient constraints, conversation migrate integration).
+3. **Regression testing**:
+   - Executed `cargo test --lib conversation::`.
+   - Result: 369 passed, 0 failed, 1 ignored.
 
-### 1. Vendored Models (`src-tauri/vendor/zca-rs/src/models/message.rs`)
-- **`ReactionType`**: Unified enum for standard and custom reaction emojis (`Standard(Reactions)`, `Custom { r_type, source, icon }`).
-- **`ForwardReference`**: Struct capturing original message reference details (`id`, `ts`, `log_src_type`, `fw_lvl`).
-- **`ReactionRequest`**: Struct containing `client_id`, `reaction`, `msg_id`, `cli_msg_id`, `thread_id`, and `thread_type`.
-- **`ForwardMessageRequest`**: Struct containing `client_id`, `message`, `thread_id`, `thread_type`, `reference`, and `ttl`.
-- **`ForwardMessageReceipt`**: Struct containing normalized `msg_id` and `cli_msg_id`, with a static `normalize(&serde_json::Value)` helper method handling numeric, string, and nested JSON response payloads.
-
-### 2. API Methods & Payload Builders (`src-tauri/vendor/zca-rs/src/apis/message.rs`)
-- **`set_reaction(&self, req: ReactionRequest)`**: API method on `Zalo` struct dispatches reaction addition/removal payloads to `/api/message/reaction` or `/api/group/reaction`.
-- **`forward_message_one(&self, req: ForwardMessageRequest)`**: API method on `Zalo` struct forwards messages to a single user or group target and returns a normalized `ForwardMessageReceipt`.
-- **`build_reaction_params(req: &ReactionRequest, imei: &str)`**: Extracted testable function for building reaction mutation JSON, preserving caller-supplied `client_id` and supporting reaction removal (`rType: -1`, `rIcon: ""`).
-- **`build_forward_one_params(req: &ForwardMessageRequest, imei: &str)`**: Extracted testable function for single-target message forwarding, formatting `toIds` or `grids` with `totalIds = 1`.
-
----
-
-## Unit Test Verification
-
-Added 6 dedicated unit tests in `src-tauri/vendor/zca-rs/src/apis/message.rs`:
-
-| Test Name | Result | Verification Objective |
-| :--- | :---: | :--- |
-| `phase2a_reaction_request_uses_caller_client_id` | **PASS** | Confirms caller-supplied `client_id` is preserved in reaction request payloads. |
-| `phase2a_reaction_remove_matches_probe` | **PASS** | Confirms `reaction: None` and `Reactions::None` produce probe-matching removal payload (`rType: -1`, `rIcon: ""`). |
-| `phase2a_forward_direct_uses_one_target` | **PASS** | Confirms single-target direct forwarding formats `toIds` array of size 1 and `totalIds: 1`. |
-| `phase2a_forward_group_uses_one_target` | **PASS** | Confirms single-target group forwarding formats `grids` array of size 1 and `totalIds: 1`. |
-| `phase2a_forward_response_normalizes_ids` | **PASS** | Confirms response normalization converts string, numeric, and nested response fields to normalized String IDs. |
-| `phase2a_mentions_serialize_utf16_ranges` | **PASS** | Confirms mention offsets and lengths are properly formatted into JSON string inside `mentionInfo`. |
-
-### Command Verification Outputs
-
-```bash
-cargo fmt --manifest-path src-tauri/vendor/zca-rs/Cargo.toml -- --check
-# Exit code: 0 (Clean)
-
-cargo test --manifest-path src-tauri/vendor/zca-rs/Cargo.toml phase2a_
-# Output: 6 passed; 0 failed; 0 ignored; finished in 0.00s
-
-cargo test --manifest-path src-tauri/vendor/zca-rs/Cargo.toml
-# Output: 24 passed; 0 failed; finished in 0.10s
-```
-
----
-
-## Conclusion
-Task 2 of Zalo Rich Chat Phase 2A is fully implemented, formatted, and verified with all unit tests passing.
+## Commits
+- `b058776`: `feat(whatsapp): add database schema migrations and tests`

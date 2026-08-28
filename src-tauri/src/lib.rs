@@ -244,10 +244,34 @@ pub fn run() {
                     facebook_graph_client,
                 ),
             );
+            let whatsapp_sessions_dir = app_data_dir.join("whatsapp-sessions");
+            let whatsapp_supervisor = std::sync::Arc::new(
+                conversation::whatsapp::supervisor::WhatsAppSupervisor::new(
+                    db_path_str.to_string(),
+                    whatsapp_sessions_dir.clone(),
+                    conversation_events.clone(),
+                ),
+            );
+            let whatsapp_login_manager = std::sync::Arc::new(
+                conversation::whatsapp::login::WhatsAppLoginManager::new(
+                    db_path_str.to_string(),
+                    whatsapp_sessions_dir,
+                    Some(app.handle().clone()),
+                ),
+            );
+            whatsapp_login_manager.with_supervisor(whatsapp_supervisor.clone());
+            whatsapp_supervisor.with_service(conversation_service.clone());
+
+            let ws_startup = whatsapp_supervisor.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = ws_startup.load_active_sessions_on_startup().await;
+            });
             app.manage(conversation::commands::ConversationState {
                 service: conversation_service.clone(),
                 zalo_supervisor: zalo_supervisor.clone(),
                 facebook_supervisor: facebook_supervisor.clone(),
+                whatsapp_supervisor: whatsapp_supervisor.clone(),
+                whatsapp_login_manager: whatsapp_login_manager.clone(),
             });
             conversation_events.clone().spawn_tauri_forwarder(app.handle().clone());
             let notif_service = notification_manager.clone();
@@ -293,6 +317,7 @@ pub fn run() {
 
             let startup_service = conversation_service.clone();
             let startup_fb_supervisor = facebook_supervisor.clone();
+            let startup_wa_supervisor = whatsapp_supervisor.clone();
             facebook_supervisor.with_service(conversation_service.clone());
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = startup_service.recover_outbox_startup() {
@@ -305,6 +330,11 @@ pub fn run() {
                     tracing::error!(target: "conversation", %error, "Facebook Messenger initial sync failed");
                 }
                 drop(startup_fb_supervisor.start_background_loop(std::time::Duration::from_secs(60)));
+                tauri::async_runtime::spawn(async move {
+                    startup_wa_supervisor
+                        .run_loop(std::time::Duration::from_secs(60))
+                        .await;
+                });
             });
 
             let fb_db_path = db_path_str.to_string();
@@ -460,6 +490,22 @@ pub fn run() {
             conversation::commands::list_conversation_pinned_messages,
             conversation::commands::sync_facebook_conversations,
             conversation::commands::ingest_facebook_webhook_events,
+            conversation::commands::start_whatsapp_qr_login,
+            conversation::commands::cancel_whatsapp_qr_login,
+            conversation::commands::get_managed_whatsapp_accounts,
+            conversation::commands::disconnect_whatsapp_account,
+            conversation::commands::create_whatsapp_campaign,
+            conversation::commands::populate_whatsapp_campaign_recipients,
+            conversation::commands::start_whatsapp_campaign,
+            conversation::commands::pause_whatsapp_campaign,
+            conversation::commands::resume_whatsapp_campaign,
+            conversation::commands::cancel_whatsapp_campaign,
+            conversation::commands::get_whatsapp_campaign,
+            conversation::commands::list_whatsapp_campaigns,
+            conversation::commands::get_whatsapp_campaign_recipients,
+            conversation::commands::sync_zalo_group_chat_history,
+            conversation::commands::sync_whatsapp_conversations,
+            conversation::commands::download_conversation_attachment,
             facebook::commands::schedule_facebook_post,
             facebook::commands::publish_facebook_post_now,
             facebook::commands::list_facebook_scheduled_posts,

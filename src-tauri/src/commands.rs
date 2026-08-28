@@ -5878,8 +5878,25 @@ pub fn fetch_group_members_impl(
         return Ok(Vec::new());
     }
 
+    let channel: String = conn
+        .query_row(
+            "SELECT ca.channel
+             FROM channel_conversations cc
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             WHERE cc.id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "zalo".to_string());
+
+    let default_member_name = match channel.as_str() {
+        "whatsapp" => "WhatsApp Member",
+        "zalo" => "Zalo Member",
+        _ => "Member",
+    };
+
     let placeholders = (0..external_ids.len())
-        .map(|index| format!("?{}", index + 2))
+        .map(|index| format!("?{}", index + 3))
         .collect::<Vec<_>>()
         .join(", ");
     let query = format!(
@@ -5893,17 +5910,17 @@ pub fn fetch_group_members_impl(
                  ROW_NUMBER() OVER (
                      PARTITION BY ci.external_id
                      ORDER BY
-                         CASE ci.identity_namespace WHEN 'zalo_uid' THEN 0 WHEN 'user' THEN 1 ELSE 2 END,
+                         CASE ci.identity_namespace WHEN 'zalo_uid' THEN 0 WHEN 'phone' THEN 0 WHEN 'user' THEN 1 ELSE 2 END,
                          CASE WHEN ci.display_name IS NOT NULL AND TRIM(ci.display_name) <> '' THEN 0 ELSE 1 END,
                          ci.id
                  ) AS identity_rank
              FROM channel_identities ci
-             WHERE ci.channel = 'zalo' AND ci.external_id IN ({placeholders})
+             WHERE ci.channel = ?2 AND ci.external_id IN ({placeholders})
          )
          SELECT
              ci.id,
              ci.external_id,
-             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Zalo Member'),
+             COALESCE(NULLIF(TRIM(ci.display_name), ''), '{default_member_name}'),
              ci.avatar_url,
              COALESCE((
                  SELECT cp.participant_role
@@ -5922,11 +5939,12 @@ pub fn fetch_group_members_impl(
          WHERE ci.identity_rank = 1
          ORDER BY
              CASE participant_role WHEN 'admin' THEN 1 WHEN 'deputy' THEN 2 ELSE 3 END,
-             COALESCE(NULLIF(TRIM(ci.display_name), ''), 'Zalo Member') ASC"
+             COALESCE(NULLIF(TRIM(ci.display_name), ''), '{default_member_name}') ASC"
     );
 
-    let mut values = Vec::<Value>::with_capacity(external_ids.len() + 1);
+    let mut values = Vec::<Value>::with_capacity(external_ids.len() + 2);
     values.push(conversation_id.into());
+    values.push(channel.into());
     values.extend(external_ids.into_iter().map(Value::Text));
 
     let mut stmt = conn
@@ -6125,7 +6143,7 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
     use crate::conversation::repository::ZaloUidCandidate;
     use crate::conversation::zalo::supervisor::GroupMessageBackfillOutcome;
 
-    let (external_thread_id, provider_account_key) = {
+    let (external_thread_id, provider_account_key, channel) = {
         let conn = state
             .conn
             .lock()
@@ -6149,13 +6167,53 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
             .optional()
             .map_err(|error| format!("Failed to resolve conversation: {error}"))?
             .ok_or_else(|| format!("Conversation {conversation_id} was not found"))?;
-        if row.2 != "group" || row.3 != "zalo" {
+        let channel = row.3;
+        if row.2 != "group" || (channel != "zalo" && channel != "whatsapp") {
             return Err(format!(
-                "Conversation {conversation_id} is not a Zalo group"
+                "Conversation {conversation_id} is not a supported group"
             ));
         }
-        (row.0, row.1)
+        (row.0, row.1, channel)
     };
+
+    if channel == "whatsapp" {
+        let (local_evidence, members) = {
+            let conn = state
+                .conn
+                .lock()
+                .map_err(|error| format!("Database lock error: {error}"))?;
+            let local_evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
+            let members = fetch_group_members_impl(&conn, conversation_id)?;
+            (local_evidence, members)
+        };
+        return Ok(GroupMemberScanResult {
+            discovered_count: members.len(),
+            profile_hydrated_count: 0,
+            membership_complete: false,
+            pages_attempted: 0,
+            pages_succeeded: 0,
+            messages_scanned: 0,
+            stop_reason: None,
+            warning: None,
+            diagnostics: GroupMemberScanDiagnostics {
+                direct_snapshot: GroupMemberDirectSnapshotDiagnostics {
+                    attempted: false,
+                    complete: false,
+                    member_count: 0,
+                    warning: None,
+                },
+                group_link: GroupMemberGroupLinkDiagnostics::default(),
+                board: GroupMemberBoardDiagnostics::default(),
+                history_backfill:
+                    crate::conversation::zalo::supervisor::GroupMessageBackfillReport::default(),
+                local_evidence: local_evidence.diagnostics,
+                profile_hydration: GroupMemberProfileHydrationDiagnostics::default(),
+                partial_result: true,
+                warnings: Vec::new(),
+            },
+            members,
+        });
+    }
 
     let client = runtime.connected_client(&provider_account_key).await;
     let mut warnings = Vec::new();

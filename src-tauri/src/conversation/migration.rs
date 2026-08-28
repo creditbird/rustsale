@@ -167,6 +167,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     super::migration_v2::apply_migration_v4(conn)?;
 
     conn.execute_batch(include_str!("schema.sql"))?;
+    super::whatsapp::migration::apply_whatsapp_migrations(conn)?;
 
     add_column_if_missing(conn, "channel_identities", "profile_synced_at", "TEXT")?;
     add_column_if_missing(conn, "channel_identities", "profile_sync_error", "TEXT")?;
@@ -210,6 +211,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_facebook_page_tokens_schema_v2(conn)?;
 
     reconcile_duplicate_zalo_channel_accounts(conn)?;
+    reconcile_duplicate_whatsapp_conversations_and_identities(conn)?;
 
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_zalo_sessions_zalo_uid
@@ -241,8 +243,202 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     )?;
 
     reset_zalo_reaction_history_once(conn)?;
+    cleanup_corrupted_whatsapp_attachments(conn)?;
 
     Ok(())
+}
+
+fn is_whatsapp_remote_path(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.starts_with("http://")
+        || normalized.starts_with("https://")
+        || normalized.starts_with("/o1/")
+        || normalized.starts_with("/v/t62")
+        || normalized.starts_with("/mms/")
+        || normalized.contains("mmg.whatsapp.net")
+}
+
+fn whatsapp_direct_path_from_reference(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with('/') {
+        return Some(trimmed.to_string());
+    }
+    url::Url::parse(trimmed)
+        .ok()
+        .map(|url| url.path().to_string())
+        .filter(|path| !path.is_empty() && path != "/")
+}
+
+fn metadata_value_is_missing(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(value)) => value.trim().is_empty(),
+        Some(_) => false,
+    }
+}
+
+fn copy_non_empty_metadata_value(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Value,
+    key: &str,
+) {
+    if !metadata_value_is_missing(target.get(key)) {
+        return;
+    }
+    let Some(value) = source.get(key) else {
+        return;
+    };
+    if metadata_value_is_missing(Some(value)) {
+        return;
+    }
+    target.insert(key.to_string(), value.clone());
+}
+
+fn canonical_whatsapp_attachment_type(value: &str) -> &str {
+    match value.to_ascii_lowercase().as_str() {
+        "image" | "photo" => "image",
+        "video" => "video",
+        "audio" | "voice" | "ptt" => "audio",
+        "sticker" => "sticker",
+        _ => "file",
+    }
+}
+
+fn cleanup_corrupted_whatsapp_attachments(conn: &Connection) -> Result<()> {
+    type LegacyWhatsAppMediaRow = (
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+
+    // `migrate` normally runs inside `db::init_db`'s transaction, but migration
+    // tests and recovery tools can also call it directly. A savepoint keeps the
+    // repair atomic in both cases; starting a nested transaction would fail in
+    // the normal application startup path.
+    conn.execute_batch("SAVEPOINT reconcile_whatsapp_media")?;
+    let repair_result = (|| -> Result<()> {
+        let rows: Vec<LegacyWhatsAppMediaRow> = {
+            let mut statement = conn.prepare(
+                "SELECT ma.id, ma.attachment_type, ma.local_path, ma.remote_url,
+                    ma.metadata_json, m.raw_payload_json
+             FROM message_attachments ma
+             JOIN messages m ON m.id = ma.message_id
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             WHERE ca.channel = 'whatsapp'
+             ORDER BY ma.id",
+            )?;
+            let mapped = statement.query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?;
+            mapped.collect::<Result<Vec<_>>>()?
+        };
+
+        for (attachment_id, attachment_type, local_path, remote_url, metadata_json, raw_payload) in
+            rows
+        {
+            let original_metadata = metadata_json.unwrap_or_else(|| "{}".to_string());
+            let mut metadata = serde_json::from_str::<serde_json::Value>(&original_metadata)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            if !metadata.is_object() {
+                metadata = serde_json::json!({});
+            }
+
+            if let (Some(metadata_object), Some(raw_payload)) =
+                (metadata.as_object_mut(), raw_payload.as_deref())
+            {
+                if let Ok(raw_value) = serde_json::from_str::<serde_json::Value>(raw_payload) {
+                    let matching_attachment = raw_value
+                        .get("attachments")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|attachments| {
+                            attachments
+                                .iter()
+                                .find(|attachment| {
+                                    attachment
+                                        .get("media_type")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(canonical_whatsapp_attachment_type)
+                                        == Some(attachment_type.as_str())
+                                })
+                                .or_else(|| attachments.first())
+                        });
+
+                    if let Some(raw_attachment) = matching_attachment {
+                        for key in [
+                            "direct_path",
+                            "media_key",
+                            "file_sha256",
+                            "file_enc_sha256",
+                            "width",
+                            "height",
+                        ] {
+                            copy_non_empty_metadata_value(metadata_object, raw_attachment, key);
+                        }
+                    }
+                }
+            }
+
+            let repaired_local_path = match local_path.as_deref() {
+                Some(path) if is_whatsapp_remote_path(path) => None,
+                _ => local_path.clone(),
+            };
+
+            if let Some(metadata_object) = metadata.as_object_mut() {
+                if metadata_value_is_missing(metadata_object.get("direct_path")) {
+                    let reference = local_path
+                        .as_deref()
+                        .filter(|path| is_whatsapp_remote_path(path))
+                        .or_else(|| {
+                            remote_url
+                                .as_deref()
+                                .filter(|path| is_whatsapp_remote_path(path))
+                        });
+                    if let Some(direct_path) =
+                        reference.and_then(whatsapp_direct_path_from_reference)
+                    {
+                        metadata_object.insert(
+                            "direct_path".to_string(),
+                            serde_json::Value::String(direct_path),
+                        );
+                    }
+                }
+            }
+
+            let repaired_metadata = metadata.to_string();
+            if repaired_local_path != local_path || repaired_metadata != original_metadata {
+                conn.execute(
+                    "UPDATE message_attachments
+                     SET local_path = ?2, metadata_json = ?3
+                     WHERE id = ?1",
+                    params![attachment_id, repaired_local_path, repaired_metadata],
+                )?;
+            }
+        }
+
+        Ok(())
+    })();
+
+    match repair_result {
+        Ok(()) => conn.execute_batch("RELEASE SAVEPOINT reconcile_whatsapp_media"),
+        Err(error) => {
+            let _ = conn.execute_batch(
+                "ROLLBACK TO SAVEPOINT reconcile_whatsapp_media;
+                 RELEASE SAVEPOINT reconcile_whatsapp_media;",
+            );
+            Err(error)
+        }
+    }
 }
 
 fn reset_zalo_reaction_history_once(conn: &Connection) -> Result<()> {
@@ -1511,6 +1707,310 @@ pub fn reconcile_duplicate_zalo_channel_accounts(conn: &Connection) -> Result<()
              WHERE zalo_uid = ?1 OR channel_account_id = ?2",
             params![uid, canonical.id],
         )?;
+    }
+
+    Ok(())
+}
+
+pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connection) -> Result<()> {
+    // 1. Auto-link unlinked WhatsApp identities to Leads by phone or display name
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, external_id, display_name
+             FROM channel_identities
+             WHERE channel = 'whatsapp' AND lead_id IS NULL",
+        )?;
+        let unlinked_rows: Vec<(i64, String, Option<String>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<Vec<_>>>()?;
+
+        for (id, ext_id, d_name) in unlinked_rows {
+            let phone =
+                crate::conversation::whatsapp::phone::resolve_lid_or_jid_to_phone(conn, &ext_id)
+                    .or_else(|| crate::conversation::whatsapp::phone::jid_to_phone(&ext_id))
+                    .unwrap_or_else(|| ext_id.clone());
+
+            let mut resolved_lead_id = crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::resolve_lead_by_phone(conn, &phone)
+                .unwrap_or(None);
+
+            if resolved_lead_id.is_none() {
+                if let Some(ref name) = d_name {
+                    let name_trimmed = name.trim();
+                    if !name_trimmed.is_empty()
+                        && !name_trimmed.starts_with('+')
+                        && !name_trimmed.starts_with("Unknown")
+                    {
+                        let mut name_stmt = conn.prepare(
+                            "SELECT id FROM leads WHERE lower(trim(name)) = lower(trim(?1)) LIMIT 2",
+                        )?;
+                        let matching_ids: Vec<i64> = name_stmt
+                            .query_map([name_trimmed], |row| row.get(0))?
+                            .collect::<Result<Vec<_>>>()?;
+                        if matching_ids.len() == 1 {
+                            resolved_lead_id = Some(matching_ids[0]);
+                        }
+                    }
+                }
+            }
+
+            if let Some(lead_id) = resolved_lead_id {
+                let _ = conn.execute(
+                    "UPDATE channel_identities
+                     SET lead_id = ?1, link_source = 'phone_match', updated_at = datetime('now')
+                     WHERE id = ?2",
+                    rusqlite::params![lead_id, id],
+                );
+            }
+        }
+    }
+
+    // 2. Reconcile duplicate channel_identities for the same WhatsApp contact (LID vs Phone)
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, channel_account_id, external_id, display_name, avatar_url, lead_id
+             FROM channel_identities
+             WHERE channel = 'whatsapp'",
+        )?;
+        let identities: Vec<(
+            i64,
+            Option<i64>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut groups: std::collections::HashMap<(Option<i64>, String), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (idx, (_, acc_id, ext_id, _, _, _)) in identities.iter().enumerate() {
+            let phone =
+                crate::conversation::whatsapp::phone::resolve_lid_or_jid_to_phone(conn, ext_id)
+                    .or_else(|| crate::conversation::whatsapp::phone::jid_to_phone(ext_id))
+                    .or_else(|| {
+                        crate::conversation::whatsapp::phone::normalize_e164(ext_id, Some("84"))
+                    })
+                    .unwrap_or_else(|| ext_id.trim().to_string());
+            let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() >= 7 {
+                groups.entry((*acc_id, digits)).or_default().push(idx);
+            }
+        }
+
+        for (_, member_indices) in groups {
+            if member_indices.len() <= 1 {
+                continue;
+            }
+
+            let mut canonical_idx = member_indices[0];
+            for &idx in &member_indices[1..] {
+                let current_canonical = &identities[canonical_idx];
+                let candidate = &identities[idx];
+                let current_is_pn = !current_canonical.2.contains("@lid")
+                    && current_canonical.2.chars().any(|c| c.is_ascii_digit());
+                let candidate_is_pn = !candidate.2.contains("@lid")
+                    && candidate.2.chars().any(|c| c.is_ascii_digit());
+                if !current_is_pn && candidate_is_pn {
+                    canonical_idx = idx;
+                } else if current_canonical.5.is_none() && candidate.5.is_some() {
+                    canonical_idx = idx;
+                }
+            }
+
+            let canonical_id = identities[canonical_idx].0;
+
+            let mut best_display_name = identities[canonical_idx].3.clone();
+            let mut best_avatar = identities[canonical_idx].4.clone();
+            let mut best_lead_id = identities[canonical_idx].5;
+
+            for &idx in &member_indices {
+                if idx == canonical_idx {
+                    continue;
+                }
+                let item = &identities[idx];
+                if best_lead_id.is_none() && item.5.is_some() {
+                    best_lead_id = item.5;
+                }
+                if let Some(ref name) = item.3 {
+                    let n = name.trim();
+                    if !n.is_empty() && !n.starts_with('+') && !n.starts_with("Unknown") {
+                        if best_display_name
+                            .as_deref()
+                            .map(|d| {
+                                d.starts_with('+')
+                                    || d.starts_with("Unknown")
+                                    || d.trim().is_empty()
+                            })
+                            .unwrap_or(true)
+                        {
+                            best_display_name = Some(n.to_string());
+                        }
+                    }
+                }
+                if best_avatar.is_none() && item.4.is_some() {
+                    best_avatar = item.4.clone();
+                }
+            }
+
+            let _ = conn.execute(
+                "UPDATE channel_identities
+                 SET display_name = COALESCE(?1, display_name),
+                     avatar_url = COALESCE(?2, avatar_url),
+                     lead_id = COALESCE(?3, lead_id),
+                     updated_at = datetime('now')
+                 WHERE id = ?4",
+                rusqlite::params![best_display_name, best_avatar, best_lead_id, canonical_id],
+            );
+
+            for &idx in &member_indices {
+                if idx == canonical_idx {
+                    continue;
+                }
+                let dup_id = identities[idx].0;
+                let _ = conn.execute(
+                    "UPDATE messages SET sender_identity_id = ?1 WHERE sender_identity_id = ?2",
+                    rusqlite::params![canonical_id, dup_id],
+                );
+                let _ = conn.execute(
+                    "UPDATE messages SET reply_sender_identity_id = ?1 WHERE reply_sender_identity_id = ?2",
+                    rusqlite::params![canonical_id, dup_id],
+                );
+                let _ = conn.execute(
+                    "UPDATE message_mentions SET identity_id = ?1 WHERE identity_id = ?2",
+                    rusqlite::params![canonical_id, dup_id],
+                );
+                let _ = conn.execute(
+                    "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+                     SELECT conversation_id, ?1, participant_role, joined_at
+                     FROM conversation_participants WHERE identity_id = ?2
+                     ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+                    rusqlite::params![canonical_id, dup_id],
+                );
+                let _ = conn.execute(
+                    "DELETE FROM conversation_participants WHERE identity_id = ?1",
+                    rusqlite::params![dup_id],
+                );
+                let _ = conn.execute(
+                    "DELETE FROM channel_identities WHERE id = ?1",
+                    rusqlite::params![dup_id],
+                );
+            }
+        }
+    }
+
+    // 3. Reconcile duplicate direct channel_conversations for WhatsApp
+    {
+        let mut stmt = conn.prepare(
+            "SELECT cc.id, cc.channel_account_id, cc.external_thread_id, cc.title
+             FROM channel_conversations cc
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             WHERE ca.channel = 'whatsapp' AND cc.kind = 'direct'
+             ORDER BY cc.id ASC",
+        )?;
+        let conversations: Vec<(i64, i64, String, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut conv_groups: std::collections::HashMap<(i64, String), Vec<usize>> =
+            std::collections::HashMap::new();
+
+        for (idx, (_, acc_id, thread_id, _)) in conversations.iter().enumerate() {
+            let phone =
+                crate::conversation::whatsapp::phone::resolve_lid_or_jid_to_phone(conn, thread_id)
+                    .or_else(|| crate::conversation::whatsapp::phone::jid_to_phone(thread_id))
+                    .or_else(|| {
+                        crate::conversation::whatsapp::phone::normalize_e164(thread_id, Some("84"))
+                    })
+                    .unwrap_or_else(|| thread_id.trim().to_string());
+            let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+            let canonical_jid = if digits.len() >= 7 {
+                crate::conversation::whatsapp::phone::phone_to_direct_jid(&digits)
+            } else {
+                thread_id.trim().to_string()
+            };
+            conv_groups
+                .entry((*acc_id, canonical_jid))
+                .or_default()
+                .push(idx);
+        }
+
+        for ((acc_id, canonical_jid), member_indices) in conv_groups {
+            if member_indices.len() <= 1 {
+                if !member_indices.is_empty() {
+                    let conv_id = conversations[member_indices[0]].0;
+                    let _ = conn.execute(
+                        "UPDATE channel_conversations SET external_thread_id = ?1 WHERE id = ?2 AND external_thread_id != ?1",
+                        rusqlite::params![canonical_jid, conv_id],
+                    );
+                }
+                continue;
+            }
+
+            let mut canonical_idx = member_indices[0];
+            for &idx in &member_indices[1..] {
+                if conversations[idx].2 == canonical_jid {
+                    canonical_idx = idx;
+                    break;
+                }
+            }
+
+            let canonical_conv_id = conversations[canonical_idx].0;
+
+            let mut best_title = conversations[canonical_idx].3.clone();
+            for &idx in &member_indices {
+                if idx == canonical_idx {
+                    continue;
+                }
+                if let Some(ref title) = conversations[idx].3 {
+                    let t = title.trim();
+                    if !t.is_empty() && !t.starts_with('+') && !t.starts_with("Unknown") {
+                        if best_title
+                            .as_deref()
+                            .map(|b| {
+                                b.starts_with('+')
+                                    || b.starts_with("Unknown")
+                                    || b.trim().is_empty()
+                            })
+                            .unwrap_or(true)
+                        {
+                            best_title = Some(t.to_string());
+                        }
+                    }
+                }
+            }
+
+            if let Some(ref title) = best_title {
+                let _ = conn.execute(
+                    "UPDATE channel_conversations SET title = ?1 WHERE id = ?2",
+                    rusqlite::params![title, canonical_conv_id],
+                );
+            }
+
+            for &idx in &member_indices {
+                if idx == canonical_idx {
+                    continue;
+                }
+                let dup_conv_id = conversations[idx].0;
+                let _ = merge_conversation(conn, canonical_conv_id, dup_conv_id, acc_id);
+            }
+
+            let _ = conn.execute(
+                "UPDATE channel_conversations SET external_thread_id = ?1 WHERE id = ?2",
+                rusqlite::params![canonical_jid, canonical_conv_id],
+            );
+        }
     }
 
     Ok(())

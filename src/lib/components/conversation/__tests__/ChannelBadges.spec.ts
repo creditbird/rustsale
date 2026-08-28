@@ -92,4 +92,40 @@ describe('ChannelBadges Component', () => {
 
     expect(screen.getByText('No channels currently visible')).toBeTruthy();
   });
+
+  test('renders WhatsApp channel with emerald styling, count badge, and toggles on click', async () => {
+    const onToggle = mock((ch: Channel) => {});
+    const whatsappChannels: ChannelBadgeSummary[] = [
+      { channel: 'whatsapp', messageCount: 42 },
+      { channel: 'zalo', messageCount: 8 }
+    ];
+
+    const { rerender } = render(ChannelBadges, {
+      props: {
+        channels: whatsappChannels,
+        activeChannels: ['whatsapp', 'zalo'],
+        onToggle
+      }
+    });
+
+    const whatsappBtn = screen.getByRole('button', { name: /whatsapp/i });
+    expect(whatsappBtn).toBeTruthy();
+    expect(screen.getByText('42')).toBeTruthy();
+    expect(whatsappBtn.getAttribute('aria-pressed')).toBe('true');
+    expect(whatsappBtn.className).toContain('bg-emerald-600');
+
+    await fireEvent.click(whatsappBtn);
+    expect(onToggle).toHaveBeenCalledWith('whatsapp');
+
+    // Rerender with WhatsApp inactive
+    await rerender({
+      channels: whatsappChannels,
+      activeChannels: ['zalo'],
+      onToggle
+    });
+
+    const inactiveWhatsAppBtn = screen.getByRole('button', { name: /whatsapp/i });
+    expect(inactiveWhatsAppBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(inactiveWhatsAppBtn.className).toContain('bg-emerald-50');
+  });
 });

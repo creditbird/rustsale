@@ -3184,4 +3184,604 @@ mod group_member_import_events {
             .unwrap();
         assert_eq!(token_status, "expired");
     }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_success() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        // 1. Create WhatsApp account
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (701, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO whatsapp_sessions 
+             (channel_account_id, account_key, phone_number, session_db_filename, is_valid, created_at, updated_at)
+             VALUES (701, '84901234567', '84901234567', 'session_701.db', 1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        // 2. Create conversation
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (702, 701, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        // 3. Create outbound message & outbox job
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (703, 702, 'outbound', 'wa_client_msg_1', 'text', 'Hello from WhatsApp outbox test', '{}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_703', 701, 703, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(701, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        // Verify outbox job is completed
+        let job_status: String = conn
+            .query_row(
+                "SELECT status FROM message_outbox_jobs WHERE id = 'job_wa_703'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(job_status, "completed");
+
+        // Verify message status is sent
+        let msg_status: String = conn
+            .query_row("SELECT status FROM messages WHERE id = 703", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(msg_status, "sent");
+
+        // Verify client dispatched message
+        let sent = mock_client.get_sent_messages();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].recipient_jid, "84909999999@s.whatsapp.net");
+        assert_eq!(sent[0].text, "Hello from WhatsApp outbox test");
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_with_quote_reply() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (710, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (711, 710, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        // Previous message from customer
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (712, 711, 'inbound', 'parent_stanza_123', 'text', 'Original question?', '{}', 'delivered', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        // Reply outbound message quoting parent (id=712)
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, reply_to_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (713, 711, 'outbound', 'wa_reply_msg', 712, 'text', 'Quoted answer!', '{}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_713', 710, 713, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(710, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        let sent = mock_client.get_sent_messages();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].text, "Quoted answer!");
+        let quote = sent[0].quote.as_ref().expect("Quote must be populated");
+        assert_eq!(quote.stanza_id, "parent_stanza_123");
+        assert_eq!(quote.text.as_deref(), Some("Original question?"));
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_media() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (720, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (721, 720, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (722, 721, 'outbound', 'wa_media_msg', 'image', 'Check this photo', '{\"url\":\"https://example.com/photo.jpg\"}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_722', 720, 722, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(720, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        let sent_media = mock_client.get_sent_media();
+        assert_eq!(sent_media.len(), 1);
+        assert_eq!(sent_media[0].media_type, "image");
+        assert_eq!(
+            sent_media[0].media_data_or_url,
+            "https://example.com/photo.jpg"
+        );
+        assert_eq!(sent_media[0].caption.as_deref(), Some("Check this photo"));
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_attachment() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (725, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (726, 725, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (727, 726, 'outbound', 'wa_att_msg', 'attachment', 'Sent an image attachment', '{\"caption\":\"Sent an image attachment\"}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_attachments
+             (id, message_id, attachment_type, file_name, mime_type, size_bytes, local_path, created_at)
+             VALUES (728, 727, 'image', 'clipboard.png', 'image/png', 54000, '/tmp/test_clipboard.png', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_727', 725, 727, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(725, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        let sent_media = mock_client.get_sent_media();
+        assert_eq!(sent_media.len(), 1);
+        assert_eq!(sent_media[0].media_type, "image");
+        assert_eq!(sent_media[0].media_data_or_url, "/tmp/test_clipboard.png");
+        assert_eq!(
+            sent_media[0].caption.as_deref(),
+            Some("Sent an image attachment")
+        );
+
+        let (remote_url, metadata_json): (Option<String>, String) = conn
+            .query_row(
+                "SELECT remote_url, metadata_json FROM message_attachments WHERE id = 728",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            remote_url.as_deref(),
+            Some("https://mmg.whatsapp.net/mock/direct_path")
+        );
+        assert!(metadata_json.contains("/mock/direct_path"));
+        assert!(metadata_json.contains("bW9ja19tZWRpYV9rZXlfMzJieXRlc19mb3JfdGVzdA=="));
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_reaction() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (730, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (731, 730, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (732, 731, 'outbound', 'wa_react_msg', 'reaction', '❤️', '{\"emoji\":\"❤️\",\"target_message_id\":\"target_msg_100\"}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_732', 730, 732, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(730, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        let reactions = mock_client.get_sent_reactions();
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0].emoji, "❤️");
+        assert_eq!(reactions[0].target_message_id, "target_msg_100");
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_retryable_error() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (740, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (741, 740, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (742, 741, 'outbound', 'wa_msg_retry', 'text', 'Will fail transiently', '{}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_742', 740, 742, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        mock_client.set_next_send_error(
+            crate::conversation::whatsapp::client::WhatsAppErrorKind::RateLimited,
+            "Rate limited: 429 Too Many Requests",
+        );
+
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(740, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        // Verify status is retry_wait and next_attempt_at is set
+        let (status, next_attempt, attempt_count): (String, Option<String>, i64) = conn.query_row(
+            "SELECT status, next_attempt_at, attempt_count FROM message_outbox_jobs WHERE id = 'job_wa_742'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+
+        assert_eq!(status, "retry_wait");
+        assert!(next_attempt.is_some());
+        assert_eq!(attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_auth_error_invalidates_account() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (750, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO whatsapp_sessions 
+             (channel_account_id, account_key, phone_number, session_db_filename, is_valid, created_at, updated_at)
+             VALUES (750, '84901234567', '84901234567', 'session_750.db', 1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (751, 750, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (752, 751, 'outbound', 'wa_msg_auth_err', 'text', 'Auth fail test', '{}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_752', 750, 752, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        mock_client.set_next_send_error(
+            crate::conversation::whatsapp::client::WhatsAppErrorKind::AuthFailure,
+            "401 Unauthorized: Session revoked by user",
+        );
+
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(750, &mock_client)
+            .await
+            .unwrap();
+
+        // Circuit breaker: auth failure returns false to halt queue drain
+        assert!(
+            !processed,
+            "process_next_whatsapp_outbox_job must return false on auth error to halt queue drain"
+        );
+
+        // Verify job failed
+        let job_status: String = conn
+            .query_row(
+                "SELECT status FROM message_outbox_jobs WHERE id = 'job_wa_752'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(job_status, "failed");
+
+        // Verify account marked invalid
+        let conn_status: String = conn
+            .query_row(
+                "SELECT connection_status FROM channel_accounts WHERE id = 750",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(conn_status, "invalid");
+
+        // Verify session marked invalid
+        let is_valid: i64 = conn
+            .query_row(
+                "SELECT is_valid FROM whatsapp_sessions WHERE channel_account_id = 750",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(is_valid, 0);
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_ambiguous_timeout_does_not_retry() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (760, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (761, 760, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (762, 761, 'outbound', 'wa_msg_timeout', 'text', 'Timeout test', '{}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_762', 760, 762, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        mock_client.set_next_send_error(
+            crate::conversation::whatsapp::client::WhatsAppErrorKind::AmbiguousTimeout,
+            "Ambiguous timeout waiting for server ack",
+        );
+
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(760, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        // REQ-WA-07 Invariant: Status must be failed / delivery_unknown and NOT retry_wait
+        let (job_status, msg_err_code): (String, String) = conn.query_row(
+            "SELECT oj.status, m.error_code FROM message_outbox_jobs oj JOIN messages m ON m.id = oj.message_id WHERE oj.id = 'job_wa_762'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+
+        assert_eq!(job_status, "failed");
+        assert_eq!(msg_err_code, "delivery_unknown");
+    }
+
+    #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_invalid_recipient_suppresses() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (770, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (771, 770, '84909888888@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (772, 771, 'outbound', 'wa_msg_invalid_rcpt', 'text', 'Invalid rcpt test', '{}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_772', 770, 772, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        mock_client.set_next_send_error(
+            crate::conversation::whatsapp::client::WhatsAppErrorKind::InvalidRecipient,
+            "Recipient 84909888888 is not on WhatsApp",
+        );
+
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(770, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        // Verify job failed
+        let job_status: String = conn
+            .query_row(
+                "SELECT status FROM message_outbox_jobs WHERE id = 'job_wa_772'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(job_status, "failed");
+
+        // Verify phone was added to suppression list
+        let suppression_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contact_suppression_list WHERE channel = 'whatsapp' AND phone_or_email = '84909888888'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(suppression_count, 1);
+    }
 }

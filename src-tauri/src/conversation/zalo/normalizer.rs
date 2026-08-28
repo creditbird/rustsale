@@ -377,7 +377,7 @@ fn json_scalar_string(value: &Value) -> Option<String> {
     }
 }
 
-fn normalize_message(
+pub fn normalize_message(
     provider_account_key: &str,
     account_display_name: Option<&str>,
     message: Message,

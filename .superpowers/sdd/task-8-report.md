@@ -1,30 +1,90 @@
-# Task 8 Report: Send Group Mentions Through the Batch Worker
+# Task 8 Report: Frontend Account Settings & QR Pairing UI
 
-## Status: COMPLETE
+**Status:** DONE
 
-### Changes Implemented
-1. **Service & Repository Layer (`service.rs`, `repository.rs`)**:
-   - Extended `enqueue_outbound_batch` in `repository.rs` to validate `ConversationSendPartContent::Text { text, mentions }`.
-   - Mentions are validated using `validate_mentions` against group participants in the database transaction:
-     - Direct conversations with mentions reject with `MentionDirectConversationUnsupported`.
-     - Non-existent or inactive group participants reject with `MentionParticipantNotFound`.
-     - Invalid UTF-16 ranges or formatting reject with `InvalidMentionRange`.
-   - Validated mentions are persisted to the `message_mentions` table during batch enqueue transaction via `save_message_mentions_tx`.
-   - Added `get_message_mentions_for_provider` to load persisted `message_mentions` for the text part in `process_next_outbox_job`. Positions are loaded from DB, preserving exact stored UTF-16 ranges without recomputing in worker.
+## Summary of Implementation
+We implemented the full frontend settings, account management, and QR login modal for WhatsApp accounts in RustSale_v2:
 
-2. **Zalo Client Integration (`zalo/client.rs`)**:
-   - Extended `ProviderOutboundContent::Text` to include `mentions: Vec<ProviderMention>`.
-   - Added `ProviderMention` DTO.
-   - Updated `send_part` in `ZaloClientImpl` to map `ProviderMention` items to `zca_rs::models::MessageMention` (mapping `is_all` to `"0"` and individual target identities to their `target_external_id`).
-   - Ensured both quote context and mentions on the same text part are passed to `MessageContent`.
+1. **`src/lib/services/whatsappService.ts`**:
+   - Implemented TypeScript types:
+     - `ConnectedWhatsAppAccount`
+     - `WhatsAppQrCodePayload`
+     - `WhatsAppLoginSuccessPayload`
+     - `WhatsAppLoginErrorPayload`
+     - `CreateWhatsAppCampaignRequest`
+     - `CampaignRecipientInput`
+     - `WhatsAppCampaignRecord`
+     - `CampaignRecipientRecord`
+   - Implemented Tauri `invoke` functions:
+     - `listManagedWhatsAppAccounts()` -> `get_managed_whatsapp_accounts`
+     - `startWhatsAppQrLogin(attemptId)` -> `start_whatsapp_qr_login`
+     - `cancelWhatsAppQrLogin(attemptId)` -> `cancel_whatsapp_qr_login`
+     - `disconnectWhatsAppAccount(channelAccountId)` -> `disconnect_whatsapp_account`
+     - `createWhatsAppCampaign(req)` -> `create_whatsapp_campaign`
+     - `populateWhatsAppCampaignRecipients(campaignId, recipients, template?)` -> `populate_whatsapp_campaign_recipients`
+     - `startWhatsAppCampaign(campaignId)` -> `start_whatsapp_campaign`
+     - `pauseWhatsAppCampaign(campaignId)` -> `pause_whatsapp_campaign`
+     - `resumeWhatsAppCampaign(campaignId)` -> `resume_whatsapp_campaign`
+     - `cancelWhatsAppCampaign(campaignId)` -> `cancel_whatsapp_campaign`
+     - `getWhatsAppCampaign(campaignId)` -> `get_whatsapp_campaign`
+     - `listWhatsAppCampaigns()` -> `list_whatsapp_campaigns`
+     - `getWhatsAppCampaignRecipients(campaignId, limit?, offset?)` -> `get_whatsapp_campaign_recipients`
+   - Exported event name constants: `EVENT_WHATSAPP_QR_CODE`, `EVENT_WHATSAPP_LOGIN_SUCCESS`, `EVENT_WHATSAPP_LOGIN_ERROR`.
 
-3. **Unit Tests Added (`service_test.rs`, `client_test.rs`)**:
-   - `outbound_group_mentions_enqueued_and_sent_with_exact_ranges`: Verifies group mentions enqueued with exact ranges persist to DB and pass to worker.
-   - `direct_conversation_mentions_rejected_with_typed_error`: Verifies direct conversation mentions are rejected with `MentionDirectConversationUnsupported`.
-   - `fake_client_captures_outbound_group_mentions`: Verifies fake client captures mentions from outbound provider send request.
-   - `quote_reply_with_mentions_serializes_both`: Verifies quote reply and group mentions on the same text part serialize both fields.
+2. **`src/lib/services/accountSettingsService.ts`**:
+   - Re-exported WhatsApp types and services for unified access.
 
-### Verification Results
-- `cargo test --manifest-path src-tauri/Cargo.toml mention_`: PASS (9 passed)
-- `cargo test --manifest-path src-tauri/Cargo.toml conversation::`: PASS (157 passed, 0 failed)
-- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: PASS
+3. **`src/lib/components/settings/WhatsAppAccountsSettings.svelte`**:
+   - **Accounts List**:
+     - Loading spinner, error banner for load/action failures.
+     - Empty state with clear call-to-action button.
+     - Responsive account cards showing avatar/initials, display name, phone number / provider key, status badges ("Connected", Phone number), operational status, and disconnect button.
+   - **QR Pairing Dialog**:
+     - Launches pairing with unique `attemptId = crypto.randomUUID()`.
+     - Listens to Tauri `whatsapp-qr-code` events, rendering QR code using `qrcode` / SVG / data URI, countdown timer with sequence number badge.
+     - Listens to `whatsapp-login-success` event, showing paired user details and auto-refreshing the accounts list.
+     - Listens to `whatsapp-login-error` event, presenting actionable error details and a retry button.
+     - On dialog close / cancel, triggers `cancel_whatsapp_qr_login(attemptId)` and cleans up event listeners and intervals.
+   - **Disconnect Confirmation Dialog**:
+     - Confirmation modal before unregistering and disabling accounts.
+
+4. **`src/lib/components/Settings.svelte`**:
+   - Enabled WhatsApp tab (removed `disabled` attribute and `Coming soon` badge).
+   - Rendered `<WhatsAppAccountsSettings />` inside `<Tabs.Content value="whatsapp">`.
+   - Exposed `openWhatsAppTab()` and `openWhatsAppQrLogin()`.
+
+5. **Test Suites**:
+   - Created `src/lib/components/settings/__tests__/WhatsAppAccountsSettings.spec.ts` covering empty states, account list rendering, QR login modal lifecycle, QR event handling, success/error states, cancellation, account disconnection, and error resilience.
+   - Updated `src/lib/components/__tests__/Settings.spec.ts` to verify enabled WhatsApp tab.
+
+## Test Evidence
+- `bun test src/lib/components/settings/__tests__/WhatsAppAccountsSettings.spec.ts src/lib/components/__tests__/Settings.spec.ts`:
+  ```
+  18 pass, 0 fail (57 expect() calls)
+  ```
+- Full test suite (`bun test`):
+  ```
+  580 pass, 1 skip, 0 fail (4159 expect() calls across 67 files)
+  ```
+- Diagnostic check (`bun run check`):
+  ```
+  svelte-check found 0 errors and 6 warnings in 3 files
+  ```
+
+## Files Changed
+- `src/lib/services/whatsappService.ts` (created)
+- `src/lib/services/accountSettingsService.ts` (modified)
+- `src/lib/components/settings/WhatsAppAccountsSettings.svelte` (created)
+- `src/lib/components/Settings.svelte` (modified)
+- `src/lib/components/settings/__tests__/WhatsAppAccountsSettings.spec.ts` (created)
+- `src/lib/components/__tests__/Settings.spec.ts` (modified)
+- `package.json` & `bun.lock` (added `qrcode` dependency)
+
+## Self-Review Findings
+- All Tauri commands match Rust snake_case and camelCase signatures.
+- QR pairing state is properly reset and cancelled on dialog unmount or user close.
+- Accounts array is safely guarded against undefined payloads.
+- TypeScript interfaces match Rust structs across supervisor, login, and campaign modules.
+
+## Status
+DONE

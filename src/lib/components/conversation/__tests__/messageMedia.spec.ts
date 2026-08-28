@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   attachmentLabel,
+  extractGalleryImages,
   extractStickerUrl,
   formatBytes,
   formatMediaDuration,
@@ -19,11 +20,21 @@ describe('messageMedia', () => {
       );
     });
 
+    it('accepts valid raster data image and asset URLs', () => {
+      expect(safeConversationUrl('data:image/png;base64,iVBORw0KGgo=')).toBe(
+        'data:image/png;base64,iVBORw0KGgo='
+      );
+      expect(safeConversationUrl('asset://localhost/path/to/img.png')).toBe(
+        'asset://localhost/path/to/img.png'
+      );
+    });
+
     it('rejects unsafe URL protocols', () => {
       expect(safeConversationUrl('javascript:alert(1)')).toBeNull();
       expect(safeConversationUrl('file:///etc/passwd')).toBeNull();
       expect(safeConversationUrl('../secret.txt')).toBeNull();
       expect(safeConversationUrl('data:text/html;base64,PHNjcmlwdD4=')).toBeNull();
+      expect(safeConversationUrl('data:image/svg+xml;base64,PHN2Zz4=')).toBeNull();
     });
   });
 
@@ -94,6 +105,41 @@ describe('messageMedia', () => {
       expect(formatMediaDuration(0)).toBe('00:00');
       expect(formatMediaDuration(65)).toBe('01:05');
       expect(formatMediaDuration(3600)).toBe('60:00');
+    });
+  });
+
+  describe('extractGalleryImages', () => {
+    it('extracts standard image URLs and ignores un-decrypted WhatsApp encrypted URLs', () => {
+      const messages = [
+        {
+          attachments: [
+            {
+              mediaType: 'image',
+              remoteUrl: 'https://example.com/photo1.jpg',
+              thumbnailUrl: null,
+              fileName: 'photo1.jpg'
+            },
+            {
+              mediaType: 'image',
+              remoteUrl: 'https://mmg.whatsapp.net/v/encrypted.enc',
+              thumbnailUrl: null,
+              fileName: 'wa_encrypted.jpg'
+            },
+            {
+              mediaType: 'image',
+              remoteUrl: 'https://mmg.whatsapp.net/v/encrypted2.enc',
+              thumbnailUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+              fileName: 'wa_decrypted.jpg'
+            }
+          ],
+          occurredAt: '2026-08-27T10:00:00Z'
+        }
+      ];
+
+      const result = extractGalleryImages(messages);
+      expect(result.length).toBe(2);
+      expect(result[0].url).toBe('https://example.com/photo1.jpg');
+      expect(result[1].url).toBe('data:image/jpeg;base64,/9j/4AAQSkZJRg==');
     });
   });
 });

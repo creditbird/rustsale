@@ -15,6 +15,8 @@
     unpinConversationMessage,
     listConversationPinnedMessages,
     syncFacebookConversations,
+    syncZaloGroupChatHistory,
+    syncWhatsAppConversations,
     type InboxItem,
 
     type Channel,
@@ -262,13 +264,18 @@
     }
   }
 
-  function handleImageClick(clickedUrl: string, _clickedMessage: ConversationMessage) {
+  function handleImageClick(clickedUrl: string, clickedMessage?: ConversationMessage) {
     const items = currentVariant?.items ?? [];
     const images = extractGalleryImages(items);
 
     const safeClicked = safeConversationUrl(clickedUrl) ?? clickedUrl;
-    if (images.length === 0 && safeClicked) {
-      images.push({ url: safeClicked, alt: 'Image' });
+    if (safeClicked && !images.some((img) => img.url === safeClicked || img.url === clickedUrl)) {
+      images.push({
+        url: safeClicked,
+        alt: 'Image',
+        caption: clickedMessage?.textContent || 'Image',
+        timestamp: clickedMessage?.occurredAt
+      });
     }
 
     galleryImages = images;
@@ -904,6 +911,10 @@
       if (selectedKey && !inbox.some((i) => i.key === selectedKey) && inbox.length > 0) {
         selectItem(inbox[0]);
       }
+      void syncWhatsAppConversations().catch(() => {});
+      if (selectedItem?.kind === 'group' && selectedItem?.conversationId !== null) {
+        void syncZaloGroupChatHistory(selectedItem.conversationId).catch(() => {});
+      }
     } catch (err) {
       console.error('Failed to refresh inbox', err);
     }
@@ -1067,6 +1078,7 @@
           let page;
           if (item.kind === 'group') {
             if (item.conversationId === null) throw new Error('Group conversation ID is missing');
+            void syncZaloGroupChatHistory(item.conversationId).catch(() => {});
             page = await getConversationTimeline(item.conversationId, null, 50);
           } else if (item.kind === 'unknown') {
             if (item.identityId === null) throw new Error('Unknown contact identity ID is missing');
