@@ -240,6 +240,8 @@ impl ReactionMutationRepository {
         })
     }
 
+    /// Marks a mutation as succeeded using multi-reaction / accumulator semantics (e.g. Zalo Phase 2A).
+    /// Multiple distinct reactions and count increments from the same actor are preserved.
     pub fn succeed(
         &self,
         client_id: &str,
@@ -308,6 +310,8 @@ impl ReactionMutationRepository {
         Ok(groups)
     }
 
+    /// Marks a mutation as succeeded using single-active reaction semantics (e.g. WhatsApp, Messenger).
+    /// Ensures that any prior reaction from this actor on this message is removed before the new active reaction is recorded.
     pub fn succeed_single_active(
         &self,
         client_id: &str,

@@ -329,6 +329,24 @@ impl ConversationReactionCode {
             Self::Custom(custom) => custom.as_str(),
         }
     }
+
+    /// Converts this reaction code to its canonical Unicode emoji glyph.
+    pub fn to_emoji_glyph(&self) -> &str {
+        normalize_reaction_emoji(self.as_str())
+    }
+}
+
+/// Normalizes an emoji reaction code or alias into a canonical UTF-8 Unicode emoji glyph.
+pub fn normalize_reaction_emoji(raw: &str) -> &str {
+    match raw.trim() {
+        "heart" | "❤️" | "❤" => "❤️",
+        "like" | "👍" => "👍",
+        "haha" | "😆" | "😂" => "😂",
+        "wow" | "😮" => "😮",
+        "cry" | "😭" | "😢" => "😢",
+        "angry" | "😡" => "😡",
+        other => other,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

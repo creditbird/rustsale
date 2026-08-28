@@ -1485,15 +1485,7 @@ impl ConversationService {
                     .get("emoji")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let emoji = match emoji_raw {
-                    "heart" | "❤️" | "❤" => "❤️",
-                    "like" | "👍" => "👍",
-                    "haha" | "😆" | "😂" => "😂",
-                    "wow" | "😮" => "😮",
-                    "cry" | "😭" | "😢" => "😢",
-                    "angry" | "😡" => "😡",
-                    other => other,
-                };
+                let emoji = crate::conversation::types::normalize_reaction_emoji(emoji_raw);
                 let target_msg_id = job
                     .content_json
                     .get("target_message_id")
@@ -2149,18 +2141,8 @@ impl ConversationService {
             }
         };
 
-        let emoji_glyph = match request.reaction.as_str() {
-            "heart" | "❤️" | "❤" => "❤️",
-            "like" | "👍" => "👍",
-            "haha" | "😆" | "😂" => "😂",
-            "wow" | "😮" => "😮",
-            "cry" | "😭" | "😢" => "😢",
-            "angry" | "😡" => "😡",
-            other => other,
-        };
-
         let emoji_str = if request.active {
-            emoji_glyph
+            request.reaction.to_emoji_glyph()
         } else {
             ""
         };
