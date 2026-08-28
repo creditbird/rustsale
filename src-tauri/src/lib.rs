@@ -259,6 +259,7 @@ pub fn run() {
                     Some(app.handle().clone()),
                 ),
             );
+            whatsapp_login_manager.with_supervisor(whatsapp_supervisor.clone());
             whatsapp_supervisor.with_service(conversation_service.clone());
 
             let ws_startup = whatsapp_supervisor.clone();
@@ -502,6 +503,9 @@ pub fn run() {
             conversation::commands::get_whatsapp_campaign,
             conversation::commands::list_whatsapp_campaigns,
             conversation::commands::get_whatsapp_campaign_recipients,
+            conversation::commands::sync_zalo_group_chat_history,
+            conversation::commands::sync_whatsapp_conversations,
+            conversation::commands::download_conversation_attachment,
             facebook::commands::schedule_facebook_post,
             facebook::commands::publish_facebook_post_now,
             facebook::commands::list_facebook_scheduled_posts,

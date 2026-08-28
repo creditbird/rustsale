@@ -31,16 +31,17 @@ type ConnectedClients =
 
 const GROUP_MESSAGE_BACKFILL_SCOPE: &str = "account_group_messages";
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupMessageBackfillOutcome {
     Completed,
     TimedOut,
+    #[default]
     Unavailable,
     Failed,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct GroupMessageBackfillReport {
     pub provider_account_key: String,
     pub scope: String,
@@ -901,6 +902,85 @@ impl ZaloSessionSupervisor {
                 ),
             },
         }
+    }
+
+    /// Synchronizes recent chat history for a specific Zalo group from the Zalo server API.
+    pub async fn sync_group_chat_history(&self, conversation_id: i64) -> anyhow::Result<usize> {
+        let (_channel_account_id, external_thread_id, provider_account_key, account_display_name) = {
+            let conn = open_db_connection(&self.db_path)?;
+            let mut stmt = conn.prepare(
+                "SELECT cc.channel_account_id, cc.external_thread_id, ca.provider_account_key, ca.display_name
+                 FROM channel_conversations cc
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 WHERE cc.id = ?1 AND cc.kind = 'group' AND ca.channel = 'zalo'",
+            )?;
+            stmt.query_row(rusqlite::params![conversation_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+        };
+
+        let client = self
+            .connected_client(&provider_account_key)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!("Zalo account {provider_account_key} is not connected")
+            })?;
+
+        let history_resp = client
+            .fetch_group_chat_history_with_cursor(&external_thread_id, Some(50), None)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch group chat history from Zalo: {e}"))?;
+
+        let mut ingested_count = 0;
+        let now_str = crate::conversation::types::utc_now();
+
+        for group_msg in history_resp.group_msgs {
+            let model_msg = zca_rs::models::Message::Group(group_msg);
+            match crate::conversation::zalo::normalizer::normalize_message(
+                &provider_account_key,
+                account_display_name.as_deref(),
+                model_msg,
+            ) {
+                Ok(normalized_msg) => {
+                    if let Ok(applied) = self
+                        .service
+                        .repository
+                        .apply_normalized_message(&normalized_msg)
+                    {
+                        if !applied.duplicate {
+                            ingested_count += 1;
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(target: "zalo_supervisor", "Failed to normalize group history message: {err}");
+                }
+            }
+        }
+
+        if let Ok(conn) = open_db_connection(&self.db_path) {
+            let _ = conn.execute(
+                "UPDATE channel_conversations SET last_synced_at = ?1, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now_str, conversation_id],
+            );
+        }
+
+        self.service
+            .events
+            .publish(crate::conversation::events::ConversationInvalidatedEvent {
+                conversation_id,
+                lead_id: None,
+                channel: crate::conversation::types::Channel::Zalo,
+                reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                message_id: None,
+            });
+
+        Ok(ingested_count)
     }
 }
 

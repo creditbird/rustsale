@@ -841,4 +841,16 @@ export const syncFacebookConversations = (pageId?: string): Promise<number> => {
 export const ingestFacebookWebhookEvents = (pageId: string, events: any[]) =>
   invoke<number>('ingest_facebook_webhook_events', { pageId, events });
 
+export const syncZaloGroupChatHistory = (conversationId: number): Promise<number> =>
+  invoke<number>('sync_zalo_group_chat_history', { conversationId });
+
+export const syncWhatsAppConversations = (): Promise<number> =>
+  invoke<number>('sync_whatsapp_conversations');
+
+export const downloadConversationAttachment = (
+  attachmentId: number
+): Promise<ConversationAttachment> =>
+  invoke<ConversationAttachment>('download_conversation_attachment', { attachmentId });
+
+
 

@@ -618,7 +618,12 @@ pub trait ZaloClient: Send + Sync {
         _count: Option<i64>,
         _last_action_id: Option<&str>,
     ) -> anyhow::Result<zca_rs::apis::group::GetGroupChatHistoryResponse> {
-        Err(anyhow::anyhow!("Not implemented"))
+        Ok(zca_rs::apis::group::GetGroupChatHistoryResponse {
+            last_action_id: String::new(),
+            last_action_id_other: String::new(),
+            more: 0,
+            group_msgs: Vec::new(),
+        })
     }
 
     async fn fetch_group_chat_history(

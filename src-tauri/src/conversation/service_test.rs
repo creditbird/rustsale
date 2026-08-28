@@ -3381,6 +3381,81 @@ mod group_member_import_events {
     }
 
     #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_attachment() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (725, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (726, 725, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (727, 726, 'outbound', 'wa_att_msg', 'attachment', 'Sent an image attachment', '{\"caption\":\"Sent an image attachment\"}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_attachments
+             (id, message_id, attachment_type, file_name, mime_type, size_bytes, local_path, created_at)
+             VALUES (728, 727, 'image', 'clipboard.png', 'image/png', 54000, '/tmp/test_clipboard.png', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_727', 725, 727, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(725, &mock_client)
+            .await
+            .unwrap();
+
+        assert!(processed);
+
+        let sent_media = mock_client.get_sent_media();
+        assert_eq!(sent_media.len(), 1);
+        assert_eq!(sent_media[0].media_type, "image");
+        assert_eq!(sent_media[0].media_data_or_url, "/tmp/test_clipboard.png");
+        assert_eq!(
+            sent_media[0].caption.as_deref(),
+            Some("Sent an image attachment")
+        );
+
+        let (remote_url, metadata_json): (Option<String>, String) = conn
+            .query_row(
+                "SELECT remote_url, metadata_json FROM message_attachments WHERE id = 728",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            remote_url.as_deref(),
+            Some("https://mmg.whatsapp.net/mock/direct_path")
+        );
+        assert!(metadata_json.contains("/mock/direct_path"));
+        assert!(metadata_json.contains("bW9ja19tZWRpYV9rZXlfMzJieXRlc19mb3JfdGVzdA=="));
+    }
+
+    #[tokio::test]
     async fn test_process_whatsapp_outbox_job_reaction() {
         let harness = ServiceHarness::new();
         let conn = harness.open_conn();

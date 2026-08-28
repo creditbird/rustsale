@@ -72,6 +72,7 @@ pub struct WhatsAppLoginManager {
     active_attempts: Arc<Mutex<HashMap<String, LoginAttemptState>>>,
     event_sender: broadcast::Sender<WhatsAppLoginEvent>,
     app_handle: Option<tauri::AppHandle>,
+    supervisor: Arc<std::sync::RwLock<Option<Arc<super::supervisor::WhatsAppSupervisor>>>>,
 }
 
 impl WhatsAppLoginManager {
@@ -88,6 +89,14 @@ impl WhatsAppLoginManager {
             active_attempts: Arc::new(Mutex::new(HashMap::new())),
             event_sender,
             app_handle,
+            supervisor: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Associates a `WhatsAppSupervisor` for spawning production client bots upon login success.
+    pub fn with_supervisor(&self, supervisor: Arc<super::supervisor::WhatsAppSupervisor>) {
+        if let Ok(mut guard) = self.supervisor.write() {
+            *guard = Some(supervisor);
         }
     }
 
@@ -108,6 +117,7 @@ impl WhatsAppLoginManager {
             active_attempts: Arc::new(Mutex::new(HashMap::new())),
             event_sender,
             app_handle: None,
+            supervisor: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -222,8 +232,8 @@ impl WhatsAppLoginManager {
                     let lid = client.lid().map(|j| j.user.to_string());
                     let account_key = format!("wa_{}", pn);
 
-                    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                        let _ = self_inner.finalize_login_success(
+                    let res_account_id = if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                        self_inner.finalize_login_success(
                             &conn,
                             &attempt_id_inner,
                             &account_key,
@@ -235,7 +245,23 @@ impl WhatsAppLoginManager {
                             },
                             lid.as_deref(),
                             None,
-                        );
+                        )
+                    } else {
+                        Err("Failed to open DB".to_string())
+                    };
+
+                    if let Ok(account_id) = res_account_id {
+                        let maybe_supervisor = self_inner
+                            .supervisor
+                            .read()
+                            .ok()
+                            .and_then(|g| g.as_ref().cloned());
+                        if let Some(supervisor) = maybe_supervisor {
+                            let session_db_filename = format!("session_{}.db", account_key);
+                            let _ = supervisor
+                                .start_account_bot(account_id, &account_key, &session_db_filename)
+                                .await;
+                        }
                     }
                 }
             })
@@ -409,31 +435,19 @@ impl WhatsAppLoginManager {
             }
         }
 
-        // Atomically rename/move temp session DB to permanent session DB
-        if temp_db_path.exists() {
-            if final_db_path.exists() {
-                let _ = fs::remove_file(&final_db_path);
-            }
-            fs::rename(&temp_db_path, &final_db_path).map_err(|e| {
-                format!(
-                    "Failed to rename session DB from {:?} to {:?}: {}",
-                    temp_db_path, final_db_path, e
-                )
-            })?;
-
-            // Also clean up any leftover temp wal/shm
-            Self::clean_temp_db_sidecars(&temp_db_path);
-        } else if !final_db_path.exists() {
-            // Touch permanent db if neither temp nor final existed
-            fs::File::create(&final_db_path)
-                .map_err(|e| format!("Failed to create session DB {:?}: {}", final_db_path, e))?;
-        }
+        // Atomically rename/move temp session DB and all WAL/SHM sidecars to permanent session DB
+        Self::move_sqlite_db_with_sidecars(&temp_db_path, &final_db_path)?;
 
         let session_db_filename = format!("session_{}.db", account_key);
         let now = Utc::now().to_rfc3339();
         let display_name = push_name
             .map(|s| s.to_string())
             .or_else(|| Some(phone_number.to_string()));
+
+        let capabilities_json = serde_json::to_string(
+            &crate::conversation::types::ConversationCapabilities::whatsapp(),
+        )
+        .unwrap_or_else(|_| "{}".to_string());
 
         // Perform atomic CRM database update
         let account_id = (|| -> SqlResult<i64> {
@@ -449,7 +463,7 @@ impl WhatsAppLoginManager {
                 ) VALUES (
                     'whatsapp', ?1, ?2, ?3,
                     1, 'connected', ?4, NULL,
-                    '{}', ?4, ?4
+                    ?5, ?4, ?4
                 )
                 ON CONFLICT(channel, provider_account_key) DO UPDATE SET
                     display_name = COALESCE(excluded.display_name, channel_accounts.display_name),
@@ -458,9 +472,10 @@ impl WhatsAppLoginManager {
                     connection_status = 'connected',
                     last_connected_at = excluded.last_connected_at,
                     last_error = NULL,
+                    capabilities_json = ?5,
                     updated_at = excluded.updated_at
                 "#,
-                params![account_key, display_name, avatar_url, now],
+                params![account_key, display_name, avatar_url, now, capabilities_json],
             )?;
 
             let account_id: i64 = tx.query_row(
@@ -532,15 +547,73 @@ impl WhatsAppLoginManager {
         Ok(account_id)
     }
 
-    /// Helper to remove a temp db file and any SQLite WAL/SHM sidecars.
-    fn clean_temp_db_files(temp_db_path: &Path) {
+    /// Safely moves a SQLite database file and any accompanying WAL / SHM sidecar files,
+    /// and checkpoints WAL to ensure no uncommitted pages are lost.
+    pub fn move_sqlite_db_with_sidecars(src: &Path, dst: &Path) -> Result<(), String> {
+        if !src.exists() {
+            if !dst.exists() {
+                fs::File::create(dst).map_err(|e| {
+                    format!("Failed to create destination session DB {:?}: {}", dst, e)
+                })?;
+            }
+            return Ok(());
+        }
+
+        // 1. Clean destination and its sidecars if destination already exists
+        if dst.exists() {
+            let _ = fs::remove_file(dst);
+        }
+        Self::clean_temp_db_sidecars(dst);
+
+        // 2. Rename primary DB file
+        fs::rename(src, dst).map_err(|e| {
+            format!(
+                "Failed to rename session DB from {:?} to {:?}: {}",
+                src, dst, e
+            )
+        })?;
+
+        // 3. Move WAL sidecars
+        let src_wal1 = src.with_extension("db-wal");
+        let dst_wal1 = dst.with_extension("db-wal");
+        if src_wal1.exists() {
+            let _ = fs::rename(&src_wal1, &dst_wal1);
+        }
+        let src_wal2 = PathBuf::from(format!("{}-wal", src.display()));
+        let dst_wal2 = PathBuf::from(format!("{}-wal", dst.display()));
+        if src_wal2.exists() {
+            let _ = fs::rename(&src_wal2, &dst_wal2);
+        }
+
+        // 4. Move SHM sidecars
+        let src_shm1 = src.with_extension("db-shm");
+        let dst_shm1 = dst.with_extension("db-shm");
+        if src_shm1.exists() {
+            let _ = fs::rename(&src_shm1, &dst_shm1);
+        }
+        let src_shm2 = PathBuf::from(format!("{}-shm", src.display()));
+        let dst_shm2 = PathBuf::from(format!("{}-shm", dst.display()));
+        if src_shm2.exists() {
+            let _ = fs::rename(&src_shm2, &dst_shm2);
+        }
+
+        // 5. Open dst to run wal_checkpoint(TRUNCATE) so WAL pages are cleanly merged into the primary file
+        if let Ok(temp_conn) = rusqlite::Connection::open(dst) {
+            let _ = temp_conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
+        }
+
+        Ok(())
+    }
+
+    /// Helper to remove a db file and any SQLite WAL/SHM sidecars.
+    pub fn clean_temp_db_files(temp_db_path: &Path) {
         if temp_db_path.exists() {
             let _ = fs::remove_file(temp_db_path);
         }
         Self::clean_temp_db_sidecars(temp_db_path);
     }
 
-    fn clean_temp_db_sidecars(temp_db_path: &Path) {
+    pub fn clean_temp_db_sidecars(temp_db_path: &Path) {
         let wal_path1 = temp_db_path.with_extension("db-wal");
         let wal_path2 = PathBuf::from(format!("{}-wal", temp_db_path.display()));
         for wal_path in [&wal_path1, &wal_path2] {

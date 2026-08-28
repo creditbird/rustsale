@@ -1442,14 +1442,29 @@ impl ConversationService {
                     .send_text_message(&recipient_jid, text, quote_opt.as_ref())
                     .await
             }
-            "media" | "image" | "video" | "audio" | "file" | "document" | "sticker" => {
+            "attachment" | "media" | "image" | "video" | "audio" | "file" | "document"
+            | "sticker" => {
                 let media_url = job
                     .content_json
                     .get("url")
                     .or_else(|| job.content_json.get("file_url"))
                     .or_else(|| job.content_json.get("path"))
+                    .or_else(|| job.content_json.get("local_path"))
                     .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        job.attachment
+                            .as_ref()
+                            .and_then(|a| a.local_path.as_deref())
+                    })
                     .unwrap_or("");
+                let media_type = job
+                    .attachment
+                    .as_ref()
+                    .map(|a| a.media_type.as_str())
+                    .unwrap_or(match job.content_type.as_str() {
+                        "attachment" => "document",
+                        other => other,
+                    });
                 let caption = job
                     .text_content
                     .as_deref()
@@ -1457,7 +1472,7 @@ impl ConversationService {
                 client
                     .send_media_message(
                         &recipient_jid,
-                        &job.content_type,
+                        media_type,
                         media_url,
                         caption,
                         quote_opt.as_ref(),
@@ -1490,6 +1505,7 @@ impl ConversationService {
                         crate::conversation::whatsapp::client::WhatsAppSendResponse {
                             provider_message_id: format!("react-{}", job.job_id),
                             timestamp: Some(now.clone()),
+                            media_metadata: None,
                         },
                     ),
                     Err(e) => Err(e),
@@ -1550,6 +1566,27 @@ impl ConversationService {
 
         match dispatch_result {
             Ok(send_res) => {
+                if let Some(ref meta) = send_res.media_metadata {
+                    if let Ok(conn) = crate::db::open_db_connection(self.repository.db_path()) {
+                        let meta_json = serde_json::json!({
+                            "direct_path": meta.direct_path,
+                            "media_key": meta.media_key,
+                            "file_sha256": meta.file_sha256,
+                            "file_enc_sha256": meta.file_enc_sha256,
+                            "file_length": meta.file_length,
+                        })
+                        .to_string();
+
+                        let _ = conn.execute(
+                            "UPDATE message_attachments
+                             SET remote_url = COALESCE(remote_url, ?1),
+                                 metadata_json = ?2
+                             WHERE message_id = ?3",
+                            rusqlite::params![meta.url, meta_json, job.message_id],
+                        );
+                    }
+                }
+
                 self.repository.complete_outbox_job(
                     &job.job_id,
                     &send_res.provider_message_id,
@@ -1990,6 +2027,184 @@ impl ConversationService {
             error_code: None,
             error_message: None,
         })
+    }
+
+    pub async fn set_whatsapp_conversation_reaction(
+        &self,
+        request: &super::types::SetConversationReactionRequest,
+        client: &dyn crate::conversation::whatsapp::client::WhatsAppClient,
+    ) -> ConversationResult<super::types::ConversationReactionMutationResult> {
+        use super::error::{ConversationError, ConversationErrorCode};
+        use super::projection::load_message_reaction_groups;
+        use super::reactions::ReactionMutationRepository;
+        use super::types::{
+            ConversationCapabilities, ConversationReactionMutationResult, ReactionMutationStatus,
+        };
+        use crate::db::open_db_connection;
+        use rusqlite::OptionalExtension;
+
+        let msg = match self.repository.get_message_by_id(request.message_id)? {
+            Some(m) => m,
+            None => {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::InvalidRequest,
+                    format!("Message {} not found", request.message_id),
+                ));
+            }
+        };
+
+        let (_provider_account_key, external_thread_id, is_group) = self
+            .repository
+            .lookup_message_thread_info(request.message_id)?;
+
+        let conn = open_db_connection(self.repository.db_path())?;
+        let (capabilities_json, self_external_id_opt): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT capabilities_json, self_external_id FROM channel_accounts WHERE id = ?1",
+                rusqlite::params![msg.channel_account_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((None, None));
+
+        let capabilities = capabilities_json
+            .as_deref()
+            .filter(|s| !s.trim().is_empty() && s.trim() != "{}")
+            .map(ConversationCapabilities::from_json)
+            .unwrap_or_else(ConversationCapabilities::whatsapp);
+
+        if !capabilities.supports_reactions
+            || !capabilities.reactions.write
+            || !capabilities.reactions.supported.contains(&request.reaction)
+        {
+            return Err(ConversationError::new(
+                ConversationErrorCode::ReactionNotSupported,
+                format!(
+                    "Reactions not supported for channel {}",
+                    msg.channel.as_str()
+                ),
+            ));
+        }
+
+        let self_external_id = self_external_id_opt
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "me".to_string());
+
+        let reaction_mutations = ReactionMutationRepository::new(self.repository.db_path());
+        let mutation = reaction_mutations.begin(request, msg.channel_account_id)?;
+
+        if mutation.is_existing {
+            let read_conn = open_db_connection(self.repository.db_path())?;
+            let groups = load_message_reaction_groups(&read_conn, request.message_id)?;
+            let status = match mutation.status.as_str() {
+                "running" => ReactionMutationStatus::Running,
+                "succeeded" => ReactionMutationStatus::Succeeded,
+                "failed" => ReactionMutationStatus::Failed,
+                _ => ReactionMutationStatus::DeliveryUnknown,
+            };
+            return Ok(ConversationReactionMutationResult {
+                client_mutation_id: mutation.client_mutation_id,
+                message_id: request.message_id,
+                reaction: request.reaction,
+                requested_active: request.active,
+                status,
+                reactions: groups,
+                error_code: mutation.error_code,
+                error_message: mutation.error_message,
+            });
+        }
+
+        let provider_message_id = match msg
+            .provider_message_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(id) => id,
+            None => {
+                return Err(ConversationError::new(
+                    ConversationErrorCode::ReactionNotSupported,
+                    format!(
+                        "Message {} is missing provider message ID",
+                        request.message_id
+                    ),
+                ));
+            }
+        };
+
+        let emoji_str = if request.active {
+            request.reaction.as_str()
+        } else {
+            ""
+        };
+
+        let sender_jid = if is_group {
+            msg.sender_identity_id.and_then(|id| {
+                let conn = open_db_connection(self.repository.db_path()).ok()?;
+                conn.query_row(
+                    "SELECT external_id FROM channel_identities WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            })
+        } else {
+            None
+        };
+
+        let send_res = client
+            .send_reaction(
+                &external_thread_id,
+                &provider_message_id,
+                sender_jid.as_deref(),
+                emoji_str,
+            )
+            .await;
+
+        match send_res {
+            Ok(_) => {
+                let now = crate::conversation::types::utc_now();
+                let groups = reaction_mutations.succeed(
+                    &mutation.client_mutation_id,
+                    &self_external_id,
+                    &now,
+                )?;
+                self.publish_message_invalidation(
+                    request.message_id,
+                    super::events::ConversationInvalidationReason::Reaction,
+                )?;
+                Ok(ConversationReactionMutationResult {
+                    client_mutation_id: mutation.client_mutation_id,
+                    message_id: request.message_id,
+                    reaction: request.reaction,
+                    requested_active: request.active,
+                    status: ReactionMutationStatus::Succeeded,
+                    reactions: groups,
+                    error_code: None,
+                    error_message: None,
+                })
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                reaction_mutations.fail(
+                    &mutation.client_mutation_id,
+                    "provider_failure",
+                    &err_msg,
+                    false,
+                )?;
+                let read_conn = open_db_connection(self.repository.db_path())?;
+                let groups = load_message_reaction_groups(&read_conn, request.message_id)?;
+                Ok(ConversationReactionMutationResult {
+                    client_mutation_id: mutation.client_mutation_id,
+                    message_id: request.message_id,
+                    reaction: request.reaction,
+                    requested_active: request.active,
+                    status: ReactionMutationStatus::Failed,
+                    reactions: groups,
+                    error_code: Some("provider_failure".to_string()),
+                    error_message: Some(err_msg),
+                })
+            }
+        }
     }
 
     pub fn pin_message(

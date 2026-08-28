@@ -887,13 +887,100 @@ pub async fn run_campaign_worker(
                 .await
             {
                 Ok(resp) => {
+                    let now_str =
+                        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                    let lead_name: Option<String> = recipient.lead_id.and_then(|lid| {
+                        conn.query_row("SELECT name FROM leads WHERE id = ?1", [lid], |r| r.get(0))
+                            .ok()
+                    });
+                    let title = lead_name
+                        .clone()
+                        .unwrap_or_else(|| format!("+{}", recipient.recipient_phone_e164));
+
+                    let _ = conn.execute(
+                        "INSERT INTO channel_conversations (
+                            channel_account_id, external_thread_id, kind, title, avatar_url, status, last_message_at, last_synced_at, created_at, updated_at
+                        ) VALUES (?1, ?2, 'direct', ?3, NULL, 'active', ?4, ?4, ?4, ?4)
+                        ON CONFLICT(channel_account_id, external_thread_id, kind) DO UPDATE SET
+                            title = CASE WHEN EXCLUDED.title IS NOT NULL AND EXCLUDED.title != '' THEN EXCLUDED.title ELSE channel_conversations.title END,
+                            last_message_at = CASE WHEN EXCLUDED.last_message_at > COALESCE(channel_conversations.last_message_at, '') THEN EXCLUDED.last_message_at ELSE channel_conversations.last_message_at END,
+                            updated_at = EXCLUDED.updated_at",
+                        rusqlite::params![account_id, recipient.recipient_jid, title, now_str],
+                    );
+
+                    let conv_id_opt: Option<i64> = conn
+                        .query_row(
+                            "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'direct'",
+                            rusqlite::params![account_id, recipient.recipient_jid],
+                            |r| r.get(0),
+                        )
+                        .ok();
+
+                    let mut created_msg_id: Option<i64> = None;
+                    if let Some(conv_id) = conv_id_opt {
+                        let _ = conn.execute(
+                            "INSERT INTO channel_identities (
+                                lead_id, channel, channel_account_id, identity_namespace, external_id,
+                                normalized_address, display_name, link_source, created_at, updated_at
+                            ) VALUES (
+                                ?1, 'whatsapp', ?2, 'phone', ?3,
+                                ?3, ?4, 'campaign', ?5, ?5
+                            )
+                            ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) WHERE channel_account_id IS NOT NULL DO UPDATE SET
+                                lead_id = COALESCE(EXCLUDED.lead_id, channel_identities.lead_id),
+                                display_name = COALESCE(EXCLUDED.display_name, channel_identities.display_name),
+                                updated_at = EXCLUDED.updated_at",
+                            rusqlite::params![
+                                recipient.lead_id,
+                                account_id,
+                                recipient.recipient_phone_e164,
+                                title,
+                                now_str,
+                            ],
+                        );
+
+                        let identity_id_opt: Option<i64> = conn
+                            .query_row(
+                                "SELECT id FROM channel_identities WHERE channel = 'whatsapp' AND channel_account_id = ?1 AND identity_namespace = 'phone' AND external_id = ?2",
+                                rusqlite::params![account_id, recipient.recipient_phone_e164],
+                                |r| r.get(0),
+                            )
+                            .ok();
+
+                        if let Some(ident_id) = identity_id_opt {
+                            let _ = conn.execute(
+                                "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+                                 VALUES (?1, ?2, 'member', ?3)
+                                 ON CONFLICT(conversation_id, identity_id) DO NOTHING",
+                                rusqlite::params![conv_id, ident_id, now_str],
+                            );
+                        }
+
+                        let _ = conn.execute(
+                            "INSERT INTO messages (
+                                conversation_id, direction, status, content_type, text_content,
+                                content_json, provider_message_id, provider_timestamp, sent_at, ingested_at
+                            ) VALUES (
+                                ?1, 'outbound', 'sent', 'text', ?2,
+                                '{}', ?3, ?4, ?4, ?4
+                            )",
+                            rusqlite::params![
+                                conv_id,
+                                text,
+                                resp.provider_message_id,
+                                now_str,
+                            ],
+                        );
+                        created_msg_id = Some(conn.last_insert_rowid());
+                    }
+
                     let _ = update_recipient_status(
                         &conn,
                         recipient.id,
                         "sent",
                         None,
                         None,
-                        None,
+                        created_msg_id,
                         Some(&resp.provider_message_id),
                     );
                 }

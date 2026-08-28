@@ -1360,3 +1360,115 @@ fn facebook_upload_sessions_schema_v2_idempotence_with_foreign_keys_on() {
     assert_eq!(saved_status, "init_pending");
     assert_eq!(saved_session_id, "sess_300");
 }
+
+#[test]
+fn whatsapp_media_reconciliation_preserves_direct_path_backfills_key_and_is_channel_scoped() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+    migrate(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (
+            id, channel, provider_account_key, connection_status,
+            capabilities_json, created_at, updated_at
+         ) VALUES
+            (501, 'whatsapp', 'wa-media-reconcile', 'connected', '{}', datetime('now'), datetime('now')),
+            (502, 'zalo', 'zalo-media-scope', 'connected', '{}', datetime('now'), datetime('now'))",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (
+            id, channel_account_id, external_thread_id, kind, status, created_at, updated_at
+         ) VALUES
+            (601, 501, '84901234567@s.whatsapp.net', 'direct', 'active', datetime('now'), datetime('now')),
+            (602, 502, 'zalo-thread', 'direct', 'active', datetime('now'), datetime('now'))",
+        [],
+    )
+    .unwrap();
+
+    let media_key = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=";
+    let raw_payload = serde_json::json!({
+        "id": "WA_LEGACY_MEDIA_001",
+        "attachments": [{
+            "media_type": "image",
+            "direct_path": "/v/t62.7118-24/legacy.enc",
+            "media_key": media_key,
+            "file_sha256": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
+            "file_enc_sha256": "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M="
+        }]
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO messages (
+            id, conversation_id, direction, provider_message_id, content_type,
+            raw_payload_json, ingested_at, status
+         ) VALUES
+            (701, 601, 'inbound', 'WA_LEGACY_MEDIA_001', 'image', ?1, datetime('now'), 'received'),
+            (702, 602, 'inbound', 'ZALO_MEDIA_SCOPE_001', 'image', '{}', datetime('now'), 'received')",
+        [raw_payload],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_attachments (
+            id, message_id, attachment_type, mime_type, local_path,
+            remote_url, metadata_json, created_at
+         ) VALUES
+            (801, 701, 'image', 'image/jpeg', '/v/t62.7118-24/legacy.enc', NULL,
+             '{\"media_key\":null}', datetime('now')),
+            (802, 702, 'image', 'image/jpeg', 'https://example.com/zalo-image.jpg',
+             'https://example.com/zalo-image.jpg', '{}', datetime('now'))",
+        [],
+    )
+    .unwrap();
+
+    migrate(&conn).unwrap();
+
+    let (local_path, metadata_json): (Option<String>, String) = conn
+        .query_row(
+            "SELECT local_path, metadata_json FROM message_attachments WHERE id = 801",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(local_path, None);
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+    assert_eq!(metadata["direct_path"], "/v/t62.7118-24/legacy.enc");
+    assert_eq!(metadata["media_key"], media_key);
+    assert_eq!(
+        metadata["file_sha256"],
+        "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
+    );
+    assert_eq!(
+        metadata["file_enc_sha256"],
+        "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M="
+    );
+
+    let zalo_local_path: Option<String> = conn
+        .query_row(
+            "SELECT local_path FROM message_attachments WHERE id = 802",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        zalo_local_path.as_deref(),
+        Some("https://example.com/zalo-image.jpg"),
+        "WhatsApp repair must not mutate another channel"
+    );
+
+    let first_metadata = metadata_json;
+    let outer_transaction = conn.transaction().unwrap();
+    migrate(&outer_transaction).unwrap();
+    outer_transaction.commit().unwrap();
+    let second_metadata: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = 801",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(second_metadata, first_metadata);
+}

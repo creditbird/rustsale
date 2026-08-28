@@ -3744,6 +3744,100 @@ mod tests {
     }
 
     #[test]
+    fn test_whatsapp_group_member_fetching_and_batch_import() {
+        let root = tempfile::tempdir().unwrap();
+        let db_path = root.path().join("test_whatsapp_group.db");
+        let conn = db::init_db(db_path.to_str().unwrap()).unwrap();
+        let now = "2026-08-27T00:00:00Z";
+
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+             VALUES (2, 'whatsapp', '84901234567', 'WA Account', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations
+             (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+             VALUES (300, 2, '123456789-987654@g.us', 'group', 'AI Builders Community', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_identities
+             (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES
+             (3001, 'whatsapp', 2, 'phone', '8613926842913', 'Vject Wang', ?1, ?1),
+             (3002, 'whatsapp', 2, 'phone', '84909888777', 'Tymon', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO conversation_participants
+             (conversation_id, identity_id, participant_role, joined_at)
+             VALUES
+             (300, 3001, 'admin', ?1),
+             (300, 3002, 'member', ?1)",
+            [now],
+        )
+        .unwrap();
+
+        let members = commands::fetch_group_members_impl(&conn, 300).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].display_name, "Vject Wang");
+        assert_eq!(members[0].participant_role, "admin");
+        assert_eq!(members[1].display_name, "Tymon");
+        assert_eq!(members[1].participant_role, "member");
+        drop(conn);
+
+        let repository = std::sync::Arc::new(
+            crate::conversation::repository::ConversationRepository::new(
+                db_path.to_string_lossy().to_string(),
+            ),
+        );
+        let events =
+            std::sync::Arc::new(crate::conversation::events::ConversationEventPublisher::new(8));
+        let service = crate::conversation::service::ConversationService::new(
+            repository,
+            events.clone(),
+            root.path().join("spool"),
+        );
+
+        let result = commands::batch_import_group_members_to_leads_impl(
+            &service,
+            commands::BatchImportGroupMembersRequest {
+                conversation_id: 300,
+                members: vec![commands::ImportMemberItem {
+                    identity_id: Some(3001),
+                    external_id: Some("8613926842913".to_string()),
+                    display_name: "Vject Wang".to_string(),
+                    avatar_url: None,
+                    phone: Some("8613926842913".to_string()),
+                }],
+                category_ids: Vec::new(),
+                new_category_name: Some("WhatsApp Community".to_string()),
+                group_title: "AI Builders Community".to_string(),
+                skip_existing: Some(true),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.imported_count, 1);
+        assert_eq!(result.assigned_category_ids.len(), 1);
+
+        let conn = crate::db::open_db_connection(db_path.to_str().unwrap()).unwrap();
+        let updated_members = commands::fetch_group_members_impl(&conn, 300).unwrap();
+        assert_eq!(updated_members.len(), 2);
+        assert_eq!(updated_members[0].display_name, "Vject Wang");
+        assert!(updated_members[0].lead_id.is_some());
+        assert_eq!(updated_members[0].categories.len(), 1);
+        assert_eq!(updated_members[0].categories[0].name, "WhatsApp Community");
+    }
+
+    #[test]
     fn test_get_hardware_id_returns_formatted_hwid() {
         let hw_info = commands::get_hardware_id().unwrap();
         assert!(hw_info.hardware_id.starts_with("HWID-"));

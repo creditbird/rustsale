@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -241,17 +241,46 @@ impl WhatsAppSupervisor {
             ));
         }
 
+        // Clean up any existing client before starting a new one
+        if let Some(existing_client) = self.get_client(account_id).await {
+            let _ = existing_client.disconnect().await;
+            self.unregister_client(account_id).await;
+        }
+
         let session_file = self.sessions_dir.join(session_db_filename);
         let store = whatsapp_rust::prelude::SqliteStore::new(&session_file.to_string_lossy())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open session SQLite store: {}", e))?;
 
         let db_path_cloned = self.db_path.clone();
+        let db_path_logged_out = self.db_path.clone();
         let events_cloned = self.events.clone();
         let account_id_val = account_id;
+        let account_id_logged_out = account_id;
 
         let bot = whatsapp_rust::bot::Bot::builder()
             .with_backend(store)
+            .on_logged_out(move |info| {
+                let db_path = db_path_logged_out.clone();
+                async move {
+                    warn!(
+                        target: "whatsapp_supervisor",
+                        account_id = account_id_logged_out,
+                        reason = ?info.reason,
+                        "WhatsApp session logged out from primary device"
+                    );
+                    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                        let _ = conn.execute(
+                            "UPDATE channel_accounts SET connection_status = 'disconnected', last_error = 'Session unlinked from phone' WHERE id = ?1",
+                            [account_id_logged_out],
+                        );
+                        let _ = conn.execute(
+                            "UPDATE whatsapp_sessions SET is_valid = 0, last_error = 'Session unlinked from phone' WHERE channel_account_id = ?1",
+                            [account_id_logged_out],
+                        );
+                    }
+                }
+            })
             .on_message(move |ctx| {
                 let db_path = db_path_cloned.clone();
                 let events = events_cloned.clone();
@@ -266,98 +295,179 @@ impl WhatsAppSupervisor {
                             );
                         }
 
-                        let text = ctx.message.conversation.clone()
-                            .or_else(|| ctx.message.extended_text_message.as_option().and_then(|e| e.text.clone()))
-                            .or_else(|| ctx.message.image_message.as_option().and_then(|i| i.caption.clone()))
-                            .or_else(|| ctx.message.video_message.as_option().and_then(|v| v.caption.clone()))
-                            .or_else(|| ctx.message.document_message.as_option().and_then(|d| d.caption.clone()));
-
-                        let mut attachments = Vec::new();
-                        if let Some(img) = ctx.message.image_message.as_option() {
-                            attachments.push(super::normalizer::RawWhatsAppAttachment {
-                                media_type: "image".to_string(),
-                                file_name: None,
-                                mime_type: img.mimetype.clone(),
-                                size_bytes: img.file_length,
-                                url: img.url.clone(),
-                                direct_path: img.direct_path.clone(),
-                                thumbnail_url: None,
-                            });
-                        } else if let Some(vid) = ctx.message.video_message.as_option() {
-                            attachments.push(super::normalizer::RawWhatsAppAttachment {
-                                media_type: "video".to_string(),
-                                file_name: None,
-                                mime_type: vid.mimetype.clone(),
-                                size_bytes: vid.file_length,
-                                url: vid.url.clone(),
-                                direct_path: vid.direct_path.clone(),
-                                thumbnail_url: None,
-                            });
-                        } else if let Some(aud) = ctx.message.audio_message.as_option() {
-                            attachments.push(super::normalizer::RawWhatsAppAttachment {
-                                media_type: "audio".to_string(),
-                                file_name: None,
-                                mime_type: aud.mimetype.clone(),
-                                size_bytes: aud.file_length,
-                                url: aud.url.clone(),
-                                direct_path: aud.direct_path.clone(),
-                                thumbnail_url: None,
-                            });
-                        } else if let Some(doc) = ctx.message.document_message.as_option() {
-                            attachments.push(super::normalizer::RawWhatsAppAttachment {
-                                media_type: "document".to_string(),
-                                file_name: doc.file_name.clone().or_else(|| doc.title.clone()),
-                                mime_type: doc.mimetype.clone(),
-                                size_bytes: doc.file_length,
-                                url: doc.url.clone(),
-                                direct_path: doc.direct_path.clone(),
-                                thumbnail_url: None,
-                            });
-                        }
-
-                        let quote = ctx.message.extended_text_message.as_option().and_then(|ext| {
-                            ext.context_info.as_option().and_then(|ctx_info| {
-                                ctx_info.stanza_id.as_deref().map(|stanza_id| {
-                                    super::normalizer::RawWhatsAppQuote {
-                                        stanza_id: stanza_id.to_string(),
-                                        participant_jid: ctx_info.participant.clone().unwrap_or_default(),
-                                        text: ctx_info.quoted_message.as_option().and_then(|qm| qm.conversation.clone()),
-                                        media_type: None,
-                                        timestamp: None,
-                                    }
-                                })
-                            })
-                        });
-
-                        let raw_msg = super::normalizer::RawWhatsAppMessage {
-                            id: ctx.info.id.clone(),
-                            chat_jid: ctx.info.source.chat.to_string(),
-                            sender_jid: Some(ctx.info.source.sender.to_string()),
-                            sender_name: if ctx.info.push_name.is_empty() {
-                                None
-                            } else {
-                                Some(ctx.info.push_name.clone())
-                            },
-                            text,
-                            timestamp: Some(ctx.info.timestamp.to_rfc3339()),
-                            is_from_me: ctx.info.source.is_from_me,
-                            attachments,
-                            quote,
-                            raw_json: None,
+                        let chat_jid = ctx.info.source.chat.to_string();
+                        let is_from_me = ctx.info.source.is_from_me;
+                        let sender_jid = if is_from_me {
+                            None
+                        } else {
+                            Some(ctx.info.source.sender.to_string())
                         };
 
-                        if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
-                            &mut conn,
-                            account_id_val,
-                            &raw_msg,
+                        let key = whatsapp_rust::prelude::wa::MessageKey {
+                            id: Some(ctx.info.id.clone()),
+                            remote_jid: Some(chat_jid.clone()),
+                            from_me: Some(is_from_me),
+                            participant: sender_jid,
+                            ..Default::default()
+                        };
+
+                        let timestamp_secs = Some(ctx.info.timestamp.timestamp() as u64);
+                        let push_name = if ctx.info.push_name.is_empty() {
+                            None
+                        } else {
+                            Some(ctx.info.push_name.as_str())
+                        };
+
+                        if let Some(reaction) = super::normalizer::WhatsAppNormalizer::extract_raw_reaction(
+                            &ctx.message,
+                            &key,
+                            timestamp_secs,
+                            &chat_jid,
                         ) {
-                            events.publish(crate::conversation::events::ConversationInvalidatedEvent {
-                                conversation_id: conv_id,
-                                lead_id: None,
-                                channel: crate::conversation::types::Channel::WhatsApp,
-                                reason: crate::conversation::events::ConversationInvalidationReason::Message,
-                                message_id: None,
-                            });
+                            if let Ok(()) = super::normalizer::WhatsAppNormalizer::ingest_reaction(
+                                &mut conn,
+                                account_id_val,
+                                &reaction,
+                            ) {
+                                let conv_id_opt: Option<i64> = conn.query_row(
+                                    "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND (external_thread_id = ?2 OR external_thread_id = ?3)",
+                                    rusqlite::params![
+                                        account_id_val,
+                                        reaction.chat_jid,
+                                        super::phone::phone_to_direct_jid(&super::phone::jid_to_phone(&reaction.chat_jid).unwrap_or_default())
+                                    ],
+                                    |r| r.get(0),
+                                ).optional().unwrap_or(None);
+
+                                if let Some(conv_id) = conv_id_opt {
+                                    events.publish(crate::conversation::events::ConversationInvalidatedEvent {
+                                        conversation_id: conv_id,
+                                        lead_id: None,
+                                        channel: crate::conversation::types::Channel::WhatsApp,
+                                        reason: crate::conversation::events::ConversationInvalidationReason::Reaction,
+                                        message_id: None,
+                                    });
+                                }
+                            }
+                        } else if let Some(raw_msg) = super::normalizer::WhatsAppNormalizer::extract_raw_message(
+                            &ctx.message,
+                            &key,
+                            timestamp_secs,
+                            push_name,
+                            &chat_jid,
+                            None,
+                        ) {
+                            if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+                                &mut conn,
+                                account_id_val,
+                                &raw_msg,
+                            ) {
+                                events.publish(crate::conversation::events::ConversationInvalidatedEvent {
+                                    conversation_id: conv_id,
+                                    lead_id: None,
+                                    channel: crate::conversation::types::Channel::WhatsApp,
+                                    reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                                    message_id: None,
+                                });
+                                // Keep the protobuf thumbnail from ingestion. The full encrypted
+                                // payload is resolved lazily through `download_conversation_attachment`,
+                                // which owns size limits, media-retry, persistence, and error semantics.
+                            }
+                        }
+                    }
+                }
+            })
+            .on_event({
+                let db_path = self.db_path.clone();
+                let events = self.events.clone();
+                move |event, _client| {
+                    let db_path = db_path.clone();
+                    let events = events.clone();
+                    async move {
+                        if let whatsapp_rust::types::events::Event::HistorySync(lazy_hs) = event.as_ref() {
+                            if let Some(history_sync) = lazy_hs.get() {
+                                if let Ok(mut conn) = rusqlite::Connection::open(&db_path) {
+                                    // Save phoneNumberToLidMappings from sync
+                                    for mapping in &history_sync.phone_number_to_lid_mappings {
+                                        if let (Some(ref pn_jid), Some(ref lid_jid)) = (mapping.pn_jid.as_ref(), mapping.lid_jid.as_ref()) {
+                                            if let Some(pn) = super::phone::jid_to_phone(pn_jid) {
+                                                let _ = super::phone::save_lid_pn_mapping(&conn, lid_jid, &pn);
+                                            }
+                                        }
+                                    }
+
+                                    let mut invalidated_conv_ids = std::collections::HashSet::new();
+
+                                    for conv in &history_sync.conversations {
+                                        let chat_jid = conv.id.clone();
+                                        let conv_title = conv.name.as_deref().or(conv.display_name.as_deref());
+
+                                        if let (Some(ref pn_jid), Some(ref lid_jid)) = (conv.pn_jid.as_ref(), conv.lid_jid.as_ref()) {
+                                            if let Some(pn) = super::phone::jid_to_phone(pn_jid) {
+                                                let _ = super::phone::save_lid_pn_mapping(&conn, lid_jid, &pn);
+                                            }
+                                        }
+
+                                        // Ensure conversation & identity exists in DB
+                                        if let Ok(conv_id) = super::normalizer::WhatsAppNormalizer::ensure_conversation_exists(
+                                            &mut conn,
+                                            account_id_val,
+                                            &chat_jid,
+                                            conv_title,
+                                        ) {
+                                            invalidated_conv_ids.insert(conv_id);
+                                        }
+
+                                        // Ingest historical messages & reactions
+                                        for history_msg in &conv.messages {
+                                            if let Some(web_msg) = history_msg.message.as_option() {
+                                                if let Some(ref msg_content) = web_msg.message.as_option() {
+                                                    if let Some(ref key) = web_msg.key.as_option() {
+                                                        let push_name = web_msg.push_name.as_deref();
+                                                        if let Some(reaction) = super::normalizer::WhatsAppNormalizer::extract_raw_reaction(
+                                                            msg_content,
+                                                            key,
+                                                            web_msg.message_timestamp,
+                                                            &chat_jid,
+                                                        ) {
+                                                            let _ = super::normalizer::WhatsAppNormalizer::ingest_reaction(
+                                                                &mut conn,
+                                                                account_id_val,
+                                                                &reaction,
+                                                            );
+                                                        } else if let Some(raw_msg) = super::normalizer::WhatsAppNormalizer::extract_raw_message(
+                                                            msg_content,
+                                                            key,
+                                                            web_msg.message_timestamp,
+                                                            push_name,
+                                                            &chat_jid,
+                                                            conv_title,
+                                                        ) {
+                                                            if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+                                                                &mut conn,
+                                                                account_id_val,
+                                                                &raw_msg,
+                                                            ) {
+                                                                invalidated_conv_ids.insert(conv_id);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    for conv_id in invalidated_conv_ids {
+                                        events.publish(crate::conversation::events::ConversationInvalidatedEvent {
+                                            conversation_id: conv_id,
+                                            lead_id: None,
+                                            channel: crate::conversation::types::Channel::WhatsApp,
+                                            reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                                            message_id: None,
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -378,6 +488,17 @@ impl WhatsAppSupervisor {
 
     /// Loads and connects all active, enabled WhatsApp sessions on application startup.
     pub async fn load_active_sessions_on_startup(&self) -> Result<usize> {
+        // Upgrade empty capabilities for existing WhatsApp accounts if needed
+        if let Ok(conn) = rusqlite::Connection::open(&self.db_path) {
+            let wa_caps = serde_json::to_string(
+                &crate::conversation::types::ConversationCapabilities::whatsapp(),
+            )
+            .unwrap_or_else(|_| "{}".to_string());
+            let _ = conn.execute(
+                "UPDATE channel_accounts SET capabilities_json = ?1 WHERE channel = 'whatsapp' AND (capabilities_json IS NULL OR capabilities_json = '' OR capabilities_json = '{}')",
+                rusqlite::params![wa_caps],
+            );
+        }
         let accounts: Vec<(i64, String, String)> = {
             let conn = rusqlite::Connection::open(&self.db_path)?;
             let mut stmt = conn.prepare(
@@ -415,7 +536,7 @@ impl WhatsAppSupervisor {
         Ok(loaded)
     }
 
-    /// Disconnects an account, terminates its active bot worker and sets status to disconnected.
+    /// Disconnects an account, terminates its active bot worker, cleans up session files and sets status to disconnected.
     pub async fn disconnect_account(&self, account_id: i64) -> Result<()> {
         if let Some(client) = self.get_client(account_id).await {
             let _ = client.disconnect().await;
@@ -424,10 +545,31 @@ impl WhatsAppSupervisor {
 
         let conn = rusqlite::Connection::open(&self.db_path)?;
         let now = chrono::Utc::now().to_rfc3339();
+
+        let session_file_opt: Option<String> = conn
+            .query_row(
+                "SELECT session_db_filename FROM whatsapp_sessions WHERE channel_account_id = ?1",
+                [account_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        if let Some(db_name) = session_file_opt {
+            let session_path = self.sessions_dir.join(&db_name);
+            super::login::WhatsAppLoginManager::clean_temp_db_files(&session_path);
+        }
+
         conn.execute(
             "UPDATE channel_accounts
              SET connection_status = 'disconnected', enabled = 0, updated_at = ?1
              WHERE id = ?2 AND channel = 'whatsapp'",
+            rusqlite::params![now, account_id],
+        )?;
+
+        conn.execute(
+            "UPDATE whatsapp_sessions
+             SET is_valid = 0, updated_at = ?1
+             WHERE channel_account_id = ?2",
             rusqlite::params![now, account_id],
         )?;
 

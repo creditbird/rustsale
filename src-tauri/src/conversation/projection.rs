@@ -277,6 +277,8 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         let caps = if json_str.trim().is_empty() || json_str.trim() == "{}" {
             if channel == "zalo" {
                 crate::conversation::types::ConversationCapabilities::zalo_phase_one()
+            } else if channel == "whatsapp" {
+                crate::conversation::types::ConversationCapabilities::whatsapp()
             } else {
                 crate::conversation::types::ConversationCapabilities::text_only()
             }

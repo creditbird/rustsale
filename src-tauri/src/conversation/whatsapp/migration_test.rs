@@ -279,3 +279,251 @@ fn test_conversation_migrate_applies_whatsapp_migrations() {
         assert_eq!(count, 0, "Table {} must exist after migrate", table);
     }
 }
+
+#[test]
+fn test_reconcile_duplicate_whatsapp_merges_lid_and_pn_identities_and_conversations() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("test_wa_reconcile.db");
+    let conn = crate::db::init_db(db_path.to_str().unwrap()).unwrap();
+    let now = "2026-08-27T00:00:00Z";
+
+    // 1. Insert channel account
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901234567', 'WA Business', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    // 2. Insert Lead "Vject Wang" with domestic China phone
+    conn.execute(
+        "INSERT INTO leads (id, name, company, status, value, last_activity, owner, email, phone)
+         VALUES (10, 'Vject Wang', 'Acme', 'new', 0.0, '2026-08-27', 'admin', 'vject@test.com', '13926842913')",
+        [],
+    )
+    .unwrap();
+
+    // 3. Insert LID identity and conversation (e.g. from initial unlinked chat)
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, link_source, created_at, updated_at)
+         VALUES (100, 'whatsapp', 1, 'phone', '198097598676992@lid', 'Vject Wang', 'unlinked', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (200, 1, 'direct', '198097598676992@lid', 'Vject Wang', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (200, 100, 'member', ?1)",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, status, ingested_at)
+         VALUES (300, 200, 100, 'inbound', 'text', 'Hello from LID', 'received', ?1)",
+        [now],
+    )
+    .unwrap();
+
+    // 4. Insert PN identity and conversation (e.g. from inbound reply)
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, link_source, created_at, updated_at)
+         VALUES (101, 'whatsapp', 1, 'phone', '8613926842913', 'Unknown (8613926842913)', 'unlinked', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (201, 1, 'direct', '8613926842913@s.whatsapp.net', 'Unknown (8613926842913)', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (201, 101, 'member', ?1)",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, sender_identity_id, direction, content_type, text_content, status, ingested_at)
+         VALUES (301, 201, 101, 'inbound', 'text', 'Can you tak picture', 'received', ?1)",
+        [now],
+    )
+    .unwrap();
+
+    // 5. Insert LID-to-PN mapping
+    conn.execute(
+        "INSERT INTO whatsapp_lid_pn_mappings (lid, phone_e164, created_at, updated_at)
+         VALUES ('198097598676992', '8613926842913', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    // Before reconcile: 2 conversations, 2 identities
+    let conv_count_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM channel_conversations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let ident_count_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM channel_identities", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(conv_count_before, 2);
+    assert_eq!(ident_count_before, 2);
+
+    // Run reconciliation
+    crate::conversation::migration::reconcile_duplicate_whatsapp_conversations_and_identities(
+        &conn,
+    )
+    .unwrap();
+
+    // After reconcile: exactly 1 conversation, 1 identity, linked to Lead 10 with name 'Vject Wang'
+    let conv_count_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM channel_conversations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let ident_count_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM channel_identities", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        conv_count_after, 1,
+        "Duplicate conversation must be merged into 1"
+    );
+    assert_eq!(
+        ident_count_after, 1,
+        "Duplicate identity must be merged into 1"
+    );
+
+    let (surviving_ident_name, surviving_lead_id): (String, Option<i64>) = conn
+        .query_row(
+            "SELECT display_name, lead_id FROM channel_identities",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(surviving_ident_name, "Vject Wang");
+    assert_eq!(
+        surviving_lead_id,
+        Some(10),
+        "Identity must be linked to Lead 10"
+    );
+
+    let (surviving_conv_title, surviving_thread_id): (String, String) = conn
+        .query_row(
+            "SELECT title, external_thread_id FROM channel_conversations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(surviving_conv_title, "Vject Wang");
+    assert_eq!(surviving_thread_id, "8613926842913@s.whatsapp.net");
+
+    // Both messages are preserved in the surviving conversation
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = 201",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        msg_count, 2,
+        "All messages must belong to surviving conversation"
+    );
+
+    // Verify Repository list_inbox returns only 1 Customer item
+    let repo = crate::conversation::repository::ConversationRepository::new(
+        db_path.to_str().unwrap().to_string(),
+    );
+    let inbox = repo.list_inbox().unwrap();
+    assert_eq!(inbox.len(), 1, "Inbox must contain exactly 1 customer item");
+    assert_eq!(inbox[0].title, "Vject Wang");
+    assert_eq!(inbox[0].lead_id, Some(10));
+}
+
+#[test]
+fn test_start_direct_conversation_for_whatsapp_links_lead_and_prevents_duplicates() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("test_wa_start_direct.db");
+    let conn = crate::db::init_db(db_path.to_str().unwrap()).unwrap();
+    let now = "2026-08-27T00:00:00.000Z";
+
+    // 1. Insert channel account
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901234567', 'WA Business', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    // 2. Insert Lead
+    conn.execute(
+        "INSERT INTO leads (id, name, company, status, value, last_activity, owner, email, phone)
+         VALUES (20, 'Vject Wang', 'Acme', 'new', 0.0, '2026-08-27', 'admin', 'vject@test.com', '+86 139 2684 2913')",
+        [],
+    )
+    .unwrap();
+
+    let repo = crate::conversation::repository::ConversationRepository::new(
+        db_path.to_str().unwrap().to_string(),
+    );
+
+    // 3. Start direct conversation from UI/Campaign
+    let req = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 1,
+        phone_or_external_id: "8613926842913".to_string(),
+        display_name: Some("Vject Wang".to_string()),
+        initial_message: "Hello Vject!".to_string(),
+    };
+
+    let msg = repo.start_direct_conversation(&req, now).unwrap();
+    assert_eq!(
+        msg.direction,
+        crate::conversation::types::MessageDirection::Outbound
+    );
+
+    // Check identity created
+    let (channel, namespace, lead_id): (String, String, Option<i64>) = conn
+        .query_row(
+            "SELECT ci.channel, ci.identity_namespace, ci.lead_id
+         FROM channel_identities ci
+         JOIN conversation_participants cp ON cp.identity_id = ci.id
+         WHERE cp.conversation_id = ?1",
+            [msg.conversation_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(channel, "whatsapp");
+    assert_eq!(namespace, "phone");
+    assert_eq!(lead_id, Some(20), "Must be linked to Lead 20");
+
+    // Check conversation thread
+    let (conv_title, ext_thread_id): (String, String) = conn
+        .query_row(
+            "SELECT title, external_thread_id FROM channel_conversations WHERE id = ?1",
+            [msg.conversation_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(conv_title, "Vject Wang");
+    assert_eq!(ext_thread_id, "8613926842913@s.whatsapp.net");
+
+    // 4. Inbox should list exactly 1 customer row
+    let inbox = repo.list_inbox().unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].title, "Vject Wang");
+    assert_eq!(inbox[0].lead_id, Some(20));
+}

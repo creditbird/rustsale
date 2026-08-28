@@ -1,10 +1,23 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::normalizer::RawWhatsAppQuote;
+
+/// Upload metadata returned after uploading media to WhatsApp CDN.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsAppMediaUploadMetadata {
+    pub url: String,
+    pub direct_path: String,
+    pub media_key: String,
+    pub file_sha256: String,
+    pub file_enc_sha256: String,
+    pub file_length: u64,
+}
 
 /// Response returned after successfully sending a message to WhatsApp.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +25,25 @@ use super::normalizer::RawWhatsAppQuote;
 pub struct WhatsAppSendResponse {
     pub provider_message_id: String,
     pub timestamp: Option<String>,
+    #[serde(default)]
+    pub media_metadata: Option<WhatsAppMediaUploadMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhatsAppMediaReuploadRequest {
+    pub provider_message_id: String,
+    pub chat_jid: String,
+    pub media_key: Vec<u8>,
+    pub is_from_me: bool,
+    pub participant_jid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhatsAppMediaReuploadResult {
+    Success { direct_path: String },
+    NotFound,
+    DecryptionError,
+    GeneralError,
 }
 
 /// Error classification for WhatsApp outbox processing and network interaction.
@@ -119,6 +151,18 @@ pub trait WhatsAppClient: Send + Sync {
         emoji: &str,
     ) -> Result<()>;
 
+    /// Downloads and decrypts a media attachment from WhatsApp CDN.
+    async fn download_media(
+        &self,
+        params: &whatsapp_rust::download::DownloadParams,
+    ) -> Result<Vec<u8>>;
+
+    /// Requests a fresh CDN direct path after WhatsApp rejects an expired media reference.
+    async fn request_media_reupload(
+        &self,
+        request: &WhatsAppMediaReuploadRequest,
+    ) -> Result<WhatsAppMediaReuploadResult>;
+
     /// Returns true if the client session is actively connected and ready for traffic.
     async fn is_connected(&self) -> bool;
 
@@ -193,6 +237,7 @@ impl WhatsAppClient for RealWhatsAppClient {
         Ok(WhatsAppSendResponse {
             provider_message_id: sent.message_id,
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            media_metadata: None,
         })
     }
 
@@ -215,6 +260,19 @@ impl WhatsAppClient for RealWhatsAppClient {
         {
             let resp = reqwest::get(media_data_or_url).await?;
             resp.bytes().await?.to_vec()
+        } else if let Some(comma_pos) = media_data_or_url.find(',') {
+            if media_data_or_url.starts_with("data:") {
+                use base64::Engine as _;
+                let b64 = &media_data_or_url[comma_pos + 1..];
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64.trim())
+                    .map_err(|e| anyhow::anyhow!("Failed to decode data URL: {}", e))?
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Invalid media path or url: {}",
+                    media_data_or_url
+                ));
+            }
         } else {
             return Err(anyhow::anyhow!(
                 "Invalid media path or url: {}",
@@ -239,6 +297,17 @@ impl WhatsAppClient for RealWhatsAppClient {
             )
             .await
             .map_err(|e| anyhow::anyhow!("Media upload failed: {}", e))?;
+
+        use base64::Engine as _;
+        let media_metadata = WhatsAppMediaUploadMetadata {
+            url: upload_res.url.clone(),
+            direct_path: upload_res.direct_path.clone(),
+            media_key: base64::engine::general_purpose::STANDARD.encode(upload_res.media_key),
+            file_sha256: base64::engine::general_purpose::STANDARD.encode(upload_res.file_sha256),
+            file_enc_sha256: base64::engine::general_purpose::STANDARD
+                .encode(upload_res.file_enc_sha256),
+            file_length: data_len,
+        };
 
         let mut msg = whatsapp_rust::prelude::wa::Message::default();
         match wa_media_type {
@@ -309,6 +378,7 @@ impl WhatsAppClient for RealWhatsAppClient {
         Ok(WhatsAppSendResponse {
             provider_message_id: sent.message_id,
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            media_metadata: Some(media_metadata),
         })
     }
 
@@ -336,6 +406,59 @@ impl WhatsAppClient for RealWhatsAppClient {
             .map_err(|e| anyhow::anyhow!("WhatsApp send reaction error: {}", e))?;
 
         Ok(())
+    }
+
+    async fn download_media(
+        &self,
+        params: &whatsapp_rust::download::DownloadParams,
+    ) -> Result<Vec<u8>> {
+        self.client
+            .download(params)
+            .await
+            .context("WhatsApp media download error")
+    }
+
+    async fn request_media_reupload(
+        &self,
+        request: &WhatsAppMediaReuploadRequest,
+    ) -> Result<WhatsAppMediaReuploadResult> {
+        let chat_jid: whatsapp_rust::Jid = request.chat_jid.parse().map_err(|error| {
+            anyhow::anyhow!(
+                "Invalid media reupload chat JID '{}': {error}",
+                request.chat_jid
+            )
+        })?;
+        let participant_jid = request
+            .participant_jid
+            .as_deref()
+            .map(str::parse::<whatsapp_rust::Jid>)
+            .transpose()
+            .map_err(|error| anyhow::anyhow!("Invalid media participant JID: {error}"))?;
+        let upstream_request = whatsapp_rust::MediaReuploadRequest {
+            msg_id: &request.provider_message_id,
+            chat_jid: &chat_jid,
+            media_key: &request.media_key,
+            is_from_me: request.is_from_me,
+            participant: participant_jid.as_ref(),
+        };
+        let result = self
+            .client
+            .media_reupload()
+            .request(&upstream_request)
+            .await
+            .context("WhatsApp media reupload request failed")?;
+        Ok(match result {
+            whatsapp_rust::MediaRetryResult::Success { direct_path } => {
+                WhatsAppMediaReuploadResult::Success { direct_path }
+            }
+            whatsapp_rust::MediaRetryResult::NotFound => WhatsAppMediaReuploadResult::NotFound,
+            whatsapp_rust::MediaRetryResult::DecryptionError => {
+                WhatsAppMediaReuploadResult::DecryptionError
+            }
+            whatsapp_rust::MediaRetryResult::GeneralError => {
+                WhatsAppMediaReuploadResult::GeneralError
+            }
+        })
     }
 
     async fn is_connected(&self) -> bool {
@@ -385,6 +508,9 @@ pub struct MockWhatsAppClient {
     pub sent_reactions: Arc<Mutex<Vec<MockSentReaction>>>,
     pub next_send_result: Arc<Mutex<Option<Result<WhatsAppSendResponse>>>>,
     pub next_reaction_result: Arc<Mutex<Option<Result<()>>>>,
+    pub download_results: Arc<Mutex<VecDeque<Result<Vec<u8>>>>>,
+    pub media_reupload_requests: Arc<Mutex<Vec<WhatsAppMediaReuploadRequest>>>,
+    pub next_media_reupload_result: Arc<Mutex<Option<Result<WhatsAppMediaReuploadResult>>>>,
     pub connected: Arc<AtomicBool>,
 }
 
@@ -402,6 +528,9 @@ impl MockWhatsAppClient {
             sent_reactions: Arc::new(Mutex::new(Vec::new())),
             next_send_result: Arc::new(Mutex::new(None)),
             next_reaction_result: Arc::new(Mutex::new(None)),
+            download_results: Arc::new(Mutex::new(VecDeque::new())),
+            media_reupload_requests: Arc::new(Mutex::new(Vec::new())),
+            next_media_reupload_result: Arc::new(Mutex::new(None)),
             connected: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -421,6 +550,18 @@ impl MockWhatsAppClient {
 
     pub fn set_next_reaction_result(&self, res: Result<()>) {
         *self.next_reaction_result.lock().unwrap() = Some(res);
+    }
+
+    pub fn set_download_results(&self, results: Vec<Result<Vec<u8>>>) {
+        *self.download_results.lock().unwrap() = results.into();
+    }
+
+    pub fn set_next_media_reupload_result(&self, result: Result<WhatsAppMediaReuploadResult>) {
+        *self.next_media_reupload_result.lock().unwrap() = Some(result);
+    }
+
+    pub fn get_media_reupload_requests(&self) -> Vec<WhatsAppMediaReuploadRequest> {
+        self.media_reupload_requests.lock().unwrap().clone()
     }
 
     pub fn set_connected(&self, connected: bool) {
@@ -443,8 +584,11 @@ impl MockWhatsAppClient {
         self.sent_messages.lock().unwrap().clear();
         self.sent_media.lock().unwrap().clear();
         self.sent_reactions.lock().unwrap().clear();
+        self.download_results.lock().unwrap().clear();
+        self.media_reupload_requests.lock().unwrap().clear();
         *self.next_send_result.lock().unwrap() = None;
         *self.next_reaction_result.lock().unwrap() = None;
+        *self.next_media_reupload_result.lock().unwrap() = None;
     }
 }
 
@@ -471,6 +615,7 @@ impl WhatsAppClient for MockWhatsAppClient {
             Ok(WhatsAppSendResponse {
                 provider_message_id: format!("wa_msg_{:016x}", rand::random::<u64>()),
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                media_metadata: None,
             })
         }
     }
@@ -497,6 +642,14 @@ impl WhatsAppClient for MockWhatsAppClient {
             Ok(WhatsAppSendResponse {
                 provider_message_id: format!("wa_media_{:016x}", rand::random::<u64>()),
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                media_metadata: Some(WhatsAppMediaUploadMetadata {
+                    url: "https://mmg.whatsapp.net/mock/direct_path".to_string(),
+                    direct_path: "/mock/direct_path".to_string(),
+                    media_key: "bW9ja19tZWRpYV9rZXlfMzJieXRlc19mb3JfdGVzdA==".to_string(),
+                    file_sha256: "bW9ja19zaGEyNTY=".to_string(),
+                    file_enc_sha256: "bW9ja19lbmNfc2hhMjU2".to_string(),
+                    file_length: 1024,
+                }),
             })
         }
     }
@@ -519,6 +672,40 @@ impl WhatsAppClient for MockWhatsAppClient {
             res
         } else {
             Ok(())
+        }
+    }
+
+    async fn download_media(
+        &self,
+        _params: &whatsapp_rust::download::DownloadParams,
+    ) -> Result<Vec<u8>> {
+        if let Some(result) = self.download_results.lock().unwrap().pop_front() {
+            return result;
+        }
+        // Deterministic dummy valid 1x1 PNG bytes for testing
+        Ok(vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ])
+    }
+
+    async fn request_media_reupload(
+        &self,
+        request: &WhatsAppMediaReuploadRequest,
+    ) -> Result<WhatsAppMediaReuploadResult> {
+        self.media_reupload_requests
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        if let Some(result) = self.next_media_reupload_result.lock().unwrap().take() {
+            result
+        } else {
+            Ok(WhatsAppMediaReuploadResult::Success {
+                direct_path: "/mock/refreshed-media.enc".to_string(),
+            })
         }
     }
 

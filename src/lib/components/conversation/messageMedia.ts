@@ -3,9 +3,13 @@ export function safeConversationUrl(url: string | null | undefined): string | nu
   const trimmed = url.trim();
   if (
     trimmed.startsWith('https://') ||
-    trimmed.startsWith('http://')
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('asset://')
   ) {
     return trimmed;
+  }
+  if (trimmed.startsWith('data:image/')) {
+    return safeImagePreviewDataUrl(trimmed);
   }
   return null;
 }
@@ -14,6 +18,7 @@ export async function openExternalUrl(url: string | null | undefined): Promise<v
   if (!url) return;
   const safe = safeConversationUrl(url);
   if (!safe) return;
+  if (!safe.startsWith('http://') && !safe.startsWith('https://')) return;
   try {
     const { openUrl } = await import('@tauri-apps/plugin-opener');
     await openUrl(safe);
@@ -26,6 +31,7 @@ export async function openExternalUrl(url: string | null | undefined): Promise<v
 
 export function isImageUrl(url: string | null | undefined): boolean {
   if (!url) return false;
+  if (url.startsWith('data:image/')) return true;
   const clean = url.split('?')[0].split('#')[0].toLowerCase();
   if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(clean)) return true;
   if (clean.includes('zdn.vn/gr/jpg/') || clean.includes('/photo-stal-') || clean.includes('/photo-')) return true;
@@ -137,18 +143,22 @@ function extractStickerUrlFromObject(obj: Record<string, unknown> | null | undef
 }
 
 const MAX_IMAGE_PREVIEW_BYTES = 10 * 1024 * 1024;
-const RASTER_IMAGE_DATA_URL = /^data:image\/(?:png|jpe?g|webp|gif);base64,([a-z0-9+/]+={0,2})$/i;
 
 export function safeImagePreviewDataUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   const trimmed = url.trim();
-  const match = RASTER_IMAGE_DATA_URL.exec(trimmed);
-  if (!match) return null;
+  if (!trimmed.startsWith('data:image/')) return null;
+  const commaIdx = trimmed.indexOf(',');
+  if (commaIdx === -1) return null;
+  const header = trimmed.slice(0, commaIdx).toLowerCase();
+  if (!header.endsWith(';base64')) return null;
+  if (header.includes('svg') || header.includes('html') || header.includes('xml')) return null;
 
-  const payload = match[1];
-  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
-  const decodedBytes = Math.floor((payload.length * 3) / 4) - padding;
-  return decodedBytes <= MAX_IMAGE_PREVIEW_BYTES ? trimmed : null;
+  const payloadLength = trimmed.length - commaIdx - 1;
+  const approxBytes = Math.floor((payloadLength * 3) / 4);
+  if (approxBytes > MAX_IMAGE_PREVIEW_BYTES || approxBytes === 0) return null;
+
+  return trimmed;
 }
 
 export function formatBytes(bytes: number | null | undefined): string {
@@ -209,7 +219,12 @@ export interface ExtractedGalleryImage {
 }
 
 export function extractGalleryImages(messages: Array<{
-  attachments?: Array<{ mediaType: string; remoteUrl?: string | null; fileName?: string | null }>;
+  attachments?: Array<{
+    mediaType: string;
+    remoteUrl?: string | null;
+    thumbnailUrl?: string | null;
+    fileName?: string | null;
+  }>;
   contentType?: string;
   content?: Record<string, unknown> | null;
   textContent?: string | null;
@@ -221,10 +236,13 @@ export function extractGalleryImages(messages: Array<{
     if (msg.attachments && msg.attachments.length > 0) {
       for (const att of msg.attachments) {
         if (att.mediaType === 'image') {
-          const safeUrl = safeConversationUrl(att.remoteUrl);
-          if (safeUrl) {
+          const isWhatsAppEncrypted = att.remoteUrl?.includes('mmg.whatsapp.net') ?? false;
+          const safeRemote = !isWhatsAppEncrypted ? safeConversationUrl(att.remoteUrl) : null;
+          const safeThumb = safeConversationUrl(att.thumbnailUrl);
+          const effectiveUrl = safeThumb || safeRemote;
+          if (effectiveUrl && !images.some((img) => img.url === effectiveUrl)) {
             images.push({
-              url: safeUrl,
+              url: effectiveUrl,
               alt: att.fileName ?? 'Image',
               caption: msg.textContent || att.fileName || 'Image',
               timestamp: msg.occurredAt

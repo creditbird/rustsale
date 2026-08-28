@@ -526,9 +526,9 @@ impl ConversationRepository {
                     request.conversation_id
                 ))
             })?;
-        if channel != "zalo" || kind != "group" {
+        if (channel != "zalo" && channel != "whatsapp") || kind != "group" {
             return Err(invalid_group_member_import(format!(
-                "Conversation {} is not a Zalo group",
+                "Conversation {} is not a supported group",
                 request.conversation_id
             )));
         }
@@ -578,6 +578,7 @@ impl ConversationRepository {
                 )));
             }
         }
+
         if let Some(category_name) = request
             .new_category_name
             .as_deref()
@@ -601,18 +602,28 @@ impl ConversationRepository {
         let group_name = conversation_title
             .as_deref()
             .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .unwrap_or("Zalo Group");
-        let mut imported_count = 0;
-        let mut updated_count = 0;
-        let mut skipped_count = 0;
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Group Conversation");
+
+        let mut imported_count = 0usize;
+        let mut updated_count = 0usize;
+        let mut skipped_count = 0usize;
 
         for member in resolved_members.values() {
-            let exact_uid_lead_id = if member.linked_lead_id.is_none() {
+            let member_phone = member.phone.as_deref().or_else(|| {
+                if channel == "whatsapp" {
+                    Some(member.external_id.as_str())
+                } else {
+                    None
+                }
+            });
+
+            let exact_uid_lead_id = if channel == "zalo" && member.linked_lead_id.is_none() {
                 exact_lead_id_for_zalo_uid_tx(&tx, &member.external_id)?
             } else {
                 None
             };
+
             let target_lead_id = match member.linked_lead_id.or(exact_uid_lead_id) {
                 Some(lead_id) => {
                     let exists = tx.query_row(
@@ -629,43 +640,69 @@ impl ConversationRepository {
                     if request.skip_existing {
                         skipped_count += 1;
                     } else {
-                        tx.execute(
-                            "UPDATE leads
-                             SET last_activity = ?1,
-                                 phone = CASE
-                                     WHEN TRIM(COALESCE(phone, '')) = ''
-                                     THEN COALESCE(?2, phone)
-                                     ELSE phone
-                                 END,
-                                 has_zalo = 1,
-                                 zalo_uid = COALESCE(NULLIF(TRIM(zalo_uid), ''), ?3),
-                                 zalo_status = 'VERIFIED_EXIST'
-                             WHERE id = ?4",
-                            params![now, member.phone, member.external_id, lead_id],
-                        )?;
+                        if channel == "zalo" {
+                            tx.execute(
+                                "UPDATE leads
+                                 SET last_activity = ?1,
+                                     phone = CASE
+                                         WHEN TRIM(COALESCE(phone, '')) = ''
+                                         THEN COALESCE(?2, phone)
+                                         ELSE phone
+                                     END,
+                                     has_zalo = 1,
+                                     zalo_uid = COALESCE(NULLIF(TRIM(zalo_uid), ''), ?3),
+                                     zalo_status = 'VERIFIED_EXIST'
+                                 WHERE id = ?4",
+                                params![now, member_phone, member.external_id, lead_id],
+                            )?;
+                        } else {
+                            tx.execute(
+                                "UPDATE leads
+                                 SET last_activity = ?1,
+                                     phone = CASE
+                                         WHEN TRIM(COALESCE(phone, '')) = ''
+                                         THEN COALESCE(?2, phone)
+                                         ELSE phone
+                                     END
+                                 WHERE id = ?3",
+                                params![now, member_phone, lead_id],
+                            )?;
+                        }
                         updated_count += 1;
                     }
                     lead_id
                 }
                 None => {
                     let about = format!(
-                        "Imported from Zalo group conversation {}",
+                        "Imported from {} group conversation {}",
+                        if channel == "whatsapp" {
+                            "WhatsApp"
+                        } else {
+                            "Zalo"
+                        },
                         request.conversation_id
                     );
+                    let (has_zalo, zalo_uid, zalo_status) = if channel == "zalo" {
+                        (1, member.external_id.as_str(), "VERIFIED_EXIST")
+                    } else {
+                        (0, "", "UNVERIFIED")
+                    };
                     tx.execute(
                         "INSERT INTO leads
                          (name, company, status, value, last_activity, owner, email, phone, about,
                           address, has_zalo, zalo_reached, zalo_uid, zalo_status,
                           relationship_status)
-                         VALUES (?1, ?2, 'New', 0, ?3, 'System', '', ?4, ?5, '', 1, 0, ?6,
-                                 'VERIFIED_EXIST', 'UNKNOWN')",
+                         VALUES (?1, ?2, 'New', 0, ?3, 'System', '', ?4, ?5, '', ?6, 0, ?7,
+                                 ?8, 'UNKNOWN')",
                         params![
                             member.display_name,
                             group_name,
                             now,
-                            member.phone.as_deref().unwrap_or(""),
+                            member_phone.unwrap_or(""),
                             about,
-                            member.external_id,
+                            has_zalo,
+                            zalo_uid,
+                            zalo_status,
                         ],
                     )?;
                     imported_count += 1;
@@ -680,8 +717,8 @@ impl ConversationRepository {
                      link_confidence = 1.0,
                      verified_at = ?2,
                      updated_at = ?2
-                 WHERE id = ?3 AND channel = 'zalo' AND identity_namespace = 'zalo_uid'",
-                params![target_lead_id, now, member.identity_id],
+                 WHERE id = ?3 AND channel = ?4",
+                params![target_lead_id, now, member.identity_id, channel],
             )?;
             if linked != 1 {
                 return Err(invalid_group_member_import(format!(
@@ -1201,6 +1238,7 @@ impl ConversationRepository {
 
     pub fn list_inbox(&self) -> Result<Vec<InboxItem>> {
         let conn = open_db_connection(&self.db_path)?;
+        let _ = crate::conversation::migration::reconcile_duplicate_whatsapp_conversations_and_identities(&conn);
         let mut items = Vec::new();
 
         // 1. Customer rows: Linked direct/email conversations grouped by lead_id (key: "lead:{lead_id}")
@@ -4078,9 +4116,41 @@ impl ConversationRepository {
         }
         let normalized_phone = crate::commands::normalize_phone_digits(phone_clean);
 
-        // 1. Try to find a matching lead by phone or zalo_uid
-        let matched_lead_id: Option<i64> = tx
+        let channel_name: String = tx
             .query_row(
+                "SELECT channel FROM channel_accounts WHERE id = ?1",
+                [request.channel_account_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "zalo".to_string());
+
+        let identity_namespace = if channel_name == "whatsapp" {
+            "phone"
+        } else {
+            "zalo_uid"
+        };
+
+        let (direct_thread_id, identity_external_id) = if channel_name == "whatsapp" {
+            let e164 =
+                crate::conversation::whatsapp::phone::normalize_e164(phone_clean, Some("84"))
+                    .unwrap_or_else(|| phone_clean.to_string());
+            let direct_jid = if crate::conversation::whatsapp::phone::is_direct_jid(phone_clean) {
+                phone_clean.to_string()
+            } else {
+                crate::conversation::whatsapp::phone::phone_to_direct_jid(&e164)
+            };
+            (direct_jid, e164)
+        } else {
+            (phone_clean.to_string(), phone_clean.to_string())
+        };
+
+        // 1. Try to find a matching lead by phone or zalo_uid
+        let matched_lead_id: Option<i64> = if channel_name == "whatsapp" {
+            crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::resolve_lead_by_phone(&tx, phone_clean)
+                .unwrap_or(None)
+                .or_else(|| crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::resolve_lead_by_phone(&tx, &identity_external_id).unwrap_or(None))
+        } else {
+            tx.query_row(
                 "SELECT id FROM leads
                  WHERE phone = ?1 OR phone = ?2 OR zalo_uid = ?1 OR zalo_uid = ?2
                  LIMIT 1",
@@ -4088,7 +4158,8 @@ impl ConversationRepository {
                 |row| row.get(0),
             )
             .optional()
-            .unwrap_or(None);
+            .unwrap_or(None)
+        };
 
         let matched_lead_id: Option<i64> = match matched_lead_id {
             Some(lid) => Some(lid),
@@ -4126,11 +4197,20 @@ impl ConversationRepository {
         let identity_id: i64 = match tx
             .query_row(
                 "SELECT id FROM channel_identities
-                 WHERE (identity_namespace = 'zalo_uid' AND external_id IN (?1, ?2))
-                    OR (channel = 'zalo' AND lead_id IS NOT NULL AND lead_id = ?3)
+                 WHERE channel = ?1 AND (
+                     (identity_namespace = ?2 AND external_id IN (?3, ?4, ?5))
+                     OR (lead_id IS NOT NULL AND lead_id = ?6)
+                 )
                  ORDER BY (CASE WHEN lead_id IS NOT NULL THEN 0 ELSE 1 END), id ASC
                  LIMIT 1",
-                params![phone_clean, normalized_phone, matched_lead_id],
+                params![
+                    channel_name,
+                    identity_namespace,
+                    phone_clean,
+                    normalized_phone,
+                    identity_external_id,
+                    matched_lead_id
+                ],
                 |row| row.get(0),
             )
             .optional()?
@@ -4145,7 +4225,7 @@ impl ConversationRepository {
                 if let Some(ref name) = request.display_name {
                     if !name.trim().is_empty() {
                         tx.execute(
-                            "UPDATE channel_identities SET display_name = ?1 WHERE id = ?2 AND (display_name IS NULL OR TRIM(display_name) = '')",
+                            "UPDATE channel_identities SET display_name = ?1 WHERE id = ?2 AND (display_name IS NULL OR TRIM(display_name) = '' OR display_name LIKE '+%')",
                             params![name.trim(), id],
                         )?;
                     }
@@ -4154,11 +4234,13 @@ impl ConversationRepository {
             }
             None => tx.query_row(
                 "INSERT INTO channel_identities (lead_id, channel, identity_namespace, external_id, display_name, avatar_url, link_source, created_at, updated_at)
-                 VALUES (?1, 'zalo', 'zalo_uid', ?2, ?3, NULL, ?4, ?5, ?5)
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?7)
                  RETURNING id",
                 params![
                     matched_lead_id,
-                    phone_clean,
+                    channel_name,
+                    identity_namespace,
+                    identity_external_id,
                     request.display_name.as_deref().map(str::trim),
                     if matched_lead_id.is_some() { "provider_match" } else { "unlinked" },
                     now,
@@ -4174,9 +4256,8 @@ impl ConversationRepository {
                  LEFT JOIN conversation_participants cp ON cp.conversation_id = cc.id
                  WHERE cc.channel_account_id = ?1 AND cc.kind = 'direct' AND (
                      cp.identity_id = ?2
-                     OR cc.external_thread_id = ?3
-                     OR cc.external_thread_id = ?4
-                     OR (?5 IS NOT NULL AND cp.identity_id IN (SELECT id FROM channel_identities WHERE lead_id = ?5))
+                     OR cc.external_thread_id IN (?3, ?4, ?5)
+                     OR (?6 IS NOT NULL AND cp.identity_id IN (SELECT id FROM channel_identities WHERE lead_id = ?6))
                  )
                  ORDER BY (CASE WHEN cp.identity_id = ?2 THEN 0 ELSE 1 END), cc.id ASC
                  LIMIT 1",
@@ -4185,6 +4266,7 @@ impl ConversationRepository {
                     identity_id,
                     phone_clean,
                     normalized_phone,
+                    direct_thread_id,
                     matched_lead_id,
                 ],
                 |row| row.get(0),
@@ -4207,7 +4289,7 @@ impl ConversationRepository {
                      RETURNING id",
                     params![
                         request.channel_account_id,
-                        phone_clean,
+                        direct_thread_id,
                         request.display_name.as_deref().unwrap_or(phone_clean),
                         now,
                     ],
@@ -5297,24 +5379,43 @@ fn resolve_group_member_import_tx(
 ) -> Result<ResolvedGroupMemberImport> {
     type IdentityRow = (i64, String, Option<String>, Option<i64>);
 
-    let requested_external_id = item
-        .external_id
-        .as_deref()
-        .map(validated_zalo_uid)
-        .transpose()?;
+    let conv_channel: String = tx
+        .query_row(
+            "SELECT ca.channel
+             FROM channel_conversations cc
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             WHERE cc.id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "zalo".to_string());
+
+    let requested_external_id = if conv_channel == "zalo" {
+        item.external_id
+            .as_deref()
+            .map(validated_zalo_uid)
+            .transpose()?
+    } else {
+        item.external_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
     let identity_by_id = match item.identity_id {
         Some(identity_id) => Some(
             tx.query_row(
                 "SELECT id, external_id, display_name, lead_id
                  FROM channel_identities
-                 WHERE id = ?1 AND channel = 'zalo' AND identity_namespace = 'zalo_uid'",
-                [identity_id],
+                 WHERE id = ?1 AND channel = ?2",
+                rusqlite::params![identity_id, conv_channel],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?
             .ok_or_else(|| {
                 invalid_group_member_import(format!(
-                    "Canonical Zalo identity {identity_id} was not found"
+                    "Canonical identity {identity_id} was not found"
                 ))
             })?,
         ),
@@ -5325,14 +5426,14 @@ fn resolve_group_member_import_tx(
             tx.query_row(
                 "SELECT id, external_id, display_name, lead_id
                  FROM channel_identities
-                 WHERE channel = 'zalo' AND identity_namespace = 'zalo_uid' AND external_id = ?1",
-                [external_id],
+                 WHERE channel = ?1 AND external_id = ?2",
+                rusqlite::params![conv_channel, external_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?
             .ok_or_else(|| {
                 invalid_group_member_import(format!(
-                    "Canonical Zalo identity {external_id:?} was not found"
+                    "Canonical identity {external_id:?} was not found"
                 ))
             })?,
         ),
@@ -5413,10 +5514,17 @@ fn resolve_group_member_import_tx(
         )));
     }
 
+    let default_display_name = match conv_channel.as_str() {
+        "whatsapp" => "WhatsApp Member",
+        "zalo" => "Zalo Member",
+        _ => "Member",
+    };
+
     Ok(ResolvedGroupMemberImport {
         identity_id: identity.0,
         external_id: identity.1,
-        display_name: non_empty(identity.2.as_deref()).unwrap_or_else(|| "Zalo Member".to_string()),
+        display_name: non_empty(identity.2.as_deref())
+            .unwrap_or_else(|| default_display_name.to_string()),
         linked_lead_id: identity.3,
         phone,
     })

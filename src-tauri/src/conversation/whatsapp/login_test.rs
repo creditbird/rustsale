@@ -292,3 +292,57 @@ async fn test_finalize_login_upsert_existing_account() {
     assert_eq!(lid, Some("99999@lid".to_string()));
     assert_eq!(avatar, Some("https://newavatar.png".to_string()));
 }
+
+#[tokio::test]
+async fn test_finalize_login_preserves_wal_sidecars() {
+    let dir = tempdir().unwrap();
+    let conn = setup_test_db();
+    let manager = WhatsAppLoginManager::new_mock_with_dir(dir.path().to_path_buf());
+    let attempt_id = "test-attempt-wal";
+
+    manager.start_mock_login(attempt_id).await.unwrap();
+    let temp_db_path = manager.get_temp_db_path(attempt_id);
+
+    // Create a table and insert a row in WAL mode into the temp db
+    {
+        let temp_conn = Connection::open(&temp_db_path).unwrap();
+        temp_conn
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        temp_conn
+            .execute(
+                "CREATE TABLE test_device (id INTEGER PRIMARY KEY, pn TEXT)",
+                [],
+            )
+            .unwrap();
+        temp_conn
+            .execute("INSERT INTO test_device (pn) VALUES (?1)", ["84988888888"])
+            .unwrap();
+    }
+
+    let account_key = "84988888888";
+    let phone_number = "84988888888";
+
+    let account_id = manager
+        .finalize_login_success(
+            &conn,
+            attempt_id,
+            account_key,
+            phone_number,
+            Some("WAL Test Account"),
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert!(account_id > 0);
+    let final_db_path = manager.get_session_db_path(account_key);
+    assert!(final_db_path.exists());
+
+    // Verify the uncheckpointed/WAL data was preserved and is readable from final_db_path
+    let final_conn = Connection::open(&final_db_path).unwrap();
+    let pn: String = final_conn
+        .query_row("SELECT pn FROM test_device WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pn, "84988888888");
+}
