@@ -527,3 +527,111 @@ fn test_start_direct_conversation_for_whatsapp_links_lead_and_prevents_duplicate
     assert_eq!(inbox[0].title, "Vject Wang");
     assert_eq!(inbox[0].lead_id, Some(20));
 }
+
+#[test]
+fn test_cleanup_corrupted_whatsapp_attachments_cleans_cdn_paths_and_preserves_local_spool() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(include_str!("../schema.sql")).unwrap();
+
+    let now = "2026-08-27T00:00:00.000Z";
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, created_at, updated_at)
+         VALUES (1, 'whatsapp', 'wa-clean-1', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+         VALUES (10, 1, '84901234567@s.whatsapp.net', 'direct', 'Peer', 'active', ?1, ?1)",
+        [now],
+    )
+    .unwrap();
+
+    // 1. Corrupted inbound message with CDN path in local_path and key in raw_payload_json
+    use base64::Engine as _;
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(vec![0x33; 32]);
+    let raw_payload = serde_json::json!({
+        "id": "MSG_CORRUPT_01",
+        "attachments": [{
+            "media_type": "image",
+            "direct_path": "/v/t62/corrupt.enc",
+            "media_key": key_b64,
+            "file_sha256": "sha123",
+            "file_enc_sha256": "enc123"
+        }]
+    }).to_string();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, raw_payload_json, ingested_at, status)
+         VALUES (100, 10, 'inbound', 'MSG_CORRUPT_01', 'image', ?1, ?2, 'received')",
+        rusqlite::params![raw_payload, now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO message_attachments (id, message_id, attachment_type, local_path, remote_url, metadata_json, created_at)
+         VALUES (1001, 100, 'image', '/v/t62/corrupt.enc', 'https://mmg.whatsapp.net/v/t62/corrupt.enc', '{}', ?1)",
+        [now],
+    )
+    .unwrap();
+
+    // 2. Valid outbound message with actual local spool path
+    let local_spool_path = "/home/arch/.config/rustsale/attachments-spool/stage-valid-123.png";
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, ingested_at, status)
+         VALUES (200, 10, 'outbound', 'MSG_OUTBOUND_01', 'attachment', ?1, 'sent')",
+        [now],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO message_attachments (id, message_id, attachment_type, local_path, remote_url, metadata_json, created_at)
+         VALUES (2001, 200, 'image', ?1, NULL, '{}', ?2)",
+        rusqlite::params![local_spool_path, now],
+    )
+    .unwrap();
+
+    // Run migration
+    crate::conversation::migration::migrate(&conn).unwrap();
+
+    // Verify corrupted attachment: local_path NULLed, metadata_json backfilled
+    let (c_local, c_meta): (Option<String>, String) = conn
+        .query_row(
+            "SELECT local_path, metadata_json FROM message_attachments WHERE id = 1001",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(c_local, None, "Corrupted CDN local_path must be NULL");
+    let c_meta_val: serde_json::Value = serde_json::from_str(&c_meta).unwrap();
+    assert_eq!(c_meta_val["media_key"], key_b64);
+    assert_eq!(c_meta_val["file_sha256"], "sha123");
+
+    // Verify valid outbound attachment: local_path preserved
+    let (v_local, _): (Option<String>, String) = conn
+        .query_row(
+            "SELECT local_path, metadata_json FROM message_attachments WHERE id = 2001",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        v_local.as_deref(),
+        Some(local_spool_path),
+        "Valid local spool path must not be wiped"
+    );
+
+    // Verify idempotency: run migration second time
+    crate::conversation::migration::migrate(&conn).unwrap();
+    let (c_local2, c_meta2): (Option<String>, String) = conn
+        .query_row(
+            "SELECT local_path, metadata_json FROM message_attachments WHERE id = 1001",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(c_local2, None);
+    assert_eq!(c_meta2, c_meta);
+}
