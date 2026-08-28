@@ -5,11 +5,31 @@ import {
   extractStickerUrl,
   formatBytes,
   formatMediaDuration,
+  isEncryptedWhatsAppMediaUrl,
   safeConversationUrl,
   safeImagePreviewDataUrl
 } from '../messageMedia';
 
 describe('messageMedia', () => {
+  describe('isEncryptedWhatsAppMediaUrl', () => {
+    it('detects WhatsApp encrypted CDN URLs and path patterns', () => {
+      expect(isEncryptedWhatsAppMediaUrl('https://mmg.whatsapp.net/o1/v/t24/f2/enc.bin')).toBe(true);
+      expect(isEncryptedWhatsAppMediaUrl('/o1/v/t24/f2/AQOmJA8CDN...')).toBe(true);
+      expect(isEncryptedWhatsAppMediaUrl('/v/t62/f2/encrypted.enc')).toBe(true);
+      expect(isEncryptedWhatsAppMediaUrl('/mms/image/encrypted')).toBe(true);
+      expect(isEncryptedWhatsAppMediaUrl('https://cdn.example.com/file.enc')).toBe(true);
+      expect(isEncryptedWhatsAppMediaUrl('https://cdn.example.com/file.enc?token=123')).toBe(true);
+    });
+
+    it('returns false for standard unencrypted images and data URLs', () => {
+      expect(isEncryptedWhatsAppMediaUrl('https://cdn.example.com/image.jpg')).toBe(false);
+      expect(isEncryptedWhatsAppMediaUrl('data:image/png;base64,iVBORw0KGgo=')).toBe(false);
+      expect(isEncryptedWhatsAppMediaUrl('asset://localhost/path/to/img.png')).toBe(false);
+      expect(isEncryptedWhatsAppMediaUrl(null)).toBe(false);
+      expect(isEncryptedWhatsAppMediaUrl(undefined)).toBe(false);
+    });
+  });
+
   describe('safeConversationUrl', () => {
     it('accepts valid HTTP/HTTPS URLs', () => {
       expect(safeConversationUrl('https://cdn.example.com/image.jpg')).toBe(
@@ -18,6 +38,12 @@ describe('messageMedia', () => {
       expect(safeConversationUrl('http://cdn.example.com/file.pdf')).toBe(
         'http://cdn.example.com/file.pdf'
       );
+    });
+
+    it('rejects encrypted WhatsApp media URLs', () => {
+      expect(safeConversationUrl('https://mmg.whatsapp.net/o1/v/t24/enc.bin')).toBeNull();
+      expect(safeConversationUrl('/o1/v/t24/f2/enc')).toBeNull();
+      expect(safeConversationUrl('https://cdn.example.com/file.enc')).toBeNull();
     });
 
     it('accepts valid raster data image and asset URLs', () => {
@@ -130,6 +156,12 @@ describe('messageMedia', () => {
               remoteUrl: 'https://mmg.whatsapp.net/v/encrypted2.enc',
               thumbnailUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
               fileName: 'wa_decrypted.jpg'
+            },
+            {
+              mediaType: 'image',
+              remoteUrl: 'https://mmg.whatsapp.net/v/encrypted3.enc',
+              thumbnailUrl: 'https://mmg.whatsapp.net/o1/v/t24/encrypted_thumb',
+              fileName: 'wa_encrypted_thumb.jpg'
             }
           ],
           occurredAt: '2026-08-27T10:00:00Z'

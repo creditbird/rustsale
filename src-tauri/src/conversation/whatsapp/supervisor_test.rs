@@ -239,3 +239,134 @@ async fn test_supervisor_run_loop_stops_on_cancellation() {
     let res = tokio::time::timeout(Duration::from_millis(500), handle).await;
     assert!(res.is_ok(), "Supervisor loop did not stop within timeout");
 }
+
+#[tokio::test]
+async fn test_supervisor_load_active_sessions_preserves_connected_client() {
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let conn = open_db_connection(&db_path).unwrap();
+    let events = Arc::new(ConversationEventPublisher::new(100));
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let supervisor = Arc::new(WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events));
+
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts 
+         (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', 1, 'connected', '{}', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO whatsapp_sessions 
+         (channel_account_id, account_key, phone_number, session_db_filename, is_valid, created_at, updated_at)
+         VALUES (1, '84901111111', '84901111111', 'session_1.db', 1, ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    let mock_client = Arc::new(MockWhatsAppClient::new());
+    mock_client.set_connected(true);
+    supervisor.register_client(1, mock_client.clone()).await;
+
+    let loaded = supervisor.load_active_sessions_on_startup().await.unwrap();
+    assert_eq!(loaded, 1);
+
+    // Client must still be the exact registered instance (not disconnected or replaced)
+    let retrieved = supervisor.get_client(1).await.unwrap();
+    assert!(retrieved.is_connected().await);
+}
+
+#[tokio::test]
+async fn test_supervisor_notify_outbox_drains_immediately() {
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let conn = open_db_connection(&db_path).unwrap();
+    let events = Arc::new(ConversationEventPublisher::new(100));
+    let repository = Arc::new(ConversationRepository::new(db_path.clone()));
+    let spool_root = std::path::Path::new(&db_path)
+        .parent()
+        .unwrap()
+        .join("spool");
+    let service = Arc::new(ConversationService::new(
+        repository.clone(),
+        events.clone(),
+        spool_root,
+    ));
+
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let supervisor = Arc::new(WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events));
+    supervisor.with_service(service);
+
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts 
+         (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', 1, 'connected', '{}', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO whatsapp_sessions 
+         (channel_account_id, account_key, phone_number, session_db_filename, is_valid, created_at, updated_at)
+         VALUES (1, '84901111111', '84901111111', 'session_1.db', 1, ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_conversations 
+         (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
+         VALUES (10, 1, '84902222222@s.whatsapp.net', 'direct', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages 
+         (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+         VALUES (101, 10, 'outbound', 'out_wa_1', 'text', 'Hello Fast WhatsApp!', '{}', 'queued', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO message_outbox_jobs 
+         (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+         VALUES ('job_wa_fast', 1, 101, 'pending', 0, ?1, ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    let mock_client = Arc::new(MockWhatsAppClient::new());
+    mock_client.set_connected(true);
+    supervisor.register_client(1, mock_client.clone()).await;
+
+    // Start background loop with a long 60-second fallback
+    let sup_clone = supervisor.clone();
+    let loop_handle = tokio::spawn(async move {
+        sup_clone.run_loop(Duration::from_secs(60)).await;
+    });
+
+    // Notify outbox immediately
+    supervisor.notify_outbox();
+
+    // Verify outbox was processed within 1000ms without waiting for 60s
+    let mut drained = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let job_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM message_outbox_jobs WHERE id = 'job_wa_fast'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        if job_status.as_deref() == Some("completed") {
+            drained = true;
+            break;
+        }
+    }
+
+    supervisor.stop();
+    let _ = loop_handle.await;
+
+    assert!(drained, "Outbox job was not drained immediately upon notify_outbox");
+    let sent_msgs = mock_client.get_sent_messages();
+    assert_eq!(sent_msgs.len(), 1);
+    assert_eq!(sent_msgs[0].recipient_jid, "84902222222@s.whatsapp.net");
+    assert_eq!(sent_msgs[0].text, "Hello Fast WhatsApp!");
+}

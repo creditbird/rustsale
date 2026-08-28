@@ -9,7 +9,8 @@
     Download,
     Loader2,
     Copy,
-    Check
+    Check,
+    AlertCircle
   } from 'lucide-svelte';
   import { saveImageToFile } from '$lib/utils/imageExport';
   import { toast } from 'svelte-sonner';
@@ -42,6 +43,7 @@
   let panY = $state(0);
   let isDragging = $state(false);
   let isSaving = $state(false);
+  let imageError = $state(false);
   let contextMenuOpen = $state(false);
   let contextMenuPos = $state({ x: 0, y: 0 });
   let copied = $state(false);
@@ -62,8 +64,15 @@
       isDragging = false;
       contextMenuOpen = false;
       copied = false;
+      imageError = false;
     }
     lastOpen = open;
+  });
+
+  $effect(() => {
+    if (currentImage?.url) {
+      imageError = false;
+    }
   });
 
   let currentImage = $derived(images[currentIndex] ?? null);
@@ -435,18 +444,30 @@
         </button>
       {/if}
 
-      <!-- Main Image -->
-      <img
-        src={currentImage.url}
-        alt={currentImage.alt || 'Image preview'}
-        class="max-h-[82vh] max-w-[90vw] object-contain rounded-lg shadow-2xl select-none {isDragging ? 'cursor-grabbing duration-0' : zoomScale > 1 ? 'cursor-grab transition-transform duration-150' : 'cursor-zoom-in transition-transform duration-150'}"
-        style="transform: translate({panX}px, {panY}px) scale({zoomScale}); touch-action: none;"
-        data-testid="gallery-main-image"
-        draggable="false"
-        ondragstart={(e) => e.preventDefault()}
-        ondblclick={handleDoubleClick}
-        oncontextmenu={handleContextMenu}
-      />
+      <!-- Main Image or Error Fallback -->
+      {#if imageError}
+        <div
+          class="flex flex-col items-center justify-center gap-3 p-8 rounded-xl bg-black/60 border border-white/10 text-white/80 max-w-md text-center"
+          data-testid="gallery-error-fallback"
+        >
+          <AlertCircle class="size-10 text-destructive" />
+          <p class="text-sm font-medium">Không thể hiển thị ảnh</p>
+          <p class="text-xs text-white/50">Ảnh có thể đã hết hạn hoặc không khả dụng trên thiết bị này.</p>
+        </div>
+      {:else}
+        <img
+          src={currentImage.url}
+          alt={currentImage.alt || 'Image preview'}
+          class="max-h-[82vh] max-w-[90vw] min-w-[min(540px,88vw)] min-h-[min(320px,65vh)] w-auto h-auto object-contain rounded-lg shadow-2xl select-none {isDragging ? 'cursor-grabbing duration-0' : zoomScale > 1 ? 'cursor-grab transition-transform duration-150' : 'cursor-zoom-in transition-transform duration-150'}"
+          style="transform: translate({panX}px, {panY}px) scale({zoomScale}); touch-action: none;"
+          data-testid="gallery-main-image"
+          draggable="false"
+          ondragstart={(e) => e.preventDefault()}
+          ondblclick={handleDoubleClick}
+          oncontextmenu={handleContextMenu}
+          onerror={() => { imageError = true; }}
+        />
+      {/if}
 
       <!-- Next Button -->
       {#if totalImages > 1}

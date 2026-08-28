@@ -424,4 +424,20 @@ describe('ImageGalleryModal Component', () => {
     await fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('renders friendly error fallback when image fails to load', async () => {
+    render(ImageGalleryModal, {
+      open: true,
+      images: sampleImages,
+      initialIndex: 0
+    });
+
+    const mainImg = screen.getByTestId('gallery-main-image');
+    expect(screen.queryByTestId('gallery-error-fallback')).toBeNull();
+
+    await fireEvent.error(mainImg);
+
+    expect(screen.getByTestId('gallery-error-fallback')).not.toBeNull();
+    expect(screen.getByText('Không thể hiển thị ảnh')).not.toBeNull();
+  });
 });

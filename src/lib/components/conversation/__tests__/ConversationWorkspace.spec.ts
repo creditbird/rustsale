@@ -861,6 +861,44 @@ describe('ConversationWorkspace Component', () => {
     expect(screen.getByText('Nội dung đã chuyển tiếp')).toBeTruthy();
   });
 
+  test('8e. Invalidation updates open timeline in real-time even when composer is focused', async () => {
+    const realtimeMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 999,
+      conversationId: 10,
+      direction: 'inbound',
+      textContent: 'Tin nhắn realtime tức thì',
+      content: { text: 'Tin nhắn realtime tức thì' },
+      occurredAt: '2026-08-28T10:00:00Z',
+      status: 'received'
+    };
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [mockMsg1], nextCursor: null }))
+      .mockImplementationOnce(async () => ({ items: [mockMsg1, realtimeMsg], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    const textarea = screen.getByPlaceholderText('Type a message...');
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 999
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(screen.getByText('Tin nhắn realtime tức thì')).toBeTruthy();
+  });
+
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();
