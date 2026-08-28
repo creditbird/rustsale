@@ -29,6 +29,7 @@ pub struct WhatsAppSupervisor {
     clients: Arc<RwLock<HashMap<i64, Arc<dyn WhatsAppClient>>>>,
     cancellation_token: CancellationToken,
     service: std::sync::RwLock<Option<Arc<crate::conversation::service::ConversationService>>>,
+    outbox_notify: Arc<tokio::sync::Notify>,
 }
 
 impl WhatsAppSupervisor {
@@ -45,6 +46,7 @@ impl WhatsAppSupervisor {
             clients: Arc::new(RwLock::new(HashMap::new())),
             cancellation_token: CancellationToken::new(),
             service: std::sync::RwLock::new(None),
+            outbox_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -184,9 +186,42 @@ impl WhatsAppSupervisor {
         Ok(processed_count)
     }
 
-    /// Background event & polling loop that periodically syncs connected accounts.
+    /// Notifies the supervisor to immediately drain outbox jobs for connected accounts.
+    pub fn notify_outbox(&self) {
+        self.outbox_notify.notify_waiters();
+    }
+
+    /// Drains outbox jobs for all currently connected and enabled WhatsApp accounts.
+    pub async fn drain_all_connected_accounts(&self) {
+        let conn_res = Connection::open(&self.db_path);
+        let accounts = match conn_res {
+            Ok(conn) => self.get_connected_accounts(&conn).unwrap_or_default(),
+            Err(e) => {
+                warn!(target: "whatsapp_supervisor", "Failed to open DB for polling: {}", e);
+                Vec::new()
+            }
+        };
+
+        for account in accounts {
+            if self.cancellation_token.is_cancelled() {
+                break;
+            }
+            if let Err(e) = self.sync_account_internal(&account).await {
+                warn!(
+                    target: "whatsapp_supervisor",
+                    "Failed to sync WhatsApp account {}: {}",
+                    account.id, e
+                );
+            }
+        }
+    }
+
+    /// Background event & polling loop that periodically syncs connected accounts and reacts to outbox notifications.
     pub async fn run_loop(&self, poll_interval: Duration) {
         info!(target: "whatsapp_supervisor", "WhatsApp supervisor run loop started");
+
+        let effective_interval = poll_interval.min(Duration::from_millis(200));
+        let mut ticker = tokio::time::interval(effective_interval);
 
         while !self.cancellation_token.is_cancelled() {
             tokio::select! {
@@ -194,28 +229,11 @@ impl WhatsAppSupervisor {
                     info!(target: "whatsapp_supervisor", "WhatsApp supervisor loop cancelled");
                     break;
                 }
-                _ = tokio::time::sleep(poll_interval) => {
-                    let conn_res = Connection::open(&self.db_path);
-                    let accounts = match conn_res {
-                        Ok(conn) => self.get_connected_accounts(&conn).unwrap_or_default(),
-                        Err(e) => {
-                            warn!(target: "whatsapp_supervisor", "Failed to open DB for polling: {}", e);
-                            Vec::new()
-                        }
-                    };
-
-                    for account in accounts {
-                        if self.cancellation_token.is_cancelled() {
-                            break;
-                        }
-                        if let Err(e) = self.sync_account_internal(&account).await {
-                            warn!(
-                                target: "whatsapp_supervisor",
-                                "Failed to sync WhatsApp account {}: {}",
-                                account.id, e
-                            );
-                        }
-                    }
+                _ = ticker.tick() => {
+                    self.drain_all_connected_accounts().await;
+                }
+                _ = self.outbox_notify.notified() => {
+                    self.drain_all_connected_accounts().await;
                 }
             }
         }
@@ -340,9 +358,17 @@ impl WhatsAppSupervisor {
                                 ).optional().unwrap_or(None);
 
                                 if let Some(conv_id) = conv_id_opt {
+                                    let lead_id_opt: Option<i64> = conn.query_row(
+                                        "SELECT ci.lead_id FROM channel_identities ci
+                                         JOIN conversation_participants cp ON cp.identity_id = ci.id
+                                         WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                                        [conv_id],
+                                        |r| r.get(0),
+                                    ).optional().unwrap_or(None);
+
                                     events.publish(crate::conversation::events::ConversationInvalidatedEvent {
                                         conversation_id: conv_id,
-                                        lead_id: None,
+                                        lead_id: lead_id_opt,
                                         channel: crate::conversation::types::Channel::WhatsApp,
                                         reason: crate::conversation::events::ConversationInvalidationReason::Reaction,
                                         message_id: None,
@@ -362,12 +388,26 @@ impl WhatsAppSupervisor {
                                 account_id_val,
                                 &raw_msg,
                             ) {
+                                let lead_id_opt: Option<i64> = conn.query_row(
+                                    "SELECT ci.lead_id FROM channel_identities ci
+                                     JOIN conversation_participants cp ON cp.identity_id = ci.id
+                                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                                    [conv_id],
+                                    |r| r.get(0),
+                                ).optional().unwrap_or(None);
+
+                                let msg_id_opt: Option<i64> = conn.query_row(
+                                    "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                                    rusqlite::params![conv_id, raw_msg.id],
+                                    |r| r.get(0),
+                                ).optional().unwrap_or(None);
+
                                 events.publish(crate::conversation::events::ConversationInvalidatedEvent {
                                     conversation_id: conv_id,
-                                    lead_id: None,
+                                    lead_id: lead_id_opt,
                                     channel: crate::conversation::types::Channel::WhatsApp,
                                     reason: crate::conversation::events::ConversationInvalidationReason::Message,
-                                    message_id: None,
+                                    message_id: msg_id_opt,
                                 });
                                 // Keep the protobuf thumbnail from ingestion. The full encrypted
                                 // payload is resolved lazily through `download_conversation_attachment`,
@@ -457,10 +497,18 @@ impl WhatsAppSupervisor {
                                         }
                                     }
 
-                                    for conv_id in invalidated_conv_ids {
+                                     for conv_id in invalidated_conv_ids {
+                                        let lead_id_opt: Option<i64> = conn.query_row(
+                                            "SELECT ci.lead_id FROM channel_identities ci
+                                             JOIN conversation_participants cp ON cp.identity_id = ci.id
+                                             WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                                            [conv_id],
+                                            |r| r.get(0),
+                                        ).optional().unwrap_or(None);
+
                                         events.publish(crate::conversation::events::ConversationInvalidatedEvent {
                                             conversation_id: conv_id,
-                                            lead_id: None,
+                                            lead_id: lead_id_opt,
                                             channel: crate::conversation::types::Channel::WhatsApp,
                                             reason: crate::conversation::events::ConversationInvalidationReason::Message,
                                             message_id: None,
@@ -517,6 +565,14 @@ impl WhatsAppSupervisor {
 
         let mut loaded = 0;
         for (acc_id, acc_key, db_filename) in accounts {
+            // If already connected and active, do not recreate or teardown existing connection!
+            if let Some(client) = self.get_client(acc_id).await {
+                if client.is_connected().await {
+                    loaded += 1;
+                    continue;
+                }
+            }
+
             match self.start_account_bot(acc_id, &acc_key, &db_filename).await {
                 Ok(_) => {
                     info!(target: "whatsapp_supervisor", acc_id, %acc_key, "Started WhatsApp account bot on startup");

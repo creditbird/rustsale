@@ -332,7 +332,7 @@ pub fn run() {
                 drop(startup_fb_supervisor.start_background_loop(std::time::Duration::from_secs(60)));
                 tauri::async_runtime::spawn(async move {
                     startup_wa_supervisor
-                        .run_loop(std::time::Duration::from_secs(60))
+                        .run_loop(std::time::Duration::from_millis(500))
                         .await;
                 });
             });

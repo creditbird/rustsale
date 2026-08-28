@@ -379,6 +379,14 @@
           sameChannels &&
           sameTargets;
         if (sameItem) return; // keep previous reference — no downstream re-render
+
+        // If last message changed on the active conversation from background/inbox sync, ensure timeline is refreshed
+        if (prev.lastMessageAt !== found.lastMessageAt || prev.lastMessagePreview !== found.lastMessagePreview) {
+          if (currentVariantKey) {
+            timelineStale.add(currentVariantKey);
+            void refreshOpenTimeline();
+          }
+        }
       }
       selectedItem = found;
     });
@@ -911,7 +919,6 @@
       if (selectedKey && !inbox.some((i) => i.key === selectedKey) && inbox.length > 0) {
         selectItem(inbox[0]);
       }
-      void syncWhatsAppConversations().catch(() => {});
       if (selectedItem?.kind === 'group' && selectedItem?.conversationId !== null) {
         void syncZaloGroupChatHistory(selectedItem.conversationId).catch(() => {});
       }
@@ -1191,16 +1198,23 @@
     if (item.kind === 'customer') {
       return (
         (item.leadId !== null && event.leadId === item.leadId) ||
+        (item.conversationId !== null && item.conversationId === event.conversationId) ||
         item.replyTargets.some((target) => target.conversationId === event.conversationId)
       );
     }
     if (item.kind === 'group') {
-      return item.conversationId !== null && event.conversationId === item.conversationId;
+      return (
+        (item.conversationId !== null && event.conversationId === item.conversationId) ||
+        item.replyTargets.some((target) => target.conversationId === event.conversationId)
+      );
     }
-    return item.replyTargets.some((target) => target.conversationId === event.conversationId);
+    return (
+      (item.conversationId !== null && item.conversationId === event.conversationId) ||
+      item.replyTargets.some((target) => target.conversationId === event.conversationId) ||
+      (event.channel === 'whatsapp' && item.replyTargets.some((target) => target.channel === 'whatsapp'))
+    );
   }
 
-  // WhatsApp-style: avoid refreshing inbox/timeline while user is typing — coalesce & defer
   function getWorkspaceEnvMode(): string {
     try {
       // @ts-ignore
@@ -1217,21 +1231,6 @@
     return 'production';
   }
   const IS_TEST_WORKSPACE = getWorkspaceEnvMode() === 'test';
-  function isComposerActive(): boolean {
-    const ae = document.activeElement as HTMLElement | null;
-    if (!ae) return false;
-    // Strict: only when the composer textarea itself is focused (not generic composer container)
-    return ae.tagName === 'TEXTAREA' && ae.getAttribute('placeholder') === 'Type a message...';
-  }
-
-  function scheduleIdleWork(callback: () => void): void {
-    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      (window as unknown as { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => number })
-        .requestIdleCallback(callback, { timeout: 2000 });
-    } else {
-      setTimeout(callback, 0);
-    }
-  }
 
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     if (event.reason === 'account_status') {
@@ -1260,37 +1259,22 @@
     }
 
     if (isActive) {
-      // Inbox: 300ms coalesce normally, 5000ms while typing to keep input at 120fps (Telegram/WhatsApp pattern)
-      // In test keep 50ms so existing specs (70ms wait) still pass.
-      const baseInboxDelay = IS_TEST_WORKSPACE ? 50 : 300;
-      const typingInboxDelay = IS_TEST_WORKSPACE ? 60 : 5000;
-      const inboxDelay = isComposerActive() ? typingInboxDelay : baseInboxDelay;
+      // Sidebar Inbox: 100ms debounce (50ms in test) to keep sidebar smooth without high-frequency refetches
+      const inboxDelay = IS_TEST_WORKSPACE ? 50 : 100;
       if (inboxRefreshTimer) clearTimeout(inboxRefreshTimer);
       inboxRefreshTimer = setTimeout(() => {
-        if (IS_TEST_WORKSPACE) {
-          void refreshInbox();
-        } else {
-          scheduleIdleWork(() => {
-            void refreshInbox();
-          });
-        }
+        void refreshInbox();
       }, inboxDelay);
 
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
       if (affectsOpenItem) {
-        const baseTimelineDelay = IS_TEST_WORKSPACE ? 50 : 300;
-        const typingTimelineDelay = IS_TEST_WORKSPACE ? 60 : 5000;
-        const timelineDelay = isComposerActive() ? typingTimelineDelay : baseTimelineDelay;
+        // Open Timeline: immediate frame-level micro-coalesce (25ms in production / 10ms in test)
+        // Critical path: updates active chat in real-time (< 30ms) without waiting or deferring to idle
+        const timelineDelay = IS_TEST_WORKSPACE ? 10 : 25;
         if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
         timelineRefreshTimer = setTimeout(() => {
-          if (IS_TEST_WORKSPACE) {
-            void refreshOpenTimeline();
-          } else {
-            scheduleIdleWork(() => {
-              void refreshOpenTimeline();
-            });
-          }
+          void refreshOpenTimeline();
         }, timelineDelay);
       }
     } else {

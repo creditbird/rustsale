@@ -1,6 +1,22 @@
+export function isEncryptedWhatsAppMediaUrl(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized.includes('mmg.whatsapp.net') ||
+    normalized.startsWith('/o1/') ||
+    normalized.startsWith('/v/t62') ||
+    normalized.startsWith('/mms/') ||
+    normalized.endsWith('.enc') ||
+    normalized.includes('.enc?')
+  );
+}
+
 export function safeConversationUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   const trimmed = url.trim();
+  if (isEncryptedWhatsAppMediaUrl(trimmed)) {
+    return null;
+  }
   if (
     trimmed.startsWith('https://') ||
     trimmed.startsWith('http://') ||
@@ -236,9 +252,8 @@ export function extractGalleryImages(messages: Array<{
     if (msg.attachments && msg.attachments.length > 0) {
       for (const att of msg.attachments) {
         if (att.mediaType === 'image') {
-          const isWhatsAppEncrypted = att.remoteUrl?.includes('mmg.whatsapp.net') ?? false;
-          const safeRemote = !isWhatsAppEncrypted ? safeConversationUrl(att.remoteUrl) : null;
-          const safeThumb = safeConversationUrl(att.thumbnailUrl);
+          const safeRemote = !isEncryptedWhatsAppMediaUrl(att.remoteUrl) ? safeConversationUrl(att.remoteUrl) : null;
+          const safeThumb = !isEncryptedWhatsAppMediaUrl(att.thumbnailUrl) ? safeConversationUrl(att.thumbnailUrl) : null;
           const effectiveUrl = safeThumb || safeRemote;
           if (effectiveUrl && !images.some((img) => img.url === effectiveUrl)) {
             images.push({
@@ -254,7 +269,7 @@ export function extractGalleryImages(messages: Array<{
 
     if (msg.contentType === 'image' || (msg.contentType && msg.contentType.startsWith('image/'))) {
       const legacyUrl = extractLegacyImageUrl(msg.content);
-      if (legacyUrl && !images.some((img) => img.url === legacyUrl)) {
+      if (legacyUrl && !isEncryptedWhatsAppMediaUrl(legacyUrl) && !images.some((img) => img.url === legacyUrl)) {
         images.push({
           url: legacyUrl,
           alt: msg.textContent || 'Image',

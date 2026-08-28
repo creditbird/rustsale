@@ -203,4 +203,31 @@ describe('MessageReactionSummary', () => {
     expect(onToggleReaction).not.toHaveBeenCalled();
     expect(screen.getByText('Người thả emoji')).toBeTruthy();
   });
+
+  it('renders custom unicode emoji and toggles them as writable reaction', async () => {
+    const onToggleReaction = mock(() => {});
+
+    render(MessageReactionSummary, {
+      groups: [
+        {
+          reactionIcon: '🙏',
+          count: 1,
+          includesMe: true,
+          actors: [
+            { identityId: null, externalId: 'own-uid', displayName: 'Me', avatarUrl: null }
+          ]
+        }
+      ],
+      canReact: true,
+      onToggleReaction
+    });
+
+    const chip = screen.getByRole('button', { name: /🙏 1/ });
+    await fireEvent.click(chip);
+    expect(onToggleReaction).toHaveBeenCalledWith('🙏', 'increment');
+
+    onToggleReaction.mockClear();
+    await fireEvent.contextMenu(chip);
+    expect(onToggleReaction).toHaveBeenCalledWith('🙏', 'remove');
+  });
 });

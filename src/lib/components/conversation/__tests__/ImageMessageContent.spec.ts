@@ -130,6 +130,34 @@ describe('ImageMessageContent Component', () => {
     });
   });
 
+  it('shows a low-resolution thumbnail immediately then resolves encrypted WhatsApp media', async () => {
+    const lowResolutionThumbnail = 'data:image/jpeg;base64,TE9X';
+    const attachment: ConversationAttachment = {
+      id: 108,
+      mediaType: 'image',
+      mimeType: 'image/jpeg',
+      fileName: 'upgrade_thumbnail.jpg',
+      sizeBytes: 197632,
+      remoteUrl: 'https://mmg.whatsapp.net/v/upgrade_thumbnail.enc',
+      thumbnailUrl: lowResolutionThumbnail,
+      width: null,
+      height: null,
+      durationSeconds: null,
+    };
+
+    const { getByTestId } = render(ImageMessageContent, {
+      props: { attachment }
+    });
+
+    expect((getByTestId('image-message-content').querySelector('img') as HTMLImageElement).src)
+      .toContain(lowResolutionThumbnail);
+    await waitFor(() => {
+      expect(downloadMock).toHaveBeenCalledWith(108);
+      expect((getByTestId('image-message-content').querySelector('img') as HTMLImageElement).src)
+        .toContain('data:image/jpeg;base64,/9j/4AAQSkZJRg==');
+    });
+  });
+
   it('handles click on fallback card to trigger download and open callback', async () => {
     const onImageClick = mock();
     const attachment: ConversationAttachment = {

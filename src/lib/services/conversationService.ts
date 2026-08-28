@@ -43,7 +43,14 @@ export interface InboxReplyTarget {
   lastMessageAt: string | null;
 }
 
-export type ConversationReactionCode = 'heart' | 'like' | 'haha' | 'wow' | 'cry' | 'angry';
+export type ConversationReactionCode =
+  | 'heart'
+  | 'like'
+  | 'haha'
+  | 'wow'
+  | 'cry'
+  | 'angry'
+  | (string & {});
 
 export interface ConversationMentionInput {
   pos: number;

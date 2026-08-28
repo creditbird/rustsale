@@ -11,7 +11,7 @@
 
 ## Problem Statement
 
-WhatsApp image messages may retain only an encrypted CDN path while losing the E2EE media key. The current partial remediation also has two idempotency gaps: a redelivery with a changed CDN URL can create a second attachment instead of enriching the existing row, and an incomplete redelivery can remove previously persisted encryption metadata through an RFC 7396 null patch. The UI then keeps selecting an unresolved attachment and cannot render the image.
+WhatsApp image messages may retain only an encrypted CDN path while losing the E2EE media key. The current partial remediation also has two idempotency gaps: a redelivery with a changed CDN URL can create a second attachment instead of enriching the existing row, and an incomplete redelivery can remove previously persisted encryption metadata through an RFC 7396 null patch. The UI then keeps selecting an unresolved attachment and cannot render the image. A second live-data failure mode is a valid but low-resolution protobuf thumbnail (for example 100×43) being treated as the final image even though the encrypted 1600×702 payload and key remain available.
 
 ## Requirements and Acceptance Criteria
 
@@ -57,6 +57,13 @@ WhatsApp image messages may retain only an encrypted CDN path while losing the E
 - Zalo image rendering and existing conversation attachment behavior remain unchanged.
 - The final diff and GitNexus affected flows must match the requirement matrix.
 - Evidence: targeted Zalo/conversation tests, full conversation test suite, `git diff --check`, and final GitNexus change detection.
+
+### WA-MEDIA-007 — Progressive full-resolution upgrade
+
+- Render the small provider/staging thumbnail immediately so the message does not flash empty.
+- For encrypted WhatsApp media with a valid key, automatically resolve the full payload in the background and replace the thumbnail in place.
+- Prefer the original bounded local file for outbound attachments, recognize already-full cached data URLs by declared byte length, and persist `preview_resolved=true` after a successful upgrade.
+- Evidence: live DB dimension/size audit plus backend and Svelte tests that start with a low-resolution thumbnail and assert replacement by full media.
 
 ## Failure and Recovery Semantics
 

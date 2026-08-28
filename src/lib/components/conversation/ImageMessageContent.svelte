@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ConversationAttachment } from '$lib/services/conversationService';
   import { downloadConversationAttachment } from '$lib/services/conversationService';
-  import { safeConversationUrl, formatBytes } from './messageMedia';
+  import { safeConversationUrl, formatBytes, isEncryptedWhatsAppMediaUrl } from './messageMedia';
   import { ImageIcon, Expand, Loader2, ArrowDownToLine, AlertCircle } from 'lucide-svelte';
 
   let {
@@ -56,21 +56,20 @@
     return { code: null, message: 'Không thể tải ảnh' };
   }
 
-  function isEncryptedWhatsAppMediaUrl(value: string | null | undefined): boolean {
-    const normalized = value?.trim().toLowerCase() ?? '';
-    return (
-      normalized.includes('mmg.whatsapp.net') ||
-      normalized.startsWith('/o1/') ||
-      normalized.startsWith('/v/t62') ||
-      normalized.startsWith('/mms/')
-    );
-  }
-
   // WhatsApp CDN references contain encrypted bytes. Neither a full-media URL
   // nor a legacy thumbnail URL from that CDN is a browser-renderable image.
   let encryptedRemoteUrl = $derived(isEncryptedWhatsAppMediaUrl(attachment.remoteUrl));
   let encryptedThumbnailUrl = $derived(isEncryptedWhatsAppMediaUrl(attachment.thumbnailUrl));
   let isWhatsAppEncrypted = $derived(encryptedRemoteUrl || encryptedThumbnailUrl);
+
+  // Check if we need to download the full media payload.
+  // For WhatsApp attachments, if remoteUrl is an encrypted CDN URL and we don't have
+  // localResolvedUrl, the current displayUrl is only the low-res protobuf/staging thumbnail.
+  // localPath is intentionally not exposed to the webview; the backend resolves it safely.
+  let isFullMediaDownloaded = $derived(Boolean(localResolvedUrl));
+  let needsFullMediaDownload = $derived(
+    Boolean(encryptedRemoteUrl && !isFullMediaDownloaded)
+  );
 
   let displayUrl = $derived(
     localResolvedUrl ||
@@ -89,7 +88,7 @@
   );
 
   async function triggerDownload(openAfterDownload = false) {
-    if (displayUrl) {
+    if (isFullMediaDownloaded && displayUrl) {
       if (openAfterDownload) {
         onImageClick(displayUrl);
       }
@@ -101,8 +100,18 @@
       }
       return;
     }
-    if (!attachment.id) return;
-    if (downloadError && !isRetryable) return;
+    if (!attachment.id) {
+      if (openAfterDownload && displayUrl) {
+        onImageClick(displayUrl);
+      }
+      return;
+    }
+    if (downloadError && !isRetryable) {
+      if (openAfterDownload && displayUrl) {
+        onImageClick(displayUrl);
+      }
+      return;
+    }
 
     isDownloading = true;
     downloadError = null;
@@ -117,28 +126,43 @@
         if (openAfterDownload || pendingOpen) {
           onImageClick(updated.thumbnailUrl);
         }
-      } else {
-        downloadError = 'Không thể tải ảnh';
+      } else if (openAfterDownload || pendingOpen) {
+        if (displayUrl) {
+          onImageClick(displayUrl);
+        } else {
+          downloadError = 'Không thể tải ảnh';
+        }
       }
     } catch (error: unknown) {
       const normalizedError = normalizeDownloadError(error);
       downloadError = normalizedError.message;
       downloadErrorCode = normalizedError.code;
+      if ((openAfterDownload || pendingOpen) && displayUrl) {
+        onImageClick(displayUrl);
+      }
     } finally {
       isDownloading = false;
       pendingOpen = false;
     }
   }
 
-  // Automatically attempt download/preview resolution if no thumbnail yet
+  // Automatically attempt download/preview resolution if no thumbnail yet or if full resolution is pending
   $effect(() => {
-    if (!displayUrl && !isDownloading && !downloadError && attachment.id) {
+    if ((!displayUrl || needsFullMediaDownload) && !isDownloading && !downloadError && attachment.id) {
       triggerDownload(false);
     }
   });
 
   function handleImageError() {
     imageError = true;
+  }
+
+  function handleClick() {
+    if (needsFullMediaDownload && !isFullMediaDownloaded) {
+      triggerDownload(true);
+    } else if (displayUrl) {
+      onImageClick(displayUrl);
+    }
   }
 </script>
 
@@ -148,22 +172,33 @@
   <div
     class="image-message-content group relative cursor-pointer overflow-hidden rounded-xl border border-border/30 bg-muted/20 shadow-sm transition-all duration-200 hover:border-border/60 hover:shadow-md"
     data-testid="image-message-content"
-    onclick={() => displayUrl && onImageClick(displayUrl)}
+    onclick={handleClick}
   >
     <img
       src={displayUrl}
       alt={attachment.fileName ?? 'Image'}
       loading="lazy"
       onerror={handleImageError}
-      class="message-image block max-h-[280px] max-w-[280px] rounded-xl object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+      class="message-image block min-w-[180px] min-h-[120px] max-h-[300px] max-w-[320px] w-auto h-auto rounded-xl object-contain bg-black/5 dark:bg-white/5 transition-transform duration-200 group-hover:scale-[1.02]"
     />
-    <div
-      class="absolute inset-0 flex items-center justify-center bg-black/25 opacity-0 backdrop-blur-[1px] transition-opacity duration-200 group-hover:opacity-100"
-    >
-      <div class="flex size-9 items-center justify-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur-sm">
-        <Expand class="size-4" />
+    {#if isDownloading}
+      <div
+        class="absolute inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[1px]"
+      >
+        <div class="flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1 text-xs text-white shadow-lg backdrop-blur-sm">
+          <Loader2 class="size-3.5 animate-spin" />
+          <span>Đang tải HD...</span>
+        </div>
       </div>
-    </div>
+    {:else}
+      <div
+        class="absolute inset-0 flex items-center justify-center bg-black/25 opacity-0 backdrop-blur-[1px] transition-opacity duration-200 group-hover:opacity-100"
+      >
+        <div class="flex size-9 items-center justify-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur-sm">
+          <Expand class="size-4" />
+        </div>
+      </div>
+    {/if}
   </div>
 {:else}
   <!-- svelte-ignore a11y_click_events_have_key_events -->

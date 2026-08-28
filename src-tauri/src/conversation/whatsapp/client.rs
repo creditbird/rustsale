@@ -149,6 +149,7 @@ pub trait WhatsAppClient: Send + Sync {
         target_message_id: &str,
         target_sender_jid: Option<&str>,
         emoji: &str,
+        is_from_me: bool,
     ) -> Result<()>;
 
     /// Downloads and decrypts a media attachment from WhatsApp CDN.
@@ -388,6 +389,7 @@ impl WhatsAppClient for RealWhatsAppClient {
         target_message_id: &str,
         target_sender_jid: Option<&str>,
         emoji: &str,
+        is_from_me: bool,
     ) -> Result<()> {
         let chat: whatsapp_rust::Jid = chat_jid
             .parse()
@@ -395,7 +397,7 @@ impl WhatsAppClient for RealWhatsAppClient {
 
         let key = whatsapp_rust::prelude::wa::MessageKey {
             remote_jid: Some(chat.to_string()),
-            from_me: Some(false),
+            from_me: Some(is_from_me),
             id: Some(target_message_id.to_string()),
             participant: target_sender_jid.map(str::to_string),
         };
@@ -498,6 +500,7 @@ pub struct MockSentReaction {
     pub target_message_id: String,
     pub target_sender_jid: Option<String>,
     pub emoji: String,
+    pub is_from_me: bool,
 }
 
 /// Deterministic mock implementation of `WhatsAppClient` for testing.
@@ -660,12 +663,14 @@ impl WhatsAppClient for MockWhatsAppClient {
         target_message_id: &str,
         target_sender_jid: Option<&str>,
         emoji: &str,
+        is_from_me: bool,
     ) -> Result<()> {
         self.sent_reactions.lock().unwrap().push(MockSentReaction {
             chat_jid: chat_jid.to_string(),
             target_message_id: target_message_id.to_string(),
             target_sender_jid: target_sender_jid.map(str::to_string),
             emoji: emoji.to_string(),
+            is_from_me,
         });
 
         if let Some(res) = self.next_reaction_result.lock().unwrap().take() {

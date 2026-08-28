@@ -2469,7 +2469,8 @@ async fn download_conversation_attachment_command_flow() {
             message_id, attachment_type, file_name, mime_type, size_bytes,
             remote_url, thumbnail_url, metadata_json, created_at
          ) VALUES (?1, 'image', 'photo_enc.jpg', 'image/jpeg', 12345,
-                   'https://mmg.whatsapp.net/v/photo_enc.jpg', NULL, ?2, ?3)",
+                   'https://mmg.whatsapp.net/v/photo_enc.jpg',
+                   'data:image/jpeg;base64,TE9X', ?2, ?3)",
         rusqlite::params![msg_id, meta_json, now],
     )
     .unwrap();
@@ -2484,8 +2485,22 @@ async fn download_conversation_attachment_command_flow() {
         .as_ref()
         .unwrap()
         .starts_with("data:image/"));
+    assert_ne!(
+        res_enc.thumbnail_url.as_deref(),
+        Some("data:image/jpeg;base64,TE9X"),
+        "an encrypted WhatsApp attachment must upgrade its low-resolution thumbnail"
+    );
     assert_eq!(res_enc.width, Some(1024));
     assert_eq!(res_enc.height, Some(768));
+    let resolved_metadata: String = conn
+        .query_row(
+            "SELECT metadata_json FROM message_attachments WHERE id = ?1",
+            [enc_att_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let resolved_metadata: serde_json::Value = serde_json::from_str(&resolved_metadata).unwrap();
+    assert_eq!(resolved_metadata["preview_resolved"], true);
 
     // 3b. An expired CDN reference follows the WhatsApp Web media-retry flow,
     // persists the refreshed direct path, then retries the download once.
@@ -2651,7 +2666,7 @@ async fn download_conversation_attachment_command_flow() {
             message_id, attachment_type, file_name, mime_type, size_bytes,
             local_path, remote_url, thumbnail_url, metadata_json, created_at
          ) VALUES (?1, 'image', 'outbound_local.png', 'image/png', ?2,
-                   ?3, NULL, NULL, '{}', ?4)",
+                   ?3, NULL, 'data:image/jpeg;base64,TE9X', '{}', ?4)",
         rusqlite::params![msg_id, png_bytes.len() as i64, temp_path_str, now],
     )
     .unwrap();
@@ -2666,6 +2681,11 @@ async fn download_conversation_attachment_command_flow() {
         .as_ref()
         .unwrap()
         .starts_with("data:image/png;base64,"));
+    assert_ne!(
+        res_local.thumbnail_url.as_deref(),
+        Some("data:image/jpeg;base64,TE9X"),
+        "the full outbound local image must replace the staging thumbnail"
+    );
 
     // Verify thumbnail_url was saved in DB
     let saved_thumb: Option<String> = conn
