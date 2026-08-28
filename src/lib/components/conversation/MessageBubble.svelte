@@ -21,6 +21,7 @@
   let {
     message,
     isGroup = false,
+    conversationTitle = '',
     showStatus = true,
     capabilities,
     pendingReactions = [],
@@ -35,6 +36,7 @@
   }: {
     message: ConversationMessage;
     isGroup?: boolean;
+    conversationTitle?: string;
     showStatus?: boolean;
     capabilities?: ConversationCapabilities;
     pendingReactions?: ConversationReactionCode[];
@@ -179,6 +181,136 @@
     !isRemoved && (message.actions?.forward ?? capabilities?.forward.enabled ?? true)
   );
 
+  const SENDER_COLORS = [
+    '#00a884', // Emerald / WA Green
+    '#1f7aec', // Blue
+    '#e542a3', // Pink / Magenta
+    '#dfa600', // Amber / Gold
+    '#f15c27', // Orange
+    '#a633d6', // Purple
+    '#029046', // Dark Green
+    '#0070e0', // Sky Blue
+    '#d32f2f', // Crimson
+    '#00897b', // Teal
+  ];
+
+  function getSenderColor(seed: string | number | null | undefined): string {
+    if (!seed) return SENDER_COLORS[0];
+    const str = String(seed);
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash << 5) - hash + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return SENDER_COLORS[Math.abs(hash) % SENDER_COLORS.length];
+  }
+
+  function getInitials(name: string | null | undefined): string {
+    if (!name) return '?';
+    const clean = name.replace(/^[~+]/, '').trim();
+    if (!clean) return '?';
+    if (/^\d/.test(clean)) {
+      return '#';
+    }
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return clean.slice(0, 1).toUpperCase();
+  }
+
+  function formatSenderPhone(externalId: string | null | undefined): string | null {
+    if (!externalId) return null;
+    const digits = externalId.replace(/\D/g, '');
+    if (!digits) return null;
+    if (digits.length >= 14 && digits.startsWith('12036')) {
+      // WhatsApp internal LID - not a phone number
+      return null;
+    }
+    if (digits.startsWith('84') && digits.length >= 10 && digits.length <= 12) {
+      return `+84 ${digits.slice(2, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`;
+    }
+    if (digits.startsWith('44') && digits.length >= 11 && digits.length <= 13) {
+      return `+44 ${digits.slice(2, 6)} ${digits.slice(6)}`;
+    }
+    if (digits.startsWith('351') && digits.length >= 11 && digits.length <= 13) {
+      return `+351 ${digits.slice(3, 6)} ${digits.slice(6, 9)} ${digits.slice(9)}`;
+    }
+    if (digits.startsWith('60') && digits.length >= 10 && digits.length <= 12) {
+      return `+60 ${digits.slice(2, 4)}-${digits.slice(4, 7)} ${digits.slice(7)}`;
+    }
+    if (digits.startsWith('1') && digits.length === 11) {
+      return `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+    }
+    if (digits.length <= 15) {
+      return `+${digits}`;
+    }
+    return null;
+  }
+
+  // 1. Is this a real human name (not phone, not group title, not LID, not "Member")?
+  let resolvedHumanName = $derived.by(() => {
+    if (!message.senderDisplayName?.trim()) return null;
+    const trimmed = message.senderDisplayName.trim();
+    const lower = trimmed.toLowerCase();
+    const isGroupTitle =
+      conversationTitle &&
+      (lower === conversationTitle.trim().toLowerCase() ||
+        trimmed === conversationTitle.trim());
+    if (
+      !trimmed.startsWith('+12036') &&
+      !trimmed.startsWith('12036') &&
+      lower !== 'member' &&
+      lower !== 'whatsapp group' &&
+      !isGroupTitle &&
+      !trimmed.startsWith('+') &&
+      !/^\d+$/.test(trimmed.replace(/\s+/g, ''))
+    ) {
+      return trimmed.replace(/^~\s*/, '').trim();
+    }
+    return null;
+  });
+
+  // 2. Formatted phone number from senderExternalId or senderDisplayName (if phone)
+  let resolvedPhoneNumber = $derived.by(() => {
+    if (message.senderExternalId?.trim()) {
+      const phone = formatSenderPhone(message.senderExternalId);
+      if (phone) return phone;
+    }
+    if (message.senderDisplayName?.trim()) {
+      const phone = formatSenderPhone(message.senderDisplayName);
+      if (phone) return phone;
+    }
+    return null;
+  });
+
+  // 3. Main display label: HumanName OR FormattedPhone OR 'Member'
+  let senderDisplayLabel = $derived.by(() => {
+    if (resolvedHumanName) {
+      return resolvedHumanName;
+    }
+    if (resolvedPhoneNumber) {
+      return resolvedPhoneNumber;
+    }
+    return 'Member';
+  });
+
+  // 4. Secondary phone to display on the right side: only if human name is displayed
+  let secondaryPhoneDisplay = $derived.by(() => {
+    if (resolvedHumanName && resolvedPhoneNumber) {
+      return resolvedPhoneNumber;
+    }
+    return null;
+  });
+
+  let senderDisplayNameResolved = $derived.by(() => {
+    return resolvedHumanName || resolvedPhoneNumber || 'Member';
+  });
+
+  let senderColor = $derived(
+    getSenderColor(message.senderIdentityId || message.senderExternalId || message.senderDisplayName)
+  );
+
   let displayReactions = $derived.by(() => {
     if (optimisticPickerIncrements.size === 0) return message.reactions;
 
@@ -207,16 +339,9 @@
     return mergedGroups;
   });
 
-  let activeReactionCodes = $derived.by(() => {
-    const codes: ConversationReactionCode[] = [];
-    for (const group of displayReactions) {
-      if (group.includesMe) {
-        const code = reactionIconToCode(group.reactionIcon);
-        if (code !== null && !codes.includes(code)) codes.push(code);
-      }
-    }
-    return codes;
-  });
+  let activeReactionCodes = $derived(
+    displayReactions.filter((g) => g.includesMe).map((g) => reactionIconToCode(g.reactionIcon)!)
+  );
 
   async function handleCopy(): Promise<void> {
     if (!copyValue || !navigator.clipboard?.writeText) return;
@@ -236,7 +361,7 @@
     };
   }
 
-  function handleSelectReaction(code: ConversationReactionCode, action: 'increment' | 'remove') {
+  function handleSelectReaction(code: ConversationReactionCode, action: 'increment' | 'remove' = 'increment') {
     showPicker = false;
     if (action === 'remove') {
       void onToggleReaction(message, code, action);
@@ -263,7 +388,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="group/bubble flex w-full my-1.5 {isOutbound ? 'justify-end' : 'justify-start'}"
+  class="group/bubble flex w-full my-1.5 items-end gap-2 {isOutbound ? 'justify-end' : 'justify-start'}"
   data-message-id={message.id}
   role="group"
   aria-label={`Message ${message.id}`}
@@ -273,6 +398,38 @@
     isHovered = false;
   }}
 >
+  {#if !isOutbound && isGroup}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="shrink-0 mb-1 cursor-pointer select-none"
+      title={senderDisplayNameResolved}
+      onclick={(e) => {
+        e.stopPropagation();
+        onUserClick({
+          identityId: message.senderIdentityId,
+          displayName: senderDisplayNameResolved,
+          externalId: message.senderExternalId || undefined,
+          targetEl: e.currentTarget as HTMLElement
+        });
+      }}
+    >
+      {#if message.senderAvatarUrl}
+        <img
+          src={message.senderAvatarUrl}
+          alt={senderDisplayNameResolved}
+          class="size-7 rounded-full object-cover shadow-xs border border-border/40"
+        />
+      {:else}
+        <div
+          class="size-7 rounded-full flex items-center justify-center text-[10.5px] font-bold text-white shadow-xs"
+          style="background-color: {senderColor}"
+        >
+          {getInitials(senderDisplayNameResolved)}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   <div
     class="relative max-w-[82%] sm:max-w-[72%] rounded-2xl px-3.5 py-2.5 transition-colors text-[13.5px] leading-relaxed font-sans space-y-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] {isOutbound
       ? 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#111b21] dark:text-[#e9edef] border border-[#b7e4b1]/60 dark:border-[#005c4b]/80 rounded-tr-xs font-normal'
@@ -280,8 +437,40 @@
   >
     <!-- Header info: Sender name / Channel / Account -->
     <div class="flex items-start justify-between gap-2">
-      <div class="flex items-center gap-2 text-xs opacity-90 font-medium flex-wrap">
-        {#if !isOutbound && (isGroup || message.senderDisplayName) && message.senderDisplayName !== message.accountDisplayName}
+      <div class="flex-1 min-w-0 flex items-center gap-2 text-xs opacity-90 font-medium flex-wrap">
+        {#if !isOutbound && isGroup}
+          <div class="flex-1 min-w-0 flex items-center justify-between gap-3 text-xs mb-0.5">
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span
+              class="font-bold text-[12.5px] cursor-pointer hover:underline select-none truncate"
+              style="color: {senderColor}"
+              data-slot="sender-name"
+              onclick={(e) => {
+                e.stopPropagation();
+                onUserClick({
+                  identityId: message.senderIdentityId,
+                  displayName: senderDisplayNameResolved,
+                  externalId: message.senderExternalId || undefined,
+                  targetEl: e.currentTarget as HTMLElement
+                });
+              }}
+            >
+              {#if resolvedHumanName}
+                {resolvedHumanName}
+              {:else if resolvedPhoneNumber}
+                {resolvedPhoneNumber}
+              {:else}
+                Member
+              {/if}
+            </span>
+            {#if secondaryPhoneDisplay}
+              <span class="text-[11px] text-muted-foreground/75 font-normal shrink-0">
+                {secondaryPhoneDisplay}
+              </span>
+            {/if}
+          </div>
+        {:else if !isOutbound && (message.senderDisplayName) && message.senderDisplayName !== message.accountDisplayName}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <span
@@ -291,17 +480,17 @@
               e.stopPropagation();
               onUserClick({
                 identityId: message.senderIdentityId,
-                displayName: message.senderDisplayName,
+                displayName: message.senderDisplayName ? message.senderDisplayName.replace(/^~+\s*/, '') : '',
                 externalId: message.senderExternalId || undefined,
                 targetEl: e.currentTarget as HTMLElement
               });
             }}
           >
-            {message.senderDisplayName}
+            {message.senderDisplayName.replace(/^~+\s*/, '')}
           </span>
         {/if}
 
-        {#if message.channel}
+        {#if message.channel && !isGroup}
           {@const ch = message.channel.toLowerCase()}
           <span class={ch === 'zalo'
             ? 'px-1.5 py-0.5 rounded-md bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-400/30 text-[10px] uppercase tracking-wider font-bold'
@@ -314,7 +503,7 @@
           </span>
         {/if}
 
-        {#if message.accountDisplayName}
+        {#if message.accountDisplayName && !isGroup}
           <span class="truncate max-w-[150px] opacity-75" title={message.accountDisplayName}>
             {message.accountDisplayName}
           </span>
@@ -412,7 +601,7 @@
       </div>
     {:else}
       {#if message.replyTarget}
-        <MessageReplyPreview replyTarget={message.replyTarget} />
+        <MessageReplyPreview replyTarget={message.replyTarget} onClick={() => onReply(message)} />
       {/if}
       <MessageContentRenderer
         {message}

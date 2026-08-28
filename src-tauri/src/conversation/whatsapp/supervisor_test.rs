@@ -246,7 +246,11 @@ async fn test_supervisor_load_active_sessions_preserves_connected_client() {
     let conn = open_db_connection(&db_path).unwrap();
     let events = Arc::new(ConversationEventPublisher::new(100));
     let sessions_dir = _dir.path().join("wa_sessions");
-    let supervisor = Arc::new(WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events));
+    let supervisor = Arc::new(WhatsAppSupervisor::new(
+        db_path.clone(),
+        sessions_dir,
+        events,
+    ));
 
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -292,7 +296,11 @@ async fn test_supervisor_notify_outbox_drains_immediately() {
     ));
 
     let sessions_dir = _dir.path().join("wa_sessions");
-    let supervisor = Arc::new(WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events));
+    let supervisor = Arc::new(WhatsAppSupervisor::new(
+        db_path.clone(),
+        sessions_dir,
+        events,
+    ));
     supervisor.with_service(service);
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -315,7 +323,8 @@ async fn test_supervisor_notify_outbox_drains_immediately() {
          (id, channel_account_id, external_thread_id, kind, created_at, updated_at)
          VALUES (10, 1, '84902222222@s.whatsapp.net', 'direct', ?1, ?1)",
         rusqlite::params![now],
-    ).unwrap();
+    )
+    .unwrap();
 
     conn.execute(
         "INSERT INTO messages 
@@ -364,7 +373,10 @@ async fn test_supervisor_notify_outbox_drains_immediately() {
     supervisor.stop();
     let _ = loop_handle.await;
 
-    assert!(drained, "Outbox job was not drained immediately upon notify_outbox");
+    assert!(
+        drained,
+        "Outbox job was not drained immediately upon notify_outbox"
+    );
     let sent_msgs = mock_client.get_sent_messages();
     assert_eq!(sent_msgs.len(), 1);
     assert_eq!(sent_msgs[0].recipient_jid, "84902222222@s.whatsapp.net");

@@ -54,6 +54,8 @@ pub struct RawWhatsAppMessage {
     pub attachments: Vec<RawWhatsAppAttachment>,
     pub quote: Option<RawWhatsAppQuote>,
     pub raw_json: Option<serde_json::Value>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -550,7 +552,7 @@ impl WhatsAppNormalizer {
             (
                 ConversationKind::Group,
                 msg.chat_jid.trim().to_string(),
-                msg.sender_name.clone(),
+                None,
             )
         } else {
             let peer_phone = phone::jid_to_phone(&msg.chat_jid)
@@ -567,17 +569,36 @@ impl WhatsAppNormalizer {
         };
 
         let participant = if !msg.is_from_me {
-            let sender_jid = msg.sender_jid.as_deref().unwrap_or(msg.chat_jid.as_str());
-            let sender_phone = phone::jid_to_phone(sender_jid)
-                .or_else(|| phone::normalize_e164(sender_jid, Some("84")));
-            let ext_id = sender_phone.unwrap_or_else(|| sender_jid.to_string());
-            Some(NormalizedIdentity {
-                identity_namespace: "phone".to_string(),
-                external_id: ext_id,
-                display_name: msg.sender_name.clone(),
-                avatar_url: None,
-                lead_id: None,
-            })
+            let sender_jid = if is_group {
+                msg.sender_jid
+                    .as_deref()
+                    .filter(|s| !phone::is_group_jid(s))
+            } else {
+                msg.sender_jid
+                    .as_deref()
+                    .filter(|s| !phone::is_group_jid(s))
+                    .or_else(|| {
+                        if phone::is_group_jid(&msg.chat_jid) {
+                            None
+                        } else {
+                            Some(msg.chat_jid.as_str())
+                        }
+                    })
+            };
+            if let Some(s_jid) = sender_jid {
+                let sender_phone =
+                    phone::jid_to_phone(s_jid).or_else(|| phone::normalize_e164(s_jid, Some("84")));
+                let ext_id = sender_phone.unwrap_or_else(|| s_jid.to_string());
+                Some(NormalizedIdentity {
+                    identity_namespace: "phone".to_string(),
+                    external_id: ext_id,
+                    display_name: msg.sender_name.clone(),
+                    avatar_url: None,
+                    lead_id: None,
+                })
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -705,9 +726,7 @@ impl WhatsAppNormalizer {
             (
                 msg.chat_jid.trim().to_string(),
                 "group",
-                msg.sender_name
-                    .clone()
-                    .unwrap_or_else(|| "WhatsApp Group".to_string()),
+                "WhatsApp Group".to_string(),
             )
         } else {
             let peer_phone = phone::resolve_lid_or_jid_to_phone(&tx, &msg.chat_jid)
@@ -855,8 +874,22 @@ impl WhatsAppNormalizer {
             }
         } else if let Some(ref sender_jid) = msg.sender_jid {
             if !msg.is_from_me {
+                let is_lid = phone::is_lid_jid(sender_jid);
                 let sender_phone = phone::resolve_lid_or_jid_to_phone(&tx, sender_jid)
-                    .or_else(|| phone::normalize_e164(sender_jid, Some("84")));
+                    .or_else(|| {
+                        if !is_lid {
+                            phone::jid_to_phone(sender_jid)
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| {
+                        if !is_lid {
+                            phone::normalize_e164(sender_jid, Some("84"))
+                        } else {
+                            None
+                        }
+                    });
                 let ext_id = sender_phone.clone().unwrap_or_else(|| sender_jid.clone());
 
                 let lead_id = sender_phone
@@ -868,10 +901,18 @@ impl WhatsAppNormalizer {
                     "unlinked"
                 };
 
-                let display_name = msg
-                    .sender_name
-                    .clone()
-                    .unwrap_or_else(|| format!("+{}", ext_id));
+                let is_valid_name = msg.sender_name.as_ref().map_or(false, |n| {
+                    let t = n.trim();
+                    !t.is_empty() && !t.starts_with("12036") && !t.starts_with("+12036")
+                });
+
+                let display_name = if is_valid_name {
+                    msg.sender_name.clone().unwrap()
+                } else if let Some(ref p) = sender_phone {
+                    format!("+{}", p)
+                } else {
+                    "Member".to_string()
+                };
 
                 tx.execute(
                     "INSERT INTO channel_identities (
@@ -882,8 +923,19 @@ impl WhatsAppNormalizer {
                         ?4, ?5, ?6, ?7, ?7
                     )
                     ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) WHERE channel_account_id IS NOT NULL DO UPDATE SET
-                        lead_id = EXCLUDED.lead_id,
-                        display_name = COALESCE(EXCLUDED.display_name, channel_identities.display_name),
+                        lead_id = COALESCE(EXCLUDED.lead_id, channel_identities.lead_id),
+                        display_name = CASE
+                            WHEN EXCLUDED.display_name != 'Member'
+                             AND EXCLUDED.display_name NOT LIKE '+12036%'
+                             AND EXCLUDED.display_name NOT LIKE '12036%'
+                            THEN EXCLUDED.display_name
+                            WHEN channel_identities.display_name IS NOT NULL
+                             AND channel_identities.display_name != 'Member'
+                             AND channel_identities.display_name NOT LIKE '+12036%'
+                             AND channel_identities.display_name NOT LIKE '12036%'
+                            THEN channel_identities.display_name
+                            ELSE EXCLUDED.display_name
+                        END,
                         link_source = EXCLUDED.link_source,
                         updated_at = EXCLUDED.updated_at",
                     params![
@@ -964,6 +1016,26 @@ impl WhatsAppNormalizer {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+
+        // Handle revoke/deleted message
+        if msg
+            .raw_json
+            .as_ref()
+            .and_then(|v| v.get("is_revoke"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            tx.execute(
+                "UPDATE messages
+                 SET status = 'removed',
+                     removed_at = COALESCE(removed_at, ?2),
+                     text_content = 'This message was deleted'
+                 WHERE conversation_id = ?1 AND provider_message_id = ?3",
+                params![conversation_id, now_str, msg.id],
+            )?;
+            tx.commit()?;
+            return Ok(Some(conversation_id));
+        }
 
         let _message_id = match existing_message {
             Some((mid, existing_raw_payload)) => {
@@ -1062,6 +1134,62 @@ impl WhatsAppNormalizer {
             }
         };
 
+        // Ingest mentions into message_mentions table
+        if let Some(ref text) = msg.text {
+            for mentioned_jid in &msg.mentions {
+                let m_phone = phone::resolve_lid_or_jid_to_phone(&tx, mentioned_jid)
+                    .or_else(|| phone::jid_to_phone(mentioned_jid))
+                    .unwrap_or_else(|| mentioned_jid.trim().to_string());
+                let clean_digits: String = m_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+
+                let (target_id, display_name): (Option<i64>, Option<String>) = tx
+                    .query_row(
+                        "SELECT id, display_name FROM channel_identities
+                         WHERE channel = 'whatsapp' AND channel_account_id = ?1 AND (external_id = ?2 OR external_id = ?3)",
+                        params![channel_account_id, m_phone, clean_digits],
+                        |r| Ok((Some(r.get(0)?), r.get(1)?)),
+                    )
+                    .optional()?
+                    .unwrap_or((None, None));
+
+                let name_tag = display_name.unwrap_or_else(|| format!("+{}", clean_digits));
+                let display_text = if name_tag.starts_with('~') || name_tag.starts_with('+') {
+                    format!("@{}", name_tag)
+                } else {
+                    format!("@~{}", name_tag)
+                };
+
+                let jid_user = phone::extract_lid_user(mentioned_jid)
+                    .or_else(|| phone::jid_to_phone(mentioned_jid))
+                    .unwrap_or_else(|| clean_digits.clone());
+
+                let patterns = [
+                    format!("@{}", jid_user),
+                    format!("@{}", clean_digits),
+                    format!("@{}", m_phone),
+                ];
+
+                for pattern in &patterns {
+                    if let Some(idx) = text.find(pattern) {
+                        let start_utf16 = text[..idx].encode_utf16().count();
+                        let length_utf16 = pattern.encode_utf16().count();
+
+                        let _ = tx.execute(
+                            "INSERT INTO message_mentions (
+                                message_id, identity_id, external_id, display_text, start_utf16, length_utf16, created_at
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                            ON CONFLICT(message_id, start_utf16, length_utf16) DO UPDATE SET
+                                identity_id = COALESCE(EXCLUDED.identity_id, message_mentions.identity_id),
+                                external_id = EXCLUDED.external_id,
+                                display_text = EXCLUDED.display_text",
+                            params![_message_id, target_id, clean_digits, display_text, start_utf16 as i64, length_utf16 as i64, now_str],
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
         tx.commit()?;
         Ok(Some(conversation_id))
     }
@@ -1096,11 +1224,13 @@ impl WhatsAppNormalizer {
                 .optional()?
                 .flatten();
             self_phone.unwrap_or_else(|| {
-                phone::jid_to_phone(&reaction.sender_jid)
+                phone::resolve_lid_or_jid_to_phone(&tx, &reaction.sender_jid)
+                    .or_else(|| phone::jid_to_phone(&reaction.sender_jid))
                     .unwrap_or_else(|| reaction.sender_jid.trim().to_string())
             })
         } else {
-            phone::jid_to_phone(&reaction.sender_jid)
+            phone::resolve_lid_or_jid_to_phone(&tx, &reaction.sender_jid)
+                .or_else(|| phone::jid_to_phone(&reaction.sender_jid))
                 .unwrap_or_else(|| reaction.sender_jid.trim().to_string())
         };
 
@@ -1429,6 +1559,7 @@ impl WhatsAppNormalizer {
         push_name: Option<&str>,
         chat_jid: &str,
         conv_title: Option<&str>,
+        participant_override: Option<&str>,
     ) -> Option<RawWhatsAppMessage> {
         let id = key.id.clone().unwrap_or_default();
         if id.is_empty() {
@@ -1436,15 +1567,65 @@ impl WhatsAppNormalizer {
         }
 
         let is_from_me = key.from_me.unwrap_or(false);
+        let is_group = phone::is_group_jid(chat_jid);
         let sender_jid = if is_from_me {
             None
+        } else if is_group {
+            participant_override
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty() && !phone::is_group_jid(p))
+                .or_else(|| {
+                    key.participant
+                        .clone()
+                        .filter(|p| !p.trim().is_empty() && !phone::is_group_jid(p))
+                })
         } else {
-            key.participant
-                .clone()
-                .or_else(|| Some(chat_jid.to_string()))
+            participant_override
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty() && !phone::is_group_jid(p))
+                .or_else(|| {
+                    key.participant
+                        .clone()
+                        .filter(|p| !p.trim().is_empty() && !phone::is_group_jid(p))
+                })
+                .or_else(|| {
+                    if phone::is_group_jid(chat_jid) {
+                        None
+                    } else {
+                        Some(chat_jid.to_string())
+                    }
+                })
         };
 
         let unwrapped = Self::unwrap_message(msg);
+
+        // Check for message revoke (deleted message)
+        if let Some(pm) = unwrapped.protocol_message.as_option() {
+            if pm.r#type
+                == Some(whatsapp_rust::prelude::wa::message::protocol_message::Type::REVOKE)
+            {
+                if let Some(target_key) = pm.key.as_option() {
+                    if let Some(target_id) = target_key.id.as_deref() {
+                        let iso_timestamp = timestamp_secs.and_then(|secs| {
+                            DateTime::from_timestamp(secs as i64, 0).map(|dt| dt.to_rfc3339())
+                        });
+                        return Some(RawWhatsAppMessage {
+                            id: target_id.to_string(),
+                            chat_jid: chat_jid.to_string(),
+                            sender_jid,
+                            sender_name: None,
+                            text: Some("This message was deleted".to_string()),
+                            timestamp: iso_timestamp,
+                            is_from_me,
+                            attachments: vec![],
+                            quote: None,
+                            raw_json: Some(serde_json::json!({ "is_revoke": true })),
+                            mentions: vec![],
+                        });
+                    }
+                }
+            }
+        }
 
         let text = unwrapped
             .conversation
@@ -1757,32 +1938,65 @@ impl WhatsAppNormalizer {
                     .and_then(|stk| stk.context_info.as_option())
             });
 
+        let mentions = context_info
+            .map(|ctx_info| ctx_info.mentioned_jid.clone())
+            .unwrap_or_default();
+
         let quote = context_info.and_then(|ctx_info| {
             ctx_info.stanza_id.as_deref().map(|stanza_id| {
-                let quoted_text = ctx_info.quoted_message.as_option().and_then(|qm| {
-                    let qm_unwrapped = Self::unwrap_message(qm);
-                    qm_unwrapped
-                        .conversation
-                        .clone()
-                        .or_else(|| {
-                            qm_unwrapped
-                                .extended_text_message
-                                .as_option()
-                                .and_then(|e| e.text.clone())
-                        })
-                        .or_else(|| {
-                            qm_unwrapped
-                                .image_message
-                                .as_option()
-                                .and_then(|i| i.caption.clone())
-                        })
-                });
+                let (quoted_text, quoted_media_type) =
+                    if let Some(qm) = ctx_info.quoted_message.as_option() {
+                        let qm_unwrapped = Self::unwrap_message(qm);
+                        let text = qm_unwrapped
+                            .conversation
+                            .clone()
+                            .or_else(|| {
+                                qm_unwrapped
+                                    .extended_text_message
+                                    .as_option()
+                                    .and_then(|e| e.text.clone())
+                            })
+                            .or_else(|| {
+                                qm_unwrapped
+                                    .image_message
+                                    .as_option()
+                                    .and_then(|i| i.caption.clone())
+                            })
+                            .or_else(|| {
+                                qm_unwrapped
+                                    .video_message
+                                    .as_option()
+                                    .and_then(|v| v.caption.clone())
+                            })
+                            .or_else(|| {
+                                qm_unwrapped
+                                    .document_message
+                                    .as_option()
+                                    .and_then(|d| d.caption.clone().or(d.title.clone()))
+                            });
+                        let media_type = if qm_unwrapped.image_message.as_option().is_some() {
+                            Some("image".to_string())
+                        } else if qm_unwrapped.video_message.as_option().is_some() {
+                            Some("video".to_string())
+                        } else if qm_unwrapped.audio_message.as_option().is_some() {
+                            Some("audio".to_string())
+                        } else if qm_unwrapped.document_message.as_option().is_some() {
+                            Some("file".to_string())
+                        } else if qm_unwrapped.sticker_message.as_option().is_some() {
+                            Some("sticker".to_string())
+                        } else {
+                            None
+                        };
+                        (text, media_type)
+                    } else {
+                        (None, None)
+                    };
 
                 RawWhatsAppQuote {
                     stanza_id: stanza_id.to_string(),
                     participant_jid: ctx_info.participant.clone().unwrap_or_default(),
                     text: quoted_text,
-                    media_type: None,
+                    media_type: quoted_media_type,
                     timestamp: None,
                 }
             })
@@ -1796,9 +2010,13 @@ impl WhatsAppNormalizer {
         let iso_timestamp = timestamp_secs
             .and_then(|secs| DateTime::from_timestamp(secs as i64, 0).map(|dt| dt.to_rfc3339()));
 
-        let sender_name = push_name
-            .map(str::to_string)
-            .or_else(|| conv_title.map(str::to_string));
+        let sender_name = if is_group {
+            push_name.map(str::to_string)
+        } else {
+            push_name
+                .map(str::to_string)
+                .or_else(|| conv_title.map(str::to_string))
+        };
 
         Some(RawWhatsAppMessage {
             id,
@@ -1811,6 +2029,7 @@ impl WhatsAppNormalizer {
             attachments,
             quote,
             raw_json: None,
+            mentions,
         })
     }
 
@@ -1820,6 +2039,7 @@ impl WhatsAppNormalizer {
         key: &whatsapp_rust::prelude::wa::MessageKey,
         timestamp_secs: Option<u64>,
         chat_jid: &str,
+        participant_override: Option<&str>,
     ) -> Option<RawWhatsAppReaction> {
         let unwrapped = Self::unwrap_message(msg);
         if let Some(rm) = unwrapped.reaction_message.as_option() {
@@ -1828,12 +2048,35 @@ impl WhatsAppNormalizer {
                 return None;
             }
             let is_from_me = key.from_me.unwrap_or(false);
+            let is_group = phone::is_group_jid(chat_jid);
             let sender_jid = if is_from_me {
                 String::new()
+            } else if is_group {
+                participant_override
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty() && !phone::is_group_jid(p))
+                    .or_else(|| {
+                        key.participant
+                            .clone()
+                            .filter(|p| !p.trim().is_empty() && !phone::is_group_jid(p))
+                    })
+                    .unwrap_or_default()
             } else {
-                key.participant
-                    .clone()
-                    .unwrap_or_else(|| chat_jid.to_string())
+                participant_override
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty() && !phone::is_group_jid(p))
+                    .or_else(|| {
+                        key.participant
+                            .clone()
+                            .filter(|p| !p.trim().is_empty() && !phone::is_group_jid(p))
+                    })
+                    .unwrap_or_else(|| {
+                        if phone::is_group_jid(chat_jid) {
+                            String::new()
+                        } else {
+                            chat_jid.to_string()
+                        }
+                    })
             };
             let emoji = rm.text.clone().unwrap_or_default();
             let timestamp = rm
@@ -1859,5 +2102,328 @@ impl WhatsAppNormalizer {
             });
         }
         None
+    }
+
+    /// Ingests or synchronizes group metadata and all participants from `whatsapp_rust::GroupMetadata`.
+    pub fn sync_group_metadata(
+        conn: &mut Connection,
+        channel_account_id: i64,
+        group: &whatsapp_rust::GroupMetadata,
+    ) -> Result<i64> {
+        let tx = conn.transaction()?;
+        let now_str = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let external_thread_id = group.id.to_string();
+        let title = if group.subject.trim().is_empty() {
+            "WhatsApp Group".to_string()
+        } else {
+            group.subject.trim().to_string()
+        };
+
+        // Upsert channel_conversations
+        tx.execute(
+            "INSERT INTO channel_conversations (
+                channel_account_id, external_thread_id, kind, title, avatar_url, status, last_synced_at, created_at, updated_at
+            ) VALUES (?1, ?2, 'group', ?3, NULL, 'active', ?4, ?4, ?4)
+            ON CONFLICT(channel_account_id, external_thread_id, kind) DO UPDATE SET
+                title = CASE
+                    WHEN EXCLUDED.title != 'WhatsApp Group' THEN EXCLUDED.title
+                    ELSE channel_conversations.title
+                END,
+                last_synced_at = EXCLUDED.last_synced_at,
+                updated_at = EXCLUDED.updated_at",
+            params![channel_account_id, external_thread_id, title, now_str],
+        )?;
+
+        let conversation_id: i64 = tx.query_row(
+            "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = 'group'",
+            params![channel_account_id, external_thread_id],
+            |row| row.get(0),
+        )?;
+
+        let mut active_identity_ids = Vec::new();
+
+        for participant in &group.participants {
+            let part_jid_str = participant.jid.to_string();
+
+            // Save LID-PN mapping if phone_number is present
+            if let Some(ref lid) = participant.lid {
+                if let Some(ref pn) = participant.phone_number {
+                    let _ = phone::save_lid_pn_mapping(&tx, &lid.to_string(), pn.user.as_str());
+                }
+            }
+            if let Some(ref pn) = participant.phone_number {
+                if participant.jid.is_lid() || phone::is_lid_jid(&part_jid_str) {
+                    let _ = phone::save_lid_pn_mapping(&tx, &part_jid_str, pn.user.as_str());
+                }
+            }
+
+            let is_lid = phone::is_lid_jid(&part_jid_str) || participant.jid.is_lid();
+            let phone_opt = participant
+                .phone_number
+                .as_ref()
+                .map(|pn| pn.user.to_string())
+                .or_else(|| phone::resolve_lid_or_jid_to_phone(&tx, &part_jid_str))
+                .or_else(|| {
+                    if !is_lid {
+                        phone::jid_to_phone(&part_jid_str)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    if !is_lid {
+                        phone::normalize_e164(&part_jid_str, Some("84"))
+                    } else {
+                        None
+                    }
+                });
+
+            let ext_id = phone_opt.clone().unwrap_or_else(|| part_jid_str.clone());
+
+            let lead_id = phone_opt
+                .as_deref()
+                .and_then(|p| Self::resolve_lead_by_phone(&tx, p).ok().flatten());
+            let link_source = if lead_id.is_some() {
+                "phone_match"
+            } else {
+                "unlinked"
+            };
+
+            let server_name = participant
+                .details
+                .as_ref()
+                .and_then(|d| d.display_name.as_ref())
+                .map(|d| d.to_string())
+                .or_else(|| participant.username.as_ref().map(|u| u.to_string()));
+
+            let is_valid_name = server_name.as_ref().map_or(false, |n| {
+                let t = n.trim();
+                !t.is_empty() && !t.starts_with("12036") && !t.starts_with("+12036")
+            });
+
+            let display_name = if is_valid_name {
+                server_name.unwrap()
+            } else if let Some(ref p) = phone_opt {
+                format!("+{}", p)
+            } else {
+                "Member".to_string()
+            };
+
+            tx.execute(
+                "INSERT INTO channel_identities (
+                    lead_id, channel, channel_account_id, identity_namespace, external_id,
+                    normalized_address, display_name, link_source, created_at, updated_at
+                ) VALUES (
+                    ?1, 'whatsapp', ?2, 'phone', ?3,
+                    ?4, ?5, ?6, ?7, ?7
+                )
+                ON CONFLICT(channel, channel_account_id, identity_namespace, external_id) WHERE channel_account_id IS NOT NULL DO UPDATE SET
+                    lead_id = COALESCE(EXCLUDED.lead_id, channel_identities.lead_id),
+                    display_name = CASE
+                        WHEN EXCLUDED.display_name != 'Member'
+                         AND EXCLUDED.display_name NOT LIKE '+12036%'
+                         AND EXCLUDED.display_name NOT LIKE '12036%'
+                        THEN EXCLUDED.display_name
+                        WHEN channel_identities.display_name IS NOT NULL
+                         AND channel_identities.display_name != 'Member'
+                         AND channel_identities.display_name NOT LIKE '+12036%'
+                         AND channel_identities.display_name NOT LIKE '12036%'
+                        THEN channel_identities.display_name
+                        ELSE EXCLUDED.display_name
+                    END,
+                    link_source = CASE WHEN EXCLUDED.lead_id IS NOT NULL THEN 'phone_match' ELSE channel_identities.link_source END,
+                    updated_at = EXCLUDED.updated_at",
+                params![
+                    lead_id,
+                    channel_account_id,
+                    ext_id,
+                    ext_id,
+                    display_name,
+                    link_source,
+                    now_str
+                ],
+            )?;
+
+            let identity_id: i64 = tx.query_row(
+                "SELECT id FROM channel_identities
+                 WHERE channel = 'whatsapp' AND channel_account_id = ?1 AND identity_namespace = 'phone' AND external_id = ?2",
+                params![channel_account_id, ext_id],
+                |row| row.get(0),
+            )?;
+
+            active_identity_ids.push(identity_id);
+
+            let role_str = if participant.is_super_admin() {
+                "owner"
+            } else if participant.is_admin() {
+                "admin"
+            } else {
+                "member"
+            };
+
+            tx.execute(
+                "INSERT INTO conversation_participants (
+                    conversation_id, identity_id, participant_role, joined_at, left_at
+                ) VALUES (?1, ?2, ?3, ?4, NULL)
+                ON CONFLICT(conversation_id, identity_id) DO UPDATE SET
+                    participant_role = EXCLUDED.participant_role,
+                    left_at = NULL",
+                params![conversation_id, identity_id, role_str, now_str],
+            )?;
+
+            // Re-link historical messages from this participant in the group to their newly synced identity
+            if let Some(ref lid) = participant.lid {
+                let lid_str = lid.to_string();
+                let lid_user = phone::extract_lid_user(&lid_str).unwrap_or_else(|| lid_str.clone());
+                let _ = tx.execute(
+                    "UPDATE messages SET sender_identity_id = ?1
+                     WHERE conversation_id = ?2
+                       AND (
+                           json_extract(raw_payload_json, '$.sender_jid') LIKE ?3
+                           OR json_extract(raw_payload_json, '$.sender_jid') LIKE ?4
+                       )",
+                    params![
+                        identity_id,
+                        conversation_id,
+                        format!("%{}%", lid_user),
+                        format!("%{}%", lid_str)
+                    ],
+                );
+            }
+            if !part_jid_str.is_empty() {
+                let _ = tx.execute(
+                    "UPDATE messages SET sender_identity_id = ?1
+                     WHERE conversation_id = ?2
+                       AND json_extract(raw_payload_json, '$.sender_jid') LIKE ?3",
+                    params![identity_id, conversation_id, format!("%{}%", part_jid_str)],
+                );
+            }
+        }
+
+        // Mark removed participants if active list is known
+        if !active_identity_ids.is_empty() {
+            let placeholders = (0..active_identity_ids.len())
+                .map(|i| format!("?{}", i + 3))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query = format!(
+                "UPDATE conversation_participants
+                 SET left_at = ?1
+                 WHERE conversation_id = ?2 AND left_at IS NULL AND identity_id NOT IN ({placeholders})"
+            );
+            let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
+            params_vec.push(now_str.into());
+            params_vec.push(conversation_id.into());
+            for id in active_identity_ids {
+                params_vec.push(id.into());
+            }
+            tx.execute(&query, rusqlite::params_from_iter(params_vec.iter()))?;
+        }
+
+        tx.commit()?;
+        Ok(conversation_id)
+    }
+
+    /// Updates a participant's display name from USync verified name or contact lookup.
+    pub fn update_participant_verified_name(
+        conn: &mut Connection,
+        channel_account_id: i64,
+        jid_str: &str,
+        verified_name: &str,
+    ) -> Result<()> {
+        let name = verified_name.trim();
+        if name.is_empty()
+            || name.starts_with("12036")
+            || name.starts_with("+12036")
+            || name == "Member"
+            || name == "WhatsApp Group"
+        {
+            return Ok(());
+        }
+        let clean_phone = phone::resolve_lid_or_jid_to_phone(conn, jid_str)
+            .or_else(|| phone::jid_to_phone(jid_str))
+            .or_else(|| phone::normalize_e164(jid_str, Some("84")))
+            .unwrap_or_else(|| jid_str.chars().filter(|c| c.is_ascii_digit()).collect());
+
+        let now_str = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+
+        conn.execute(
+            "UPDATE channel_identities
+             SET display_name = ?1, updated_at = ?2
+             WHERE channel = 'whatsapp'
+               AND channel_account_id = ?3
+               AND (external_id = ?4 OR external_id = ?5 OR normalized_address = ?4 OR normalized_address = ?5)
+               AND (display_name IS NULL OR display_name = 'Member' OR display_name LIKE '+%' OR display_name LIKE '12036%')",
+            rusqlite::params![name, now_str, channel_account_id, jid_str, clean_phone],
+        )?;
+
+        Ok(())
+    }
+
+    /// Repairs historical messages in group chats where sender_identity_id was mistakenly linked to the group identity itself,
+    /// or where raw_payload_json stored the group JID as sender_jid.
+    /// Also re-links messages to their real participant identity if participant info is present in raw_payload_json.
+    pub fn repair_misattributed_group_senders(
+        conn: &mut Connection,
+        channel_account_id: i64,
+    ) -> Result<usize> {
+        let tx = conn.transaction()?;
+
+        // 1. Clear any raw_payload_json.sender_jid that was set to group JID (@g.us)
+        let _ = tx.execute(
+            "UPDATE messages
+             SET raw_payload_json = json_set(raw_payload_json, '$.sender_jid', NULL)
+             WHERE conversation_id IN (
+                 SELECT id FROM channel_conversations
+                 WHERE channel_account_id = ?1 AND kind = 'group'
+             )
+             AND json_extract(raw_payload_json, '$.sender_jid') LIKE '%@g.us'",
+            rusqlite::params![channel_account_id],
+        );
+
+        // 2. Set sender_identity_id = NULL for all group messages where sender_identity_id was mistakenly pointing to the group identity
+        let affected = tx.execute(
+            "UPDATE messages
+             SET sender_identity_id = NULL
+             WHERE conversation_id IN (
+                 SELECT id FROM channel_conversations
+                 WHERE channel_account_id = ?1 AND kind = 'group'
+             )
+             AND sender_identity_id IN (
+                 SELECT ci.id FROM channel_identities ci
+                 JOIN channel_conversations cc ON cc.external_thread_id = ci.external_id AND cc.channel_account_id = ci.channel_account_id
+                 WHERE ci.channel_account_id = ?1 AND cc.kind = 'group'
+             )",
+            rusqlite::params![channel_account_id],
+        )?;
+
+        // 3. Automatically re-link group messages that have a valid sender_jid (LID or Phone JID) in raw_payload_json
+        // to the matching participant's channel_identities row
+        let _ = tx.execute(
+            "UPDATE messages
+             SET sender_identity_id = (
+                 SELECT ci.id FROM channel_identities ci
+                 JOIN conversation_participants cp ON cp.identity_id = ci.id AND cp.conversation_id = messages.conversation_id
+                 WHERE ci.channel = 'whatsapp'
+                   AND ci.channel_account_id = ?1
+                   AND (
+                       ci.external_id = json_extract(messages.raw_payload_json, '$.sender_jid')
+                       OR ci.normalized_address = json_extract(messages.raw_payload_json, '$.sender_jid')
+                       OR json_extract(messages.raw_payload_json, '$.sender_jid') LIKE '%' || ci.external_id || '%'
+                   )
+                 LIMIT 1
+             )
+             WHERE conversation_id IN (
+                 SELECT id FROM channel_conversations
+                 WHERE channel_account_id = ?1 AND kind = 'group'
+             )
+             AND sender_identity_id IS NULL
+             AND json_extract(raw_payload_json, '$.sender_jid') IS NOT NULL
+             AND json_extract(raw_payload_json, '$.sender_jid') NOT LIKE '%@g.us'",
+            rusqlite::params![channel_account_id],
+        );
+
+        tx.commit()?;
+        Ok(affected)
     }
 }

@@ -530,4 +530,81 @@ describe('MessageBubble Component', () => {
     expect(screen.getByText('+84912345678')).toBeTruthy();
     expect(screen.getByText('I agree with this proposal')).toBeTruthy();
   });
+
+  test('renders WhatsApp group message with real sender name and phone number on the right', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 704,
+      channel: 'whatsapp',
+      senderDisplayName: 'Sadia Wajiha',
+      senderExternalId: '447503823686',
+      senderAvatarUrl: null,
+      textContent: 'Hi friends!'
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'AI Builders Tech Q&A'
+      }
+    });
+
+    expect(screen.getByText('Sadia Wajiha')).toBeTruthy();
+    expect(screen.queryByText(/~/)).toBeNull();
+    expect(screen.getByText('+44 7503 823686')).toBeTruthy();
+    expect(screen.getByText('SW')).toBeTruthy();
+  });
+
+  test('ignores group conversation title as sender name and falls back to phone number', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 705,
+      channel: 'whatsapp',
+      senderDisplayName: 'AI Builders Tech Q&A',
+      senderExternalId: '84978781822',
+      senderAvatarUrl: null,
+      textContent: 'Hi builders'
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'AI Builders Tech Q&A'
+      }
+    });
+
+    expect(screen.queryByText(/AI Builders Tech Q&A/)).toBeNull();
+    expect(screen.queryByText(/~/)).toBeNull();
+    expect(screen.getByText(/\+84 97 878/)).toBeTruthy();
+    expect(screen.getByText('#')).toBeTruthy();
+  });
+
+  test('renders Member without lone tilde when sender has no name and unmapped LID', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 706,
+      channel: 'whatsapp',
+      senderDisplayName: 'AI Builders Community',
+      senderExternalId: '120363422595125899',
+      senderAvatarUrl: null,
+      textContent: 'Nice one'
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'AI Builders Community'
+      }
+    });
+
+    // Must NOT render lone ~
+    expect(screen.queryByText(/~/)).toBeNull();
+    // Must render Member
+    expect(screen.getByText('Member')).toBeTruthy();
+    // Must render initials 'M'
+    expect(screen.getByText('M')).toBeTruthy();
+  });
 });

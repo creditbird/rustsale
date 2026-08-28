@@ -561,7 +561,8 @@ fn test_cleanup_corrupted_whatsapp_attachments_cleans_cdn_paths_and_preserves_lo
             "file_sha256": "sha123",
             "file_enc_sha256": "enc123"
         }]
-    }).to_string();
+    })
+    .to_string();
 
     conn.execute(
         "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, raw_payload_json, ingested_at, status)

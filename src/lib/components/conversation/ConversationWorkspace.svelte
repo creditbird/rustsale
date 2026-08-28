@@ -1444,7 +1444,17 @@
 
   function getParticipantsPreview(item: InboxItem): string {
     if (!item.participants || item.participants.length === 0) return '';
-    return item.participants.map((p) => p.displayName || 'Member').join(', ');
+    const names = item.participants
+      .map((p) => {
+        const name = p.displayName?.trim();
+        if (name && !name.startsWith('+12036') && !name.startsWith('12036')) {
+          return name;
+        }
+        return null;
+      })
+      .filter((n): n is string => Boolean(n));
+    if (names.length === 0) return '';
+    return names.slice(0, 5).join(', ');
   }
 </script>
 
@@ -1596,6 +1606,7 @@
           : 'No messages in this conversation'}
         onLoadOlder={handleLoadOlder}
         isGroup={selectedItem.kind === 'group'}
+        conversationTitle={selectedItem.title}
         {capabilitiesForMessage}
         pendingReactionsForMessage={(msgId) => mutationStateRef?.getPendingReactionCodes(msgId) ?? []}
         {pinnedMessageIds}

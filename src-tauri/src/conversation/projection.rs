@@ -3,7 +3,7 @@ use crate::conversation::types::{
     ConversationReactionActor, ConversationReactionGroup, ConversationReplyTarget,
     ConversationSendBatchSummary, MessageSendBatchStatus,
 };
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, OptionalExtension, Result};
 use std::collections::HashMap;
 
 type ReactionAggregate = (u32, bool, Vec<ConversationReactionActor>);
@@ -359,6 +359,75 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
                 msg.reply_target = Some(hydrated.clone());
             }
         }
+        if msg.reply_target.is_none() {
+            if let Ok(Some(row_json)) = conn.query_row(
+                "SELECT raw_payload_json FROM messages WHERE id = ?1",
+                [msg.id],
+                |r| r.get::<_, Option<String>>(0),
+            ) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&row_json) {
+                    if let Some(q) = val.get("quote") {
+                        let text = q.get("text").and_then(|t| t.as_str()).map(str::to_string);
+                        let participant_jid = q
+                            .get("participant_jid")
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("");
+                        let media_type = q
+                            .get("media_type")
+                            .and_then(|m| m.as_str())
+                            .map(str::to_string);
+
+                        let sender_name = if !participant_jid.is_empty() {
+                            let q_phone =
+                                crate::conversation::whatsapp::phone::resolve_lid_or_jid_to_phone(
+                                    conn,
+                                    participant_jid,
+                                )
+                                .or_else(|| {
+                                    crate::conversation::whatsapp::phone::jid_to_phone(
+                                        participant_jid,
+                                    )
+                                })
+                                .unwrap_or_else(|| participant_jid.to_string());
+                            let clean_digits: String =
+                                q_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                            let account_id_opt: Option<i64> = conn
+                                .query_row(
+                                    "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                                    [msg.conversation_id],
+                                    |r| r.get(0),
+                                )
+                                .optional()
+                                .unwrap_or(None);
+                            let name: Option<String> = conn
+                                .query_row(
+                                    "SELECT display_name FROM channel_identities WHERE channel = 'whatsapp' AND (?4 IS NULL OR channel_account_id = ?4) AND (external_id = ?1 OR external_id = ?2 OR external_id = ?3)",
+                                    rusqlite::params![participant_jid, q_phone, clean_digits, account_id_opt],
+                                    |r| r.get(0),
+                                )
+                                .optional()
+                                .unwrap_or(None);
+                            name.or_else(|| Some(format!("+{}", clean_digits)))
+                        } else {
+                            None
+                        };
+
+                        if text.is_some() || media_type.is_some() {
+                            msg.reply_target = Some(ConversationReplyTarget {
+                                message_id: None,
+                                sender_display_name: sender_name,
+                                content_type: media_type
+                                    .clone()
+                                    .unwrap_or_else(|| "text".to_string()),
+                                text_content: text,
+                                media_type,
+                                occurred_at: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         if let Some(reacts) = reactions_map.remove(&msg.id) {
             msg.reactions = reacts;
         }
@@ -367,6 +436,97 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
         }
         if let Some(mentions) = mentions_map.remove(&msg.id) {
             msg.mentions = mentions;
+        }
+
+        if msg.channel == crate::conversation::types::Channel::WhatsApp {
+            if msg.sender_external_id.is_none() {
+                if let Ok(raw_sender) = conn.query_row(
+                    "SELECT json_extract(raw_payload_json, '$.sender_jid') FROM messages WHERE id = ?1",
+                    [msg.id],
+                    |r| r.get::<_, Option<String>>(0),
+                ) {
+                    if let Some(s_jid) = raw_sender {
+                        msg.sender_external_id = Some(s_jid);
+                    }
+                }
+            }
+
+            if let Some(ref ext_id) = msg.sender_external_id {
+                if crate::conversation::whatsapp::phone::is_lid_jid(ext_id) {
+                    if let Some(lid_user) =
+                        crate::conversation::whatsapp::phone::extract_lid_user(ext_id)
+                    {
+                        if let Ok(phone) = conn.query_row(
+                            "SELECT phone_e164 FROM whatsapp_lid_pn_mappings WHERE lid = ?1 OR lid LIKE ?2",
+                            rusqlite::params![lid_user, format!("{}%", lid_user)],
+                            |r| r.get::<_, String>(0),
+                        ) {
+                            msg.sender_external_id = Some(phone);
+                        }
+                    }
+                }
+            }
+
+            let account_id_opt: Option<i64> = conn
+                .query_row(
+                    "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                    [msg.conversation_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+
+            if msg.sender_display_name.is_none()
+                || msg.sender_display_name.as_deref() == Some("Member")
+            {
+                if let Some(ref ext_id) = msg.sender_external_id {
+                    let clean_digits: String =
+                        ext_id.chars().filter(|c| c.is_ascii_digit()).collect();
+                    let name_opt: Option<String> = conn
+                        .query_row(
+                            "SELECT display_name FROM channel_identities
+                             WHERE channel = 'whatsapp'
+                               AND (?1 IS NULL OR channel_account_id = ?1)
+                               AND (external_id = ?2 OR external_id = ?3 OR normalized_address = ?2 OR normalized_address = ?3)
+                               AND display_name IS NOT NULL
+                               AND display_name != 'Member'
+                               AND display_name != 'WhatsApp Group'
+                               AND display_name NOT LIKE '12036%'
+                               AND display_name NOT LIKE '+12036%'
+                             LIMIT 1",
+                            rusqlite::params![account_id_opt, ext_id, clean_digits],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .unwrap_or(None);
+                    if let Some(name) = name_opt {
+                        msg.sender_display_name = Some(name);
+                    }
+                }
+            }
+
+            if msg.sender_avatar_url.is_none() {
+                if let Some(ref ext_id) = msg.sender_external_id {
+                    let clean_digits: String =
+                        ext_id.chars().filter(|c| c.is_ascii_digit()).collect();
+                    let avatar_opt: Option<String> = conn
+                        .query_row(
+                            "SELECT avatar_url FROM channel_identities
+                             WHERE channel = 'whatsapp'
+                               AND (?1 IS NULL OR channel_account_id = ?1)
+                               AND (external_id = ?2 OR external_id = ?3 OR normalized_address = ?2 OR normalized_address = ?3)
+                               AND avatar_url IS NOT NULL
+                             LIMIT 1",
+                            rusqlite::params![account_id_opt, ext_id, clean_digits],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .unwrap_or(None);
+                    if let Some(url) = avatar_opt {
+                        msg.sender_avatar_url = Some(url);
+                    }
+                }
+            }
         }
 
         let has_provider_ids = msg

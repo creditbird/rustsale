@@ -354,13 +354,7 @@ impl ReactionMutationRepository {
             )?;
 
             // In single-active mode (e.g. WhatsApp, Messenger), delete any prior reaction of this actor on this message
-            mark_reaction_removed(
-                &tx,
-                message_id,
-                self_external_id,
-                None,
-                occurred_at,
-            )?;
+            mark_reaction_removed(&tx, message_id, self_external_id, None, occurred_at)?;
 
             if active {
                 apply_reaction_increment(

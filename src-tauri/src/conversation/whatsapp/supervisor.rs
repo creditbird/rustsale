@@ -306,11 +306,13 @@ impl WhatsAppSupervisor {
                     if let Ok(mut conn) = rusqlite::Connection::open(&db_path) {
                         // Save sender_alt if present
                         if let Some(ref sender_alt) = ctx.info.source.sender_alt {
-                            let _ = super::phone::save_lid_pn_mapping(
-                                &conn,
-                                &ctx.info.source.sender.to_string(),
-                                &sender_alt.to_string(),
-                            );
+                            let sender_str = ctx.info.source.sender.to_string();
+                            let alt_str = sender_alt.to_string();
+                            if super::phone::is_lid_jid(&sender_str) {
+                                let _ = super::phone::save_lid_pn_mapping(&conn, &sender_str, &alt_str);
+                            } else if super::phone::is_lid_jid(&alt_str) {
+                                let _ = super::phone::save_lid_pn_mapping(&conn, &alt_str, &sender_str);
+                            }
                         }
 
                         let chat_jid = ctx.info.source.chat.to_string();
@@ -336,11 +338,18 @@ impl WhatsAppSupervisor {
                             Some(ctx.info.push_name.as_str())
                         };
 
+                        let sender_source_jid = if !ctx.info.source.sender.user.is_empty() {
+                            Some(ctx.info.source.sender.to_string())
+                        } else {
+                            None
+                        };
+
                         if let Some(reaction) = super::normalizer::WhatsAppNormalizer::extract_raw_reaction(
                             &ctx.message,
                             &key,
                             timestamp_secs,
                             &chat_jid,
+                            sender_source_jid.as_deref(),
                         ) {
                             if let Ok(()) = super::normalizer::WhatsAppNormalizer::ingest_reaction(
                                 &mut conn,
@@ -382,6 +391,7 @@ impl WhatsAppSupervisor {
                             push_name,
                             &chat_jid,
                             None,
+                            sender_source_jid.as_deref(),
                         ) {
                             if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
                                 &mut conn,
@@ -420,18 +430,67 @@ impl WhatsAppSupervisor {
             .on_event({
                 let db_path = self.db_path.clone();
                 let events = self.events.clone();
-                move |event, _client| {
+                move |event, client| {
                     let db_path = db_path.clone();
                     let events = events.clone();
                     async move {
-                        if let whatsapp_rust::types::events::Event::HistorySync(lazy_hs) = event.as_ref() {
+                        if let whatsapp_rust::types::events::Event::Connected(_) = event.as_ref() {
+                            if let Ok(mut conn) = rusqlite::Connection::open(&db_path) {
+                                let _ = super::normalizer::WhatsAppNormalizer::repair_misattributed_group_senders(
+                                    &mut conn,
+                                    account_id_val,
+                                );
+                                if let Ok(groups_map) = client.groups().get_participating().await {
+                                    for (_group_jid, group_meta) in &groups_map {
+                                        if let Ok(conv_id) = super::normalizer::WhatsAppNormalizer::sync_group_metadata(
+                                            &mut conn,
+                                            account_id_val,
+                                            group_meta,
+                                        ) {
+                                            events.publish(crate::conversation::events::ConversationInvalidatedEvent {
+                                                conversation_id: conv_id,
+                                                lead_id: None,
+                                                channel: crate::conversation::types::Channel::WhatsApp,
+                                                reason: crate::conversation::events::ConversationInvalidationReason::Metadata,
+                                                message_id: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let whatsapp_rust::types::events::Event::GroupUpdate(group_update) = event.as_ref() {
+                            if let Ok(mut conn) = rusqlite::Connection::open(&db_path) {
+                                if let Ok(group_meta) = client.groups().get_metadata(&group_update.group_jid).await {
+                                    if let Ok(conv_id) = super::normalizer::WhatsAppNormalizer::sync_group_metadata(
+                                        &mut conn,
+                                        account_id_val,
+                                        &group_meta,
+                                    ) {
+                                        let _ = super::normalizer::WhatsAppNormalizer::repair_misattributed_group_senders(
+                                            &mut conn,
+                                            account_id_val,
+                                        );
+                                        events.publish(crate::conversation::events::ConversationInvalidatedEvent {
+                                            conversation_id: conv_id,
+                                            lead_id: None,
+                                            channel: crate::conversation::types::Channel::WhatsApp,
+                                            reason: crate::conversation::events::ConversationInvalidationReason::Metadata,
+                                            message_id: None,
+                                        });
+                                    }
+                                }
+                            }
+                        } else if let whatsapp_rust::types::events::Event::HistorySync(lazy_hs) = event.as_ref() {
                             if let Some(history_sync) = lazy_hs.get() {
                                 if let Ok(mut conn) = rusqlite::Connection::open(&db_path) {
                                     // Save phoneNumberToLidMappings from sync
                                     for mapping in &history_sync.phone_number_to_lid_mappings {
                                         if let (Some(ref pn_jid), Some(ref lid_jid)) = (mapping.pn_jid.as_ref(), mapping.lid_jid.as_ref()) {
-                                            if let Some(pn) = super::phone::jid_to_phone(pn_jid) {
-                                                let _ = super::phone::save_lid_pn_mapping(&conn, lid_jid, &pn);
+                                            let clean_pn = super::phone::jid_to_phone(pn_jid)
+                                                .or_else(|| super::phone::normalize_e164(pn_jid, None))
+                                                .unwrap_or_else(|| pn_jid.chars().filter(|c| c.is_ascii_digit()).collect());
+                                            if !clean_pn.is_empty() {
+                                                let _ = super::phone::save_lid_pn_mapping(&conn, lid_jid, &clean_pn);
                                             }
                                         }
                                     }
@@ -443,8 +502,11 @@ impl WhatsAppSupervisor {
                                         let conv_title = conv.name.as_deref().or(conv.display_name.as_deref());
 
                                         if let (Some(ref pn_jid), Some(ref lid_jid)) = (conv.pn_jid.as_ref(), conv.lid_jid.as_ref()) {
-                                            if let Some(pn) = super::phone::jid_to_phone(pn_jid) {
-                                                let _ = super::phone::save_lid_pn_mapping(&conn, lid_jid, &pn);
+                                            let clean_pn = super::phone::jid_to_phone(pn_jid)
+                                                .or_else(|| super::phone::normalize_e164(pn_jid, None))
+                                                .unwrap_or_else(|| pn_jid.chars().filter(|c| c.is_ascii_digit()).collect());
+                                            if !clean_pn.is_empty() {
+                                                let _ = super::phone::save_lid_pn_mapping(&conn, lid_jid, &clean_pn);
                                             }
                                         }
 
@@ -464,11 +526,16 @@ impl WhatsAppSupervisor {
                                                 if let Some(ref msg_content) = web_msg.message.as_option() {
                                                     if let Some(ref key) = web_msg.key.as_option() {
                                                         let push_name = web_msg.push_name.as_deref();
+                                                        let participant_override = web_msg
+                                                            .participant
+                                                            .as_deref()
+                                                            .or(key.participant.as_deref());
                                                         if let Some(reaction) = super::normalizer::WhatsAppNormalizer::extract_raw_reaction(
                                                             msg_content,
                                                             key,
                                                             web_msg.message_timestamp,
                                                             &chat_jid,
+                                                            participant_override,
                                                         ) {
                                                             let _ = super::normalizer::WhatsAppNormalizer::ingest_reaction(
                                                                 &mut conn,
@@ -481,7 +548,8 @@ impl WhatsAppSupervisor {
                                                             web_msg.message_timestamp,
                                                             push_name,
                                                             &chat_jid,
-                                                            conv_title,
+                                                            if super::phone::is_group_jid(&chat_jid) { None } else { conv_title },
+                                                            participant_override,
                                                         ) {
                                                             if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
                                                                 &mut conn,
@@ -497,7 +565,48 @@ impl WhatsAppSupervisor {
                                         }
                                     }
 
-                                     for conv_id in invalidated_conv_ids {
+                                    // Also sync full participating groups metadata & members
+                                    if let Ok(groups_map) = client.groups().get_participating().await {
+                                        for (_group_jid, group_meta) in &groups_map {
+                                            if let Ok(conv_id) = super::normalizer::WhatsAppNormalizer::sync_group_metadata(
+                                                &mut conn,
+                                                account_id_val,
+                                                group_meta,
+                                            ) {
+                                                invalidated_conv_ids.insert(conv_id);
+                                            }
+                                            // Query USync for participant verified names
+                                            let unverified_jids: Vec<whatsapp_rust::Jid> = group_meta
+                                                .participants
+                                                .iter()
+                                                .map(|p| p.jid.clone())
+                                                .collect();
+                                            if !unverified_jids.is_empty() {
+                                                if let Ok(user_info_map) = client.contacts().get_user_info(&unverified_jids).await {
+                                                    for (jid, info) in user_info_map {
+                                                        if let Some(ref vn) = info.verified_name {
+                                                            if let Some(ref name) = vn.name {
+                                                                let _ = super::normalizer::WhatsAppNormalizer::update_participant_verified_name(
+                                                                    &mut conn,
+                                                                    account_id_val,
+                                                                    &jid.to_string(),
+                                                                    name,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Repair any previously misattributed group sender identities
+                                    let _ = super::normalizer::WhatsAppNormalizer::repair_misattributed_group_senders(
+                                        &mut conn,
+                                        account_id_val,
+                                    );
+
+                                    for conv_id in invalidated_conv_ids {
                                         let lead_id_opt: Option<i64> = conn.query_row(
                                             "SELECT ci.lead_id FROM channel_identities ci
                                              JOIN conversation_participants cp ON cp.identity_id = ci.id

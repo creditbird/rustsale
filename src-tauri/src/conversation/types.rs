@@ -696,6 +696,7 @@ pub struct ConversationMessage {
     pub sender_identity_id: Option<i64>,
     pub sender_external_id: Option<String>,
     pub sender_display_name: Option<String>,
+    pub sender_avatar_url: Option<String>,
     pub direction: MessageDirection,
     #[serde(skip_serializing)]
     pub provider_message_id: Option<String>,
@@ -1478,6 +1479,7 @@ mod tests {
             sender_identity_id: None,
             sender_external_id: None,
             sender_display_name: Some("Peer".into()),
+            sender_avatar_url: None,
             direction: MessageDirection::Inbound,
             provider_message_id: Some("provider-message".into()),
             provider_client_message_id: Some("provider-client-message".into()),
