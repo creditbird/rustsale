@@ -326,6 +326,29 @@ describe('MessageComposer', () => {
     });
   });
 
+  test('automatically focuses composer textarea and positions cursor when replyTarget is set', async () => {
+    const replyTarget: ConversationReplySelection = {
+      messageId: 9,
+      conversationId: 101,
+      channelAccountId: 1,
+      preview: {
+        messageId: 9,
+        senderDisplayName: 'Khách hàng',
+        contentType: 'text',
+        textContent: 'Tin gốc',
+        mediaType: null,
+        occurredAt: '2026-08-02T09:00:00.000Z'
+      }
+    };
+    render(MessageComposer, { item: baseItem, runtime: baseRuntime, replyTarget });
+    await tick();
+
+    const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(document.activeElement).toBe(textarea);
+    });
+  });
+
   test('inserts emoji at the textarea selection and restores focus', async () => {
     render(MessageComposer, { item: baseItem, runtime: baseRuntime });
     const textarea = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
