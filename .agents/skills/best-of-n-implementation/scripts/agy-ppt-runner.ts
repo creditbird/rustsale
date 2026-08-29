@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 type Pair = [number, number];
@@ -201,7 +201,7 @@ function judgePrompt(inputPath: string, criteriaPath: string): string {
 Judge input file: ${inputPath}
 Criteria file: ${criteriaPath}
 
-Read both files and inspect the current repository base when useful. Evaluate every criterion independently, cite concrete evidence, and report true release-blocking defects in blockers_a or blockers_b. Return only the supplied structured JSON contract. Eligibility is not approval.`;
+Read both files and inspect the current repository base when useful. Evaluate every criterion independently, cite concrete evidence, and report true release-blocking defects in blockers_a or blockers_b. If there are no fatal evaluation blockers that prevent completing this assessment, set limitations to []. Return only the supplied structured JSON contract. Eligibility is not approval.`;
 }
 
 async function invokeJudge(
