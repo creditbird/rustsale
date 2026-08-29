@@ -625,6 +625,13 @@ impl WhatsAppSupervisor {
                                     }
                                 }
                             }
+                        } else {
+                            handle_whatsapp_receipt_event(
+                                &db_path,
+                                account_id_val,
+                                event.as_ref(),
+                                &events,
+                            );
                         }
                     }
                 }
@@ -740,4 +747,115 @@ impl WhatsAppSupervisor {
 
         Ok(())
     }
+}
+
+pub(crate) fn map_whatsapp_receipt_event(
+    event: &whatsapp_rust::types::events::Event,
+) -> Option<super::normalizer::RawWhatsAppReceipt> {
+    match event {
+        whatsapp_rust::types::events::Event::Receipt(receipt) => {
+            let r_type = match receipt.r#type {
+                whatsapp_rust::types::presence::ReceiptType::Read
+                | whatsapp_rust::types::presence::ReceiptType::ReadSelf => "read",
+                whatsapp_rust::types::presence::ReceiptType::Played
+                | whatsapp_rust::types::presence::ReceiptType::PlayedSelf => "played",
+                whatsapp_rust::types::presence::ReceiptType::Delivered => "delivered",
+                whatsapp_rust::types::presence::ReceiptType::Sent => "sent",
+                whatsapp_rust::types::presence::ReceiptType::ServerError => "failed",
+                _ => "",
+            };
+            if !r_type.is_empty() && !receipt.message_ids.is_empty() {
+                Some(super::normalizer::RawWhatsAppReceipt {
+                    message_ids: receipt
+                        .message_ids
+                        .iter()
+                        .map(|id| id.to_string())
+                        .collect(),
+                    chat_jid: receipt.source.chat.to_string(),
+                    sender_jid: if !receipt.source.sender.user.is_empty() {
+                        Some(receipt.source.sender.to_string())
+                    } else {
+                        None
+                    },
+                    receipt_type: r_type.to_string(),
+                    timestamp: Some(receipt.timestamp.to_rfc3339()),
+                })
+            } else {
+                None
+            }
+        }
+        whatsapp_rust::types::events::Event::ServerAck(ack) => {
+            if ack.class.as_deref() == Some("message") && !ack.id.is_empty() {
+                let receipt_type = if ack.error.is_some() {
+                    "failed"
+                } else {
+                    "sent"
+                };
+                Some(super::normalizer::RawWhatsAppReceipt {
+                    message_ids: vec![ack.id.clone()],
+                    chat_jid: ack.from.as_ref().map(|j| j.to_string()).unwrap_or_default(),
+                    sender_jid: None,
+                    receipt_type: receipt_type.to_string(),
+                    timestamp: ack.timestamp.map(|t| t.to_rfc3339()),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn handle_whatsapp_receipt_event(
+    db_path: &str,
+    account_id: i64,
+    event: &whatsapp_rust::types::events::Event,
+    events: &Arc<ConversationEventPublisher>,
+) -> Option<Result<(), anyhow::Error>> {
+    let raw_receipt = map_whatsapp_receipt_event(event)?;
+    let res = process_and_publish_whatsapp_receipt(db_path, account_id, &raw_receipt, events);
+    if let Err(ref e) = res {
+        warn!(
+            error = ?e,
+            account_id = account_id,
+            "Failed to process and publish WhatsApp receipt event"
+        );
+    }
+    Some(res)
+}
+
+pub(crate) fn process_and_publish_whatsapp_receipt(
+    db_path: &str,
+    account_id: i64,
+    raw_receipt: &super::normalizer::RawWhatsAppReceipt,
+    events: &Arc<ConversationEventPublisher>,
+) -> anyhow::Result<()> {
+    let mut conn = rusqlite::Connection::open(db_path).map_err(|e| {
+        anyhow::anyhow!("failed to open sqlite database for whatsapp receipt ingest: {e}")
+    })?;
+    let updated_msgs =
+        super::normalizer::WhatsAppNormalizer::ingest_receipt(&mut conn, account_id, raw_receipt)
+            .map_err(|e| anyhow::anyhow!("failed to ingest whatsapp receipt: {e}"))?;
+
+    for (conv_id, msg_id) in updated_msgs {
+        let lead_id_opt: Option<i64> = conn
+            .query_row(
+                "SELECT ci.lead_id FROM channel_identities ci
+                 JOIN conversation_participants cp ON cp.identity_id = ci.id
+                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                [conv_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+
+        events.publish(crate::conversation::events::ConversationInvalidatedEvent {
+            conversation_id: conv_id,
+            lead_id: lead_id_opt,
+            channel: crate::conversation::types::Channel::WhatsApp,
+            reason: crate::conversation::events::ConversationInvalidationReason::Receipt,
+            message_id: Some(msg_id),
+        });
+    }
+    Ok(())
 }

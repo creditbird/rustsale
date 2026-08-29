@@ -1816,6 +1816,957 @@ fn read_receipt_advances_outbound_message_status() {
     assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 1);
 }
 
+fn outbound_direct_msg(msg_id: &str, client_id: &str, timestamp: &str) -> NormalizedMessage {
+    let mut msg = direct_message_with_client_id(msg_id, client_id);
+    msg.direction = MessageDirection::Outbound;
+    msg.status = MessageStatus::Sent;
+    msg.provider_timestamp = Some(timestamp.to_string());
+    msg
+}
+
+#[test]
+fn read_receipt_sweeps_prior_outbound_messages_in_direct_conversation() {
+    let harness = Harness::new();
+
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-1",
+            "client-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-2",
+            "client-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-3",
+            "client-3",
+            "2026-07-31T01:02:00.000Z",
+        ))
+        .unwrap();
+
+    // Send read receipt targeting anchor message-3
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "message-3".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:03:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // All 3 messages must now be 'read'
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status = 'read'"),
+        3
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_receipts WHERE receipt_type = 'read'"),
+        3
+    );
+}
+
+#[test]
+fn read_receipt_fallback_sweeps_conversation_when_anchor_msg_id_not_found() {
+    let harness = Harness::new();
+
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-1",
+            "client-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-2",
+            "client-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+
+    // Send read receipt with unmatched provider_message_id
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "unmatched-id".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status = 'read'"),
+        2
+    );
+}
+
+#[test]
+fn out_of_order_ingestion_sweep_respects_timestamp_order() {
+    let harness = Harness::new();
+
+    // Ingest out-of-order:
+    // row 1: msg-1 @ 01:00:00
+    // row 2: msg-3 @ 01:02:00
+    // row 3: msg-2 @ 01:01:00 (backfilled later, higher DB id)
+    // row 4: msg-4 @ 01:03:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-1",
+            "c-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-3",
+            "c-3",
+            "2026-07-31T01:02:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-2",
+            "c-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-4",
+            "c-4",
+            "2026-07-31T01:03:00.000Z",
+        ))
+        .unwrap();
+
+    // Receipt for anchor msg-2 (timestamp 01:01:00, id=3)
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "msg-2".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:04:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // msg-1 (01:00:00) and msg-2 (01:01:00) must be read
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-1'"),
+        "read"
+    );
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-2'"),
+        "read"
+    );
+
+    // msg-3 (01:02:00) and msg-4 (01:03:00) must REMAIN 'sent', not read!
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-3'"),
+        "sent"
+    );
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-4'"),
+        "sent"
+    );
+}
+
+#[test]
+fn inbound_message_sweeps_prior_outbound_messages_to_read() {
+    let harness = Harness::new();
+
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-1",
+            "client-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-2",
+            "client-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+
+    // Recipient replies with inbound message
+    let mut in_msg = direct_message_with_client_id("message-reply", "client-in");
+    in_msg.direction = MessageDirection::Inbound;
+    in_msg.status = MessageStatus::Received;
+    in_msg.provider_timestamp = Some("2026-07-31T01:02:00.000Z".to_string());
+    harness
+        .repository
+        .apply_normalized_message(&in_msg)
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar(
+            "SELECT COUNT(*) FROM messages WHERE direction = 'outbound' AND status = 'read'"
+        ),
+        2
+    );
+}
+
+#[test]
+fn inbound_reaction_sweeps_prior_outbound_messages_to_read() {
+    let harness = Harness::new();
+
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-1",
+            "client-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-2",
+            "client-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+
+    // Peer adds heart reaction to msg2
+    harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("ev-1".to_string()),
+            provider_message_id: "message-2".to_string(),
+            provider_client_message_id: "client-2".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-07-31T01:03:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar(
+            "SELECT COUNT(*) FROM messages WHERE direction = 'outbound' AND status = 'read'"
+        ),
+        2
+    );
+}
+
+#[test]
+fn self_reaction_does_not_trigger_implicit_read() {
+    let harness = Harness::new();
+
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-1",
+            "client-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Self account reacts to own message from another device
+    harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("ev-self".to_string()),
+            provider_message_id: "message-1".to_string(),
+            provider_client_message_id: "client-1".to_string(),
+            actor_external_id: "self-account-uid".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // Message must remain 'sent'
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'message-1'"),
+        "sent"
+    );
+}
+
+#[test]
+fn peer_reaction_on_inbound_message_does_not_sweep_outbound_messages() {
+    let harness = Harness::new();
+
+    // Prior outbound message
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-out",
+            "client-out",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Inbound message
+    let mut in_msg = direct_message_with_client_id("msg-in", "client-in");
+    in_msg.direction = MessageDirection::Inbound;
+    in_msg.status = MessageStatus::Received;
+    in_msg.provider_timestamp = Some("2026-07-31T01:01:00.000Z".to_string());
+    harness
+        .repository
+        .apply_normalized_message(&in_msg)
+        .unwrap();
+
+    // Reset msg-out to 'sent' for isolation test
+    open_db_connection(harness.repository.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE messages SET status = 'sent' WHERE provider_message_id = 'msg-out'",
+            [],
+        )
+        .unwrap();
+
+    // Peer reacts to the INBOUND message
+    harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("ev-in".to_string()),
+            provider_message_id: "msg-in".to_string(),
+            provider_client_message_id: "client-in".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // msg-out must remain 'sent'
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-out'"),
+        "sent"
+    );
+}
+
+#[test]
+fn group_read_receipt_records_all_recipients_for_swept_messages() {
+    let harness = Harness::new();
+
+    let mut gmsg1 = direct_message_with_client_id("g-1", "gc-1");
+    gmsg1.conversation_kind = ConversationKind::Group;
+    gmsg1.external_thread_id = "group-100".to_string();
+    gmsg1.direction = MessageDirection::Outbound;
+    gmsg1.status = MessageStatus::Sent;
+    gmsg1.provider_timestamp = Some("2026-07-31T01:00:00.000Z".to_string());
+    harness.repository.apply_normalized_message(&gmsg1).unwrap();
+
+    let mut gmsg2 = direct_message_with_client_id("g-2", "gc-2");
+    gmsg2.conversation_kind = ConversationKind::Group;
+    gmsg2.external_thread_id = "group-100".to_string();
+    gmsg2.direction = MessageDirection::Outbound;
+    gmsg2.status = MessageStatus::Sent;
+    gmsg2.provider_timestamp = Some("2026-07-31T01:01:00.000Z".to_string());
+    harness.repository.apply_normalized_message(&gmsg2).unwrap();
+
+    // Read receipt with 3 recipients
+    let recipients = vec![
+        "member-1".to_string(),
+        "member-2".to_string(),
+        "member-3".to_string(),
+    ];
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "group-100".to_string(),
+            is_group: true,
+            provider_message_id: "g-2".to_string(),
+            recipient_external_ids: recipients.clone(),
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // Both messages are read
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'g-1'"),
+        "read"
+    );
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'g-2'"),
+        "read"
+    );
+
+    // Each message has 3 receipt records (total 6)
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_receipts WHERE receipt_type = 'read'"),
+        6
+    );
+}
+
+#[test]
+fn pending_reaction_replay_triggers_implicit_read_sweep() {
+    let harness = Harness::new();
+
+    // Outbound message 1 sent at 01:00:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-1",
+            "c-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Peer reaction arrives BEFORE msg-2 is ingested
+    let res = harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("ev-pending".to_string()),
+            provider_message_id: "msg-2".to_string(),
+            provider_client_message_id: "c-2".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-07-31T01:03:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    // Since msg-2 is not found yet, res is None and reaction is staged in pending
+    assert_eq!(res, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+
+    // Now msg-2 arrives
+    let applied = harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-2",
+            "c-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+    assert_eq!(applied.replayed_reaction_count, 1);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+
+    // Both msg-1 and msg-2 must now be 'read' due to replayed implicit read
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-1'"),
+        "read"
+    );
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-2'"),
+        "read"
+    );
+}
+
+#[test]
+fn group_multi_round_receipts_records_all_members_for_swept_messages() {
+    let harness = Harness::new();
+
+    let mut gmsg1 = direct_message_with_client_id("g-1", "gc-1");
+    gmsg1.conversation_kind = ConversationKind::Group;
+    gmsg1.external_thread_id = "group-100".to_string();
+    gmsg1.direction = MessageDirection::Outbound;
+    gmsg1.status = MessageStatus::Sent;
+    gmsg1.provider_timestamp = Some("2026-07-31T01:00:00.000Z".to_string());
+    harness.repository.apply_normalized_message(&gmsg1).unwrap();
+
+    let mut gmsg2 = direct_message_with_client_id("g-2", "gc-2");
+    gmsg2.conversation_kind = ConversationKind::Group;
+    gmsg2.external_thread_id = "group-100".to_string();
+    gmsg2.direction = MessageDirection::Outbound;
+    gmsg2.status = MessageStatus::Sent;
+    gmsg2.provider_timestamp = Some("2026-07-31T01:01:00.000Z".to_string());
+    harness.repository.apply_normalized_message(&gmsg2).unwrap();
+
+    // Round 1: Member A reads g-2
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "group-100".to_string(),
+            is_group: true,
+            provider_message_id: "g-2".to_string(),
+            recipient_external_ids: vec!["member-A".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_receipts WHERE receipt_type = 'read'"),
+        2
+    );
+
+    // Round 2: Member B reads g-2 (messages already have status = 'read')
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "group-100".to_string(),
+            is_group: true,
+            provider_message_id: "g-2".to_string(),
+            recipient_external_ids: vec!["member-B".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:03:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // Must record member-B for BOTH g-1 and g-2, making total 4 receipts
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_receipts WHERE receipt_type = 'read'"),
+        4
+    );
+}
+
+#[test]
+fn swept_receipts_record_actual_event_occurred_at_not_send_time() {
+    let harness = Harness::new();
+
+    // msg-1 sent at 01:00:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-1",
+            "c-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // msg-2 sent at 01:05:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-2",
+            "c-2",
+            "2026-07-31T01:05:00.000Z",
+        ))
+        .unwrap();
+
+    // Read receipt on msg-2 arrives at 01:15:00
+    let receipt_event_time = "2026-07-31T01:15:00.000Z";
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "msg-2".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: receipt_event_time.to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // Swept msg-1 must have occurred_at == receipt_event_time (not its own send time 01:00:00)
+    let msg1_id = harness.scalar("SELECT id FROM messages WHERE provider_message_id = 'msg-1'");
+    let msg1_receipt_occurred = harness.text(&format!(
+        "SELECT occurred_at FROM message_receipts WHERE message_id = {}",
+        msg1_id
+    ));
+    assert_eq!(msg1_receipt_occurred, receipt_event_time);
+}
+
+#[test]
+fn composite_id_with_multiple_underscores_resolves_correctly() {
+    let harness = Harness::new();
+
+    // Stored ID has underscore in the middle: node_target-456
+    let applied1 = harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "node_target-456",
+            "client-456",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Newer message sent at 01:01:00 (between anchor 01:00:00 and receipt event 01:02:00)
+    // Killer test: Direct resolution uses anchor send time 01:00:00 as cutoff (keeps newer-msg sent).
+    // Fallback would use receipt event time 01:02:00 as cutoff (and falsely mark newer-msg read).
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "newer-msg",
+            "client-new",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+
+    // Receipt with composite ID containing multiple prefix tokens: prefix_cluster_node_target-456
+    let res = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "prefix_cluster_node_target-456".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+
+    // MUST resolve directly to node_target-456's message_id (not fallback)
+    assert_eq!(res, Some(applied1.message_id));
+
+    // node_target-456 must be 'read'
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'node_target-456'"),
+        "read"
+    );
+
+    // newer-msg (sent at 01:01:00 > 01:00:00 anchor) must REMAIN 'sent'
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'newer-msg'"),
+        "sent"
+    );
+}
+
+#[test]
+fn pending_reaction_with_composite_id_replays_and_preserves_payload() {
+    let harness = Harness::new();
+
+    // Outbound message 1 sent at 01:00:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-1",
+            "c-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Peer reaction arrives BEFORE msg-2 with a COMPOSITE ID: prefix_cluster_node_target-456
+    let reaction_payload = serde_json::json!({"source": "zalo_ws", "custom_field": "val_abc"});
+    let res = harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("ev-pending-composite".to_string()),
+            provider_message_id: "prefix_cluster_node_target-456".to_string(),
+            provider_client_message_id: "".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-07-31T01:03:00.000Z".to_string(),
+            raw_payload: reaction_payload.clone(),
+        })
+        .unwrap();
+    assert_eq!(res, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+
+    // Now msg-2 arrives with core ID node_target-456
+    let applied = harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "node_target-456",
+            "c-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+    assert_eq!(applied.replayed_reaction_count, 1);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+
+    // Both msg-1 and node_target-456 must be 'read'
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'msg-1'"),
+        "read"
+    );
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE provider_message_id = 'node_target-456'"),
+        "read"
+    );
+
+    // Verify raw_payload was preserved during replay sweep
+    let msg1_id = harness.scalar("SELECT id FROM messages WHERE provider_message_id = 'msg-1'");
+    let msg1_receipt_payload = harness.text(&format!(
+        "SELECT raw_payload_json FROM message_receipts WHERE message_id = {}",
+        msg1_id
+    ));
+    assert!(msg1_receipt_payload.contains("val_abc"));
+}
+
+#[test]
+fn receipt_monotonic_timestamp_prevents_stale_duplicate_from_overwriting_newer_timestamp() {
+    let harness = Harness::new();
+
+    // Send message at 01:00:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-mono",
+            "c-mono",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Newer read receipt arrives at 01:05:00
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "msg-mono".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({"source": "realtime"}),
+        })
+        .unwrap();
+
+    let msg_id = harness.scalar("SELECT id FROM messages WHERE provider_message_id = 'msg-mono'");
+    assert_eq!(
+        harness.text(&format!(
+            "SELECT occurred_at FROM message_receipts WHERE message_id = {}",
+            msg_id
+        )),
+        "2026-07-31T01:05:00.000Z"
+    );
+
+    // Stale historical receipt arrives out-of-order at 01:02:00
+    harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "msg-mono".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({"source": "stale_history"}),
+        })
+        .unwrap();
+
+    // Timestamp must remain monotonic 01:05:00 and payload must remain realtime
+    assert_eq!(
+        harness.text(&format!(
+            "SELECT occurred_at FROM message_receipts WHERE message_id = {}",
+            msg_id
+        )),
+        "2026-07-31T01:05:00.000Z"
+    );
+    let payload = harness.text(&format!(
+        "SELECT raw_payload_json FROM message_receipts WHERE message_id = {}",
+        msg_id
+    ));
+    assert!(payload.contains("realtime"));
+}
+
+#[test]
+fn composite_id_collision_prevention_rejects_unrelated_messages_sharing_prefix() {
+    let harness = Harness::new();
+
+    // Initial message to initialize channel account
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "initial-msg",
+            "c-init",
+            "2026-07-31T00:50:00.000Z",
+        ))
+        .unwrap();
+
+    // Stage reaction for message A: prefix_cluster_msg-A
+    harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("ev-stage-a".to_string()),
+            provider_message_id: "prefix_cluster_msg-A".to_string(),
+            provider_client_message_id: "".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-07-31T01:02:00.000Z".to_string(),
+            raw_payload: serde_json::json!({"reaction_for": "msg-A"}),
+        })
+        .unwrap();
+
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+
+    // Message B arrives with shared prefix tokens: prefix_cluster_msg-B
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "prefix_cluster_msg-B",
+            "cli-b",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Collision check: Message B must NOT match Reaction A!
+    // Message B status must remain sent, and reaction A must still be pending
+    let msg_b_id = harness
+        .scalar("SELECT id FROM messages WHERE provider_message_id = 'prefix_cluster_msg-B'");
+    assert_eq!(
+        harness.text(&format!(
+            "SELECT status FROM messages WHERE id = {msg_b_id}"
+        )),
+        "sent"
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        1
+    );
+
+    // Now Message A arrives (with suffix ID msg-A)
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-A",
+            "cli-a",
+            "2026-07-31T00:59:00.000Z",
+        ))
+        .unwrap();
+
+    // Reaction A matches and replays on Message A
+    let msg_a_id = harness.scalar("SELECT id FROM messages WHERE provider_message_id = 'msg-A'");
+    assert_eq!(
+        harness.text(&format!(
+            "SELECT status FROM messages WHERE id = {msg_a_id}"
+        )),
+        "read"
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM pending_message_reactions"),
+        0
+    );
+    // Message B still remains sent
+    assert_eq!(
+        harness.text(&format!(
+            "SELECT status FROM messages WHERE id = {msg_b_id}"
+        )),
+        "sent"
+    );
+}
+
+#[test]
+fn reaction_implicit_read_respects_anchor_send_time_cutoff() {
+    let harness = Harness::new();
+
+    // Message 1 sent at 01:00:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-anchor",
+            "cli-anchor",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+
+    // Message 2 sent newer at 01:01:00
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "msg-newer",
+            "cli-newer",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+
+    // Peer reacts at 01:03:00 to Message 1 specifically
+    harness
+        .repository
+        .apply_reaction(&NormalizedReaction {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_event_id: Some("ev-reaction-anchor".to_string()),
+            provider_message_id: "msg-anchor".to_string(),
+            provider_client_message_id: "".to_string(),
+            actor_external_id: "peer-1".to_string(),
+            reaction: "heart".to_string(),
+            removed: false,
+            occurred_at: "2026-07-31T01:03:00.000Z".to_string(),
+            raw_payload: serde_json::json!({"action": "heart"}),
+        })
+        .unwrap();
+
+    let anchor_id =
+        harness.scalar("SELECT id FROM messages WHERE provider_message_id = 'msg-anchor'");
+    let newer_id =
+        harness.scalar("SELECT id FROM messages WHERE provider_message_id = 'msg-newer'");
+
+    // Anchor message 1 must be marked read
+    assert_eq!(
+        harness.text(&format!(
+            "SELECT status FROM messages WHERE id = {anchor_id}"
+        )),
+        "read"
+    );
+
+    // Invariant: Newer message 2 (01:01:00 > 01:00:00) MUST NOT be swept and MUST stay sent!
+    assert_eq!(
+        harness.text(&format!(
+            "SELECT status FROM messages WHERE id = {newer_id}"
+        )),
+        "sent"
+    );
+}
+
 #[test]
 fn checkpoint_upsert_is_monotonic_per_account_scope() {
     let harness = Harness::new();

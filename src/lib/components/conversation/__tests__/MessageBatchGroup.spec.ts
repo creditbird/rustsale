@@ -41,9 +41,27 @@ describe('MessageBatchGroup', () => {
     expect(screen.getAllByText('Sent')).toHaveLength(1);
   });
 
+  it('renders "Delivered" when all messages are delivered', () => {
+    render(MessageBatchGroup, { messages: [makeMessage(1, 'delivered'), makeMessage(2, 'delivered')] });
+    expect(screen.getAllByText('Delivered')).toHaveLength(1);
+  });
+
+  it('renders "Read" with CheckCheck icon and blue color when all messages are read', () => {
+    const { container } = render(MessageBatchGroup, { messages: [makeMessage(1, 'read'), makeMessage(2, 'read')] });
+    expect(screen.getAllByText('Read')).toHaveLength(1);
+    const readIcon = container.querySelector('svg.lucide-check-check.text-\\[\\#53bdeb\\]');
+    expect(readIcon).toBeTruthy();
+    expect(readIcon?.classList.contains('lucide-check-check')).toBe(true);
+  });
+
   it('renders one aggregate footer and a failed-part warning for partial batches', () => {
     render(MessageBatchGroup, { messages: [makeMessage(1, 'sent'), makeMessage(2, 'failed')] });
     expect(screen.getAllByText('Partially sent')).toHaveLength(1);
     expect(screen.getByText('Network error')).toBeTruthy();
+  });
+
+  it('renders "Failed to send" when all messages in batch failed', () => {
+    render(MessageBatchGroup, { messages: [makeMessage(1, 'failed'), makeMessage(2, 'failed')] });
+    expect(screen.getAllByText('Failed to send')).toHaveLength(1);
   });
 });

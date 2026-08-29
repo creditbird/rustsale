@@ -382,3 +382,213 @@ async fn test_supervisor_notify_outbox_drains_immediately() {
     assert_eq!(sent_msgs[0].recipient_jid, "84902222222@s.whatsapp.net");
     assert_eq!(sent_msgs[0].text, "Hello Fast WhatsApp!");
 }
+
+#[tokio::test]
+async fn test_process_and_publish_whatsapp_receipt_success_and_error_handling() {
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let events = Arc::new(ConversationEventPublisher::new(100));
+    let mut rx = events.subscribe();
+
+    // 1. Set up account, conversation, and message in DB
+    let conn = open_db_connection(&db_path).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts
+         (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', 1, 'connected', '{}', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (20, 1, 'direct', '84903333333@s.whatsapp.net', 'Test WA', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+         VALUES (201, 20, 'outbound', 'stanza_receipt_wa_1', 'text', 'Receipt msg', '{}', 'sent', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    let raw_receipt = super::normalizer::RawWhatsAppReceipt {
+        message_ids: vec!["stanza_receipt_wa_1".to_string()],
+        chat_jid: "84903333333@s.whatsapp.net".to_string(),
+        sender_jid: Some("84903333333@s.whatsapp.net".to_string()),
+        receipt_type: "read".to_string(),
+        timestamp: Some("2026-08-26T12:00:00.000Z".to_string()),
+    };
+
+    // 2. Success execution publishes InvalidationEvent
+    let result =
+        super::supervisor::process_and_publish_whatsapp_receipt(&db_path, 1, &raw_receipt, &events);
+    assert!(result.is_ok());
+
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.conversation_id, 20);
+    assert_eq!(event.message_id, Some(201));
+
+    // 3. Error propagation on invalid DB path
+    let err_result = super::supervisor::process_and_publish_whatsapp_receipt(
+        "/non_existent/path/db.sqlite",
+        1,
+        &raw_receipt,
+        &events,
+    );
+    assert!(err_result.is_err());
+    assert!(err_result
+        .unwrap_err()
+        .to_string()
+        .contains("failed to open sqlite database"));
+}
+
+#[tokio::test]
+async fn test_whatsapp_receipt_listener_event_handling_logging_and_liveness() {
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let events = Arc::new(ConversationEventPublisher::new(100));
+    let mut rx = events.subscribe();
+
+    let conn = open_db_connection(&db_path).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts
+         (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', 1, 'connected', '{}', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (25, 1, 'direct', '84903333333@s.whatsapp.net', 'Test WA Liveness', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+         VALUES (2501, 25, 'outbound', 'stanza_ack_live_1', 'text', 'Ack msg', '{}', 'sending', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+         VALUES (2502, 25, 'outbound', 'stanza_ack_live_2', 'text', 'Ack msg 2', '{}', 'sending', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    // 1. First event: ServerAck message with error (failed receipt)
+    let fail_ack = whatsapp_rust::types::events::ServerAck::builder()
+        .id("stanza_ack_live_1".to_string())
+        .from(
+            "84903333333@s.whatsapp.net"
+                .parse::<whatsapp_rust::Jid>()
+                .unwrap(),
+        )
+        .class("message".to_string())
+        .error("500".to_string())
+        .timestamp(chrono::Utc::now())
+        .build();
+    let fail_event = whatsapp_rust::types::events::Event::ServerAck(fail_ack);
+
+    // Verify map_whatsapp_receipt_event maps error ack to "failed"
+    let mapped_fail = super::supervisor::map_whatsapp_receipt_event(&fail_event).unwrap();
+    assert_eq!(mapped_fail.receipt_type, "failed");
+    assert_eq!(mapped_fail.message_ids, vec!["stanza_ack_live_1"]);
+
+    // Simulate dependency failure: handle_whatsapp_receipt_event with invalid DB path
+    // This executes the warn! logging branch and returns Err without crashing or panicking
+    let fail_handle_res = super::supervisor::handle_whatsapp_receipt_event(
+        "/non_existent/path/corrupted.sqlite",
+        1,
+        &fail_event,
+        &events,
+    );
+    assert!(fail_handle_res.is_some());
+    assert!(fail_handle_res.unwrap().is_err());
+
+    // 2. Second event: Verify listener liveness on subsequent event
+    let success_ack = whatsapp_rust::types::events::ServerAck::builder()
+        .id("stanza_ack_live_2".to_string())
+        .from(
+            "84903333333@s.whatsapp.net"
+                .parse::<whatsapp_rust::Jid>()
+                .unwrap(),
+        )
+        .class("message".to_string())
+        .timestamp(chrono::Utc::now())
+        .build();
+    let success_event = whatsapp_rust::types::events::Event::ServerAck(success_ack);
+
+    // Verify map_whatsapp_receipt_event maps clean ack to "sent"
+    let mapped_success = super::supervisor::map_whatsapp_receipt_event(&success_event).unwrap();
+    assert_eq!(mapped_success.receipt_type, "sent");
+
+    // Process second event on valid DB path
+    let success_handle_res =
+        super::supervisor::handle_whatsapp_receipt_event(&db_path, 1, &success_event, &events);
+    assert!(success_handle_res.is_some());
+    assert!(success_handle_res.unwrap().is_ok());
+
+    // Verify invalidation event was published for msg 2502
+    let published_event = rx.recv().await.unwrap();
+    assert_eq!(published_event.conversation_id, 25);
+    assert_eq!(published_event.message_id, Some(2502));
+
+    let updated_status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 2502", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(updated_status, "sent");
+}
+
+#[test]
+fn test_map_whatsapp_receipt_event_presence_and_server_error() {
+    let chat_jid: whatsapp_rust::Jid = "84903333333@s.whatsapp.net".parse().unwrap();
+    let sender_jid: whatsapp_rust::Jid = "84903333333@s.whatsapp.net".parse().unwrap();
+
+    // 1. ReceiptType::ServerError -> maps to "failed"
+    let server_error_receipt = whatsapp_rust::types::events::Receipt::builder()
+        .source(whatsapp_rust::types::message::MessageSource {
+            chat: chat_jid.clone(),
+            sender: sender_jid.clone(),
+            ..Default::default()
+        })
+        .message_ids(vec!["msg_server_err_1".into()])
+        .timestamp(chrono::Utc::now())
+        .r#type(whatsapp_rust::types::presence::ReceiptType::ServerError)
+        .offline(false)
+        .build();
+    let ev1 = whatsapp_rust::types::events::Event::Receipt(server_error_receipt);
+    let mapped1 = super::supervisor::map_whatsapp_receipt_event(&ev1).unwrap();
+    assert_eq!(mapped1.receipt_type, "failed");
+    assert_eq!(mapped1.message_ids, vec!["msg_server_err_1"]);
+
+    // 2. ReceiptType::Read -> maps to "read"
+    let read_receipt = whatsapp_rust::types::events::Receipt::builder()
+        .source(whatsapp_rust::types::message::MessageSource {
+            chat: chat_jid.clone(),
+            sender: sender_jid.clone(),
+            ..Default::default()
+        })
+        .message_ids(vec!["msg_read_1".into()])
+        .timestamp(chrono::Utc::now())
+        .r#type(whatsapp_rust::types::presence::ReceiptType::Read)
+        .offline(false)
+        .build();
+    let ev2 = whatsapp_rust::types::events::Event::Receipt(read_receipt);
+    let mapped2 = super::supervisor::map_whatsapp_receipt_event(&ev2).unwrap();
+    assert_eq!(mapped2.receipt_type, "read");
+    assert_eq!(mapped2.message_ids, vec!["msg_read_1"]);
+
+    // 3. ReceiptType::Delivered -> maps to "delivered"
+    let del_receipt = whatsapp_rust::types::events::Receipt::builder()
+        .source(whatsapp_rust::types::message::MessageSource {
+            chat: chat_jid.clone(),
+            sender: sender_jid.clone(),
+            ..Default::default()
+        })
+        .message_ids(vec!["msg_del_1".into()])
+        .timestamp(chrono::Utc::now())
+        .r#type(whatsapp_rust::types::presence::ReceiptType::Delivered)
+        .offline(false)
+        .build();
+    let ev3 = whatsapp_rust::types::events::Event::Receipt(del_receipt);
+    let mapped3 = super::supervisor::map_whatsapp_receipt_event(&ev3).unwrap();
+    assert_eq!(mapped3.receipt_type, "delivered");
+    assert_eq!(mapped3.message_ids, vec!["msg_del_1"]);
+}

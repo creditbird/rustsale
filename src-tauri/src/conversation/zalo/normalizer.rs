@@ -695,29 +695,33 @@ pub fn normalize_listener_event(
             for delivered in delivered_vec {
                 match delivered {
                     DeliveredMessage::User(user_msg) => {
-                        let norm_receipt = NormalizedReceipt {
-                            provider_account_key: provider_account_key.to_string(),
-                            external_thread_id: user_msg.thread_id.clone(),
+                        let norm_receipt = normalize_delivered_receipt(DeliveredReceiptInput {
+                            provider_account_key,
+                            thread_id: &user_msg.thread_id,
                             is_group: false,
-                            provider_message_id: user_msg.data.msg_id.clone(),
-                            recipient_external_ids: user_msg.data.delivered_uids.clone(),
-                            kind: ReceiptKind::Delivered,
-                            occurred_at: provider_time_u64(user_msg.data.m_s_ts),
+                            msg_id: &user_msg.data.msg_id,
+                            real_msg_id: &user_msg.data.real_msg_id,
+                            seen: user_msg.data.seen,
+                            seen_uids: &user_msg.data.seen_uids,
+                            delivered_uids: &user_msg.data.delivered_uids,
+                            m_s_ts: user_msg.data.m_s_ts,
                             raw_payload: serde_json::to_value(&user_msg.data)?,
-                        };
+                        });
                         result.push(ZaloMutation::Receipt(norm_receipt));
                     }
                     DeliveredMessage::Group(group_msg) => {
-                        let norm_receipt = NormalizedReceipt {
-                            provider_account_key: provider_account_key.to_string(),
-                            external_thread_id: group_msg.thread_id.clone(),
+                        let norm_receipt = normalize_delivered_receipt(DeliveredReceiptInput {
+                            provider_account_key,
+                            thread_id: &group_msg.thread_id,
                             is_group: true,
-                            provider_message_id: group_msg.data.base.msg_id.clone(),
-                            recipient_external_ids: group_msg.data.base.delivered_uids.clone(),
-                            kind: ReceiptKind::Delivered,
-                            occurred_at: provider_time_u64(group_msg.data.base.m_s_ts),
+                            msg_id: &group_msg.data.base.msg_id,
+                            real_msg_id: &group_msg.data.base.real_msg_id,
+                            seen: group_msg.data.base.seen,
+                            seen_uids: &group_msg.data.base.seen_uids,
+                            delivered_uids: &group_msg.data.base.delivered_uids,
+                            m_s_ts: group_msg.data.base.m_s_ts,
                             raw_payload: serde_json::to_value(&group_msg.data)?,
-                        };
+                        });
                         result.push(ZaloMutation::Receipt(norm_receipt));
                     }
                 }
@@ -730,11 +734,16 @@ pub fn normalize_listener_event(
             for seen in seen_vec {
                 match seen {
                     SeenMessage::User(user_msg) => {
+                        let effective_provider_msg_id = if !user_msg.data.msg_id.is_empty() {
+                            user_msg.data.msg_id.clone()
+                        } else {
+                            user_msg.data.real_msg_id.clone()
+                        };
                         let norm_receipt = NormalizedReceipt {
                             provider_account_key: provider_account_key.to_string(),
                             external_thread_id: user_msg.thread_id.clone(),
                             is_group: false,
-                            provider_message_id: user_msg.data.msg_id.clone(),
+                            provider_message_id: effective_provider_msg_id,
                             recipient_external_ids: vec![user_msg.data.id_to.clone()],
                             kind: ReceiptKind::Read,
                             occurred_at: now.clone(),
@@ -772,5 +781,46 @@ pub fn normalize_listener_event(
         | ListenerEvent::Typing(_)
         | ListenerEvent::UploadAttachment(_)
         | ListenerEvent::FriendEvent(_) => Ok(vec![]),
+    }
+}
+
+struct DeliveredReceiptInput<'a> {
+    provider_account_key: &'a str,
+    thread_id: &'a str,
+    is_group: bool,
+    msg_id: &'a str,
+    real_msg_id: &'a str,
+    seen: i32,
+    seen_uids: &'a [String],
+    delivered_uids: &'a [String],
+    m_s_ts: u64,
+    raw_payload: serde_json::Value,
+}
+
+fn normalize_delivered_receipt(input: DeliveredReceiptInput<'_>) -> NormalizedReceipt {
+    let effective_provider_msg_id = if !input.msg_id.is_empty() {
+        input.msg_id.to_string()
+    } else {
+        input.real_msg_id.to_string()
+    };
+    let is_seen = input.seen == 1 || !input.seen_uids.is_empty();
+    let recipient_external_ids = if is_seen && !input.seen_uids.is_empty() {
+        input.seen_uids.to_vec()
+    } else {
+        input.delivered_uids.to_vec()
+    };
+    NormalizedReceipt {
+        provider_account_key: input.provider_account_key.to_string(),
+        external_thread_id: input.thread_id.to_string(),
+        is_group: input.is_group,
+        provider_message_id: effective_provider_msg_id,
+        recipient_external_ids,
+        kind: if is_seen {
+            ReceiptKind::Read
+        } else {
+            ReceiptKind::Delivered
+        },
+        occurred_at: provider_time_u64(input.m_s_ts),
+        raw_payload: input.raw_payload,
     }
 }

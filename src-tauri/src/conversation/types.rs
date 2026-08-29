@@ -57,6 +57,16 @@ impl ConversationKind {
             Self::EmailThread => "email_thread",
         }
     }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "direct" => Ok(Self::Direct),
+            "group" => Ok(Self::Group),
+            "email_thread" => Ok(Self::EmailThread),
+            _ => Err(format!("unknown conversation kind: {s}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -769,7 +769,9 @@ fn test_normalizer_reaction_and_receipt_ingestion() {
         receipt_type: "delivered".to_string(),
         timestamp: Some("2026-08-26T12:01:00.000Z".to_string()),
     };
-    WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &delivery_receipt).unwrap();
+    let updated1 = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &delivery_receipt).unwrap();
+    assert_eq!(updated1.len(), 1);
+    assert_eq!(updated1[0].1, 500);
 
     let status1: String = conn
         .query_row("SELECT status FROM messages WHERE id = 500", [], |r| {
@@ -786,7 +788,9 @@ fn test_normalizer_reaction_and_receipt_ingestion() {
         receipt_type: "read".to_string(),
         timestamp: Some("2026-08-26T12:03:00.000Z".to_string()),
     };
-    WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &read_receipt).unwrap();
+    let updated2 = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &read_receipt).unwrap();
+    assert_eq!(updated2.len(), 1);
+    assert_eq!(updated2[0].1, 500);
 
     let status2: String = conn
         .query_row("SELECT status FROM messages WHERE id = 500", [], |r| {
@@ -794,6 +798,411 @@ fn test_normalizer_reaction_and_receipt_ingestion() {
         })
         .unwrap();
     assert_eq!(status2, "read");
+
+    // 4. Ingest Played Receipt (Voice message played) -> maps to read without violating schema
+    let played_receipt = RawWhatsAppReceipt {
+        message_ids: vec!["stanza_react_500".to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "played".to_string(),
+        timestamp: Some("2026-08-26T12:04:00.000Z".to_string()),
+    };
+    let updated3 = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &played_receipt).unwrap();
+    // Status is already read, so status_changed is false, updated is empty
+    assert_eq!(updated3.len(), 0);
+
+    let receipt_in_db: String = conn
+        .query_row(
+            "SELECT receipt_type FROM message_receipts WHERE message_id = 500 AND receipt_type = 'read'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_in_db, "read");
+}
+
+#[test]
+fn test_whatsapp_receipt_state_machine_invariants_and_monotonic_timestamp() {
+    let mut conn = setup_test_db();
+
+    // Set up direct conversation
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+         VALUES (20, 1, '84901234567@s.whatsapp.net', 'direct', 'Customer 20', 'active', '2026-08-26T12:00:00.000Z', '2026-08-26T12:00:00.000Z')",
+        [],
+    ).unwrap();
+
+    // Create OUTBOUND message with initial status 'sending'
+    let msg_stanza_id = "stanza_outbound_msg_201";
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (201, 20, 'outbound', ?1, 'text', 'Hello from store', 'sending', '2026-08-26T12:00:00.000Z')",
+        [msg_stanza_id],
+    ).unwrap();
+
+    // 1. Ingest 'sent' receipt -> status becomes 'sent'
+    let sent_receipt = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: None,
+        receipt_type: "sent".to_string(),
+        timestamp: Some("2026-08-26T12:01:00.000Z".to_string()),
+    };
+    let updated_sent = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &sent_receipt).unwrap();
+    assert_eq!(updated_sent.len(), 1);
+    assert_eq!(updated_sent[0], (20, 201));
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 201", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "sent");
+
+    // 2. Ingest 'delivered' receipt at 12:03:00 -> status becomes 'delivered'
+    let delivered_receipt = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "delivered".to_string(),
+        timestamp: Some("2026-08-26T12:03:00.000Z".to_string()),
+    };
+    let updated_delivered =
+        WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &delivered_receipt).unwrap();
+    assert_eq!(updated_delivered.len(), 1);
+    assert_eq!(updated_delivered[0], (20, 201));
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 201", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "delivered");
+
+    // 3. Regression test on delivered: Stale 'sent' receipt cannot regress 'delivered' -> 'sent'
+    let stale_sent = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: None,
+        receipt_type: "sent".to_string(),
+        timestamp: Some("2026-08-26T12:01:30.000Z".to_string()),
+    };
+    let updated_stale_sent = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &stale_sent).unwrap();
+    assert_eq!(
+        updated_stale_sent.len(),
+        0,
+        "Delivered message must not regress to sent"
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 201", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "delivered");
+
+    // 4. Regression test on delivered: 'failed' receipt cannot override 'delivered' -> 'failed'
+    let late_fail = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: None,
+        receipt_type: "failed".to_string(),
+        timestamp: Some("2026-08-26T12:04:00.000Z".to_string()),
+    };
+    let updated_late_fail = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &late_fail).unwrap();
+    assert_eq!(
+        updated_late_fail.len(),
+        0,
+        "Delivered message must not regress to failed"
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 201", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "delivered");
+
+    // 5. Ingest 'read' receipt at 12:05:00 -> status becomes 'read'
+    let read_receipt = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "read".to_string(),
+        timestamp: Some("2026-08-26T12:05:00.000Z".to_string()),
+    };
+    let updated_read = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &read_receipt).unwrap();
+    assert_eq!(updated_read.len(), 1);
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 201", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "read");
+
+    let occurred_at: String = conn
+        .query_row(
+            "SELECT occurred_at FROM message_receipts WHERE message_id = 201 AND receipt_type = 'read'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(occurred_at, "2026-08-26T12:05:00.000Z");
+
+    // 6. Monotonic receipt timestamp: Stale read receipt at 12:02:00 arrives out of order
+    let stale_read = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "read".to_string(),
+        timestamp: Some("2026-08-26T12:02:00.000Z".to_string()),
+    };
+    let _ = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &stale_read).unwrap();
+    let occurred_at_after_stale: String = conn
+        .query_row(
+            "SELECT occurred_at FROM message_receipts WHERE message_id = 201 AND receipt_type = 'read'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        occurred_at_after_stale, "2026-08-26T12:05:00.000Z",
+        "Timestamp must remain monotonic MAX and not regress"
+    );
+
+    // 7. Regression test on read: 'failed' receipt cannot regress 'read' -> 'failed'
+    let fail_on_read = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: None,
+        receipt_type: "failed".to_string(),
+        timestamp: Some("2026-08-26T12:06:00.000Z".to_string()),
+    };
+    let updated_fail_on_read =
+        WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &fail_on_read).unwrap();
+    assert_eq!(
+        updated_fail_on_read.len(),
+        0,
+        "Read message must not regress to failed"
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 201", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "read");
+
+    // 8. Regression test on read: 'delivered' receipt cannot regress 'read' -> 'delivered'
+    let delivered_on_read = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "delivered".to_string(),
+        timestamp: Some("2026-08-26T12:07:00.000Z".to_string()),
+    };
+    let updated_delivered_on_read =
+        WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &delivered_on_read).unwrap();
+    assert_eq!(
+        updated_delivered_on_read.len(),
+        0,
+        "Read message must not regress to delivered"
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 201", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "read");
+}
+
+#[test]
+fn test_whatsapp_receipt_failed_terminal_state_and_resurrection_protection() {
+    let mut conn = setup_test_db();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+         VALUES (21, 1, '84901234567@s.whatsapp.net', 'direct', 'Customer 21', 'active', '2026-08-26T12:00:00.000Z', '2026-08-26T12:00:00.000Z')",
+        [],
+    ).unwrap();
+
+    let msg_stanza_id = "stanza_fail_test_202";
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (202, 21, 'outbound', ?1, 'text', 'Failing message', 'sent', '2026-08-26T12:00:00.000Z')",
+        [msg_stanza_id],
+    ).unwrap();
+
+    // 1. Transition sent -> failed
+    let fail_receipt = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: None,
+        receipt_type: "failed".to_string(),
+        timestamp: Some("2026-08-26T12:01:00.000Z".to_string()),
+    };
+    let updated = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &fail_receipt).unwrap();
+    assert_eq!(updated.len(), 1);
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 202", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "failed");
+
+    // 2. Late 'read' receipt cannot resurrect 'failed' -> 'read'
+    let late_read = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "read".to_string(),
+        timestamp: Some("2026-08-26T12:02:00.000Z".to_string()),
+    };
+    let updated_read = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &late_read).unwrap();
+    assert_eq!(
+        updated_read.len(),
+        0,
+        "Failed message must not be overwritten by read receipt"
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 202", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "failed");
+
+    // 3. Late 'delivered' receipt cannot resurrect 'failed' -> 'delivered'
+    let late_delivered = RawWhatsAppReceipt {
+        message_ids: vec![msg_stanza_id.to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "delivered".to_string(),
+        timestamp: Some("2026-08-26T12:03:00.000Z".to_string()),
+    };
+    let updated_del = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &late_delivered).unwrap();
+    assert_eq!(
+        updated_del.len(),
+        0,
+        "Failed message must not be overwritten by delivered receipt"
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 202", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "failed");
+}
+
+#[test]
+fn test_whatsapp_receipt_inbound_message_immunity_and_chat_jid_isolation() {
+    let mut conn = setup_test_db();
+
+    // Create conversation A
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+         VALUES (30, 1, '84901234567@s.whatsapp.net', 'direct', 'Customer 30', 'active', '2026-08-26T12:00:00.000Z', '2026-08-26T12:00:00.000Z')",
+        [],
+    ).unwrap();
+
+    // 1. Inbound message in Conversation A
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (301, 30, 'inbound', 'stanza_inbound_301', 'text', 'Customer sent this', 'received', '2026-08-26T12:00:00.000Z')",
+        [],
+    ).unwrap();
+
+    // Ingest receipt targeting inbound message -> MUST BE IGNORED
+    let inbound_target_receipt = RawWhatsAppReceipt {
+        message_ids: vec!["stanza_inbound_301".to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "read".to_string(),
+        timestamp: Some("2026-08-26T12:05:00.000Z".to_string()),
+    };
+    let updated_inbound =
+        WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &inbound_target_receipt).unwrap();
+    assert_eq!(
+        updated_inbound.len(),
+        0,
+        "Inbound messages must never be modified by receipts"
+    );
+    let inb_status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 301", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        inb_status, "received",
+        "Inbound message status must remain unchanged"
+    );
+
+    // 2. Outbound message in Conversation A
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (302, 30, 'outbound', 'stanza_outbound_302', 'text', 'Store message', 'sent', '2026-08-26T12:00:00.000Z')",
+        [],
+    ).unwrap();
+
+    // Receipt with MISMATCHED chat_jid (e.g. from conversation B)
+    let mismatched_chat_receipt = RawWhatsAppReceipt {
+        message_ids: vec!["stanza_outbound_302".to_string()],
+        chat_jid: "84999999999@s.whatsapp.net".to_string(), // different chat_jid
+        sender_jid: Some("84999999999@s.whatsapp.net".to_string()),
+        receipt_type: "read".to_string(),
+        timestamp: Some("2026-08-26T12:05:00.000Z".to_string()),
+    };
+    let updated_mismatch =
+        WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &mismatched_chat_receipt).unwrap();
+    assert_eq!(
+        updated_mismatch.len(),
+        0,
+        "Receipt with mismatched chat_jid must be ignored"
+    );
+    let out_status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 302", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        out_status, "sent",
+        "Outbound message status must remain unchanged on chat_jid mismatch"
+    );
+}
+
+#[test]
+fn test_whatsapp_receipt_terminal_removed_state() {
+    let mut conn = setup_test_db();
+
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+         VALUES (40, 1, '84901234567@s.whatsapp.net', 'direct', 'Customer 40', 'active', '2026-08-26T12:00:00.000Z', '2026-08-26T12:00:00.000Z')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (401, 40, 'outbound', 'stanza_removed_401', 'text', 'Deleted message', 'removed', '2026-08-26T12:00:00.000Z')",
+        [],
+    ).unwrap();
+
+    let late_read = RawWhatsAppReceipt {
+        message_ids: vec!["stanza_removed_401".to_string()],
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        receipt_type: "read".to_string(),
+        timestamp: Some("2026-08-26T12:07:00.000Z".to_string()),
+    };
+    let removed_updated = WhatsAppNormalizer::ingest_receipt(&mut conn, 1, &late_read).unwrap();
+    assert_eq!(
+        removed_updated.len(),
+        0,
+        "Removed message must not be reported as status changed"
+    );
+
+    let final_status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 401", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        final_status, "removed",
+        "Terminal removed state must be strictly preserved"
+    );
 }
 
 #[test]

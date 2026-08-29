@@ -220,10 +220,13 @@ pub struct AppliedMessage {
 #[derive(Debug)]
 struct PendingMessageReaction {
     id: i64,
+    provider_message_id: String,
+    provider_client_message_id: String,
     actor_external_id: String,
     reaction: String,
     removed: bool,
     occurred_at: String,
+    raw_payload_json: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1168,8 +1171,15 @@ impl ConversationRepository {
                 now,
             )?;
 
-            let replayed_reaction_count =
-                replay_pending_reactions_tx(&tx, channel_account_id, message_id, message)?;
+            apply_implicit_conversation_read_tx(&tx, conversation_id, message, now)?;
+
+            let replayed_reaction_count = replay_pending_reactions_tx(
+                &tx,
+                channel_account_id,
+                message_id,
+                conversation_id,
+                message,
+            )?;
 
             tx.commit()?;
             return Ok(AppliedMessage {
@@ -1231,25 +1241,7 @@ impl ConversationRepository {
             )?;
         }
 
-        if message.direction == MessageDirection::Inbound {
-            tx.execute(
-                "UPDATE messages
-                 SET status = 'read'
-                 WHERE conversation_id = ?1
-                   AND direction = 'outbound'
-                   AND status IN ('sent', 'delivered')",
-                params![conversation_id],
-            )?;
-        } else if message.direction == MessageDirection::Outbound {
-            tx.execute(
-                "UPDATE messages
-                 SET status = 'read'
-                 WHERE conversation_id = ?1
-                   AND direction = 'inbound'
-                   AND status != 'read'",
-                params![conversation_id],
-            )?;
-        }
+        apply_implicit_conversation_read_tx(&tx, conversation_id, message, now)?;
 
         Self::save_message_mentions_tx(
             &tx,
@@ -1259,8 +1251,13 @@ impl ConversationRepository {
             now,
         )?;
 
-        let replayed_reaction_count =
-            replay_pending_reactions_tx(&tx, channel_account_id, message_id, message)?;
+        let replayed_reaction_count = replay_pending_reactions_tx(
+            &tx,
+            channel_account_id,
+            message_id,
+            conversation_id,
+            message,
+        )?;
 
         tx.commit()?;
 
@@ -2342,6 +2339,39 @@ impl ConversationRepository {
             &reaction.occurred_at,
         )?;
 
+        if !reaction.removed && !reaction.is_group {
+            let info: Option<(i64, String, String, String)> = tx
+                .query_row(
+                    "SELECT m.conversation_id, m.direction, cc.kind, cc.external_thread_id
+                     FROM messages m
+                     JOIN channel_conversations cc ON cc.id = m.conversation_id
+                     WHERE m.id = ?1",
+                    [message_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?;
+
+            if let Some((conversation_id, raw_dir, raw_kind, external_thread_id)) = info {
+                let direction =
+                    MessageDirection::from_str(&raw_dir).unwrap_or(MessageDirection::Outbound);
+                let conversation_kind =
+                    ConversationKind::from_str(&raw_kind).unwrap_or(ConversationKind::Direct);
+                let raw_payload = reaction.raw_payload.to_string();
+                apply_implicit_reaction_read_tx(
+                    &tx,
+                    conversation_id,
+                    message_id,
+                    conversation_kind,
+                    direction,
+                    &external_thread_id,
+                    &reaction.actor_external_id,
+                    reaction.removed,
+                    &reaction.occurred_at,
+                    Some(&raw_payload),
+                )?;
+            }
+        }
+
         tx.commit()?;
         Ok(Some(message_id))
     }
@@ -2378,21 +2408,18 @@ impl ConversationRepository {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
-        let message_id = match resolve_message_id(
+        let message_id = resolve_message_id(
             &tx,
             &receipt.provider_account_key,
             &receipt.external_thread_id,
             receipt.is_group,
             &receipt.provider_message_id,
             "",
-        )? {
-            Some(id) => id,
-            None => return Ok(None),
-        };
+        )?;
 
-        let receipt_type_str = match receipt.kind {
-            ReceiptKind::Delivered => "delivered",
-            ReceiptKind::Read => "read",
+        let target_status = match receipt.kind {
+            ReceiptKind::Delivered => ReceiptTargetStatus::Delivered,
+            ReceiptKind::Read => ReceiptTargetStatus::Read,
         };
 
         let recipients = if receipt.recipient_external_ids.is_empty() {
@@ -2400,46 +2427,97 @@ impl ConversationRepository {
         } else {
             receipt.recipient_external_ids.clone()
         };
-
         let payload_str = receipt.raw_payload.to_string();
 
-        for recipient_id in &recipients {
-            tx.execute(
-                "INSERT INTO message_receipts
-                 (message_id, recipient_external_id, receipt_type, occurred_at, raw_payload_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(message_id, recipient_external_id, receipt_type) DO UPDATE SET
-                     occurred_at = excluded.occurred_at,
-                     raw_payload_json = excluded.raw_payload_json",
-                params![
-                    message_id,
-                    recipient_id,
-                    receipt_type_str,
-                    receipt.occurred_at,
-                    payload_str,
-                ],
-            )?;
-        }
-
-        let current_status: String = tx.query_row(
-            "SELECT status FROM messages WHERE id = ?1",
-            [message_id],
-            |row| row.get(0),
-        )?;
-
-        if current_status != "failed" && current_status != "removed" {
-            let current_rank = status_rank(&current_status);
-            let target_rank = status_rank(receipt_type_str);
-            if target_rank > current_rank {
+        if let Some(msg_id) = message_id {
+            for recipient_id in &recipients {
                 tx.execute(
-                    "UPDATE messages SET status = ?1 WHERE id = ?2",
-                    params![receipt_type_str, message_id],
+                    "INSERT INTO message_receipts
+                     (message_id, recipient_external_id, receipt_type, occurred_at, raw_payload_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(message_id, recipient_external_id, receipt_type) DO UPDATE SET
+                         occurred_at = MAX(message_receipts.occurred_at, excluded.occurred_at),
+                         raw_payload_json = CASE
+                             WHEN excluded.occurred_at >= message_receipts.occurred_at
+                             THEN excluded.raw_payload_json
+                             ELSE message_receipts.raw_payload_json
+                         END",
+                    params![
+                        msg_id,
+                        recipient_id,
+                        target_status.as_str(),
+                        receipt.occurred_at,
+                        payload_str,
+                    ],
                 )?;
             }
-        }
 
-        tx.commit()?;
-        Ok(Some(message_id))
+            let (conversation_id, current_status): (i64, String) = tx.query_row(
+                "SELECT conversation_id, status FROM messages WHERE id = ?1",
+                [msg_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+            if current_status != "failed" && current_status != "removed" {
+                let current_rank = status_rank(&current_status);
+                let target_rank = target_status.rank();
+                if target_rank > current_rank {
+                    tx.execute(
+                        "UPDATE messages SET status = ?1 WHERE id = ?2",
+                        params![target_status.as_str(), msg_id],
+                    )?;
+                }
+            }
+
+            // Sweep older outbound messages in the same conversation
+            sweep_outbound_messages_status_tx(
+                &tx,
+                SweepOutboundParams {
+                    conversation_id,
+                    target_status,
+                    anchor_cutoff_timestamp: Some(&receipt.occurred_at),
+                    anchor_message_id: Some(msg_id),
+                    recipient_external_ids: &recipients,
+                    raw_payload_json: Some(&payload_str),
+                    event_occurred_at: Some(&receipt.occurred_at),
+                },
+            )?;
+
+            tx.commit()?;
+            Ok(Some(msg_id))
+        } else {
+            // Fallback: resolve conversation_id by thread_id and sweep all outbound messages
+            let channel_account_id =
+                find_channel_account_id_by_key(&tx, "zalo", &receipt.provider_account_key)?;
+            if let Some(account_id) = channel_account_id {
+                let kind = if receipt.is_group { "group" } else { "direct" };
+                let conv_id: Option<i64> = tx
+                    .query_row(
+                        "SELECT id FROM channel_conversations WHERE channel_account_id = ?1 AND external_thread_id = ?2 AND kind = ?3",
+                        params![account_id, receipt.external_thread_id, kind],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                if let Some(conversation_id) = conv_id {
+                    let swept = sweep_outbound_messages_status_tx(
+                        &tx,
+                        SweepOutboundParams {
+                            conversation_id,
+                            target_status,
+                            anchor_cutoff_timestamp: Some(&receipt.occurred_at),
+                            anchor_message_id: None,
+                            recipient_external_ids: &recipients,
+                            raw_payload_json: Some(&payload_str),
+                            event_occurred_at: Some(&receipt.occurred_at),
+                        },
+                    )?;
+                    tx.commit()?;
+                    return Ok(swept.into_iter().last());
+                }
+            }
+            Ok(None)
+        }
     }
 
     pub fn apply_group_snapshot(&self, snapshot: &NormalizedGroupSnapshot) -> Result<i64> {
@@ -5909,8 +5987,44 @@ fn ensure_channel_account(
     )
 }
 
+fn composite_id_candidates(id: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    let trimmed = id.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return candidates;
+    }
+    candidates.push(trimmed);
+    if trimmed.contains('_') {
+        let mut current = trimmed;
+        while let Some((_, rest)) = current.split_once('_') {
+            let rest = rest.trim();
+            if !rest.is_empty() && rest != "0" && !candidates.contains(&rest) {
+                candidates.push(rest);
+            }
+            current = rest;
+        }
+    }
+    candidates
+}
+
+fn is_composite_id_match(id_a: &str, id_b: &str) -> bool {
+    let a = id_a.trim();
+    let b = id_b.trim();
+    if a.is_empty() || b.is_empty() || a == "0" || b == "0" {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    let candidates_a = composite_id_candidates(a);
+    let candidates_b = composite_id_candidates(b);
+    candidates_a.contains(&b)
+        || candidates_b.contains(&a)
+        || candidates_a.iter().any(|ca| candidates_b.contains(ca))
+}
+
 fn resolve_message_id(
-    tx: &rusqlite::Transaction,
+    tx: &rusqlite::Transaction<'_>,
     provider_account_key: &str,
     external_thread_id: &str,
     is_group: bool,
@@ -5918,7 +6032,6 @@ fn resolve_message_id(
     provider_client_message_id: &str,
 ) -> Result<Option<i64>> {
     let channel_account_id = find_channel_account_id_by_key(tx, "zalo", provider_account_key)?;
-
     let channel_account_id = match channel_account_id {
         Some(id) => id,
         None => return Ok(None),
@@ -5938,11 +6051,11 @@ fn resolve_message_id(
         None => return Ok(None),
     };
 
-    if !provider_message_id.is_empty() && provider_message_id != "0" {
+    for candidate in composite_id_candidates(provider_message_id) {
         let msg_id: Option<i64> = tx
             .query_row(
-                "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
-                params![conversation_id, provider_message_id],
+                "SELECT id FROM messages WHERE conversation_id = ?1 AND (provider_message_id = ?2 OR provider_client_message_id = ?2)",
+                params![conversation_id, candidate],
                 |row| row.get(0),
             )
             .optional()?;
@@ -6018,33 +6131,30 @@ fn replay_pending_reactions_tx(
     tx: &rusqlite::Transaction<'_>,
     channel_account_id: i64,
     message_id: i64,
+    conversation_id: i64,
     message: &NormalizedMessage,
 ) -> Result<usize> {
-    let provider_message_id = message
+    let msg_pmid = message
         .provider_message_id
         .as_deref()
         .map(str::trim)
         .unwrap_or("");
-    let provider_client_message_id = message
+    let msg_cmid = message
         .provider_client_message_id
         .as_deref()
         .map(str::trim)
         .unwrap_or("");
-    if provider_message_id.is_empty() && provider_client_message_id.is_empty() {
+    if msg_pmid.is_empty() && msg_cmid.is_empty() {
         return Ok(0);
     }
 
-    let pending = {
+    let all_pending = {
         let mut statement = tx.prepare(
-            "SELECT id, actor_external_id, reaction, removed, occurred_at
+            "SELECT id, provider_message_id, provider_client_message_id, actor_external_id, reaction, removed, occurred_at, raw_payload_json
              FROM pending_message_reactions
              WHERE channel_account_id = ?1
                AND external_thread_id = ?2
                AND conversation_kind = ?3
-               AND (
-                   (?4 != '' AND provider_message_id = ?4)
-                   OR (?5 != '' AND provider_client_message_id = ?5)
-               )
              ORDER BY occurred_at, id",
         )?;
         let rows = statement.query_map(
@@ -6052,23 +6162,37 @@ fn replay_pending_reactions_tx(
                 channel_account_id,
                 message.external_thread_id,
                 message.conversation_kind.as_str(),
-                provider_message_id,
-                provider_client_message_id,
             ],
             |row| {
                 Ok(PendingMessageReaction {
                     id: row.get(0)?,
-                    actor_external_id: row.get(1)?,
-                    reaction: row.get(2)?,
-                    removed: row.get::<_, i64>(3)? != 0,
-                    occurred_at: row.get(4)?,
+                    provider_message_id: row.get(1)?,
+                    provider_client_message_id: row.get(2)?,
+                    actor_external_id: row.get(3)?,
+                    reaction: row.get(4)?,
+                    removed: row.get::<_, i64>(5)? != 0,
+                    occurred_at: row.get(6)?,
+                    raw_payload_json: row.get(7)?,
                 })
             },
         )?;
         rows.collect::<Result<Vec<_>>>()?
     };
 
-    for pending_reaction in &pending {
+    let matched_pending: Vec<PendingMessageReaction> = all_pending
+        .into_iter()
+        .filter(|pending| {
+            let p_pmid = pending.provider_message_id.as_str();
+            let p_cmid = pending.provider_client_message_id.as_str();
+
+            (!p_cmid.is_empty() && !msg_cmid.is_empty() && p_cmid == msg_cmid)
+                || is_composite_id_match(p_pmid, msg_pmid)
+                || (!p_cmid.is_empty() && is_composite_id_match(p_cmid, msg_pmid))
+                || (!msg_cmid.is_empty() && is_composite_id_match(p_pmid, msg_cmid))
+        })
+        .collect();
+
+    for pending_reaction in &matched_pending {
         apply_reaction_to_message_tx(
             tx,
             message_id,
@@ -6077,16 +6201,99 @@ fn replay_pending_reactions_tx(
             pending_reaction.removed,
             &pending_reaction.occurred_at,
         )?;
+
+        apply_implicit_reaction_read_tx(
+            tx,
+            conversation_id,
+            message_id,
+            message.conversation_kind,
+            message.direction,
+            &message.external_thread_id,
+            &pending_reaction.actor_external_id,
+            pending_reaction.removed,
+            &pending_reaction.occurred_at,
+            Some(&pending_reaction.raw_payload_json),
+        )?;
     }
 
-    for pending_reaction in &pending {
+    for pending_reaction in &matched_pending {
         tx.execute(
             "DELETE FROM pending_message_reactions WHERE id = ?1",
             [pending_reaction.id],
         )?;
     }
 
-    Ok(pending.len())
+    Ok(matched_pending.len())
+}
+
+fn apply_implicit_reaction_read_tx(
+    tx: &rusqlite::Transaction<'_>,
+    conversation_id: i64,
+    message_id: i64,
+    conversation_kind: ConversationKind,
+    direction: MessageDirection,
+    external_thread_id: &str,
+    actor_external_id: &str,
+    removed: bool,
+    occurred_at: &str,
+    raw_payload_json: Option<&str>,
+) -> Result<()> {
+    if !removed
+        && conversation_kind == ConversationKind::Direct
+        && direction == MessageDirection::Outbound
+        && actor_external_id == external_thread_id
+    {
+        let recipient_ids = [actor_external_id.to_string()];
+        let payload = raw_payload_json.unwrap_or("{}");
+
+        // 1. Process anchor message directly
+        for recipient_id in &recipient_ids {
+            tx.execute(
+                "INSERT INTO message_receipts
+                 (message_id, recipient_external_id, receipt_type, occurred_at, raw_payload_json)
+                 VALUES (?1, ?2, 'read', ?3, ?4)
+                 ON CONFLICT(message_id, recipient_external_id, receipt_type) DO UPDATE SET
+                     occurred_at = MAX(message_receipts.occurred_at, excluded.occurred_at),
+                     raw_payload_json = CASE
+                         WHEN excluded.occurred_at >= message_receipts.occurred_at
+                         THEN excluded.raw_payload_json
+                         ELSE message_receipts.raw_payload_json
+                     END",
+                params![message_id, recipient_id, occurred_at, payload],
+            )?;
+        }
+
+        let current_status: String = tx.query_row(
+            "SELECT status FROM messages WHERE id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )?;
+        if current_status != "failed" && current_status != "removed" {
+            let current_rank = status_rank(&current_status);
+            let target_rank = status_rank("read");
+            if target_rank > current_rank {
+                tx.execute(
+                    "UPDATE messages SET status = 'read' WHERE id = ?1",
+                    params![message_id],
+                )?;
+            }
+        }
+
+        // 2. Sweep prior outbound messages with cutoff from anchor message
+        sweep_outbound_messages_status_tx(
+            tx,
+            SweepOutboundParams {
+                conversation_id,
+                target_status: ReceiptTargetStatus::Read,
+                anchor_cutoff_timestamp: None,
+                anchor_message_id: Some(message_id),
+                recipient_external_ids: &recipient_ids,
+                raw_payload_json,
+                event_occurred_at: Some(occurred_at),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn apply_reaction_to_message_tx(
@@ -6150,6 +6357,180 @@ fn status_rank(status: &str) -> i32 {
         "read" => 5,
         _ => 0,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiptTargetStatus {
+    Delivered,
+    Read,
+}
+
+impl ReceiptTargetStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ReceiptTargetStatus::Delivered => "delivered",
+            ReceiptTargetStatus::Read => "read",
+        }
+    }
+
+    fn rank(&self) -> i32 {
+        status_rank(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SweepOutboundParams<'a> {
+    conversation_id: i64,
+    target_status: ReceiptTargetStatus,
+    anchor_cutoff_timestamp: Option<&'a str>,
+    anchor_message_id: Option<i64>,
+    recipient_external_ids: &'a [String],
+    raw_payload_json: Option<&'a str>,
+    event_occurred_at: Option<&'a str>,
+}
+
+fn sweep_outbound_messages_status_tx(
+    tx: &rusqlite::Transaction,
+    params: SweepOutboundParams<'_>,
+) -> Result<Vec<i64>> {
+    let target_rank = params.target_status.rank();
+
+    let cutoff_timestamp: Option<String> = if let Some(anchor_id) = params.anchor_message_id {
+        let anchor_ts: Option<String> = tx
+            .query_row(
+                "SELECT COALESCE(provider_timestamp, ingested_at) FROM messages WHERE id = ?1",
+                [anchor_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        anchor_ts.or_else(|| params.anchor_cutoff_timestamp.map(ToString::to_string))
+    } else {
+        params.anchor_cutoff_timestamp.map(ToString::to_string)
+    };
+
+    let sql = "SELECT id, status, COALESCE(provider_timestamp, ingested_at) AS msg_time
+               FROM messages
+               WHERE conversation_id = ?1
+                 AND direction = 'outbound'
+                 AND status NOT IN ('failed', 'removed')";
+
+    let mut stmt = tx.prepare(sql)?;
+    let rows = stmt
+        .query_map(params![params.conversation_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut affected_message_ids = Vec::new();
+    let payload = params.raw_payload_json.unwrap_or("{}");
+    let recipients = if params.recipient_external_ids.is_empty() {
+        vec!["".to_string()]
+    } else {
+        params.recipient_external_ids.to_vec()
+    };
+
+    for (msg_id, current_status, msg_time) in rows {
+        if let Some(anchor_id) = params.anchor_message_id {
+            if msg_id == anchor_id {
+                continue;
+            }
+        }
+        if let Some(cutoff) = &cutoff_timestamp {
+            if msg_time.as_str() > cutoff.as_str() {
+                continue;
+            }
+        }
+
+        let occurred_at = params
+            .event_occurred_at
+            .unwrap_or_else(|| cutoff_timestamp.as_deref().unwrap_or(msg_time.as_str()));
+
+        for recipient_id in &recipients {
+            tx.execute(
+                "INSERT INTO message_receipts
+                 (message_id, recipient_external_id, receipt_type, occurred_at, raw_payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(message_id, recipient_external_id, receipt_type) DO UPDATE SET
+                     occurred_at = MAX(message_receipts.occurred_at, excluded.occurred_at),
+                     raw_payload_json = CASE
+                         WHEN excluded.occurred_at >= message_receipts.occurred_at
+                         THEN excluded.raw_payload_json
+                         ELSE message_receipts.raw_payload_json
+                     END",
+                params![
+                    msg_id,
+                    recipient_id,
+                    params.target_status.as_str(),
+                    occurred_at,
+                    payload,
+                ],
+            )?;
+        }
+
+        let current_rank = status_rank(&current_status);
+        if target_rank > current_rank {
+            tx.execute(
+                "UPDATE messages SET status = ?1 WHERE id = ?2",
+                params![params.target_status.as_str(), msg_id],
+            )?;
+            affected_message_ids.push(msg_id);
+        }
+    }
+
+    Ok(affected_message_ids)
+}
+
+fn apply_implicit_conversation_read_tx(
+    tx: &rusqlite::Transaction,
+    conversation_id: i64,
+    message: &NormalizedMessage,
+    now: &str,
+) -> Result<()> {
+    if message.direction == MessageDirection::Inbound
+        && message.conversation_kind == ConversationKind::Direct
+    {
+        let peer_external_id = message
+            .participant
+            .as_ref()
+            .map(|p| p.external_id.as_str())
+            .unwrap_or("");
+        let occurred = message.provider_timestamp.as_deref().unwrap_or(now);
+        let recipient_ids = if !peer_external_id.is_empty() {
+            vec![peer_external_id.to_string()]
+        } else {
+            vec![]
+        };
+        let raw_payload = message
+            .raw_payload
+            .as_ref()
+            .map(serde_json::Value::to_string);
+        sweep_outbound_messages_status_tx(
+            tx,
+            SweepOutboundParams {
+                conversation_id,
+                target_status: ReceiptTargetStatus::Read,
+                anchor_cutoff_timestamp: Some(occurred),
+                anchor_message_id: None,
+                recipient_external_ids: &recipient_ids,
+                raw_payload_json: raw_payload.as_deref(),
+                event_occurred_at: Some(occurred),
+            },
+        )?;
+    } else if message.direction == MessageDirection::Outbound {
+        tx.execute(
+            "UPDATE messages
+             SET status = 'read'
+             WHERE conversation_id = ?1
+               AND direction = 'inbound'
+               AND status != 'read'",
+            params![conversation_id],
+        )?;
+    }
+    Ok(())
 }
 
 fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> {

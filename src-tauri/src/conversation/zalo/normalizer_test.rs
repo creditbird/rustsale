@@ -452,6 +452,26 @@ fn delivered_and_seen_receipts_normalize_correctly() {
     };
     assert_eq!(receipt2.kind, ReceiptKind::Read);
     assert_eq!(receipt2.provider_message_id, "msg-32");
+
+    // Delivered message with seen=1 should normalize to ReceiptKind::Read
+    let delivered_seen = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "".to_string(),
+        seen: 1,
+        delivered_uids: vec!["peer-uid".to_string()],
+        seen_uids: vec!["peer-uid".to_string()],
+        real_msg_id: "real-seen-34".to_string(),
+        m_s_ts: 1785456000000,
+    });
+    let event_del_seen =
+        ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(delivered_seen)]);
+    let mutations_del_seen =
+        normalize_listener_event("imei-a", Some("Sale 01"), event_del_seen).unwrap();
+    assert_eq!(mutations_del_seen.len(), 1);
+    let ZaloMutation::Receipt(receipt3) = &mutations_del_seen[0] else {
+        panic!("expected receipt mutation");
+    };
+    assert_eq!(receipt3.kind, ReceiptKind::Read);
+    assert_eq!(receipt3.provider_message_id, "real-seen-34");
 }
 
 #[test]
