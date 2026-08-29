@@ -13,6 +13,9 @@
 > [!IMPORTANT]
 > **MANDATORY IMPLEMENTATION HARNESS:** Before any task that creates, changes, fixes, refactors, migrates, or ships behavior, read and follow [`docs/IMPLEMENTATION_COMPLETION_HARNESS.md`](docs/IMPLEMENTATION_COMPLETION_HARNESS.md). Its requirement ledger, adversarial verification, evidence ladder, and Completion Lock control all implementation and remediation work. Do not claim completion while any lock condition remains open.
 
+> [!IMPORTANT]
+> **BEST-OF-N IMPLEMENTATION:** For explicitly requested Best-of-N work, or Tier 3 changes with multiple materially different valid implementations, read and follow [`.agents/skills/best-of-n-implementation/SKILL.md`](.agents/skills/best-of-n-implementation/SKILL.md). A ranking winner is only `SELECTED`; final readiness remains controlled by [`docs/IMPLEMENTATION_COMPLETION_HARNESS.md`](docs/IMPLEMENTATION_COMPLETION_HARNESS.md). Missing candidate, ranking, review, or quality-gate evidence produces `INCOMPLETE`, never implicit fallback or approval.
+
 # Release & Auto-Update Workflow (Cloudflare R2)
 
 > [!IMPORTANT]

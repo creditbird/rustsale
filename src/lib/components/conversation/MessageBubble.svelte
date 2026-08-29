@@ -388,7 +388,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="group/bubble flex w-full my-1.5 items-end gap-2 {isOutbound ? 'justify-end' : 'justify-start'}"
+  class="group/bubble flex w-full my-1.5 items-start gap-2 {isOutbound ? 'justify-end' : 'justify-start'}"
   data-message-id={message.id}
   role="group"
   aria-label={`Message ${message.id}`}
@@ -401,7 +401,7 @@
   {#if !isOutbound && isGroup}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
-      class="shrink-0 mb-1 cursor-pointer select-none"
+      class="shrink-0 mt-0.5 cursor-pointer select-none"
       title={senderDisplayNameResolved}
       onclick={(e) => {
         e.stopPropagation();

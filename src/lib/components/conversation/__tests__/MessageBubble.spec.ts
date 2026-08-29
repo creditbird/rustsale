@@ -607,4 +607,37 @@ describe('MessageBubble Component', () => {
     // Must render initials 'M'
     expect(screen.getByText('M')).toBeTruthy();
   });
+
+  test('renders avatar aligned at the top (items-start) for group chat messages', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 707,
+      channel: 'zalo',
+      senderDisplayName: 'Định Đỗ',
+      senderExternalId: '123456789',
+      senderAvatarUrl: 'https://example.com/avatar.jpg',
+      textContent: 'TỔNG KẾT 10 BÀI TẬP TỪ Ý TƯỞNG'
+    };
+
+    const { container } = render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'Team 1A - Startup 12 Week'
+      }
+    });
+
+    const bubbleWrapper = container.querySelector('[data-message-id="707"]');
+    expect(bubbleWrapper).toBeTruthy();
+    expect(bubbleWrapper?.classList.contains('items-start')).toBe(true);
+    expect(bubbleWrapper?.classList.contains('items-end')).toBe(false);
+
+    const avatarImg = container.querySelector('img[alt="Định Đỗ"]');
+    expect(avatarImg).toBeTruthy();
+    expect(avatarImg?.getAttribute('src')).toBe('https://example.com/avatar.jpg');
+    const avatarContainer = avatarImg?.parentElement;
+    expect(avatarContainer?.classList.contains('mt-0.5')).toBe(true);
+    expect(avatarContainer?.classList.contains('mb-1')).toBe(false);
+  });
 });
+
