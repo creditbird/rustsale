@@ -1505,7 +1505,13 @@ impl ConversationService {
                     .unwrap_or(false);
 
                 match client
-                    .send_reaction(&recipient_jid, target_msg_id, target_sender, emoji, target_is_from_me)
+                    .send_reaction(
+                        &recipient_jid,
+                        target_msg_id,
+                        target_sender,
+                        emoji,
+                        target_is_from_me,
+                    )
                     .await
                 {
                     Ok(()) => Ok(
@@ -2045,8 +2051,8 @@ impl ConversationService {
         use super::projection::load_message_reaction_groups;
         use super::reactions::ReactionMutationRepository;
         use super::types::{
-            ConversationCapabilities, ConversationReactionCode,
-            ConversationReactionMutationResult, ReactionMutationStatus,
+            ConversationCapabilities, ConversationReactionCode, ConversationReactionMutationResult,
+            ReactionMutationStatus,
         };
         use crate::db::open_db_connection;
         use rusqlite::OptionalExtension;

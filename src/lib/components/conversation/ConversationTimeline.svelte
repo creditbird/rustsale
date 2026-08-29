@@ -20,6 +20,7 @@
     emptyMessage,
     onLoadOlder,
     isGroup = false,
+    conversationTitle = '',
     capabilitiesForMessage = () => undefined,
     pendingReactionsForMessage = () => [],
     pinnedMessageIds = new Set<number>(),
@@ -38,6 +39,7 @@
     emptyMessage: string;
     onLoadOlder: () => void;
     isGroup?: boolean;
+    conversationTitle?: string;
     capabilitiesForMessage?: (message: ConversationMessage) => ConversationCapabilities | undefined;
     pendingReactionsForMessage?: (messageId: number) => ConversationReactionCode[];
     pinnedMessageIds?: Set<number>;
@@ -263,6 +265,7 @@
         <MessageBatchGroup
           messages={renderItem.messages}
           {isGroup}
+          {conversationTitle}
           {capabilitiesForMessage}
           {pendingReactionsForMessage}
           {onReply}
@@ -277,6 +280,7 @@
         <MessageBubble
           message={renderItem.message}
           {isGroup}
+          {conversationTitle}
           capabilities={capabilitiesForMessage(renderItem.message)}
           pendingReactions={pendingReactionsForMessage(renderItem.message.id)}
           isPinned={pinnedMessageIds.has(renderItem.message.id)}

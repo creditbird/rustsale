@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+    "run_dir": { "type": "string" },
+    "base_sha": { "type": "string" },
+    "selected_candidate": { "type": ["string", "null"] },
+    "ranking_backend": {
+      "type": "string",
+      "enum": ["agy-ppt", "llm-verifier"]
+    },
+    "ranking_evidence": { "type": ["string", "null"] },
+    "review_verdict": {
+      "type": "string",
+      "enum": ["APPROVED", "CHANGES_REQUESTED", "REVIEW_INCOMPLETE"]
+    },
+    "quality_gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "array", "items": { "type": "string" } },
+          "exit_code": { "type": "integer" },
+          "observed": { "type": "string" }
+        },
+        "required": ["command", "exit_code", "observed"]
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "status",
+    "run_dir",
+    "base_sha",
+    "selected_candidate",
+    "ranking_backend",
+    "ranking_evidence",
+    "review_verdict",
+    "quality_gates",
+    "limitations"
+  ]
+}

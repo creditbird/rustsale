@@ -35,15 +35,20 @@
     open = false,
     conversationId = null,
     groupTitle = '',
+    channel = 'zalo',
     onClose = () => {},
     onLeadsImported = (_count: number) => {}
   }: {
     open?: boolean;
     conversationId?: number | null;
     groupTitle?: string;
+    channel?: 'zalo' | 'whatsapp' | string;
     onClose?: () => void;
     onLeadsImported?: (count: number) => void;
   } = $props();
+
+  const isWhatsApp = $derived(channel?.toLowerCase() === 'whatsapp');
+  const channelLabel = $derived(isWhatsApp ? 'WhatsApp' : 'Zalo');
 
   let members = $state<GroupMemberDetail[]>([]);
   let loading = $state(false);
@@ -94,7 +99,7 @@
 
   const diagnosticSummary = $derived.by(() => {
     if (!scanResult) {
-      return 'Showing locally saved UIDs. Click Deep Scan to supplement data from Zalo.';
+      return `Showing locally saved UIDs. Click Deep Scan to supplement data from ${channelLabel}.`;
     }
     if (scanResult.diagnostics.direct_snapshot.complete) {
       return `Full member list from provider snapshot: ${scanResult.discovered_count} members.`;
@@ -529,7 +534,7 @@
           <Input
             type="text"
             bind:value={searchQuery}
-            placeholder="Search name, Zalo ID..."
+            placeholder={`Search name, ${channelLabel} ID...`}
             class="h-8 pl-8 text-xs w-full"
           />
         </div>
@@ -562,7 +567,7 @@
                 <th class="p-3">Member</th>
                 <th class="p-3 w-28">Role</th>
                 <th class="p-3 w-56">CRM Status & Category</th>
-                <th class="p-3 w-28 text-right">Zalo ID</th>
+                <th class="p-3 w-28 text-right">{channelLabel} ID</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-border/60">
@@ -742,7 +747,7 @@
           <ul class="list-disc pl-4 space-y-0.5">
             <li>Non-lead members will be automatically created in CRM.</li>
             <li>Existing leads will be automatically assigned to selected categories.</li>
-            <li>Lead notes will automatically track origin: <code>Zalo Group Lead: {groupTitle}</code>.</li>
+            <li>Lead notes will automatically track origin: <code>{channelLabel} Group Lead: {groupTitle}</code>.</li>
           </ul>
         </div>
 

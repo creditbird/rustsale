@@ -13,6 +13,9 @@
     "check:watch": "bun run i18n:compile && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "bun run i18n:compile && bun test --conditions=browser --conditions=svelte",
     "test:cloak-runtime": "bun test sidecars/cloak-runtime/src",
+    "best-of-n": "bun .agents/skills/best-of-n-implementation/scripts/orchestrate.ts",
+    "best-of-n:setup-llm-verifier": "bun .agents/skills/best-of-n-implementation/scripts/setup-verifier.ts",
+    "test:best-of-n": "bun test ./.agents/skills/best-of-n-implementation/scripts/orchestrate.test.ts ./.agents/skills/best-of-n-implementation/scripts/agy-ppt-runner.test.ts ./.agents/skills/best-of-n-implementation/scripts/llm-verifier-runner.test.ts",
     "release": "bun run scripts/publish-release.ts",
     "release:r2": "bun run scripts/generate-r2-release.ts",
     "tauri": "tauri"

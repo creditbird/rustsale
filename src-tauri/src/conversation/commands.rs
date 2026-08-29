@@ -821,7 +821,10 @@ pub async fn sync_whatsapp_conversations(
         .load_active_sessions_on_startup()
         .await
         .map_err(|e| e.to_string())?;
-    state.whatsapp_supervisor.drain_all_connected_accounts().await;
+    state
+        .whatsapp_supervisor
+        .drain_all_connected_accounts()
+        .await;
     Ok(loaded)
 }
 

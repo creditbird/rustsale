@@ -530,4 +530,114 @@ describe('MessageBubble Component', () => {
     expect(screen.getByText('+84912345678')).toBeTruthy();
     expect(screen.getByText('I agree with this proposal')).toBeTruthy();
   });
+
+  test('renders WhatsApp group message with real sender name and phone number on the right', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 704,
+      channel: 'whatsapp',
+      senderDisplayName: 'Sadia Wajiha',
+      senderExternalId: '447503823686',
+      senderAvatarUrl: null,
+      textContent: 'Hi friends!'
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'AI Builders Tech Q&A'
+      }
+    });
+
+    expect(screen.getByText('Sadia Wajiha')).toBeTruthy();
+    expect(screen.queryByText(/~/)).toBeNull();
+    expect(screen.getByText('+44 7503 823686')).toBeTruthy();
+    expect(screen.getByText('SW')).toBeTruthy();
+  });
+
+  test('ignores group conversation title as sender name and falls back to phone number', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 705,
+      channel: 'whatsapp',
+      senderDisplayName: 'AI Builders Tech Q&A',
+      senderExternalId: '84978781822',
+      senderAvatarUrl: null,
+      textContent: 'Hi builders'
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'AI Builders Tech Q&A'
+      }
+    });
+
+    expect(screen.queryByText(/AI Builders Tech Q&A/)).toBeNull();
+    expect(screen.queryByText(/~/)).toBeNull();
+    expect(screen.getByText(/\+84 97 878/)).toBeTruthy();
+    expect(screen.getByText('#')).toBeTruthy();
+  });
+
+  test('renders Member without lone tilde when sender has no name and unmapped LID', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 706,
+      channel: 'whatsapp',
+      senderDisplayName: 'AI Builders Community',
+      senderExternalId: '120363422595125899',
+      senderAvatarUrl: null,
+      textContent: 'Nice one'
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'AI Builders Community'
+      }
+    });
+
+    // Must NOT render lone ~
+    expect(screen.queryByText(/~/)).toBeNull();
+    // Must render Member
+    expect(screen.getByText('Member')).toBeTruthy();
+    // Must render initials 'M'
+    expect(screen.getByText('M')).toBeTruthy();
+  });
+
+  test('renders avatar aligned at the top (items-start) for group chat messages', () => {
+    const groupMsg: ConversationMessage = {
+      ...baseMessage,
+      id: 707,
+      channel: 'zalo',
+      senderDisplayName: 'Định Đỗ',
+      senderExternalId: '123456789',
+      senderAvatarUrl: 'https://example.com/avatar.jpg',
+      textContent: 'TỔNG KẾT 10 BÀI TẬP TỪ Ý TƯỞNG'
+    };
+
+    const { container } = render(MessageBubble, {
+      props: {
+        message: groupMsg,
+        isGroup: true,
+        conversationTitle: 'Team 1A - Startup 12 Week'
+      }
+    });
+
+    const bubbleWrapper = container.querySelector('[data-message-id="707"]');
+    expect(bubbleWrapper).toBeTruthy();
+    expect(bubbleWrapper?.classList.contains('items-start')).toBe(true);
+    expect(bubbleWrapper?.classList.contains('items-end')).toBe(false);
+
+    const avatarImg = container.querySelector('img[alt="Định Đỗ"]');
+    expect(avatarImg).toBeTruthy();
+    expect(avatarImg?.getAttribute('src')).toBe('https://example.com/avatar.jpg');
+    const avatarContainer = avatarImg?.parentElement;
+    expect(avatarContainer?.classList.contains('mt-0.5')).toBe(true);
+    expect(avatarContainer?.classList.contains('mb-1')).toBe(false);
+  });
 });
+

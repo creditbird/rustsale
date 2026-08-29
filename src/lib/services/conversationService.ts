@@ -309,6 +309,7 @@ export interface ConversationMessage {
   senderIdentityId: number | null;
   senderExternalId?: string | null;
   senderDisplayName: string | null;
+  senderAvatarUrl?: string | null;
   direction: MessageDirection;
   contentType: string;
   textContent: string | null;

@@ -11,6 +11,7 @@
   let {
     messages,
     isGroup = false,
+    conversationTitle = '',
     capabilitiesForMessage = () => undefined,
     pendingReactionsForMessage = () => [],
     onReply = () => {},
@@ -23,6 +24,7 @@
   }: {
     messages: ConversationMessage[];
     isGroup?: boolean;
+    conversationTitle?: string;
     capabilitiesForMessage?: (message: ConversationMessage) => ConversationCapabilities | undefined;
     pendingReactionsForMessage?: (messageId: number) => ConversationReactionCode[];
     onReply?: (message: ConversationMessage) => void;
@@ -78,6 +80,7 @@
     <MessageBubble
       {message}
       {isGroup}
+      {conversationTitle}
       showStatus={false}
       capabilities={capabilitiesForMessage(message)}
       pendingReactions={pendingReactionsForMessage(message.id)}

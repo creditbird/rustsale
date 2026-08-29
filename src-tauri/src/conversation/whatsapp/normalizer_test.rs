@@ -164,6 +164,17 @@ fn setup_test_db() -> Connection {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS message_mentions (
+            message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            identity_id INTEGER REFERENCES channel_identities(id) ON DELETE SET NULL,
+            external_id TEXT,
+            display_text TEXT NOT NULL,
+            start_utf16 INTEGER NOT NULL,
+            length_utf16 INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(message_id, start_utf16, length_utf16)
+        );
+
         CREATE TABLE IF NOT EXISTS whatsapp_lid_pn_mappings (
             lid TEXT PRIMARY KEY,
             phone_e164 TEXT NOT NULL,
@@ -211,6 +222,7 @@ fn mock_incoming_text(chat_jid: &str, text: &str) -> RawWhatsAppMessage {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     }
 }
 
@@ -358,6 +370,7 @@ fn test_normalizer_resolves_lid_when_pn_mapping_exists() {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
@@ -395,6 +408,7 @@ fn test_normalizer_auto_maps_lid_when_message_has_pn_and_lid() {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
@@ -429,6 +443,7 @@ fn test_normalizer_inbound_direct_message_parsing() {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
@@ -488,6 +503,7 @@ fn test_normalizer_inbound_group_message_parsing() {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
@@ -544,6 +560,7 @@ fn test_normalizer_attachments_parsing() {
         }],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
@@ -588,6 +605,7 @@ fn test_normalizer_quote_reply_parsing() {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
     WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &msg1)
         .unwrap()
@@ -619,6 +637,7 @@ fn test_normalizer_quote_reply_parsing() {
             timestamp: Some("2026-08-26T12:00:00.000Z".to_string()),
         }),
         raw_json: None,
+        mentions: vec![],
     };
     WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &msg2)
         .unwrap()
@@ -687,12 +706,14 @@ fn test_normalizer_reaction_and_receipt_ingestion() {
         let mut stmt = conn
             .prepare("SELECT reaction, count FROM message_reactions WHERE message_id = 500")
             .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap();
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         rows.collect::<Result<Vec<_>, _>>().unwrap()
     };
-    assert_eq!(reactions.len(), 1, "WhatsApp actor must have only 1 active reaction");
+    assert_eq!(
+        reactions.len(),
+        1,
+        "WhatsApp actor must have only 1 active reaction"
+    );
     assert_eq!(reactions[0].0, "🙏");
 
     // Ingest Third Reaction (replaces with 😂)
@@ -710,9 +731,7 @@ fn test_normalizer_reaction_and_receipt_ingestion() {
         let mut stmt = conn
             .prepare("SELECT reaction, count FROM message_reactions WHERE message_id = 500")
             .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap();
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         rows.collect::<Result<Vec<_>, _>>().unwrap()
     };
     assert_eq!(reactions3.len(), 1);
@@ -733,12 +752,14 @@ fn test_normalizer_reaction_and_receipt_ingestion() {
         let mut stmt = conn
             .prepare("SELECT reaction, count FROM message_reactions WHERE message_id = 500")
             .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap();
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         rows.collect::<Result<Vec<_>, _>>().unwrap()
     };
-    assert_eq!(reactions_after_remove.len(), 0, "Reaction should be removed completely");
+    assert_eq!(
+        reactions_after_remove.len(),
+        0,
+        "Reaction should be removed completely"
+    );
 
     // 2. Ingest Delivery Receipt
     let delivery_receipt = RawWhatsAppReceipt {
@@ -819,6 +840,7 @@ fn test_normalizer_outbound_direct_and_group_messages() {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &out_direct)
         .unwrap()
@@ -880,6 +902,7 @@ fn test_normalizer_pending_reaction_replayed_when_message_arrives() {
         attachments: vec![],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
         .unwrap()
@@ -940,6 +963,7 @@ fn test_normalizer_normalize_message_model_conversion() {
         }],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let norm = WhatsAppNormalizer::normalize_message("84901234567", Some("My Biz"), &raw).unwrap();
@@ -1048,6 +1072,7 @@ fn test_extract_raw_message_from_proto() {
         Some("Sender Name"),
         "84901234567@s.whatsapp.net",
         Some("Chat Title"),
+        None,
     )
     .expect("Should extract raw message");
 
@@ -1088,6 +1113,7 @@ fn test_extract_raw_message_nested_ephemeral_and_view_once() {
         Some("Alice"),
         "84901234567@s.whatsapp.net",
         None,
+        None,
     )
     .expect("Should extract message from ephemeral wrapper");
     assert_eq!(raw1.text, Some("Secret ephemeral text".to_string()));
@@ -1127,6 +1153,7 @@ fn test_extract_raw_message_nested_ephemeral_and_view_once() {
         Some(1700000002),
         Some("Bob"),
         "84901234567@s.whatsapp.net",
+        None,
         None,
     )
     .expect("Should extract image from view_once_message_v2 wrapper");
@@ -1196,6 +1223,7 @@ fn test_extract_and_ingest_image_with_encryption_metadata() {
         Some(1700000003),
         Some("Sender"),
         "84901234567@s.whatsapp.net",
+        None,
         None,
     )
     .expect("Should extract raw message");
@@ -1281,6 +1309,7 @@ fn test_ingest_duplicate_redelivery_enriches_missing_media_key_and_cleans_local_
         }],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw_initial)
@@ -1341,6 +1370,7 @@ fn test_ingest_duplicate_redelivery_enriches_missing_media_key_and_cleans_local_
         }],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let re_conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw_enriched)
@@ -1409,6 +1439,7 @@ fn test_redelivery_with_refreshed_cdn_url_reuses_canonical_attachment() {
         }],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
 
     let conversation_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &initial)
@@ -1503,6 +1534,7 @@ fn test_sparse_redelivery_does_not_erase_persisted_media_secrets() {
         }],
         quote: None,
         raw_json: None,
+        mentions: vec![],
     };
     WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &rich).unwrap();
 
@@ -1546,4 +1578,580 @@ fn test_sparse_redelivery_does_not_erase_persisted_media_secrets() {
         thumbnail_url.as_deref(),
         Some("data:image/jpeg;base64,RICH")
     );
+}
+
+#[test]
+fn test_extract_group_message_never_uses_group_title_as_sender_name() {
+    let msg = whatsapp_rust::prelude::wa::Message {
+        conversation: Some("Message in group".to_string()),
+        ..Default::default()
+    };
+    let key = whatsapp_rust::prelude::wa::MessageKey {
+        id: Some("WA_GROUP_MSG_001".to_string()),
+        remote_jid: Some("120363025342171@g.us".to_string()),
+        from_me: Some(false),
+        participant: Some("84901234567@s.whatsapp.net".to_string()),
+        ..Default::default()
+    };
+
+    // Case 1: push_name is None, conv_title is provided ("AI Builders Tech Q&A")
+    let raw = WhatsAppNormalizer::extract_raw_message(
+        &msg,
+        &key,
+        Some(1700000000),
+        None,
+        "120363025342171@g.us",
+        Some("AI Builders Tech Q&A"),
+        None,
+    )
+    .expect("Should extract message");
+
+    // In a group, sender_name must NOT fallback to conv_title!
+    assert_eq!(raw.sender_name, None);
+    assert_eq!(
+        raw.sender_jid,
+        Some("84901234567@s.whatsapp.net".to_string())
+    );
+
+    // Case 2: push_name is provided ("Alice")
+    let raw_with_name = WhatsAppNormalizer::extract_raw_message(
+        &msg,
+        &key,
+        Some(1700000000),
+        Some("Alice"),
+        "120363025342171@g.us",
+        Some("AI Builders Tech Q&A"),
+        None,
+    )
+    .expect("Should extract message");
+
+    assert_eq!(raw_with_name.sender_name, Some("Alice".to_string()));
+}
+
+#[test]
+fn test_group_message_sender_jid_no_fallback_to_group_jid() {
+    let msg = whatsapp_rust::prelude::wa::Message {
+        conversation: Some("Message without participant".to_string()),
+        ..Default::default()
+    };
+    let key = whatsapp_rust::prelude::wa::MessageKey {
+        id: Some("WA_GROUP_MSG_NOPART".to_string()),
+        remote_jid: Some("120363025342171@g.us".to_string()),
+        from_me: Some(false),
+        participant: None,
+        ..Default::default()
+    };
+
+    let raw = WhatsAppNormalizer::extract_raw_message(
+        &msg,
+        &key,
+        Some(1700000000),
+        None,
+        "120363025342171@g.us",
+        None,
+        None,
+    )
+    .expect("Should extract message");
+
+    // In a group, sender_jid must NOT fallback to chat_jid (@g.us)
+    assert_eq!(raw.sender_jid, None);
+}
+
+#[test]
+fn test_extract_raw_message_with_web_message_info_participant_override() {
+    let msg = whatsapp_rust::prelude::wa::Message {
+        conversation: Some("Message from WebMessageInfo participant".to_string()),
+        ..Default::default()
+    };
+    let key = whatsapp_rust::prelude::wa::MessageKey {
+        id: Some("WA_GROUP_MSG_OVERRIDE".to_string()),
+        remote_jid: Some("120363025342171@g.us".to_string()),
+        from_me: Some(false),
+        participant: None, // key.participant is empty
+        ..Default::default()
+    };
+
+    // participant_override passed from WebMessageInfo.participant
+    let raw = WhatsAppNormalizer::extract_raw_message(
+        &msg,
+        &key,
+        Some(1700000000),
+        Some("Minh"),
+        "120363025342171@g.us",
+        Some("AI Builders Tech Q&A"),
+        Some("120363422595125899:1@lid"),
+    )
+    .expect("Should extract message");
+
+    assert_eq!(raw.sender_jid, Some("120363422595125899:1@lid".to_string()));
+    assert_eq!(raw.sender_name, Some("Minh".to_string()));
+}
+
+#[test]
+fn test_push_name_propagation_on_group_messages() {
+    let mut conn = setup_test_db();
+    let channel_account_id = 1;
+
+    // 1. First message from participant has no push_name
+    let raw1 = RawWhatsAppMessage {
+        id: "msg_grp_prop_01".to_string(),
+        chat_jid: "120363025342171@g.us".to_string(),
+        sender_jid: Some("84978781822@s.whatsapp.net".to_string()),
+        sender_name: None,
+        text: Some("Initial message without push name".to_string()),
+        timestamp: Some("2026-08-26T12:00:00.000Z".to_string()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: None,
+        mentions: vec![],
+    };
+    WhatsAppNormalizer::ingest_incoming_message(&mut conn, channel_account_id, &raw1).unwrap();
+
+    let name1: String = conn
+        .query_row(
+            "SELECT display_name FROM channel_identities WHERE external_id = '84978781822'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(name1, "+84978781822");
+
+    // 2. Second message from participant arrives with push_name = "Thucents"
+    let raw2 = RawWhatsAppMessage {
+        id: "msg_grp_prop_02".to_string(),
+        chat_jid: "120363025342171@g.us".to_string(),
+        sender_jid: Some("84978781822@s.whatsapp.net".to_string()),
+        sender_name: Some("Thucents".to_string()),
+        text: Some("Now with real push name".to_string()),
+        timestamp: Some("2026-08-26T12:05:00.000Z".to_string()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: None,
+        mentions: vec![],
+    };
+    WhatsAppNormalizer::ingest_incoming_message(&mut conn, channel_account_id, &raw2).unwrap();
+
+    // The display_name in channel_identities must be updated to "Thucents"
+    let name2: String = conn
+        .query_row(
+            "SELECT display_name FROM channel_identities WHERE external_id = '84978781822'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(name2, "Thucents");
+}
+
+#[test]
+fn test_repair_misattributed_group_senders() {
+    let mut conn = setup_test_db();
+    let channel_account_id = 1;
+    let group_jid = "120363025342171@g.us";
+
+    // Setup group conversation
+    let conv_id = WhatsAppNormalizer::ensure_conversation_exists(
+        &mut conn,
+        channel_account_id,
+        group_jid,
+        Some("AI Builders Community"),
+    )
+    .unwrap();
+
+    // Create a group identity where external_id = group_jid
+    conn.execute(
+        "INSERT INTO channel_identities (
+            channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at
+         ) VALUES ('whatsapp', ?1, 'phone', ?2, 'AI Builders Community', '2026-08-26T12:00:00Z', '2026-08-26T12:00:00Z')",
+        rusqlite::params![channel_account_id, group_jid],
+    ).unwrap();
+
+    let group_identity_id: i64 = conn
+        .query_row(
+            "SELECT id FROM channel_identities WHERE external_id = ?1",
+            [group_jid],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // Create a real participant identity for member
+    let member_phone = "84901234567";
+    conn.execute(
+        "INSERT INTO channel_identities (
+            channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at
+         ) VALUES ('whatsapp', ?1, 'phone', ?2, 'Sadia Wajiha', '2026-08-26T12:00:00Z', '2026-08-26T12:00:00Z')",
+        rusqlite::params![channel_account_id, member_phone],
+    ).unwrap();
+
+    let member_identity_id: i64 = conn
+        .query_row(
+            "SELECT id FROM channel_identities WHERE external_id = ?1",
+            [member_phone],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    conn.execute(
+        "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+         VALUES (?1, ?2, 'member', '2026-08-26T12:00:00Z')",
+        rusqlite::params![conv_id, member_identity_id],
+    ).unwrap();
+
+    // Insert message 1: mistakenly pointed to group_identity_id, but raw_payload_json has valid sender_jid
+    let raw_payload_1 = serde_json::json!({
+        "sender_jid": "84901234567@s.whatsapp.net"
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO messages (
+            conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, status, raw_payload_json, ingested_at
+         ) VALUES (?1, ?2, 'inbound', 'msg_corrupt_01', 'text', 'real member message', 'delivered', ?3, '2026-08-26T12:00:00Z')",
+        rusqlite::params![conv_id, group_identity_id, raw_payload_1],
+    ).unwrap();
+
+    // Insert message 2: mistakenly pointed to group_identity_id, and raw_payload_json had corrupted group JID
+    let raw_payload_2 = serde_json::json!({
+        "sender_jid": "120363025342171@g.us"
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO messages (
+            conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, status, raw_payload_json, ingested_at
+         ) VALUES (?1, ?2, 'inbound', 'msg_corrupt_02', 'text', 'group jid message', 'delivered', ?3, '2026-08-26T12:00:00Z')",
+        rusqlite::params![conv_id, group_identity_id, raw_payload_2],
+    ).unwrap();
+
+    // Run repair
+    let repaired =
+        WhatsAppNormalizer::repair_misattributed_group_senders(&mut conn, channel_account_id)
+            .unwrap();
+    assert_eq!(repaired, 2);
+
+    // Verify message 1 is re-linked to real member identity!
+    let sender_id_1: Option<i64> = conn
+        .query_row(
+            "SELECT sender_identity_id FROM messages WHERE provider_message_id = 'msg_corrupt_01'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sender_id_1, Some(member_identity_id));
+
+    // Verify message 2 has raw_payload_json.sender_jid cleared of @g.us and sender_identity_id is NULL
+    let sender_id_2: Option<i64> = conn
+        .query_row(
+            "SELECT sender_identity_id FROM messages WHERE provider_message_id = 'msg_corrupt_02'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sender_id_2, None);
+
+    let raw_json_2: String = conn
+        .query_row(
+            "SELECT raw_payload_json FROM messages WHERE provider_message_id = 'msg_corrupt_02'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!raw_json_2.contains("@g.us"));
+}
+
+#[test]
+fn test_group_message_adversarial_participant_is_group_jid() {
+    let msg = whatsapp_rust::prelude::wa::Message {
+        conversation: Some("Adversarial message with group JID participant".to_string()),
+        ..Default::default()
+    };
+    let key = whatsapp_rust::prelude::wa::MessageKey {
+        id: Some("WA_ADV_001".to_string()),
+        remote_jid: Some("120363025342171@g.us".to_string()),
+        from_me: Some(false),
+        participant: Some("120363025342171@g.us".to_string()), // Adversarial: key.participant is group JID
+        ..Default::default()
+    };
+
+    // Case 1: participant_override is group JID
+    let raw1 = WhatsAppNormalizer::extract_raw_message(
+        &msg,
+        &key,
+        Some(1700000000),
+        None,
+        "120363025342171@g.us",
+        None,
+        Some("120363025342171@g.us"),
+    )
+    .expect("Should extract message");
+
+    assert_eq!(raw1.sender_jid, None);
+
+    // Case 2: key.participant is group JID, override is None
+    let raw2 = WhatsAppNormalizer::extract_raw_message(
+        &msg,
+        &key,
+        Some(1700000000),
+        None,
+        "120363025342171@g.us",
+        None,
+        None,
+    )
+    .expect("Should extract message");
+
+    assert_eq!(raw2.sender_jid, None);
+}
+
+#[test]
+fn test_update_participant_verified_name_resolves_lid_to_phone_identity() {
+    let mut conn = setup_test_db();
+    let channel_account_id = 1;
+    let phone_num = "84912345678";
+    let lid_str = "1029384756@lid";
+
+    // Insert phone identity with generic initial display name
+    conn.execute(
+        "INSERT INTO channel_identities (
+            channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at
+         ) VALUES ('whatsapp', ?1, 'phone', ?2, '+84912345678', '2026-08-26T12:00:00Z', '2026-08-26T12:00:00Z')",
+        rusqlite::params![channel_account_id, phone_num],
+    ).unwrap();
+
+    // Map LID to phone
+    super::phone::save_lid_pn_mapping(&conn, lid_str, phone_num).unwrap();
+
+    // Call update_participant_verified_name with the LID
+    WhatsAppNormalizer::update_participant_verified_name(
+        &mut conn,
+        channel_account_id,
+        lid_str,
+        "Dean H",
+    )
+    .unwrap();
+
+    // Verify that the phone identity row was updated to "Dean H"
+    let name: String = conn
+        .query_row(
+            "SELECT display_name FROM channel_identities WHERE external_id = ?1",
+            [phone_num],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(name, "Dean H");
+}
+
+#[test]
+fn test_group_message_ingestion_formats_display_name_as_phone() {
+    let mut conn = setup_test_db();
+    let raw = RawWhatsAppMessage {
+        id: "msg_grp_002".to_string(),
+        chat_jid: "120363025342171@g.us".to_string(),
+        sender_jid: Some("84911223344@s.whatsapp.net".to_string()),
+        sender_name: None,
+        text: Some("No push name provided".to_string()),
+        timestamp: Some("2026-08-26T12:00:00.000Z".to_string()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: None,
+        mentions: vec![],
+    };
+
+    let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
+        .unwrap()
+        .unwrap();
+
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM channel_conversations WHERE id = ?1",
+            [conv_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "WhatsApp Group");
+
+    let display_name: String = conn
+        .query_row(
+            "SELECT display_name FROM channel_identities WHERE channel = 'whatsapp' AND external_id = '84911223344'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(display_name, "+84911223344");
+}
+
+#[test]
+fn test_sync_group_metadata_and_participants() {
+    use whatsapp_rust::{GroupMetadata, GroupParticipant, Jid, ParticipantType};
+
+    let mut conn = setup_test_db();
+
+    let meta = GroupMetadata {
+        id: "120363025342171@g.us".parse::<Jid>().unwrap(),
+        subject: "AI Builders Tech Q&A".to_string(),
+        participants: vec![
+            GroupParticipant {
+                jid: "84901234567@s.whatsapp.net".parse::<Jid>().unwrap(),
+                phone_number: Some("84901234567@s.whatsapp.net".parse::<Jid>().unwrap()),
+                lid: None,
+                username: Some("AdminUser".into()),
+                participant_type: ParticipantType::Admin,
+                details: None,
+            },
+            GroupParticipant {
+                jid: "198097598676992@lid".parse::<Jid>().unwrap(),
+                phone_number: Some("84988776655@s.whatsapp.net".parse::<Jid>().unwrap()),
+                lid: Some("198097598676992@lid".parse::<Jid>().unwrap()),
+                username: None,
+                participant_type: ParticipantType::Member,
+                details: None,
+            },
+            GroupParticipant {
+                jid: "84933445566@s.whatsapp.net".parse::<Jid>().unwrap(),
+                phone_number: None,
+                lid: None,
+                username: None,
+                participant_type: ParticipantType::Member,
+                details: None,
+            },
+        ],
+        ..Default::default()
+    };
+
+    let conv_id = WhatsAppNormalizer::sync_group_metadata(&mut conn, 1, &meta).unwrap();
+
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM channel_conversations WHERE id = ?1",
+            [conv_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "AI Builders Tech Q&A");
+
+    let participant_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = ?1 AND left_at IS NULL",
+            [conv_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(participant_count, 3);
+
+    // Verify LID-PN mapping was saved
+    let pn = super::phone::resolve_lid_or_jid_to_phone(&conn, "198097598676992@lid");
+    assert_eq!(pn, Some("84988776655".to_string()));
+
+    // Verify admin role
+    let admin_role: String = conn
+        .query_row(
+            "SELECT cp.participant_role FROM conversation_participants cp
+             JOIN channel_identities ci ON ci.id = cp.identity_id
+             WHERE cp.conversation_id = ?1 AND ci.external_id = '84901234567'",
+            [conv_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(admin_role, "admin");
+}
+
+#[test]
+fn test_group_message_with_mentions_populates_message_mentions_table() {
+    let mut conn = setup_test_db();
+
+    // 1. Create a candidate identity for Minh
+    conn.execute(
+        "INSERT INTO channel_identities (
+            channel_account_id, channel, identity_namespace, external_id, display_name, created_at, updated_at
+        ) VALUES (1, 'whatsapp', 'phone', '84978781822', 'Minh', '2026-08-28T10:00:00Z', '2026-08-28T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let raw = RawWhatsAppMessage {
+        id: "msg_mention_001".to_string(),
+        chat_jid: "120363025342171@g.us".to_string(),
+        sender_jid: Some("84911223344@s.whatsapp.net".to_string()),
+        sender_name: Some("Thucents".to_string()),
+        text: Some("What's up with these spam taking over AI Builders @84978781822😥".to_string()),
+        timestamp: Some("2026-08-28T10:05:00.000Z".to_string()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: None,
+        mentions: vec!["84978781822@s.whatsapp.net".to_string()],
+    };
+
+    let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
+        .unwrap()
+        .unwrap();
+
+    let msg_id: i64 = conn
+        .query_row(
+            "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = 'msg_mention_001'",
+            [conv_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let (display_text, ext_id): (String, Option<String>) = conn
+        .query_row(
+            "SELECT display_text, external_id FROM message_mentions WHERE message_id = ?1",
+            [msg_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(display_text, "@~Minh");
+    assert_eq!(ext_id.as_deref(), Some("84978781822"));
+}
+
+#[test]
+fn test_extract_and_ingest_revoke_message_marks_tombstone() {
+    let mut conn = setup_test_db();
+
+    // 1. Initial message arrives
+    let raw = RawWhatsAppMessage {
+        id: "msg_to_delete_001".to_string(),
+        chat_jid: "120363025342171@g.us".to_string(),
+        sender_jid: Some("84911223344@s.whatsapp.net".to_string()),
+        sender_name: Some("Sadia".to_string()),
+        text: Some("Spam link here".to_string()),
+        timestamp: Some("2026-08-28T10:00:00.000Z".to_string()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: None,
+        mentions: vec![],
+    };
+    let conv_id = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw)
+        .unwrap()
+        .unwrap();
+
+    // 2. Revoke message arrives
+    let revoke_raw = RawWhatsAppMessage {
+        id: "msg_to_delete_001".to_string(),
+        chat_jid: "120363025342171@g.us".to_string(),
+        sender_jid: Some("84911223344@s.whatsapp.net".to_string()),
+        sender_name: None,
+        text: Some("This message was deleted".to_string()),
+        timestamp: Some("2026-08-28T10:01:00.000Z".to_string()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: Some(serde_json::json!({ "is_revoke": true })),
+        mentions: vec![],
+    };
+    WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &revoke_raw).unwrap();
+
+    // Verify message status is 'removed'
+    let (status, text): (String, String) = conn
+        .query_row(
+            "SELECT status, text_content FROM messages WHERE conversation_id = ?1 AND provider_message_id = 'msg_to_delete_001'",
+            [conv_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(status, "removed");
+    assert_eq!(text, "This message was deleted");
 }

@@ -1713,6 +1713,42 @@ pub fn reconcile_duplicate_zalo_channel_accounts(conn: &Connection) -> Result<()
 }
 
 pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connection) -> Result<()> {
+    // 0. Clean up corrupted display_names where WhatsApp identity was given a group title or is a group JID
+    conn.execute(
+        "UPDATE channel_identities
+         SET display_name = NULL,
+             updated_at = datetime('now')
+         WHERE channel = 'whatsapp'
+           AND display_name IS NOT NULL
+           AND lead_id IS NULL
+           AND (
+               external_id LIKE '%@g.us'
+               OR display_name IN (
+                   SELECT title FROM channel_conversations
+                   WHERE channel_account_id = channel_identities.channel_account_id
+                     AND kind = 'group'
+                     AND title IS NOT NULL
+                     AND title != 'WhatsApp Group'
+               )
+           )",
+        [],
+    )?;
+
+    // 0b. Repair any historical group messages misassigned to group identities
+    conn.execute(
+        "UPDATE messages
+         SET sender_identity_id = NULL
+         WHERE conversation_id IN (
+             SELECT id FROM channel_conversations WHERE kind = 'group'
+         )
+         AND sender_identity_id IN (
+             SELECT ci.id FROM channel_identities ci
+             JOIN channel_conversations cc ON cc.external_thread_id = ci.external_id AND cc.channel_account_id = ci.channel_account_id
+             WHERE cc.kind = 'group'
+         )",
+        [],
+    )?;
+
     // 1. Auto-link unlinked WhatsApp identities to Leads by phone or display name
     {
         let mut stmt = conn.prepare(

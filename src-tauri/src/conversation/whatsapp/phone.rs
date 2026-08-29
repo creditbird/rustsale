@@ -7,23 +7,31 @@ pub const WHATSAPP_LID_SERVER: &str = "lid";
 pub const WHATSAPP_BROADCAST_SERVER: &str = "broadcast";
 pub const WHATSAPP_NEWSLETTER_SERVER: &str = "newsletter";
 
-/// Checks whether a given JID is a WhatsApp Linked Identity (`@lid`).
+/// Checks whether a given JID is a WhatsApp Linked Identity (`@lid` or 15+ digit LID format).
 pub fn is_lid_jid(jid: &str) -> bool {
-    jid.ends_with(&format!("@{WHATSAPP_LID_SERVER}"))
+    let clean = jid.trim();
+    clean.contains("@lid")
+        || (clean.starts_with("12036")
+            && clean.chars().filter(|c| c.is_ascii_digit()).count() >= 14)
 }
 
 /// Extracts the LID user string from a LID JID.
 pub fn extract_lid_user(jid: &str) -> Option<String> {
-    if !is_lid_jid(jid) {
-        return None;
+    let clean = jid.trim();
+    if clean.contains("@lid") {
+        let user_part = clean.split('@').next()?;
+        let user_base = user_part.split(':').next()?;
+        if !user_base.is_empty() {
+            return Some(user_base.to_string());
+        }
     }
-    let user_part = jid.split('@').next()?;
-    let user_base = user_part.split(':').next()?;
-    if !user_base.is_empty() {
-        Some(user_base.to_string())
-    } else {
-        None
+    if clean.starts_with("12036") {
+        let digits: String = clean.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.len() >= 14 {
+            return Some(digits);
+        }
     }
+    None
 }
 
 /// Resolves a JID or LID to an E.164 phone string.
@@ -53,11 +61,17 @@ pub fn save_lid_pn_mapping(
 ) -> rusqlite::Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let clean_lid = extract_lid_user(lid).unwrap_or_else(|| lid.to_string());
+    let clean_phone = jid_to_phone(phone_e164)
+        .or_else(|| normalize_e164(phone_e164, None))
+        .unwrap_or_else(|| phone_e164.chars().filter(|c| c.is_ascii_digit()).collect());
+    if clean_lid.is_empty() || clean_phone.is_empty() {
+        return Ok(());
+    }
     conn.execute(
         "INSERT INTO whatsapp_lid_pn_mappings (lid, phone_e164, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?3)
          ON CONFLICT(lid) DO UPDATE SET phone_e164 = EXCLUDED.phone_e164, updated_at = EXCLUDED.updated_at",
-        rusqlite::params![clean_lid, phone_e164, now],
+        rusqlite::params![clean_lid, clean_phone, now],
     )?;
     Ok(())
 }

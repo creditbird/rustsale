@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "problem": { "type": "string", "minLength": 1 },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "risk_tier": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "mode": { "type": "string", "enum": ["shadow", "enforced"] },
+    "candidate_count": { "type": "integer", "minimum": 2, "maximum": 5 },
+    "ranking_backend": {
+      "type": "string",
+      "enum": ["agy-ppt", "llm-verifier"],
+      "default": "agy-ppt"
+    },
+    "focused_checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "type": "string", "minLength": 1 }
+      }
+    },
+    "agy_verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "effort": { "type": "string", "enum": ["low", "medium", "high"] },
+        "model": { "type": "string", "minLength": 1 },
+        "pivots": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "seed": { "type": "integer" },
+        "tie_breaker": { "type": "boolean" },
+        "max_parallel_pairs": { "type": "integer", "minimum": 1, "maximum": 3 }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "n_evaluations": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "pivots": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "seed": { "type": "integer" }
+      }
+    }
+  },
+  "required": [
+    "task_id",
+    "problem",
+    "requirements",
+    "acceptance_criteria",
+    "risk_tier",
+    "mode",
+    "candidate_count",
+    "focused_checks"
+  ],
+  "allOf": [
+    {
+      "if": { "required": ["agy_verifier"] },
+      "then": { "properties": { "ranking_backend": { "const": "agy-ppt" } } }
+    },
+    {
+      "if": { "required": ["verifier"] },
+      "then": {
+        "required": ["ranking_backend"],
+        "properties": { "ranking_backend": { "const": "llm-verifier" } }
+      }
+    }
+  ]
+}

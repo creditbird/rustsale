@@ -21,4 +21,6 @@ scratch/
 /src/lib/paraglide/
 supabase/.temp/
 .agents/skills/opencode-review/
+__pycache__/
+*.pyc
 

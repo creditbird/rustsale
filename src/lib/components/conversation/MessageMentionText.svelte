@@ -21,7 +21,7 @@
     | { type: 'text'; text: string }
     | { type: 'mention'; text: string; identityId: number | null; externalId?: string };
 
-  const MENTION_REGEX = /@(\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2}(?:\s[-–—]\s\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2})?)/gu;
+  const MENTION_REGEX = /@(?:~[^\s@]+|\+?[0-9]{7,15}|\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2}(?:\s[-–—]\s\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2})?)/gu;
   const URL_REGEX = /(https?:\/\/[^\s<]+)/g;
 
   let chunks = $derived.by<MentionChunk[]>(() => {
@@ -74,7 +74,7 @@
       if (len > 0) {
         result.push({
           type: 'mention',
-          text: sliceUtf16(text, start, len),
+          text: m.displayText || sliceUtf16(text, start, len),
           identityId: m.identityId,
           externalId: m.externalId
         });
@@ -119,7 +119,7 @@
       <span
         role="button"
         tabindex="0"
-        class="mention-span font-semibold text-blue-600 dark:text-blue-400 bg-blue-500/10 dark:bg-blue-400/15 rounded px-1.5 py-0.5 cursor-pointer hover:underline hover:bg-blue-500/20 transition-colors inline-flex items-center gap-0.5"
+        class="mention-span font-semibold text-[#00a884] dark:text-[#25d366] bg-[#00a884]/10 dark:bg-[#25d366]/15 rounded px-1.5 py-0.5 cursor-pointer hover:underline hover:bg-[#00a884]/20 transition-colors inline-flex items-center gap-0.5"
         data-testid="mention-span"
         data-mention-id={chunk.identityId ?? ''}
         onclick={(e) => {
@@ -132,8 +132,8 @@
             onMentionClick(chunk.identityId, chunk.text, chunk.externalId, e.currentTarget as HTMLElement);
           }
         }}
-        title={`Tag ${chunk.text}`}
-      >{chunk.text}</span>
+        title={`Tag ${chunk.text.replace(/^@~+/, '@')}`}
+      >{chunk.text.replace(/^@~+/, '@')}</span>
     {:else}
       {#each parseTextWithUrls(chunk.text) as subPart, j (j)}
         {#if subPart.type === 'url'}

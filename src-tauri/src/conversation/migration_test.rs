@@ -1472,3 +1472,51 @@ fn whatsapp_media_reconciliation_preserves_direct_path_backfills_key_and_is_chan
         .unwrap();
     assert_eq!(second_metadata, first_metadata);
 }
+
+#[test]
+fn test_reconcile_cleans_whatsapp_identity_display_names_matching_group_titles() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT, phone TEXT)",
+        [],
+    )
+    .unwrap();
+    migrate(&conn).unwrap();
+
+    // 1. Insert WhatsApp account
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', 'wa_acc_01', 'My Account', 'connected', '{}', '2026-08-28T00:00:00Z', '2026-08-28T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // 2. Insert WhatsApp group conversation named "AI Builders Tech Q&A"
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+         VALUES (10, 1, '120363025342171@g.us', 'group', 'AI Builders Tech Q&A', 'active', '2026-08-28T00:00:00Z', '2026-08-28T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // 3. Insert identity with corrupted display_name = "AI Builders Tech Q&A"
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (100, 'whatsapp', 1, 'phone', '84901234567', 'AI Builders Tech Q&A', '2026-08-28T00:00:00Z', '2026-08-28T00:00:00Z')",
+        [],
+    ).unwrap();
+
+    // 4. Run reconciliation
+    crate::conversation::migration::reconcile_duplicate_whatsapp_conversations_and_identities(
+        &conn,
+    )
+    .unwrap();
+
+    // 5. Verify display_name was reset to NULL
+    let d_name: Option<String> = conn
+        .query_row(
+            "SELECT display_name FROM channel_identities WHERE id = 100",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(d_name, None);
+}

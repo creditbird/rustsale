@@ -20,6 +20,44 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static LAST_PROVIDER_CLIENT_ID: AtomicU64 = AtomicU64::new(0);
 
+pub const MESSAGE_SELECT_COLUMNS: &str = "\
+    m.id, m.conversation_id, cc.channel_account_id, ca.channel, \
+    ca.display_name, m.sender_identity_id, \
+    CASE \
+        WHEN m.direction = 'inbound' \
+         AND json_valid(m.raw_payload_json) \
+         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.dName')), '') IS NOT NULL \
+         AND (cc.kind != 'group' OR (json_extract(m.raw_payload_json, '$.dName') != cc.title AND json_extract(m.raw_payload_json, '$.dName') != 'WhatsApp Group')) \
+        THEN json_extract(m.raw_payload_json, '$.dName') \
+        WHEN m.direction = 'inbound' \
+         AND json_valid(m.raw_payload_json) \
+         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.sender_name')), '') IS NOT NULL \
+         AND (cc.kind != 'group' OR (json_extract(m.raw_payload_json, '$.sender_name') != cc.title AND json_extract(m.raw_payload_json, '$.sender_name') != 'WhatsApp Group')) \
+         AND json_extract(m.raw_payload_json, '$.sender_name') NOT LIKE '+12036%' \
+         AND json_extract(m.raw_payload_json, '$.sender_name') NOT LIKE '12036%' \
+        THEN json_extract(m.raw_payload_json, '$.sender_name') \
+        WHEN m.direction = 'inbound' \
+         AND json_valid(m.raw_payload_json) \
+         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.push_name')), '') IS NOT NULL \
+         AND (cc.kind != 'group' OR (json_extract(m.raw_payload_json, '$.push_name') != cc.title AND json_extract(m.raw_payload_json, '$.push_name') != 'WhatsApp Group')) \
+         AND json_extract(m.raw_payload_json, '$.push_name') NOT LIKE '+12036%' \
+         AND json_extract(m.raw_payload_json, '$.push_name') NOT LIKE '12036%' \
+        THEN json_extract(m.raw_payload_json, '$.push_name') \
+        WHEN ci.display_name IS NOT NULL \
+         AND (cc.kind != 'group' OR (ci.display_name != cc.title AND ci.display_name != 'WhatsApp Group')) \
+         AND ci.display_name NOT LIKE '+12036%' \
+         AND ci.display_name NOT LIKE '12036%' \
+         AND ci.display_name != 'Member' \
+        THEN ci.display_name \
+        ELSE NULL \
+    END AS sender_display_name, \
+    m.direction, \
+    m.provider_message_id, m.content_type, m.text_content, m.content_json, \
+    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at, \
+    m.status, m.removed_at, m.error_message, m.reply_to_message_id, \
+    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id, \
+    ci.avatar_url AS sender_avatar_url";
+
 fn message_occurred_after_tombstone(message: &NormalizedMessage, deleted_at: &str) -> bool {
     let occurred_at = message
         .provider_timestamp
@@ -2121,21 +2159,9 @@ impl ConversationRepository {
             .join(", ");
         let before_at = before.map(|cursor| cursor.occurred_at.as_str());
         let before_id = before.map(|cursor| cursor.message_id);
+
         let sql = format!(
-            "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                    ca.display_name, m.sender_identity_id,
-                    CASE
-                        WHEN m.direction = 'inbound'
-                         AND json_valid(m.raw_payload_json)
-                         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.dName')), '') IS NOT NULL
-                        THEN json_extract(m.raw_payload_json, '$.dName')
-                        ELSE ci.display_name
-                    END,
-                    m.direction,
-                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
-                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
+            "SELECT {MESSAGE_SELECT_COLUMNS}
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2193,20 +2219,8 @@ impl ConversationRepository {
         let conn = open_db_connection(&self.db_path)?;
         let before_at = before.map(|cursor| cursor.occurred_at.as_str());
         let before_id = before.map(|cursor| cursor.message_id);
-        let sql = "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                    ca.display_name, m.sender_identity_id,
-                    CASE
-                        WHEN m.direction = 'inbound'
-                         AND json_valid(m.raw_payload_json)
-                         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.dName')), '') IS NOT NULL
-                        THEN json_extract(m.raw_payload_json, '$.dName')
-                        ELSE ci.display_name
-                    END,
-                    m.direction,
-                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
-                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
+        let sql = format!(
+            "SELECT {MESSAGE_SELECT_COLUMNS}
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2220,7 +2234,8 @@ impl ConversationRepository {
                AND (? IS NULL OR COALESCE(m.provider_timestamp, m.ingested_at) < ?
                     OR (COALESCE(m.provider_timestamp, m.ingested_at) = ? AND m.id < ?))
              ORDER BY occurred_at DESC, m.id DESC
-             LIMIT ?";
+             LIMIT ?"
+        );
         let clamped_limit = limit.clamp(1, 100);
         let mut values = Vec::<rusqlite::types::Value>::new();
         values.push(identity_id.into());
@@ -2235,7 +2250,7 @@ impl ConversationRepository {
         }));
         values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
         values.push(i64::from(clamped_limit).into());
-        let mut statement = conn.prepare(sql)?;
+        let mut statement = conn.prepare(&sql)?;
         let rows = statement
             .query_map(
                 rusqlite::params_from_iter(values.iter()),
@@ -2256,20 +2271,8 @@ impl ConversationRepository {
         let conn = open_db_connection(&self.db_path)?;
         let before_at = before.map(|cursor| cursor.occurred_at.as_str());
         let before_id = before.map(|cursor| cursor.message_id);
-        let sql = "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                    ca.display_name, m.sender_identity_id,
-                    CASE
-                        WHEN m.direction = 'inbound'
-                         AND json_valid(m.raw_payload_json)
-                         AND NULLIF(TRIM(json_extract(m.raw_payload_json, '$.dName')), '') IS NOT NULL
-                        THEN json_extract(m.raw_payload_json, '$.dName')
-                        ELSE ci.display_name
-                    END,
-                    m.direction,
-                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
-                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
+        let sql = format!(
+            "SELECT {MESSAGE_SELECT_COLUMNS}
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
@@ -2278,7 +2281,8 @@ impl ConversationRepository {
                AND (? IS NULL OR COALESCE(m.provider_timestamp, m.ingested_at) < ?
                     OR (COALESCE(m.provider_timestamp, m.ingested_at) = ? AND m.id < ?))
              ORDER BY occurred_at DESC, m.id DESC
-             LIMIT ?";
+             LIMIT ?"
+        );
         let clamped_limit = limit.clamp(1, 100);
         let mut values = Vec::<rusqlite::types::Value>::new();
         values.push(conversation_id.into());
@@ -2293,7 +2297,7 @@ impl ConversationRepository {
         }));
         values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
         values.push(i64::from(clamped_limit).into());
-        let mut statement = conn.prepare(sql)?;
+        let mut statement = conn.prepare(&sql)?;
         let rows = statement
             .query_map(
                 rusqlite::params_from_iter(values.iter()),
@@ -2861,19 +2865,16 @@ impl ConversationRepository {
 
     pub fn get_message_by_id(&self, message_id: i64) -> Result<Option<ConversationMessage>> {
         let conn = open_db_connection(&self.db_path)?;
-        let sql = "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                    ca.display_name, m.sender_identity_id, ci.display_name,
-                    m.direction, m.provider_message_id, m.content_type, m.text_content,
-                    m.content_json, COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
+        let sql = format!(
+            "SELECT {MESSAGE_SELECT_COLUMNS}
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
              LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
-             WHERE m.id = ?1";
+             WHERE m.id = ?1"
+        );
         let msg: Option<ConversationMessage> = conn
-            .query_row(sql, [message_id], map_conversation_message)
+            .query_row(&sql, [message_id], map_conversation_message)
             .optional()?;
         if let Some(m) = msg {
             let mut list = vec![m];
@@ -3027,21 +3028,15 @@ impl ConversationRepository {
             params![job_id, message_id, request.channel_account_id, now],
         )?;
 
-        let message = tx.query_row(
-            "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                    ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
-                    m.provider_message_id, m.content_type, m.text_content, m.content_json,
-                    COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                    m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                    m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
+        let sql = format!(
+            "SELECT {MESSAGE_SELECT_COLUMNS}
              FROM messages m
              JOIN channel_conversations cc ON cc.id = m.conversation_id
              JOIN channel_accounts ca ON ca.id = cc.channel_account_id
              LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
-             WHERE m.id = ?1",
-            [message_id],
-            map_conversation_message,
-        )?;
+             WHERE m.id = ?1"
+        );
+        let message = tx.query_row(&sql, [message_id], map_conversation_message)?;
 
         tx.commit()?;
         Ok(message)
@@ -3231,24 +3226,18 @@ impl ConversationRepository {
             .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
 
         if let Some(batch_id) = existing_batch_id {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                        ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
-                        m.provider_message_id, m.content_type, m.text_content, m.content_json,
-                        COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                        m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                        m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
+            let sql = format!(
+                "SELECT {MESSAGE_SELECT_COLUMNS}
                  FROM messages m
                  JOIN channel_conversations cc ON cc.id = m.conversation_id
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                  LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
                  WHERE m.send_batch_id = ?1
-                 ORDER BY m.batch_index ASC",
-                )
-                .map_err(|e| {
-                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
-                })?;
+                 ORDER BY m.batch_index ASC"
+            );
+            let mut stmt = tx.prepare(&sql).map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?;
 
             let rows = stmt
                 .query_map([&batch_id], map_conversation_message)
@@ -3571,23 +3560,17 @@ impl ConversationRepository {
         }
 
         let mut messages = Vec::new();
+        let sql = format!(
+            "SELECT {MESSAGE_SELECT_COLUMNS}
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+             WHERE m.id = ?1"
+        );
         for msg_id in created_message_ids {
             let msg = tx
-                .query_row(
-                    "SELECT m.id, m.conversation_id, cc.channel_account_id, ca.channel,
-                        ca.display_name, m.sender_identity_id, ci.display_name, m.direction,
-                        m.provider_message_id, m.content_type, m.text_content, m.content_json,
-                        COALESCE(m.provider_timestamp, m.ingested_at) AS occurred_at,
-                        m.status, m.removed_at, m.error_message, m.reply_to_message_id,
-                        m.provider_client_message_id, m.batch_index, ci.external_id AS sender_external_id
-                 FROM messages m
-                 JOIN channel_conversations cc ON cc.id = m.conversation_id
-                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
-                 LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
-                 WHERE m.id = ?1",
-                    [msg_id],
-                    map_conversation_message,
-                )
+                .query_row(&sql, [msg_id], map_conversation_message)
                 .map_err(|e| {
                     ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
                 })?;
@@ -6227,6 +6210,7 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
     };
 
     let sender_external_id: Option<String> = row.get(19).ok();
+    let sender_avatar_url: Option<String> = row.get(20).ok();
 
     Ok(ConversationMessage {
         id: row.get(0)?,
@@ -6237,6 +6221,7 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
         sender_identity_id: row.get(5)?,
         sender_external_id,
         sender_display_name,
+        sender_avatar_url,
         direction,
         provider_message_id: row.get(8)?,
         provider_client_message_id: row.get(17)?,
