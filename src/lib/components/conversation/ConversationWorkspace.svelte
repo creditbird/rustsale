@@ -1693,6 +1693,7 @@
     open={groupMembersModalOpen}
     conversationId={selectedItem?.conversationId ?? null}
     groupTitle={selectedItem?.title ?? ''}
+    channel={selectedItem?.replyTargets?.[0]?.channel ?? selectedItem?.channels?.[0]?.channel ?? 'zalo'}
     onClose={() => (groupMembersModalOpen = false)}
   />
   <NewChatDialog

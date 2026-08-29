@@ -3150,6 +3150,47 @@ mod tests {
                 .unwrap();
             }
 
+            fn insert_whatsapp_conversation(&self, conversation_id: i64, kind: &str, thread_id: &str) {
+                let conn = self.state.conn.lock().unwrap();
+                let now = "2026-08-10T00:00:00Z";
+                conn.execute(
+                    "INSERT INTO channel_accounts
+                     (id, channel, provider_account_key, display_name, created_at, updated_at)
+                     VALUES (2, 'whatsapp', '84901234567', 'WhatsApp Acc', ?1, ?1)",
+                    [now],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO channel_conversations
+                     (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+                     VALUES (?1, 2, ?2, ?3, 'WhatsApp Group', ?4, ?4)",
+                    rusqlite::params![conversation_id, thread_id, kind, now],
+                )
+                .unwrap();
+            }
+
+            fn insert_whatsapp_local_participant(&self, conversation_id: i64, external_id: &str, display_name: &str) {
+                let conn = self.state.conn.lock().unwrap();
+                let now = "2026-08-10T00:00:00Z";
+                let identity_id = conn
+                    .query_row(
+                        "INSERT INTO channel_identities
+                         (channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+                         VALUES ('whatsapp', 2, 'phone', ?1, ?2, ?3, ?3)
+                         RETURNING id",
+                        rusqlite::params![external_id, display_name, now],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap();
+                conn.execute(
+                    "INSERT INTO conversation_participants
+                     (conversation_id, identity_id, participant_role, joined_at)
+                     VALUES (?1, ?2, 'member', ?3)",
+                    rusqlite::params![conversation_id, identity_id, now],
+                )
+                .unwrap();
+            }
+
             fn insert_local_reaction_actor(&self, conversation_id: i64, external_id: &str) {
                 let conn = self.state.conn.lock().unwrap();
                 let message_id = conn
@@ -3338,6 +3379,7 @@ mod tests {
 
         struct FakeGroupScanRuntime {
             client: Option<Arc<FakeGroupScanClient>>,
+            whatsapp_client: Option<Arc<dyn crate::conversation::whatsapp::client::WhatsAppClient>>,
             backfill: GroupMessageBackfillReport,
             connected_calls: AtomicUsize,
             backfill_calls: AtomicUsize,
@@ -3352,6 +3394,7 @@ mod tests {
                     .then(|| format!("backfill outcome: {outcome:?}"));
                 Self {
                     client,
+                    whatsapp_client: None,
                     backfill: GroupMessageBackfillReport {
                         provider_account_key: "account-a".to_string(),
                         scope: "account_group_messages".to_string(),
@@ -3367,6 +3410,14 @@ mod tests {
                     connected_calls: AtomicUsize::new(0),
                     backfill_calls: AtomicUsize::new(0),
                 }
+            }
+
+            fn with_whatsapp_client(
+                mut self,
+                whatsapp_client: Arc<dyn crate::conversation::whatsapp::client::WhatsAppClient>,
+            ) -> Self {
+                self.whatsapp_client = Some(whatsapp_client);
+                self
             }
         }
 
@@ -3389,6 +3440,13 @@ mod tests {
             ) -> GroupMessageBackfillReport {
                 self.backfill_calls.fetch_add(1, Ordering::SeqCst);
                 self.backfill.clone()
+            }
+
+            async fn connected_whatsapp_client(
+                &self,
+                _account_id: i64,
+            ) -> Option<Arc<dyn crate::conversation::whatsapp::client::WhatsAppClient>> {
+                self.whatsapp_client.clone()
             }
         }
 
@@ -3702,6 +3760,132 @@ mod tests {
             assert!(result.diagnostics.group_link.link_retrieved);
             assert_eq!(result.diagnostics.group_link.committed_uid_count, 1);
             assert_eq!(harness.identity_count("link-member-uid"), 1);
+        }
+
+        #[tokio::test]
+        async fn whatsapp_group_scan_with_connected_client_syncs_metadata_and_returns_complete_membership() {
+            let harness = GroupScanHarness::new();
+            let thread_id = "120363000000000001@g.us";
+            harness.insert_whatsapp_conversation(501, "group", thread_id);
+
+            let wa_client = Arc::new(crate::conversation::whatsapp::client::MockWhatsAppClient::new());
+            let group_jid: whatsapp_rust::Jid = thread_id.parse().unwrap();
+            let p1_jid: whatsapp_rust::Jid = "84901111111@s.whatsapp.net".parse().unwrap();
+            let p2_jid: whatsapp_rust::Jid = "84902222222@s.whatsapp.net".parse().unwrap();
+
+            let group_meta = whatsapp_rust::GroupMetadata {
+                id: group_jid,
+                subject: "WhatsApp Test Group".to_string(),
+                participants: vec![
+                    whatsapp_rust::GroupParticipant {
+                        jid: p1_jid.clone(),
+                        phone_number: Some(p1_jid.clone()),
+                        lid: None,
+                        username: None,
+                        participant_type: whatsapp_rust::ParticipantType::Admin,
+                        details: None,
+                    },
+                    whatsapp_rust::GroupParticipant {
+                        jid: p2_jid.clone(),
+                        phone_number: Some(p2_jid.clone()),
+                        lid: None,
+                        username: None,
+                        participant_type: whatsapp_rust::ParticipantType::Member,
+                        details: None,
+                    },
+                ],
+                ..Default::default()
+            };
+            wa_client.set_group_info(thread_id, Ok(group_meta));
+
+            let runtime = FakeGroupScanRuntime::new(None, GroupMessageBackfillOutcome::Completed)
+                .with_whatsapp_client(wa_client);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                501,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result.discovered_count, 2);
+            assert!(result.membership_complete);
+            assert!(result.diagnostics.direct_snapshot.attempted);
+            assert!(result.diagnostics.direct_snapshot.complete);
+            assert_eq!(result.diagnostics.direct_snapshot.member_count, 2);
+            assert!(!result.diagnostics.partial_result);
+            assert!(result.warning.is_none());
+
+            let members = result.members;
+            assert_eq!(members.len(), 2);
+            let admin = members.iter().find(|m| m.external_id.as_deref() == Some("84901111111")).unwrap();
+            assert_eq!(admin.participant_role, "admin");
+            let member = members.iter().find(|m| m.external_id.as_deref() == Some("84902222222")).unwrap();
+            assert_eq!(member.participant_role, "member");
+        }
+
+        #[tokio::test]
+        async fn whatsapp_group_scan_with_disconnected_client_returns_local_evidence_and_warning() {
+            let harness = GroupScanHarness::new();
+            let thread_id = "120363000000000002@g.us";
+            harness.insert_whatsapp_conversation(502, "group", thread_id);
+            harness.insert_whatsapp_local_participant(502, "84903333333", "Offline Member");
+
+            let runtime = FakeGroupScanRuntime::new(None, GroupMessageBackfillOutcome::Unavailable);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                502,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result.discovered_count, 1);
+            assert!(!result.membership_complete);
+            assert!(!result.diagnostics.direct_snapshot.attempted);
+            assert!(!result.diagnostics.direct_snapshot.complete);
+            assert!(result.diagnostics.partial_result);
+            assert_eq!(result.stop_reason.as_deref(), Some("client_offline"));
+            assert!(result.warning.is_some());
+            assert_eq!(result.diagnostics.warnings[0].code, "client_offline");
+            assert_eq!(result.members[0].external_id.as_deref(), Some("84903333333"));
+        }
+
+        #[tokio::test]
+        async fn whatsapp_group_scan_query_failure_returns_partial_result_and_warning() {
+            let harness = GroupScanHarness::new();
+            let thread_id = "120363000000000003@g.us";
+            harness.insert_whatsapp_conversation(503, "group", thread_id);
+            harness.insert_whatsapp_local_participant(503, "84904444444", "Fallback Member");
+
+            let wa_client = Arc::new(crate::conversation::whatsapp::client::MockWhatsAppClient::new());
+            wa_client.set_next_group_info_result(Err(anyhow::anyhow!("Network timeout")));
+
+            let runtime = FakeGroupScanRuntime::new(None, GroupMessageBackfillOutcome::Completed)
+                .with_whatsapp_client(wa_client);
+
+            let result = commands::sync_and_deep_scan_group_members_impl(
+                &harness.state,
+                harness.service.as_ref(),
+                &runtime,
+                503,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result.discovered_count, 1);
+            assert!(!result.membership_complete);
+            assert!(result.diagnostics.direct_snapshot.attempted);
+            assert!(!result.diagnostics.direct_snapshot.complete);
+            assert!(result.diagnostics.partial_result);
+            assert_eq!(result.stop_reason.as_deref(), Some("whatsapp_query_failed"));
+            assert!(result.warning.is_some());
+            assert_eq!(result.diagnostics.warnings[0].code, "whatsapp_query_failed");
+            assert_eq!(result.members[0].external_id.as_deref(), Some("84904444444"));
         }
     }
 

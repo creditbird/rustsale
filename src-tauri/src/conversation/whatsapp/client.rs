@@ -164,6 +164,9 @@ pub trait WhatsAppClient: Send + Sync {
         request: &WhatsAppMediaReuploadRequest,
     ) -> Result<WhatsAppMediaReuploadResult>;
 
+    /// Fetches live group metadata and participant list from WhatsApp.
+    async fn get_group_info(&self, group_jid: &str) -> Result<whatsapp_rust::GroupMetadata>;
+
     /// Returns true if the client session is actively connected and ready for traffic.
     async fn is_connected(&self) -> bool;
 
@@ -463,6 +466,27 @@ impl WhatsAppClient for RealWhatsAppClient {
         })
     }
 
+    async fn get_group_info(&self, group_jid: &str) -> Result<whatsapp_rust::GroupMetadata> {
+        let jid: whatsapp_rust::Jid = group_jid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid group JID '{}': {}", group_jid, e))?;
+
+        let outcome = self
+            .client
+            .execute(whatsapp_rust::wacore::iq::groups::GroupQueryIq::new(&jid))
+            .await
+            .map_err(|e| anyhow::anyhow!("WhatsApp get_group_info IQ error: {}", e))?;
+
+        match outcome {
+            whatsapp_rust::wacore::iq::groups::GroupInfoOutcome::Full(group) => {
+                Ok(whatsapp_rust::GroupMetadata::from(*group))
+            }
+            whatsapp_rust::wacore::iq::groups::GroupInfoOutcome::NotModified => {
+                Err(anyhow::anyhow!("Group query returned NotModified"))
+            }
+        }
+    }
+
     async fn is_connected(&self) -> bool {
         self.client.is_connected()
     }
@@ -514,6 +538,8 @@ pub struct MockWhatsAppClient {
     pub download_results: Arc<Mutex<VecDeque<Result<Vec<u8>>>>>,
     pub media_reupload_requests: Arc<Mutex<Vec<WhatsAppMediaReuploadRequest>>>,
     pub next_media_reupload_result: Arc<Mutex<Option<Result<WhatsAppMediaReuploadResult>>>>,
+    pub next_group_info_result: Arc<Mutex<Option<Result<whatsapp_rust::GroupMetadata>>>>,
+    pub group_info_results: Arc<Mutex<std::collections::HashMap<String, Result<whatsapp_rust::GroupMetadata>>>>,
     pub connected: Arc<AtomicBool>,
 }
 
@@ -534,6 +560,8 @@ impl MockWhatsAppClient {
             download_results: Arc::new(Mutex::new(VecDeque::new())),
             media_reupload_requests: Arc::new(Mutex::new(Vec::new())),
             next_media_reupload_result: Arc::new(Mutex::new(None)),
+            next_group_info_result: Arc::new(Mutex::new(None)),
+            group_info_results: Arc::new(Mutex::new(std::collections::HashMap::new())),
             connected: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -561,6 +589,14 @@ impl MockWhatsAppClient {
 
     pub fn set_next_media_reupload_result(&self, result: Result<WhatsAppMediaReuploadResult>) {
         *self.next_media_reupload_result.lock().unwrap() = Some(result);
+    }
+
+    pub fn set_next_group_info_result(&self, res: Result<whatsapp_rust::GroupMetadata>) {
+        *self.next_group_info_result.lock().unwrap() = Some(res);
+    }
+
+    pub fn set_group_info(&self, jid: impl Into<String>, res: Result<whatsapp_rust::GroupMetadata>) {
+        self.group_info_results.lock().unwrap().insert(jid.into(), res);
     }
 
     pub fn get_media_reupload_requests(&self) -> Vec<WhatsAppMediaReuploadRequest> {
@@ -592,6 +628,8 @@ impl MockWhatsAppClient {
         *self.next_send_result.lock().unwrap() = None;
         *self.next_reaction_result.lock().unwrap() = None;
         *self.next_media_reupload_result.lock().unwrap() = None;
+        *self.next_group_info_result.lock().unwrap() = None;
+        self.group_info_results.lock().unwrap().clear();
     }
 }
 
@@ -712,6 +750,27 @@ impl WhatsAppClient for MockWhatsAppClient {
                 direct_path: "/mock/refreshed-media.enc".to_string(),
             })
         }
+    }
+
+    async fn get_group_info(&self, group_jid: &str) -> Result<whatsapp_rust::GroupMetadata> {
+        if let Some(res) = self.next_group_info_result.lock().unwrap().take() {
+            return res;
+        }
+        if let Some(res) = self.group_info_results.lock().unwrap().get(group_jid) {
+            return match res {
+                Ok(meta) => Ok(meta.clone()),
+                Err(e) => Err(anyhow::anyhow!("{}", e)),
+            };
+        }
+        let jid: whatsapp_rust::Jid = group_jid
+            .parse()
+            .unwrap_or_else(|_| whatsapp_rust::Jid::group("120363000000000000"));
+        Ok(whatsapp_rust::GroupMetadata {
+            id: jid,
+            subject: "Mock WhatsApp Group".to_string(),
+            participants: vec![],
+            ..Default::default()
+        })
     }
 
     async fn is_connected(&self) -> bool {

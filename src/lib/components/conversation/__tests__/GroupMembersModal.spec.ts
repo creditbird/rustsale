@@ -158,7 +158,7 @@ mock.module('@tauri-apps/api/core', () => ({
 
 const { default: GroupMembersModal } = await import('../GroupMembersModal.svelte');
 const renderedViews: Array<{
-  rerender: (props: { open?: boolean; conversationId?: number | null; groupTitle?: string }) =>
+  rerender: (props: { open?: boolean; conversationId?: number | null; groupTitle?: string; channel?: string }) =>
     | void
     | Promise<void>;
 }> = [];
@@ -401,5 +401,32 @@ describe('GroupMembersModal', () => {
 
     expect(onLeadsImported).not.toHaveBeenCalled();
     expect(mockGetLocalMembers).toHaveBeenCalledTimes(1);
+  });
+
+  test('renders WhatsApp channel context when channel is whatsapp', async () => {
+    renderModal({
+      open: true,
+      conversationId: 50,
+      groupTitle: 'WA Community',
+      channel: 'whatsapp'
+    });
+    await screen.findByText('Member A');
+
+    expect(screen.getByText(/supplement data from WhatsApp/)).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search name, WhatsApp ID...')).toBeTruthy();
+    expect(screen.getByText('WhatsApp ID')).toBeTruthy();
+  });
+
+  test('defaults to Zalo channel context when channel is omitted or zalo', async () => {
+    renderModal({
+      open: true,
+      conversationId: 51,
+      groupTitle: 'Zalo Community'
+    });
+    await screen.findByText('Member A');
+
+    expect(screen.getByText(/supplement data from Zalo/)).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search name, Zalo ID...')).toBeTruthy();
+    expect(screen.getByText('Zalo ID')).toBeTruthy();
   });
 });

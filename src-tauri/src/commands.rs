@@ -5699,14 +5699,25 @@ pub struct ImportMemberItem {
 pub(crate) trait GroupMemberScanRuntime: Send + Sync {
     async fn connected_client(
         &self,
-        provider_account_key: &str,
-    ) -> Option<std::sync::Arc<dyn crate::conversation::zalo::client::ZaloClient>>;
+        _provider_account_key: &str,
+    ) -> Option<std::sync::Arc<dyn crate::conversation::zalo::client::ZaloClient>> {
+        None
+    }
 
     async fn backfill_group_messages(
         &self,
-        provider_account_key: &str,
-        timeout: std::time::Duration,
-    ) -> crate::conversation::zalo::supervisor::GroupMessageBackfillReport;
+        _provider_account_key: &str,
+        _timeout: std::time::Duration,
+    ) -> crate::conversation::zalo::supervisor::GroupMessageBackfillReport {
+        Default::default()
+    }
+
+    async fn connected_whatsapp_client(
+        &self,
+        _account_id: i64,
+    ) -> Option<std::sync::Arc<dyn crate::conversation::whatsapp::client::WhatsAppClient>> {
+        None
+    }
 }
 
 #[async_trait::async_trait]
@@ -5733,6 +5744,41 @@ impl GroupMemberScanRuntime for crate::conversation::zalo::supervisor::ZaloSessi
             timeout,
         )
         .await
+    }
+}
+
+pub(crate) struct ConversationGroupScanRuntime<'a> {
+    pub zalo: &'a crate::conversation::zalo::supervisor::ZaloSessionSupervisor,
+    pub whatsapp: &'a crate::conversation::whatsapp::supervisor::WhatsAppSupervisor,
+}
+
+#[async_trait::async_trait]
+impl GroupMemberScanRuntime for ConversationGroupScanRuntime<'_> {
+    async fn connected_client(
+        &self,
+        provider_account_key: &str,
+    ) -> Option<std::sync::Arc<dyn crate::conversation::zalo::client::ZaloClient>> {
+        self.zalo.connected_client(provider_account_key).await
+    }
+
+    async fn backfill_group_messages(
+        &self,
+        provider_account_key: &str,
+        timeout: std::time::Duration,
+    ) -> crate::conversation::zalo::supervisor::GroupMessageBackfillReport {
+        self.zalo.backfill_group_messages(provider_account_key, timeout).await
+    }
+
+    async fn connected_whatsapp_client(
+        &self,
+        account_id: i64,
+    ) -> Option<std::sync::Arc<dyn crate::conversation::whatsapp::client::WhatsAppClient>> {
+        let client = self.whatsapp.get_client(account_id).await?;
+        if client.is_connected().await {
+            Some(client)
+        } else {
+            None
+        }
     }
 }
 
@@ -6125,10 +6171,14 @@ pub async fn sync_and_deep_scan_group_members(
     conversation_state: tauri::State<'_, ConversationState>,
     conversation_id: i64,
 ) -> Result<GroupMemberScanResult, String> {
+    let runtime = ConversationGroupScanRuntime {
+        zalo: conversation_state.zalo_supervisor.as_ref(),
+        whatsapp: conversation_state.whatsapp_supervisor.as_ref(),
+    };
     sync_and_deep_scan_group_members_impl(
         state.inner(),
         conversation_state.service.as_ref(),
-        conversation_state.zalo_supervisor.as_ref(),
+        &runtime,
         conversation_id,
     )
     .await
@@ -6143,14 +6193,14 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
     use crate::conversation::repository::ZaloUidCandidate;
     use crate::conversation::zalo::supervisor::GroupMessageBackfillOutcome;
 
-    let (external_thread_id, provider_account_key, channel) = {
+    let (external_thread_id, provider_account_key, channel, channel_account_id) = {
         let conn = state
             .conn
             .lock()
             .map_err(|error| format!("Database lock error: {error}"))?;
         let row = conn
             .query_row(
-                "SELECT cc.external_thread_id, ca.provider_account_key, cc.kind, ca.channel
+                "SELECT cc.external_thread_id, ca.provider_account_key, cc.kind, ca.channel, ca.id
                  FROM channel_conversations cc
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                  WHERE cc.id = ?1",
@@ -6161,6 +6211,7 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
                     ))
                 },
             )
@@ -6173,46 +6224,157 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
                 "Conversation {conversation_id} is not a supported group"
             ));
         }
-        (row.0, row.1, channel)
+        (row.0, row.1, channel, row.4)
     };
 
     if channel == "whatsapp" {
-        let (local_evidence, members) = {
-            let conn = state
-                .conn
-                .lock()
-                .map_err(|error| format!("Database lock error: {error}"))?;
-            let local_evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
-            let members = fetch_group_members_impl(&conn, conversation_id)?;
-            (local_evidence, members)
-        };
-        return Ok(GroupMemberScanResult {
-            discovered_count: members.len(),
-            profile_hydrated_count: 0,
-            membership_complete: false,
-            pages_attempted: 0,
-            pages_succeeded: 0,
-            messages_scanned: 0,
-            stop_reason: None,
-            warning: None,
-            diagnostics: GroupMemberScanDiagnostics {
-                direct_snapshot: GroupMemberDirectSnapshotDiagnostics {
-                    attempted: false,
-                    complete: false,
-                    member_count: 0,
-                    warning: None,
+        let client = runtime.connected_whatsapp_client(channel_account_id).await;
+        if let Some(client) = client {
+            match client.get_group_info(&external_thread_id).await {
+                Ok(group_metadata) => {
+                    {
+                        let mut conn = state
+                            .conn
+                            .lock()
+                            .map_err(|error| format!("Database lock error: {error}"))?;
+                        crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::sync_group_metadata(
+                            &mut conn,
+                            channel_account_id,
+                            &group_metadata,
+                        )
+                        .map_err(|error| format!("Failed to persist WhatsApp group metadata: {error}"))?;
+                    }
+                    let (local_evidence, members) = {
+                        let conn = state
+                            .conn
+                            .lock()
+                            .map_err(|error| format!("Database lock error: {error}"))?;
+                        let local_evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
+                        let members = fetch_group_members_impl(&conn, conversation_id)?;
+                        (local_evidence, members)
+                    };
+                    return Ok(GroupMemberScanResult {
+                        discovered_count: members.len(),
+                        profile_hydrated_count: members.len(),
+                        membership_complete: true,
+                        pages_attempted: 1,
+                        pages_succeeded: 1,
+                        messages_scanned: 0,
+                        stop_reason: None,
+                        warning: None,
+                        diagnostics: GroupMemberScanDiagnostics {
+                            direct_snapshot: GroupMemberDirectSnapshotDiagnostics {
+                                attempted: true,
+                                complete: true,
+                                member_count: members.len(),
+                                warning: None,
+                            },
+                            group_link: GroupMemberGroupLinkDiagnostics::default(),
+                            board: GroupMemberBoardDiagnostics::default(),
+                            history_backfill:
+                                crate::conversation::zalo::supervisor::GroupMessageBackfillReport::default(),
+                            local_evidence: local_evidence.diagnostics,
+                            profile_hydration: GroupMemberProfileHydrationDiagnostics {
+                                attempted: members.len(),
+                                succeeded: members.len(),
+                                failed: 0,
+                                warnings: Vec::new(),
+                            },
+                            partial_result: false,
+                            warnings: Vec::new(),
+                        },
+                        members,
+                    });
+                }
+                Err(error) => {
+                    let warning = group_member_scan_warning(
+                        "direct_snapshot",
+                        "whatsapp_query_failed",
+                        Some(format!("conversation_id={conversation_id}")),
+                        format!("Failed to query WhatsApp group info: {error}"),
+                    );
+                    let (local_evidence, members) = {
+                        let conn = state
+                            .conn
+                            .lock()
+                            .map_err(|error| format!("Database lock error: {error}"))?;
+                        let local_evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
+                        let members = fetch_group_members_impl(&conn, conversation_id)?;
+                        (local_evidence, members)
+                    };
+                    return Ok(GroupMemberScanResult {
+                        discovered_count: members.len(),
+                        profile_hydrated_count: 0,
+                        membership_complete: false,
+                        pages_attempted: 1,
+                        pages_succeeded: 0,
+                        messages_scanned: 0,
+                        stop_reason: Some("whatsapp_query_failed".to_string()),
+                        warning: Some(warning.message.clone()),
+                        diagnostics: GroupMemberScanDiagnostics {
+                            direct_snapshot: GroupMemberDirectSnapshotDiagnostics {
+                                attempted: true,
+                                complete: false,
+                                member_count: 0,
+                                warning: Some(warning.clone()),
+                            },
+                            group_link: GroupMemberGroupLinkDiagnostics::default(),
+                            board: GroupMemberBoardDiagnostics::default(),
+                            history_backfill:
+                                crate::conversation::zalo::supervisor::GroupMessageBackfillReport::default(),
+                            local_evidence: local_evidence.diagnostics,
+                            profile_hydration: GroupMemberProfileHydrationDiagnostics::default(),
+                            partial_result: true,
+                            warnings: vec![warning],
+                        },
+                        members,
+                    });
+                }
+            }
+        } else {
+            let warning = group_member_scan_warning(
+                "direct_snapshot",
+                "client_offline",
+                Some(format!("account_id={channel_account_id}")),
+                "WhatsApp client is offline or disconnected; showing local member evidence",
+            );
+            let (local_evidence, members) = {
+                let conn = state
+                    .conn
+                    .lock()
+                    .map_err(|error| format!("Database lock error: {error}"))?;
+                let local_evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
+                let members = fetch_group_members_impl(&conn, conversation_id)?;
+                (local_evidence, members)
+            };
+            return Ok(GroupMemberScanResult {
+                discovered_count: members.len(),
+                profile_hydrated_count: 0,
+                membership_complete: false,
+                pages_attempted: 0,
+                pages_succeeded: 0,
+                messages_scanned: 0,
+                stop_reason: Some("client_offline".to_string()),
+                warning: Some(warning.message.clone()),
+                diagnostics: GroupMemberScanDiagnostics {
+                    direct_snapshot: GroupMemberDirectSnapshotDiagnostics {
+                        attempted: false,
+                        complete: false,
+                        member_count: 0,
+                        warning: Some(warning.clone()),
+                    },
+                    group_link: GroupMemberGroupLinkDiagnostics::default(),
+                    board: GroupMemberBoardDiagnostics::default(),
+                    history_backfill:
+                        crate::conversation::zalo::supervisor::GroupMessageBackfillReport::default(),
+                    local_evidence: local_evidence.diagnostics,
+                    profile_hydration: GroupMemberProfileHydrationDiagnostics::default(),
+                    partial_result: true,
+                    warnings: vec![warning],
                 },
-                group_link: GroupMemberGroupLinkDiagnostics::default(),
-                board: GroupMemberBoardDiagnostics::default(),
-                history_backfill:
-                    crate::conversation::zalo::supervisor::GroupMessageBackfillReport::default(),
-                local_evidence: local_evidence.diagnostics,
-                profile_hydration: GroupMemberProfileHydrationDiagnostics::default(),
-                partial_result: true,
-                warnings: Vec::new(),
-            },
-            members,
-        });
+                members,
+            });
+        }
     }
 
     let client = runtime.connected_client(&provider_account_key).await;
