@@ -1294,12 +1294,12 @@ impl WhatsAppNormalizer {
         Ok(())
     }
 
-    /// Ingests a WhatsApp delivery or read receipt.
+    /// Ingests a WhatsApp delivery or read receipt, returning list of (conversation_id, message_id) updated.
     pub fn ingest_receipt(
         conn: &mut Connection,
         channel_account_id: i64,
         receipt: &RawWhatsAppReceipt,
-    ) -> Result<()> {
+    ) -> Result<Vec<(i64, i64)>> {
         let tx = conn.transaction()?;
         let occurred_at = Self::normalize_iso_timestamp(receipt.timestamp.as_deref());
 
@@ -1309,43 +1309,151 @@ impl WhatsAppNormalizer {
             .and_then(phone::jid_to_phone)
             .unwrap_or_default();
 
+        let mut updated = Vec::new();
+
         for mid in &receipt.message_ids {
-            let msg_id: Option<i64> = tx
+            let msg_info: Option<(i64, i64, String, String, String)> = tx
                 .query_row(
-                    "SELECT m.id FROM messages m
+                    "SELECT m.id, m.conversation_id, m.status, cc.external_thread_id, cc.kind FROM messages m
                      JOIN channel_conversations cc ON cc.id = m.conversation_id
-                     WHERE cc.channel_account_id = ?1 AND m.provider_message_id = ?2
+                     WHERE cc.channel_account_id = ?1
+                       AND m.direction = 'outbound'
+                       AND (m.provider_message_id = ?2 OR m.provider_client_message_id = ?2)
                      LIMIT 1",
                     params![channel_account_id, mid],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?;
 
-            if let Some(id) = msg_id {
+            if let Some((id, conv_id, current_status, conv_thread_id, conv_kind)) = msg_info {
+                // Verify that receipt.chat_jid matches the message's conversation if chat_jid is specified
+                if !receipt.chat_jid.trim().is_empty() {
+                    let chat_jid = receipt.chat_jid.trim();
+                    let matches_conv = if conv_thread_id == chat_jid {
+                        true
+                    } else if conv_kind == "group" {
+                        match (conv_thread_id.split('@').next(), chat_jid.split('@').next()) {
+                            (Some(a), Some(b)) => a == b,
+                            _ => false,
+                        }
+                    } else {
+                        let resolved_chat_phone = phone::resolve_lid_or_jid_to_phone(&tx, chat_jid)
+                            .or_else(|| phone::jid_to_phone(chat_jid))
+                            .unwrap_or_else(|| chat_jid.to_string());
+                        let normalized_chat_phone =
+                            phone::normalize_e164(&resolved_chat_phone, Some("84"))
+                                .unwrap_or_else(|| resolved_chat_phone.clone());
+
+                        let resolved_conv_phone =
+                            phone::resolve_lid_or_jid_to_phone(&tx, &conv_thread_id)
+                                .or_else(|| phone::jid_to_phone(&conv_thread_id))
+                                .unwrap_or_else(|| conv_thread_id.clone());
+                        let normalized_conv_phone =
+                            phone::normalize_e164(&resolved_conv_phone, Some("84"))
+                                .unwrap_or_else(|| resolved_conv_phone.clone());
+
+                        if normalized_chat_phone == normalized_conv_phone {
+                            true
+                        } else if phone::phone_to_direct_jid(&normalized_chat_phone)
+                            == conv_thread_id
+                        {
+                            true
+                        } else {
+                            // Check identity association
+                            tx.query_row(
+                                "SELECT 1 FROM channel_identities ci
+                                 JOIN conversation_participants cp ON cp.identity_id = ci.id
+                                 WHERE cp.conversation_id = ?1
+                                   AND (ci.external_id = ?2 OR ci.normalized_address = ?3 OR ci.external_id = ?3)
+                                 LIMIT 1",
+                                params![conv_id, chat_jid, normalized_chat_phone],
+                                |_| Ok(true),
+                            ).unwrap_or(false)
+                        }
+                    };
+
+                    if !matches_conv {
+                        continue;
+                    }
+                }
+
                 let r_type = receipt.receipt_type.to_lowercase();
-                if r_type == "read" || r_type == "played" {
-                    tx.execute(
-                        "UPDATE messages SET status = 'read' WHERE id = ?1 AND status != 'read'",
-                        params![id],
-                    )?;
-                } else if r_type == "delivered" {
-                    tx.execute(
-                        "UPDATE messages SET status = 'delivered' WHERE id = ?1 AND status NOT IN ('delivered', 'read')",
-                        params![id],
-                    )?;
+                let db_receipt_type = match r_type.as_str() {
+                    "read" | "played" => "read",
+                    "delivered" => "delivered",
+                    "sent" | "accepted" => "sent",
+                    "failed" => "failed",
+                    _ => continue,
+                };
+
+                let mut status_changed = false;
+                if current_status != "removed" {
+                    if db_receipt_type == "failed" {
+                        // failed can only be set if not already delivered or read, and not already failed
+                        if current_status == "sending"
+                            || current_status == "queued"
+                            || current_status == "pending"
+                            || current_status == "sent"
+                        {
+                            tx.execute(
+                                "UPDATE messages SET status = 'failed' WHERE id = ?1",
+                                params![id],
+                            )?;
+                            status_changed = true;
+                        }
+                    } else if db_receipt_type == "read" {
+                        // read can be set if not already read or failed
+                        if current_status != "read" && current_status != "failed" {
+                            tx.execute(
+                                "UPDATE messages SET status = 'read' WHERE id = ?1",
+                                params![id],
+                            )?;
+                            status_changed = true;
+                        }
+                    } else if db_receipt_type == "delivered" {
+                        // delivered can only be set if not already delivered, read, or failed
+                        if current_status == "sending"
+                            || current_status == "queued"
+                            || current_status == "pending"
+                            || current_status == "sent"
+                        {
+                            tx.execute(
+                                "UPDATE messages SET status = 'delivered' WHERE id = ?1",
+                                params![id],
+                            )?;
+                            status_changed = true;
+                        }
+                    } else if db_receipt_type == "sent" {
+                        // sent can only be set if in initial sending states
+                        if current_status == "sending"
+                            || current_status == "queued"
+                            || current_status == "pending"
+                        {
+                            tx.execute(
+                                "UPDATE messages SET status = 'sent' WHERE id = ?1",
+                                params![id],
+                            )?;
+                            status_changed = true;
+                        }
+                    }
+                }
+
+                if status_changed {
+                    updated.push((conv_id, id));
                 }
 
                 tx.execute(
                     "INSERT INTO message_receipts (message_id, recipient_external_id, receipt_type, occurred_at, raw_payload_json)
                      VALUES (?1, ?2, ?3, ?4, '{}')
-                     ON CONFLICT(message_id, recipient_external_id, receipt_type) DO NOTHING",
-                    params![id, recipient_phone, r_type, occurred_at],
+                     ON CONFLICT(message_id, recipient_external_id, receipt_type) DO UPDATE SET
+                         occurred_at = MAX(message_receipts.occurred_at, excluded.occurred_at)",
+                    params![id, recipient_phone, db_receipt_type, occurred_at],
                 )?;
             }
         }
 
         tx.commit()?;
-        Ok(())
+        Ok(updated)
     }
 
     /// Ensures that a conversation record exists in `channel_conversations` (and if direct, `channel_identities`).

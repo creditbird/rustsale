@@ -139,10 +139,13 @@ pub fn send_conversation_message(
     state: tauri::State<'_, ConversationState>,
     request: SendConversationMessageRequest,
 ) -> Result<ConversationMessage, String> {
-    state
+    let msg = state
         .service
         .enqueue_message(&request)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    state.zalo_supervisor.notify_outbox();
+    state.whatsapp_supervisor.notify_outbox();
+    Ok(msg)
 }
 
 #[tauri::command]
@@ -194,10 +197,13 @@ pub fn start_direct_conversation(
     state: tauri::State<'_, ConversationState>,
     request: StartDirectConversationRequest,
 ) -> Result<ConversationMessage, String> {
-    state
+    let msg = state
         .service
         .start_direct_conversation(&request)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    state.zalo_supervisor.notify_outbox();
+    state.whatsapp_supervisor.notify_outbox();
+    Ok(msg)
 }
 
 #[tauri::command]
@@ -221,6 +227,7 @@ pub fn send_conversation_batch(
         .service
         .enqueue_batch(&request)
         .map_err(|error| error.command_error())?;
+    state.zalo_supervisor.notify_outbox();
     state.whatsapp_supervisor.notify_outbox();
     Ok(result)
 }

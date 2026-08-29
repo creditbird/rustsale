@@ -490,6 +490,7 @@ pub struct ZaloSessionSupervisor {
     tasks: Mutex<HashMap<String, SessionTask>>,
     clients: ConnectedClients,
     sticker_cache: std::sync::Mutex<crate::conversation::zalo::sticker_cache::ZaloStickerCache>,
+    outbox_notify: Arc<tokio::sync::Notify>,
 }
 
 impl ZaloSessionSupervisor {
@@ -507,7 +508,14 @@ impl ZaloSessionSupervisor {
             sticker_cache: std::sync::Mutex::new(
                 crate::conversation::zalo::sticker_cache::ZaloStickerCache::new(),
             ),
+            outbox_notify: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Notifies the supervisor to immediately process outbox jobs for connected Zalo accounts.
+    pub fn notify_outbox(&self) {
+        self.outbox_notify.notify_waiters();
+        self.outbox_notify.notify_one();
     }
 
     pub async fn connected_client(
@@ -597,10 +605,20 @@ impl ZaloSessionSupervisor {
         let service = self.service.clone();
         let factory = self.factory.clone();
         let clients = self.clients.clone();
+        let outbox_notify = self.outbox_notify.clone();
         let (control_tx, control_rx) = mpsc::channel(16);
 
         let handle = tokio::spawn(async move {
-            run_session_loop(service, factory, clients, session, task_cancel, control_rx).await;
+            run_session_loop(
+                service,
+                factory,
+                clients,
+                session,
+                task_cancel,
+                control_rx,
+                outbox_notify,
+            )
+            .await;
         });
 
         tasks.insert(
@@ -663,10 +681,20 @@ impl ZaloSessionSupervisor {
         let service = self.service.clone();
         let factory = self.factory.clone();
         let clients = self.clients.clone();
+        let outbox_notify = self.outbox_notify.clone();
         let (control_tx, control_rx) = mpsc::channel(16);
 
         let handle = tokio::spawn(async move {
-            run_session_loop(service, factory, clients, session, task_cancel, control_rx).await;
+            run_session_loop(
+                service,
+                factory,
+                clients,
+                session,
+                task_cancel,
+                control_rx,
+                outbox_notify,
+            )
+            .await;
         });
 
         self.tasks.lock().await.insert(
@@ -991,6 +1019,7 @@ async fn run_session_loop(
     session: ZaloSession,
     cancellation: CancellationToken,
     mut control_rx: mpsc::Receiver<SupervisorControl>,
+    outbox_notify: Arc<tokio::sync::Notify>,
 ) {
     let imei = session.imei.clone();
     let mut provider_account_key = session.provider_account_key().to_string();
@@ -1233,7 +1262,7 @@ async fn run_session_loop(
         }
 
         // 7. Drain receiver loop with reactive pagination state machine
-        let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(50));
+        let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(200));
         let mut profile_ticker = tokio::time::interval(std::time::Duration::from_secs(60));
         let mut history_ticker = tokio::time::interval_at(
             tokio::time::Instant::now() + HISTORY_RESUME_INTERVAL,
@@ -1255,6 +1284,25 @@ async fn run_session_loop(
                     .await;
                     client.stop();
                     return;
+                }
+                _ = outbox_notify.notified() => {
+                    if let Some(acc_id) = account_id {
+                        while let Ok(true) = service.process_next_outbox_job(acc_id, client.as_ref()).await {
+                            if cancellation.is_cancelled() {
+                                if let Some(h) = profile_sync_handle.take() {
+                                    h.abort();
+                                }
+                                unregister_connected_client(
+                                    &connected_clients,
+                                    &provider_account_key,
+                                    &client,
+                                )
+                                .await;
+                                client.stop();
+                                return;
+                            }
+                        }
+                    }
                 }
                 _ = outbox_ticker.tick() => {
                     if let Some(acc_id) = account_id {

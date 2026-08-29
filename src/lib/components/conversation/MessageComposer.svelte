@@ -337,6 +337,13 @@
   $effect(() => {
     if (replyTarget) {
       selectedChannelAccountId = replyTarget.channelAccountId;
+      tick().then(() => {
+        if (textareaElement) {
+          textareaElement.focus();
+          const len = textareaElement.value.length;
+          textareaElement.setSelectionRange(len, len);
+        }
+      });
       return;
     }
     if (selectionTouched) return;

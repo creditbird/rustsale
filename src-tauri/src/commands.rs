@@ -5766,7 +5766,9 @@ impl GroupMemberScanRuntime for ConversationGroupScanRuntime<'_> {
         provider_account_key: &str,
         timeout: std::time::Duration,
     ) -> crate::conversation::zalo::supervisor::GroupMessageBackfillReport {
-        self.zalo.backfill_group_messages(provider_account_key, timeout).await
+        self.zalo
+            .backfill_group_messages(provider_account_key, timeout)
+            .await
     }
 
     async fn connected_whatsapp_client(
@@ -6249,7 +6251,8 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
                             .conn
                             .lock()
                             .map_err(|error| format!("Database lock error: {error}"))?;
-                        let local_evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
+                        let local_evidence =
+                            collect_group_member_local_evidence(&conn, conversation_id)?;
                         let members = fetch_group_members_impl(&conn, conversation_id)?;
                         (local_evidence, members)
                     };
@@ -6298,7 +6301,8 @@ pub(crate) async fn sync_and_deep_scan_group_members_impl(
                             .conn
                             .lock()
                             .map_err(|error| format!("Database lock error: {error}"))?;
-                        let local_evidence = collect_group_member_local_evidence(&conn, conversation_id)?;
+                        let local_evidence =
+                            collect_group_member_local_evidence(&conn, conversation_id)?;
                         let members = fetch_group_members_impl(&conn, conversation_id)?;
                         (local_evidence, members)
                     };

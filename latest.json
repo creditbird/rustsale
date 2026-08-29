@@ -1,11 +1,11 @@
 {
-  "version": "0.1.13",
-  "notes": "Vá lỗi giao diện tràn và đè tab trong trang Cài đặt (Settings), tối ưu Tabs primitive và đồng bộ hệ thống thông báo",
-  "pub_date": "2026-08-26T14:26:49.736Z",
+  "version": "0.1.14",
+  "notes": "Tích hợp WhatsApp Omnichannel hoàn chỉnh (QR login, media sync, reactions, group member sync), tối ưu luồng hội thoại và autofocus khi trả lời tin nhắn",
+  "pub_date": "2026-08-29T04:10:42.085Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDZSeDY1U0E1TlNNbkVPVDFDaUx6N0RaZWlveG45Zk1qTkxHL3M0VWdoNmVoblFuMW5aS2NTb1EwcysvUzExOG9LUGdvWDFpN3hPTDdURy9XTGxtMUFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3NzU0NDA4CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xM19hbWQ2NC5kZWIKb1UxOTJ1NFZ5ZGNmUWpNT2owZFRFdFk3UzEwTnVSQ09ubnpRSEIreS9BWWhkNmhZRjN3aUdESktjNVZLQ3lpc0hYZVowNzA1OW95RTk3eXpudUxJRFE9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.13/RustSale%20CRM_0.1.13_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDZNNmNDY2ZkZ2ZNdTQzQ0lWbDNQSGY4VUpvVkVtcFE3TFQzZDFCYWhFZzdDYlFDSGhjODdmeUJTM0c1blFVQmYxejlXRStWbytTbnQ5dFVRcWdqaHdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTc2NjQxCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNF9hbWQ2NC5kZWIKem1CN2FGU1VvbXF4UWVlN1RsOC95N0w4L3VNZit3ejZpVkRQZHFtRTRJYWw2cjNWNGZSc2VrL21UUmk3VlR2NVJ4SlNWbkR0TFByKzR4S3pXS2hJQUE9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.14/RustSale%20CRM_0.1.14_amd64.deb"
     }
   }
 }

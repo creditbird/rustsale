@@ -539,7 +539,8 @@ pub struct MockWhatsAppClient {
     pub media_reupload_requests: Arc<Mutex<Vec<WhatsAppMediaReuploadRequest>>>,
     pub next_media_reupload_result: Arc<Mutex<Option<Result<WhatsAppMediaReuploadResult>>>>,
     pub next_group_info_result: Arc<Mutex<Option<Result<whatsapp_rust::GroupMetadata>>>>,
-    pub group_info_results: Arc<Mutex<std::collections::HashMap<String, Result<whatsapp_rust::GroupMetadata>>>>,
+    pub group_info_results:
+        Arc<Mutex<std::collections::HashMap<String, Result<whatsapp_rust::GroupMetadata>>>>,
     pub connected: Arc<AtomicBool>,
 }
 
@@ -595,8 +596,15 @@ impl MockWhatsAppClient {
         *self.next_group_info_result.lock().unwrap() = Some(res);
     }
 
-    pub fn set_group_info(&self, jid: impl Into<String>, res: Result<whatsapp_rust::GroupMetadata>) {
-        self.group_info_results.lock().unwrap().insert(jid.into(), res);
+    pub fn set_group_info(
+        &self,
+        jid: impl Into<String>,
+        res: Result<whatsapp_rust::GroupMetadata>,
+    ) {
+        self.group_info_results
+            .lock()
+            .unwrap()
+            .insert(jid.into(), res);
     }
 
     pub fn get_media_reupload_requests(&self) -> Vec<WhatsAppMediaReuploadRequest> {
