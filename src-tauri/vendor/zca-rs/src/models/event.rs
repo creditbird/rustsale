@@ -796,8 +796,8 @@ pub struct Undo {
 
 impl Undo {
     pub fn new(uid: &str, mut data: TUndo, is_group: bool) -> Self {
-        let is_self = data.uid_from == "0";
-        let thread_id = if is_group || data.uid_from == "0" {
+        let is_self = data.uid_from == "0" || (!uid.is_empty() && data.uid_from == uid);
+        let thread_id = if is_group || is_self {
             data.id_to.clone()
         } else {
             data.uid_from.clone()
@@ -1387,5 +1387,34 @@ mod tests {
 
         assert_eq!(ev.thread_id, "g9");
         assert!(matches!(ev.data, GroupEventData::Raw(_)));
+    }
+
+    #[test]
+    fn undo_detects_is_self_with_mobile_uid() {
+        let own_uid = "351966042521";
+        let peer_uid = "84903333333";
+        let group_id = "g_123456789";
+
+        let t_undo_self = TUndo {
+            msg_id: "m1".to_string(),
+            cli_msg_id: "c1".to_string(),
+            id_to: peer_uid.to_string(),
+            uid_from: own_uid.to_string(),
+            ts: "123".to_string(),
+        };
+        let undo_self = Undo::new(own_uid, t_undo_self, false);
+        assert!(undo_self.is_self);
+        assert_eq!(undo_self.thread_id, peer_uid);
+
+        let t_undo_group = TUndo {
+            msg_id: "m2".to_string(),
+            cli_msg_id: "c2".to_string(),
+            id_to: group_id.to_string(),
+            uid_from: own_uid.to_string(),
+            ts: "123".to_string(),
+        };
+        let undo_grp = Undo::new(own_uid, t_undo_group, true);
+        assert!(undo_grp.is_self);
+        assert_eq!(undo_grp.thread_id, group_id);
     }
 }

@@ -441,6 +441,101 @@ async fn test_process_and_publish_whatsapp_receipt_success_and_error_handling() 
 }
 
 #[tokio::test]
+async fn test_whatsapp_serverack_nack_without_class_reaches_failed_and_invalidation() {
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let events = Arc::new(ConversationEventPublisher::new(100));
+    let mut rx = events.subscribe();
+
+    let conn = open_db_connection(&db_path).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts
+         (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', 1, 'connected', '{}', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO channel_conversations (id, channel_account_id, kind, external_thread_id, title, created_at, updated_at)
+         VALUES (25, 1, 'direct', '84903333333@s.whatsapp.net', 'Test WA NACK', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+         VALUES (2510, 25, 'outbound', 'nack_realistic_msg_1', 'text', 'Outbound msg', '{}', 'sending', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    // Production-realistic NACK shape from wacore/whatsapp-rust 0.7.0:
+    // class is None, timestamp is None, from is server JID (s.whatsapp.net), error code is "479"
+    let nack = whatsapp_rust::types::events::ServerAck::builder()
+        .id("nack_realistic_msg_1".to_string())
+        .from("s.whatsapp.net".parse::<whatsapp_rust::Jid>().unwrap())
+        .error("479".to_string())
+        .build();
+    let nack_event = whatsapp_rust::types::events::Event::ServerAck(nack);
+
+    let mapped = super::supervisor::map_whatsapp_receipt_event(&nack_event).unwrap();
+    assert_eq!(mapped.receipt_type, "failed");
+    assert_eq!(mapped.message_ids, vec!["nack_realistic_msg_1"]);
+    assert_eq!(mapped.chat_jid, ""); // Server JID cleared to allow message-ID correlation
+
+    let handle_res =
+        super::supervisor::handle_whatsapp_receipt_event(&db_path, 1, &nack_event, &events);
+    assert!(handle_res.is_some());
+    assert!(handle_res.unwrap().is_ok());
+
+    let published_event = rx.recv().await.unwrap();
+    assert_eq!(published_event.conversation_id, 25);
+    assert_eq!(published_event.message_id, Some(2510));
+
+    let updated_status: String = conn
+        .query_row("SELECT status FROM messages WHERE id = 2510", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(updated_status, "failed");
+
+    let receipt_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM message_receipts WHERE message_id = 2510 AND receipt_type = 'failed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_count, 1);
+}
+
+#[test]
+fn test_whatsapp_serverack_negative_coverage() {
+    // 1. Error ACK with non-message class (e.g. "call") -> returns None
+    let call_ack = whatsapp_rust::types::events::ServerAck::builder()
+        .id("call_ack_1".to_string())
+        .from("s.whatsapp.net".parse::<whatsapp_rust::Jid>().unwrap())
+        .class("call".to_string())
+        .error("500".to_string())
+        .build();
+    let ev1 = whatsapp_rust::types::events::Event::ServerAck(call_ack);
+    assert!(super::supervisor::map_whatsapp_receipt_event(&ev1).is_none());
+
+    // 2. Success ACK with non-message class (e.g. "notification") -> returns None
+    let notif_ack = whatsapp_rust::types::events::ServerAck::builder()
+        .id("notif_ack_1".to_string())
+        .from("s.whatsapp.net".parse::<whatsapp_rust::Jid>().unwrap())
+        .class("notification".to_string())
+        .build();
+    let ev2 = whatsapp_rust::types::events::Event::ServerAck(notif_ack);
+    assert!(super::supervisor::map_whatsapp_receipt_event(&ev2).is_none());
+
+    // 3. ServerAck with empty ID -> returns None
+    let empty_id_ack = whatsapp_rust::types::events::ServerAck::builder()
+        .id("".to_string())
+        .class("message".to_string())
+        .build();
+    let ev3 = whatsapp_rust::types::events::Event::ServerAck(empty_id_ack);
+    assert!(super::supervisor::map_whatsapp_receipt_event(&ev3).is_none());
+}
+
+#[tokio::test]
 async fn test_whatsapp_receipt_listener_event_handling_logging_and_liveness() {
     let (db_path, _dir) = setup_test_supervisor_db();
     let events = Arc::new(ConversationEventPublisher::new(100));
@@ -489,8 +584,7 @@ async fn test_whatsapp_receipt_listener_event_handling_logging_and_liveness() {
     assert_eq!(mapped_fail.receipt_type, "failed");
     assert_eq!(mapped_fail.message_ids, vec!["stanza_ack_live_1"]);
 
-    // Simulate dependency failure: handle_whatsapp_receipt_event with invalid DB path
-    // This executes the warn! logging branch and returns Err without crashing or panicking
+    // Process first event with an invalid DB path to simulate error logging path
     let fail_handle_res = super::supervisor::handle_whatsapp_receipt_event(
         "/non_existent/path/corrupted.sqlite",
         1,
@@ -500,7 +594,7 @@ async fn test_whatsapp_receipt_listener_event_handling_logging_and_liveness() {
     assert!(fail_handle_res.is_some());
     assert!(fail_handle_res.unwrap().is_err());
 
-    // 2. Second event: Verify listener liveness on subsequent event
+    // 2. Second event: Sequential execution on the same listener handler
     let success_ack = whatsapp_rust::types::events::ServerAck::builder()
         .id("stanza_ack_live_2".to_string())
         .from(
@@ -513,11 +607,10 @@ async fn test_whatsapp_receipt_listener_event_handling_logging_and_liveness() {
         .build();
     let success_event = whatsapp_rust::types::events::Event::ServerAck(success_ack);
 
-    // Verify map_whatsapp_receipt_event maps clean ack to "sent"
     let mapped_success = super::supervisor::map_whatsapp_receipt_event(&success_event).unwrap();
     assert_eq!(mapped_success.receipt_type, "sent");
 
-    // Process second event on valid DB path
+    // Process second event on valid DB path using the exact same handler interface
     let success_handle_res =
         super::supervisor::handle_whatsapp_receipt_event(&db_path, 1, &success_event, &events);
     assert!(success_handle_res.is_some());

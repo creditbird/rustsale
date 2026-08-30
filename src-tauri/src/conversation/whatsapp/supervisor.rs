@@ -785,19 +785,48 @@ pub(crate) fn map_whatsapp_receipt_event(
             }
         }
         whatsapp_rust::types::events::Event::ServerAck(ack) => {
-            if ack.class.as_deref() == Some("message") && !ack.id.is_empty() {
-                let receipt_type = if ack.error.is_some() {
-                    "failed"
+            if !ack.id.is_empty() {
+                let is_error_ack = ack.error.is_some();
+                let is_message_class = ack.class.as_deref() == Some("message");
+                // For error ACKs (NACK), class is optional in wacore/whatsapp-rust (can be None or Some("message")).
+                // Reject explicit non-message classes (e.g. Some("call"), Some("notification")).
+                let class_valid = if is_error_ack {
+                    ack.class.as_deref().map_or(true, |c| c == "message")
                 } else {
-                    "sent"
+                    is_message_class
                 };
-                Some(super::normalizer::RawWhatsAppReceipt {
-                    message_ids: vec![ack.id.clone()],
-                    chat_jid: ack.from.as_ref().map(|j| j.to_string()).unwrap_or_default(),
-                    sender_jid: None,
-                    receipt_type: receipt_type.to_string(),
-                    timestamp: ack.timestamp.map(|t| t.to_rfc3339()),
-                })
+
+                if class_valid {
+                    let receipt_type = if is_error_ack { "failed" } else { "sent" };
+
+                    // For ServerAck, `from` may be the server JID (e.g., "s.whatsapp.net") or peer JID.
+                    // If it's a server/broadcast JID or None, keep chat_jid empty so that
+                    // `ingest_receipt` correlates directly by message ID without failing peer conversation JID validation.
+                    let chat_jid = match ack.from.as_ref() {
+                        Some(j) => {
+                            let s = j.to_string();
+                            if s.contains("s.whatsapp.net")
+                                || s.contains("broadcast")
+                                || s == "server"
+                            {
+                                String::new()
+                            } else {
+                                s
+                            }
+                        }
+                        None => String::new(),
+                    };
+
+                    Some(super::normalizer::RawWhatsAppReceipt {
+                        message_ids: vec![ack.id.clone()],
+                        chat_jid,
+                        sender_jid: None,
+                        receipt_type: receipt_type.to_string(),
+                        timestamp: ack.timestamp.map(|t| t.to_rfc3339()),
+                    })
+                } else {
+                    None
+                }
             } else {
                 None
             }

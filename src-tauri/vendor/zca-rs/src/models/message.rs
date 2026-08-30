@@ -233,8 +233,8 @@ pub struct UserMessage {
 
 impl UserMessage {
     pub fn new(uid: &str, mut data: TMessage) -> Self {
-        let is_self = data.uid_from == "0";
-        let thread_id = if data.uid_from == "0" {
+        let is_self = data.uid_from == "0" || (!uid.is_empty() && data.uid_from == uid);
+        let thread_id = if is_self {
             data.id_to.clone()
         } else {
             data.uid_from.clone()
@@ -266,7 +266,7 @@ pub struct GroupMessage {
 
 impl GroupMessage {
     pub fn new(uid: &str, mut data: TGroupMessage) -> Self {
-        let is_self = data.base.uid_from == "0";
+        let is_self = data.base.uid_from == "0" || (!uid.is_empty() && data.base.uid_from == uid);
         let thread_id = data.base.id_to.clone();
 
         if data.base.uid_from == "0" {
@@ -670,5 +670,89 @@ mod tests {
         assert_eq!(message.params_ext.count_unread, 0);
         assert_eq!(message.params_ext.contain_type, 0);
         assert_eq!(message.params_ext.platform_type, 0);
+    }
+
+    #[test]
+    fn user_and_group_message_detect_is_self_with_mobile_uid() {
+        let own_uid = "351966042521";
+        let peer_uid = "84903333333";
+        let group_id = "g_123456789";
+
+        // 1. UserMessage sent from web (uidFrom == "0")
+        let mut msg_web = create_dummy_message();
+        msg_web.uid_from = "0".to_string();
+        msg_web.id_to = peer_uid.to_string();
+        let user_msg_web = UserMessage::new(own_uid, msg_web);
+        assert!(user_msg_web.is_self);
+        assert_eq!(user_msg_web.thread_id, peer_uid);
+        assert_eq!(user_msg_web.data.uid_from, own_uid);
+
+        // 2. UserMessage sent from mobile (uidFrom == own_uid)
+        let mut msg_mobile = create_dummy_message();
+        msg_mobile.uid_from = own_uid.to_string();
+        msg_mobile.id_to = peer_uid.to_string();
+        let user_msg_mobile = UserMessage::new(own_uid, msg_mobile);
+        assert!(user_msg_mobile.is_self);
+        assert_eq!(user_msg_mobile.thread_id, peer_uid);
+
+        // 3. UserMessage received from peer (uidFrom == peer_uid)
+        let mut msg_peer = create_dummy_message();
+        msg_peer.uid_from = peer_uid.to_string();
+        msg_peer.id_to = own_uid.to_string();
+        let user_msg_peer = UserMessage::new(own_uid, msg_peer);
+        assert!(!user_msg_peer.is_self);
+        assert_eq!(user_msg_peer.thread_id, peer_uid);
+
+        // 4. GroupMessage sent from mobile (uidFrom == own_uid)
+        let mut grp_mobile = TGroupMessage {
+            base: create_dummy_message(),
+            mentions: None,
+        };
+        grp_mobile.base.uid_from = own_uid.to_string();
+        grp_mobile.base.id_to = group_id.to_string();
+        let group_msg_mobile = GroupMessage::new(own_uid, grp_mobile);
+        assert!(group_msg_mobile.is_self);
+        assert_eq!(group_msg_mobile.thread_id, group_id);
+
+        // 5. GroupMessage sent from peer (uidFrom == peer_uid)
+        let mut grp_peer = TGroupMessage {
+            base: create_dummy_message(),
+            mentions: None,
+        };
+        grp_peer.base.uid_from = peer_uid.to_string();
+        grp_peer.base.id_to = group_id.to_string();
+        let group_msg_peer = GroupMessage::new(own_uid, grp_peer);
+        assert!(!group_msg_peer.is_self);
+        assert_eq!(group_msg_peer.thread_id, group_id);
+    }
+
+    fn create_dummy_message() -> TMessage {
+        TMessage {
+            action_id: "act-1".to_string(),
+            msg_id: "msg-1".to_string(),
+            cli_msg_id: "cli-1".to_string(),
+            msg_type: "chat".to_string(),
+            uid_from: "".to_string(),
+            id_to: "".to_string(),
+            d_name: "User".to_string(),
+            ts: "1785548753795".to_string(),
+            status: 1,
+            content: "hello".to_string(),
+            notify: "".to_string(),
+            ttl: 0,
+            user_id: "".to_string(),
+            uin: "".to_string(),
+            property_ext: None,
+            params_ext: TParamsExt {
+                count_unread: 0,
+                contain_type: 0,
+                platform_type: 0,
+            },
+            cmd: 501,
+            st: 0,
+            at: 0,
+            real_msg_id: "real-1".to_string(),
+            quote: None,
+        }
     }
 }

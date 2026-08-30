@@ -16,4 +16,3 @@ Companion actual status: `docs/plans/2026-08-30-whatsapp-receipt-remediation/202
 | Trailing whitespaces | 0 | 1 | 0 | PASSED |
 | Knowledge Graph Nodes | > 80,000 | 81,000 | 82,020 nodes | PASSED |
 | Knowledge Graph Relationships | > 90,000 | 92,000 | 94,779 relationships | PASSED |
-

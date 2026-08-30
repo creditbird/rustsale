@@ -915,10 +915,17 @@ impl ZaloClient for RealZaloClient {
         count: Option<i64>,
         last_action_id: Option<&str>,
     ) -> anyhow::Result<zca_rs::apis::group::GetGroupChatHistoryResponse> {
-        self.inner
+        let mut resp = self
+            .inner
             .get_group_chat_history_with_cursor(group_id, count, last_action_id)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch group chat history: {e}"))
+            .map_err(|e| anyhow::anyhow!("Failed to fetch group chat history: {e}"))?;
+        for msg in &mut resp.group_msgs {
+            if msg.thread_id.is_empty() || msg.thread_id == "0" {
+                msg.thread_id = group_id.to_string();
+            }
+        }
+        Ok(resp)
     }
 
     async fn fetch_group_member_profiles(
