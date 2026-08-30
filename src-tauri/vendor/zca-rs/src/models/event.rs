@@ -616,6 +616,16 @@ pub struct TDeliveredMessage {
     pub m_s_ts: u64,
 }
 
+impl TDeliveredMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = (!self.msg_id.trim().is_empty() && self.msg_id.trim() != "0")
+            || (!self.real_msg_id.trim().is_empty() && self.real_msg_id.trim() != "0");
+        let has_recipient = self.delivered_uids.iter().any(|u| !u.trim().is_empty())
+            || self.seen_uids.iter().any(|u| !u.trim().is_empty());
+        has_msg_id && has_recipient
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TGroupDeliveredMessage {
@@ -623,6 +633,15 @@ pub struct TGroupDeliveredMessage {
     pub base: TDeliveredMessage,
     #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub group_id: String,
+}
+
+impl TGroupDeliveredMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = (!self.base.msg_id.trim().is_empty() && self.base.msg_id.trim() != "0")
+            || (!self.base.real_msg_id.trim().is_empty() && self.base.real_msg_id.trim() != "0");
+        let has_group_id = !self.group_id.trim().is_empty();
+        has_msg_id && has_group_id
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -691,6 +710,15 @@ pub struct TUserSeenMessage {
     pub real_msg_id: String,
 }
 
+impl TUserSeenMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = (!self.msg_id.trim().is_empty() && self.msg_id.trim() != "0")
+            || (!self.real_msg_id.trim().is_empty() && self.real_msg_id.trim() != "0");
+        let has_recipient = !self.id_to.trim().is_empty();
+        has_msg_id && has_recipient
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TGroupSeenMessage {
@@ -700,6 +728,14 @@ pub struct TGroupSeenMessage {
     pub group_id: String,
     #[serde(default, deserialize_with = "deserialize_vec_string_or_number")]
     pub seen_uids: Vec<String>,
+}
+
+impl TGroupSeenMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = !self.msg_id.trim().is_empty() && self.msg_id.trim() != "0";
+        let has_group_id = !self.group_id.trim().is_empty();
+        has_msg_id && has_group_id
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1504,6 +1540,64 @@ mod tests {
         assert_eq!(seen.id_to, "3378879609226363403");
         assert_eq!(seen.msg_id, "8209687565523");
         assert_eq!(seen.real_msg_id, "");
+    }
+
+    #[test]
+    fn receipt_models_semantic_validation_rejects_empty_and_zero_ids() {
+        // Empty object deserializes due to serde(default), but is_valid must be false
+        let empty_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!empty_del.is_valid());
+
+        // Zero msgId without realMsgId is invalid
+        let zero_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "0",
+            "deliveredUids": ["user_123"]
+        })).unwrap();
+        assert!(!zero_del.is_valid());
+
+        // Zero msgId with non-zero realMsgId and recipient is valid
+        let real_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "0",
+            "realMsgId": "real_999",
+            "deliveredUids": ["user_123"]
+        })).unwrap();
+        assert!(real_del.is_valid());
+
+        // Valid msgId but no deliveredUids or seenUids is invalid
+        let no_uids_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "12345",
+            "deliveredUids": []
+        })).unwrap();
+        assert!(!no_uids_del.is_valid());
+
+        // User seen with empty idTo or empty msgId is invalid
+        let empty_seen: TUserSeenMessage = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!empty_seen.is_valid());
+
+        let no_id_seen: TUserSeenMessage = serde_json::from_value(serde_json::json!({
+            "idTo": "user_123",
+            "msgId": "0"
+        })).unwrap();
+        assert!(!no_id_seen.is_valid());
+
+        let valid_seen: TUserSeenMessage = serde_json::from_value(serde_json::json!({
+            "idTo": "user_123",
+            "msgId": "12345"
+        })).unwrap();
+        assert!(valid_seen.is_valid());
+
+        // Group seen with empty groupId is invalid
+        let empty_group_seen: TGroupSeenMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "12345",
+            "groupId": ""
+        })).unwrap();
+        assert!(!empty_group_seen.is_valid());
+
+        let valid_group_seen: TGroupSeenMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "12345",
+            "groupId": "group_123"
+        })).unwrap();
+        assert!(valid_group_seen.is_valid());
     }
 
     fn create_dummy_undo() -> TUndo {

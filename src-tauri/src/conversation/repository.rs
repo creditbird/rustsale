@@ -3663,6 +3663,9 @@ impl ConversationRepository {
             messages.push(msg);
         }
 
+        crate::conversation::projection::hydrate_messages(&tx, &mut messages)
+            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
         tx.commit().map_err(|e| {
             ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
         })?;

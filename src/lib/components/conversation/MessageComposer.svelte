@@ -12,6 +12,7 @@
     type ConversationAccountRuntime,
     type ConversationCapabilities,
     type ConversationMentionCandidate,
+    type ConversationMessage,
     type ConversationQuickTemplate,
     type ConversationRuntimeStatus,
     type InboxItem,
@@ -1106,18 +1107,89 @@
       }
     });
 
+    const clientBatchId = newClientId('batch');
+    const preparedParts = parts.map((part) => ({
+      ...part,
+      clientPartId: part.clientPartId || newClientId('part')
+    }));
+
+    // 1. Zero-latency optimistic message bubble generation (<1ms)
+    const optimisticMessages: ConversationMessage[] = preparedParts.map((part, idx) => {
+      const isText = part.type === 'text';
+      const textContent = isText ? part.text : null;
+      return {
+        id: -(Date.now() + idx),
+        conversationId: targetConversationId,
+        channelAccountId: selectedOption?.id ?? 0,
+        channel: selectedOption?.target.channel ?? 'zalo',
+        accountDisplayName: selectedOption?.account?.displayName ?? null,
+        senderIdentityId: null,
+        senderExternalId: null,
+        senderDisplayName: null,
+        senderAvatarUrl: null,
+        direction: 'outbound',
+        contentType: part.type,
+        textContent,
+        content: isText ? { text: textContent } : {},
+        occurredAt: new Date().toISOString(),
+        status: 'queued',
+        removedAt: null,
+        errorMessage: null,
+        replyToMessageId: currentReplyTarget?.messageId ?? null,
+        attachments: [],
+        replyTarget: currentReplyTarget
+          ? {
+              messageId: currentReplyTarget.messageId,
+              senderDisplayName: null,
+              contentType: 'text',
+              textContent: null,
+              mediaType: null,
+              occurredAt: new Date().toISOString()
+            }
+          : null,
+        reactions: [],
+        batchIndex: idx,
+        sendBatch: {
+          sendBatchId: clientBatchId,
+          status: 'queued',
+          totalParts: preparedParts.length,
+          sentParts: 0,
+          failedParts: 0
+        },
+        mentions: [],
+        actions: {
+          reply: true,
+          copy: true,
+          recall: false,
+          forward: true,
+          react: true
+        }
+      };
+    });
+
+    onBatchQueued?.({
+      batchId: clientBatchId,
+      clientBatchId,
+      messages: optimisticMessages
+    });
+    if (currentReplyTarget) onCancelReply();
+
     isSending = true;
     try {
       const result = await sendConversationBatch({
         conversationId: targetConversationId,
-        clientBatchId: newClientId('batch'),
+        clientBatchId,
         replyToMessageId: currentReplyTarget?.messageId ?? null,
-        parts,
+        parts: preparedParts,
         messageTag: outboundMessageTag ?? null
       });
       onBatchQueued?.(result);
-      if (currentReplyTarget) onCancelReply();
     } catch (error) {
+      onBatchQueued?.({
+        batchId: clientBatchId,
+        clientBatchId,
+        messages: []
+      });
       // On network / send error, restore snapshot back into draft state
       draftCache.update(activeDraftKey, {
         text: snapshot.text,
@@ -1166,16 +1238,92 @@
       }
     }
 
+    const clientBatchId = newClientId('batch');
+    const clientPartId = newClientId('part');
+    const optimisticMessage: ConversationMessage = {
+      id: -Date.now(),
+      conversationId: targetConversationId,
+      channelAccountId: selectedOption?.id ?? 0,
+      channel: selectedOption?.target.channel ?? 'zalo',
+      accountDisplayName: selectedOption?.account?.displayName ?? null,
+      senderIdentityId: null,
+      senderExternalId: null,
+      senderDisplayName: null,
+      senderAvatarUrl: null,
+      direction: 'outbound',
+      contentType: 'sticker',
+      textContent: null,
+      content: {
+        stickerId: sticker.stickerId,
+        cateId: sticker.cateId,
+        type: sticker.stickerType,
+        url: sticker.url
+      },
+      occurredAt: new Date().toISOString(),
+      status: 'queued',
+      removedAt: null,
+      errorMessage: null,
+      replyToMessageId: replyTarget?.messageId ?? null,
+      attachments: [
+        {
+          id: -Date.now(),
+          mediaType: 'sticker',
+          mimeType: 'image/webp',
+          fileName: 'sticker.webp',
+          sizeBytes: null,
+          remoteUrl: sticker.url,
+          thumbnailUrl: null,
+          width: null,
+          height: null,
+          durationSeconds: null
+        }
+      ],
+      replyTarget: replyTarget
+        ? {
+            messageId: replyTarget.messageId,
+            senderDisplayName: null,
+            contentType: 'text',
+            textContent: null,
+            mediaType: null,
+            occurredAt: new Date().toISOString()
+          }
+        : null,
+      reactions: [],
+      batchIndex: 0,
+      sendBatch: {
+        sendBatchId: clientBatchId,
+        status: 'queued',
+        totalParts: 1,
+        sentParts: 0,
+        failedParts: 0
+      },
+      mentions: [],
+      actions: {
+        reply: true,
+        copy: true,
+        recall: false,
+        forward: true,
+        react: true
+      }
+    };
+
+    onBatchQueued?.({
+      batchId: clientBatchId,
+      clientBatchId,
+      messages: [optimisticMessage]
+    });
+    if (replyTarget) onCancelReply();
+
     isSending = true;
     sendError = null;
     try {
       const result = await sendConversationBatch({
         conversationId: targetConversationId,
-        clientBatchId: newClientId('batch'),
+        clientBatchId,
         replyToMessageId: replyTarget?.messageId ?? null,
         parts: [
           {
-            clientPartId: newClientId('part'),
+            clientPartId,
             type: 'sticker',
             stickerId: sticker.stickerId,
             cateId: sticker.cateId,
@@ -1187,8 +1335,12 @@
       });
       activePopover = null;
       onBatchQueued?.(result);
-      if (replyTarget) onCancelReply();
     } catch (error) {
+      onBatchQueued?.({
+        batchId: clientBatchId,
+        clientBatchId,
+        messages: []
+      });
       sendError = formatError(error);
     } finally {
       isSending = false;

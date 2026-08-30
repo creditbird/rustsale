@@ -964,11 +964,14 @@ async fn handle_incoming_packet(
         if let Some(delivereds) = decoded.get("delivereds").and_then(|v| v.as_array()) {
             for del_val in delivereds {
                 match serde_json::from_value::<crate::models::event::TDeliveredMessage>(del_val.clone()) {
-                    Ok(del_data) => {
+                    Ok(del_data) if del_data.is_valid() => {
                         delivered_events.push(DeliveredMessage::User(UserDeliveredMessage::new(del_data)));
                     }
+                    Ok(_) => {
+                        log::warn!("Ignored semantically invalid TDeliveredMessage in cmd 502");
+                    }
                     Err(e) => {
-                        log::warn!("Failed to parse TDeliveredMessage from payload {:?}: {}", del_val, e);
+                        log::warn!("Failed to parse TDeliveredMessage in cmd 502: {}", e);
                     }
                 }
             }
@@ -981,11 +984,14 @@ async fn handle_incoming_packet(
         if let Some(seens) = decoded.get("seens").and_then(|v| v.as_array()) {
             for seen_val in seens {
                 match serde_json::from_value::<crate::models::event::TUserSeenMessage>(seen_val.clone()) {
-                    Ok(seen_data) => {
+                    Ok(seen_data) if seen_data.is_valid() => {
                         seen_events.push(SeenMessage::User(UserSeenMessage::new(seen_data)));
                     }
+                    Ok(_) => {
+                        log::warn!("Ignored semantically invalid TUserSeenMessage in cmd 502");
+                    }
                     Err(e) => {
-                        log::warn!("Failed to parse TUserSeenMessage from payload {:?}: {}", seen_val, e);
+                        log::warn!("Failed to parse TUserSeenMessage in cmd 502: {}", e);
                     }
                 }
             }
@@ -999,15 +1005,18 @@ async fn handle_incoming_packet(
         if let Some(delivereds) = decoded.get("delivereds").and_then(|v| v.as_array()) {
             for del_val in delivereds {
                 match serde_json::from_value::<crate::models::event::TGroupDeliveredMessage>(del_val.clone()) {
-                    Ok(del_data) => {
+                    Ok(del_data) if del_data.is_valid() => {
                         let event = GroupDeliveredMessage::new(&uid, del_data);
                         if event.is_self && !self_listen {
                             continue;
                         }
                         delivered_events.push(DeliveredMessage::Group(event));
                     }
+                    Ok(_) => {
+                        log::warn!("Ignored semantically invalid TGroupDeliveredMessage in cmd 522");
+                    }
                     Err(e) => {
-                        log::warn!("Failed to parse TGroupDeliveredMessage from payload {:?}: {}", del_val, e);
+                        log::warn!("Failed to parse TGroupDeliveredMessage in cmd 522: {}", e);
                     }
                 }
             }
@@ -1020,15 +1029,18 @@ async fn handle_incoming_packet(
         if let Some(seens) = decoded.get("groupSeens").and_then(|v| v.as_array()) {
             for seen_val in seens {
                 match serde_json::from_value::<crate::models::event::TGroupSeenMessage>(seen_val.clone()) {
-                    Ok(seen_data) => {
+                    Ok(seen_data) if seen_data.is_valid() => {
                         let event = GroupSeenMessage::new(&uid, seen_data);
                         if event.is_self && !self_listen {
                             continue;
                         }
                         seen_events.push(SeenMessage::Group(event));
                     }
+                    Ok(_) => {
+                        log::warn!("Ignored semantically invalid TGroupSeenMessage in cmd 522");
+                    }
                     Err(e) => {
-                        log::warn!("Failed to parse TGroupSeenMessage from payload {:?}: {}", seen_val, e);
+                        log::warn!("Failed to parse TGroupSeenMessage in cmd 522: {}", e);
                     }
                 }
             }

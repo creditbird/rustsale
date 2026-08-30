@@ -1033,11 +1033,23 @@ impl ZaloSessionSupervisor {
             );
         }
 
+        let lead_id_opt: Option<i64> = open_db_connection(&self.db_path).ok().and_then(|conn| {
+            conn.query_row(
+                "SELECT ci.lead_id FROM channel_identities ci
+                     JOIN conversation_participants cp ON cp.identity_id = ci.id
+                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                [conversation_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None)
+        });
+
         self.service
             .events
             .publish(crate::conversation::events::ConversationInvalidatedEvent {
                 conversation_id,
-                lead_id: None,
+                lead_id: lead_id_opt,
                 channel: crate::conversation::types::Channel::Zalo,
                 reason: crate::conversation::events::ConversationInvalidationReason::Message,
                 message_id: None,
@@ -1116,11 +1128,23 @@ impl ZaloSessionSupervisor {
                         rusqlite::params![now_str, conv_id],
                     );
                 }
+                let lead_id_opt: Option<i64> = open_db_connection(db_path).ok().and_then(|conn| {
+                    conn.query_row(
+                        "SELECT ci.lead_id FROM channel_identities ci
+                             JOIN conversation_participants cp ON cp.identity_id = ci.id
+                             WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                        [conv_id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None)
+                });
+
                 service
                     .events
                     .publish(crate::conversation::events::ConversationInvalidatedEvent {
                         conversation_id: conv_id,
-                        lead_id: None,
+                        lead_id: lead_id_opt,
                         channel: crate::conversation::types::Channel::Zalo,
                         reason:
                             crate::conversation::events::ConversationInvalidationReason::Message,

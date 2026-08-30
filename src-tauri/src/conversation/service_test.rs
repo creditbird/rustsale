@@ -3973,4 +3973,105 @@ mod group_member_import_events {
         assert_eq!(delta.message.sender_display_name.as_deref(), Some("Customer 1"));
         assert!(delta.emitted_at_ms > 0);
     }
+
+    #[test]
+    fn test_enqueue_outbound_batch_returns_hydrated_messages_and_publishes_delta() {
+        use crate::conversation::types::{ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest};
+
+        let harness = ServiceHarness::new();
+        let mut delta_rx = harness.events.subscribe_delta();
+        let mut inval_rx = harness.events.subscribe();
+
+        let req = SendConversationBatchRequest {
+            conversation_id: 1,
+            client_batch_id: "batch-hydrated-01".to_string(),
+            reply_to_message_id: None,
+            parts: vec![ConversationSendPartRequest {
+                client_part_id: "part-01".to_string(),
+                content: ConversationSendPartContent::Text {
+                    text: "Tin nhắn outbound hydrate".to_string(),
+                    mentions: vec![],
+                },
+            }],
+            message_tag: None,
+        };
+
+        let res = harness.service.enqueue_batch(&req).unwrap();
+        assert_eq!(res.messages.len(), 1);
+        let msg = &res.messages[0];
+        assert_eq!(msg.status, crate::conversation::types::MessageStatus::Queued);
+        assert_eq!(msg.send_batch.as_ref().unwrap().send_batch_id, res.batch_id);
+        assert_eq!(res.client_batch_id, "batch-hydrated-01");
+
+        // Verify delta published
+        let delta = delta_rx.try_recv().expect("Expected delta for enqueued outbound batch");
+        assert_eq!(delta.conversation_id, 1);
+        assert_eq!(delta.message.text_content.as_deref(), Some("Tin nhắn outbound hydrate"));
+        assert_eq!(delta.message.status, crate::conversation::types::MessageStatus::Queued);
+        assert!(inval_rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn test_ingest_zalo_echo_publishes_delta_event() {
+        let harness = ServiceHarness::new();
+        let mut delta_rx = harness.events.subscribe_delta();
+
+        // 1. Enqueue outbound message
+        let req = crate::conversation::types::SendConversationBatchRequest {
+            conversation_id: 1,
+            client_batch_id: "batch-echo-01".to_string(),
+            reply_to_message_id: None,
+            parts: vec![crate::conversation::types::ConversationSendPartRequest {
+                client_part_id: "part-echo-01".to_string(),
+                content: crate::conversation::types::ConversationSendPartContent::Text {
+                    text: "Tin nhắn gửi qua zalo".to_string(),
+                    mentions: vec![],
+                },
+            }],
+            message_tag: None,
+        };
+        let _ = harness.service.enqueue_batch(&req).unwrap();
+        let _ = delta_rx.try_recv().unwrap(); // drain enqueue delta
+
+        // 2. Ingest websocket echo for the message (is_self = true)
+        let raw_user_msg: zca_rs::models::TMessage = serde_json::from_value(serde_json::json!({
+            "actionId": "action-echo-1",
+            "msgId": "echo-msg-100",
+            "cliMsgId": "cli-delta-msg-echo",
+            "msgType": "webchat",
+            "uidFrom": "self-uid",
+            "idTo": "user-1",
+            "dName": "Sale 01",
+            "ts": "1722420050000",
+            "status": 1,
+            "content": "Tin nhắn gửi qua zalo",
+            "notify": "",
+            "ttl": 0,
+            "userId": "",
+            "uin": "",
+            "propertyExt": null,
+            "paramsExt": {"countUnread": 0, "containType": 0, "platformType": 1},
+            "cmd": 501,
+            "st": 0,
+            "at": 0,
+            "realMsgId": "real-echo-msg-100",
+            "quote": null
+        }))
+        .unwrap();
+
+        let event = zca_rs::listener::ListenerEvent::Message(Box::new(
+            zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_user_msg)),
+        ));
+
+        harness
+            .service
+            .ingest_zalo_event("imei-1", Some("Sale 01"), event)
+            .unwrap();
+
+        // 3. Verify delta was published on echo receipt
+        let delta = delta_rx.try_recv().expect("Expected delta event on echo arrival");
+        assert_eq!(delta.conversation_id, 1);
+        assert_eq!(delta.channel, Channel::Zalo);
+        assert_eq!(delta.message.text_content.as_deref(), Some("Tin nhắn gửi qua zalo"));
+    }
 }

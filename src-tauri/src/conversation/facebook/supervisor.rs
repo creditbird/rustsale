@@ -222,9 +222,20 @@ impl FacebookMessengerSupervisor {
 
         if all_new_messages > 0 && !all_affected_conversations.is_empty() {
             for cid in &all_affected_conversations {
+                let lead_id_opt: Option<i64> = conn
+                    .query_row(
+                        "SELECT ci.lead_id FROM channel_identities ci
+                         JOIN conversation_participants cp ON cp.identity_id = ci.id
+                         WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                        [cid],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None);
+
                 self.events.publish(ConversationInvalidatedEvent {
                     conversation_id: *cid,
-                    lead_id: None,
+                    lead_id: lead_id_opt,
                     channel: Channel::Messenger,
                     reason: ConversationInvalidationReason::Message,
                     message_id: None,
@@ -332,9 +343,20 @@ impl FacebookMessengerSupervisor {
         }
 
         for cid in &affected {
+            let lead_id_opt: Option<i64> = conn
+                .query_row(
+                    "SELECT ci.lead_id FROM channel_identities ci
+                     JOIN conversation_participants cp ON cp.identity_id = ci.id
+                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                    [cid],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+
             self.events.publish(ConversationInvalidatedEvent {
                 conversation_id: *cid,
-                lead_id: None,
+                lead_id: lead_id_opt,
                 channel: Channel::Messenger,
                 reason: ConversationInvalidationReason::Message,
                 message_id: None,

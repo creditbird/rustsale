@@ -406,6 +406,14 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Message,
             message_id: Some(message.id),
         });
+        self.events.publish_delta(crate::conversation::events::ConversationMessageDeltaEvent {
+            sequence: self.events.next_sequence(),
+            conversation_id: message.conversation_id,
+            lead_id: None,
+            channel: message.channel,
+            message: message.clone(),
+            emitted_at_ms: chrono::Utc::now().timestamp_millis(),
+        });
         Ok(message)
     }
 
@@ -456,6 +464,11 @@ impl ConversationService {
                         let _ = self.publish_message_invalidation(
                             applied.message_id,
                             ConversationInvalidationReason::Reaction,
+                        );
+                    } else if applied.message_id > 0 {
+                        let _ = self.publish_message_invalidation(
+                            applied.message_id,
+                            ConversationInvalidationReason::Message,
                         );
                     }
                 }

@@ -1245,7 +1245,15 @@
           selectedItem.leadId === delta.leadId);
 
       if (affectsOpenItem) {
-        const nextItems = mergeMessages(currentVariant.items, [delta.message]);
+        const cleanedItems = currentVariant.items.filter(
+          (item) =>
+            !(
+              item.id < 0 &&
+              delta.message.sendBatch?.sendBatchId &&
+              item.sendBatch?.sendBatchId === delta.message.sendBatch.sendBatchId
+            )
+        );
+        const nextItems = mergeMessages(cleanedItems, [delta.message]);
         currentVariant = {
           ...currentVariant,
           items: nextItems,
@@ -1351,12 +1359,25 @@
   }
 
   function handleBatchQueued(result: SendConversationBatchResult) {
-    if (!selectedItem || result.messages.length === 0) return;
+    if (!selectedItem) return;
+
+    if (result.messages.length === 0) {
+      if (result.clientBatchId) {
+        const cleanedItems = currentVariant.items.filter(
+          (item) => !(item.id < 0 && item.sendBatch?.sendBatchId === result.clientBatchId)
+        );
+        currentVariant = { ...currentVariant, items: cleanedItems };
+        if (currentVariantKey) {
+          variantsCache.set(currentVariantKey, currentVariant);
+        }
+      }
+      return;
+    }
 
     const realBatchIds = new Set(
       result.messages
         .filter((m) => m.id > 0)
-        .map((m) => m.sendBatch?.sendBatchId)
+        .map((m) => m.sendBatch?.sendBatchId || result.clientBatchId)
         .filter(Boolean)
     );
     const cleanedItems = currentVariant.items.filter(
@@ -1370,7 +1391,9 @@
 
     const merged = mergeMessages(cleanedItems, result.messages);
     currentVariant = { ...currentVariant, items: merged };
-    variantsCache.set(currentVariantKey, currentVariant);
+    if (currentVariantKey) {
+      variantsCache.set(currentVariantKey, currentVariant);
+    }
 
     const lastMessage = [...result.messages].sort((left, right) => {
       const indexDiff = (left.batchIndex ?? 0) - (right.batchIndex ?? 0);

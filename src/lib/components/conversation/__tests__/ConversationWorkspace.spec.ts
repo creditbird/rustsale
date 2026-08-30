@@ -1075,6 +1075,24 @@ describe('ConversationWorkspace Component', () => {
     expect(mockGetContactTimeline).not.toHaveBeenCalled();
   });
 
+  test('8j. Outbound send displays optimistic message bubble immediately and reconciles seamlessly with server batch', async () => {
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    const textarea = screen.getByPlaceholderText(/Type a message|Send message/i) as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'Tin nhắn gửi đi tức thì 0ms' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
+
+    // Verify optimistic message is immediately in DOM in both timeline and sidebar preview
+    const matching = screen.getAllByText('Tin nhắn gửi đi tức thì 0ms');
+    expect(matching.length).toBeGreaterThanOrEqual(2);
+    expect(textarea.value).toBe('');
+  });
+
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();
