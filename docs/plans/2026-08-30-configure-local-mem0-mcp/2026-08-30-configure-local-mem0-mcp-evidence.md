@@ -53,8 +53,16 @@ Matching plan item(s): `P1-A`, `P1-B`
 
 Matching plan item(s): `P2-A`, `P2-B`, `P2-C`
 
-Pending acceptance and closure evidence.
+- `E2-P2A-SUP1`: `rp_supervisor_260830_142348_by_gpt-5-codex_local-mem0-mcp.md` returned `REJECT` for the full ready-to-use claim because a fresh exact-command launch against the existing store still fails on the active Qdrant lock. Registration and isolated behavior were cleared.
+- `E2-P2B-CLEAN1`: Final cleanup inspection confirmed `.tmp/mem0-mcp-validation.ye8wwe` is absent from the repository; no server source or real-memory file was changed by this plan.
+- `E2-P2C-CFG1`: Final `codex mcp get mem0` still reports the exact enabled local stdio registration with masked environment values.
+- `E2-P2C-LOCK1`: Final lock inspection still reports PID `15304` under active parent `agy` PID `4152`; the process was not disrupted.
+- `E2-P2C-BUILD1`: The last implementation/configuration edit remains covered by successful `bun run build` evidence `E1-P1A-BUILD1`; subsequent repo edits are documentation-only.
+- `E2-P2C-STATE1`: Final harness state is `CONDITIONALLY READY`, not complete: R-06 requires a restarted, lock-free Codex real-store call.
 
 ## Closure Evidence
 
-Pending final detect-changes, commits, worktree state, and readiness verdict.
+- P1-A commit: `db34691` (`docs(plan): configure local Mem0 MCP`).
+- P1-B commit: `d527124` (`docs(plan): verify local Mem0 MCP contract`).
+- Supervisor report: `rp_supervisor_260830_142348_by_gpt-5-codex_local-mem0-mcp.md` with verdict `REJECT` for full real-store readiness.
+- Final readiness: `CONDITIONALLY READY`; pending lock-free real-store verification after the owning client exits and Codex restarts.

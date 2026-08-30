@@ -2,7 +2,7 @@
 
 Title: Configure Local Mem0 MCP
 Date: 2026-08-30
-Status: P0 Complete
+Status: Blocked
 Companion plan: `docs/plans/2026-08-30-configure-local-mem0-mcp/2026-08-30-configure-local-mem0-mcp-plan.md`
 Companion evidence: `docs/plans/2026-08-30-configure-local-mem0-mcp/2026-08-30-configure-local-mem0-mcp-evidence.md`
 Companion benchmark: `docs/plans/2026-08-30-configure-local-mem0-mcp/2026-08-30-configure-local-mem0-mcp-benchmark.md`
@@ -70,6 +70,7 @@ The executable/configuration targets are outside the indexed repository, so `fil
 | R0 | 2026-08-30 | baseline before implementation | local wrapper, Codex catalog, persistent lock | initial classification | `E0-P0A-SRC1`, `E0-P0A-CFG1`, `E0-P0A-LOCK1` | register without modifying server/data; validate using isolated store |
 | R1 | 2026-08-30 | after P1-A | Codex MCP catalog and active lock holder | registration `missing -> correct`; lock remains `blocked` | `E1-P1A-CFG1`, `E1-P1A-CFG2`, `E1-P1A-LOCK1` | proceed to isolated MCP validation; preserve real store |
 | R2 | 2026-08-30 | after P1-B | isolated MCP contract and validation store | tool contract `partial -> correct`; real-store launch remains `blocked` | `E1-P1B-MCP1`, `E1-P1B-ROUND1`, `E1-P1B-CLEAN1` | proceed to supervisor with conditional real-store readiness |
+| R3 | 2026-08-30 | after supervisor review | full Codex ready-to-use claim | config and isolated contract accepted; real-store readiness remains `blocked` | `E2-P2A-SUP1`, `E2-P2C-CFG1`, `E2-P2C-LOCK1` | close as conditionally ready; require restart and real-store call |
 
 ## Phase Touch Map
 

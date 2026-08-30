@@ -3,7 +3,7 @@
 ## Metadata
 
 - Date: `2026-08-30`
-- Status: `in_progress`
+- Status: `conditionally_ready`
 - Risk: `Tier 3 — local external integration with persistent and destructive memory tools`
 - Plan: `docs/plans/2026-08-30-configure-local-mem0-mcp/2026-08-30-configure-local-mem0-mcp-plan.md`
 - Evidence: `docs/plans/2026-08-30-configure-local-mem0-mcp/2026-08-30-configure-local-mem0-mcp-evidence.md`
@@ -54,6 +54,7 @@ The local Mem0 implementation exists and exposes the required tool names, but Co
 | R-03 | The MCP contract exposes the required memory operations. | At minimum `add_memory`, `search_memories`, and `get_memories` exist, with update/delete operations unchanged. | MCP initialize and list-tools returns the seven local wrapper tools. | Startup or protocol failures are surfaced, not reported as success. | Direct stdio MCP handshake and inventory. | P1-B | `GREEN` |
 | R-04 | Validation proves a memory round trip without contaminating existing data. | Test data is confined to a plan-created `.tmp` store and removed after validation. | Add, search/get, and delete succeed through MCP. | Shared-store lock and dependency failures remain visible; no fallback writes to the real store. | Isolated MCP round trip plus cleanup proof. | P1-B | `GREEN` |
 | R-05 | Existing Mem0 consumers remain uninterrupted. | The active lock holder is not terminated or reconfigured by this task. | PID/lock ownership remains unchanged during registration. | No destructive process control is used. | Process and lock inspection before/after. | P1-B | `GREEN` |
+| R-06 | A restarted Codex session can call Mem0 against the existing persistent store. | The configured server must initialize on `/home/arch/.local/share/mem0` and return a real-store memory response. | A fresh `search_memories` or `get_memories` call succeeds for user `arch`. | Embedded-Qdrant lock failure is surfaced and forbids a complete claim. | Fresh post-restart real-store MCP call. | P2-A | `BLOCKED` |
 
 ## Acceptance Criteria
 
@@ -182,7 +183,7 @@ The local Mem0 implementation exists and exposes the required tool names, but Co
   - Actual-status Update: contract `unbound -> bound-correct`; real-store concurrency stays blocked until lock-free verification.
   - Commit Boundary: commit plan/evidence updates after this slice passes.
 
-- [ ] P2-A: Call supervisor for the implemented-plan acceptance loop.
+- [x] P2-A: Call supervisor for the implemented-plan acceptance loop.
   - Goal: independently verify configuration, evidence, scope, and readiness state.
   - Work Steps:
     1. Apply the supervisor skill to the full plan and current reality.
@@ -190,7 +191,7 @@ The local Mem0 implementation exists and exposes the required tool names, but Co
   - Implementation Gate: P1-A and P1-B are complete or explicitly blocked.
   - Acceptance: supervisor passes or records an exact blocker.
 
-- [ ] P2-B: Remove dead work created during this plan.
+- [x] P2-B: Remove dead work created during this plan.
   - Goal: retain only the accepted config and durable plan artifacts.
   - Work Steps:
     1. Remove plan-created `.tmp` data and obsolete attempts.
@@ -199,7 +200,7 @@ The local Mem0 implementation exists and exposes the required tool names, but Co
   - Implementation Gate: remove only artifacts created by this plan.
   - Acceptance: no validation store or rejected config remains; supervisor passes cleanup.
 
-- [ ] P2-C: Close the plan.
+- [x] P2-C: Close the plan.
   - Goal: record final validation, change detection, commits, and readiness.
   - Work Steps:
     1. Run the nearest real MCP boundary checks and the repo's required full build if applicable to this non-app configuration slice.
