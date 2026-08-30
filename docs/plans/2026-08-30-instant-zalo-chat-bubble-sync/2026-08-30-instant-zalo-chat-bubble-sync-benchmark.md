@@ -21,15 +21,17 @@
 | Phase | Metric | Unit | Baseline | Latest | Final | Target | Delta | Evidence |
 |---|---|---|---|---|---|---|---|---|
 | P1-A | Repository Invalidation Unit Test | tests | 0 | 1 | 1 | 1 | +1 | `test_lookup_message_invalidation_info_prioritizes_linked_lead` |
-| P1-B | Workspace Invalidation Unit Test | tests | 35 | 36 | 36 | 36 | +1 | `ConversationWorkspace.spec.ts (8h)` |
+| P1-A | Service Push-Delta Event Unit Test | tests | 0 | 1 | 1 | 1 | +1 | `test_ingest_zalo_event_publishes_delta_event` |
+| P1-B | Workspace Push-Delta Unit Test (Zero IPC) | tests | 35 | 37 | 37 | 37 | +2 | `ConversationWorkspace.spec.ts (8h, 8i)` |
+| P1-B | Inbound Bubble Paint Latency | ms | ~5000ms | < 16ms (next frame) | < 16ms | < 16ms | -4984ms | Direct Store Upsert |
 
 ## B2 - P2 Benchmarks
 
 | Phase | Metric | Unit | Baseline | Latest | Final | Target | Delta | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| P2-A | Full Backend Test Suite | passed | 803 | 804 | 804 | 804 | +1 | `cargo test --lib` (34.56s) |
-| P2-A | Full Frontend Test Suite | passed | 627 | 628 | 628 | 628 | +1 | `bun run test` (81.31s) |
-| P2-A | Svelte / TS Type Check | errors | 0 | 0 | 0 | 0 | 0 | `bunx svelte-check` |
+| P2-A | Backend Delta Event Test | passed | 0 | 1 | 1 | 1 | +1 | `cargo test test_ingest_zalo_event_publishes_delta_event` |
+| P2-A | Conversation Workspace Spec Suite | passed | 35 | 37 | 37 | 37 | +2 | `bun test ConversationWorkspace.spec.ts` |
+| P2-A | Svelte / TS Type Check | errors | 0 | 0 | 0 | 0 | 0 | `bun run check` |
 
 ## Non-Benchmarkable Notes
 

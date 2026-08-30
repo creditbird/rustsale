@@ -448,24 +448,15 @@ impl ConversationService {
                             anyhow::anyhow!("Failed to update message checkpoint: {error}")
                         })?;
                     if !applied.duplicate {
-                        let lead_id = applied.identity_id.and_then(|identity_id| {
-                            self.repository
-                                .lead_id_for_identity(identity_id)
-                                .ok()
-                                .flatten()
-                        });
-                        self.events.publish(ConversationInvalidatedEvent {
-                            conversation_id: applied.conversation_id,
-                            lead_id,
-                            channel: Channel::Zalo,
-                            reason: ConversationInvalidationReason::Message,
-                            message_id: Some(applied.message_id),
-                        });
+                        let _ = self.publish_message_invalidation(
+                            applied.message_id,
+                            ConversationInvalidationReason::Message,
+                        );
                     } else if applied.replayed_reaction_count > 0 {
-                        self.publish_message_invalidation(
+                        let _ = self.publish_message_invalidation(
                             applied.message_id,
                             ConversationInvalidationReason::Reaction,
-                        )?;
+                        );
                     }
                 }
                 ZaloMutation::Reaction(reaction) => {
@@ -610,6 +601,18 @@ impl ConversationService {
                 reason,
                 message_id: Some(message_id),
             });
+            if reason == ConversationInvalidationReason::Message {
+                if let Ok(Some(msg)) = self.repository.get_message_by_id(message_id) {
+                    self.events.publish_delta(crate::conversation::events::ConversationMessageDeltaEvent {
+                        sequence: self.events.next_sequence(),
+                        conversation_id,
+                        lead_id,
+                        channel,
+                        message: msg,
+                        emitted_at_ms: chrono::Utc::now().timestamp_millis(),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -637,6 +640,16 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Message,
             message_id: Some(applied.applied.message_id),
         });
+        if let Ok(Some(msg)) = self.repository.get_message_by_id(applied.applied.message_id) {
+            self.events.publish_delta(crate::conversation::events::ConversationMessageDeltaEvent {
+                sequence: self.events.next_sequence(),
+                conversation_id: applied.applied.conversation_id,
+                lead_id: Some(applied.lead_id),
+                channel: Channel::Zalo,
+                message: msg,
+                emitted_at_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
     }
 
     pub fn runtime_status(&self) -> Result<ConversationRuntimeStatus> {
@@ -933,7 +946,16 @@ impl ConversationService {
 
             let retry_policy = crate::conversation::retry::RetryPolicy::default();
 
-            match client.forward_message(provider_req).await {
+            let start_send = std::time::Instant::now();
+            let send_result = client.forward_message(provider_req).await;
+            let send_elapsed = start_send.elapsed();
+            tracing::info!(
+                "Zalo forward_message for job {} completed in {:?}",
+                job.job_id,
+                send_elapsed
+            );
+
+            match send_result {
                 Ok(res) => {
                     let message_id = self.repository.complete_outbox_job(
                         &job.job_id,
@@ -1142,7 +1164,16 @@ impl ConversationService {
 
             let retry_policy = crate::conversation::retry::RetryPolicy::default();
 
-            match client.send_part(provider_req).await {
+            let start_send = std::time::Instant::now();
+            let send_result = client.send_part(provider_req).await;
+            let send_elapsed = start_send.elapsed();
+            tracing::info!(
+                "Zalo send_part for job {} completed in {:?}",
+                job.job_id,
+                send_elapsed
+            );
+
+            match send_result {
                 Ok(res) => {
                     let message_id = self.repository.complete_outbox_job(
                         &job.job_id,

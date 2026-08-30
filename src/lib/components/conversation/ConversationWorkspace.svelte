@@ -10,6 +10,7 @@
     listConversationMentionCandidates,
     initConversationEventBridge,
     onConversationInvalidated,
+    onConversationMessageDelta,
     recallConversationMessage,
     pinConversationMessage,
     unpinConversationMessage,
@@ -24,6 +25,7 @@
     type ConversationRuntimeStatus,
     type ConversationMessage,
     type ConversationInvalidatedEvent,
+    type ConversationMessageDeltaEvent,
     type SendConversationBatchResult,
     type ConversationReactionCode,
     type ConversationReactionGroup,
@@ -801,12 +803,12 @@
 
   // Event Bridge registration
   onMount(() => {
-    const cleanupBridge = initConversationEventBridge();
     const cleanupInvalidated = onConversationInvalidated(handleInvalidatedEvent);
+    const cleanupDelta = onConversationMessageDelta(handleMessageDelta);
 
     return () => {
       cleanupInvalidated();
-      cleanupBridge();
+      cleanupDelta();
       if (inboxRefreshTimer) clearTimeout(inboxRefreshTimer);
       if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
     };
@@ -1222,6 +1224,61 @@
     return 'production';
   }
   const IS_TEST_WORKSPACE = getWorkspaceEnvMode() === 'test';
+
+  function handleMessageDelta(delta: ConversationMessageDeltaEvent) {
+    const receiveMs = Date.now();
+    const latencyMs = delta.emittedAtMs > 0 ? receiveMs - delta.emittedAtMs : 0;
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        `[OmniChat Delta] seq=${delta.sequence} convId=${delta.conversationId} msgId=${delta.message.id} latency=${latencyMs}ms`
+      );
+    }
+
+    // 1. Instant Open Timeline Store Upsert
+    if (selectedItem) {
+      const affectsOpenItem =
+        selectedItem.conversationId === delta.conversationId ||
+        selectedItem.replyTargets.some((t) => t.conversationId === delta.conversationId) ||
+        (selectedItem.kind === 'customer' &&
+          selectedItem.leadId !== null &&
+          delta.leadId !== null &&
+          selectedItem.leadId === delta.leadId);
+
+      if (affectsOpenItem) {
+        const nextItems = mergeMessages(currentVariant.items, [delta.message]);
+        currentVariant = {
+          ...currentVariant,
+          items: nextItems,
+          hasLoaded: true,
+          loading: false
+        };
+        if (currentVariantKey) {
+          variantsCache.set(currentVariantKey, currentVariant);
+        }
+      }
+    }
+
+    // 2. Fast In-Memory Sidebar Preview & Timestamp update
+    const affectedItem = inbox.find(
+      (item) =>
+        item.conversationId === delta.conversationId ||
+        item.replyTargets.some((t) => t.conversationId === delta.conversationId) ||
+        (item.kind === 'customer' &&
+          item.leadId !== null &&
+          delta.leadId !== null &&
+          item.leadId === delta.leadId)
+    );
+    if (affectedItem) {
+      affectedItem.lastMessagePreview =
+        delta.message.textContent ||
+        (delta.message.contentType === 'image' ? '[Hình ảnh]' : '[Tin nhắn]');
+      affectedItem.lastMessageAt = delta.message.occurredAt;
+      inbox = [...inbox].sort(
+        (a, b) =>
+          new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime()
+      );
+    }
+  }
 
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     if (event.reason === 'account_status') {

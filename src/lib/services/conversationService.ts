@@ -411,6 +411,15 @@ export interface ConversationInvalidatedEvent {
   messageId?: number;
 }
 
+export interface ConversationMessageDeltaEvent {
+  sequence: number;
+  conversationId: number;
+  leadId: number | null;
+  channel: Channel;
+  message: ConversationMessage;
+  emittedAtMs: number;
+}
+
 // IPC Command Wrappers
 export const listConversationInbox = () =>
   invoke<InboxItem[]>('list_conversation_inbox');
@@ -568,13 +577,25 @@ export const listConversationPinnedMessages = (conversationId: number) =>
 
 // Ref-counted Event Bridge Logic
 type InvalidationListener = (event: ConversationInvalidatedEvent) => void;
+type DeltaListener = (event: ConversationMessageDeltaEvent) => void;
+
 const invalidationListeners = new Set<InvalidationListener>();
+const deltaListeners = new Set<DeltaListener>();
 
 export function onConversationInvalidated(listener: InvalidationListener): () => void {
   invalidationListeners.add(listener);
   const cleanupBridge = initConversationEventBridge();
   return () => {
     invalidationListeners.delete(listener);
+    cleanupBridge();
+  };
+}
+
+export function onConversationMessageDelta(listener: DeltaListener): () => void {
+  deltaListeners.add(listener);
+  const cleanupBridge = initConversationEventBridge();
+  return () => {
+    deltaListeners.delete(listener);
     cleanupBridge();
   };
 }
@@ -615,16 +636,31 @@ export function ensureConversationEventBridgeConnected(): Promise<() => void> | 
       clearTimeout(bridgeRetryTimer);
       bridgeRetryTimer = null;
     }
-    bridgePromise = listen<ConversationInvalidatedEvent>('conversation-invalidated', (event) => {
-      for (const listener of invalidationListeners) {
-        try {
-          listener(event.payload);
-        } catch (err) {
-          console.error('Error in invalidationListener', err);
+    bridgePromise = Promise.all([
+      listen<ConversationInvalidatedEvent>('conversation-invalidated', (event) => {
+        for (const listener of invalidationListeners) {
+          try {
+            listener(event.payload);
+          } catch (err) {
+            console.error('Error in invalidationListener', err);
+          }
         }
-      }
-    })
-      .then((cleanup) => {
+      }),
+      listen<ConversationMessageDeltaEvent>('conversation-message-delta', (event) => {
+        for (const listener of deltaListeners) {
+          try {
+            listener(event.payload);
+          } catch (err) {
+            console.error('Error in deltaListener', err);
+          }
+        }
+      })
+    ])
+      .then(([cleanupInval, cleanupDelta]) => {
+        const cleanup = () => {
+          cleanupInval();
+          cleanupDelta();
+        };
         bridgeUnlisten = cleanup;
         bridgeRetryAttempt = 0;
         if (bridgeRefCount <= 0 && bridgeUnlisten) {

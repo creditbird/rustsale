@@ -3784,4 +3784,193 @@ mod group_member_import_events {
         ).unwrap();
         assert_eq!(suppression_count, 1);
     }
+
+    #[tokio::test]
+    async fn zalo_listener_to_service_to_repository_receipt_flow_and_invalid_quarantine() {
+        let harness = ServiceHarness::new();
+        let _account_id = harness.seed_zalo_account("imei-a", None);
+
+        let msg_req = NormalizedMessage {
+            channel: Channel::Zalo,
+            provider_account_key: "imei-a".to_string(),
+            account_display_name: Some("Sale Agent".to_string()),
+            participant: Some(NormalizedIdentity {
+                identity_namespace: "zalo_uid".to_string(),
+                external_id: "peer-zalo-100".to_string(),
+                display_name: Some("Customer 100".to_string()),
+                avatar_url: None,
+                lead_id: None,
+            }),
+            sender_is_participant: false,
+            external_thread_id: "peer-zalo-100".to_string(),
+            conversation_kind: crate::conversation::types::ConversationKind::Direct,
+            conversation_title: Some("Customer 100".to_string()),
+            direction: MessageDirection::Outbound,
+            status: MessageStatus::Sent,
+            provider_message_id: Some("p-msg-100".to_string()),
+            provider_client_message_id: Some("cli-msg-100".to_string()),
+            local_request_id: None,
+            content_type: "text".to_string(),
+            text_content: Some("Hello customer".to_string()),
+            content: serde_json::json!({}),
+            attachments: vec![],
+            reply: None,
+            mentions: vec![],
+            raw_payload: None,
+            provider_timestamp: Some("2026-08-30T10:00:00.000Z".to_string()),
+            ingested_at: "2026-08-30T10:00:00.000Z".to_string(),
+        };
+
+        let applied = harness
+            .repository
+            .apply_normalized_message(&msg_req)
+            .unwrap();
+        let msg_id = applied.message_id;
+
+        let conn = harness.open_conn();
+        let status_0: String = conn
+            .query_row("SELECT status FROM messages WHERE id = ?1", [msg_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(status_0, "sent");
+
+        // 1. Ingest Delivered Event (seen = 0)
+        let del_data = zca_rs::models::event::TDeliveredMessage {
+            msg_id: "p-msg-100".to_string(),
+            seen: 0,
+            delivered_uids: vec!["peer-zalo-100".to_string()],
+            seen_uids: vec![],
+            real_msg_id: "".to_string(),
+            m_s_ts: 1788085000000,
+        };
+        let del_event = zca_rs::listener::ListenerEvent::DeliveredMessages(vec![
+            zca_rs::models::DeliveredMessage::User(zca_rs::models::UserDeliveredMessage::new(
+                del_data,
+            )),
+        ]);
+        harness
+            .service
+            .ingest_zalo_event("imei-a", Some("Sale Agent"), del_event)
+            .unwrap();
+
+        let status_1: String = conn
+            .query_row("SELECT status FROM messages WHERE id = ?1", [msg_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(status_1, "delivered");
+
+        // 2. Ingest Seen Event (Read)
+        let seen_data = zca_rs::models::event::TUserSeenMessage {
+            id_to: "peer-zalo-100".to_string(),
+            msg_id: "p-msg-100".to_string(),
+            real_msg_id: "".to_string(),
+        };
+        let seen_event =
+            zca_rs::listener::ListenerEvent::SeenMessages(vec![zca_rs::models::SeenMessage::User(
+                zca_rs::models::UserSeenMessage::new(seen_data),
+            )]);
+        harness
+            .service
+            .ingest_zalo_event("imei-a", Some("Sale Agent"), seen_event)
+            .unwrap();
+
+        let status_2: String = conn
+            .query_row("SELECT status FROM messages WHERE id = ?1", [msg_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(status_2, "read");
+
+        // 3. Ingest malformed/unanchored receipts - must be quarantined and cause 0 changes
+        let invalid_del_data = zca_rs::models::event::TDeliveredMessage {
+            msg_id: "0".to_string(),
+            seen: 0,
+            delivered_uids: vec!["peer-zalo-100".to_string()],
+            seen_uids: vec![],
+            real_msg_id: "".to_string(),
+            m_s_ts: 0,
+        };
+        let invalid_del_event = zca_rs::listener::ListenerEvent::DeliveredMessages(vec![
+            zca_rs::models::DeliveredMessage::User(zca_rs::models::UserDeliveredMessage::new(
+                invalid_del_data,
+            )),
+        ]);
+        harness
+            .service
+            .ingest_zalo_event("imei-a", Some("Sale Agent"), invalid_del_event)
+            .unwrap();
+
+        let status_3: String = conn
+            .query_row("SELECT status FROM messages WHERE id = ?1", [msg_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(status_3, "read");
+
+        let receipts_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_receipts WHERE message_id = ?1",
+                [msg_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(receipts_count, 2); // 1 delivered + 1 read
+    }
+
+    #[test]
+    fn test_ingest_zalo_event_publishes_delta_event() {
+        let harness = ServiceHarness::new();
+        let mut delta_rx = harness.events.subscribe_delta();
+        let mut inval_rx = harness.events.subscribe();
+
+        let raw_user_msg: zca_rs::models::TMessage = serde_json::from_value(serde_json::json!({
+            "actionId": "action-1",
+            "msgId": "delta-msg-999",
+            "cliMsgId": "cli-delta-msg-999",
+            "msgType": "webchat",
+            "uidFrom": "user-1",
+            "idTo": "0",
+            "dName": "Customer 1",
+            "ts": "1722420000000",
+            "status": 1,
+            "content": "Xin chào shop realtime",
+            "notify": "",
+            "ttl": 0,
+            "userId": "",
+            "uin": "",
+            "propertyExt": null,
+            "paramsExt": {"countUnread": 1, "containType": 0, "platformType": 1},
+            "cmd": 501,
+            "st": 0,
+            "at": 0,
+            "realMsgId": "real-delta-msg-999",
+            "quote": null
+        }))
+        .unwrap();
+
+        let event = zca_rs::listener::ListenerEvent::Message(Box::new(
+            zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_user_msg)),
+        ));
+
+        harness
+            .service
+            .ingest_zalo_event("imei-1", Some("Sale 01"), event)
+            .unwrap();
+
+        // 1. Verify invalidation event
+        let inval = inval_rx.try_recv().expect("Expected invalidation event");
+        assert_eq!(inval.conversation_id, 1);
+        assert_eq!(inval.channel, Channel::Zalo);
+
+        // 2. Verify delta event contains full render-ready ConversationMessage
+        let delta = delta_rx.try_recv().expect("Expected delta event");
+        assert_eq!(delta.conversation_id, 1);
+        assert_eq!(delta.channel, Channel::Zalo);
+        assert!(delta.sequence > 0);
+        assert_eq!(delta.message.text_content.as_deref(), Some("Xin chào shop realtime"));
+        assert_eq!(delta.message.sender_display_name.as_deref(), Some("Customer 1"));
+        assert!(delta.emitted_at_ms > 0);
+    }
 }

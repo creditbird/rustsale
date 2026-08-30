@@ -8,6 +8,7 @@ import type {
   ConversationMessage,
   TimelinePage,
   ConversationInvalidatedEvent,
+  ConversationMessageDeltaEvent,
   ConversationCapabilities,
   SendConversationBatchRequest,
   SetConversationReactionRequest
@@ -26,6 +27,7 @@ beforeAll(() => {
 });
 
 let invalidationListeners = new Set<(event: ConversationInvalidatedEvent) => void>();
+let deltaListeners = new Set<(event: ConversationMessageDeltaEvent) => void>();
 
 const richCapabilities: ConversationCapabilities = {
   maxTextLength: 2000,
@@ -52,6 +54,12 @@ const richCapabilities: ConversationCapabilities = {
 
 function emitInvalidated(event: ConversationInvalidatedEvent) {
   for (const listener of invalidationListeners) {
+    listener(event);
+  }
+}
+
+function emitDelta(event: ConversationMessageDeltaEvent) {
+  for (const listener of deltaListeners) {
     listener(event);
   }
 }
@@ -453,6 +461,10 @@ mock.module('$lib/services/conversationService', () => ({
     invalidationListeners.add(listener);
     return () => invalidationListeners.delete(listener);
   },
+  onConversationMessageDelta: (listener: (event: ConversationMessageDeltaEvent) => void) => {
+    deltaListeners.add(listener);
+    return () => deltaListeners.delete(listener);
+  },
   sendConversationBatch: (request: SendConversationBatchRequest) => mockSendConversationBatch(request),
   stageConversationAttachmentPaths: mock(async () => []),
   stageConversationClipboardImage: mock(async () => null),
@@ -501,6 +513,7 @@ describe('ConversationWorkspace Component', () => {
     cleanup();
     document.body.innerHTML = '';
     invalidationListeners.clear();
+    deltaListeners.clear();
     mockListConversationInbox.mockClear();
     mockGetContactTimeline.mockClear();
     mockGetConversationTimeline.mockClear();
@@ -1019,6 +1032,47 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     expect(screen.getByText('Tin nhắn mismatch lead id')).toBeTruthy();
+  });
+
+  test('8i. Direct ConversationMessageDeltaEvent renders new bubble immediately without requiring IPC timeline refetch', async () => {
+    const deltaMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 2005,
+      conversationId: 10,
+      channel: 'zalo',
+      direction: 'inbound',
+      textContent: 'Tin nhắn Delta tức thì 0ms',
+      content: { text: 'Tin nhắn Delta tức thì 0ms' },
+      occurredAt: '2026-08-28T10:15:00Z',
+      status: 'received'
+    };
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    mockGetContactTimeline.mockClear();
+
+    // Emit delta directly
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: deltaMsg,
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Verify DOM contains the new bubble in open timeline AND updated sidebar preview
+    const matchingElements = screen.getAllByText('Tin nhắn Delta tức thì 0ms');
+    expect(matchingElements.length).toBe(2);
+    // Verify getContactTimeline IPC was NOT called (0 IPC round-trips for immediate render)
+    expect(mockGetContactTimeline).not.toHaveBeenCalled();
   });
 
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {
