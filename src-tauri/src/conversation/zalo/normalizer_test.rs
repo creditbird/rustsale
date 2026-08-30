@@ -472,6 +472,47 @@ fn delivered_and_seen_receipts_normalize_correctly() {
     };
     assert_eq!(receipt3.kind, ReceiptKind::Read);
     assert_eq!(receipt3.provider_message_id, "real-seen-34");
+
+    // Delivered message with m_s_ts=0 must NOT produce 1970 timestamp
+    let delivered_zero_ts = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "0".to_string(),
+        seen: 0,
+        delivered_uids: vec!["peer-uid".to_string()],
+        seen_uids: vec![],
+        real_msg_id: "real-del-35".to_string(),
+        m_s_ts: 0,
+    });
+    let event_zero_ts =
+        ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(delivered_zero_ts)]);
+    let mutations_zero_ts =
+        normalize_listener_event("imei-a", Some("Sale 01"), event_zero_ts).unwrap();
+    let ZaloMutation::Receipt(receipt4) = &mutations_zero_ts[0] else {
+        panic!("expected receipt mutation");
+    };
+    assert_eq!(receipt4.kind, ReceiptKind::Delivered);
+    assert_eq!(receipt4.provider_message_id, "real-del-35");
+    assert!(!receipt4.occurred_at.contains("1970"));
+
+    // Delivered message with seen=1 and empty delivered_uids must extract thread_id from seen_uids
+    let delivered_active_chat = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "msg-active-36".to_string(),
+        seen: 1,
+        delivered_uids: vec![],
+        seen_uids: vec!["active-client-uid".to_string()],
+        real_msg_id: "".to_string(),
+        m_s_ts: 0,
+    });
+    let event_active_chat =
+        ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(delivered_active_chat)]);
+    let mutations_active_chat =
+        normalize_listener_event("imei-a", Some("Sale 01"), event_active_chat).unwrap();
+    let ZaloMutation::Receipt(receipt5) = &mutations_active_chat[0] else {
+        panic!("expected receipt mutation");
+    };
+    assert_eq!(receipt5.kind, ReceiptKind::Read);
+    assert_eq!(receipt5.external_thread_id, "active-client-uid");
+    assert_eq!(receipt5.recipient_external_ids, vec!["active-client-uid".to_string()]);
+    assert!(!receipt5.occurred_at.contains("1970"));
 }
 
 #[test]

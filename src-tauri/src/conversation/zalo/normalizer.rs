@@ -93,16 +93,21 @@ fn provider_time(value: &str) -> String {
     value
         .parse::<i64>()
         .ok()
+        .filter(|&millis| millis > 0)
         .and_then(|millis| Utc.timestamp_millis_opt(millis).single())
         .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
         .unwrap_or_else(crate::conversation::types::utc_now)
 }
 
 fn provider_time_u64(millis: u64) -> String {
-    Utc.timestamp_millis_opt(millis as i64)
-        .single()
-        .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
-        .unwrap_or_else(crate::conversation::types::utc_now)
+    if millis == 0 {
+        crate::conversation::types::utc_now()
+    } else {
+        Utc.timestamp_millis_opt(millis as i64)
+            .single()
+            .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
+            .unwrap_or_else(crate::conversation::types::utc_now)
+    }
 }
 
 fn content_parts(
@@ -734,7 +739,15 @@ pub fn normalize_listener_event(
             for seen in seen_vec {
                 match seen {
                     SeenMessage::User(user_msg) => {
-                        let effective_provider_msg_id = if !user_msg.data.msg_id.is_empty() {
+                        let effective_provider_msg_id = if !user_msg.data.msg_id.is_empty()
+                            && user_msg.data.msg_id != "0"
+                        {
+                            user_msg.data.msg_id.clone()
+                        } else if !user_msg.data.real_msg_id.is_empty()
+                            && user_msg.data.real_msg_id != "0"
+                        {
+                            user_msg.data.real_msg_id.clone()
+                        } else if !user_msg.data.msg_id.is_empty() {
                             user_msg.data.msg_id.clone()
                         } else {
                             user_msg.data.real_msg_id.clone()
@@ -798,7 +811,11 @@ struct DeliveredReceiptInput<'a> {
 }
 
 fn normalize_delivered_receipt(input: DeliveredReceiptInput<'_>) -> NormalizedReceipt {
-    let effective_provider_msg_id = if !input.msg_id.is_empty() {
+    let effective_provider_msg_id = if !input.msg_id.is_empty() && input.msg_id != "0" {
+        input.msg_id.to_string()
+    } else if !input.real_msg_id.is_empty() && input.real_msg_id != "0" {
+        input.real_msg_id.to_string()
+    } else if !input.msg_id.is_empty() {
         input.msg_id.to_string()
     } else {
         input.real_msg_id.to_string()
@@ -809,9 +826,18 @@ fn normalize_delivered_receipt(input: DeliveredReceiptInput<'_>) -> NormalizedRe
     } else {
         input.delivered_uids.to_vec()
     };
+    let external_thread_id = if !input.thread_id.is_empty() {
+        input.thread_id.to_string()
+    } else if let Some(first_seen) = input.seen_uids.first() {
+        first_seen.to_string()
+    } else if let Some(first_delivered) = input.delivered_uids.first() {
+        first_delivered.to_string()
+    } else {
+        String::new()
+    };
     NormalizedReceipt {
         provider_account_key: input.provider_account_key.to_string(),
-        external_thread_id: input.thread_id.to_string(),
+        external_thread_id,
         is_group: input.is_group,
         provider_message_id: effective_provider_msg_id,
         recipient_external_ids,

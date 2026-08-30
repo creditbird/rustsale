@@ -12,6 +12,53 @@ where
     }
 }
 
+fn deserialize_vec_string_or_number<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(arr) => {
+            let res = arr
+                .into_iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(s),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect();
+            Ok(res)
+        }
+        serde_json::Value::String(s) => Ok(vec![s]),
+        serde_json::Value::Number(n) => Ok(vec![n.to_string()]),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn deserialize_string_or_number_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(n) => Ok(n.as_u64().unwrap_or(0)),
+        serde_json::Value::String(s) => Ok(s.parse::<u64>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
+fn deserialize_string_or_number_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(n) => Ok(n.as_i64().map(|v| v as i32).unwrap_or(0)),
+        serde_json::Value::String(s) => Ok(s.parse::<i32>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FriendEventType {
     Add = 0,
@@ -552,22 +599,29 @@ fn parse_group_event_data(data: &serde_json::Value, r#type: GroupEventType) -> G
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TDeliveredMessage {
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number_i32")]
     pub seen: i32,
+    #[serde(default, deserialize_with = "deserialize_vec_string_or_number")]
     pub delivered_uids: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_vec_string_or_number")]
     pub seen_uids: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub real_msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number_u64")]
     pub m_s_ts: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TGroupDeliveredMessage {
     #[serde(flatten)]
     pub base: TDeliveredMessage,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub group_id: String,
 }
 
@@ -581,7 +635,12 @@ pub struct UserDeliveredMessage {
 
 impl UserDeliveredMessage {
     pub fn new(data: TDeliveredMessage) -> Self {
-        let thread_id = data.delivered_uids.first().cloned().unwrap_or_default();
+        let thread_id = data
+            .delivered_uids
+            .first()
+            .or_else(|| data.seen_uids.first())
+            .cloned()
+            .unwrap_or_default();
         Self {
             r#type: crate::models::ThreadType::User,
             data,
@@ -621,19 +680,25 @@ pub enum DeliveredMessage {
     Group(GroupDeliveredMessage),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TUserSeenMessage {
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub id_to: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub real_msg_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TGroupSeenMessage {
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub group_id: String,
+    #[serde(default, deserialize_with = "deserialize_vec_string_or_number")]
     pub seen_uids: Vec<String>,
 }
 
@@ -1408,6 +1473,37 @@ mod tests {
         let undo_grp = Undo::new(own_uid, t_undo_group, true);
         assert!(undo_grp.is_self);
         assert_eq!(undo_grp.thread_id, group_id);
+    }
+
+    #[test]
+    fn delivered_and_seen_message_deserialization_handles_omitted_and_numeric_fields() {
+        // Minimal delivered payload from Zalo when recipient has not read yet (seen=0, no seenUids, no realMsgId)
+        let json_del = serde_json::json!({
+            "msgId": 8209689228975_u64,
+            "seen": 0,
+            "deliveredUids": [3378879609226363403_u64],
+            "mSTs": 1788085038787_u64
+        });
+        let del: TDeliveredMessage = serde_json::from_value(json_del).expect("must parse minimal delivered");
+        assert_eq!(del.msg_id, "8209689228975");
+        assert_eq!(del.seen, 0);
+        assert_eq!(del.delivered_uids, vec!["3378879609226363403"]);
+        assert!(del.seen_uids.is_empty());
+        assert_eq!(del.real_msg_id, "");
+        assert_eq!(del.m_s_ts, 1788085038787);
+
+        let user_del = UserDeliveredMessage::new(del);
+        assert_eq!(user_del.thread_id, "3378879609226363403");
+
+        // Minimal seen payload
+        let json_seen = serde_json::json!({
+            "idTo": 3378879609226363403_u64,
+            "msgId": 8209687565523_u64
+        });
+        let seen: TUserSeenMessage = serde_json::from_value(json_seen).expect("must parse minimal seen");
+        assert_eq!(seen.id_to, "3378879609226363403");
+        assert_eq!(seen.msg_id, "8209687565523");
+        assert_eq!(seen.real_msg_id, "");
     }
 
     fn create_dummy_undo() -> TUndo {
