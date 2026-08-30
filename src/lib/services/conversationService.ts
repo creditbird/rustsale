@@ -572,8 +572,10 @@ const invalidationListeners = new Set<InvalidationListener>();
 
 export function onConversationInvalidated(listener: InvalidationListener): () => void {
   invalidationListeners.add(listener);
+  const cleanupBridge = initConversationEventBridge();
   return () => {
     invalidationListeners.delete(listener);
+    cleanupBridge();
   };
 }
 

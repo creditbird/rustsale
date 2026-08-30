@@ -917,8 +917,13 @@
     try {
       inbox = await listConversationInbox();
       inboxStale = false;
-      if (selectedKey && !inbox.some((i) => i.key === selectedKey) && inbox.length > 0) {
-        selectItem(inbox[0]);
+      if (selectedKey) {
+        const updatedSelectedItem = inbox.find((i) => i.key === selectedKey);
+        if (updatedSelectedItem) {
+          selectedItem = updatedSelectedItem;
+        } else if (inbox.length > 0) {
+          selectItem(inbox[0]);
+        }
       }
       if (selectedItem?.kind === 'group' && selectedItem?.conversationId !== null) {
         void syncZaloGroupChatHistory(selectedItem.conversationId).catch(() => {});
@@ -941,7 +946,6 @@
     });
 
     if (item.kind === 'group') {
-
       activeChannels = [];
     } else {
       const availableChannels = item.channels.map((channel) => channel.channel);
@@ -952,7 +956,7 @@
       activeChannelsPerKey.set(item.key, activeChannels);
     }
 
-    loadOrFetchVariant(item, activeChannels, true);
+    loadOrFetchVariant(item, activeChannels, false);
   }
 
   function handleSidebarSelect(item: InboxItem) {
@@ -977,64 +981,27 @@
     activeChannels = updated;
     activeChannelsPerKey.set(selectedItem.key, updated);
 
-    loadOrFetchVariant(selectedItem, updated);
+    loadOrFetchVariant(selectedItem, updated, false);
   }
 
-  async function loadOrFetchVariant(
-    item: InboxItem,
-    channels: Channel[],
-    isNewSelection = false
-  ) {
-    if (item.kind !== 'group' && item.leadId !== null && channels.length === 0) {
-      currentVariant = {
-        items: [],
-        nextCursor: null,
-        hasLoaded: true,
-        loading: false
-      };
-      return;
-    }
-
+  function loadOrFetchVariant(item: InboxItem, channels: Channel[], preserveAnchor: boolean) {
     const key =
       item.kind === 'group' || item.leadId === null
         ? `${item.key}:group`
         : `${item.key}:${channelSetKey(channels)}`;
 
-    const anchor = isNewSelection ? null : (timelineRef?.captureAnchor() ?? null);
+    const existing = variantsCache.get(key);
+    const anchor = preserveAnchor ? timelineRef?.captureAnchor() ?? null : null;
 
-    if (variantsCache.has(key)) {
-      const cached = variantsCache.get(key)!;
-      currentVariant = cached;
+    if (existing && !timelineStale.has(key)) {
+      currentVariant = existing;
       if (anchor) {
-        const survivingId = nearestSurvivingAnchor(currentVariant.items, cached.items, anchor.messageId);
-        if (survivingId !== null) {
-          timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
-        }
-      }
-      if ((timelineStale.has(key) || !cached.hasLoaded) && !inFlightVariantFetches.has(key)) {
-        fetchVariantFirstPage(item, channels, key, anchor);
+        timelineRef?.restoreAnchor({ messageId: anchor.messageId, offsetTop: anchor.offsetTop });
       }
     } else {
-      // Create initial variant with instant filtered messages across existing cache
-      const allItemMsgs: ConversationMessage[] = [];
-      for (const cacheKey of variantsCache.keys()) {
-        if (cacheKey.startsWith(`${item.key}:`)) {
-          const v = variantsCache.get(cacheKey);
-          if (v) allItemMsgs.push(...v.items);
-        }
-      }
-
-      const instantFiltered =
-        item.kind === 'group' || item.leadId === null
-          ? mergeMessages([], allItemMsgs)
-          : filterMessages(mergeMessages([], allItemMsgs), channels);
-
-      const initialVar: TimelineVariant = {
-        items: instantFiltered,
-        nextCursor: null,
-        hasLoaded: false,
-        loading: true
-      };
+      const initialVar: TimelineVariant = existing
+        ? { ...existing, loading: existing.hasLoaded ? false : true }
+        : { items: [], nextCursor: null, hasLoaded: false, loading: true };
 
       variantsCache.set(key, initialVar);
       currentVariant = initialVar;
@@ -1096,26 +1063,27 @@
             page = await getContactTimeline(item.leadId, channels, null, 50);
           }
 
-          const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
-          if (currentEpoch === startEpoch) {
-            const latestExisting = variantsCache.get(key) || existing;
-            const updated = mergeTimelinePage(latestExisting, page, 'refresh');
-            variantsCache.set(key, updated);
-            timelineStale.delete(key);
+          const latestExisting = variantsCache.get(key) || existing;
+          const updated = mergeTimelinePage(latestExisting, page, 'refresh');
+          variantsCache.set(key, updated);
 
-            if (currentVariantKey === key) {
-              currentVariant = updated;
-              if (anchor) {
-                const survivingId = nearestSurvivingAnchor(
-                  existing.items,
-                  updated.items,
-                  anchor.messageId
-                );
-                if (survivingId !== null) {
-                  timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
-                }
+          if (currentVariantKey === key) {
+            currentVariant = updated;
+            if (anchor) {
+              const survivingId = nearestSurvivingAnchor(
+                existing.items,
+                updated.items,
+                anchor.messageId
+              );
+              if (survivingId !== null) {
+                timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
               }
             }
+          }
+
+          const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
+          if (currentEpoch === startEpoch) {
+            timelineStale.delete(key);
             break;
           }
         } catch (err) {
@@ -1192,16 +1160,30 @@
   function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
     if (event.conversationId === 0) {
       if (event.channel) {
-        return item.replyTargets.some((target) => target.channel === event.channel);
+        return (
+          item.channels.some((c) => c.channel === event.channel) ||
+          item.replyTargets.some((target) => target.channel === event.channel)
+        );
       }
       return true;
     }
     if (item.kind === 'customer') {
-      return (
-        (item.leadId !== null && event.leadId === item.leadId) ||
-        (item.conversationId !== null && item.conversationId === event.conversationId) ||
-        item.replyTargets.some((target) => target.conversationId === event.conversationId)
-      );
+      if (item.leadId !== null && event.leadId !== null && item.leadId === event.leadId) {
+        return true;
+      }
+      if (item.conversationId !== null && item.conversationId === event.conversationId) {
+        return true;
+      }
+      if (item.replyTargets.some((target) => target.conversationId === event.conversationId)) {
+        return true;
+      }
+      if (event.channel && event.leadId === null) {
+        return (
+          item.channels.some((c) => c.channel === event.channel) ||
+          item.replyTargets.some((t) => t.channel === event.channel)
+        );
+      }
+      return false;
     }
     if (item.kind === 'group') {
       return (
@@ -1209,11 +1191,19 @@
         item.replyTargets.some((target) => target.conversationId === event.conversationId)
       );
     }
-    return (
-      (item.conversationId !== null && item.conversationId === event.conversationId) ||
-      item.replyTargets.some((target) => target.conversationId === event.conversationId) ||
-      (event.channel === 'whatsapp' && item.replyTargets.some((target) => target.channel === 'whatsapp'))
-    );
+    if (item.conversationId !== null && item.conversationId === event.conversationId) {
+      return true;
+    }
+    if (item.replyTargets.some((target) => target.conversationId === event.conversationId)) {
+      return true;
+    }
+    if (event.channel) {
+      return (
+        item.channels.some((c) => c.channel === event.channel) ||
+        item.replyTargets.some((t) => t.channel === event.channel)
+      );
+    }
+    return false;
   }
 
   function getWorkspaceEnvMode(): string {
@@ -1270,9 +1260,9 @@
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
       if (affectsOpenItem) {
-        // Open Timeline: immediate frame-level micro-coalesce (25ms in production / 10ms in test)
-        // Critical path: updates active chat in real-time (< 30ms) without waiting or deferring to idle
-        const timelineDelay = IS_TEST_WORKSPACE ? 10 : 25;
+        // Open Timeline: immediate frame-level micro-coalesce (0ms in production / 10ms in test)
+        // Critical path: updates active chat in real-time (< 5ms) without waiting or deferring to idle
+        const timelineDelay = IS_TEST_WORKSPACE ? 10 : 0;
         if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
         timelineRefreshTimer = setTimeout(() => {
           void refreshOpenTimeline();

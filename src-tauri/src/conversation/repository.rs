@@ -2405,6 +2405,12 @@ impl ConversationRepository {
     }
 
     pub fn apply_receipt(&self, receipt: &NormalizedReceipt) -> Result<Option<i64>> {
+        let trimmed_msg_id = receipt.provider_message_id.trim();
+        let trimmed_thread_id = receipt.external_thread_id.trim();
+        if trimmed_msg_id.is_empty() || trimmed_msg_id == "0" || trimmed_thread_id.is_empty() {
+            return Ok(None);
+        }
+
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
@@ -2896,6 +2902,7 @@ impl ConversationRepository {
                  LEFT JOIN conversation_participants cp ON cp.conversation_id = cc.id
                  LEFT JOIN channel_identities ci ON ci.id = cp.identity_id
                  WHERE m.id = ?1
+                 ORDER BY (ci.lead_id IS NOT NULL) DESC, (ci.id = m.sender_identity_id) DESC, ci.lead_id DESC
                  LIMIT 1",
                 [message_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),

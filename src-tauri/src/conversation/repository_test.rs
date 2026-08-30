@@ -1922,6 +1922,147 @@ fn read_receipt_fallback_sweeps_conversation_when_anchor_msg_id_not_found() {
 }
 
 #[test]
+fn apply_receipt_rejects_empty_zero_or_missing_thread_anchor_without_mutating_db() {
+    let harness = Harness::new();
+
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-1",
+            "client-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-2",
+            "client-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+
+    // 1. Empty provider_message_id
+    let res1 = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(res1, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status IN ('delivered', 'read')"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 0);
+
+    // 2. Zero "0" provider_message_id
+    let res2 = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "0".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Delivered,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(res2, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status IN ('delivered', 'read')"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 0);
+
+    // 3. Empty external_thread_id
+    let res3 = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "".to_string(),
+            is_group: false,
+            provider_message_id: "message-1".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(res3, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status IN ('delivered', 'read')"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 0);
+}
+
+#[test]
+fn apply_receipt_mixed_batch_applies_valid_and_leaves_invalid_unapplied() {
+    let harness = Harness::new();
+
+    let id1 = harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-10",
+            "client-10",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap()
+        .message_id;
+
+    // Invalid receipt
+    let inv_res = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(inv_res, None);
+
+    // Valid receipt
+    let val_res = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "message-10".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(val_res, Some(id1));
+
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE id = 1"),
+        "read"
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_receipts WHERE message_id = 1"),
+        1
+    );
+}
+
+#[test]
 fn out_of_order_ingestion_sweep_respects_timestamp_order() {
     let harness = Harness::new();
 
@@ -6449,3 +6590,65 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
         duration
     );
 }
+
+#[test]
+fn test_lookup_message_invalidation_info_prioritizes_linked_lead() {
+    let harness = Harness::new();
+
+    // 1. Create a direct message
+    let msg = direct_message_with_client_id("test-inval-1", "cli-inval-1");
+    let applied = harness.repository.apply_normalized_message(&msg).unwrap();
+
+    // 2. Insert two participants:
+    // Participant 1: Account owner (lead_id = None)
+    // Participant 2: Customer lead (lead_id = Some(114))
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO leads (name, phone) VALUES ('Thao', '0901234567')",
+        [],
+    )
+    .unwrap();
+    let lead_id = conn.last_insert_rowid();
+
+    let account_identity_id: i64 = conn
+        .query_row(
+            "INSERT INTO channel_identities (channel, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES ('zalo', 'zalo_uid', 'owner_zalo_id', 'Me', '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z') RETURNING id",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let customer_identity_id: i64 = conn
+        .query_row(
+            "INSERT INTO channel_identities (channel, identity_namespace, external_id, display_name, lead_id, created_at, updated_at)
+             VALUES ('zalo', 'zalo_uid', 'customer_zalo_id', 'Thao', ?1, '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z') RETURNING id",
+            [lead_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // Insert participants into conversation
+    conn.execute(
+        "INSERT OR IGNORE INTO conversation_participants (conversation_id, identity_id) VALUES (?1, ?2)",
+        [applied.conversation_id, account_identity_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO conversation_participants (conversation_id, identity_id) VALUES (?1, ?2)",
+        [applied.conversation_id, customer_identity_id],
+    )
+    .unwrap();
+
+    // 3. Lookup invalidation info
+    let info = harness
+        .repository
+        .lookup_message_invalidation_info(applied.message_id)
+        .unwrap()
+        .expect("Should find invalidation info");
+
+    assert_eq!(info.0, applied.conversation_id);
+    assert_eq!(info.1, Some(lead_id));
+    assert_eq!(info.2, Channel::Zalo);
+}
+
+

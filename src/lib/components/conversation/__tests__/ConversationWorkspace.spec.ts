@@ -906,6 +906,121 @@ describe('ConversationWorkspace Component', () => {
     expect(screen.getByText('Tin nhắn realtime tức thì')).toBeTruthy();
   });
 
+  test('8f. Invalidation for open customer with leadId = null still refreshes timeline via conversationId match', async () => {
+    const unlinkedZaloMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 1001,
+      conversationId: 10,
+      channel: 'zalo',
+      direction: 'inbound',
+      textContent: 'Tin nhắn Zalo leadId null',
+      content: { text: 'Tin nhắn Zalo leadId null' },
+      occurredAt: '2026-08-28T10:05:00Z',
+      status: 'received'
+    };
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [mockMsg1], nextCursor: null }))
+      .mockImplementationOnce(async () => ({ items: [mockMsg1, unlinkedZaloMsg], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: null,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 1001
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(screen.getByText('Tin nhắn Zalo leadId null')).toBeTruthy();
+  });
+
+  test('8g. Non-discarding merge renders new message even if trailing receipt events arrive during IPC fetch', async () => {
+    const freshMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 1002,
+      conversationId: 10,
+      direction: 'inbound',
+      textContent: 'Tin nhắn ngay trước receipt',
+      content: { text: 'Tin nhắn ngay trước receipt' },
+      occurredAt: '2026-08-28T10:10:00Z',
+      status: 'received'
+    };
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [mockMsg1], nextCursor: null }))
+      .mockImplementationOnce(async () => {
+        // Simulate trailing receipt event arriving during in-flight IPC fetch
+        emitInvalidated({
+          conversationId: 10,
+          leadId: 1,
+          channel: 'zalo',
+          reason: 'receipt',
+          messageId: 1002
+        });
+        return { items: [mockMsg1, freshMsg], nextCursor: null };
+      })
+      .mockImplementation(async () => ({ items: [mockMsg1, freshMsg], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 1002
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(screen.getByText('Tin nhắn ngay trước receipt')).toBeTruthy();
+  });
+
+  test('8h. Invalidation with mismatched event.leadId but matching item.replyTargets still refreshes open timeline instantly', async () => {
+    const mismatchLeadMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 1003,
+      conversationId: 10,
+      channel: 'zalo',
+      direction: 'inbound',
+      textContent: 'Tin nhắn mismatch lead id',
+      content: { text: 'Tin nhắn mismatch lead id' },
+      occurredAt: '2026-08-28T10:10:00Z',
+      status: 'received'
+    };
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [mockMsg1], nextCursor: null }))
+      .mockImplementationOnce(async () => ({ items: [mockMsg1, mismatchLeadMsg], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 999, // Mismatched leadId from backend participant ambiguity
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 1003
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(screen.getByText('Tin nhắn mismatch lead id')).toBeTruthy();
+  });
+
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();
