@@ -51,8 +51,8 @@ The local Mem0 implementation exists and exposes the required tool names, but Co
 |---|---|---|---|---|---|---|---|
 | R-01 | Codex registers the existing local self-hosted Mem0 server as `mem0`. | The registration launches only the existing local wrapper and does not point to Mem0 Cloud. | `codex mcp get mem0` resolves the expected absolute command and args. | No duplicate name, hosted URL, or API-key dependency is introduced. | Codex config/list output with secrets absent. | P1-A | `GREEN` |
 | R-02 | The registration preserves the existing memory scope. | `MEM0_DIR` remains `/home/arch/.local/share/mem0` and `MEM0_DEFAULT_USER_ID` remains `arch`. | A fresh process receives both expected non-secret values. | Existing store/user is not silently replaced by a new default. | Codex MCP inspection and server launch evidence. | P1-A | `GREEN` |
-| R-03 | The MCP contract exposes the required memory operations. | At minimum `add_memory`, `search_memories`, and `get_memories` exist, with update/delete operations unchanged. | MCP initialize and list-tools returns the seven local wrapper tools. | Startup or protocol failures are surfaced, not reported as success. | Direct stdio MCP handshake and inventory. | P1-B | `UNPROVEN` |
-| R-04 | Validation proves a memory round trip without contaminating existing data. | Test data is confined to a plan-created `.tmp` store and removed after validation. | Add, search/get, and delete succeed through MCP. | Shared-store lock and dependency failures remain visible; no fallback writes to the real store. | Isolated MCP round trip plus cleanup proof. | P1-B | `UNPROVEN` |
+| R-03 | The MCP contract exposes the required memory operations. | At minimum `add_memory`, `search_memories`, and `get_memories` exist, with update/delete operations unchanged. | MCP initialize and list-tools returns the seven local wrapper tools. | Startup or protocol failures are surfaced, not reported as success. | Direct stdio MCP handshake and inventory. | P1-B | `GREEN` |
+| R-04 | Validation proves a memory round trip without contaminating existing data. | Test data is confined to a plan-created `.tmp` store and removed after validation. | Add, search/get, and delete succeed through MCP. | Shared-store lock and dependency failures remain visible; no fallback writes to the real store. | Isolated MCP round trip plus cleanup proof. | P1-B | `GREEN` |
 | R-05 | Existing Mem0 consumers remain uninterrupted. | The active lock holder is not terminated or reconfigured by this task. | PID/lock ownership remains unchanged during registration. | No destructive process control is used. | Process and lock inspection before/after. | P1-B | `GREEN` |
 
 ## Acceptance Criteria
@@ -133,7 +133,7 @@ The local Mem0 implementation exists and exposes the required tool names, but Co
   - Actual-status Update: `missing -> correct` for Codex registration; lock remains `blocked` if holder persists.
   - Commit Boundary: commit plan/evidence updates after this slice passes.
 
-- [ ] P1-B: Validate the MCP contract and isolated memory round trip.
+- [x] P1-B: Validate the MCP contract and isolated memory round trip.
   - Goal: prove the registered command exposes the expected tools and performs persistent operations without touching the real store.
   - Scope Boundary:
     - Editable: repo-local `.tmp/mem0-mcp-validation` during the test; this plan set.

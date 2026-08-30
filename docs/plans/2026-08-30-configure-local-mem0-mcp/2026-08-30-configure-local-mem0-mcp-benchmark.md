@@ -18,9 +18,9 @@
 
 | Phase | Metric | Unit | Baseline | Latest | Final | Target | Delta | Evidence |
 |-------|--------|------|----------|--------|-------|--------|-------|----------|
-| P0 | Installed Mem0 MCP tools declared | tools | 7 | 7 | pending | >= 3 required tools | 0 | `E0-P0A-TOOL1` |
-| P0 | Codex `mem0` registrations | servers | 0 | 1 | pending | 1 | +1 | `E1-P1A-CFG2` |
-| P0 | Active real-store lock holders | processes | 1 | 1 | pending | 0 for a second stdio launch | 0 | `E0-P0A-LOCK1` |
+| P0 | Installed Mem0 MCP tools declared | tools | 7 | 7 | 7 | >= 3 required tools | 0 | `E0-P0A-TOOL1`, `E1-P1B-MCP1` |
+| P0 | Codex `mem0` registrations | servers | 0 | 1 | 1 | 1 | +1 | `E1-P1A-CFG2` |
+| P0 | Active real-store lock holders | processes | 1 | 1 | 1 | 0 for a second stdio launch | 0 | `E0-P0A-LOCK1`, `E1-P1B-LOCK1` |
 | P0 | Repo app files intended for edit | files | 0 | 0 | 0 | 0 | 0 | `E0-P0A-GRAPH2` |
 
 ## B1 - P1 Benchmarks
@@ -28,8 +28,8 @@
 | Phase | Metric | Unit | Baseline | Latest | Final | Target | Delta | Evidence |
 |-------|--------|------|----------|--------|-------|--------|-------|----------|
 | P1 | Codex `mem0` registrations | servers | 0 | 1 | 1 | 1 | +1 | `E1-P1A-CFG2` |
-| P1 | MCP tools discovered at runtime | tools | 0 | pending | pending | 7 | pending | pending |
-| P1 | Isolated memory round trips | round trips | 0 | pending | pending | 1 | pending | pending |
+| P1 | MCP tools discovered at runtime | tools | 0 | 7 | 7 | 7 | +7 | `E1-P1B-MCP1` |
+| P1 | Isolated memory round trips | round trips | 0 | 1 | 1 | 1 | +1 | `E1-P1B-ROUND1` |
 
 ## B2 - P2 Benchmarks
 

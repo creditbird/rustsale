@@ -43,7 +43,11 @@ Matching plan item(s): `P1-A`, `P1-B`
 - `E1-P1A-BUILD1`: After Anvien reported no build/analyze lock, `bun run build` completed successfully. It emitted pre-existing Svelte state/a11y and large-chunk warnings but no build error; a fresh post-build `codex mcp get mem0` still reported the expected enabled local stdio registration.
 - `E1-P1A-DETECT1`: After a fresh `anvien analyze --force`, `anvien detect-changes --repo rustsale --scope all` reported zero changed files, symbols, processes, and affected files in the application graph; the only repo changes are untracked plan documents.
 
-P1-B evidence is pending.
+- `E1-P1B-MCP1`: The direct stdio MCP client initialized successfully and discovered exactly seven tools: `add_memory`, `search_memories`, `get_memories`, `get_memory`, `update_memory`, `delete_memory`, and `delete_all_memories`.
+- `E1-P1B-ROUND1`: Against isolated `MEM0_DIR=.tmp/mem0-mcp-validation.ye8wwe`, direct MCP calls passed add, semantic search, list, get-by-ID, update, delete, and post-delete absence assertions. This is the superficial-patch killer proving actual protocol and storage behavior rather than config text.
+- `E1-P1B-WARN1`: The successful isolated run emitted a Mem0 deprecation warning for `update(data=...)` and a harmless Qdrant destructor warning during Python shutdown. Neither changed the exit result or assertions; the installed wrapper remains preserve-only in this task.
+- `E1-P1B-CLEAN1`: The isolated store measured 56 KiB, was resolved under the repository `.tmp` directory, and was moved recoverably to the desktop Trash after validation. The source path no longer exists.
+- `E1-P1B-LOCK1`: The real store remained preserve-only and its pre-existing lock holder was not terminated. Concurrent real-store startup remains a disclosed condition.
 
 ## E2 - P2 Evidence
 

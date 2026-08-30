@@ -58,7 +58,7 @@ The executable/configuration targets are outside the indexed repository, so `fil
 | Unit | Current State | Required State | Status | Relationship Count | Evidence | Next Plan Decision |
 |------|---------------|----------------|--------|--------------------|----------|--------------------|
 | Local Mem0 installation | Mem0 OSS 2.0.19 wrapper and venv exist. | Reuse unchanged. | correct | N/A external | `E0-P0A-SRC1`, `E0-P0A-SRC2` | preserve |
-| Local MCP tool contract | Seven required CRUD/search tools are declared. | Runtime discovery and round trip proven. | partial | N/A external | `E0-P0A-TOOL1`, `E0-P0A-FAIL1` | validate P1-B in isolation |
+| Local MCP tool contract | Seven tools were discovered and exercised through direct stdio MCP against an isolated store. | Runtime discovery and round trip proven. | correct | N/A external | `E1-P1B-MCP1`, `E1-P1B-ROUND1` | preserve; real-store startup remains conditional |
 | Codex MCP registration | One enabled `mem0` stdio server targets the installed local wrapper and existing scope. | One enabled local stdio registration. | correct | N/A external | `E1-P1A-CFG1`, `E1-P1A-CFG2` | preserve; validate P1-B |
 | Persistent data/user scope | Store path and user ID are known. | Preserve exact values. | correct | N/A external | `E0-P0A-SCOPE1` | preserve in P1-A |
 | Concurrent real-store launch | Active Mem0 process owns the embedded-Qdrant lock. | A new Codex-launched process opens the store after the holder exits, or shared architecture is separately approved. | blocked | N/A external | `E0-P0A-LOCK1`, `E0-P0A-FAIL1` | do not kill holder; disclose blocker |
@@ -69,6 +69,7 @@ The executable/configuration targets are outside the indexed repository, so `fil
 |---------|------|------------|----------------|----------------|----------|-------------------|
 | R0 | 2026-08-30 | baseline before implementation | local wrapper, Codex catalog, persistent lock | initial classification | `E0-P0A-SRC1`, `E0-P0A-CFG1`, `E0-P0A-LOCK1` | register without modifying server/data; validate using isolated store |
 | R1 | 2026-08-30 | after P1-A | Codex MCP catalog and active lock holder | registration `missing -> correct`; lock remains `blocked` | `E1-P1A-CFG1`, `E1-P1A-CFG2`, `E1-P1A-LOCK1` | proceed to isolated MCP validation; preserve real store |
+| R2 | 2026-08-30 | after P1-B | isolated MCP contract and validation store | tool contract `partial -> correct`; real-store launch remains `blocked` | `E1-P1B-MCP1`, `E1-P1B-ROUND1`, `E1-P1B-CLEAN1` | proceed to supervisor with conditional real-store readiness |
 
 ## Phase Touch Map
 
@@ -157,7 +158,7 @@ Kill the holder, bypass the lock, or mutate/copy the live store without explicit
 | Plan Item | Actual Status Finding | Required Status / Next-Action Update |
 |-----------|-----------------------|--------------------------------------|
 | P1-A | Server exists; only Codex binding is missing. | Add one local stdio entry with existing path/user values. |
-| P1-B | Registration is correct; real store still cannot be opened concurrently. | Use the registered command against an isolated store; keep real-store readiness conditional if the lock persists. |
+| P1-B | Isolated MCP contract and round trip are correct; real store still cannot be opened concurrently. | Preserve the accepted registration and carry the lock condition into supervisor/final readiness. |
 
 ## Implementation Gate
 
