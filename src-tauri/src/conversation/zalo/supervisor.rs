@@ -958,40 +958,72 @@ impl ZaloSessionSupervisor {
             .ok_or_else(|| {
                 anyhow::anyhow!("Zalo account {provider_account_key} is not connected")
             })?;
-
-        let history_resp = client
-            .fetch_group_chat_history_with_cursor(&external_thread_id, Some(50), None)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch group chat history from Zalo: {e}"))?;
-
         let mut ingested_count = 0;
         let now_str = crate::conversation::types::utc_now();
+        let mut current_cursor: Option<String> = None;
+        let mut page_count = 0;
 
-        for mut group_msg in history_resp.group_msgs {
-            if group_msg.thread_id.is_empty() || group_msg.thread_id == "0" {
-                group_msg.thread_id = external_thread_id.clone();
-            }
-            let model_msg = zca_rs::models::Message::Group(group_msg);
-            match crate::conversation::zalo::normalizer::normalize_message(
-                &provider_account_key,
-                account_display_name.as_deref(),
-                model_msg,
-            ) {
-                Ok(normalized_msg) => {
-                    if let Ok(applied) = self
-                        .service
-                        .repository
-                        .apply_normalized_message(&normalized_msg)
-                    {
-                        if !applied.duplicate {
-                            ingested_count += 1;
-                        }
+        while page_count < 3 {
+            page_count += 1;
+            let history_resp = match client
+                .fetch_group_chat_history_with_cursor(
+                    &external_thread_id,
+                    Some(50),
+                    current_cursor.as_deref(),
+                )
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if page_count == 1 {
+                        return Err(anyhow::anyhow!(
+                            "Failed to fetch group chat history from Zalo: {e}"
+                        ));
+                    } else {
+                        tracing::warn!(target: "zalo_supervisor", "Pagination stopped at page {page_count}: {e}");
+                        break;
                     }
                 }
-                Err(err) => {
-                    tracing::warn!(target: "zalo_supervisor", "Failed to normalize group history message: {err}");
+            };
+
+            let has_more = history_resp.more > 0 && !history_resp.last_action_id.is_empty();
+            let next_cursor = history_resp.last_action_id.clone();
+            let msgs_count = history_resp.group_msgs.len();
+
+            for mut group_msg in history_resp.group_msgs {
+                if group_msg.thread_id.is_empty() || group_msg.thread_id == "0" {
+                    group_msg.thread_id = external_thread_id.clone();
+                }
+                let model_msg = zca_rs::models::Message::Group(group_msg);
+                match crate::conversation::zalo::normalizer::normalize_message(
+                    &provider_account_key,
+                    account_display_name.as_deref(),
+                    model_msg,
+                ) {
+                    Ok(normalized_msg) => {
+                        if let Ok(applied) = self
+                            .service
+                            .repository
+                            .apply_normalized_message(&normalized_msg)
+                        {
+                            if !applied.duplicate {
+                                ingested_count += 1;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(target: "zalo_supervisor", "Failed to normalize group history message: {err}");
+                    }
                 }
             }
+
+            if !has_more
+                || msgs_count == 0
+                || next_cursor == current_cursor.clone().unwrap_or_default()
+            {
+                break;
+            }
+            current_cursor = Some(next_cursor);
         }
 
         if let Ok(conn) = open_db_connection(&self.db_path) {

@@ -472,7 +472,8 @@ mock.module('$lib/services/conversationService', () => ({
   syncAndDeepScanGroupMembers: (conversationId: number) =>
     mockSyncAndDeepScanGroupMembers(conversationId),
   batchImportGroupMembersToLeads: (request: unknown) =>
-    mockBatchImportGroupMembersToLeads(request)
+    mockBatchImportGroupMembersToLeads(request),
+  syncZaloGroupChatHistory: mock(async (_conversationId: number) => 0)
 }));
 
 mock.module('$lib/services/crmService', () => ({
@@ -483,6 +484,12 @@ mock.module('$lib/services/crmService', () => ({
   removeLeadsFromCategory: mock(async () => {}),
   createCategory: mock(async () => 1),
   onLeadsChanged: mock((_listener: any) => () => {})
+}));
+
+mock.module('$lib/services/metaRealtimeService', () => ({
+  startMetaRealtimeListener: mock(() => () => {}),
+  stopMetaRealtimeListener: mock(() => {}),
+  schedulePageSync: mock(() => {})
 }));
 
 describe('ConversationWorkspace Component', () => {

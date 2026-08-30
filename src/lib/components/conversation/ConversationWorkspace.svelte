@@ -539,8 +539,9 @@
     const instantPins: PinnedMessage[] = [];
     let hasAllCached = true;
     for (const cid of convIds) {
-      if (pinnedMessagesCache.has(cid)) {
-        instantPins.push(...pinnedMessagesCache.get(cid)!);
+      const cached = pinnedMessagesCache.get(cid);
+      if (cached && Array.isArray(cached)) {
+        instantPins.push(...cached);
       } else {
         hasAllCached = false;
       }

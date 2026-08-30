@@ -1395,26 +1395,47 @@ mod tests {
         let peer_uid = "84903333333";
         let group_id = "g_123456789";
 
-        let t_undo_self = TUndo {
-            msg_id: "m1".to_string(),
-            cli_msg_id: "c1".to_string(),
-            id_to: peer_uid.to_string(),
-            uid_from: own_uid.to_string(),
-            ts: "123".to_string(),
-        };
+        let mut t_undo_self = create_dummy_undo();
+        t_undo_self.id_to = peer_uid.to_string();
+        t_undo_self.uid_from = own_uid.to_string();
         let undo_self = Undo::new(own_uid, t_undo_self, false);
         assert!(undo_self.is_self);
         assert_eq!(undo_self.thread_id, peer_uid);
 
-        let t_undo_group = TUndo {
-            msg_id: "m2".to_string(),
-            cli_msg_id: "c2".to_string(),
-            id_to: group_id.to_string(),
-            uid_from: own_uid.to_string(),
-            ts: "123".to_string(),
-        };
+        let mut t_undo_group = create_dummy_undo();
+        t_undo_group.id_to = group_id.to_string();
+        t_undo_group.uid_from = own_uid.to_string();
         let undo_grp = Undo::new(own_uid, t_undo_group, true);
         assert!(undo_grp.is_self);
         assert_eq!(undo_grp.thread_id, group_id);
+    }
+
+    fn create_dummy_undo() -> TUndo {
+        TUndo {
+            action_id: "act-1".to_string(),
+            msg_id: "msg-1".to_string(),
+            cli_msg_id: "cli-1".to_string(),
+            msg_type: "undo".to_string(),
+            uid_from: "".to_string(),
+            id_to: "".to_string(),
+            d_name: "User".to_string(),
+            ts: "123".to_string(),
+            status: 1,
+            content: TUndoContent {
+                global_msg_id: 1,
+                cli_msg_id: 1,
+                delete_msg: 1,
+                src_id: 0,
+                dest_id: 0,
+            },
+            notify: "".to_string(),
+            ttl: 0,
+            user_id: "".to_string(),
+            uin: "".to_string(),
+            cmd: 501,
+            st: 0,
+            at: 0,
+            real_msg_id: "real-1".to_string(),
+        }
     }
 }
