@@ -1,4 +1,5 @@
 use super::*;
+use tauri::Manager;
 
 #[test]
 fn test_notification_settings_default() {
@@ -79,8 +80,19 @@ fn test_should_suppress_notification_when_focused() {
 #[test]
 fn test_should_suppress_notification_when_dnd_or_disabled() {
     let manager = NotificationManager::default();
+    let tray_state = crate::tray::TrayState::new(true, false);
+    manager.set_tray_state(tray_state.clone());
 
     // Default: not suppressed
+    assert!(!manager.should_suppress(1, false));
+
+    // When Tray DND is enabled: must suppress direct and group chats
+    tray_state.set_dnd_enabled(true);
+    assert!(manager.should_suppress(1, false));
+    assert!(manager.should_suppress(1, true));
+
+    // When Tray DND is toggled off: resumed
+    tray_state.set_dnd_enabled(false);
     assert!(!manager.should_suppress(1, false));
 
     // Disabled setting
@@ -115,4 +127,28 @@ fn test_rate_limiting_debounces_rapid_burst() {
 
     // Different conversation should be allowed
     assert!(manager.check_and_record_rate_limit(200));
+}
+
+#[test]
+fn test_dispatch_desktop_notification_and_test_command() {
+    let app = tauri::test::mock_builder()
+        .plugin(tauri_plugin_notification::init())
+        .manage(std::sync::Arc::new(NotificationManager::default()))
+        .build(tauri::generate_context!())
+        .expect("failed to build mock app");
+    let state = app.state::<std::sync::Arc<NotificationManager>>();
+
+    let test_res = test_desktop_notification(app.handle().clone(), state);
+    assert!(
+        test_res.is_ok(),
+        "test_desktop_notification should return Ok: {:?}",
+        test_res
+    );
+
+    let direct_res = dispatch_desktop_notification(&app.handle(), "Test Title", "Test Body");
+    assert!(
+        direct_res.is_ok(),
+        "dispatch_desktop_notification should return Ok: {:?}",
+        direct_res
+    );
 }

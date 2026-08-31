@@ -683,8 +683,12 @@
 
     const stopRealtime = startMetaRealtimeListener();
 
+    let focusDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     const onWindowFocus = () => {
-      void syncFacebookConversations().catch(() => {});
+      if (focusDebounceTimer) clearTimeout(focusDebounceTimer);
+      focusDebounceTimer = setTimeout(() => {
+        void syncFacebookConversations().catch(() => {});
+      }, 500);
     };
     window.addEventListener('focus', onWindowFocus);
 
@@ -702,6 +706,7 @@
 
     return () => {
       stopRealtime();
+      if (focusDebounceTimer) clearTimeout(focusDebounceTimer);
       window.removeEventListener('focus', onWindowFocus);
       clearInterval(interval);
     };
@@ -819,12 +824,19 @@
       void initializeHighWaterMarkAndCatchUp();
     });
 
+    let hwmFocusTimer: ReturnType<typeof setTimeout> | null = null;
     const onFocus = () => {
-      void initializeHighWaterMarkAndCatchUp();
+      if (hwmFocusTimer) clearTimeout(hwmFocusTimer);
+      hwmFocusTimer = setTimeout(() => {
+        void initializeHighWaterMarkAndCatchUp();
+      }, 300);
     };
     const onVisibility = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        void initializeHighWaterMarkAndCatchUp();
+        if (hwmFocusTimer) clearTimeout(hwmFocusTimer);
+        hwmFocusTimer = setTimeout(() => {
+          void initializeHighWaterMarkAndCatchUp();
+        }, 300);
       }
     };
 
@@ -841,6 +853,7 @@
       cleanupDelta();
       cleanupLag();
       cleanupReconnect();
+      if (hwmFocusTimer) clearTimeout(hwmFocusTimer);
       if (typeof window !== 'undefined') {
         window.removeEventListener('focus', onFocus);
         document.removeEventListener('visibilitychange', onVisibility);

@@ -160,8 +160,13 @@ pub fn set_close_to_tray(enabled: bool, state: tauri::State<'_, TrayState>) -> R
 }
 
 #[tauri::command]
-pub fn set_tray_dnd(enabled: bool, state: tauri::State<'_, TrayState>) -> Result<(), String> {
+pub fn set_tray_dnd<R: Runtime>(
+    app: AppHandle<R>,
+    enabled: bool,
+    state: tauri::State<'_, TrayState>,
+) -> Result<(), String> {
     state.set_dnd_enabled(enabled);
+    let _ = app.emit("tray-dnd-changed", enabled);
     Ok(())
 }
 

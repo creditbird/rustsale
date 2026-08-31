@@ -91,6 +91,7 @@ pub fn run() {
     install_rustls_crypto_provider();
     let tray_state = tray::TrayState::default();
     let notification_manager = std::sync::Arc::new(notification::NotificationManager::default());
+    notification_manager.set_tray_state(tray_state.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())

@@ -79,6 +79,7 @@ pub struct NotificationManager {
     settings: RwLock<NotificationSettings>,
     focus_state: RwLock<(Option<i64>, bool)>,
     last_notified: Mutex<HashMap<i64, Instant>>,
+    tray_state: RwLock<Option<crate::tray::TrayState>>,
 }
 
 impl Default for NotificationManager {
@@ -87,6 +88,7 @@ impl Default for NotificationManager {
             settings: RwLock::new(NotificationSettings::default()),
             focus_state: RwLock::new((None, false)),
             last_notified: Mutex::new(HashMap::new()),
+            tray_state: RwLock::new(None),
         }
     }
 }
@@ -97,7 +99,12 @@ impl NotificationManager {
             settings: RwLock::new(settings),
             focus_state: RwLock::new((None, false)),
             last_notified: Mutex::new(HashMap::new()),
+            tray_state: RwLock::new(None),
         }
+    }
+
+    pub fn set_tray_state(&self, tray_state: crate::tray::TrayState) {
+        *self.tray_state.write().unwrap() = Some(tray_state);
     }
 
     pub fn get_settings(&self) -> NotificationSettings {
@@ -116,6 +123,12 @@ impl NotificationManager {
         let settings = self.settings.read().unwrap();
         if !settings.enabled {
             return true;
+        }
+
+        if let Some(ref tray) = *self.tray_state.read().unwrap() {
+            if tray.is_dnd_enabled() {
+                return true;
+            }
         }
 
         if is_group && settings.mute_groups {
@@ -168,23 +181,91 @@ impl NotificationManager {
         let title = format_notification_title(channel, sender_name, is_group, group_name);
         let body = format_notification_body(raw_text, content_type, settings.privacy_mode);
 
-        if let Err(error) = app
-            .notification()
-            .builder()
-            .title(&title)
-            .body(&body)
-            .show()
-        {
-            tracing::warn!(target: "notification", %error, "Failed to show desktop notification");
+        if let Err(error) = dispatch_desktop_notification(app, &title, &body) {
+            tracing::warn!(target: "notification", %error, "Failed to deliver inbound desktop notification");
+        } else {
+            let payload = serde_json::json!({
+                "conversationId": conversation_id,
+                "leadId": lead_id,
+                "channel": channel,
+                "sound": settings.sound_enabled
+            });
+            let _ = app.emit("desktop-notification-sent", payload);
+        }
+    }
+}
+
+fn show_plugin_notification<R: Runtime>(
+    app: &AppHandle<R>,
+    title: &str,
+    body: &str,
+) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|err| format!("Desktop notification delivery failed: {err}"))
+}
+
+pub fn dispatch_desktop_notification<R: Runtime>(
+    app: &AppHandle<R>,
+    title: &str,
+    body: &str,
+) -> Result<(), String> {
+    let title_owned = title.to_string();
+    let body_owned = body.to_string();
+    let app_handle = app.clone();
+
+    #[cfg(target_os = "linux")]
+    {
+        let spawn_res = std::thread::Builder::new()
+            .name("notification-dispatch".to_string())
+            .spawn(move || {
+                let notify_send_res = std::process::Command::new("notify-send")
+                    .arg(&title_owned)
+                    .arg(&body_owned)
+                    .arg("-a")
+                    .arg("RustSale CRM")
+                    .arg("-i")
+                    .arg("rustsale-crm")
+                    .arg("-e")
+                    .arg("-u")
+                    .arg("normal")
+                    .arg("-t")
+                    .arg("3500")
+                    .arg("-h")
+                    .arg("string:category:im.received")
+                    .status();
+
+                match notify_send_res {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => {
+                        tracing::warn!(target: "notification", %status, "notify-send exited with non-zero status; falling back to tauri-plugin-notification");
+                        if let Err(err) = show_plugin_notification(&app_handle, &title_owned, &body_owned) {
+                            tracing::warn!(target: "notification", %err, "Fallback tauri-plugin-notification failed");
+                        }
+                    }
+                    Err(spawn_err) => {
+                        tracing::debug!(target: "notification", %spawn_err, "notify-send spawn failed; falling back to tauri-plugin-notification");
+                        if let Err(err) = show_plugin_notification(&app_handle, &title_owned, &body_owned) {
+                            tracing::warn!(target: "notification", %err, "Fallback tauri-plugin-notification failed");
+                        }
+                    }
+                }
+            });
+
+        if let Err(err) = spawn_res {
+            tracing::warn!(target: "notification", %err, "Failed to spawn notification thread; falling back to plugin");
+            return show_plugin_notification(app, title, body);
         }
 
-        let payload = serde_json::json!({
-            "conversationId": conversation_id,
-            "leadId": lead_id,
-            "channel": channel,
-            "sound": settings.sound_enabled
-        });
-        let _ = app.emit("desktop-notification-sent", payload);
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        show_plugin_notification(&app_handle, &title_owned, &body_owned)
     }
 }
 
@@ -226,12 +307,7 @@ pub fn test_desktop_notification<R: Runtime>(
         "Đây là thông báo thử nghiệm từ RustSale CRM. Tính năng hoạt động hoàn hảo!".to_string()
     };
 
-    app.notification()
-        .builder()
-        .title("[RustSale] Thông báo thử nghiệm")
-        .body(&body)
-        .show()
-        .map_err(|e| e.to_string())?;
+    dispatch_desktop_notification(&app, "[RustSale] Thông báo thử nghiệm", &body)?;
 
     let _ = app.emit(
         "desktop-notification-sent",
