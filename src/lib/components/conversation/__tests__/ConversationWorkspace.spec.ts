@@ -2357,7 +2357,7 @@ describe('ConversationWorkspace Component', () => {
     });
   });
 
-  test('28c. Conversation switch during fallback snapshot does not corrupt newly selected conversation', async () => {
+  test('28c. Conversation switch during fallback snapshot does not corrupt newly selected conversation or advance its cursor', async () => {
     const mockCustomer2: InboxItem = {
       ...mockCustomerItem,
       key: 'lead:2',
@@ -2406,7 +2406,7 @@ describe('ConversationWorkspace Component', () => {
     await tick();
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // Replay throws error
+    // Replay throws error for contact A
     mockResumeConversationDeltas.mockImplementation(async () => {
       throw new Error('FromSqlConversionFailure');
     });
@@ -2453,7 +2453,7 @@ describe('ConversationWorkspace Component', () => {
     // Contact B timeline is open
     expect(screen.getAllByText('Tin nhắn của khách B').length).toBeGreaterThanOrEqual(1);
 
-    // Now resolve the late snapshot for contact A
+    // Now resolve the late snapshot for contact A with high sequence 103
     if (resolveContact1!) {
       resolveContact1({
         items: [
@@ -2476,6 +2476,212 @@ describe('ConversationWorkspace Component', () => {
     // Contact B timeline must NOT be overwritten with Contact A's message
     expect(screen.queryByText('Late snapshot for contact A')).toBeNull();
     expect(screen.getAllByText('Tin nhắn của khách B').length).toBeGreaterThanOrEqual(1);
+
+    // Now emit a delta for Contact B with sequence 101 (which is < 103)
+    // If Contact A's late snapshot had erroneously advanced the cursor to 103, this delta would be dropped as duplicate!
+    emitDelta({
+      sequence: 101,
+      conversationId: 20,
+      leadId: 2,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg2,
+        id: 202,
+        textContent: 'Tin nhắn 101 của khách B',
+        content: { text: 'Tin nhắn 101 của khách B' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Must be rendered in Contact B timeline!
+    expect(screen.getAllByText('Tin nhắn 101 của khách B').length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('28d. Component unmount during in-flight snapshot reload cancels recovery and prevents teardown retries', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockResolvedValueOnce({
+      items: [mockMsg1],
+      nextCursor: null,
+      snapshotSequence: 100
+    });
+
+    let rejectSnapshot: ((reason?: any) => void) | undefined;
+    mockGetContactTimeline.mockImplementation(async () => {
+      return new Promise((_, reject) => {
+        rejectSnapshot = reject;
+      });
+    });
+
+    mockResumeConversationDeltas.mockImplementation(async () => {
+      throw new Error('CorruptedSQLiteRow');
+    });
+
+    const { unmount } = render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Trigger gap to initiate fallback snapshot
+    emitDelta({
+      sequence: 105,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 999,
+        textContent: 'Delta 105 trigger',
+        content: { text: 'Delta 105 trigger' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Unmount component while snapshot reload is in flight
+    unmount();
+    await tick();
+
+    // Clear call counts to track if any post-unmount calls occur
+    mockResumeConversationDeltas.mockClear();
+    mockGetContactTimeline.mockClear();
+
+    // Reject the pending snapshot AFTER unmount
+    if (typeof rejectSnapshot === 'function') {
+      (rejectSnapshot as (reason?: any) => void)(new Error('NetworkTimeoutAfterUnmount'));
+    }
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Verify NO retry timer or IPC was invoked after unmount
+    expect(mockResumeConversationDeltas).not.toHaveBeenCalled();
+    expect(mockGetContactTimeline).not.toHaveBeenCalled();
+  });
+
+  test('28e. Retry timer collision with active replay enqueues obligation and achieves full eventual convergence', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+
+    // Initial timeline
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    // Slow replay 1 resolves with delay
+    let resolveReplay1: (val: any) => void;
+    mockResumeConversationDeltas.mockImplementation(async (fromSeq) => {
+      if (fromSeq === 100) {
+        return new Promise((resolve) => {
+          resolveReplay1 = resolve;
+        });
+      }
+      if (fromSeq >= 101) {
+        return [
+          {
+            sequence: 103,
+            conversationId: 10,
+            leadId: 1,
+            channel: 'zalo' as const,
+            message: {
+              ...mockMsg1,
+              id: 503,
+              textContent: 'Message 103 from second replay',
+              content: { text: 'Message 103 from second replay' }
+            },
+            emittedAtMs: Date.now()
+          },
+          {
+            sequence: 104,
+            conversationId: 10,
+            leadId: 1,
+            channel: 'zalo' as const,
+            message: {
+              ...mockMsg1,
+              id: 504,
+              textContent: 'Message 104 from second replay',
+              content: { text: 'Message 104 from second replay' }
+            },
+            emittedAtMs: Date.now()
+          }
+        ];
+      }
+      return [];
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Emit gap delta to trigger replay 1
+    emitDelta({
+      sequence: 102,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 501,
+        textContent: 'Message 102',
+        content: { text: 'Message 102' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+
+    // While replay 1 is in-flight (isResumingDeltas = true), emit another gap delta 105
+    emitDelta({
+      sequence: 105,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 502,
+        textContent: 'Message 105',
+        content: { text: 'Message 105' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+
+    // Now finish replay 1
+    if (resolveReplay1!) {
+      resolveReplay1([
+        {
+          sequence: 101,
+          conversationId: 10,
+          leadId: 1,
+          channel: 'zalo' as const,
+          message: {
+            ...mockMsg1,
+            id: 500,
+            textContent: 'Message 101 from first replay',
+            content: { text: 'Message 101 from first replay' }
+          },
+          emittedAtMs: Date.now()
+        }
+      ]);
+    }
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Verify all messages from both replays and buffered deltas converged!
+    await waitFor(() => {
+      expect(screen.getAllByText('Message 101 from first replay').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('Message 102').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('Message 103 from second replay').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('Message 104 from second replay').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('Message 105').length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   test('29. Empty authoritative snapshot response does NOT drop newer pushed delta bubble', async () => {

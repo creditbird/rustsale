@@ -1,10 +1,10 @@
 {
   "version": "0.1.14",
-  "notes": "Enterprise Omnichannel Push-Delta Sync with Monotonic Sequence and Fallback Recovery",
-  "pub_date": "2026-08-31T08:27:08.292Z",
+  "notes": "Phiên bản v0.1.14: Cập nhật tính năng và cải thiện hiệu năng cho RustSale CRM.",
+  "pub_date": "2026-08-31T09:24:04.400Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDRpVi95RjJEYWhTeCs3S3VVQmo5Nm5ud3NxditOeWQ2UEdqT09qUVNEdTN5SG8vazl6UzNGVzZDTzNRc2d1S1ZNd1JjQlFVSWYrdmUwTkJaeCsrZUFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MTY0ODI3CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNF9hbWQ2NC5kZWIKaW9OQ0VkcnZBdEJmaWI4dmlOMkJWM2J2dGtPT0c0TzhsemV0aU5XNHplWm9xdlhMZGlTTFNTMGJMcDVIWW4vNkxBclFxcmdJNEpXZHlZbEZDSk0rQXc9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUC91NFgrMHFseUJ4K2s3b3UzN3BuK1BkYjRmcjhBSmM5WHdlUVpLUjlNN3h3NC91aXJEcnhpZFEvZVJUNndKSVpqdFg3cndKNTRNTU0wUFNiZEJIdkEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MTY4MjQzCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNF9hbWQ2NC5kZWIKckxXQzU1Q2NSNEZNUGJVaVVZVEdNNlRtZ3lOU1RXejBJaTB1R3lXVElEUWM4ZHMzVDc1VEF2d2k1dWIyYVBKVG9NUVRzNGlVYUxMOEIyR1p5d1RSQ0E9PQo=",
       "url": "https://rustsale.trantrongtri.com/v0.1.14/RustSale%20CRM_0.1.14_amd64.deb"
     }
   }

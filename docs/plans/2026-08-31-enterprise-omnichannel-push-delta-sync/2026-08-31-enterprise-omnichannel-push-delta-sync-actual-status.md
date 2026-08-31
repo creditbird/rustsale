@@ -93,6 +93,7 @@ Out of scope:
 | R2 | 2026-08-31 | Supervisor Re-Review REJECT | 8 Architectural Blockers Identified | Reclassified to `wrong`/`partial` | `rp_supervisor_260831_063454` | Proceed to Phase P1 remediation |
 | R3 | 2026-08-31 | Remediation Completed | All 8 Blockers Architecturally Fixed & Tested | Reclassified all rows to `correct` | `E1-P1A-TX1..E3-P3B-GITHYGIENE1` | Submitted to Supervisor |
 | R4 | 2026-08-31 | Supervisor 4-Blocker Remediation | Fallback Replay Await, Cursor/Buffer Safety, Adversarial Tests 28a/b/c, DB Migration, Tauri Distributable | Reclassified all rows to `correct` with transactional safety proofs | `E2-P2A-REPLAY1`, `E2-P2D-TESTS1`, `E3-P3A-DIST1` | Submit for Final Supervisor Acceptance |
+| R5 | 2026-08-31 | Final Acceptance Re-Review Remediation | 3 Replay Races Fixed (28c/d/e), Cryptographic Minisign Sig Verification, DB Backup Timestamp, Raw Latency p50/p95/p99 Telemetry | All rows `correct` with 100% cryptographic and adversarial test proofs | `E2-P2D-TESTS1`, `E3-P3A-SIGVERIFY`, `E3-P3A-DBMIGRATION`, `E3-P3A-TELEMETRY` | Ready for Final Acceptance Review |
 
 ## Phase Touch Map
 
