@@ -248,7 +248,7 @@ fn test_dispatch_notification_deterministic_strategy() {
     // 1. Primary succeeds -> Fallback is NOT called
     let mut fallback_called = false;
     let res1 = dispatch_notification_strategy(
-        || Ok(true),
+        || Ok(()),
         || {
             fallback_called = true;
             Ok(())
@@ -257,10 +257,10 @@ fn test_dispatch_notification_deterministic_strategy() {
     assert!(res1.is_ok());
     assert!(!fallback_called, "Fallback should not be called when primary succeeds");
 
-    // 2. Primary exits non-zero (Ok(false)) -> Fallback is called and succeeds
+    // 2. Primary exits non-zero (Err) -> Fallback is called and succeeds
     let mut fallback_called = false;
     let res2 = dispatch_notification_strategy(
-        || Ok(false),
+        || Err("notify-send exited non-zero: 1".to_string()),
         || {
             fallback_called = true;
             Ok(())

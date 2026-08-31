@@ -249,7 +249,7 @@ pub fn show_plugin_notification<R: Runtime>(
 }
 
 #[cfg(target_os = "linux")]
-pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<bool, String> {
+pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<(), String> {
     let mut child = std::process::Command::new("notify-send")
         .arg(title)
         .arg(body)
@@ -273,10 +273,10 @@ pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<bool, String
         match child.try_wait() {
             Ok(Some(status)) => {
                 if status.success() {
-                    return Ok(true);
+                    return Ok(());
                 } else {
                     tracing::warn!(target: "notification", %status, "notify-send exited non-zero");
-                    return Ok(false);
+                    return Err(format!("notify-send exited non-zero: {status}"));
                 }
             }
             Ok(None) => {
@@ -322,12 +322,11 @@ pub fn dispatch_notification_strategy<FPrimary, FFallback>(
     mut fallback_runner: FFallback,
 ) -> Result<(), String>
 where
-    FPrimary: FnMut() -> Result<bool, String>,
+    FPrimary: FnMut() -> Result<(), String>,
     FFallback: FnMut() -> Result<(), String>,
 {
     match primary_runner() {
-        Ok(true) => Ok(()),
-        Ok(false) => fallback_runner(),
+        Ok(()) => Ok(()),
         Err(primary_err) => match fallback_runner() {
             Ok(()) => Ok(()),
             Err(fallback_err) => Err(format!(

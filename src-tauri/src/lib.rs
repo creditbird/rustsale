@@ -280,7 +280,7 @@ pub fn run() {
             let notif_app = app.handle().clone();
             let mut notif_events = conversation_events.subscribe();
 
-            let (notif_tx, notif_rx) = tokio::sync::mpsc::channel::<(i64, Option<i64>)>(64);
+            let (notif_tx, notif_rx) = tokio::sync::mpsc::channel::<(i64, Option<i64>)>(128);
             let notif_rx = std::sync::Arc::new(tokio::sync::Mutex::new(notif_rx));
 
             for _ in 0..4 {
@@ -299,7 +299,7 @@ pub fn run() {
                                 let repo = repo.clone();
                                 let mgr = mgr.clone();
                                 let handle = handle.clone();
-                                let _ = tokio::task::spawn_blocking(move || {
+                                match tokio::task::spawn_blocking(move || {
                                     if let Ok(Some(msg)) = repo.get_message_by_id(msg_id) {
                                         if msg.direction == conversation::types::MessageDirection::Inbound {
                                             let sender = msg.sender_display_name.as_deref().unwrap_or("Khách hàng");
@@ -317,7 +317,12 @@ pub fn run() {
                                             );
                                         }
                                     }
-                                }).await;
+                                }).await {
+                                    Ok(_) => {}
+                                    Err(join_err) => {
+                                        tracing::error!(target: "notification", %msg_id, %join_err, "Notification worker blocking task panicked or aborted");
+                                    }
+                                }
                             }
                             None => break,
                         }
@@ -331,19 +336,16 @@ pub fn run() {
                         Ok(event) => {
                             if event.reason == conversation::events::ConversationInvalidationReason::Message {
                                 if let Some(msg_id) = event.message_id {
-                                    let tx = notif_tx.clone();
-                                    let lead_id = event.lead_id;
-                                    tauri::async_runtime::spawn(async move {
-                                        match tx.send_timeout((msg_id, lead_id), std::time::Duration::from_millis(500)).await {
-                                            Ok(_) => {}
-                                            Err(tokio::sync::mpsc::error::SendTimeoutError::Timeout(_)) => {
-                                                tracing::warn!(target: "notification", %msg_id, "Notification buffer full after 500ms timeout; message dropped");
-                                            }
-                                            Err(tokio::sync::mpsc::error::SendTimeoutError::Closed(_)) => {
-                                                tracing::warn!(target: "notification", %msg_id, "Notification worker queue closed");
-                                            }
+                                    match notif_tx.try_send((msg_id, event.lead_id)) {
+                                        Ok(_) => {}
+                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                            tracing::warn!(target: "notification", %msg_id, "Notification queue full (128 items); message dropped to protect runtime");
                                         }
-                                    });
+                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                            tracing::warn!(target: "notification", %msg_id, "Notification worker queue closed");
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
