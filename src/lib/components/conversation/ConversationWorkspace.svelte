@@ -1497,6 +1497,14 @@
                 if (targetSeq === undefined || seq >= targetSeq) {
                   replayFallbackRetries = 0;
                   fallbackNeeded = false;
+                  // Invalidate all other cached conversation variants so switching to them fetches fresh authoritative DB snapshots
+                  for (const cachedKey of variantsCache.keys()) {
+                    if (cachedKey !== currentKey) {
+                      timelineStale.add(cachedKey);
+                    }
+                  }
+                  // Refresh inbox list so sidebar previews/unread counts reflect latest DB state
+                  void refreshInbox();
                 } else {
                   scheduleReplayFallbackRetry(seq, targetSeq);
                 }
@@ -1517,8 +1525,18 @@
 
         if (isComponentMounted) {
           isResumingDeltas = false;
-          // Always drain live delta buffer upon exiting current replay recovery
-          drainLiveDeltaBuffer(!fallbackNeeded);
+          // First drain any contiguous deltas enabled by the completed replay
+          drainLiveDeltaBuffer(false);
+
+          const nextTarget = pendingReplayTargetSeq;
+          pendingReplayTargetSeq = null;
+
+          if (nextTarget !== null && nextTarget > lastSeenSequence && !fallbackNeeded) {
+            void resumeMissedDeltas(lastSeenSequence, nextTarget);
+          } else {
+            // Drain remaining buffer and allow gap resumption if needed
+            drainLiveDeltaBuffer(!fallbackNeeded);
+          }
         }
       }
     }
