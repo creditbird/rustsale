@@ -76,6 +76,12 @@ Matching plan item(s): `P3-A`, `P3-B`, `P3-C`
 - `E3-P3A-BUNTEST`: `bun test` passed 645 tests across 70 files with 0 failures (1 skipped smoke test).
 - `E3-P3A-BUILD`: `bun run build` built client and server bundles cleanly.
 - `E3-P3A-DBMIGRATION`: Production database at `/home/arch/.local/share/com.rustsale.crm/rustsale.db` verified with `conversation_deltas` table and all 3 indexes (`idx_conversation_deltas_conv`, `idx_conversation_deltas_seq`, `idx_conversation_deltas_message_event`).
+- `E3-P3A-DIST1`: Packaged Tauri release bundle generated via `./scripts/release.sh --dry-run`:
+  - Distributable: `src-tauri/target/release/bundle/deb/RustSale CRM_0.1.14_amd64.deb` (62.88 MB)
+  - SHA256: `1e84c43a6b1cbe299b24ca1aeb784905b35e7259ba76ed0c23c14bc508907b8a`
+  - Signature: `src-tauri/target/release/bundle/deb/RustSale CRM_0.1.14_amd64.deb.sig` (Ed25519 signed)
+  - Target Platform: `linux-x86_64`
+  - Release Manifest: `latest.json`
 - `E3-P3B-GITHYGIENE1`: `git diff --check` executed with clean exit code 0 (zero trailing whitespace, zero conflict markers, clean file bounds).
 
 ## Closure Evidence
