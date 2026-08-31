@@ -17,7 +17,7 @@ import {
 } from '../desktopNotificationService';
 
 let mockInvokeFailure = false;
-let customFocusHandler: ((args: Record<string, unknown>) => Promise<boolean>) | null = null;
+let customFocusHandler: ((args: Record<string, unknown>) => Promise<{ accepted: boolean; backend_seq: number }>) | null = null;
 let backendFocusState = { convId: null as number | null, isFocused: true, seq: 0 };
 const eventListeners: Record<string, ((event: { payload: unknown }) => void)[]> = {};
 
@@ -37,9 +37,9 @@ mock.module('@tauri-apps/api/core', () => ({
           isFocused: (args?.isFocused as boolean) ?? true,
           seq
         };
-        return true;
+        return { accepted: true, backend_seq: seq };
       }
-      return false; // Stale sequence rejected
+      return { accepted: false, backend_seq: backendFocusState.seq }; // Stale sequence rejected
     }
     if (cmd === 'get_notification_settings') {
       return { enabled: true, sound_enabled: true, privacy_mode: false, mute_groups: false };
@@ -128,9 +128,9 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
           isFocused: (args.isFocused as boolean) ?? true,
           seq
         };
-        return true;
+        return { accepted: true, backend_seq: seq };
       }
-      return false; // Stale sequence rejected
+      return { accepted: false, backend_seq: backendFocusState.seq };
     };
 
     // Trigger Call 1 for conv 100 (which gets delayed at the barrier)
@@ -150,6 +150,18 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
     // Backend state must NOT have regressed to conv 100
     expect(backendFocusState.convId).toBe(200);
     expect(getActiveFocusState().activeConversationId).toBe(200);
+  });
+
+  test('automatically rebases and retries when client sequence starts behind backend generation', async () => {
+    // Simulate backend being far ahead after WebView reload / clock adjustment
+    backendFocusState = { convId: 1, isFocused: true, seq: 9999999999999 };
+
+    await setConversationFocus(777, true);
+
+    // Client must have rebased past backend sequence and successfully updated backend
+    expect(backendFocusState.convId).toBe(777);
+    expect(backendFocusState.seq).toBeGreaterThan(9999999999999);
+    expect(getActiveFocusState().activeConversationId).toBe(777);
   });
 
   test('retrieves and updates notification settings', async () => {

@@ -50,21 +50,27 @@
     let unsubDnd: (() => void) | null = null;
     let dndEventReceived = false;
 
-    subscribeTrayDndChanged((enabled) => {
-      if (active) {
-        dndEventReceived = true;
-        tray.dnd_enabled = enabled;
-      }
-    }).then((unsub) => {
-      if (active) {
-        unsubDnd = unsub;
-      } else {
-        unsub();
-      }
-    }).catch(() => {});
-
     (async () => {
       try {
+        // 1. Establish subscription first and ensure listener is active
+        try {
+          const unsub = await subscribeTrayDndChanged((enabled) => {
+            if (active) {
+              dndEventReceived = true;
+              tray.dnd_enabled = enabled;
+            }
+          });
+          if (active) {
+            unsubDnd = unsub;
+          } else {
+            unsub();
+            return;
+          }
+        } catch (subErr) {
+          console.warn('Failed to subscribe to tray DND updates:', subErr);
+        }
+
+        // 2. Read snapshots only after listener is confirmed active
         const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
         if (active) {
           if (s) settings = s;

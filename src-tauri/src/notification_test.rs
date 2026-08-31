@@ -64,7 +64,7 @@ fn test_format_notification_content_media() {
 #[test]
 fn test_should_suppress_notification_when_focused() {
     let manager = NotificationManager::default();
-    assert!(manager.set_focus(Some(42), true, Some(1)));
+    assert!(manager.set_focus(Some(42), true, Some(1)).accepted);
 
     // Suppressed because user is focused on conversation 42
     assert!(manager.should_suppress(42, false));
@@ -73,7 +73,7 @@ fn test_should_suppress_notification_when_focused() {
     assert!(!manager.should_suppress(99, false));
 
     // When window loses focus, conversation 42 is no longer suppressed
-    assert!(manager.set_focus(Some(42), false, Some(2)));
+    assert!(manager.set_focus(Some(42), false, Some(2)).accepted);
     assert!(!manager.should_suppress(42, false));
 }
 
@@ -82,24 +82,34 @@ fn test_focus_sequence_monotonic_ordering() {
     let manager = NotificationManager::default();
 
     // Call 1 at seq 10 sets focus to conv 10
-    assert!(manager.set_focus(Some(10), true, Some(10)));
+    let res1 = manager.set_focus(Some(10), true, Some(10));
+    assert!(res1.accepted);
+    assert_eq!(res1.backend_seq, 10);
     assert_eq!(manager.get_focus_state(), (Some(10), true, 10));
 
     // Call 2 at seq 20 sets focus to conv 20
-    assert!(manager.set_focus(Some(20), true, Some(20)));
+    let res2 = manager.set_focus(Some(20), true, Some(20));
+    assert!(res2.accepted);
+    assert_eq!(res2.backend_seq, 20);
     assert_eq!(manager.get_focus_state(), (Some(20), true, 20));
 
-    // Out-of-order delayed Call 3 at seq 15 arrives later -> REJECTED
-    assert!(!manager.set_focus(Some(15), true, Some(15)));
+    // Out-of-order delayed Call 3 at seq 15 arrives later -> REJECTED, returns backend_seq = 20
+    let res3 = manager.set_focus(Some(15), true, Some(15));
+    assert!(!res3.accepted);
+    assert_eq!(res3.backend_seq, 20);
     // Backend focus state remains at conv 20
     assert_eq!(manager.get_focus_state(), (Some(20), true, 20));
 
     // Duplicate Call at seq 20 -> REJECTED
-    assert!(!manager.set_focus(Some(999), false, Some(20)));
+    let res_dup = manager.set_focus(Some(999), false, Some(20));
+    assert!(!res_dup.accepted);
+    assert_eq!(res_dup.backend_seq, 20);
     assert_eq!(manager.get_focus_state(), (Some(20), true, 20));
 
     // Newer Call 4 at seq 25 -> ACCEPTED
-    assert!(manager.set_focus(Some(25), false, Some(25)));
+    let res4 = manager.set_focus(Some(25), false, Some(25));
+    assert!(res4.accepted);
+    assert_eq!(res4.backend_seq, 25);
     assert_eq!(manager.get_focus_state(), (Some(25), false, 25));
 }
 

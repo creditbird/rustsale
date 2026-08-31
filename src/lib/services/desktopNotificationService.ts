@@ -80,6 +80,11 @@ export function getActiveFocusState(): { activeConversationId: number | null; is
   return { activeConversationId, isFocused: isWindowFocused };
 }
 
+export interface FocusSyncResult {
+  accepted: boolean;
+  backend_seq: number;
+}
+
 let lastSyncedFocus: { convId: number | null; focused: boolean } | null = null;
 let focusLocalCounter = 0;
 let lastIssuedSeq = 0;
@@ -116,15 +121,33 @@ export async function setConversationFocus(
     return;
   }
 
-  const seq = nextMonotonicFocusSeq();
+  let seq = nextMonotonicFocusSeq();
 
   try {
-    const accepted = await invoke<boolean>('set_active_conversation_focus', {
+    let result = await invoke<FocusSyncResult>('set_active_conversation_focus', {
       activeConversationId: targetConvId,
       isFocused: targetFocused,
       seq
     });
-    if (accepted !== false && seq === lastIssuedSeq) {
+
+    // Only rebase/retry if our target state is still the active state (not superseded by a newer call)
+    if (
+      result &&
+      !result.accepted &&
+      typeof result.backend_seq === 'number' &&
+      targetConvId === activeConversationId &&
+      targetFocused === isWindowFocused
+    ) {
+      lastIssuedSeq = Math.max(lastIssuedSeq, result.backend_seq);
+      seq = nextMonotonicFocusSeq();
+      result = await invoke<FocusSyncResult>('set_active_conversation_focus', {
+        activeConversationId: targetConvId,
+        isFocused: targetFocused,
+        seq
+      });
+    }
+
+    if (result && result.accepted !== false && seq === lastIssuedSeq) {
       lastSyncedFocus = { convId: targetConvId, focused: targetFocused };
     }
   } catch (err) {

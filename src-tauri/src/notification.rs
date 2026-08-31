@@ -75,6 +75,12 @@ pub fn format_notification_body(raw_text: &str, content_type: &str, privacy_mode
     }
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct FocusSyncResult {
+    pub accepted: bool,
+    pub backend_seq: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FocusRecord {
     pub active_conversation_id: Option<i64>,
@@ -122,11 +128,14 @@ impl NotificationManager {
         *self.settings.write().unwrap() = new_settings;
     }
 
-    pub fn set_focus(&self, active_conversation_id: Option<i64>, is_focused: bool, seq: Option<u64>) -> bool {
+    pub fn set_focus(&self, active_conversation_id: Option<i64>, is_focused: bool, seq: Option<u64>) -> FocusSyncResult {
         let mut lock = self.focus_state.lock().unwrap();
         if let Some(s) = seq {
             if s <= lock.seq {
-                return false; // Stale or duplicate sequence rejected atomically
+                return FocusSyncResult {
+                    accepted: false,
+                    backend_seq: lock.seq,
+                };
             }
             lock.seq = s;
         } else {
@@ -134,7 +143,10 @@ impl NotificationManager {
         }
         lock.active_conversation_id = active_conversation_id;
         lock.is_focused = is_focused;
-        true
+        FocusSyncResult {
+            accepted: true,
+            backend_seq: lock.seq,
+        }
     }
 
     pub fn get_focus_state(&self) -> (Option<i64>, bool, u64) {
@@ -243,7 +255,7 @@ pub fn dispatch_desktop_notification<R: Runtime>(
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        let notify_send_res = std::process::Command::new("notify-send")
+        let spawn_res = std::process::Command::new("notify-send")
             .arg(title)
             .arg(body)
             .arg("-a")
@@ -257,12 +269,37 @@ pub fn dispatch_desktop_notification<R: Runtime>(
             .arg("3500")
             .arg("-h")
             .arg("string:category:im.received")
-            .status();
+            .spawn();
 
-        match notify_send_res {
-            Ok(status) if status.success() => Ok(()),
-            Ok(status) => {
-                tracing::warn!(target: "notification", %status, "notify-send exited with non-zero status; falling back to plugin");
+        match spawn_res {
+            Ok(mut child) => {
+                let start = Instant::now();
+                let timeout = Duration::from_millis(1500);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            if status.success() {
+                                return Ok(());
+                            } else {
+                                tracing::warn!(target: "notification", %status, "notify-send exited non-zero; falling back to plugin");
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            if start.elapsed() >= timeout {
+                                tracing::warn!(target: "notification", "notify-send timed out after 1.5s; killing process and falling back to plugin");
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        Err(err) => {
+                            tracing::warn!(target: "notification", %err, "notify-send try_wait error; falling back to plugin");
+                            break;
+                        }
+                    }
+                }
                 show_plugin_notification(app, title, body)
             }
             Err(spawn_err) => {
@@ -300,7 +337,7 @@ pub fn set_active_conversation_focus(
     is_focused: bool,
     seq: Option<u64>,
     state: tauri::State<'_, std::sync::Arc<NotificationManager>>,
-) -> Result<bool, String> {
+) -> Result<FocusSyncResult, String> {
     Ok(state.set_focus(active_conversation_id, is_focused, seq))
 }
 
