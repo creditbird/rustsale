@@ -457,7 +457,11 @@ const mockStartDirectConversation = mock(
 );
 
 const mockResumeConversationDeltas = mock(
-  async (_afterSeq: number, _limit?: number): Promise<ConversationMessageDeltaEvent[]> => []
+  async (
+    _afterSeq: number,
+    _targetSeq?: number | null,
+    _limit?: number
+  ): Promise<ConversationMessageDeltaEvent[]> => []
 );
 const mockGetConversationHighWaterMark = mock(
   async () => ({ currentSequence: 0, minSequence: 0 })
@@ -490,8 +494,8 @@ mock.module('$lib/services/conversationService', () => ({
     reconnectListeners.add(listener);
     return () => reconnectListeners.delete(listener);
   },
-  resumeConversationDeltas: (afterSeq: number, limit?: number) =>
-    mockResumeConversationDeltas(afterSeq, limit),
+  resumeConversationDeltas: (afterSeq: number, targetSeq?: number | null, limit?: number) =>
+    mockResumeConversationDeltas(afterSeq, targetSeq, limit),
   sendConversationBatch: (request: SendConversationBatchRequest) => mockSendConversationBatch(request),
   stageConversationAttachmentPaths: mock(async () => []),
   stageConversationClipboardImage: mock(async () => null),
@@ -538,7 +542,9 @@ mock.module('$lib/services/metaRealtimeService', () => ({
 
 describe('ConversationWorkspace Component', () => {
   beforeEach(() => {
+    document.body.removeAttribute('style');
     setLocale('en');
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem, mockGroupItem]);
     mockGetConversationHighWaterMark.mockImplementation(async () => ({
       currentSequence: 0,
       minSequence: 0
@@ -549,6 +555,7 @@ describe('ConversationWorkspace Component', () => {
   afterEach(() => {
     cleanup();
     document.body.innerHTML = '';
+    document.body.removeAttribute('style');
     invalidationListeners.clear();
     deltaListeners.clear();
     lagListeners.clear();
@@ -1997,8 +2004,8 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     await tick();
 
-    // Verify resumeConversationDeltas was invoked for seq 1
-    expect(mockResumeConversationDeltas).toHaveBeenCalledWith(1, 200);
+    // Verify resumeConversationDeltas was invoked for seq 1 and targetSeq 3
+    expect(mockResumeConversationDeltas).toHaveBeenCalledWith(1, 3, 200);
     // Both seq 1, seq 2 (replayed), and seq 3 are rendered in open timeline
     const timeline = document.querySelector('[data-timeline-container]');
     expect(timeline).toBeTruthy();
@@ -2497,7 +2504,9 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     // Must be rendered in Contact B timeline!
-    expect(screen.getAllByText('Tin nhắn 101 của khách B').length).toBeGreaterThanOrEqual(1);
+    await waitFor(() => {
+      expect(screen.getAllByText('Tin nhắn 101 của khách B').length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   test('28d. Component unmount during in-flight snapshot reload cancels recovery and prevents teardown retries', async () => {
@@ -2681,6 +2690,180 @@ describe('ConversationWorkspace Component', () => {
       expect(screen.getAllByText('Message 103 from second replay').length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText('Message 104 from second replay').length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText('Message 105').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  test('28f. Conversation B receives contiguous and gap deltas during in-flight snapshot for A; resolving A drains and converges B', async () => {
+    const itemA: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:1',
+      leadId: 1,
+      conversationId: 10,
+      title: 'Khách Hàng A',
+      replyTargets: [
+        {
+          conversationId: 10,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+    const itemB: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:2',
+      leadId: 2,
+      conversationId: 20,
+      title: 'Khách Hàng B',
+      replyTargets: [
+        {
+          conversationId: 20,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+
+    mockListConversationInbox.mockImplementation(async () => [itemA, itemB]);
+
+    let resolveSnapshotA: (val: any) => void;
+    mockGetContactTimeline.mockImplementation(async (leadId) => {
+      if (leadId === 1) {
+        return new Promise((resolve) => {
+          resolveSnapshotA = resolve;
+        });
+      }
+      if (leadId === 2) {
+        return {
+          items: [
+            {
+              ...mockMsg2,
+              id: 200,
+              conversationId: 20,
+              textContent: 'B Initial Message',
+              content: { text: 'B Initial Message' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 100
+        };
+      }
+      return { items: [], nextCursor: null, snapshotSequence: 0 };
+    });
+
+    mockResumeConversationDeltas.mockImplementation(async (fromSeq, targetSeq) => {
+      if (fromSeq === 100 && targetSeq === 103) {
+        throw new Error('PoisonedReplayForA');
+      }
+      if (fromSeq === 101 && targetSeq === 103) {
+        return [
+          {
+            sequence: 102,
+            conversationId: 20,
+            leadId: 2,
+            channel: 'zalo' as const,
+            message: {
+              ...mockMsg2,
+              id: 202,
+              conversationId: 20,
+              textContent: 'B Replayed Message 102',
+              content: { text: 'B Replayed Message 102' }
+            },
+            emittedAtMs: Date.now()
+          }
+        ];
+      }
+      return [];
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A triggers fallback snapshot via gap + error
+    emitDelta({
+      sequence: 103,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 999,
+        textContent: 'Delta 103 for A',
+        content: { text: 'Delta 103 for A' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Switch to Contact B while A snapshot is in flight
+    const itemBElement = screen.getByText('Khách Hàng B');
+    await fireEvent.click(itemBElement);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // While A snapshot is still pending, B receives contiguous delta 101 and gap delta 103
+    emitDelta({
+      sequence: 101,
+      conversationId: 20,
+      leadId: 2,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg2,
+        id: 201,
+        conversationId: 20,
+        textContent: 'B Contiguous Message 101',
+        content: { text: 'B Contiguous Message 101' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    emitDelta({
+      sequence: 103,
+      conversationId: 20,
+      leadId: 2,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg2,
+        id: 203,
+        conversationId: 20,
+        textContent: 'B Gap Message 103',
+        content: { text: 'B Gap Message 103' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+
+    // Now resolve A's pending snapshot (which is now for an inactive conversation key)
+    if (resolveSnapshotA!) {
+      resolveSnapshotA({
+        items: [mockMsg1],
+        hasMore: false,
+        nextCursor: null,
+        snapshotSequence: 103
+      });
+    }
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Prove that B converged completely: B has initial msg, contiguous 101, replayed 102, and gap 103!
+    await waitFor(() => {
+      expect(screen.getAllByText('B Initial Message').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('B Contiguous Message 101').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('B Replayed Message 102').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('B Gap Message 103').length).toBeGreaterThanOrEqual(1);
     });
   });
 

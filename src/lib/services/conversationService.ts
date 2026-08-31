@@ -590,6 +590,7 @@ export const listConversationPinnedMessages = (conversationId: number) =>
 
 export const resumeConversationDeltas = (
   afterSequence: number,
+  targetSequence?: number | null,
   limit?: number
 ): Promise<ConversationMessageDeltaEvent[]> =>
   invoke<ConversationMessageDeltaEvent[]>('resume_conversation_deltas', {

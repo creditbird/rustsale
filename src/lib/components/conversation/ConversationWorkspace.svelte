@@ -981,6 +981,7 @@
       messageSequenceMap.clear();
       pendingInvalidationMessageIds.clear();
       pendingGeneralInvalidation = false;
+      lastSeenSequence = 0;
     }
     selectedKey = item.key;
     selectedItem = item;
@@ -1227,18 +1228,21 @@
     }
   }
 
-  async function refreshOpenTimeline(): Promise<TimelinePage | null> {
+  export async function refreshOpenTimeline(preserveScroll: boolean = true): Promise<TimelinePage | null> {
     if (!selectedItem) return null;
     if (selectedItem.kind !== 'group' && activeChannels.length === 0) return null;
 
-    const key = `${selectedItem.key}:${channelSetKey(activeChannels)}`;
+    const key = currentVariantKey;
     variantInvalidationEpoch.set(
       key,
       (variantInvalidationEpoch.get(key) ?? 0) + 1
     );
     timelineStale.add(key);
 
-    const anchor = timelineRef?.captureAnchor() ?? null;
+    let anchor: { messageId: number; offsetTop: number } | null = null;
+    if (preserveScroll && timelineRef) {
+      anchor = timelineRef.captureAnchor();
+    }
     return await fetchVariantFirstPage(selectedItem, activeChannels, key, anchor);
   }
 
@@ -1311,6 +1315,9 @@
   let lastSeenSequence = 0;
   let isResumingDeltas = false;
   let liveDeltaBuffer: ConversationMessageDeltaEvent[] = [];
+  let pendingReplayTargetSeq: number | null = null;
+  let replayGeneration = 0;
+  let replayFallbackRetries = 0;
   const messageSequenceMap = new Map<number, number>();
 
   const pendingInvalidationMessageIds = new Set<number>();
@@ -1404,15 +1411,12 @@
     }
   }
 
-  let replayGeneration = 0;
-  let replayFallbackRetries = 0;
+  const REPLAY_BATCH_SIZE = 200;
   const MAX_REPLAY_FALLBACK_RETRIES = 3;
   let replayFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingReplayTargetSeq: number | null = null;
 
-  async function resumeMissedDeltas(fromSeq: number, targetSeq?: number) {
+  export async function resumeMissedDeltas(fromSeq: number, targetSeq?: number): Promise<void> {
     if (!isComponentMounted) return;
-
     if (isResumingDeltas) {
       if (targetSeq !== undefined) {
         pendingReplayTargetSeq = Math.max(pendingReplayTargetSeq ?? 0, targetSeq);
@@ -1421,81 +1425,88 @@
     }
 
     isResumingDeltas = true;
-    const currentReplayGen = ++replayGeneration;
+    const thisGeneration = ++replayGeneration;
     const initialTargetKey = selectedItem
-      ? `${selectedItem.key}:${channelSetKey(activeChannels)}`
+      ? selectedItem.kind === 'group' || selectedItem.leadId === null
+        ? `${selectedItem.key}:group`
+        : `${selectedItem.key}:${channelSetKey(activeChannels)}`
       : null;
 
-    let recoverySucceeded = false;
+    let currentCursor = fromSeq;
+    let fallbackNeeded = false;
+
     try {
-      let currentSeq = fromSeq;
-      let hasMore = true;
-      while (hasMore) {
-        if (!isComponentMounted) return;
-        const batch = await resumeConversationDeltas(currentSeq, 200);
-        if (!isComponentMounted) return;
-        if (!batch || batch.length === 0) {
+      while (isComponentMounted && thisGeneration === replayGeneration) {
+        const deltas = await resumeConversationDeltas(
+          currentCursor,
+          targetSeq ?? null,
+          REPLAY_BATCH_SIZE
+        );
+
+        if (!isComponentMounted || thisGeneration !== replayGeneration) {
+          return;
+        }
+
+        if (deltas.length === 0) {
           break;
         }
-        for (const d of batch) {
-          applySingleDelta(d);
-          if (d.sequence > currentSeq) {
-            currentSeq = d.sequence;
+
+        deltas.sort((a, b) => a.sequence - b.sequence);
+
+        for (const delta of deltas) {
+          if (!isComponentMounted || thisGeneration !== replayGeneration) return;
+          if (delta.sequence > lastSeenSequence) {
+            applySingleDelta(delta);
           }
+          currentCursor = Math.max(currentCursor, delta.sequence);
         }
-        if (targetSeq && currentSeq >= targetSeq) {
+
+        if (deltas.length < REPLAY_BATCH_SIZE) {
           break;
         }
-        if (batch.length < 200) {
+        if (targetSeq !== undefined && currentCursor >= targetSeq) {
           break;
         }
       }
-      if (!isComponentMounted) return;
-      // Replay succeeded! Reset retries and drain liveDeltaBuffer
-      recoverySucceeded = true;
       replayFallbackRetries = 0;
-      drainLiveDeltaBuffer();
     } catch (err) {
-      console.error('[OmniChat Delta] Failed to resume missed deltas:', err);
-      if (!isComponentMounted) return;
-
-      // Authoritative fallback: recover from corrupt/poisoned replay rows via full snapshot reload.
-      // Check generation and ownership before advancing cursor or buffer.
-      const snapshotTarget = selectedItem;
-      const targetKey = snapshotTarget
-        ? `${snapshotTarget.key}:${channelSetKey(activeChannels)}`
-        : null;
-
-      if (snapshotTarget && targetKey && targetKey === initialTargetKey) {
-        try {
-          const page = await refreshOpenTimeline();
-          if (!isComponentMounted) return;
-
-          const currentKey = selectedItem
-            ? `${selectedItem.key}:${channelSetKey(activeChannels)}`
-            : null;
-
-          if (page && currentKey === targetKey && replayGeneration === currentReplayGen) {
-            // Snapshot succeeded for the active conversation!
-            recoverySucceeded = true;
-            replayFallbackRetries = 0;
-            // Drain live buffer only for events newer than snapshotSequence
-            drainLiveDeltaBuffer();
-          } else if (!page && isComponentMounted && currentKey === targetKey) {
-            scheduleReplayFallbackRetry(fromSeq, targetSeq);
-          }
-        } catch (snapshotErr) {
-          console.error('[OmniChat Delta] Authoritative snapshot reload failed:', snapshotErr);
-          if (isComponentMounted) {
-            scheduleReplayFallbackRetry(fromSeq, targetSeq);
-          }
-        }
-      } else if (isComponentMounted && targetKey === initialTargetKey) {
-        scheduleReplayFallbackRetry(fromSeq, targetSeq);
-      }
+      console.error(
+        `[OmniChat Delta] Failed to resume missed deltas from sequence ${fromSeq}:`,
+        err
+      );
+      fallbackNeeded = true;
     } finally {
+      if (fallbackNeeded && isComponentMounted && thisGeneration === replayGeneration) {
+        const currentKey = selectedItem
+          ? selectedItem.kind === 'group' || selectedItem.leadId === null
+            ? `${selectedItem.key}:group`
+            : `${selectedItem.key}:${channelSetKey(activeChannels)}`
+          : null;
+
+        if (currentKey === initialTargetKey && initialTargetKey !== null) {
+          try {
+            const page = await refreshOpenTimeline();
+            if (page && isComponentMounted) {
+              replayFallbackRetries = 0;
+            } else if (!page && isComponentMounted) {
+              scheduleReplayFallbackRetry(fromSeq, targetSeq);
+            }
+          } catch (snapshotErr) {
+            console.error('[OmniChat Delta] Authoritative snapshot reload failed:', snapshotErr);
+            if (isComponentMounted) {
+              scheduleReplayFallbackRetry(fromSeq, targetSeq);
+            }
+          }
+        } else if (initialTargetKey) {
+          timelineStale.add(initialTargetKey);
+        }
+      }
+
       isResumingDeltas = false;
-      if (recoverySucceeded && isComponentMounted && pendingReplayTargetSeq !== null) {
+      // Always drain live delta buffer upon exiting replay recovery loop!
+      drainLiveDeltaBuffer();
+
+      if (isComponentMounted && pendingReplayTargetSeq !== null) {
         const nextTarget = pendingReplayTargetSeq;
         pendingReplayTargetSeq = null;
         if (nextTarget > lastSeenSequence) {
@@ -1506,38 +1517,50 @@
   }
 
   function drainLiveDeltaBuffer() {
-    if (!isComponentMounted) return;
-    if (liveDeltaBuffer.length > 0) {
-      liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
-      const remaining: ConversationMessageDeltaEvent[] = [];
-      let gapEncountered = false;
+    if (!isComponentMounted || liveDeltaBuffer.length === 0) return;
+    liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
+    const remaining: ConversationMessageDeltaEvent[] = [];
+    let gapEncountered = false;
 
-      for (const buffered of liveDeltaBuffer) {
-        if (buffered.sequence <= lastSeenSequence) {
-          continue;
-        }
+    for (const buffered of liveDeltaBuffer) {
+      if (buffered.sequence <= lastSeenSequence) {
+        continue;
+      }
+
+      const affectsOpenItem =
+        selectedItem &&
+        (selectedItem.conversationId === buffered.conversationId ||
+          selectedItem.replyTargets.some((t) => t.conversationId === buffered.conversationId) ||
+          (selectedItem.kind === 'customer' &&
+            selectedItem.leadId !== null &&
+            buffered.leadId !== null &&
+            selectedItem.leadId === buffered.leadId));
+
+      if (affectsOpenItem) {
         if (buffered.sequence === lastSeenSequence + 1) {
           applySingleDelta(buffered);
         } else {
           gapEncountered = true;
           remaining.push(buffered);
         }
+      } else {
+        // Background item: apply preview/cache without blocking active item
+        applySingleDelta(buffered);
       }
+    }
 
-      liveDeltaBuffer = remaining;
+    liveDeltaBuffer = remaining;
 
-      if (gapEncountered && liveDeltaBuffer.length > 0) {
-        const highestBuffered = liveDeltaBuffer[liveDeltaBuffer.length - 1].sequence;
-        void resumeMissedDeltas(lastSeenSequence, highestBuffered);
-      }
+    if (gapEncountered && liveDeltaBuffer.length > 0 && !isResumingDeltas) {
+      const highestBuffered = liveDeltaBuffer[liveDeltaBuffer.length - 1].sequence;
+      void resumeMissedDeltas(lastSeenSequence, highestBuffered);
     }
   }
 
   function scheduleReplayFallbackRetry(fromSeq: number, targetSeq?: number) {
     if (!isComponentMounted) return;
     if (replayFallbackRetries < MAX_REPLAY_FALLBACK_RETRIES) {
-      replayFallbackRetries++;
-      const delayMs = IS_TEST_WORKSPACE ? 20 : Math.min(1000 * Math.pow(2, replayFallbackRetries - 1), 4000);
+      const delayMs = IS_TEST_WORKSPACE ? 20 : Math.min(1000 * Math.pow(2, replayFallbackRetries), 4000);
       if (replayFallbackTimer) clearTimeout(replayFallbackTimer);
       replayFallbackTimer = setTimeout(() => {
         replayFallbackTimer = null;
@@ -1549,6 +1572,7 @@
           scheduleReplayFallbackRetry(fromSeq, targetSeq);
           return;
         }
+        replayFallbackRetries++;
         void resumeMissedDeltas(lastSeenSequence > fromSeq ? lastSeenSequence : fromSeq, targetSeq);
       }, delayMs);
     } else {
@@ -1559,11 +1583,6 @@
   }
 
   function applySingleDelta(delta: ConversationMessageDeltaEvent) {
-    if (delta.sequence > lastSeenSequence) {
-      lastSeenSequence = delta.sequence;
-    }
-    messageSequenceMap.set(delta.message.id, delta.sequence);
-
     // 1. Instant Open Timeline Store Upsert
     if (selectedItem) {
       const affectsOpenItem =
@@ -1575,6 +1594,11 @@
           selectedItem.leadId === delta.leadId);
 
       if (affectsOpenItem) {
+        if (delta.sequence > lastSeenSequence) {
+          lastSeenSequence = delta.sequence;
+        }
+        messageSequenceMap.set(delta.message.id, delta.sequence);
+
         const cleanedItems = currentVariant.items.filter(
           (item) =>
             !(
