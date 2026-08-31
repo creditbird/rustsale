@@ -50,11 +50,11 @@ Matching plan item(s): `P1-A`, `P1-B`, `P1-C`, `P1-D`
 
 Matching plan item(s): `P2-A`, `P2-B`, `P2-C`, `P2-D`
 
-- `E2-P2A-REPLAY1`: `ConversationWorkspace.svelte` implements `isResumingDeltas` state, `liveDeltaBuffer`, and a multi-page replay while loop with batch size 200 in `resumeMissedDeltas(fromSeq, targetSeq)`. On poisoned replay error (e.g. malformed JSON in `conversation_deltas`), it falls back immediately to authoritative `refreshOpenTimeline()`, advances `lastSeenSequence = targetSeq`, and drains `liveDeltaBuffer` without infinite retry loops (verified in `ConversationWorkspace.spec.ts` Test 28).
+- `E2-P2A-REPLAY1`: `ConversationWorkspace.svelte` implements `isResumingDeltas` state, `liveDeltaBuffer`, and a multi-page replay while loop with batch size 200 in `resumeMissedDeltas(fromSeq, targetSeq)`. On poisoned replay error (e.g. malformed JSON in `conversation_deltas`), it awaits authoritative `refreshOpenTimeline()`. Only on verified snapshot success (`page && currentKey === targetKey`) does it advance `lastSeenSequence` to the returned snapshot watermark (`page.snapshotSequence`) and drain `liveDeltaBuffer` for events newer than watermark (`seq > lastSeenSequence`). If snapshot rejects or fails, cursor and buffer are preserved intact and retried with bounded exponential backoff (`scheduleReplayFallbackRetry`, `MAX_REPLAY_FALLBACK_RETRIES = 3`). Unmount cleans up active fallback retry timers (`replayFallbackTimer`).
 - `E2-P2B-WATERMARK1`: `timelineState.ts` `mergeTimelinePage` preserves newer delta items (`seq > snapshotSeq`) independently of whether the returned snapshot page is empty (`page.items.length === 0`), preventing race-condition data loss (verified in `timelineState.spec.ts` and `ConversationWorkspace.spec.ts` Test 29).
 - `E2-P2B-SUPPRESS1`: `ConversationWorkspace.svelte` `handleInvalidatedEvent` suppresses `refreshOpenTimeline()` when `event.reason === 'message'`, removing 50-message IPC queries from the hot path while maintaining authoritative refreshes for `history_sync`, `attachment_update`, `reaction`, `receipt`, `metadata`, and `account_status`.
 - `E2-P2C-TELEMETRY1`: Frame-level DOM paint telemetry (`requestAnimationFrame`) implemented in `ConversationWorkspace.svelte` recording raw numeric latency samples in `deltaPaintSamples` and providing p50/p95/p99 summary via `getDeltaPaintTelemetrySummary()`. Exposed `window.__GET_DELTA_PAINT_TELEMETRY__` for benchmarks.
-- `E2-P2D-TESTS1`: All 44 component tests in `ConversationWorkspace.spec.ts` passed:
+- `E2-P2D-TESTS1`: All 49 component tests in `ConversationWorkspace.spec.ts` passed:
   - Test 21: Inbound delta renders immediately and suppresses redundant 50-message IPC reload.
   - Test 22: Sequence gap triggers `resumeConversationDeltas` to backfill missed messages.
   - Test 23: Stale snapshot arriving after delta upsert does NOT drop the new message bubble.
@@ -62,21 +62,27 @@ Matching plan item(s): `P2-A`, `P2-B`, `P2-C`, `P2-D`
   - Test 25: Burst message invalidations coalesce fallback and trigger single reload if any message was not pushed via delta.
   - Test 26: High water mark with minSequence > lastSeenSequence forces full timeline refresh on lag.
   - Test 27: High water mark within replay window resumes missed deltas on reconnect.
-  - Test 28: Malformed replay deserialization error falls back to authoritative snapshot reload.
+  - Test 28a: Malformed replay deserialization error falls back to authoritative snapshot reload, updates cursor from returned watermark, and drains newer live deltas.
+  - Test 28b: Poisoned replay with rejected snapshot keeps cursor unchanged, preserves buffer, and retries until success.
+  - Test 28c: Conversation switch during fallback snapshot does not corrupt newly selected conversation.
   - Test 29: Empty authoritative snapshot response does NOT drop newer pushed delta bubble.
 
 ## E3 - P3 Evidence
 
 Matching plan item(s): `P3-A`, `P3-B`, `P3-C`
 
-- `E3-P3A-CARGOTEST`: `cargo test --lib -- conversation::` passed with 106 repository tests (including Zalo fault-injection `test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomically`), 32 migration tests, and 0 failures.
-- `E3-P3A-SVELTECHECK`: `bun run check` reported 0 errors across all files.
-- `E3-P3A-BUNTEST`: `bun test` passed 353 tests across 39 files with 0 failures.
+- `E3-P3A-CARGOTEST`: `cargo test --lib -- conversation::` passed with 496 tests (including Zalo fault-injection `test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomically`), 32 migration tests, and 0 failures.
+- `E3-P3A-SVELTECHECK`: `bun run check` reported 0 errors and 6 warnings across all files.
+- `E3-P3A-BUNTEST`: `bun test` passed 645 tests across 70 files with 0 failures (1 skipped smoke test).
 - `E3-P3A-BUILD`: `bun run build` built client and server bundles cleanly.
-- `E3-P3A-RELEASEBIN`: `cargo build --release` compiled packaged desktop binary `target/release/rustsale-crm` (76.8MB) cleanly.
+- `E3-P3A-DBMIGRATION`: Production database at `/home/arch/.local/share/com.rustsale.crm/rustsale.db` verified with `conversation_deltas` table and all 3 indexes (`idx_conversation_deltas_conv`, `idx_conversation_deltas_seq`, `idx_conversation_deltas_message_event`).
 - `E3-P3B-GITHYGIENE1`: `git diff --check` executed with clean exit code 0 (zero trailing whitespace, zero conflict markers, clean file bounds).
 
 ## Closure Evidence
 
-- All 4 blockers from Supervisor Re-Review Report `260831_103144` have been resolved, verified with zero-trust tests, and fully compiled.
+- All 4 blockers from Supervisor REJECT report `rp_supervisor_260831_132938_by_gpt-5-codex_enterprise_push_delta_four_blocker_resubmission.md` have been fully resolved and verified:
+  1. Replay fallback awaits snapshot success before advancing cursor/draining buffer; on failure cursor and buffer are retained intact with bounded retry.
+  2. Adversarial tests 28a, 28b, 28c prove snapshot success, error recovery/retry, and conversational isolation under mid-flight switches.
+  3. Packaging workflow uses repository release script (`scripts/publish-release.ts`) on the exact committed commit hash.
+  4. Production database verified on disk with delta migration executed and verified.
 - Zero-trust evidence ledger and benchmark metrics populated.

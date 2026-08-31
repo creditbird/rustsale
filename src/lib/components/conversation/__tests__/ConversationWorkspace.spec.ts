@@ -2202,7 +2202,7 @@ describe('ConversationWorkspace Component', () => {
     expect(screen.getAllByText('Resumed delta item #777').length).toBeGreaterThanOrEqual(1);
   });
 
-  test('28. Malformed replay deserialization error falls back to authoritative snapshot reload', async () => {
+  test('28a. Malformed replay deserialization error falls back to authoritative snapshot reload, updates cursor, and drains newer live deltas', async () => {
     mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
     mockGetContactTimeline.mockImplementation(async () => ({
       items: [mockMsg1],
@@ -2221,7 +2221,21 @@ describe('ConversationWorkspace Component', () => {
       throw new Error('FromSqlConversionFailure: Malformed JSON payload');
     });
 
-    // Gap triggers replay attempt
+    // Authoritative snapshot returns recovered message and snapshotSequence = 103
+    const mockRecoveredMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 102,
+      textContent: 'Recovered snapshot msg 102',
+      content: { text: 'Recovered snapshot msg 102' }
+    };
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1, mockRecoveredMsg],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 103
+    }));
+
+    // Gap triggers replay attempt (seq 103)
     emitDelta({
       sequence: 103,
       conversationId: 10,
@@ -2230,16 +2244,238 @@ describe('ConversationWorkspace Component', () => {
       message: {
         ...mockMsg1,
         id: 999,
-        textContent: 'Live delta after gap',
-        content: { text: 'Live delta after gap' }
+        textContent: 'Live delta 103 covered by snapshot',
+        content: { text: 'Live delta 103 covered by snapshot' }
       },
       emittedAtMs: Date.now()
     });
 
-    // Because replay failed, it MUST trigger authoritative snapshot reload fallback!
+    // Trailing live delta arrives during replay recovery (seq 104)
+    emitDelta({
+      sequence: 104,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 1000,
+        textContent: 'Live trailing delta 104 newer than snapshot',
+        content: { text: 'Live trailing delta 104 newer than snapshot' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    // Verify snapshot reload occurred
     await waitFor(() => {
       expect(mockGetContactTimeline).toHaveBeenCalled();
     });
+
+    // Verify snapshot recovered item is rendered
+    await waitFor(() => {
+      expect(screen.getAllByText('Recovered snapshot msg 102').length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Verify live delta 104 newer than snapshot is drained and rendered
+    await waitFor(() => {
+      expect(screen.getAllByText('Live trailing delta 104 newer than snapshot').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  test('28b. Poisoned replay with rejected snapshot keeps cursor unchanged, preserves buffer, and retries until success', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mockGetContactTimeline.mockClear();
+
+    // Replay fails
+    mockResumeConversationDeltas.mockImplementation(async () => {
+      throw new Error('FromSqlConversionFailure: Malformed JSON');
+    });
+
+    // First snapshot attempt rejects (e.g. temporary IPC network error), subsequent retry succeeds
+    const mockRecoveredMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 102,
+      textContent: 'Retried snapshot recovered msg 102',
+      content: { text: 'Retried snapshot recovered msg 102' }
+    };
+    mockGetContactTimeline
+      .mockRejectedValueOnce(new Error('IPC Snapshot Failed'))
+      .mockImplementation(async () => ({
+        items: [mockMsg1, mockRecoveredMsg],
+        hasMore: false,
+        nextCursor: null,
+        snapshotSequence: 103
+      }));
+
+    // Emit live delta with gap
+    emitDelta({
+      sequence: 103,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 999,
+        textContent: 'Buffered delta under failure 103',
+        content: { text: 'Buffered delta under failure 103' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    // Next live event arrives
+    emitDelta({
+      sequence: 104,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 1001,
+        textContent: 'Buffered delta 104',
+        content: { text: 'Buffered delta 104' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    // Wait for retry to execute and converge
+    await waitFor(() => {
+      expect(mockGetContactTimeline.mock.calls.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 1000 });
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Retried snapshot recovered msg 102').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('Buffered delta 104').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  test('28c. Conversation switch during fallback snapshot does not corrupt newly selected conversation', async () => {
+    const mockCustomer2: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:2',
+      leadId: 2,
+      title: 'Trần Thị B',
+      replyTargets: [
+        {
+          conversationId: 20,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+    const mockMsg2: ConversationMessage = {
+      ...mockMsg1,
+      id: 201,
+      conversationId: 20,
+      senderDisplayName: 'Trần Thị B',
+      textContent: 'Tin nhắn của khách B',
+      content: { text: 'Tin nhắn của khách B' }
+    };
+
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem, mockCustomer2]);
+    mockGetContactTimeline.mockImplementation(async (leadId) => {
+      if (leadId === 2) {
+        return {
+          items: [mockMsg2],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 100
+        };
+      }
+      return {
+        items: [mockMsg1],
+        hasMore: false,
+        nextCursor: null,
+        snapshotSequence: 100
+      };
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Replay throws error
+    mockResumeConversationDeltas.mockImplementation(async () => {
+      throw new Error('FromSqlConversionFailure');
+    });
+
+    // Delayed snapshot for contact 1
+    let resolveContact1: (val: any) => void;
+    mockGetContactTimeline.mockImplementation(async (leadId) => {
+      if (leadId === 1) {
+        return new Promise((resolve) => {
+          resolveContact1 = resolve;
+        });
+      }
+      return {
+        items: [mockMsg2],
+        hasMore: false,
+        nextCursor: null,
+        snapshotSequence: 100
+      };
+    });
+
+    // Gap on contact 1 triggers fallback snapshot
+    emitDelta({
+      sequence: 103,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 999,
+        textContent: 'Delta 103',
+        content: { text: 'Delta 103' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+
+    // User switches to Contact B
+    const itemB = screen.getByText('Trần Thị B');
+    await fireEvent.click(itemB);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Contact B timeline is open
+    expect(screen.getAllByText('Tin nhắn của khách B').length).toBeGreaterThanOrEqual(1);
+
+    // Now resolve the late snapshot for contact A
+    if (resolveContact1!) {
+      resolveContact1({
+        items: [
+          {
+            ...mockMsg1,
+            id: 102,
+            textContent: 'Late snapshot for contact A',
+            content: { text: 'Late snapshot for contact A' }
+          }
+        ],
+        hasMore: false,
+        nextCursor: null,
+        snapshotSequence: 103
+      });
+    }
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Contact B timeline must NOT be overwritten with Contact A's message
+    expect(screen.queryByText('Late snapshot for contact A')).toBeNull();
+    expect(screen.getAllByText('Tin nhắn của khách B').length).toBeGreaterThanOrEqual(1);
   });
 
   test('29. Empty authoritative snapshot response does NOT drop newer pushed delta bubble', async () => {

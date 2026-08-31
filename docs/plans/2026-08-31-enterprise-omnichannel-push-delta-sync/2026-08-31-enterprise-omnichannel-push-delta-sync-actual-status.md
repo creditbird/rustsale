@@ -91,7 +91,8 @@ Out of scope:
 | R0 | 2026-08-31 | baseline before P0 | Full Omnichannel Push-Delta Scope | Initial baseline classification | `E0-P0A-SRC1..E0-P0A-SRC8` | Proceed to P1-A |
 | R1 | 2026-08-31 | Initial remediation | All P1, P2, P3 scopes | Updated to `correct` (provisional) | `E1-P1A-SCHEMA1..E3-P3A-CARGOBIN` | Submitted to Supervisor |
 | R2 | 2026-08-31 | Supervisor Re-Review REJECT | 8 Architectural Blockers Identified | Reclassified to `wrong`/`partial` | `rp_supervisor_260831_063454` | Proceed to Phase P1 remediation |
-| R3 | 2026-08-31 | Remediation Completed | All 8 Blockers Architecturally Fixed & Tested | Reclassified all rows to `correct` | `E1-P1A-TX1..E3-P3B-GITHYGIENE1` | Submit for Final Supervisor Review |
+| R3 | 2026-08-31 | Remediation Completed | All 8 Blockers Architecturally Fixed & Tested | Reclassified all rows to `correct` | `E1-P1A-TX1..E3-P3B-GITHYGIENE1` | Submitted to Supervisor |
+| R4 | 2026-08-31 | Supervisor 4-Blocker Remediation | Fallback Replay Await, Cursor/Buffer Safety, Adversarial Tests 28a/b/c, DB Migration, Tauri Distributable | Reclassified all rows to `correct` with transactional safety proofs | `E2-P2A-REPLAY1`, `E2-P2D-TESTS1`, `E3-P3A-DIST1` | Submit for Final Supervisor Acceptance |
 
 ## Phase Touch Map
 

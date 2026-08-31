@@ -23,7 +23,7 @@
     resumeConversationDeltas,
     getConversationHighWaterMark,
     type InboxItem,
-
+    type TimelinePage,
     type Channel,
     type ConversationCapabilities,
     type ConversationRuntimeStatus,
@@ -844,6 +844,7 @@
       if (inboxRefreshTimer) clearTimeout(inboxRefreshTimer);
       if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
       if (invalidationFallbackTimer) clearTimeout(invalidationFallbackTimer);
+      if (replayFallbackTimer) clearTimeout(replayFallbackTimer);
     };
   });
 
@@ -912,7 +913,7 @@
     }
   }
 
-  const inFlightVariantFetches = new Map<string, Promise<void>>();
+  const inFlightVariantFetches = new Map<string, Promise<TimelinePage | null>>();
 
   async function prefetchInboxTimelines(items: InboxItem[]) {
     if (!items || items.length === 0) return;
@@ -1058,7 +1059,7 @@
     channels: Channel[],
     key: string,
     anchor: { messageId: number; offsetTop: number } | null
-  ) {
+  ): Promise<TimelinePage | null> {
     const existing = variantsCache.get(key) ?? {
       items: [],
       nextCursor: null,
@@ -1084,14 +1085,21 @@
       if (timelineStale.has(key)) {
         return fetchVariantFirstPage(item, channels, key, anchor);
       }
-      return;
+      const cached = variantsCache.get(key);
+      return cached
+        ? {
+            items: cached.items,
+            nextCursor: cached.nextCursor,
+            snapshotSequence: lastSeenSequence
+          }
+        : null;
     }
 
-    const fetchPromise = (async () => {
+    const fetchPromise = (async (): Promise<TimelinePage | null> => {
       while (true) {
         const startEpoch = variantInvalidationEpoch.get(key) ?? 0;
         try {
-          let page;
+          let page: TimelinePage;
           if (item.kind === 'group') {
             if (item.conversationId === null) throw new Error('Group conversation ID is missing');
             void syncZaloGroupChatHistory(item.conversationId).catch(() => {});
@@ -1138,7 +1146,7 @@
           const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
           if (currentEpoch === startEpoch) {
             timelineStale.delete(key);
-            break;
+            return page;
           }
         } catch (err) {
           console.error('Failed to fetch timeline variant', err);
@@ -1149,7 +1157,7 @@
           if (currentVariantKey === key) {
             currentVariant = failed;
           }
-          break;
+          throw err;
         }
       }
     })().finally(() => {
@@ -1157,7 +1165,7 @@
     });
 
     inFlightVariantFetches.set(key, fetchPromise);
-    await fetchPromise;
+    return await fetchPromise;
   }
 
   async function handleLoadOlder() {
@@ -1203,9 +1211,9 @@
     }
   }
 
-  async function refreshOpenTimeline() {
-    if (!selectedItem) return;
-    if (selectedItem.kind !== 'group' && activeChannels.length === 0) return;
+  async function refreshOpenTimeline(): Promise<TimelinePage | null> {
+    if (!selectedItem) return null;
+    if (selectedItem.kind !== 'group' && activeChannels.length === 0) return null;
 
     const key = `${selectedItem.key}:${channelSetKey(activeChannels)}`;
     variantInvalidationEpoch.set(
@@ -1215,7 +1223,7 @@
     timelineStale.add(key);
 
     const anchor = timelineRef?.captureAnchor() ?? null;
-    await fetchVariantFirstPage(selectedItem, activeChannels, key, anchor);
+    return await fetchVariantFirstPage(selectedItem, activeChannels, key, anchor);
   }
 
   function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
@@ -1380,6 +1388,10 @@
     }
   }
 
+  let replayFallbackRetries = 0;
+  const MAX_REPLAY_FALLBACK_RETRIES = 3;
+  let replayFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
   async function resumeMissedDeltas(fromSeq: number, targetSeq?: number) {
     if (isResumingDeltas) return;
     isResumingDeltas = true;
@@ -1404,35 +1416,70 @@
           break;
         }
       }
-      // Drain liveDeltaBuffer
-      if (liveDeltaBuffer.length > 0) {
-        liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
-        for (const buffered of liveDeltaBuffer) {
-          if (buffered.sequence > lastSeenSequence) {
-            applySingleDelta(buffered);
-          }
-        }
-        liveDeltaBuffer = [];
-      }
+      // Replay succeeded! Reset retries and drain liveDeltaBuffer
+      replayFallbackRetries = 0;
+      drainLiveDeltaBuffer();
     } catch (err) {
       console.error('[OmniChat Delta] Failed to resume missed deltas:', err);
       // Authoritative fallback: recover from corrupt/poisoned replay rows via full snapshot reload.
-      // refreshOpenTimeline() updates the open timeline and safely sets lastSeenSequence to the server snapshotSequence.
-      if (selectedItem) {
-        await refreshOpenTimeline();
-      }
-      // Drain live delta buffer for subsequent live events
-      if (liveDeltaBuffer.length > 0) {
-        liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
-        for (const buffered of liveDeltaBuffer) {
-          if (buffered.sequence > lastSeenSequence) {
-            applySingleDelta(buffered);
+      // Must await snapshot success before cursor advancement or buffer disposal.
+      const snapshotTarget = selectedItem;
+      const targetKey = snapshotTarget
+        ? `${snapshotTarget.key}:${channelSetKey(activeChannels)}`
+        : null;
+
+      if (snapshotTarget && targetKey) {
+        try {
+          const page = await refreshOpenTimeline();
+          const currentKey = selectedItem
+            ? `${selectedItem.key}:${channelSetKey(activeChannels)}`
+            : null;
+
+          if (page && currentKey === targetKey) {
+            // Snapshot succeeded for the active conversation!
+            replayFallbackRetries = 0;
+            // Drain live buffer only for events newer than snapshotSequence
+            drainLiveDeltaBuffer();
+          } else if (!page) {
+            scheduleReplayFallbackRetry(fromSeq, targetSeq);
           }
+        } catch (snapshotErr) {
+          console.error('[OmniChat Delta] Authoritative snapshot reload failed:', snapshotErr);
+          scheduleReplayFallbackRetry(fromSeq, targetSeq);
         }
-        liveDeltaBuffer = [];
+      } else {
+        scheduleReplayFallbackRetry(fromSeq, targetSeq);
       }
     } finally {
       isResumingDeltas = false;
+    }
+  }
+
+  function drainLiveDeltaBuffer() {
+    if (liveDeltaBuffer.length > 0) {
+      liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
+      for (const buffered of liveDeltaBuffer) {
+        if (buffered.sequence > lastSeenSequence) {
+          applySingleDelta(buffered);
+        }
+      }
+      liveDeltaBuffer = [];
+    }
+  }
+
+  function scheduleReplayFallbackRetry(fromSeq: number, targetSeq?: number) {
+    if (replayFallbackRetries < MAX_REPLAY_FALLBACK_RETRIES) {
+      replayFallbackRetries++;
+      const delayMs = IS_TEST_WORKSPACE ? 20 : Math.min(1000 * Math.pow(2, replayFallbackRetries - 1), 4000);
+      if (replayFallbackTimer) clearTimeout(replayFallbackTimer);
+      replayFallbackTimer = setTimeout(() => {
+        replayFallbackTimer = null;
+        void resumeMissedDeltas(lastSeenSequence > fromSeq ? lastSeenSequence : fromSeq, targetSeq);
+      }, delayMs);
+    } else {
+      console.error(
+        `[OmniChat Delta] Replay fallback exceeded maximum retry attempts (${MAX_REPLAY_FALLBACK_RETRIES}). Buffer preserved.`
+      );
     }
   }
 
