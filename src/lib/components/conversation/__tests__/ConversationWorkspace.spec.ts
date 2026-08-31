@@ -3482,4 +3482,294 @@ describe('ConversationWorkspace Component', () => {
       expect(screen.getAllByText('Msg 13 via HWM Target').length).toBeGreaterThanOrEqual(1);
     });
   });
+
+  test('34. In-flight delayed prefetch for B resolving after fallback invalidation does NOT clear staleness and forces fresh fetch upon selection', async () => {
+    const itemA: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:1',
+      leadId: 1,
+      conversationId: 10,
+      title: 'Khách Hàng A',
+      replyTargets: [
+        {
+          conversationId: 10,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+    const itemB: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:2',
+      leadId: 2,
+      conversationId: 20,
+      title: 'Khách Hàng B',
+      replyTargets: [
+        {
+          conversationId: 20,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+
+    let resolveDelayedPrefetchB: ((val: any) => void) | null = null;
+    let bFetchCount = 0;
+
+    mockListConversationInbox.mockImplementation(async () => [itemA, itemB]);
+    mockGetContactTimeline.mockImplementation(async (leadId) => {
+      if (leadId === 1) {
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 100,
+              conversationId: 10,
+              channel: 'zalo' as const,
+              textContent: 'A Initial 10',
+              content: { text: 'A Initial 10' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 10
+        };
+      }
+      if (leadId === 2) {
+        bFetchCount++;
+        if (bFetchCount === 1) {
+          // Delayed prefetch for B
+          return new Promise((resolve) => {
+            resolveDelayedPrefetchB = resolve;
+          });
+        }
+        // Authoritative second fetch for B
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 200,
+              conversationId: 20,
+              channel: 'zalo' as const,
+              textContent: 'B Authoritative Post-Fallback 30',
+              content: { text: 'B Authoritative Post-Fallback 30' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 30
+        };
+      }
+      return { items: [], nextCursor: null, snapshotSequence: 0 };
+    });
+
+    // Replay fails
+    mockResumeConversationDeltas.mockImplementation(async () => {
+      throw new Error('FromSqlConversionFailure: Malformed Replay Row');
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A is rendered, delayed prefetch for B is in flight
+    expect(screen.getByText('A Initial 10')).toBeTruthy();
+
+    // Now A encounters replay failure and falls back to snapshot 30!
+    mockGetContactTimeline.mockImplementation(async (leadId) => {
+      if (leadId === 1) {
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 100,
+              conversationId: 10,
+              channel: 'zalo' as const,
+              textContent: 'A Initial 10',
+              content: { text: 'A Initial 10' }
+            },
+            {
+              ...mockMsg1,
+              id: 105,
+              conversationId: 10,
+              channel: 'zalo' as const,
+              textContent: 'A Recovered 30',
+              content: { text: 'A Recovered 30' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 30
+        };
+      }
+      if (leadId === 2) {
+        bFetchCount++;
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 200,
+              conversationId: 20,
+              channel: 'zalo' as const,
+              textContent: 'B Authoritative Post-Fallback 30',
+              content: { text: 'B Authoritative Post-Fallback 30' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 30
+        };
+      }
+      return { items: [], nextCursor: null, snapshotSequence: 0 };
+    });
+
+    emitDelta({
+      sequence: 30,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 105,
+        textContent: 'A Recovered 30',
+        content: { text: 'A Recovered 30' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Now delayed prefetch for B resolves with obsolete snapshot 20
+    if (resolveDelayedPrefetchB) {
+      (resolveDelayedPrefetchB as (val: any) => void)({
+        items: [
+          {
+            ...mockMsg1,
+            id: 199,
+            conversationId: 20,
+            channel: 'zalo' as const,
+            textContent: 'B Obsolete InFlight Snapshot 20',
+            content: { text: 'B Obsolete InFlight Snapshot 20' }
+          }
+        ],
+        hasMore: false,
+        nextCursor: null,
+        snapshotSequence: 20
+      });
+    }
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Now click B: B must NOT display obsolete snapshot 20; it must refetch and show Authoritative 30!
+    await fireEvent.click(screen.getByText('Khách Hàng B'));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    await waitFor(() => {
+      expect(screen.queryByText('B Obsolete InFlight Snapshot 20')).toBeNull();
+      expect(screen.getByText('B Authoritative Post-Fallback 30')).toBeTruthy();
+    });
+  });
+
+  test('35. Queued higher HWM target arriving during replay failure is preserved across fallback retry and fully converges', async () => {
+    let replayCalls: number[] = [];
+    let fallbackSnapshotCalls = 0;
+
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => {
+      fallbackSnapshotCalls++;
+      if (fallbackSnapshotCalls === 1) {
+        // Initial timeline
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 1,
+              conversationId: 10,
+              channel: 'zalo' as const,
+              textContent: 'Initial 10',
+              content: { text: 'Initial 10' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 10
+        };
+      }
+      // Second snapshot call from fallback retry returns up to sequence 30
+      return {
+        items: [
+          {
+            ...mockMsg1,
+            id: 1,
+            conversationId: 10,
+            channel: 'zalo' as const,
+            textContent: 'Initial 10',
+            content: { text: 'Initial 10' }
+          },
+          {
+            ...mockMsg1,
+            id: 30,
+            conversationId: 10,
+            channel: 'zalo' as const,
+            textContent: 'Recovered Sequence 30 after Fallback Retry',
+            content: { text: 'Recovered Sequence 30 after Fallback Retry' }
+          }
+        ],
+        hasMore: false,
+        nextCursor: null,
+        snapshotSequence: 30
+      };
+    });
+
+    let firstReplay = true;
+    mockResumeConversationDeltas.mockImplementation(async (fromSeq) => {
+      replayCalls.push(fromSeq);
+      if (firstReplay) {
+        firstReplay = false;
+        throw new Error('InitialReplayFailure');
+      }
+      return [];
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Mock high water mark check to return currentSequence = 30
+    mockGetConversationHighWaterMark.mockResolvedValue({ minSequence: 1, currentSequence: 30 });
+
+    // Emit gap delta 12 to start replay toward 12
+    emitDelta({
+      sequence: 12,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: { ...mockMsg1, id: 12, textContent: 'Gap 12', content: { text: 'Gap 12' } },
+      emittedAtMs: Date.now()
+    });
+
+    // While initial replay throws and schedules fallback retry, reconnect arrives with HWM 30
+    emitReconnect();
+
+    await tick();
+    // Wait for fallback retry timer (20ms in test)
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // Verify fallback retry reached and rendered sequence 30
+    await waitFor(() => {
+      expect(screen.getByText('Recovered Sequence 30 after Fallback Retry')).toBeTruthy();
+    });
+  });
 });
+

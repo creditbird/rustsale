@@ -1126,6 +1126,13 @@
             page = await getContactTimeline(item.leadId, channels, null, 50);
           }
 
+          const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
+          if (currentEpoch !== startEpoch) {
+            // An invalidation occurred while this fetch was in flight.
+            // Retry under the new epoch without committing obsolete snapshot.
+            continue;
+          }
+
           const latestExisting = variantsCache.get(key) || existing;
           const updated = mergeTimelinePage(latestExisting, page, 'refresh', {
             messageSequenceMap
@@ -1166,11 +1173,8 @@
             }
           }
 
-          const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
-          if (currentEpoch === startEpoch) {
-            timelineStale.delete(key);
-            return page;
-          }
+          timelineStale.delete(key);
+          return page;
         } catch (err) {
           console.error('Failed to fetch timeline variant', err);
           const latestExisting = variantsCache.get(key) || existing;
@@ -1494,19 +1498,27 @@
               const page = await refreshOpenTimeline();
               if (page && isComponentMounted && thisGeneration === replayGeneration) {
                 const seq = page.snapshotSequence ?? 0;
-                if (targetSeq === undefined || seq >= targetSeq) {
+                const effectiveTarget = pendingReplayTargetSeq !== null
+                  ? Math.max(targetSeq ?? 0, pendingReplayTargetSeq)
+                  : targetSeq;
+
+                if (effectiveTarget === undefined || seq >= effectiveTarget) {
                   replayFallbackRetries = 0;
                   fallbackNeeded = false;
-                  // Invalidate all other cached conversation variants so switching to them fetches fresh authoritative DB snapshots
+                  // Invalidate all other cached conversation variants and bump epochs so in-flight fetches cannot overwrite with stale snapshots
                   for (const cachedKey of variantsCache.keys()) {
                     if (cachedKey !== currentKey) {
+                      variantInvalidationEpoch.set(
+                        cachedKey,
+                        (variantInvalidationEpoch.get(cachedKey) ?? 0) + 1
+                      );
                       timelineStale.add(cachedKey);
                     }
                   }
                   // Refresh inbox list so sidebar previews/unread counts reflect latest DB state
                   void refreshInbox();
                 } else {
-                  scheduleReplayFallbackRetry(seq, targetSeq);
+                  scheduleReplayFallbackRetry(seq, effectiveTarget);
                 }
               } else if (!page && isComponentMounted && thisGeneration === replayGeneration) {
                 scheduleReplayFallbackRetry(fromSeq, targetSeq);
@@ -1518,6 +1530,10 @@
               }
             }
           } else if (initialTargetKey) {
+            variantInvalidationEpoch.set(
+              initialTargetKey,
+              (variantInvalidationEpoch.get(initialTargetKey) ?? 0) + 1
+            );
             timelineStale.add(initialTargetKey);
             fallbackNeeded = false;
           }
@@ -1528,14 +1544,19 @@
           // First drain any contiguous deltas enabled by the completed replay
           drainLiveDeltaBuffer(false);
 
-          const nextTarget = pendingReplayTargetSeq;
-          pendingReplayTargetSeq = null;
+          if (!fallbackNeeded) {
+            const nextTarget = pendingReplayTargetSeq;
+            pendingReplayTargetSeq = null;
 
-          if (nextTarget !== null && nextTarget > lastSeenSequence && !fallbackNeeded) {
-            void resumeMissedDeltas(lastSeenSequence, nextTarget);
+            if (nextTarget !== null && nextTarget > lastSeenSequence) {
+              void resumeMissedDeltas(lastSeenSequence, nextTarget);
+            } else {
+              // Drain remaining buffer and allow gap resumption if needed
+              drainLiveDeltaBuffer(true);
+            }
           } else {
-            // Drain remaining buffer and allow gap resumption if needed
-            drainLiveDeltaBuffer(!fallbackNeeded);
+            // When fallback is unresolved, preserve pendingReplayTargetSeq for scheduled retry
+            drainLiveDeltaBuffer(false);
           }
         }
       }
@@ -1574,20 +1595,24 @@
   function scheduleReplayFallbackRetry(fromSeq: number, targetSeq?: number) {
     if (!isComponentMounted) return;
     if (replayFallbackRetries < MAX_REPLAY_FALLBACK_RETRIES) {
+      const effectiveTarget = pendingReplayTargetSeq !== null
+        ? Math.max(targetSeq ?? 0, pendingReplayTargetSeq)
+        : targetSeq;
+
       const delayMs = IS_TEST_WORKSPACE ? 20 : Math.min(1000 * Math.pow(2, replayFallbackRetries), 4000);
       if (replayFallbackTimer) clearTimeout(replayFallbackTimer);
       replayFallbackTimer = setTimeout(() => {
         replayFallbackTimer = null;
         if (!isComponentMounted) return;
         if (isResumingDeltas) {
-          if (targetSeq !== undefined) {
-            pendingReplayTargetSeq = Math.max(pendingReplayTargetSeq ?? 0, targetSeq);
+          if (effectiveTarget !== undefined) {
+            pendingReplayTargetSeq = Math.max(pendingReplayTargetSeq ?? 0, effectiveTarget);
           }
-          scheduleReplayFallbackRetry(fromSeq, targetSeq);
+          scheduleReplayFallbackRetry(fromSeq, effectiveTarget);
           return;
         }
         replayFallbackRetries++;
-        void resumeMissedDeltas(lastSeenSequence > fromSeq ? lastSeenSequence : fromSeq, targetSeq);
+        void resumeMissedDeltas(lastSeenSequence > fromSeq ? lastSeenSequence : fromSeq, effectiveTarget);
       }, delayMs);
     } else {
       console.error(
