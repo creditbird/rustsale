@@ -18,6 +18,7 @@
     syncFacebookConversations,
     syncZaloGroupChatHistory,
     syncWhatsAppConversations,
+    resumeConversationDeltas,
     type InboxItem,
 
     type Channel,
@@ -1066,7 +1067,7 @@
           }
 
           const latestExisting = variantsCache.get(key) || existing;
-          const updated = mergeTimelinePage(latestExisting, page, 'refresh');
+          const updated = mergeTimelinePage(latestExisting, page, 'refresh', deltaUpsertedMessageIds);
           variantsCache.set(key, updated);
 
           if (currentVariantKey === key) {
@@ -1225,14 +1226,83 @@
   }
   const IS_TEST_WORKSPACE = getWorkspaceEnvMode() === 'test';
 
-  function handleMessageDelta(delta: ConversationMessageDeltaEvent) {
-    const receiveMs = Date.now();
-    const latencyMs = delta.emittedAtMs > 0 ? receiveMs - delta.emittedAtMs : 0;
-    if (typeof console !== 'undefined' && console.debug) {
-      console.debug(
-        `[OmniChat Delta] seq=${delta.sequence} convId=${delta.conversationId} msgId=${delta.message.id} latency=${latencyMs}ms`
-      );
+  let lastSeenSequence = 0;
+  let isResumingDeltas = false;
+  let liveDeltaBuffer: ConversationMessageDeltaEvent[] = [];
+  let deltaUpsertedMessageIds: Set<number> = new Set();
+
+  export interface DeltaPaintTelemetrySample {
+    sequence: number;
+    deltaToPaintMs: number;
+    dbToPaintMs: number;
+    timestamp: number;
+  }
+  const deltaPaintSamples: DeltaPaintTelemetrySample[] = [];
+
+  export function getDeltaPaintTelemetrySummary() {
+    if (deltaPaintSamples.length === 0) {
+      return { count: 0, p50: 0, p95: 0, p99: 0, max: 0, avg: 0 };
     }
+    const latencies = deltaPaintSamples.map((s) => s.deltaToPaintMs).sort((a, b) => a - b);
+    const count = latencies.length;
+    const p50 = latencies[Math.floor(count * 0.50)];
+    const p95 = latencies[Math.min(count - 1, Math.floor(count * 0.95))];
+    const p99 = latencies[Math.min(count - 1, Math.floor(count * 0.99))];
+    const max = latencies[count - 1];
+    const avg = Math.round((latencies.reduce((acc, v) => acc + v, 0) / count) * 100) / 100;
+    return { count, p50, p95, p99, max, avg };
+  }
+
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __GET_DELTA_PAINT_TELEMETRY__?: typeof getDeltaPaintTelemetrySummary }).__GET_DELTA_PAINT_TELEMETRY__ = getDeltaPaintTelemetrySummary;
+  }
+
+  async function resumeMissedDeltas(fromSeq: number, targetSeq?: number) {
+    if (isResumingDeltas) return;
+    isResumingDeltas = true;
+    try {
+      let currentSeq = fromSeq;
+      let hasMore = true;
+      while (hasMore) {
+        const batch = await resumeConversationDeltas(currentSeq, 200);
+        if (!batch || batch.length === 0) {
+          break;
+        }
+        for (const d of batch) {
+          applySingleDelta(d);
+          if (d.sequence > currentSeq) {
+            currentSeq = d.sequence;
+          }
+        }
+        if (targetSeq && currentSeq >= targetSeq) {
+          break;
+        }
+        if (batch.length < 200) {
+          break;
+        }
+      }
+      // Drain liveDeltaBuffer
+      if (liveDeltaBuffer.length > 0) {
+        liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
+        for (const buffered of liveDeltaBuffer) {
+          if (buffered.sequence > lastSeenSequence) {
+            applySingleDelta(buffered);
+          }
+        }
+        liveDeltaBuffer = [];
+      }
+    } catch (err) {
+      console.error('[OmniChat Delta] Failed to resume missed deltas:', err);
+    } finally {
+      isResumingDeltas = false;
+    }
+  }
+
+  function applySingleDelta(delta: ConversationMessageDeltaEvent) {
+    if (delta.sequence > lastSeenSequence) {
+      lastSeenSequence = delta.sequence;
+    }
+    deltaUpsertedMessageIds.add(delta.message.id);
 
     // 1. Instant Open Timeline Store Upsert
     if (selectedItem) {
@@ -1288,6 +1358,58 @@
     }
   }
 
+  function recordPaintTelemetry(receivePerf: number, delta: ConversationMessageDeltaEvent) {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const paintPerf = typeof performance !== 'undefined' ? performance.now() : Date.now();
+          const deltaToPaintMs = Math.round((paintPerf - receivePerf) * 100) / 100;
+          const dbToPaintMs = delta.emittedAtMs > 0 ? Date.now() - delta.emittedAtMs : deltaToPaintMs;
+          deltaPaintSamples.push({
+            sequence: delta.sequence,
+            deltaToPaintMs,
+            dbToPaintMs,
+            timestamp: Date.now()
+          });
+          if (deltaPaintSamples.length > 500) {
+            deltaPaintSamples.shift();
+          }
+          if (typeof console !== 'undefined' && console.debug) {
+            console.debug(
+              `[OmniChat Telemetry] seq=${delta.sequence} deltaToPaint=${deltaToPaintMs}ms dbToPaint=${dbToPaintMs}ms`
+            );
+          }
+        });
+      });
+    }
+  }
+
+  function handleMessageDelta(delta: ConversationMessageDeltaEvent) {
+    const receiveMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+    if (isResumingDeltas) {
+      liveDeltaBuffer.push(delta);
+      return;
+    }
+
+    // Gap detection: if sequence is ahead by > 1, replay missing deltas from SQLite
+    if (lastSeenSequence > 0 && delta.sequence > lastSeenSequence + 1) {
+      console.warn(
+        `[OmniChat Delta] Gap detected: expected ${lastSeenSequence + 1}, received ${delta.sequence}. Buffering and resuming...`
+      );
+      liveDeltaBuffer.push(delta);
+      void resumeMissedDeltas(lastSeenSequence, delta.sequence);
+      return;
+    }
+
+    if (lastSeenSequence > 0 && delta.sequence <= lastSeenSequence) {
+      return;
+    }
+
+    applySingleDelta(delta);
+    recordPaintTelemetry(receiveMs, delta);
+  }
+
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     if (event.reason === 'account_status') {
       void refreshRuntimeStatus(true);
@@ -1324,9 +1446,10 @@
 
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
-      if (affectsOpenItem) {
-        // Open Timeline: immediate frame-level micro-coalesce (0ms in production / 10ms in test)
-        // Critical path: updates active chat in real-time (< 5ms) without waiting or deferring to idle
+      if (affectsOpenItem && event.reason !== 'message') {
+        // Only trigger full 50-item timeline IPC reload for non-message invalidations
+        // (such as participant joins, pinning, unpinning, reactions, title changes, profile syncs).
+        // Message deltas are directly upserted into timeline via handleMessageDelta.
         const timelineDelay = IS_TEST_WORKSPACE ? 10 : 0;
         if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
         timelineRefreshTimer = setTimeout(() => {

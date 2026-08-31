@@ -12,6 +12,7 @@ pub use crate::conversation::zalo::normalizer::{
     NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
     NormalizedUndo, ReceiptKind,
 };
+use crate::conversation::events::ConversationMessageDeltaEvent;
 use crate::db::open_db_connection;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result};
@@ -207,7 +208,7 @@ pub struct SyncCheckpointDetail {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppliedMessage {
     pub channel_account_id: i64,
     pub identity_id: Option<i64>,
@@ -215,6 +216,7 @@ pub struct AppliedMessage {
     pub message_id: i64,
     pub duplicate: bool,
     pub replayed_reaction_count: usize,
+    pub delta_event: Option<ConversationMessageDeltaEvent>,
 }
 
 #[derive(Debug)]
@@ -931,6 +933,7 @@ impl ConversationRepository {
                     message_id: 0,
                     duplicate: true,
                     replayed_reaction_count: 0,
+                    delta_event: None,
                 });
             } else {
                 tx.execute(
@@ -1189,6 +1192,7 @@ impl ConversationRepository {
                 message_id,
                 duplicate: true,
                 replayed_reaction_count,
+                delta_event: None,
             });
         }
 
@@ -1259,6 +1263,28 @@ impl ConversationRepository {
             message,
         )?;
 
+        let lead_id_opt: Option<i64> = tx
+            .query_row(
+                "SELECT ci.lead_id
+                 FROM conversation_participants cp
+                 JOIN channel_identities ci ON ci.id = cp.identity_id
+                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL
+                 ORDER BY (ci.id = cp.identity_id) DESC
+                 LIMIT 1",
+                [conversation_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+
+        let delta_event = Self::record_message_delta_tx(
+            &tx,
+            conversation_id,
+            lead_id_opt,
+            message.channel,
+            message_id,
+        )?;
+
         tx.commit()?;
 
         Ok(AppliedMessage {
@@ -1268,6 +1294,7 @@ impl ConversationRepository {
             message_id,
             duplicate: false,
             replayed_reaction_count,
+            delta_event,
         })
     }
 
@@ -2968,6 +2995,110 @@ impl ConversationRepository {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn record_message_delta_tx(
+        tx: &rusqlite::Transaction<'_>,
+        conversation_id: i64,
+        lead_id: Option<i64>,
+        channel: Channel,
+        message_id: i64,
+    ) -> Result<Option<ConversationMessageDeltaEvent>> {
+        let sql = format!(
+            "SELECT {MESSAGE_SELECT_COLUMNS}
+             FROM messages m
+             JOIN channel_conversations cc ON cc.id = m.conversation_id
+             JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+             LEFT JOIN channel_identities ci ON ci.id = m.sender_identity_id
+             WHERE m.id = ?1"
+        );
+        let msg: Option<ConversationMessage> = tx
+            .query_row(&sql, [message_id], map_conversation_message)
+            .optional()?;
+        if let Some(m) = msg {
+            let mut list = vec![m];
+            crate::conversation::projection::hydrate_messages(tx, &mut list)?;
+            if let Some(hydrated_msg) = list.pop() {
+                let emitted_at_ms = chrono::Utc::now().timestamp_millis();
+                let mut event = ConversationMessageDeltaEvent {
+                    sequence: 0,
+                    conversation_id,
+                    lead_id,
+                    channel,
+                    message: hydrated_msg,
+                    emitted_at_ms,
+                };
+                let payload_json = serde_json::to_string(&event)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                tx.execute(
+                    "INSERT INTO conversation_deltas (conversation_id, lead_id, channel, message_id, event_type, payload_json, created_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, 'message', ?5, ?6)",
+                    rusqlite::params![
+                        conversation_id,
+                        lead_id,
+                        channel.as_str(),
+                        message_id,
+                        payload_json,
+                        emitted_at_ms,
+                    ],
+                )?;
+                let seq = tx.last_insert_rowid() as u64;
+                event.sequence = seq;
+                let updated_payload = serde_json::to_string(&event)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                tx.execute(
+                    "UPDATE conversation_deltas SET payload_json = ?1 WHERE sequence = ?2",
+                    rusqlite::params![updated_payload, seq as i64],
+                )?;
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn record_message_delta(
+        &self,
+        conversation_id: i64,
+        lead_id: Option<i64>,
+        channel: Channel,
+        message_id: i64,
+    ) -> Result<Option<ConversationMessageDeltaEvent>> {
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let res = Self::record_message_delta_tx(&tx, conversation_id, lead_id, channel, message_id)?;
+        tx.commit()?;
+        Ok(res)
+    }
+
+    pub fn fetch_deltas_after_sequence(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<ConversationMessageDeltaEvent>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let cap = limit.clamp(1, 500);
+        let mut stmt = conn.prepare(
+            "SELECT sequence, payload_json
+             FROM conversation_deltas
+             WHERE sequence > ?1
+             ORDER BY sequence ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![after_sequence as i64, cap as i64], |row| {
+            let seq: i64 = row.get(0)?;
+            let payload_json: String = row.get(1)?;
+            Ok((seq as u64, payload_json))
+        })?;
+
+        let mut deltas = Vec::new();
+        for row in rows {
+            let (seq, payload_json) = row?;
+            if let Ok(mut event) = serde_json::from_str::<ConversationMessageDeltaEvent>(&payload_json) {
+                event.sequence = seq;
+                deltas.push(event);
+            }
+        }
+        Ok(deltas)
     }
 
     pub fn get_conversation_account_key(&self, conversation_id: i64) -> Result<Option<String>> {

@@ -198,6 +198,9 @@ impl FacebookMessengerSupervisor {
                         all_affected_conversations.push(cid);
                     }
                 }
+                for delta in summary.delta_events {
+                    self.events.publish_delta(delta);
+                }
             }
 
             let next_cursor = conversations_page
@@ -233,12 +236,21 @@ impl FacebookMessengerSupervisor {
                     .optional()
                     .unwrap_or(None);
 
+                let msg_id_opt: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY id DESC LIMIT 1",
+                        [cid],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None);
+
                 self.events.publish(ConversationInvalidatedEvent {
                     conversation_id: *cid,
                     lead_id: lead_id_opt,
                     channel: Channel::Messenger,
                     reason: ConversationInvalidationReason::Message,
-                    message_id: None,
+                    message_id: msg_id_opt,
                 });
             }
         }
@@ -354,13 +366,34 @@ impl FacebookMessengerSupervisor {
                 .optional()
                 .unwrap_or(None);
 
+            let msg_id_opt: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY id DESC LIMIT 1",
+                    [cid],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+
             self.events.publish(ConversationInvalidatedEvent {
                 conversation_id: *cid,
                 lead_id: lead_id_opt,
                 channel: Channel::Messenger,
                 reason: ConversationInvalidationReason::Message,
-                message_id: None,
+                message_id: msg_id_opt,
             });
+
+            if let Some(msg_id) = msg_id_opt {
+                let repo = crate::conversation::repository::ConversationRepository::new(self.db_path.clone());
+                if let Ok(Some(delta_event)) = repo.record_message_delta(
+                    *cid,
+                    lead_id_opt,
+                    Channel::Messenger,
+                    msg_id,
+                ) {
+                    self.events.publish_delta(delta_event);
+                }
+            }
         }
 
         Ok(affected.len())

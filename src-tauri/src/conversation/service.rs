@@ -406,14 +406,14 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Message,
             message_id: Some(message.id),
         });
-        self.events.publish_delta(crate::conversation::events::ConversationMessageDeltaEvent {
-            sequence: self.events.next_sequence(),
-            conversation_id: message.conversation_id,
-            lead_id: None,
-            channel: message.channel,
-            message: message.clone(),
-            emitted_at_ms: chrono::Utc::now().timestamp_millis(),
-        });
+        if let Ok(Some(delta)) = self.repository.record_message_delta(
+            message.conversation_id,
+            None,
+            message.channel,
+            message.id,
+        ) {
+            self.events.publish_delta(delta);
+        }
         Ok(message)
     }
 
@@ -456,6 +456,9 @@ impl ConversationService {
                             anyhow::anyhow!("Failed to update message checkpoint: {error}")
                         })?;
                     if !applied.duplicate {
+                        if let Some(delta) = &applied.delta_event {
+                            self.events.publish_delta(delta.clone());
+                        }
                         let _ = self.publish_message_invalidation(
                             applied.message_id,
                             ConversationInvalidationReason::Message,
@@ -466,6 +469,14 @@ impl ConversationService {
                             ConversationInvalidationReason::Reaction,
                         );
                     } else if applied.message_id > 0 {
+                        if let Ok(Some(delta)) = self.repository.record_message_delta(
+                            applied.conversation_id,
+                            None,
+                            message.channel,
+                            applied.message_id,
+                        ) {
+                            self.events.publish_delta(delta);
+                        }
                         let _ = self.publish_message_invalidation(
                             applied.message_id,
                             ConversationInvalidationReason::Message,
@@ -614,20 +625,18 @@ impl ConversationService {
                 reason,
                 message_id: Some(message_id),
             });
-            if reason == ConversationInvalidationReason::Message {
-                if let Ok(Some(msg)) = self.repository.get_message_by_id(message_id) {
-                    self.events.publish_delta(crate::conversation::events::ConversationMessageDeltaEvent {
-                        sequence: self.events.next_sequence(),
-                        conversation_id,
-                        lead_id,
-                        channel,
-                        message: msg,
-                        emitted_at_ms: chrono::Utc::now().timestamp_millis(),
-                    });
-                }
-            }
         }
         Ok(())
+    }
+
+    pub fn resume_deltas(
+        &self,
+        after_sequence: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::conversation::events::ConversationMessageDeltaEvent>> {
+        Ok(self
+            .repository
+            .fetch_deltas_after_sequence(after_sequence, limit.unwrap_or(200))?)
     }
 
     pub fn apply_group_snapshot(&self, snapshot: &NormalizedGroupSnapshot) -> Result<i64> {
@@ -653,15 +662,15 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Message,
             message_id: Some(applied.applied.message_id),
         });
-        if let Ok(Some(msg)) = self.repository.get_message_by_id(applied.applied.message_id) {
-            self.events.publish_delta(crate::conversation::events::ConversationMessageDeltaEvent {
-                sequence: self.events.next_sequence(),
-                conversation_id: applied.applied.conversation_id,
-                lead_id: Some(applied.lead_id),
-                channel: Channel::Zalo,
-                message: msg,
-                emitted_at_ms: chrono::Utc::now().timestamp_millis(),
-            });
+        if let Some(delta_event) = &applied.applied.delta_event {
+            self.events.publish_delta(delta_event.clone());
+        } else if let Ok(Some(delta_event)) = self.repository.record_message_delta(
+            applied.applied.conversation_id,
+            Some(applied.lead_id),
+            Channel::Zalo,
+            applied.applied.message_id,
+        ) {
+            self.events.publish_delta(delta_event);
         }
     }
 
@@ -678,6 +687,14 @@ impl ConversationService {
         for msg in &res.messages {
             let _ =
                 self.publish_message_invalidation(msg.id, ConversationInvalidationReason::Message);
+            if let Ok(Some(delta)) = self.repository.record_message_delta(
+                msg.conversation_id,
+                None,
+                msg.channel,
+                msg.id,
+            ) {
+                self.events.publish_delta(delta);
+            }
         }
         Ok(res)
     }

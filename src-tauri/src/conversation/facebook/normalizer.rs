@@ -14,6 +14,8 @@ pub struct IngestSummary {
     pub messages_inserted: usize,
     pub new_messages_count: usize,
     pub affected_conversation_ids: Vec<i64>,
+    #[serde(default)]
+    pub delta_events: Vec<crate::conversation::events::ConversationMessageDeltaEvent>,
 }
 
 pub struct FacebookMessengerNormalizer;
@@ -251,7 +253,32 @@ impl FacebookMessengerNormalizer {
                             )?;
                             summary.new_messages_count += 1;
                             thread_new_messages += 1;
-                            tx.last_insert_rowid()
+                            let new_id = tx.last_insert_rowid();
+
+                            let lead_id_opt: Option<i64> = tx
+                                .query_row(
+                                    "SELECT ci.lead_id FROM channel_identities ci
+                                     JOIN conversation_participants cp ON cp.identity_id = ci.id
+                                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                                    [conversation_id],
+                                    |r| r.get(0),
+                                )
+                                .optional()
+                                .unwrap_or(None);
+
+                            if let Ok(Some(delta_event)) =
+                                crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+                                    &tx,
+                                    conversation_id,
+                                    lead_id_opt,
+                                    crate::conversation::types::Channel::Messenger,
+                                    new_id,
+                                )
+                            {
+                                summary.delta_events.push(delta_event);
+                            }
+
+                            new_id
                         }
                     };
 
@@ -548,6 +575,25 @@ impl FacebookMessengerNormalizer {
                             }
                         }
                     }
+
+                    let lead_id_opt: Option<i64> = tx
+                        .query_row(
+                            "SELECT ci.lead_id FROM channel_identities ci
+                             JOIN conversation_participants cp ON cp.identity_id = ci.id
+                             WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                            [conversation_id],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .unwrap_or(None);
+
+                    let _ = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+                        &tx,
+                        conversation_id,
+                        lead_id_opt,
+                        crate::conversation::types::Channel::Messenger,
+                        message_id,
+                    );
                 }
             }
         }

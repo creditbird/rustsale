@@ -20,6 +20,10 @@ fn setup_test_supervisor_db() -> (String, tempfile::TempDir) {
         .to_string();
 
     let conn = open_db_connection(&db_path).unwrap();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS leads (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT, zalo_uid TEXT)",
+        [],
+    ).unwrap();
     migrate(&conn).unwrap();
     apply_whatsapp_migrations(&conn).unwrap();
 
@@ -684,4 +688,53 @@ fn test_map_whatsapp_receipt_event_presence_and_server_error() {
     let mapped3 = super::supervisor::map_whatsapp_receipt_event(&ev3).unwrap();
     assert_eq!(mapped3.receipt_type, "delivered");
     assert_eq!(mapped3.message_ids, vec!["msg_del_1"]);
+}
+
+#[tokio::test]
+async fn test_whatsapp_inbound_message_publishes_delta_event() {
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let events = Arc::new(ConversationEventPublisher::new(100));
+    let sessions_dir = _dir.path().join("wa_sessions");
+    let _supervisor = Arc::new(WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events.clone()));
+
+    let mut conn = open_db_connection(&db_path).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO channel_accounts
+         (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', 1, 'connected', '{}', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    let raw_msg = crate::conversation::whatsapp::normalizer::RawWhatsAppMessage {
+        id: "wa_inbound_msg_001".to_string(),
+        chat_jid: "84902222222@s.whatsapp.net".to_string(),
+        sender_jid: Some("84902222222@s.whatsapp.net".to_string()),
+        sender_name: Some("Khach Hang WA".to_string()),
+        text: Some("Chao shop qua WhatsApp".to_string()),
+        timestamp: Some(now.clone()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: None,
+        mentions: vec![],
+    };
+
+    let conv_id = crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+        &mut conn,
+        1,
+        &raw_msg,
+    ).unwrap().unwrap();
+
+    let msg_id: i64 = conn.query_row(
+        "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+        rusqlite::params![conv_id, "wa_inbound_msg_001"],
+        |r| r.get(0),
+    ).unwrap();
+
+    let repo = ConversationRepository::new(db_path);
+    let delta = repo.record_message_delta(conv_id, None, crate::conversation::types::Channel::WhatsApp, msg_id).unwrap().unwrap();
+    assert_eq!(delta.channel, crate::conversation::types::Channel::WhatsApp);
+    assert_eq!(delta.message.text_content.as_deref(), Some("Chao shop qua WhatsApp"));
+    assert!(delta.sequence > 0);
 }

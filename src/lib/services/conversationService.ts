@@ -407,7 +407,15 @@ export interface ConversationInvalidatedEvent {
   conversationId: number;
   leadId: number | null;
   channel: Channel;
-  reason: 'message' | 'receipt' | 'reaction' | 'metadata' | 'link' | 'account_status';
+  reason:
+    | 'message'
+    | 'receipt'
+    | 'reaction'
+    | 'metadata'
+    | 'link'
+    | 'account_status'
+    | 'history_sync'
+    | 'attachment_update';
   messageId?: number;
 }
 
@@ -574,6 +582,15 @@ export const unpinConversationMessage = (conversationId: number, messageId: numb
 export const listConversationPinnedMessages = (conversationId: number) =>
   invoke<PinnedMessage[]>('list_conversation_pinned_messages', { conversationId });
 
+export const resumeConversationDeltas = (
+  afterSequence: number,
+  limit?: number
+): Promise<ConversationMessageDeltaEvent[]> =>
+  invoke<ConversationMessageDeltaEvent[]>('resume_conversation_deltas', {
+    afterSequence,
+    limit: limit ?? 200
+  });
+
 
 // Ref-counted Event Bridge Logic
 type InvalidationListener = (event: ConversationInvalidatedEvent) => void;
@@ -636,30 +653,34 @@ export function ensureConversationEventBridgeConnected(): Promise<() => void> | 
       clearTimeout(bridgeRetryTimer);
       bridgeRetryTimer = null;
     }
-    bridgePromise = Promise.all([
-      listen<ConversationInvalidatedEvent>('conversation-invalidated', (event) => {
-        for (const listener of invalidationListeners) {
-          try {
-            listener(event.payload);
-          } catch (err) {
-            console.error('Error in invalidationListener', err);
+    const cleanups: (() => void)[] = [];
+    bridgePromise = (async () => {
+      try {
+        const c1 = await listen<ConversationInvalidatedEvent>('conversation-invalidated', (event) => {
+          for (const listener of invalidationListeners) {
+            try {
+              listener(event.payload);
+            } catch (err) {
+              console.error('Error in invalidationListener', err);
+            }
           }
-        }
-      }),
-      listen<ConversationMessageDeltaEvent>('conversation-message-delta', (event) => {
-        for (const listener of deltaListeners) {
-          try {
-            listener(event.payload);
-          } catch (err) {
-            console.error('Error in deltaListener', err);
+        });
+        cleanups.push(c1);
+
+        const c2 = await listen<ConversationMessageDeltaEvent>('conversation-message-delta', (event) => {
+          for (const listener of deltaListeners) {
+            try {
+              listener(event.payload);
+            } catch (err) {
+              console.error('Error in deltaListener', err);
+            }
           }
-        }
-      })
-    ])
-      .then(([cleanupInval, cleanupDelta]) => {
+        });
+        cleanups.push(c2);
+
         const cleanup = () => {
-          cleanupInval();
-          cleanupDelta();
+          c1();
+          c2();
         };
         bridgeUnlisten = cleanup;
         bridgeRetryAttempt = 0;
@@ -669,14 +690,19 @@ export function ensureConversationEventBridgeConnected(): Promise<() => void> | 
           bridgePromise = null;
         }
         return cleanup;
-      })
-      .catch((err) => {
+      } catch (err) {
+        for (const c of cleanups) {
+          try {
+            c();
+          } catch {}
+        }
         bridgePromise = null;
         bridgeUnlisten = null;
         console.error('Failed to init conversation event bridge', err);
         scheduleBridgeRetry();
         return () => {};
-      });
+      }
+    })();
   }
   return bridgePromise;
 }

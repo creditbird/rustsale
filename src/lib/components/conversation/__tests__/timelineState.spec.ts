@@ -171,6 +171,31 @@ describe('timelineState', () => {
       expect(merged.items.map((message) => message.id)).toEqual([1, 2, 999]);
     });
 
+    it('retains newly delta-upserted messages newer than snapshot on refresh', () => {
+      const oldServerMsg = createMessage(1, '2026-08-31T00:00:00Z');
+      const delayedSnapshotMsg = createMessage(2, '2026-08-31T00:00:05Z');
+      const newlyArrivedDeltaMsg = createMessage(3, '2026-08-31T00:00:10Z');
+
+      // Current in-memory timeline already has old message and newly arrived delta message #3
+      const current = {
+        items: [oldServerMsg, newlyArrivedDeltaMsg],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      // Delayed snapshot query finishes and returns only messages #1 and #2 (queried before #3 was committed)
+      const snapshotPage = {
+        items: [oldServerMsg, delayedSnapshotMsg],
+        nextCursor: null
+      };
+
+      const merged = mergeTimelinePage(current, snapshotPage, 'refresh');
+
+      // Merged must retain #1, #2, AND newly arrived #3 (no bubble disappearance!)
+      expect(merged.items.map((m) => m.id)).toEqual([1, 2, 3]);
+    });
+
     it('retains newest 200 items when mode is refresh', () => {
       const baseTime = 1700000000000;
       const currentItems = Array.from({ length: 150 }, (_, i) =>

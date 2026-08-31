@@ -66,9 +66,12 @@ mock.module('@tauri-apps/api/core', () => ({
   }
 }));
 
+let eventCallbacks: Record<string, (event: { payload: unknown }) => void> = {};
+
 mock.module('@tauri-apps/api/event', () => ({
   listen: async (eventName: string, cb: (event: { payload: unknown }) => void) => {
     listenCallCount += 1;
+    eventCallbacks[eventName] = cb;
     eventCallback = cb;
     if (listenFailuresRemaining > 0) {
       listenFailuresRemaining -= 1;
@@ -638,7 +641,8 @@ describe('conversationService ref-counted invalidation bridge', () => {
 
     await getBridgePromise();
 
-    expect(listenCallCount).toBe(1);
+    // 2 listeners total: 1 for invalidation, 1 for delta
+    expect(listenCallCount).toBe(2);
 
     unsub1();
     unsub2();
@@ -666,8 +670,8 @@ describe('conversationService ref-counted invalidation bridge', () => {
       messageId: 100
     };
 
-    expect(eventCallback).not.toBeNull();
-    eventCallback!({ payload: sampleEvent });
+    expect(eventCallbacks['conversation-invalidated']).toBeDefined();
+    eventCallbacks['conversation-invalidated']({ payload: sampleEvent });
 
     expect(received1).toEqual([sampleEvent]);
     expect(received2).toEqual([sampleEvent]);
@@ -688,7 +692,8 @@ describe('conversationService ref-counted invalidation bridge', () => {
     expect(unlistenCallCount).toBe(0);
 
     unsub2();
-    expect(unlistenCallCount).toBe(1);
+    // 2 unlisten calls: 1 for invalidation, 1 for delta
+    expect(unlistenCallCount).toBe(2);
   });
 
   test('a failed initial listen schedules one bounded retry and final cleanup cancels the retry', async () => {
@@ -697,18 +702,18 @@ describe('conversationService ref-counted invalidation bridge', () => {
     const unsub = initConversationEventBridge();
     expect(getBridgeRefCount()).toBe(1);
 
-    // Wait for the retry loop to trigger
+    // Wait for the retry loop to trigger (attempt 1 failed on 1st listen, retry runs both = 3 total)
     const deadline = Date.now() + 1_000;
-    while (listenCallCount < 2 && Date.now() < deadline) {
+    while (listenCallCount < 3 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    expect(listenCallCount).toBe(2);
+    expect(listenCallCount).toBe(3);
     expect(getBridgeRefCount()).toBe(1);
     expect(getBridgePromise()).not.toBeNull();
 
     unsub();
-    expect(unlistenCallCount).toBe(1);
+    expect(unlistenCallCount).toBe(2);
   });
 
   test('cancels scheduled retry when unsubscribed before retry fires', async () => {

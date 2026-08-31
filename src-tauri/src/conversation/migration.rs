@@ -244,7 +244,28 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
     reset_zalo_reaction_history_once(conn)?;
     cleanup_corrupted_whatsapp_attachments(conn)?;
+    ensure_conversation_deltas_schema(conn)?;
 
+    Ok(())
+}
+
+fn ensure_conversation_deltas_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS conversation_deltas (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            lead_id INTEGER,
+            channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+            message_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL DEFAULT 'message',
+            payload_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+            FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_deltas_conv ON conversation_deltas(conversation_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_conversation_deltas_seq ON conversation_deltas(sequence);",
+    )?;
     Ok(())
 }
 

@@ -775,6 +775,7 @@ async fn publish_outreach_success_emits_event_when_not_duplicate() {
             message_id: 100,
             duplicate: false,
             replayed_reaction_count: 0,
+            delta_event: None,
         },
         lead_id: 42,
     };
@@ -805,6 +806,7 @@ async fn publish_outreach_success_skips_duplicate() {
             message_id: 100,
             duplicate: true,
             replayed_reaction_count: 0,
+            delta_event: None,
         },
         lead_id: 42,
     };
@@ -4073,5 +4075,66 @@ mod group_member_import_events {
         assert_eq!(delta.conversation_id, 1);
         assert_eq!(delta.channel, Channel::Zalo);
         assert_eq!(delta.message.text_content.as_deref(), Some("Tin nhắn gửi qua zalo"));
+    }
+
+    #[test]
+    fn test_burst_300_events_persists_monotonic_sequence_and_replays_lagged_events() {
+        let harness = ServiceHarness::new();
+        // 1. Burst ingest 300 messages
+        for i in 1..=300 {
+            let raw_msg: zca_rs::models::TMessage = serde_json::from_value(serde_json::json!({
+                "actionId": format!("act-{}", i),
+                "msgId": format!("msg-burst-{}", i),
+                "cliMsgId": format!("cli-burst-{}", i),
+                "msgType": "webchat",
+                "uidFrom": "user-1",
+                "idTo": "0",
+                "dName": "Customer 1",
+                "ts": format!("{}", 1722420000000i64 + i as i64 * 1000),
+                "status": 1,
+                "content": format!("Burst message {}", i),
+                "notify": "",
+                "ttl": 0,
+                "userId": "",
+                "uin": "",
+                "propertyExt": null,
+                "paramsExt": {"countUnread": 1, "containType": 0, "platformType": 1},
+                "cmd": 501,
+                "st": 0,
+                "at": 0,
+                "realMsgId": format!("real-burst-{}", i),
+                "quote": null
+            }))
+            .unwrap();
+
+            let event = zca_rs::listener::ListenerEvent::Message(Box::new(
+                zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_msg)),
+            ));
+
+            harness
+                .service
+                .ingest_zalo_event("imei-1", Some("Sale 01"), event)
+                .unwrap();
+        }
+
+        // 2. Replay all 300 deltas from sequence 0
+        let all_deltas = harness.service.resume_deltas(0, Some(500)).unwrap();
+        assert_eq!(all_deltas.len(), 300, "Must recover all 300 messages from SQLite change log");
+
+        // 3. Verify sequence monotonicity
+        for (idx, delta) in all_deltas.iter().enumerate() {
+            let expected_seq = (idx + 1) as u64;
+            assert_eq!(delta.sequence, expected_seq, "Sequence must be strictly monotonic and gapless");
+            assert_eq!(
+                delta.message.text_content.as_deref(),
+                Some(format!("Burst message {}", idx + 1).as_str())
+            );
+        }
+
+        // 4. Replay starting from sequence 250 (resume last 50 missed events)
+        let resumed = harness.service.resume_deltas(250, Some(100)).unwrap();
+        assert_eq!(resumed.len(), 50);
+        assert_eq!(resumed[0].sequence, 251);
+        assert_eq!(resumed[49].sequence, 300);
     }
 }

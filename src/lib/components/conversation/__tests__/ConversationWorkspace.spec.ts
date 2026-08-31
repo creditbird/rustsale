@@ -447,6 +447,10 @@ const mockStartDirectConversation = mock(
   })
 );
 
+const mockResumeConversationDeltas = mock(
+  async (_afterSeq: number, _limit?: number): Promise<ConversationMessageDeltaEvent[]> => []
+);
+
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
   getContactTimeline: (leadId: number, channels: any[], before: any, limit: number) =>
@@ -465,6 +469,8 @@ mock.module('$lib/services/conversationService', () => ({
     deltaListeners.add(listener);
     return () => deltaListeners.delete(listener);
   },
+  resumeConversationDeltas: (afterSeq: number, limit?: number) =>
+    mockResumeConversationDeltas(afterSeq, limit),
   sendConversationBatch: (request: SendConversationBatchRequest) => mockSendConversationBatch(request),
   stageConversationAttachmentPaths: mock(async () => []),
   stageConversationClipboardImage: mock(async () => null),
@@ -485,7 +491,12 @@ mock.module('$lib/services/conversationService', () => ({
     mockSyncAndDeepScanGroupMembers(conversationId),
   batchImportGroupMembersToLeads: (request: unknown) =>
     mockBatchImportGroupMembersToLeads(request),
-  syncZaloGroupChatHistory: mock(async (_conversationId: number) => 0)
+  syncZaloGroupChatHistory: mock(async (_conversationId: number) => 0),
+  pinConversationMessage: mock(async () => {}),
+  unpinConversationMessage: mock(async () => {}),
+  listConversationPinnedMessages: mock(async () => []),
+  syncFacebookConversations: mock(async () => 0),
+  syncWhatsAppConversations: mock(async () => 0)
 }));
 
 mock.module('$lib/services/crmService', () => ({
@@ -718,7 +729,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 1,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 103
     });
 
@@ -733,7 +744,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 99,
       leadId: 99,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 104
     });
 
@@ -758,7 +769,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 28,
       leadId: null,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 103
     });
 
@@ -813,7 +824,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 1,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 429
     });
 
@@ -910,7 +921,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 1,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 999
     });
 
@@ -945,7 +956,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: null,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 1001
     });
 
@@ -990,7 +1001,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 1,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 1002
     });
 
@@ -1025,7 +1036,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 999, // Mismatched leadId from backend participant ambiguity
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 1003
     });
 
@@ -1841,5 +1852,202 @@ describe('ConversationWorkspace Component', () => {
     const waBadge = screen.getByRole('button', { name: 'whatsapp' });
     expect(waBadge).toBeTruthy();
     expect(waBadge.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  test('21. Inbound delta upserts directly into timeline and suppresses redundant 50-message IPC reload on message invalidation', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    let timelineCallCount = 0;
+    mockGetContactTimeline.mockImplementation(async () => {
+      timelineCallCount += 1;
+      return {
+        items: [mockMsg1],
+        hasMore: false,
+        nextCursor: null
+      };
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(screen.getByText('Chào shop')).toBeTruthy();
+    expect(timelineCallCount).toBe(1);
+
+    // Incoming delta
+    const deltaMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 202,
+      textContent: 'Tin nhắn delta realtime tức thì',
+      occurredAt: '2026-08-31T01:00:00Z'
+    };
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: deltaMsg,
+      emittedAtMs: Date.now()
+    });
+
+    // Simulated real-world dual emission: invalidation with reason 'message'
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 202
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The bubble is visible immediately
+    expect(screen.getByText('Tin nhắn delta realtime tức thì')).toBeTruthy();
+    // Invalidation did NOT trigger a redundant 50-message timeline IPC reload!
+    expect(timelineCallCount).toBe(1);
+  });
+
+  test('22. Sequence gap triggers resumeConversationDeltas to backfill missed messages', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    const missedMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 301,
+      textContent: 'Tin nhắn bị lỡ do gap sequence #1',
+      occurredAt: '2026-08-31T01:00:01Z'
+    };
+
+    mockResumeConversationDeltas.mockImplementation(async (afterSeq: number) => {
+      if (afterSeq === 1) {
+        return [
+          {
+            sequence: 2,
+            conversationId: 10,
+            leadId: 1,
+            channel: 'zalo',
+            message: missedMsg,
+            emittedAtMs: Date.now()
+          }
+        ];
+      }
+      return [];
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // First receive delta sequence 1
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: { ...mockMsg1, id: 300, textContent: 'Seq 1 msg' },
+      emittedAtMs: Date.now()
+    });
+    await tick();
+
+    // Then receive delta sequence 3 (gap detected: expected 2, got 3)
+    emitDelta({
+      sequence: 3,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: { ...mockMsg1, id: 302, textContent: 'Seq 3 msg' },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await tick();
+
+    // Verify resumeConversationDeltas was invoked for seq 1
+    expect(mockResumeConversationDeltas).toHaveBeenCalledWith(1, 200);
+    // Both seq 1, seq 2 (replayed), and seq 3 are rendered in open timeline
+    const timeline = document.querySelector('[data-timeline-container]');
+    expect(timeline).toBeTruthy();
+    expect(within(timeline as HTMLElement).getByText('Seq 1 msg')).toBeTruthy();
+    expect(within(timeline as HTMLElement).getByText('Tin nhắn bị lỡ do gap sequence #1')).toBeTruthy();
+    expect(within(timeline as HTMLElement).getByText('Seq 3 msg')).toBeTruthy();
+  });
+
+  test('23. Stale snapshot arriving after delta upsert does NOT drop the new message bubble', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Receive delta for message #400
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: { ...mockMsg1, id: 400, textContent: 'New delta message #400', occurredAt: '2026-08-31T01:00:10Z' },
+      emittedAtMs: Date.now()
+    });
+    await tick();
+
+    // Stale snapshot resolution finishes with only older messages
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'account_status',
+      messageId: undefined
+    });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The newly arrived delta bubble MUST remain visible (no drop!)
+    expect(screen.getByText('New delta message #400')).toBeTruthy();
+  });
+
+  test('24. Duplicate delta with seq <= lastSeenSequence is safely deduplicated', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const duplicateDelta = {
+      sequence: 5,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: { ...mockMsg1, id: 501, textContent: 'Duplicate test bubble', occurredAt: '2026-08-31T01:00:20Z' },
+      emittedAtMs: Date.now()
+    };
+
+    // First arrival
+    emitDelta(duplicateDelta);
+    await tick();
+
+    // Duplicate arrival with same sequence
+    emitDelta(duplicateDelta);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await tick();
+
+    const timeline = document.querySelector('[data-timeline-container]');
+    const bubbles = timeline ? within(timeline as HTMLElement).getAllByText('Duplicate test bubble') : [];
+    expect(bubbles.length).toBe(1);
   });
 });

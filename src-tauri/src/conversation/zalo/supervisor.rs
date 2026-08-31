@@ -1051,7 +1051,7 @@ impl ZaloSessionSupervisor {
                 conversation_id,
                 lead_id: lead_id_opt,
                 channel: crate::conversation::types::Channel::Zalo,
-                reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                reason: crate::conversation::events::ConversationInvalidationReason::HistorySync,
                 message_id: None,
             });
 
@@ -1147,7 +1147,7 @@ impl ZaloSessionSupervisor {
                         lead_id: lead_id_opt,
                         channel: crate::conversation::types::Channel::Zalo,
                         reason:
-                            crate::conversation::events::ConversationInvalidationReason::Message,
+                            crate::conversation::events::ConversationInvalidationReason::HistorySync,
                         message_id: None,
                     });
             }

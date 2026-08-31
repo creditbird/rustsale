@@ -419,6 +419,18 @@ impl WhatsAppSupervisor {
                                     reason: crate::conversation::events::ConversationInvalidationReason::Message,
                                     message_id: msg_id_opt,
                                 });
+
+                                if let Some(msg_id) = msg_id_opt {
+                                    let repo = crate::conversation::repository::ConversationRepository::new(db_path.clone());
+                                    if let Ok(Some(delta_event)) = repo.record_message_delta(
+                                        conv_id,
+                                        lead_id_opt,
+                                        crate::conversation::types::Channel::WhatsApp,
+                                        msg_id,
+                                    ) {
+                                        events.publish_delta(delta_event);
+                                    }
+                                }
                                 // Keep the protobuf thumbnail from ingestion. The full encrypted
                                 // payload is resolved lazily through `download_conversation_attachment`,
                                 // which owns size limits, media-retry, persistence, and error semantics.
@@ -619,7 +631,7 @@ impl WhatsAppSupervisor {
                                             conversation_id: conv_id,
                                             lead_id: lead_id_opt,
                                             channel: crate::conversation::types::Channel::WhatsApp,
-                                            reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                                            reason: crate::conversation::events::ConversationInvalidationReason::HistorySync,
                                             message_id: None,
                                         });
                                     }

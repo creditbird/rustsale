@@ -1,6 +1,5 @@
 use crate::conversation::types::{Channel, ConversationMessage};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Emitter;
 use tokio::sync::broadcast;
 
@@ -13,6 +12,8 @@ pub enum ConversationInvalidationReason {
     Metadata,
     Link,
     AccountStatus,
+    HistorySync,
+    AttachmentUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +40,6 @@ pub struct ConversationMessageDeltaEvent {
 pub struct ConversationEventPublisher {
     sender: broadcast::Sender<ConversationInvalidatedEvent>,
     delta_sender: broadcast::Sender<ConversationMessageDeltaEvent>,
-    sequence: AtomicU64,
 }
 
 impl ConversationEventPublisher {
@@ -49,12 +49,7 @@ impl ConversationEventPublisher {
         Self {
             sender,
             delta_sender,
-            sequence: AtomicU64::new(0),
         }
-    }
-
-    pub fn next_sequence(&self) -> u64 {
-        self.sequence.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ConversationInvalidatedEvent> {

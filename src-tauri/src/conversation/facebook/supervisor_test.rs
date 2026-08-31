@@ -220,6 +220,7 @@ fn create_supervisor_test_db(db_path: &str) {
             updated_at TEXT NOT NULL
         );"
     ).unwrap();
+    crate::conversation::migration::migrate(&conn).unwrap();
 }
 
 #[tokio::test]
@@ -532,6 +533,7 @@ async fn test_supervisor_ingest_webhook_events_emits_invalidation() {
 
     let events = Arc::new(ConversationEventPublisher::new(64));
     let mut rx = events.subscribe();
+    let mut delta_rx = events.subscribe_delta();
     let client = Arc::new(MockFacebookGraphClient {
         conversations: vec![],
     });
@@ -559,6 +561,12 @@ async fn test_supervisor_ingest_webhook_events_emits_invalidation() {
         event.channel,
         crate::conversation::types::Channel::Messenger
     );
+
+    // Delta event must also be emitted with durable sequence
+    let delta = delta_rx.try_recv().expect("Expected delta event");
+    assert_eq!(delta.channel, crate::conversation::types::Channel::Messenger);
+    assert_eq!(delta.message.text_content.as_deref(), Some("Quận 8 e ơi"));
+    assert!(delta.sequence > 0);
 }
 
 #[tokio::test]
