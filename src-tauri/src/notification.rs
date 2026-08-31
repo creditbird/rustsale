@@ -1,6 +1,5 @@
 use crate::conversation::types::Channel;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Runtime};
@@ -76,10 +75,16 @@ pub fn format_notification_body(raw_text: &str, content_type: &str, privacy_mode
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FocusRecord {
+    pub active_conversation_id: Option<i64>,
+    pub is_focused: bool,
+    pub seq: u64,
+}
+
 pub struct NotificationManager {
     settings: RwLock<NotificationSettings>,
-    focus_state: RwLock<(Option<i64>, bool)>,
-    focus_seq: AtomicU64,
+    focus_state: Mutex<FocusRecord>,
     last_notified: Mutex<HashMap<i64, Instant>>,
     tray_state: RwLock<Option<crate::tray::TrayState>>,
 }
@@ -88,8 +93,7 @@ impl Default for NotificationManager {
     fn default() -> Self {
         Self {
             settings: RwLock::new(NotificationSettings::default()),
-            focus_state: RwLock::new((None, false)),
-            focus_seq: AtomicU64::new(0),
+            focus_state: Mutex::new(FocusRecord::default()),
             last_notified: Mutex::new(HashMap::new()),
             tray_state: RwLock::new(None),
         }
@@ -100,8 +104,7 @@ impl NotificationManager {
     pub fn new(settings: NotificationSettings) -> Self {
         Self {
             settings: RwLock::new(settings),
-            focus_state: RwLock::new((None, false)),
-            focus_seq: AtomicU64::new(0),
+            focus_state: Mutex::new(FocusRecord::default()),
             last_notified: Mutex::new(HashMap::new()),
             tray_state: RwLock::new(None),
         }
@@ -120,31 +123,23 @@ impl NotificationManager {
     }
 
     pub fn set_focus(&self, active_conversation_id: Option<i64>, is_focused: bool, seq: Option<u64>) -> bool {
+        let mut lock = self.focus_state.lock().unwrap();
         if let Some(s) = seq {
-            let mut curr = self.focus_seq.load(Ordering::SeqCst);
-            loop {
-                if s < curr {
-                    return false; // Stale sequence rejected
-                }
-                match self.focus_seq.compare_exchange_weak(
-                    curr,
-                    s,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(actual) => curr = actual,
-                }
+            if s <= lock.seq {
+                return false; // Stale or duplicate sequence rejected atomically
             }
+            lock.seq = s;
+        } else {
+            lock.seq = lock.seq.saturating_add(1);
         }
-        *self.focus_state.write().unwrap() = (active_conversation_id, is_focused);
+        lock.active_conversation_id = active_conversation_id;
+        lock.is_focused = is_focused;
         true
     }
 
     pub fn get_focus_state(&self) -> (Option<i64>, bool, u64) {
-        let state = *self.focus_state.read().unwrap();
-        let seq = self.focus_seq.load(Ordering::SeqCst);
-        (state.0, state.1, seq)
+        let lock = self.focus_state.lock().unwrap();
+        (lock.active_conversation_id, lock.is_focused, lock.seq)
     }
 
     pub fn should_suppress(&self, conversation_id: i64, is_group: bool) -> bool {
@@ -159,12 +154,12 @@ impl NotificationManager {
             }
         }
 
-        if is_group && settings.mute_groups {
+        if settings.mute_groups && is_group {
             return true;
         }
 
-        let (focused_conv_id, is_window_focused) = *self.focus_state.read().unwrap();
-        if is_window_focused && focused_conv_id == Some(conversation_id) {
+        let (active_id, is_focused, _) = self.get_focus_state();
+        if is_focused && active_id == Some(conversation_id) {
             return true;
         }
 

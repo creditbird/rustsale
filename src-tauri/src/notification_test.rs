@@ -94,9 +94,41 @@ fn test_focus_sequence_monotonic_ordering() {
     // Backend focus state remains at conv 20
     assert_eq!(manager.get_focus_state(), (Some(20), true, 20));
 
+    // Duplicate Call at seq 20 -> REJECTED
+    assert!(!manager.set_focus(Some(999), false, Some(20)));
+    assert_eq!(manager.get_focus_state(), (Some(20), true, 20));
+
     // Newer Call 4 at seq 25 -> ACCEPTED
     assert!(manager.set_focus(Some(25), false, Some(25)));
     assert_eq!(manager.get_focus_state(), (Some(25), false, 25));
+}
+
+#[test]
+fn test_concurrent_atomic_focus_updates() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let manager = Arc::new(NotificationManager::default());
+    let mut handles = Vec::new();
+
+    // Spawn 10 concurrent threads with different sequence numbers and conversations
+    for i in 1..=10 {
+        let mgr = Arc::clone(&manager);
+        handles.push(thread::spawn(move || {
+            let seq = (i * 10) as u64;
+            mgr.set_focus(Some(i as i64), true, Some(seq));
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // Because highest sequence submitted was 100 (i=10), final state must have seq 100 and conv 10
+    let (active_conv, is_focused, final_seq) = manager.get_focus_state();
+    assert_eq!(final_seq, 100);
+    assert_eq!(active_conv, Some(10));
+    assert!(is_focused);
 }
 
 #[test]
@@ -150,11 +182,24 @@ fn test_rate_limiting_debounces_rapid_burst_and_prunes() {
     // Different conversation should be allowed
     assert!(manager.check_and_record_rate_limit(200));
 
-    // Burst across 80 conversations triggers pruning path
-    for i in 1..=80 {
-        manager.check_and_record_rate_limit(1000 + i);
+    // Populate 70 expired entries (> 3 seconds old)
+    let past_time = Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap();
+    {
+        let mut map = manager.last_notified.lock().unwrap();
+        for i in 1..=70 {
+            map.insert(5000 + i, past_time);
+        }
+        assert!(map.len() >= 72);
     }
-    assert!(manager.last_notified.lock().unwrap().len() <= 85);
+
+    // Trigger pruning via next rate-limit check (size > 64 threshold)
+    assert!(manager.check_and_record_rate_limit(9999));
+
+    // Expired entries must be purged, leaving only active recent entries (100, 200, 9999)
+    let final_len = manager.last_notified.lock().unwrap().len();
+    assert_eq!(final_len, 3);
 }
 
 #[test]

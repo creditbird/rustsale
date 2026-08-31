@@ -81,7 +81,20 @@ export function getActiveFocusState(): { activeConversationId: number | null; is
 }
 
 let lastSyncedFocus: { convId: number | null; focused: boolean } | null = null;
-let focusSyncSeq = 0;
+let focusLocalCounter = 0;
+let lastIssuedSeq = 0;
+
+function nextMonotonicFocusSeq(): number {
+  const nowUs = Date.now() * 1000;
+  focusLocalCounter = (focusLocalCounter + 1) % 1000;
+  const candidate = nowUs + focusLocalCounter;
+  if (candidate <= lastIssuedSeq) {
+    lastIssuedSeq += 1;
+    return lastIssuedSeq;
+  }
+  lastIssuedSeq = candidate;
+  return candidate;
+}
 
 export async function setConversationFocus(
   convId: number | null,
@@ -103,7 +116,7 @@ export async function setConversationFocus(
     return;
   }
 
-  const seq = ++focusSyncSeq;
+  const seq = nextMonotonicFocusSeq();
 
   try {
     const accepted = await invoke<boolean>('set_active_conversation_focus', {
@@ -111,11 +124,11 @@ export async function setConversationFocus(
       isFocused: targetFocused,
       seq
     });
-    if (accepted !== false && seq === focusSyncSeq) {
+    if (accepted !== false && seq === lastIssuedSeq) {
       lastSyncedFocus = { convId: targetConvId, focused: targetFocused };
     }
   } catch (err) {
-    if (seq === focusSyncSeq) {
+    if (seq === lastIssuedSeq) {
       lastSyncedFocus = null;
     }
     console.warn('Failed to sync conversation focus to backend:', err);

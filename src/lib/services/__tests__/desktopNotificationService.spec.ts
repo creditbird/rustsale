@@ -17,6 +17,7 @@ import {
 } from '../desktopNotificationService';
 
 let mockInvokeFailure = false;
+let customFocusHandler: ((args: Record<string, unknown>) => Promise<boolean>) | null = null;
 let backendFocusState = { convId: null as number | null, isFocused: true, seq: 0 };
 const eventListeners: Record<string, ((event: { payload: unknown }) => void)[]> = {};
 
@@ -26,8 +27,11 @@ mock.module('@tauri-apps/api/core', () => ({
       throw new Error('Simulated_IPC_Focus_Failure');
     }
     if (cmd === 'set_active_conversation_focus') {
+      if (customFocusHandler) {
+        return customFocusHandler(args || {});
+      }
       const seq = (args?.seq as number) || 0;
-      if (seq >= backendFocusState.seq) {
+      if (seq > backendFocusState.seq) {
         backendFocusState = {
           convId: (args?.activeConversationId as number | null) ?? null,
           isFocused: (args?.isFocused as boolean) ?? true,
@@ -69,6 +73,7 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
   beforeEach(() => {
     setLocale('vi');
     mockInvokeFailure = false;
+    customFocusHandler = null;
     backendFocusState = { convId: null, isFocused: true, seq: 0 };
     _resetSharedAudioContextForTesting();
   });
@@ -103,18 +108,48 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
     expect(updated.isFocused).toBe(false);
   });
 
-  test('preserves monotonic backend focus state even under out-of-order IPC completion', async () => {
-    // Call 1 for conv 10
-    const p1 = setConversationFocus(10, true);
-    // Call 2 for conv 20
-    const p2 = setConversationFocus(20, true);
+  test('preserves monotonic backend focus state when earlier IPC execution is delayed behind newer IPC', async () => {
+    let releaseCall1: () => void = () => {};
+    const call1Deferred = new Promise<void>((resolve) => {
+      releaseCall1 = resolve;
+    });
 
-    await Promise.all([p1, p2]);
+    let callCount = 0;
+    customFocusHandler = async (args) => {
+      callCount++;
+      const seq = (args.seq as number) || 0;
+      if (callCount === 1) {
+        // Force Call 1 to pause at the barrier until released
+        await call1Deferred;
+      }
+      if (seq > backendFocusState.seq) {
+        backendFocusState = {
+          convId: (args.activeConversationId as number | null) ?? null,
+          isFocused: (args.isFocused as boolean) ?? true,
+          seq
+        };
+        return true;
+      }
+      return false; // Stale sequence rejected
+    };
 
-    // Backend must converge to conv 20
-    expect(backendFocusState.convId).toBe(20);
-    expect(backendFocusState.isFocused).toBe(true);
-    expect(getActiveFocusState().activeConversationId).toBe(20);
+    // Trigger Call 1 for conv 100 (which gets delayed at the barrier)
+    const p1 = setConversationFocus(100, true);
+
+    // Trigger Call 2 for conv 200 (which completes immediately)
+    const p2 = setConversationFocus(200, true);
+    await p2;
+
+    // Backend must currently be at conv 200
+    expect(backendFocusState.convId).toBe(200);
+
+    // Now release Call 1 to finish its execution
+    releaseCall1();
+    await p1;
+
+    // Backend state must NOT have regressed to conv 100
+    expect(backendFocusState.convId).toBe(200);
+    expect(getActiveFocusState().activeConversationId).toBe(200);
   });
 
   test('retrieves and updates notification settings', async () => {
@@ -194,7 +229,8 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
     cleanup();
   });
 
-  test('reuses single AudioContext instance and resumes if suspended', () => {
+  test('reuses single AudioContext instance and safely restores environment', () => {
+    const originalWindow = (globalThis as unknown as { window?: unknown }).window;
     let instanceCount = 0;
     let resumeCallCount = 0;
 
@@ -231,20 +267,25 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
       }
     }
 
-    const fakeWindow = {
-      AudioContext: MockAudioContext
-    };
-    (globalThis as unknown as { window: unknown }).window = fakeWindow;
+    try {
+      const fakeWindow = {
+        AudioContext: MockAudioContext
+      };
+      (globalThis as unknown as { window: unknown }).window = fakeWindow;
 
-    playNotificationChime();
-    expect(instanceCount).toBe(1);
-    expect(resumeCallCount).toBe(1);
+      playNotificationChime();
+      expect(instanceCount).toBe(1);
+      expect(resumeCallCount).toBe(1);
 
-    // Second call reuses same instance and does not instantiate a second AudioContext
-    playNotificationChime();
-    expect(instanceCount).toBe(1);
-
-    delete (globalThis as unknown as { window?: unknown }).window;
-    delete (globalThis as unknown as { AudioContext?: unknown }).AudioContext;
+      // Second call reuses same instance and does not instantiate a second AudioContext
+      playNotificationChime();
+      expect(instanceCount).toBe(1);
+    } finally {
+      if (originalWindow !== undefined) {
+        (globalThis as unknown as { window: unknown }).window = originalWindow;
+      } else {
+        delete (globalThis as unknown as { window?: unknown }).window;
+      }
+    }
   });
 });

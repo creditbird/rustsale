@@ -48,25 +48,11 @@
   onMount(() => {
     let active = true;
     let unsubDnd: (() => void) | null = null;
-
-    (async () => {
-      try {
-        const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
-        if (active) {
-          if (s) settings = s;
-          if (t) tray = t;
-        }
-      } catch (err) {
-        console.warn('Error loading notification settings:', err);
-      } finally {
-        if (active) {
-          loading = false;
-        }
-      }
-    })();
+    let dndEventReceived = false;
 
     subscribeTrayDndChanged((enabled) => {
       if (active) {
+        dndEventReceived = true;
         tray.dnd_enabled = enabled;
       }
     }).then((unsub) => {
@@ -76,6 +62,27 @@
         unsub();
       }
     }).catch(() => {});
+
+    (async () => {
+      try {
+        const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
+        if (active) {
+          if (s) settings = s;
+          if (t) {
+            tray.close_to_tray = t.close_to_tray;
+            if (!dndEventReceived) {
+              tray.dnd_enabled = t.dnd_enabled;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Error loading notification settings:', err);
+      } finally {
+        if (active) {
+          loading = false;
+        }
+      }
+    })();
 
     return () => {
       active = false;
