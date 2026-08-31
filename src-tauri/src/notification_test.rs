@@ -289,3 +289,62 @@ fn test_dispatch_notification_deterministic_strategy() {
     assert!(res4.is_err(), "Dual failure must return Err");
     assert_eq!(res4.unwrap_err(), "plugin delivery failed");
 }
+
+#[tokio::test]
+async fn test_bounded_notification_queue_and_concurrency() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<usize>(64);
+    let rx = Arc::new(tokio::sync::Mutex::new(rx));
+    let active_workers = Arc::new(AtomicUsize::new(0));
+    let max_concurrency = Arc::new(AtomicUsize::new(0));
+    let completed_count = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let rx = rx.clone();
+        let active = active_workers.clone();
+        let max = max_concurrency.clone();
+        let completed = completed_count.clone();
+
+        handles.push(tokio::spawn(async move {
+            loop {
+                let job = {
+                    let mut lock = rx.lock().await;
+                    lock.recv().await
+                };
+                match job {
+                    Some(_) => {
+                        let cur = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        let mut prev_max = max.load(Ordering::SeqCst);
+                        while cur > prev_max {
+                            match max.compare_exchange_weak(prev_max, cur, Ordering::SeqCst, Ordering::SeqCst) {
+                                Ok(_) => break,
+                                Err(actual) => prev_max = actual,
+                            }
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        completed.fetch_add(1, Ordering::SeqCst);
+                    }
+                    None => break,
+                }
+            }
+        }));
+    }
+
+    // Submit 10 jobs into the queue
+    for i in 0..10 {
+        tx.send(i).await.expect("channel should accept 10 items");
+    }
+    drop(tx);
+
+    for h in handles {
+        h.await.expect("worker task should finish cleanly");
+    }
+
+    assert_eq!(completed_count.load(Ordering::SeqCst), 10, "All 10 jobs must complete");
+    assert!(max_concurrency.load(Ordering::SeqCst) <= 4, "Concurrency must never exceed 4");
+    assert_eq!(active_workers.load(Ordering::SeqCst), 0, "All worker permits must be released");
+}

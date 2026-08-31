@@ -248,6 +248,56 @@ pub fn show_plugin_notification<R: Runtime>(
         .map_err(|err| format!("Desktop notification delivery failed: {err}"))
 }
 
+#[cfg(target_os = "linux")]
+pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<bool, String> {
+    let mut child = std::process::Command::new("notify-send")
+        .arg(title)
+        .arg(body)
+        .arg("-a")
+        .arg("RustSale CRM")
+        .arg("-i")
+        .arg("rustsale-crm")
+        .arg("-e")
+        .arg("-u")
+        .arg("normal")
+        .arg("-t")
+        .arg("3500")
+        .arg("-h")
+        .arg("string:category:im.received")
+        .spawn()
+        .map_err(|e| format!("notify-send spawn failed: {e}"))?;
+
+    let start = Instant::now();
+    let timeout = Duration::from_millis(1500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(true);
+                } else {
+                    tracing::warn!(target: "notification", %status, "notify-send exited non-zero");
+                    return Ok(false);
+                }
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    tracing::warn!(target: "notification", "notify-send timed out after 1.5s; killing process");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("notify-send timed out after 1.5s".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(err) => {
+                tracing::warn!(target: "notification", %err, "notify-send try_wait error; killing process");
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("notify-send try_wait error: {err}"));
+            }
+        }
+    }
+}
+
 pub fn dispatch_desktop_notification<R: Runtime>(
     app: &AppHandle<R>,
     title: &str,
@@ -255,60 +305,10 @@ pub fn dispatch_desktop_notification<R: Runtime>(
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        let spawn_res = std::process::Command::new("notify-send")
-            .arg(title)
-            .arg(body)
-            .arg("-a")
-            .arg("RustSale CRM")
-            .arg("-i")
-            .arg("rustsale-crm")
-            .arg("-e")
-            .arg("-u")
-            .arg("normal")
-            .arg("-t")
-            .arg("3500")
-            .arg("-h")
-            .arg("string:category:im.received")
-            .spawn();
-
-        match spawn_res {
-            Ok(mut child) => {
-                let start = Instant::now();
-                let timeout = Duration::from_millis(1500);
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            if status.success() {
-                                return Ok(());
-                            } else {
-                                tracing::warn!(target: "notification", %status, "notify-send exited non-zero; falling back to plugin");
-                                break;
-                            }
-                        }
-                        Ok(None) => {
-                            if start.elapsed() >= timeout {
-                                tracing::warn!(target: "notification", "notify-send timed out after 1.5s; killing process and falling back to plugin");
-                                let _ = child.kill();
-                                let _ = child.wait();
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(20));
-                        }
-                        Err(err) => {
-                            tracing::warn!(target: "notification", %err, "notify-send try_wait error; killing process and falling back to plugin");
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                    }
-                }
-                show_plugin_notification(app, title, body)
-            }
-            Err(spawn_err) => {
-                tracing::debug!(target: "notification", %spawn_err, "notify-send spawn failed; falling back to plugin");
-                show_plugin_notification(app, title, body)
-            }
-        }
+        dispatch_notification_strategy(
+            || execute_linux_notify_send(title, body),
+            || show_plugin_notification(app, title, body),
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
