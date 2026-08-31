@@ -25,6 +25,7 @@
     setCloseToTray,
     setTrayDnd,
     testDesktopNotification,
+    subscribeTrayDndChanged,
     type NotificationSettings as SettingsType,
     type TrayConfig
   } from '$lib/services/desktopNotificationService';
@@ -44,16 +45,44 @@
   let loading = $state(true);
   let testing = $state(false);
 
-  onMount(async () => {
-    try {
-      const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
-      if (s) settings = s;
-      if (t) tray = t;
-    } catch (err) {
-      console.warn('Error loading notification settings:', err);
-    } finally {
-      loading = false;
-    }
+  onMount(() => {
+    let active = true;
+    let unsubDnd: (() => void) | null = null;
+
+    (async () => {
+      try {
+        const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
+        if (active) {
+          if (s) settings = s;
+          if (t) tray = t;
+        }
+      } catch (err) {
+        console.warn('Error loading notification settings:', err);
+      } finally {
+        if (active) {
+          loading = false;
+        }
+      }
+    })();
+
+    subscribeTrayDndChanged((enabled) => {
+      if (active) {
+        tray.dnd_enabled = enabled;
+      }
+    }).then((unsub) => {
+      if (active) {
+        unsubDnd = unsub;
+      } else {
+        unsub();
+      }
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+      if (unsubDnd) {
+        unsubDnd();
+      }
+    };
   });
 
   async function handleToggleEnabled() {

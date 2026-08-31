@@ -106,11 +106,12 @@ export async function setConversationFocus(
   const seq = ++focusSyncSeq;
 
   try {
-    await invoke('set_active_conversation_focus', {
+    const accepted = await invoke<boolean>('set_active_conversation_focus', {
       activeConversationId: targetConvId,
-      isFocused: targetFocused
+      isFocused: targetFocused,
+      seq
     });
-    if (seq === focusSyncSeq) {
+    if (accepted !== false && seq === focusSyncSeq) {
       lastSyncedFocus = { convId: targetConvId, focused: targetFocused };
     }
   } catch (err) {
@@ -120,6 +121,12 @@ export async function setConversationFocus(
     console.warn('Failed to sync conversation focus to backend:', err);
     throw err;
   }
+}
+
+export async function subscribeTrayDndChanged(callback: (enabled: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>('tray-dnd-changed', (event) => {
+    callback(event.payload);
+  });
 }
 
 export async function getNotificationSettings(): Promise<NotificationSettings> {
@@ -190,6 +197,14 @@ function getSharedAudioContext(): AudioContext | null {
     console.debug('Notification chime audio context initialization error:', err);
     return null;
   }
+}
+
+export function _resetSharedAudioContextForTesting(): void {
+  sharedAudioCtx = null;
+}
+
+export function _getSharedAudioContextForTesting(): AudioContext | null {
+  return getSharedAudioContext();
 }
 
 export function playNotificationChime(): void {

@@ -64,7 +64,7 @@ fn test_format_notification_content_media() {
 #[test]
 fn test_should_suppress_notification_when_focused() {
     let manager = NotificationManager::default();
-    manager.set_focus(Some(42), true);
+    assert!(manager.set_focus(Some(42), true, Some(1)));
 
     // Suppressed because user is focused on conversation 42
     assert!(manager.should_suppress(42, false));
@@ -73,8 +73,30 @@ fn test_should_suppress_notification_when_focused() {
     assert!(!manager.should_suppress(99, false));
 
     // When window loses focus, conversation 42 is no longer suppressed
-    manager.set_focus(Some(42), false);
+    assert!(manager.set_focus(Some(42), false, Some(2)));
     assert!(!manager.should_suppress(42, false));
+}
+
+#[test]
+fn test_focus_sequence_monotonic_ordering() {
+    let manager = NotificationManager::default();
+
+    // Call 1 at seq 10 sets focus to conv 10
+    assert!(manager.set_focus(Some(10), true, Some(10)));
+    assert_eq!(manager.get_focus_state(), (Some(10), true, 10));
+
+    // Call 2 at seq 20 sets focus to conv 20
+    assert!(manager.set_focus(Some(20), true, Some(20)));
+    assert_eq!(manager.get_focus_state(), (Some(20), true, 20));
+
+    // Out-of-order delayed Call 3 at seq 15 arrives later -> REJECTED
+    assert!(!manager.set_focus(Some(15), true, Some(15)));
+    // Backend focus state remains at conv 20
+    assert_eq!(manager.get_focus_state(), (Some(20), true, 20));
+
+    // Newer Call 4 at seq 25 -> ACCEPTED
+    assert!(manager.set_focus(Some(25), false, Some(25)));
+    assert_eq!(manager.get_focus_state(), (Some(25), false, 25));
 }
 
 #[test]
@@ -116,7 +138,7 @@ fn test_should_suppress_notification_when_dnd_or_disabled() {
 }
 
 #[test]
-fn test_rate_limiting_debounces_rapid_burst() {
+fn test_rate_limiting_debounces_rapid_burst_and_prunes() {
     let manager = NotificationManager::default();
 
     // First message should be allowed
@@ -127,6 +149,12 @@ fn test_rate_limiting_debounces_rapid_burst() {
 
     // Different conversation should be allowed
     assert!(manager.check_and_record_rate_limit(200));
+
+    // Burst across 80 conversations triggers pruning path
+    for i in 1..=80 {
+        manager.check_and_record_rate_limit(1000 + i);
+    }
+    assert!(manager.last_notified.lock().unwrap().len() <= 85);
 }
 
 #[test]
@@ -150,5 +178,12 @@ fn test_dispatch_desktop_notification_and_test_command() {
         direct_res.is_ok(),
         "dispatch_desktop_notification should return Ok: {:?}",
         direct_res
+    );
+
+    let plugin_res = show_plugin_notification(&app.handle(), "Fallback Title", "Fallback Body");
+    assert!(
+        plugin_res.is_ok(),
+        "show_plugin_notification should return Ok: {:?}",
+        plugin_res
     );
 }

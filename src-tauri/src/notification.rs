@@ -1,5 +1,6 @@
 use crate::conversation::types::Channel;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Runtime};
@@ -78,6 +79,7 @@ pub fn format_notification_body(raw_text: &str, content_type: &str, privacy_mode
 pub struct NotificationManager {
     settings: RwLock<NotificationSettings>,
     focus_state: RwLock<(Option<i64>, bool)>,
+    focus_seq: AtomicU64,
     last_notified: Mutex<HashMap<i64, Instant>>,
     tray_state: RwLock<Option<crate::tray::TrayState>>,
 }
@@ -87,6 +89,7 @@ impl Default for NotificationManager {
         Self {
             settings: RwLock::new(NotificationSettings::default()),
             focus_state: RwLock::new((None, false)),
+            focus_seq: AtomicU64::new(0),
             last_notified: Mutex::new(HashMap::new()),
             tray_state: RwLock::new(None),
         }
@@ -98,6 +101,7 @@ impl NotificationManager {
         Self {
             settings: RwLock::new(settings),
             focus_state: RwLock::new((None, false)),
+            focus_seq: AtomicU64::new(0),
             last_notified: Mutex::new(HashMap::new()),
             tray_state: RwLock::new(None),
         }
@@ -115,8 +119,32 @@ impl NotificationManager {
         *self.settings.write().unwrap() = new_settings;
     }
 
-    pub fn set_focus(&self, active_conversation_id: Option<i64>, is_focused: bool) {
+    pub fn set_focus(&self, active_conversation_id: Option<i64>, is_focused: bool, seq: Option<u64>) -> bool {
+        if let Some(s) = seq {
+            let mut curr = self.focus_seq.load(Ordering::SeqCst);
+            loop {
+                if s < curr {
+                    return false; // Stale sequence rejected
+                }
+                match self.focus_seq.compare_exchange_weak(
+                    curr,
+                    s,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => curr = actual,
+                }
+            }
+        }
         *self.focus_state.write().unwrap() = (active_conversation_id, is_focused);
+        true
+    }
+
+    pub fn get_focus_state(&self) -> (Option<i64>, bool, u64) {
+        let state = *self.focus_state.read().unwrap();
+        let seq = self.focus_seq.load(Ordering::SeqCst);
+        (state.0, state.1, seq)
     }
 
     pub fn should_suppress(&self, conversation_id: i64, is_group: bool) -> bool {
@@ -146,6 +174,11 @@ impl NotificationManager {
     pub fn check_and_record_rate_limit(&self, conversation_id: i64) -> bool {
         let now = Instant::now();
         let mut map = self.last_notified.lock().unwrap();
+
+        // Prune expired entries when map size grows to prevent memory leaks
+        if map.len() > 64 {
+            map.retain(|_, &mut time| now.duration_since(time) <= RATE_LIMIT_WINDOW * 2);
+        }
 
         if let Some(last_time) = map.get(&conversation_id) {
             if now.duration_since(*last_time) < RATE_LIMIT_WINDOW {
@@ -195,7 +228,7 @@ impl NotificationManager {
     }
 }
 
-fn show_plugin_notification<R: Runtime>(
+pub fn show_plugin_notification<R: Runtime>(
     app: &AppHandle<R>,
     title: &str,
     body: &str,
@@ -213,59 +246,40 @@ pub fn dispatch_desktop_notification<R: Runtime>(
     title: &str,
     body: &str,
 ) -> Result<(), String> {
-    let title_owned = title.to_string();
-    let body_owned = body.to_string();
-    let app_handle = app.clone();
-
     #[cfg(target_os = "linux")]
     {
-        let spawn_res = std::thread::Builder::new()
-            .name("notification-dispatch".to_string())
-            .spawn(move || {
-                let notify_send_res = std::process::Command::new("notify-send")
-                    .arg(&title_owned)
-                    .arg(&body_owned)
-                    .arg("-a")
-                    .arg("RustSale CRM")
-                    .arg("-i")
-                    .arg("rustsale-crm")
-                    .arg("-e")
-                    .arg("-u")
-                    .arg("normal")
-                    .arg("-t")
-                    .arg("3500")
-                    .arg("-h")
-                    .arg("string:category:im.received")
-                    .status();
+        let notify_send_res = std::process::Command::new("notify-send")
+            .arg(title)
+            .arg(body)
+            .arg("-a")
+            .arg("RustSale CRM")
+            .arg("-i")
+            .arg("rustsale-crm")
+            .arg("-e")
+            .arg("-u")
+            .arg("normal")
+            .arg("-t")
+            .arg("3500")
+            .arg("-h")
+            .arg("string:category:im.received")
+            .status();
 
-                match notify_send_res {
-                    Ok(status) if status.success() => {}
-                    Ok(status) => {
-                        tracing::warn!(target: "notification", %status, "notify-send exited with non-zero status; falling back to tauri-plugin-notification");
-                        if let Err(err) = show_plugin_notification(&app_handle, &title_owned, &body_owned) {
-                            tracing::warn!(target: "notification", %err, "Fallback tauri-plugin-notification failed");
-                        }
-                    }
-                    Err(spawn_err) => {
-                        tracing::debug!(target: "notification", %spawn_err, "notify-send spawn failed; falling back to tauri-plugin-notification");
-                        if let Err(err) = show_plugin_notification(&app_handle, &title_owned, &body_owned) {
-                            tracing::warn!(target: "notification", %err, "Fallback tauri-plugin-notification failed");
-                        }
-                    }
-                }
-            });
-
-        if let Err(err) = spawn_res {
-            tracing::warn!(target: "notification", %err, "Failed to spawn notification thread; falling back to plugin");
-            return show_plugin_notification(app, title, body);
+        match notify_send_res {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => {
+                tracing::warn!(target: "notification", %status, "notify-send exited with non-zero status; falling back to plugin");
+                show_plugin_notification(app, title, body)
+            }
+            Err(spawn_err) => {
+                tracing::debug!(target: "notification", %spawn_err, "notify-send spawn failed; falling back to plugin");
+                show_plugin_notification(app, title, body)
+            }
         }
-
-        Ok(())
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        show_plugin_notification(&app_handle, &title_owned, &body_owned)
+        show_plugin_notification(app, title, body)
     }
 }
 
@@ -289,10 +303,10 @@ pub fn update_notification_settings(
 pub fn set_active_conversation_focus(
     active_conversation_id: Option<i64>,
     is_focused: bool,
+    seq: Option<u64>,
     state: tauri::State<'_, std::sync::Arc<NotificationManager>>,
-) -> Result<(), String> {
-    state.set_focus(active_conversation_id, is_focused);
-    Ok(())
+) -> Result<bool, String> {
+    Ok(state.set_focus(active_conversation_id, is_focused, seq))
 }
 
 #[tauri::command]

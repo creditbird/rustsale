@@ -10,15 +10,32 @@ import {
   setTrayDnd,
   formatNotificationPreviewText,
   playNotificationChime,
-  initDesktopNotificationBridge
+  initDesktopNotificationBridge,
+  subscribeTrayDndChanged,
+  _resetSharedAudioContextForTesting,
+  _getSharedAudioContextForTesting
 } from '../desktopNotificationService';
 
 let mockInvokeFailure = false;
+let backendFocusState = { convId: null as number | null, isFocused: true, seq: 0 };
+const eventListeners: Record<string, ((event: { payload: unknown }) => void)[]> = {};
 
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args?: Record<string, unknown>) => {
     if (mockInvokeFailure && cmd === 'set_active_conversation_focus') {
       throw new Error('Simulated_IPC_Focus_Failure');
+    }
+    if (cmd === 'set_active_conversation_focus') {
+      const seq = (args?.seq as number) || 0;
+      if (seq >= backendFocusState.seq) {
+        backendFocusState = {
+          convId: (args?.activeConversationId as number | null) ?? null,
+          isFocused: (args?.isFocused as boolean) ?? true,
+          seq
+        };
+        return true;
+      }
+      return false; // Stale sequence rejected
     }
     if (cmd === 'get_notification_settings') {
       return { enabled: true, sound_enabled: true, privacy_mode: false, mute_groups: false };
@@ -29,7 +46,7 @@ mock.module('@tauri-apps/api/core', () => ({
     if (cmd === 'get_tray_state') {
       return { close_to_tray: true, dnd_enabled: false };
     }
-    if (cmd === 'set_close_to_tray' || cmd === 'set_tray_dnd' || cmd === 'set_active_conversation_focus') {
+    if (cmd === 'set_close_to_tray' || cmd === 'set_tray_dnd') {
       return undefined;
     }
     return undefined;
@@ -37,14 +54,23 @@ mock.module('@tauri-apps/api/core', () => ({
 }));
 
 mock.module('@tauri-apps/api/event', () => ({
-  listen: async (_eventName: string, _callback: (event: unknown) => void) => {
-    return () => {};
+  listen: async (eventName: string, callback: (event: { payload: unknown }) => void) => {
+    if (!eventListeners[eventName]) {
+      eventListeners[eventName] = [];
+    }
+    eventListeners[eventName].push(callback);
+    return () => {
+      eventListeners[eventName] = eventListeners[eventName].filter((cb) => cb !== callback);
+    };
   }
 }));
 
 describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
   beforeEach(() => {
     setLocale('vi');
+    mockInvokeFailure = false;
+    backendFocusState = { convId: null, isFocused: true, seq: 0 };
+    _resetSharedAudioContextForTesting();
   });
 
   test('formats preview text correctly in Vietnamese', () => {
@@ -75,6 +101,20 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
     const updated = getActiveFocusState();
     expect(updated.activeConversationId).toBeNull();
     expect(updated.isFocused).toBe(false);
+  });
+
+  test('preserves monotonic backend focus state even under out-of-order IPC completion', async () => {
+    // Call 1 for conv 10
+    const p1 = setConversationFocus(10, true);
+    // Call 2 for conv 20
+    const p2 = setConversationFocus(20, true);
+
+    await Promise.all([p1, p2]);
+
+    // Backend must converge to conv 20
+    expect(backendFocusState.convId).toBe(20);
+    expect(backendFocusState.isFocused).toBe(true);
+    expect(getActiveFocusState().activeConversationId).toBe(20);
   });
 
   test('retrieves and updates notification settings', async () => {
@@ -114,15 +154,27 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
     await expect(setTrayDnd(true)).resolves.toBeUndefined();
   });
 
-  test('initializes desktop notification bridge and unregisters cleanly', async () => {
-    let dndState: boolean | null = null;
+  test('subscribes to tray-dnd-changed events and receives updates', async () => {
+    let capturedDnd = false;
+    const unsub = await subscribeTrayDndChanged((enabled) => {
+      capturedDnd = enabled;
+    });
+
+    // Simulate backend tray-dnd-changed emission
+    eventListeners['tray-dnd-changed']?.forEach((cb) => cb({ payload: true }));
+    expect(capturedDnd).toBe(true);
+
+    eventListeners['tray-dnd-changed']?.forEach((cb) => cb({ payload: false }));
+    expect(capturedDnd).toBe(false);
+
+    unsub();
+  });
+
+  test('initializes desktop notification bridge and processes events', async () => {
+    let dndState = false;
     let markAllReadCalled = false;
-    let navigatedId: number | null = null;
 
     const cleanup = await initDesktopNotificationBridge({
-      onNavigate: (convId) => {
-        navigatedId = convId;
-      },
       onMarkAllRead: () => {
         markAllReadCalled = true;
       },
@@ -131,48 +183,68 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
       }
     });
 
+    // Fire mock events
+    eventListeners['tray-mark-all-read']?.forEach((cb) => cb({ payload: null }));
+    expect(markAllReadCalled).toBe(true);
+
+    eventListeners['tray-dnd-changed']?.forEach((cb) => cb({ payload: true }));
+    expect(dndState).toBe(true);
+
     expect(typeof cleanup).toBe('function');
     cleanup();
   });
 
-  test('executes playNotificationChime safely without exceptions', () => {
-    // Mock WebAudio AudioContext
-    const mockDestination = {};
-    const mockGainNode = {
-      gain: {
-        setValueAtTime: () => {},
-        linearRampToValueAtTime: () => {},
-        exponentialRampToValueAtTime: () => {}
-      },
-      connect: () => {}
-    };
-    const mockOscillatorNode = {
-      type: 'sine',
-      frequency: {
-        setValueAtTime: () => {}
-      },
-      connect: () => {},
-      start: () => {},
-      stop: () => {}
-    };
+  test('reuses single AudioContext instance and resumes if suspended', () => {
+    let instanceCount = 0;
+    let resumeCallCount = 0;
 
     class MockAudioContext {
       currentTime = 0;
-      state = 'running';
-      destination = mockDestination;
+      state = 'suspended';
+      destination = {};
+      constructor() {
+        instanceCount++;
+      }
       createGain() {
-        return mockGainNode;
+        return {
+          gain: {
+            setValueAtTime: () => {},
+            linearRampToValueAtTime: () => {},
+            exponentialRampToValueAtTime: () => {}
+          },
+          connect: () => {}
+        };
       }
       createOscillator() {
-        return mockOscillatorNode;
+        return {
+          type: 'sine',
+          frequency: { setValueAtTime: () => {} },
+          connect: () => {},
+          start: () => {},
+          stop: () => {}
+        };
       }
       resume() {
+        resumeCallCount++;
+        this.state = 'running';
         return Promise.resolve();
       }
     }
 
-    (globalThis as unknown as { AudioContext: typeof MockAudioContext }).AudioContext = MockAudioContext;
+    const fakeWindow = {
+      AudioContext: MockAudioContext
+    };
+    (globalThis as unknown as { window: unknown }).window = fakeWindow;
 
-    expect(() => playNotificationChime()).not.toThrow();
+    playNotificationChime();
+    expect(instanceCount).toBe(1);
+    expect(resumeCallCount).toBe(1);
+
+    // Second call reuses same instance and does not instantiate a second AudioContext
+    playNotificationChime();
+    expect(instanceCount).toBe(1);
+
+    delete (globalThis as unknown as { window?: unknown }).window;
+    delete (globalThis as unknown as { AudioContext?: unknown }).AudioContext;
   });
 });
