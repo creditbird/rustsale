@@ -281,13 +281,15 @@ fn test_dispatch_notification_deterministic_strategy() {
     assert!(res3.is_ok());
     assert!(fallback_called, "Fallback must be called when primary fails to spawn");
 
-    // 4. Primary fails and Fallback also fails -> Dual failure returns Err
+    // 4. Primary fails and Fallback also fails -> Dual failure returns composite Err preserving both contexts
     let res4 = dispatch_notification_strategy(
         || Err("primary timed out".to_string()),
         || Err("plugin delivery failed".to_string()),
     );
     assert!(res4.is_err(), "Dual failure must return Err");
-    assert_eq!(res4.unwrap_err(), "plugin delivery failed");
+    let err_str = res4.unwrap_err();
+    assert!(err_str.contains("primary timed out"), "Error must contain primary failure context");
+    assert!(err_str.contains("plugin delivery failed"), "Error must contain fallback failure context");
 }
 
 #[tokio::test]

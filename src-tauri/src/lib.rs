@@ -331,9 +331,19 @@ pub fn run() {
                         Ok(event) => {
                             if event.reason == conversation::events::ConversationInvalidationReason::Message {
                                 if let Some(msg_id) = event.message_id {
-                                    if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = notif_tx.try_send((msg_id, event.lead_id)) {
-                                        tracing::warn!(target: "notification", %msg_id, "Notification buffer full (64 items); message dropped");
-                                    }
+                                    let tx = notif_tx.clone();
+                                    let lead_id = event.lead_id;
+                                    tauri::async_runtime::spawn(async move {
+                                        match tx.send_timeout((msg_id, lead_id), std::time::Duration::from_millis(500)).await {
+                                            Ok(_) => {}
+                                            Err(tokio::sync::mpsc::error::SendTimeoutError::Timeout(_)) => {
+                                                tracing::warn!(target: "notification", %msg_id, "Notification buffer full after 500ms timeout; message dropped");
+                                            }
+                                            Err(tokio::sync::mpsc::error::SendTimeoutError::Closed(_)) => {
+                                                tracing::warn!(target: "notification", %msg_id, "Notification worker queue closed");
+                                            }
+                                        }
+                                    });
                                 }
                             }
                         }

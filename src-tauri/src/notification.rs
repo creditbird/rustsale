@@ -327,7 +327,13 @@ where
 {
     match primary_runner() {
         Ok(true) => Ok(()),
-        Ok(false) | Err(_) => fallback_runner(),
+        Ok(false) => fallback_runner(),
+        Err(primary_err) => match fallback_runner() {
+            Ok(()) => Ok(()),
+            Err(fallback_err) => Err(format!(
+                "Primary notification failed: {primary_err}; Plugin fallback failed: {fallback_err}"
+            )),
+        },
     }
 }
 
