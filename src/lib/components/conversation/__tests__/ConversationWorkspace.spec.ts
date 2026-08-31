@@ -3670,7 +3670,10 @@ describe('ConversationWorkspace Component', () => {
     await tick();
     await new Promise((resolve) => setTimeout(resolve, 80));
 
-    // Now click B: B must NOT display obsolete snapshot 20; it must refetch and show Authoritative 30!
+    // Confirm that delayed prefetch encountering changed epoch triggered a second fetch
+    expect(bFetchCount).toBe(2);
+
+    // Now click B: B must NOT display obsolete snapshot 20; it must show Authoritative 30!
     await fireEvent.click(screen.getByText('Khách Hàng B'));
     await tick();
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -3681,15 +3684,65 @@ describe('ConversationWorkspace Component', () => {
     });
   });
 
-  test('35. Queued higher HWM target arriving during replay failure is preserved across fallback retry and fully converges', async () => {
+  test('35. Queued higher HWM target arriving during replay failure is preserved across below-target fallback and converges on scheduled retry', async () => {
+    const unhandledRejections: PromiseRejectionEvent[] = [];
+    const rejectionHandler = (event: PromiseRejectionEvent) => {
+      unhandledRejections.push(event);
+    };
+    window.addEventListener('unhandledrejection', rejectionHandler);
+
     let replayCalls: number[] = [];
     let fallbackSnapshotCalls = 0;
 
-    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
-    mockGetContactTimeline.mockImplementation(async () => {
-      fallbackSnapshotCalls++;
-      if (fallbackSnapshotCalls === 1) {
-        // Initial timeline
+    try {
+      mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+      mockGetContactTimeline.mockImplementation(async () => {
+        fallbackSnapshotCalls++;
+        if (fallbackSnapshotCalls === 1) {
+          // Initial timeline
+          return {
+            items: [
+              {
+                ...mockMsg1,
+                id: 1,
+                conversationId: 10,
+                channel: 'zalo' as const,
+                textContent: 'Initial 10',
+                content: { text: 'Initial 10' }
+              }
+            ],
+            hasMore: false,
+            nextCursor: null,
+            snapshotSequence: 10
+          };
+        }
+        if (fallbackSnapshotCalls === 2) {
+          // Immediate fallback returns below-target snapshot at sequence 15 (< 30)
+          return {
+            items: [
+              {
+                ...mockMsg1,
+                id: 1,
+                conversationId: 10,
+                channel: 'zalo' as const,
+                textContent: 'Initial 10',
+                content: { text: 'Initial 10' }
+              },
+              {
+                ...mockMsg1,
+                id: 15,
+                conversationId: 10,
+                channel: 'zalo' as const,
+                textContent: 'Intermediate Snapshot 15',
+                content: { text: 'Intermediate Snapshot 15' }
+              }
+            ],
+            hasMore: false,
+            nextCursor: null,
+            snapshotSequence: 15
+          };
+        }
+        // Third snapshot call from scheduled fallback retry returns full sequence 30
         return {
           items: [
             {
@@ -3699,77 +3752,64 @@ describe('ConversationWorkspace Component', () => {
               channel: 'zalo' as const,
               textContent: 'Initial 10',
               content: { text: 'Initial 10' }
+            },
+            {
+              ...mockMsg1,
+              id: 30,
+              conversationId: 10,
+              channel: 'zalo' as const,
+              textContent: 'Recovered Sequence 30 after Fallback Retry',
+              content: { text: 'Recovered Sequence 30 after Fallback Retry' }
             }
           ],
           hasMore: false,
           nextCursor: null,
-          snapshotSequence: 10
+          snapshotSequence: 30
         };
-      }
-      // Second snapshot call from fallback retry returns up to sequence 30
-      return {
-        items: [
-          {
-            ...mockMsg1,
-            id: 1,
-            conversationId: 10,
-            channel: 'zalo' as const,
-            textContent: 'Initial 10',
-            content: { text: 'Initial 10' }
-          },
-          {
-            ...mockMsg1,
-            id: 30,
-            conversationId: 10,
-            channel: 'zalo' as const,
-            textContent: 'Recovered Sequence 30 after Fallback Retry',
-            content: { text: 'Recovered Sequence 30 after Fallback Retry' }
-          }
-        ],
-        hasMore: false,
-        nextCursor: null,
-        snapshotSequence: 30
-      };
-    });
+      });
 
-    let firstReplay = true;
-    mockResumeConversationDeltas.mockImplementation(async (fromSeq) => {
-      replayCalls.push(fromSeq);
-      if (firstReplay) {
-        firstReplay = false;
+      mockResumeConversationDeltas.mockImplementation(async (fromSeq) => {
+        replayCalls.push(fromSeq);
         throw new Error('InitialReplayFailure');
-      }
-      return [];
-    });
+      });
 
-    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
-    await tick();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+      render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+      await tick();
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // Mock high water mark check to return currentSequence = 30
-    mockGetConversationHighWaterMark.mockResolvedValue({ minSequence: 1, currentSequence: 30 });
+      // Mock high water mark check to return currentSequence = 30
+      mockGetConversationHighWaterMark.mockResolvedValue({ minSequence: 1, currentSequence: 30 });
 
-    // Emit gap delta 12 to start replay toward 12
-    emitDelta({
-      sequence: 12,
-      conversationId: 10,
-      leadId: 1,
-      channel: 'zalo' as const,
-      message: { ...mockMsg1, id: 12, textContent: 'Gap 12', content: { text: 'Gap 12' } },
-      emittedAtMs: Date.now()
-    });
+      // Emit gap delta 12 to start replay toward 12
+      emitDelta({
+        sequence: 12,
+        conversationId: 10,
+        leadId: 1,
+        channel: 'zalo' as const,
+        message: { ...mockMsg1, id: 12, textContent: 'Gap 12', content: { text: 'Gap 12' } },
+        emittedAtMs: Date.now()
+      });
 
-    // While initial replay throws and schedules fallback retry, reconnect arrives with HWM 30
-    emitReconnect();
+      // While initial replay throws and schedules fallback retry, reconnect arrives with HWM 30
+      emitReconnect();
 
-    await tick();
-    // Wait for fallback retry timer (20ms in test)
-    await new Promise((resolve) => setTimeout(resolve, 150));
+      await tick();
+      // Wait for fallback retry timer (20ms in test workspace) and retry execution
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
-    // Verify fallback retry reached and rendered sequence 30
-    await waitFor(() => {
-      expect(screen.getByText('Recovered Sequence 30 after Fallback Retry')).toBeTruthy();
-    });
+      // Verify multiple snapshot calls occurred (initial + below-target immediate fallback + scheduled retry)
+      expect(fallbackSnapshotCalls).toBeGreaterThanOrEqual(3);
+
+      // Verify scheduled fallback retry converged to sequence 30 and rendered
+      await waitFor(() => {
+        expect(screen.getByText('Recovered Sequence 30 after Fallback Retry')).toBeTruthy();
+      });
+
+      expect(unhandledRejections.length).toBe(0);
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectionHandler);
+    }
   });
 });
+
 

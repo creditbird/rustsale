@@ -12,7 +12,7 @@ fn find_repo_root() -> PathBuf {
             break;
         }
     }
-    std::env::current_dir().expect("Failed to get current dir")
+    panic!("Repository root containing src-tauri and latest.json not found from current working directory");
 }
 
 #[test]
