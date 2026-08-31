@@ -6894,3 +6894,60 @@ fn test_enqueue_outbound_batch_delta_fault_injection_rolls_back_atomically() {
         .unwrap();
     assert_eq!(batch_count, 0);
 }
+
+#[test]
+fn test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomically() {
+    let harness = Harness::new();
+
+    // Install trigger on harness DB to force delta insert error during Zalo ingest
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger_zalo BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: zalo normalized message delta failure');
+         END;"
+    ).unwrap();
+
+    let mut msg = direct_message_with_client_id("zalo-msg-fault", "cli-zalo-fault");
+    msg.channel = crate::conversation::types::Channel::Zalo;
+    msg.text_content = Some("Zalo text that must roll back".to_string());
+    msg.attachments = vec![NormalizedAttachment {
+        provider_attachment_id: None,
+        media_type: "image".to_string(),
+        mime_type: "image/png".to_string(),
+        file_name: Some("zalo.png".to_string()),
+        size_bytes: Some(1024),
+        remote_url: Some("https://example.com/zalo.png".to_string()),
+        thumbnail_url: None,
+        metadata_json: None,
+    }];
+
+    let res = harness.repository.apply_normalized_message(&msg);
+    assert!(res.is_err(), "Must fail-closed when delta recording fails during Zalo ingest");
+
+    // Verify messages table has no entry
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE text_content = 'Zalo text that must roll back'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0, "No message row should persist after delta failure");
+
+    // Verify attachments table has no entry
+    let att_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM message_attachments WHERE remote_url = 'https://example.com/zalo.png'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(att_count, 0, "No attachment row should persist after delta failure");
+
+    // Verify deltas table has no entry
+    let delta_count: i64 = conn
+        .query_row("SELECT count(*) FROM conversation_deltas", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(delta_count, 0, "No delta row should persist");
+}

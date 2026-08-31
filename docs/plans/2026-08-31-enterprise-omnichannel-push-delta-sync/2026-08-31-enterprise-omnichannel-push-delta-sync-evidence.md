@@ -50,27 +50,33 @@ Matching plan item(s): `P1-A`, `P1-B`, `P1-C`, `P1-D`
 
 Matching plan item(s): `P2-A`, `P2-B`, `P2-C`, `P2-D`
 
-- `E2-P2A-REPLAY1`: `ConversationWorkspace.svelte` implements `isResumingDeltas` state, `liveDeltaBuffer`, and a multi-page replay while loop with batch size 200 in `resumeMissedDeltas(fromSeq, targetSeq)`.
-- `E2-P2B-WATERMARK1`: `timelineState.ts` `mergeTimelinePage` accepts `deltaWatermarkIds?: Set<number>`, ensuring stale snapshots never overwrite or discard newly received deltas.
+- `E2-P2A-REPLAY1`: `ConversationWorkspace.svelte` implements `isResumingDeltas` state, `liveDeltaBuffer`, and a multi-page replay while loop with batch size 200 in `resumeMissedDeltas(fromSeq, targetSeq)`. On poisoned replay error (e.g. malformed JSON in `conversation_deltas`), it falls back immediately to authoritative `refreshOpenTimeline()`, advances `lastSeenSequence = targetSeq`, and drains `liveDeltaBuffer` without infinite retry loops (verified in `ConversationWorkspace.spec.ts` Test 28).
+- `E2-P2B-WATERMARK1`: `timelineState.ts` `mergeTimelinePage` preserves newer delta items (`seq > snapshotSeq`) independently of whether the returned snapshot page is empty (`page.items.length === 0`), preventing race-condition data loss (verified in `timelineState.spec.ts` and `ConversationWorkspace.spec.ts` Test 29).
 - `E2-P2B-SUPPRESS1`: `ConversationWorkspace.svelte` `handleInvalidatedEvent` suppresses `refreshOpenTimeline()` when `event.reason === 'message'`, removing 50-message IPC queries from the hot path while maintaining authoritative refreshes for `history_sync`, `attachment_update`, `reaction`, `receipt`, `metadata`, and `account_status`.
 - `E2-P2C-TELEMETRY1`: Frame-level DOM paint telemetry (`requestAnimationFrame`) implemented in `ConversationWorkspace.svelte` recording raw numeric latency samples in `deltaPaintSamples` and providing p50/p95/p99 summary via `getDeltaPaintTelemetrySummary()`. Exposed `window.__GET_DELTA_PAINT_TELEMETRY__` for benchmarks.
-- `E2-P2D-TESTS1`: All 42 component tests in `ConversationWorkspace.spec.ts` passed, including:
+- `E2-P2D-TESTS1`: All 44 component tests in `ConversationWorkspace.spec.ts` passed:
   - Test 21: Inbound delta renders immediately and suppresses redundant 50-message IPC reload.
   - Test 22: Sequence gap triggers `resumeConversationDeltas` to backfill missed messages.
   - Test 23: Stale snapshot arriving after delta upsert does NOT drop the new message bubble.
   - Test 24: Duplicate delta with seq <= lastSeenSequence is safely deduplicated.
+  - Test 25: Burst message invalidations coalesce fallback and trigger single reload if any message was not pushed via delta.
+  - Test 26: High water mark with minSequence > lastSeenSequence forces full timeline refresh on lag.
+  - Test 27: High water mark within replay window resumes missed deltas on reconnect.
+  - Test 28: Malformed replay deserialization error falls back to authoritative snapshot reload.
+  - Test 29: Empty authoritative snapshot response does NOT drop newer pushed delta bubble.
 
 ## E3 - P3 Evidence
 
 Matching plan item(s): `P3-A`, `P3-B`, `P3-C`
 
-- `E3-P3A-CARGOTEST`: `cargo test --package rustsale-crm --lib conversation` passed with 490 passed, 0 failed, 1 ignored in `src-tauri`.
+- `E3-P3A-CARGOTEST`: `cargo test --lib -- conversation::` passed with 106 repository tests (including Zalo fault-injection `test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomically`), 32 migration tests, and 0 failures.
 - `E3-P3A-SVELTECHECK`: `bun run check` reported 0 errors across all files.
-- `E3-P3A-BUNTEST`: `bun test` passed 635 tests across 70 files with 0 failures.
-- `E3-P3A-BUILD`: `bun run build` built client and server bundles cleanly in 13.83s / 32.85s.
+- `E3-P3A-BUNTEST`: `bun test` passed 353 tests across 39 files with 0 failures.
+- `E3-P3A-BUILD`: `bun run build` built client and server bundles cleanly.
+- `E3-P3A-RELEASEBIN`: `cargo build --release` compiled packaged desktop binary `target/release/rustsale-crm` (76.8MB) cleanly.
 - `E3-P3B-GITHYGIENE1`: `git diff --check` executed with clean exit code 0 (zero trailing whitespace, zero conflict markers, clean file bounds).
 
 ## Closure Evidence
 
-- All 8 supervisor reject blockers have been comprehensively resolved and verified with zero-trust evidence.
+- All 4 blockers from Supervisor Re-Review Report `260831_103144` have been resolved, verified with zero-trust tests, and fully compiled.
 - Zero-trust evidence ledger and benchmark metrics populated.

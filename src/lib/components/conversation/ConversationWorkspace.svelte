@@ -975,6 +975,7 @@
       pendingGeneralInvalidation = false;
     }
     selectedKey = item.key;
+    selectedItem = item;
 
     item.unreadCount = 0;
     if (item.channels) {
@@ -1206,8 +1207,15 @@
     if (!selectedItem) return;
     if (selectedItem.kind !== 'group' && activeChannels.length === 0) return;
 
+    const key = `${selectedItem.key}:${channelSetKey(activeChannels)}`;
+    variantInvalidationEpoch.set(
+      key,
+      (variantInvalidationEpoch.get(key) ?? 0) + 1
+    );
+    timelineStale.add(key);
+
     const anchor = timelineRef?.captureAnchor() ?? null;
-    await fetchVariantFirstPage(selectedItem, activeChannels, currentVariantKey, anchor);
+    await fetchVariantFirstPage(selectedItem, activeChannels, key, anchor);
   }
 
   function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
@@ -1408,11 +1416,23 @@
       }
     } catch (err) {
       console.error('[OmniChat Delta] Failed to resume missed deltas:', err);
-      setTimeout(() => {
-        if (targetSeq && lastSeenSequence < targetSeq) {
-          void resumeMissedDeltas(lastSeenSequence, targetSeq);
+      // Authoritative fallback: recover from corrupt/poisoned replay rows via full snapshot reload
+      if (selectedItem) {
+        void refreshOpenTimeline();
+      }
+      if (targetSeq && targetSeq > lastSeenSequence) {
+        lastSeenSequence = targetSeq;
+      }
+      // Drain live delta buffer for subsequent live events
+      if (liveDeltaBuffer.length > 0) {
+        liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
+        for (const buffered of liveDeltaBuffer) {
+          if (buffered.sequence > lastSeenSequence) {
+            applySingleDelta(buffered);
+          }
         }
-      }, 500);
+        liveDeltaBuffer = [];
+      }
     } finally {
       isResumingDeltas = false;
     }

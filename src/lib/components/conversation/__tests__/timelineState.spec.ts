@@ -227,6 +227,59 @@ describe('timelineState', () => {
       expect(merged.items.map((m) => m.id)).toEqual([1, 2]);
     });
 
+    it('retains newer delta items when snapshot page is empty if sequence > snapshotSequence', () => {
+      const concurrentMsg = createMessage(101, '2026-08-31T00:00:10Z');
+      const obsoleteMsg = createMessage(99, '2026-08-31T00:00:05Z');
+
+      const current = {
+        items: [obsoleteMsg, concurrentMsg],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      const emptySnapshotPage = {
+        items: [],
+        nextCursor: null,
+        snapshotSequence: 10
+      };
+
+      const seqMap = new Map<number, number>();
+      seqMap.set(99, 8); // seq 8 <= snapshotSequence 10 -> discard
+      seqMap.set(101, 11); // seq 11 > snapshotSequence 10 -> RETAIN!
+
+      const merged = mergeTimelinePage(current, emptySnapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      // concurrentMsg must be retained despite empty snapshot page
+      expect(merged.items.map((m) => m.id)).toEqual([101]);
+    });
+
+    it('discards all non-optimistic items when snapshot page is empty and no item is newer than watermark', () => {
+      const obsoleteMsg1 = createMessage(98, '2026-08-31T00:00:05Z');
+      const obsoleteMsg2 = createMessage(99, '2026-08-31T00:00:06Z');
+
+      const current = {
+        items: [obsoleteMsg1, obsoleteMsg2],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      const emptySnapshotPage = {
+        items: [],
+        nextCursor: null,
+        snapshotSequence: 10
+      };
+
+      const seqMap = new Map<number, number>();
+      seqMap.set(98, 5);
+      seqMap.set(99, 10);
+
+      const merged = mergeTimelinePage(current, emptySnapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      expect(merged.items).toEqual([]);
+    });
+
     it('retains newest 200 items when mode is refresh', () => {
       const baseTime = 1700000000000;
       const currentItems = Array.from({ length: 150 }, (_, i) =>

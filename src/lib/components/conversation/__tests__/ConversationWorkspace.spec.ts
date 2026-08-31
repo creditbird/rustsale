@@ -539,6 +539,11 @@ mock.module('$lib/services/metaRealtimeService', () => ({
 describe('ConversationWorkspace Component', () => {
   beforeEach(() => {
     setLocale('en');
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 0,
+      minSequence: 0
+    }));
+    mockResumeConversationDeltas.mockImplementation(async () => []);
   });
 
   afterEach(() => {
@@ -2195,5 +2200,91 @@ describe('ConversationWorkspace Component', () => {
     // Replay should have resumed deltas and rendered resumed message
     expect(mockResumeConversationDeltas).toHaveBeenCalled();
     expect(screen.getAllByText('Resumed delta item #777').length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('28. Malformed replay deserialization error falls back to authoritative snapshot reload', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mockGetContactTimeline.mockClear();
+
+    // Replay throws error (e.g. malformed JSON in sequence 102)
+    mockResumeConversationDeltas.mockImplementation(async () => {
+      throw new Error('FromSqlConversionFailure: Malformed JSON payload');
+    });
+
+    // Gap triggers replay attempt
+    emitDelta({
+      sequence: 103,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 999,
+        textContent: 'Live delta after gap',
+        content: { text: 'Live delta after gap' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    // Because replay failed, it MUST trigger authoritative snapshot reload fallback!
+    await waitFor(() => {
+      expect(mockGetContactTimeline).toHaveBeenCalled();
+    });
+  });
+
+  test('29. Empty authoritative snapshot response does NOT drop newer pushed delta bubble', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 10
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A delta with sequence 11 arrives (newer than snapshotSequence 10)
+    emitDelta({
+      sequence: 11,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 888,
+        textContent: 'New bubble arriving after empty snapshot',
+        content: { text: 'New bubble arriving after empty snapshot' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Another refresh resolves with empty items and snapshotSequence 10
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      reason: 'history_sync',
+      messageId: 0
+    });
+
+    // The sequence-11 bubble MUST remain visible in timeline
+    await waitFor(() => {
+      expect(screen.queryAllByText('New bubble arriving after empty snapshot').length).toBeGreaterThanOrEqual(1);
+    });
   });
 });

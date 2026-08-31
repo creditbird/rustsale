@@ -154,21 +154,21 @@ export function mergeTimelinePage(
 
     const snapshotSeq = page.snapshotSequence ?? 0;
 
-    const retainedNewerItems =
-      page.items.length > 0
-        ? current.items.filter((item) => {
-            if (pageIds.has(item.id)) return false;
-            if (item.id < 0 || item.status === 'queued' || item.status === 'sending') return false;
-            if (messageSequenceMap && snapshotSeq > 0) {
-              const seq = messageSequenceMap.get(item.id);
-              if (seq !== undefined) {
-                return seq > snapshotSeq;
-              }
-            }
-            const itemTime = new Date(item.occurredAt).getTime();
-            return itemTime > pageMaxTime || (itemTime === pageMaxTime && item.id > pageMaxId);
-          })
-        : [];
+    const retainedNewerItems = current.items.filter((item) => {
+      if (pageIds.has(item.id)) return false;
+      if (item.id < 0 || item.status === 'queued' || item.status === 'sending') return false;
+      if (messageSequenceMap && snapshotSeq > 0) {
+        const seq = messageSequenceMap.get(item.id);
+        if (seq !== undefined) {
+          return seq > snapshotSeq;
+        }
+      }
+      if (page.items.length > 0) {
+        const itemTime = new Date(item.occurredAt).getTime();
+        return itemTime > pageMaxTime || (itemTime === pageMaxTime && item.id > pageMaxId);
+      }
+      return false;
+    });
 
     const retainedOlderItems = page.nextCursor
       ? current.items.filter((item) => {
