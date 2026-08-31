@@ -1126,7 +1126,13 @@ impl Zalo {
             uid_guard.clone().unwrap_or_default()
         };
 
-        decode_group_chat_history_payload(raw, &uid)
+        let mut response = decode_group_chat_history_payload(raw, &uid)?;
+        for msg in &mut response.group_msgs {
+            if msg.thread_id.is_empty() || msg.thread_id == "0" {
+                msg.thread_id = group_id.to_string();
+            }
+        }
+        Ok(response)
     }
 
     /// Get list of board items (notes, pinned messages, polls) in a group.

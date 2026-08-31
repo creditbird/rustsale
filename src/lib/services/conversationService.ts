@@ -331,6 +331,12 @@ export interface ConversationMessage {
 export interface TimelinePage {
   items: ConversationMessage[];
   nextCursor: TimelineCursor | null;
+  snapshotSequence?: number;
+}
+
+export interface ConversationHighWaterMark {
+  currentSequence: number;
+  minSequence: number;
 }
 
 export interface ConversationAccountRuntime {
@@ -407,8 +413,25 @@ export interface ConversationInvalidatedEvent {
   conversationId: number;
   leadId: number | null;
   channel: Channel;
-  reason: 'message' | 'receipt' | 'reaction' | 'metadata' | 'link' | 'account_status';
+  reason:
+    | 'message'
+    | 'receipt'
+    | 'reaction'
+    | 'metadata'
+    | 'link'
+    | 'account_status'
+    | 'history_sync'
+    | 'attachment_update';
   messageId?: number;
+}
+
+export interface ConversationMessageDeltaEvent {
+  sequence: number;
+  conversationId: number;
+  leadId: number | null;
+  channel: Channel;
+  message: ConversationMessage;
+  emittedAtMs: number;
 }
 
 // IPC Command Wrappers
@@ -565,15 +588,63 @@ export const unpinConversationMessage = (conversationId: number, messageId: numb
 export const listConversationPinnedMessages = (conversationId: number) =>
   invoke<PinnedMessage[]>('list_conversation_pinned_messages', { conversationId });
 
+export const resumeConversationDeltas = (
+  afterSequence: number,
+  limit?: number
+): Promise<ConversationMessageDeltaEvent[]> =>
+  invoke<ConversationMessageDeltaEvent[]>('resume_conversation_deltas', {
+    afterSequence,
+    limit: limit ?? 200
+  });
+
+export const getConversationHighWaterMark = (): Promise<ConversationHighWaterMark> =>
+  invoke<ConversationHighWaterMark>('get_conversation_high_water_mark');
+
 
 // Ref-counted Event Bridge Logic
 type InvalidationListener = (event: ConversationInvalidatedEvent) => void;
+type DeltaListener = (event: ConversationMessageDeltaEvent) => void;
+type LagListener = (payload: { skipped: number }) => void;
+type ReconnectListener = () => void;
+
 const invalidationListeners = new Set<InvalidationListener>();
+const deltaListeners = new Set<DeltaListener>();
+const lagListeners = new Set<LagListener>();
+const reconnectListeners = new Set<ReconnectListener>();
 
 export function onConversationInvalidated(listener: InvalidationListener): () => void {
   invalidationListeners.add(listener);
+  const cleanupBridge = initConversationEventBridge();
   return () => {
     invalidationListeners.delete(listener);
+    cleanupBridge();
+  };
+}
+
+export function onConversationMessageDelta(listener: DeltaListener): () => void {
+  deltaListeners.add(listener);
+  const cleanupBridge = initConversationEventBridge();
+  return () => {
+    deltaListeners.delete(listener);
+    cleanupBridge();
+  };
+}
+
+export function onConversationDeltaLagged(listener: LagListener): () => void {
+  lagListeners.add(listener);
+  const cleanupBridge = initConversationEventBridge();
+  return () => {
+    lagListeners.delete(listener);
+    cleanupBridge();
+  };
+}
+
+export function onConversationBridgeReconnected(listener: ReconnectListener): () => void {
+  reconnectListeners.add(listener);
+  const cleanupBridge = initConversationEventBridge();
+  return () => {
+    reconnectListeners.delete(listener);
+    cleanupBridge();
   };
 }
 
@@ -613,32 +684,78 @@ export function ensureConversationEventBridgeConnected(): Promise<() => void> | 
       clearTimeout(bridgeRetryTimer);
       bridgeRetryTimer = null;
     }
-    bridgePromise = listen<ConversationInvalidatedEvent>('conversation-invalidated', (event) => {
-      for (const listener of invalidationListeners) {
-        try {
-          listener(event.payload);
-        } catch (err) {
-          console.error('Error in invalidationListener', err);
-        }
-      }
-    })
-      .then((cleanup) => {
+    const cleanups: (() => void)[] = [];
+    bridgePromise = (async () => {
+      try {
+        const c1 = await listen<ConversationInvalidatedEvent>('conversation-invalidated', (event) => {
+          for (const listener of invalidationListeners) {
+            try {
+              listener(event.payload);
+            } catch (err) {
+              console.error('Error in invalidationListener', err);
+            }
+          }
+        });
+        cleanups.push(c1);
+
+        const c2 = await listen<ConversationMessageDeltaEvent>('conversation-message-delta', (event) => {
+          for (const listener of deltaListeners) {
+            try {
+              listener(event.payload);
+            } catch (err) {
+              console.error('Error in deltaListener', err);
+            }
+          }
+        });
+        cleanups.push(c2);
+
+        const c3 = await listen<{ skipped: number }>('conversation-delta-lagged', (event) => {
+          for (const listener of lagListeners) {
+            try {
+              listener(event.payload);
+            } catch (err) {
+              console.error('Error in lagListener', err);
+            }
+          }
+        });
+        cleanups.push(c3);
+
+        const cleanup = () => {
+          c1();
+          c2();
+          c3();
+        };
         bridgeUnlisten = cleanup;
         bridgeRetryAttempt = 0;
+
+        // Notify reconnect listeners
+        for (const listener of reconnectListeners) {
+          try {
+            listener();
+          } catch (err) {
+            console.error('Error in reconnectListener', err);
+          }
+        }
+
         if (bridgeRefCount <= 0 && bridgeUnlisten) {
           bridgeUnlisten();
           bridgeUnlisten = null;
           bridgePromise = null;
         }
         return cleanup;
-      })
-      .catch((err) => {
+      } catch (err) {
+        for (const c of cleanups) {
+          try {
+            c();
+          } catch {}
+        }
         bridgePromise = null;
         bridgeUnlisten = null;
         console.error('Failed to init conversation event bridge', err);
         scheduleBridgeRetry();
         return () => {};
-      });
+      }
+    })();
   }
   return bridgePromise;
 }

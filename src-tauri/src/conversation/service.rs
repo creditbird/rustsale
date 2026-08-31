@@ -398,7 +398,7 @@ impl ConversationService {
         request: &super::types::StartDirectConversationRequest,
     ) -> Result<super::types::ConversationMessage> {
         let now = crate::conversation::types::utc_now();
-        let message = self.repository.start_direct_conversation(request, &now)?;
+        let (message, delta) = self.repository.start_direct_conversation(request, &now)?;
         self.events.publish(ConversationInvalidatedEvent {
             conversation_id: message.conversation_id,
             lead_id: None,
@@ -406,6 +406,9 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Message,
             message_id: Some(message.id),
         });
+        if let Some(delta_event) = delta {
+            self.events.publish_delta(delta_event);
+        }
         Ok(message)
     }
 
@@ -448,24 +451,23 @@ impl ConversationService {
                             anyhow::anyhow!("Failed to update message checkpoint: {error}")
                         })?;
                     if !applied.duplicate {
-                        let lead_id = applied.identity_id.and_then(|identity_id| {
-                            self.repository
-                                .lead_id_for_identity(identity_id)
-                                .ok()
-                                .flatten()
-                        });
-                        self.events.publish(ConversationInvalidatedEvent {
-                            conversation_id: applied.conversation_id,
-                            lead_id,
-                            channel: Channel::Zalo,
-                            reason: ConversationInvalidationReason::Message,
-                            message_id: Some(applied.message_id),
-                        });
+                        if let Some(delta) = &applied.delta_event {
+                            self.events.publish_delta(delta.clone());
+                        }
+                        let _ = self.publish_message_invalidation(
+                            applied.message_id,
+                            ConversationInvalidationReason::Message,
+                        );
                     } else if applied.replayed_reaction_count > 0 {
-                        self.publish_message_invalidation(
+                        let _ = self.publish_message_invalidation(
                             applied.message_id,
                             ConversationInvalidationReason::Reaction,
-                        )?;
+                        );
+                    } else if applied.message_id > 0 {
+                        let _ = self.publish_message_invalidation(
+                            applied.message_id,
+                            ConversationInvalidationReason::Message,
+                        );
                     }
                 }
                 ZaloMutation::Reaction(reaction) => {
@@ -614,6 +616,22 @@ impl ConversationService {
         Ok(())
     }
 
+    pub fn resume_deltas(
+        &self,
+        after_sequence: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::conversation::events::ConversationMessageDeltaEvent>> {
+        Ok(self
+            .repository
+            .fetch_deltas_after_sequence(after_sequence, limit.unwrap_or(200))?)
+    }
+
+    pub fn get_high_water_mark(
+        &self,
+    ) -> Result<crate::conversation::types::ConversationHighWaterMark> {
+        Ok(self.repository.get_conversation_high_water_mark()?)
+    }
+
     pub fn apply_group_snapshot(&self, snapshot: &NormalizedGroupSnapshot) -> Result<i64> {
         let conversation_id = self.repository.apply_group_snapshot(snapshot)?;
         self.events.publish(ConversationInvalidatedEvent {
@@ -637,6 +655,16 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Message,
             message_id: Some(applied.applied.message_id),
         });
+        if let Some(delta_event) = &applied.applied.delta_event {
+            self.events.publish_delta(delta_event.clone());
+        } else if let Ok(Some(delta_event)) = self.repository.record_message_delta(
+            applied.applied.conversation_id,
+            Some(applied.lead_id),
+            Channel::Zalo,
+            applied.applied.message_id,
+        ) {
+            self.events.publish_delta(delta_event);
+        }
     }
 
     pub fn runtime_status(&self) -> Result<ConversationRuntimeStatus> {
@@ -652,6 +680,9 @@ impl ConversationService {
         for msg in &res.messages {
             let _ =
                 self.publish_message_invalidation(msg.id, ConversationInvalidationReason::Message);
+        }
+        for delta in &res.delta_events {
+            self.events.publish_delta(delta.clone());
         }
         Ok(res)
     }
@@ -933,7 +964,16 @@ impl ConversationService {
 
             let retry_policy = crate::conversation::retry::RetryPolicy::default();
 
-            match client.forward_message(provider_req).await {
+            let start_send = std::time::Instant::now();
+            let send_result = client.forward_message(provider_req).await;
+            let send_elapsed = start_send.elapsed();
+            tracing::info!(
+                "Zalo forward_message for job {} completed in {:?}",
+                job.job_id,
+                send_elapsed
+            );
+
+            match send_result {
                 Ok(res) => {
                     let message_id = self.repository.complete_outbox_job(
                         &job.job_id,
@@ -1142,7 +1182,16 @@ impl ConversationService {
 
             let retry_policy = crate::conversation::retry::RetryPolicy::default();
 
-            match client.send_part(provider_req).await {
+            let start_send = std::time::Instant::now();
+            let send_result = client.send_part(provider_req).await;
+            let send_elapsed = start_send.elapsed();
+            tracing::info!(
+                "Zalo send_part for job {} completed in {:?}",
+                job.job_id,
+                send_elapsed
+            );
+
+            match send_result {
                 Ok(res) => {
                     let message_id = self.repository.complete_outbox_job(
                         &job.job_id,

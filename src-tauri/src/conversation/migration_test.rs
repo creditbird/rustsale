@@ -1520,3 +1520,76 @@ fn test_reconcile_cleans_whatsapp_identity_display_names_matching_group_titles()
         .unwrap();
     assert_eq!(d_name, None);
 }
+
+#[test]
+fn test_conversation_deltas_migration_deduplicates_prior_rows_and_is_idempotent() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    // 1. Initial schema with legacy deltas table without unique index
+    conn.execute_batch(
+        "CREATE TABLE channel_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel TEXT NOT NULL,
+            provider_account_key TEXT NOT NULL,
+            display_name TEXT
+        );
+        CREATE TABLE channel_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_account_id INTEGER NOT NULL REFERENCES channel_accounts(id),
+            external_thread_id TEXT NOT NULL,
+            kind TEXT NOT NULL
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL REFERENCES channel_conversations(id),
+            direction TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            text_content TEXT
+        );
+        CREATE TABLE conversation_deltas (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            lead_id INTEGER,
+            channel TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL DEFAULT 'message',
+            payload_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO channel_accounts VALUES (1, 'zalo', 'acc-1', 'Zalo Acc');
+        INSERT INTO channel_conversations VALUES (1, 1, 'thread-1', 'direct');
+        INSERT INTO messages VALUES (10, 1, 'inbound', 'text', 'Duplicate 1');
+        INSERT INTO messages VALUES (20, 1, 'inbound', 'text', 'Duplicate 2');
+
+        INSERT INTO conversation_deltas VALUES (1, 1, NULL, 'zalo', 10, 'message', '{\"old\": 1}', 1000);
+        INSERT INTO conversation_deltas VALUES (2, 1, NULL, 'zalo', 10, 'message', '{\"latest\": 2}', 2000);
+        INSERT INTO conversation_deltas VALUES (3, 1, NULL, 'zalo', 20, 'message', '{\"old\": 3}', 3000);
+        INSERT INTO conversation_deltas VALUES (4, 1, NULL, 'zalo', 20, 'message', '{\"old\": 4}', 4000);
+        INSERT INTO conversation_deltas VALUES (5, 1, NULL, 'zalo', 20, 'message', '{\"latest\": 5}', 5000);"
+    ).unwrap();
+
+    // 2. Run migration
+    crate::conversation::migration::ensure_conversation_deltas_schema(&conn).unwrap();
+
+    // 3. Verify duplicate rows were removed, keeping latest sequence (2 and 5)
+    let remaining_sequences: Vec<i64> = conn
+        .prepare("SELECT sequence FROM conversation_deltas ORDER BY sequence ASC")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(remaining_sequences, vec![2, 5]);
+
+    // 4. Verify unique index exists and is enforced
+    let index_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_conversation_deltas_message_event'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(index_count, 1);
+
+    // 5. Test idempotency: re-running does not fail
+    crate::conversation::migration::ensure_conversation_deltas_schema(&conn).unwrap();
+}

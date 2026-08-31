@@ -122,17 +122,54 @@ export function filterMessages(
   return items.filter((item) => channelSet.has(item.channel));
 }
 
+export interface MergeTimelineOptions {
+  deltaWatermarkSequence?: number;
+  messageSequenceMap?: Map<number, number>;
+}
+
 export function mergeTimelinePage(
   current: TimelineVariant,
   page: TimelinePage,
-  mode: 'refresh' | 'older'
+  mode: 'refresh' | 'older',
+  options?: MergeTimelineOptions
 ): TimelineVariant {
+  const messageSequenceMap = options?.messageSequenceMap;
+
   let mergedItems: ConversationMessage[];
   if (mode === 'refresh') {
     const pageIds = new Set(page.items.map((item) => item.id));
     const optimisticItems = current.items.filter(
-      (item) => !pageIds.has(item.id) && (item.status === 'queued' || item.status === 'sending')
+      (item) => !pageIds.has(item.id) && (item.id < 0 || item.status === 'queued' || item.status === 'sending')
     );
+
+    let pageMaxTime = -Infinity;
+    let pageMaxId = -Infinity;
+    for (const item of page.items) {
+      const t = new Date(item.occurredAt).getTime();
+      if (t > pageMaxTime || (t === pageMaxTime && item.id > pageMaxId)) {
+        pageMaxTime = t;
+        pageMaxId = item.id;
+      }
+    }
+
+    const snapshotSeq = page.snapshotSequence ?? 0;
+
+    const retainedNewerItems = current.items.filter((item) => {
+      if (pageIds.has(item.id)) return false;
+      if (item.id < 0 || item.status === 'queued' || item.status === 'sending') return false;
+      if (messageSequenceMap && snapshotSeq > 0) {
+        const seq = messageSequenceMap.get(item.id);
+        if (seq !== undefined) {
+          return seq > snapshotSeq;
+        }
+      }
+      if (page.items.length > 0) {
+        const itemTime = new Date(item.occurredAt).getTime();
+        return itemTime > pageMaxTime || (itemTime === pageMaxTime && item.id > pageMaxId);
+      }
+      return false;
+    });
+
     const retainedOlderItems = page.nextCursor
       ? current.items.filter((item) => {
           if (pageIds.has(item.id)) return false;
@@ -144,7 +181,10 @@ export function mergeTimelinePage(
           );
         })
       : [];
-    mergedItems = mergeMessages([...retainedOlderItems, ...optimisticItems], page.items);
+    mergedItems = mergeMessages(
+      [...retainedOlderItems, ...retainedNewerItems, ...optimisticItems],
+      page.items
+    );
   } else {
     mergedItems = mergeMessages(current.items, page.items);
   }

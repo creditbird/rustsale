@@ -10,6 +10,9 @@
     listConversationMentionCandidates,
     initConversationEventBridge,
     onConversationInvalidated,
+    onConversationMessageDelta,
+    onConversationDeltaLagged,
+    onConversationBridgeReconnected,
     recallConversationMessage,
     pinConversationMessage,
     unpinConversationMessage,
@@ -17,6 +20,8 @@
     syncFacebookConversations,
     syncZaloGroupChatHistory,
     syncWhatsAppConversations,
+    resumeConversationDeltas,
+    getConversationHighWaterMark,
     type InboxItem,
 
     type Channel,
@@ -24,6 +29,7 @@
     type ConversationRuntimeStatus,
     type ConversationMessage,
     type ConversationInvalidatedEvent,
+    type ConversationMessageDeltaEvent,
     type SendConversationBatchResult,
     type ConversationReactionCode,
     type ConversationReactionGroup,
@@ -539,8 +545,9 @@
     const instantPins: PinnedMessage[] = [];
     let hasAllCached = true;
     for (const cid of convIds) {
-      if (pinnedMessagesCache.has(cid)) {
-        instantPins.push(...pinnedMessagesCache.get(cid)!);
+      const cached = pinnedMessagesCache.get(cid);
+      if (cached && Array.isArray(cached)) {
+        instantPins.push(...cached);
       } else {
         hasAllCached = false;
       }
@@ -800,14 +807,43 @@
 
   // Event Bridge registration
   onMount(() => {
-    const cleanupBridge = initConversationEventBridge();
     const cleanupInvalidated = onConversationInvalidated(handleInvalidatedEvent);
+    const cleanupDelta = onConversationMessageDelta(handleMessageDelta);
+    const cleanupLag = onConversationDeltaLagged(() => {
+      void initializeHighWaterMarkAndCatchUp();
+    });
+    const cleanupReconnect = onConversationBridgeReconnected(() => {
+      void initializeHighWaterMarkAndCatchUp();
+    });
+
+    const onFocus = () => {
+      void initializeHighWaterMarkAndCatchUp();
+    };
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void initializeHighWaterMarkAndCatchUp();
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onFocus);
+      document.addEventListener('visibilitychange', onVisibility);
+    }
+
+    void initializeHighWaterMarkAndCatchUp();
 
     return () => {
       cleanupInvalidated();
-      cleanupBridge();
+      cleanupDelta();
+      cleanupLag();
+      cleanupReconnect();
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
       if (inboxRefreshTimer) clearTimeout(inboxRefreshTimer);
       if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
+      if (invalidationFallbackTimer) clearTimeout(invalidationFallbackTimer);
     };
   });
 
@@ -916,8 +952,13 @@
     try {
       inbox = await listConversationInbox();
       inboxStale = false;
-      if (selectedKey && !inbox.some((i) => i.key === selectedKey) && inbox.length > 0) {
-        selectItem(inbox[0]);
+      if (selectedKey) {
+        const updatedSelectedItem = inbox.find((i) => i.key === selectedKey);
+        if (updatedSelectedItem) {
+          selectedItem = updatedSelectedItem;
+        } else if (inbox.length > 0) {
+          selectItem(inbox[0]);
+        }
       }
       if (selectedItem?.kind === 'group' && selectedItem?.conversationId !== null) {
         void syncZaloGroupChatHistory(selectedItem.conversationId).catch(() => {});
@@ -928,7 +969,13 @@
   }
 
   function selectItem(item: InboxItem) {
+    if (selectedKey !== item.key) {
+      messageSequenceMap.clear();
+      pendingInvalidationMessageIds.clear();
+      pendingGeneralInvalidation = false;
+    }
     selectedKey = item.key;
+    selectedItem = item;
 
     item.unreadCount = 0;
     if (item.channels) {
@@ -940,7 +987,6 @@
     });
 
     if (item.kind === 'group') {
-
       activeChannels = [];
     } else {
       const availableChannels = item.channels.map((channel) => channel.channel);
@@ -951,7 +997,7 @@
       activeChannelsPerKey.set(item.key, activeChannels);
     }
 
-    loadOrFetchVariant(item, activeChannels, true);
+    loadOrFetchVariant(item, activeChannels, false);
   }
 
   function handleSidebarSelect(item: InboxItem) {
@@ -976,64 +1022,27 @@
     activeChannels = updated;
     activeChannelsPerKey.set(selectedItem.key, updated);
 
-    loadOrFetchVariant(selectedItem, updated);
+    loadOrFetchVariant(selectedItem, updated, false);
   }
 
-  async function loadOrFetchVariant(
-    item: InboxItem,
-    channels: Channel[],
-    isNewSelection = false
-  ) {
-    if (item.kind !== 'group' && item.leadId !== null && channels.length === 0) {
-      currentVariant = {
-        items: [],
-        nextCursor: null,
-        hasLoaded: true,
-        loading: false
-      };
-      return;
-    }
-
+  function loadOrFetchVariant(item: InboxItem, channels: Channel[], preserveAnchor: boolean) {
     const key =
       item.kind === 'group' || item.leadId === null
         ? `${item.key}:group`
         : `${item.key}:${channelSetKey(channels)}`;
 
-    const anchor = isNewSelection ? null : (timelineRef?.captureAnchor() ?? null);
+    const existing = variantsCache.get(key);
+    const anchor = preserveAnchor ? timelineRef?.captureAnchor() ?? null : null;
 
-    if (variantsCache.has(key)) {
-      const cached = variantsCache.get(key)!;
-      currentVariant = cached;
+    if (existing && !timelineStale.has(key)) {
+      currentVariant = existing;
       if (anchor) {
-        const survivingId = nearestSurvivingAnchor(currentVariant.items, cached.items, anchor.messageId);
-        if (survivingId !== null) {
-          timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
-        }
-      }
-      if ((timelineStale.has(key) || !cached.hasLoaded) && !inFlightVariantFetches.has(key)) {
-        fetchVariantFirstPage(item, channels, key, anchor);
+        timelineRef?.restoreAnchor({ messageId: anchor.messageId, offsetTop: anchor.offsetTop });
       }
     } else {
-      // Create initial variant with instant filtered messages across existing cache
-      const allItemMsgs: ConversationMessage[] = [];
-      for (const cacheKey of variantsCache.keys()) {
-        if (cacheKey.startsWith(`${item.key}:`)) {
-          const v = variantsCache.get(cacheKey);
-          if (v) allItemMsgs.push(...v.items);
-        }
-      }
-
-      const instantFiltered =
-        item.kind === 'group' || item.leadId === null
-          ? mergeMessages([], allItemMsgs)
-          : filterMessages(mergeMessages([], allItemMsgs), channels);
-
-      const initialVar: TimelineVariant = {
-        items: instantFiltered,
-        nextCursor: null,
-        hasLoaded: false,
-        loading: true
-      };
+      const initialVar: TimelineVariant = existing
+        ? { ...existing, loading: existing.hasLoaded ? false : true }
+        : { items: [], nextCursor: null, hasLoaded: false, loading: true };
 
       variantsCache.set(key, initialVar);
       currentVariant = initialVar;
@@ -1095,26 +1104,40 @@
             page = await getContactTimeline(item.leadId, channels, null, 50);
           }
 
-          const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
-          if (currentEpoch === startEpoch) {
-            const latestExisting = variantsCache.get(key) || existing;
-            const updated = mergeTimelinePage(latestExisting, page, 'refresh');
-            variantsCache.set(key, updated);
-            timelineStale.delete(key);
+          const latestExisting = variantsCache.get(key) || existing;
+          const updated = mergeTimelinePage(latestExisting, page, 'refresh', {
+            messageSequenceMap
+          });
+          variantsCache.set(key, updated);
 
-            if (currentVariantKey === key) {
-              currentVariant = updated;
-              if (anchor) {
-                const survivingId = nearestSurvivingAnchor(
-                  existing.items,
-                  updated.items,
-                  anchor.messageId
-                );
-                if (survivingId !== null) {
-                  timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
-                }
+          if (page.snapshotSequence && page.snapshotSequence > 0) {
+            if (page.snapshotSequence > lastSeenSequence) {
+              lastSeenSequence = page.snapshotSequence;
+            }
+            for (const [mid, seq] of messageSequenceMap.entries()) {
+              if (seq <= page.snapshotSequence) {
+                messageSequenceMap.delete(mid);
               }
             }
+          }
+
+          if (currentVariantKey === key) {
+            currentVariant = updated;
+            if (anchor) {
+              const survivingId = nearestSurvivingAnchor(
+                existing.items,
+                updated.items,
+                anchor.messageId
+              );
+              if (survivingId !== null) {
+                timelineRef?.restoreAnchor({ messageId: survivingId, offsetTop: anchor.offsetTop });
+              }
+            }
+          }
+
+          const currentEpoch = variantInvalidationEpoch.get(key) ?? 0;
+          if (currentEpoch === startEpoch) {
+            timelineStale.delete(key);
             break;
           }
         } catch (err) {
@@ -1184,23 +1207,44 @@
     if (!selectedItem) return;
     if (selectedItem.kind !== 'group' && activeChannels.length === 0) return;
 
+    const key = `${selectedItem.key}:${channelSetKey(activeChannels)}`;
+    variantInvalidationEpoch.set(
+      key,
+      (variantInvalidationEpoch.get(key) ?? 0) + 1
+    );
+    timelineStale.add(key);
+
     const anchor = timelineRef?.captureAnchor() ?? null;
-    await fetchVariantFirstPage(selectedItem, activeChannels, currentVariantKey, anchor);
+    await fetchVariantFirstPage(selectedItem, activeChannels, key, anchor);
   }
 
   function eventAffectsItem(item: InboxItem, event: ConversationInvalidatedEvent): boolean {
     if (event.conversationId === 0) {
       if (event.channel) {
-        return item.replyTargets.some((target) => target.channel === event.channel);
+        return (
+          item.channels.some((c) => c.channel === event.channel) ||
+          item.replyTargets.some((target) => target.channel === event.channel)
+        );
       }
       return true;
     }
     if (item.kind === 'customer') {
-      return (
-        (item.leadId !== null && event.leadId === item.leadId) ||
-        (item.conversationId !== null && item.conversationId === event.conversationId) ||
-        item.replyTargets.some((target) => target.conversationId === event.conversationId)
-      );
+      if (item.leadId !== null && event.leadId !== null && item.leadId === event.leadId) {
+        return true;
+      }
+      if (item.conversationId !== null && item.conversationId === event.conversationId) {
+        return true;
+      }
+      if (item.replyTargets.some((target) => target.conversationId === event.conversationId)) {
+        return true;
+      }
+      if (event.channel && event.leadId === null) {
+        return (
+          item.channels.some((c) => c.channel === event.channel) ||
+          item.replyTargets.some((t) => t.channel === event.channel)
+        );
+      }
+      return false;
     }
     if (item.kind === 'group') {
       return (
@@ -1208,11 +1252,19 @@
         item.replyTargets.some((target) => target.conversationId === event.conversationId)
       );
     }
-    return (
-      (item.conversationId !== null && item.conversationId === event.conversationId) ||
-      item.replyTargets.some((target) => target.conversationId === event.conversationId) ||
-      (event.channel === 'whatsapp' && item.replyTargets.some((target) => target.channel === 'whatsapp'))
-    );
+    if (item.conversationId !== null && item.conversationId === event.conversationId) {
+      return true;
+    }
+    if (item.replyTargets.some((target) => target.conversationId === event.conversationId)) {
+      return true;
+    }
+    if (event.channel) {
+      return (
+        item.channels.some((c) => c.channel === event.channel) ||
+        item.replyTargets.some((t) => t.channel === event.channel)
+      );
+    }
+    return false;
   }
 
   function getWorkspaceEnvMode(): string {
@@ -1231,6 +1283,270 @@
     return 'production';
   }
   const IS_TEST_WORKSPACE = getWorkspaceEnvMode() === 'test';
+
+  let lastSeenSequence = 0;
+  let isResumingDeltas = false;
+  let liveDeltaBuffer: ConversationMessageDeltaEvent[] = [];
+  const messageSequenceMap = new Map<number, number>();
+
+  const pendingInvalidationMessageIds = new Set<number>();
+  let pendingGeneralInvalidation = false;
+  let invalidationFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleInvalidationFallback() {
+    if (invalidationFallbackTimer) return;
+    invalidationFallbackTimer = setTimeout(() => {
+      invalidationFallbackTimer = null;
+      let shouldRefresh = pendingGeneralInvalidation;
+      if (!shouldRefresh) {
+        for (const mid of pendingInvalidationMessageIds) {
+          if (!currentVariant.items.some((m) => m.id === mid)) {
+            shouldRefresh = true;
+            break;
+          }
+        }
+      }
+      pendingInvalidationMessageIds.clear();
+      pendingGeneralInvalidation = false;
+      if (shouldRefresh) {
+        void refreshOpenTimeline();
+      }
+    }, IS_TEST_WORKSPACE ? 20 : 60);
+  }
+
+  export interface DeltaPaintTelemetrySample {
+    sequence: number;
+    deltaToPaintMs: number;
+    dbToPaintMs: number;
+    timestamp: number;
+  }
+  const deltaPaintSamples: DeltaPaintTelemetrySample[] = [];
+
+  export function getDeltaPaintTelemetrySummary() {
+    if (deltaPaintSamples.length === 0) {
+      return {
+        count: 0,
+        deltaToPaint: { p50: 0, p95: 0, p99: 0, max: 0, avg: 0 },
+        dbToPaint: { p50: 0, p95: 0, p99: 0, max: 0, avg: 0 },
+        p50: 0,
+        p95: 0,
+        p99: 0,
+        max: 0,
+        avg: 0
+      };
+    }
+    const deltaLatencies = deltaPaintSamples.map((s) => s.deltaToPaintMs).sort((a, b) => a - b);
+    const dbLatencies = deltaPaintSamples.map((s) => s.dbToPaintMs).sort((a, b) => a - b);
+    const count = deltaLatencies.length;
+    const calc = (arr: number[]) => {
+      const p50 = arr[Math.floor(count * 0.50)];
+      const p95 = arr[Math.min(count - 1, Math.floor(count * 0.95))];
+      const p99 = arr[Math.min(count - 1, Math.floor(count * 0.99))];
+      const max = arr[count - 1];
+      const avg = Math.round((arr.reduce((acc, v) => acc + v, 0) / count) * 100) / 100;
+      return { p50, p95, p99, max, avg };
+    };
+    const deltaStats = calc(deltaLatencies);
+    const dbStats = calc(dbLatencies);
+    return {
+      count,
+      deltaToPaint: deltaStats,
+      dbToPaint: dbStats,
+      ...deltaStats
+    };
+  }
+
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __GET_DELTA_PAINT_TELEMETRY__?: typeof getDeltaPaintTelemetrySummary }).__GET_DELTA_PAINT_TELEMETRY__ = getDeltaPaintTelemetrySummary;
+  }
+
+  async function initializeHighWaterMarkAndCatchUp() {
+    try {
+      const hwm = await getConversationHighWaterMark();
+      if (!hwm || typeof hwm.currentSequence !== 'number') return;
+      if (lastSeenSequence === 0) {
+        lastSeenSequence = hwm.currentSequence;
+      } else if (typeof hwm.minSequence === 'number' && lastSeenSequence < hwm.minSequence) {
+        // Gap is beyond retention floor! Authoritative full snapshot is required.
+        lastSeenSequence = hwm.currentSequence;
+        if (selectedItem) {
+          void refreshOpenTimeline();
+        }
+      } else if (lastSeenSequence < hwm.currentSequence) {
+        await resumeMissedDeltas(lastSeenSequence, hwm.currentSequence);
+      }
+    } catch (err) {
+      console.error('[OmniChat Delta] Failed to get high water mark:', err);
+    }
+  }
+
+  async function resumeMissedDeltas(fromSeq: number, targetSeq?: number) {
+    if (isResumingDeltas) return;
+    isResumingDeltas = true;
+    try {
+      let currentSeq = fromSeq;
+      let hasMore = true;
+      while (hasMore) {
+        const batch = await resumeConversationDeltas(currentSeq, 200);
+        if (!batch || batch.length === 0) {
+          break;
+        }
+        for (const d of batch) {
+          applySingleDelta(d);
+          if (d.sequence > currentSeq) {
+            currentSeq = d.sequence;
+          }
+        }
+        if (targetSeq && currentSeq >= targetSeq) {
+          break;
+        }
+        if (batch.length < 200) {
+          break;
+        }
+      }
+      // Drain liveDeltaBuffer
+      if (liveDeltaBuffer.length > 0) {
+        liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
+        for (const buffered of liveDeltaBuffer) {
+          if (buffered.sequence > lastSeenSequence) {
+            applySingleDelta(buffered);
+          }
+        }
+        liveDeltaBuffer = [];
+      }
+    } catch (err) {
+      console.error('[OmniChat Delta] Failed to resume missed deltas:', err);
+      // Authoritative fallback: recover from corrupt/poisoned replay rows via full snapshot reload.
+      // refreshOpenTimeline() updates the open timeline and safely sets lastSeenSequence to the server snapshotSequence.
+      if (selectedItem) {
+        await refreshOpenTimeline();
+      }
+      // Drain live delta buffer for subsequent live events
+      if (liveDeltaBuffer.length > 0) {
+        liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
+        for (const buffered of liveDeltaBuffer) {
+          if (buffered.sequence > lastSeenSequence) {
+            applySingleDelta(buffered);
+          }
+        }
+        liveDeltaBuffer = [];
+      }
+    } finally {
+      isResumingDeltas = false;
+    }
+  }
+
+  function applySingleDelta(delta: ConversationMessageDeltaEvent) {
+    if (delta.sequence > lastSeenSequence) {
+      lastSeenSequence = delta.sequence;
+    }
+    messageSequenceMap.set(delta.message.id, delta.sequence);
+
+    // 1. Instant Open Timeline Store Upsert
+    if (selectedItem) {
+      const affectsOpenItem =
+        selectedItem.conversationId === delta.conversationId ||
+        selectedItem.replyTargets.some((t) => t.conversationId === delta.conversationId) ||
+        (selectedItem.kind === 'customer' &&
+          selectedItem.leadId !== null &&
+          delta.leadId !== null &&
+          selectedItem.leadId === delta.leadId);
+
+      if (affectsOpenItem) {
+        const cleanedItems = currentVariant.items.filter(
+          (item) =>
+            !(
+              item.id < 0 &&
+              delta.message.sendBatch?.sendBatchId &&
+              item.sendBatch?.sendBatchId === delta.message.sendBatch.sendBatchId
+            )
+        );
+        const nextItems = mergeMessages(cleanedItems, [delta.message]);
+        currentVariant = {
+          ...currentVariant,
+          items: nextItems,
+          hasLoaded: true,
+          loading: false
+        };
+        if (currentVariantKey) {
+          variantsCache.set(currentVariantKey, currentVariant);
+        }
+      }
+    }
+
+    // 2. Fast In-Memory Sidebar Preview & Timestamp update
+    const affectedItem = inbox.find(
+      (item) =>
+        item.conversationId === delta.conversationId ||
+        item.replyTargets.some((t) => t.conversationId === delta.conversationId) ||
+        (item.kind === 'customer' &&
+          item.leadId !== null &&
+          delta.leadId !== null &&
+          item.leadId === delta.leadId)
+    );
+    if (affectedItem) {
+      affectedItem.lastMessagePreview =
+        delta.message.textContent ||
+        (delta.message.contentType === 'image' ? '[Hình ảnh]' : '[Tin nhắn]');
+      affectedItem.lastMessageAt = delta.message.occurredAt;
+      inbox = [...inbox].sort(
+        (a, b) =>
+          new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime()
+      );
+    }
+  }
+
+  function recordPaintTelemetry(receivePerf: number, delta: ConversationMessageDeltaEvent) {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const paintPerf = typeof performance !== 'undefined' ? performance.now() : Date.now();
+          const deltaToPaintMs = Math.round((paintPerf - receivePerf) * 100) / 100;
+          const dbToPaintMs = delta.emittedAtMs > 0 ? Date.now() - delta.emittedAtMs : deltaToPaintMs;
+          deltaPaintSamples.push({
+            sequence: delta.sequence,
+            deltaToPaintMs,
+            dbToPaintMs,
+            timestamp: Date.now()
+          });
+          if (deltaPaintSamples.length > 500) {
+            deltaPaintSamples.shift();
+          }
+          if (typeof console !== 'undefined' && console.debug) {
+            console.debug(
+              `[OmniChat Telemetry] seq=${delta.sequence} deltaToPaint=${deltaToPaintMs}ms dbToPaint=${dbToPaintMs}ms`
+            );
+          }
+        });
+      });
+    }
+  }
+
+  function handleMessageDelta(delta: ConversationMessageDeltaEvent) {
+    const receiveMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+    if (isResumingDeltas) {
+      liveDeltaBuffer.push(delta);
+      return;
+    }
+
+    // Gap detection: if sequence is ahead by > 1, replay missing deltas from SQLite
+    if (lastSeenSequence > 0 && delta.sequence > lastSeenSequence + 1) {
+      console.warn(
+        `[OmniChat Delta] Gap detected: expected ${lastSeenSequence + 1}, received ${delta.sequence}. Buffering and resuming...`
+      );
+      liveDeltaBuffer.push(delta);
+      void resumeMissedDeltas(lastSeenSequence, delta.sequence);
+      return;
+    }
+
+    if (lastSeenSequence > 0 && delta.sequence <= lastSeenSequence) {
+      return;
+    }
+
+    applySingleDelta(delta);
+    recordPaintTelemetry(receiveMs, delta);
+  }
 
   function handleInvalidatedEvent(event: ConversationInvalidatedEvent) {
     if (event.reason === 'account_status') {
@@ -1269,13 +1585,28 @@
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
       if (affectsOpenItem) {
-        // Open Timeline: immediate frame-level micro-coalesce (25ms in production / 10ms in test)
-        // Critical path: updates active chat in real-time (< 30ms) without waiting or deferring to idle
-        const timelineDelay = IS_TEST_WORKSPACE ? 10 : 25;
-        if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
-        timelineRefreshTimer = setTimeout(() => {
-          void refreshOpenTimeline();
-        }, timelineDelay);
+        if (event.reason !== 'message') {
+          // Only trigger full 50-item timeline IPC reload for non-message invalidations
+          // (such as participant joins, pinning, unpinning, reactions, title changes, profile syncs).
+          // Message deltas are directly upserted into timeline via handleMessageDelta.
+          const timelineDelay = IS_TEST_WORKSPACE ? 10 : 0;
+          if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
+          timelineRefreshTimer = setTimeout(() => {
+            void refreshOpenTimeline();
+          }, timelineDelay);
+        } else {
+          // Bounded fallback with burst-safe coalescing:
+          if (!event.messageId) {
+            pendingGeneralInvalidation = true;
+            scheduleInvalidationFallback();
+          } else {
+            const hasMessage = currentVariant.items.some((m) => m.id === event.messageId);
+            if (!hasMessage) {
+              pendingInvalidationMessageIds.add(event.messageId);
+              scheduleInvalidationFallback();
+            }
+          }
+        }
       }
     } else {
       inboxStale = true;
@@ -1303,12 +1634,25 @@
   }
 
   function handleBatchQueued(result: SendConversationBatchResult) {
-    if (!selectedItem || result.messages.length === 0) return;
+    if (!selectedItem) return;
+
+    if (result.messages.length === 0) {
+      if (result.clientBatchId) {
+        const cleanedItems = currentVariant.items.filter(
+          (item) => !(item.id < 0 && item.sendBatch?.sendBatchId === result.clientBatchId)
+        );
+        currentVariant = { ...currentVariant, items: cleanedItems };
+        if (currentVariantKey) {
+          variantsCache.set(currentVariantKey, currentVariant);
+        }
+      }
+      return;
+    }
 
     const realBatchIds = new Set(
       result.messages
         .filter((m) => m.id > 0)
-        .map((m) => m.sendBatch?.sendBatchId)
+        .map((m) => m.sendBatch?.sendBatchId || result.clientBatchId)
         .filter(Boolean)
     );
     const cleanedItems = currentVariant.items.filter(
@@ -1322,7 +1666,9 @@
 
     const merged = mergeMessages(cleanedItems, result.messages);
     currentVariant = { ...currentVariant, items: merged };
-    variantsCache.set(currentVariantKey, currentVariant);
+    if (currentVariantKey) {
+      variantsCache.set(currentVariantKey, currentVariant);
+    }
 
     const lastMessage = [...result.messages].sort((left, right) => {
       const indexDiff = (left.batchIndex ?? 0) - (right.batchIndex ?? 0);

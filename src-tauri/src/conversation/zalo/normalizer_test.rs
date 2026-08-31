@@ -472,6 +472,156 @@ fn delivered_and_seen_receipts_normalize_correctly() {
     };
     assert_eq!(receipt3.kind, ReceiptKind::Read);
     assert_eq!(receipt3.provider_message_id, "real-seen-34");
+
+    // Delivered message with m_s_ts=0 must NOT produce 1970 timestamp
+    let delivered_zero_ts = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "0".to_string(),
+        seen: 0,
+        delivered_uids: vec!["peer-uid".to_string()],
+        seen_uids: vec![],
+        real_msg_id: "real-del-35".to_string(),
+        m_s_ts: 0,
+    });
+    let event_zero_ts =
+        ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(delivered_zero_ts)]);
+    let mutations_zero_ts =
+        normalize_listener_event("imei-a", Some("Sale 01"), event_zero_ts).unwrap();
+    let ZaloMutation::Receipt(receipt4) = &mutations_zero_ts[0] else {
+        panic!("expected receipt mutation");
+    };
+    assert_eq!(receipt4.kind, ReceiptKind::Delivered);
+    assert_eq!(receipt4.provider_message_id, "real-del-35");
+    assert!(!receipt4.occurred_at.contains("1970"));
+
+    // Delivered message with seen=1 and empty delivered_uids must extract thread_id from seen_uids
+    let delivered_active_chat = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "msg-active-36".to_string(),
+        seen: 1,
+        delivered_uids: vec![],
+        seen_uids: vec!["active-client-uid".to_string()],
+        real_msg_id: "".to_string(),
+        m_s_ts: 0,
+    });
+    let event_active_chat =
+        ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(delivered_active_chat)]);
+    let mutations_active_chat =
+        normalize_listener_event("imei-a", Some("Sale 01"), event_active_chat).unwrap();
+    let ZaloMutation::Receipt(receipt5) = &mutations_active_chat[0] else {
+        panic!("expected receipt mutation");
+    };
+    assert_eq!(receipt5.kind, ReceiptKind::Read);
+    assert_eq!(receipt5.external_thread_id, "active-client-uid");
+    assert_eq!(
+        receipt5.recipient_external_ids,
+        vec!["active-client-uid".to_string()]
+    );
+    assert!(!receipt5.occurred_at.contains("1970"));
+}
+
+#[test]
+fn receipt_normalization_rejects_empty_zero_and_missing_thread_ids() {
+    // 1. Delivery with empty msg_id and real_msg_id
+    let empty_msg_del = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "".to_string(),
+        seen: 0,
+        delivered_uids: vec!["peer-1".to_string()],
+        seen_uids: vec![],
+        real_msg_id: "".to_string(),
+        m_s_ts: 0,
+    });
+    let event1 = ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(empty_msg_del)]);
+    let mut1 = normalize_listener_event("imei-a", Some("Sale 01"), event1).unwrap();
+    assert!(mut1.is_empty());
+
+    // 2. Delivery with "0" msg_id and "0" real_msg_id
+    let zero_msg_del = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "0".to_string(),
+        seen: 0,
+        delivered_uids: vec!["peer-1".to_string()],
+        seen_uids: vec![],
+        real_msg_id: "0".to_string(),
+        m_s_ts: 0,
+    });
+    let event2 = ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(zero_msg_del)]);
+    let mut2 = normalize_listener_event("imei-a", Some("Sale 01"), event2).unwrap();
+    assert!(mut2.is_empty());
+
+    // 3. Delivery with valid msg_id but empty thread/recipients
+    let mut no_thread_del = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "msg-valid-1".to_string(),
+        seen: 0,
+        delivered_uids: vec![],
+        seen_uids: vec![],
+        real_msg_id: "".to_string(),
+        m_s_ts: 0,
+    });
+    no_thread_del.thread_id = "".to_string();
+    let event3 = ListenerEvent::DeliveredMessages(vec![DeliveredMessage::User(no_thread_del)]);
+    let mut3 = normalize_listener_event("imei-a", Some("Sale 01"), event3).unwrap();
+    assert!(mut3.is_empty());
+
+    // 4. Seen with empty msg_id and real_msg_id
+    let empty_seen = UserSeenMessage::new(TUserSeenMessage {
+        id_to: "peer-1".to_string(),
+        msg_id: "".to_string(),
+        real_msg_id: "".to_string(),
+    });
+    let event4 = ListenerEvent::SeenMessages(vec![SeenMessage::User(empty_seen)]);
+    let mut4 = normalize_listener_event("imei-a", Some("Sale 01"), event4).unwrap();
+    assert!(mut4.is_empty());
+
+    // 5. Seen with empty thread_id (id_to)
+    let mut no_thread_seen = UserSeenMessage::new(TUserSeenMessage {
+        id_to: "".to_string(),
+        msg_id: "msg-valid-1".to_string(),
+        real_msg_id: "".to_string(),
+    });
+    no_thread_seen.thread_id = "".to_string();
+    let event5 = ListenerEvent::SeenMessages(vec![SeenMessage::User(no_thread_seen)]);
+    let mut5 = normalize_listener_event("imei-a", Some("Sale 01"), event5).unwrap();
+    assert!(mut5.is_empty());
+}
+
+#[test]
+fn receipt_normalization_mixed_batch_preserves_valid_and_drops_invalid() {
+    let valid_del = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "msg-valid-100".to_string(),
+        seen: 0,
+        delivered_uids: vec!["peer-1".to_string()],
+        seen_uids: vec![],
+        real_msg_id: "".to_string(),
+        m_s_ts: 1785456000000,
+    });
+    let empty_del = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "".to_string(),
+        seen: 0,
+        delivered_uids: vec!["peer-1".to_string()],
+        seen_uids: vec![],
+        real_msg_id: "".to_string(),
+        m_s_ts: 0,
+    });
+    let zero_del = UserDeliveredMessage::new(TDeliveredMessage {
+        msg_id: "0".to_string(),
+        seen: 0,
+        delivered_uids: vec!["peer-1".to_string()],
+        seen_uids: vec![],
+        real_msg_id: "0".to_string(),
+        m_s_ts: 0,
+    });
+
+    let batch = ListenerEvent::DeliveredMessages(vec![
+        DeliveredMessage::User(valid_del),
+        DeliveredMessage::User(empty_del),
+        DeliveredMessage::User(zero_del),
+    ]);
+
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), batch).unwrap();
+    assert_eq!(mutations.len(), 1);
+    let ZaloMutation::Receipt(receipt) = &mutations[0] else {
+        panic!("expected receipt");
+    };
+    assert_eq!(receipt.provider_message_id, "msg-valid-100");
+    assert_eq!(receipt.external_thread_id, "peer-1");
 }
 
 #[test]
@@ -917,7 +1067,7 @@ fn complete_outbox_job_updates_provider_client_message_id_when_different_from_qu
         text: "Outbound message to be sent".to_string(),
         reply_to_message_id: None,
     };
-    let queued_msg = repo
+    let (queued_msg, _delta) = repo
         .enqueue_outbound_message(&req, "local-req-1", "job-outbox-1", "2026-08-18T10:00:00Z")
         .unwrap();
     assert_eq!(queued_msg.status, MessageStatus::Queued);

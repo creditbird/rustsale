@@ -393,32 +393,22 @@ impl WhatsAppSupervisor {
                             None,
                             sender_source_jid.as_deref(),
                         ) {
-                            if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+                            if let Ok(Some(applied)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
                                 &mut conn,
                                 account_id_val,
                                 &raw_msg,
                             ) {
-                                let lead_id_opt: Option<i64> = conn.query_row(
-                                    "SELECT ci.lead_id FROM channel_identities ci
-                                     JOIN conversation_participants cp ON cp.identity_id = ci.id
-                                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
-                                    [conv_id],
-                                    |r| r.get(0),
-                                ).optional().unwrap_or(None);
-
-                                let msg_id_opt: Option<i64> = conn.query_row(
-                                    "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
-                                    rusqlite::params![conv_id, raw_msg.id],
-                                    |r| r.get(0),
-                                ).optional().unwrap_or(None);
-
                                 events.publish(crate::conversation::events::ConversationInvalidatedEvent {
-                                    conversation_id: conv_id,
-                                    lead_id: lead_id_opt,
+                                    conversation_id: applied.conversation_id,
+                                    lead_id: applied.lead_id,
                                     channel: crate::conversation::types::Channel::WhatsApp,
                                     reason: crate::conversation::events::ConversationInvalidationReason::Message,
-                                    message_id: msg_id_opt,
+                                    message_id: Some(applied.message_id),
                                 });
+
+                                if let Some(delta_event) = applied.delta_event {
+                                    events.publish_delta(delta_event);
+                                }
                                 // Keep the protobuf thumbnail from ingestion. The full encrypted
                                 // payload is resolved lazily through `download_conversation_attachment`,
                                 // which owns size limits, media-retry, persistence, and error semantics.
@@ -551,12 +541,15 @@ impl WhatsAppSupervisor {
                                                             if super::phone::is_group_jid(&chat_jid) { None } else { conv_title },
                                                             participant_override,
                                                         ) {
-                                                            if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+                                                            if let Ok(Some(applied)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
                                                                 &mut conn,
                                                                 account_id_val,
                                                                 &raw_msg,
                                                             ) {
-                                                                invalidated_conv_ids.insert(conv_id);
+                                                                invalidated_conv_ids.insert(applied.conversation_id);
+                                                                if let Some(delta) = applied.delta_event {
+                                                                    events.publish_delta(delta);
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -619,7 +612,7 @@ impl WhatsAppSupervisor {
                                             conversation_id: conv_id,
                                             lead_id: lead_id_opt,
                                             channel: crate::conversation::types::Channel::WhatsApp,
-                                            reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                                            reason: crate::conversation::events::ConversationInvalidationReason::HistorySync,
                                             message_id: None,
                                         });
                                     }
@@ -785,19 +778,48 @@ pub(crate) fn map_whatsapp_receipt_event(
             }
         }
         whatsapp_rust::types::events::Event::ServerAck(ack) => {
-            if ack.class.as_deref() == Some("message") && !ack.id.is_empty() {
-                let receipt_type = if ack.error.is_some() {
-                    "failed"
+            if !ack.id.is_empty() {
+                let is_error_ack = ack.error.is_some();
+                let is_message_class = ack.class.as_deref() == Some("message");
+                // For error ACKs (NACK), class is optional in wacore/whatsapp-rust (can be None or Some("message")).
+                // Reject explicit non-message classes (e.g. Some("call"), Some("notification")).
+                let class_valid = if is_error_ack {
+                    ack.class.as_deref().map_or(true, |c| c == "message")
                 } else {
-                    "sent"
+                    is_message_class
                 };
-                Some(super::normalizer::RawWhatsAppReceipt {
-                    message_ids: vec![ack.id.clone()],
-                    chat_jid: ack.from.as_ref().map(|j| j.to_string()).unwrap_or_default(),
-                    sender_jid: None,
-                    receipt_type: receipt_type.to_string(),
-                    timestamp: ack.timestamp.map(|t| t.to_rfc3339()),
-                })
+
+                if class_valid {
+                    let receipt_type = if is_error_ack { "failed" } else { "sent" };
+
+                    // For ServerAck, `from` may be the server JID (e.g., "s.whatsapp.net") or peer JID.
+                    // If it's a server/broadcast JID or None, keep chat_jid empty so that
+                    // `ingest_receipt` correlates directly by message ID without failing peer conversation JID validation.
+                    let chat_jid = match ack.from.as_ref() {
+                        Some(j) => {
+                            let s = j.to_string();
+                            if s.contains("s.whatsapp.net")
+                                || s.contains("broadcast")
+                                || s == "server"
+                            {
+                                String::new()
+                            } else {
+                                s
+                            }
+                        }
+                        None => String::new(),
+                    };
+
+                    Some(super::normalizer::RawWhatsAppReceipt {
+                        message_ids: vec![ack.id.clone()],
+                        chat_jid,
+                        sender_jid: None,
+                        receipt_type: receipt_type.to_string(),
+                        timestamp: ack.timestamp.map(|t| t.to_rfc3339()),
+                    })
+                } else {
+                    None
+                }
             } else {
                 None
             }

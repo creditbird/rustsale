@@ -198,6 +198,9 @@ impl FacebookMessengerSupervisor {
                         all_affected_conversations.push(cid);
                     }
                 }
+                for delta in summary.delta_events {
+                    self.events.publish_delta(delta);
+                }
             }
 
             let next_cursor = conversations_page
@@ -222,12 +225,32 @@ impl FacebookMessengerSupervisor {
 
         if all_new_messages > 0 && !all_affected_conversations.is_empty() {
             for cid in &all_affected_conversations {
+                let lead_id_opt: Option<i64> = conn
+                    .query_row(
+                        "SELECT ci.lead_id FROM channel_identities ci
+                         JOIN conversation_participants cp ON cp.identity_id = ci.id
+                         WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                        [cid],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None);
+
+                let msg_id_opt: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY id DESC LIMIT 1",
+                        [cid],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None);
+
                 self.events.publish(ConversationInvalidatedEvent {
                     conversation_id: *cid,
-                    lead_id: None,
+                    lead_id: lead_id_opt,
                     channel: Channel::Messenger,
                     reason: ConversationInvalidationReason::Message,
-                    message_id: None,
+                    message_id: msg_id_opt,
                 });
             }
         }
@@ -319,9 +342,21 @@ impl FacebookMessengerSupervisor {
                 page_id,
                 event,
             ) {
-                Ok(Some(cid)) => {
-                    if !affected.contains(&cid) {
-                        affected.push(cid);
+                Ok(Some(res)) => {
+                    if !affected.contains(&res.conversation_id) {
+                        affected.push(res.conversation_id);
+                    }
+
+                    self.events.publish(ConversationInvalidatedEvent {
+                        conversation_id: res.conversation_id,
+                        lead_id: res.lead_id,
+                        channel: Channel::Messenger,
+                        reason: ConversationInvalidationReason::Message,
+                        message_id: res.delta_events.last().map(|d| d.message.id),
+                    });
+
+                    for delta_event in res.delta_events {
+                        self.events.publish_delta(delta_event);
                     }
                 }
                 Ok(None) => {}
@@ -329,16 +364,6 @@ impl FacebookMessengerSupervisor {
                     warn!(target: "facebook_sync", %err, "Failed ingesting webhook event");
                 }
             }
-        }
-
-        for cid in &affected {
-            self.events.publish(ConversationInvalidatedEvent {
-                conversation_id: *cid,
-                lead_id: None,
-                channel: Channel::Messenger,
-                reason: ConversationInvalidationReason::Message,
-                message_id: None,
-            });
         }
 
         Ok(affected.len())

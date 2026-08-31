@@ -171,6 +171,115 @@ describe('timelineState', () => {
       expect(merged.items.map((message) => message.id)).toEqual([1, 2, 999]);
     });
 
+    it('retains newly delta-upserted messages newer than snapshot on refresh', () => {
+      const oldServerMsg = createMessage(1, '2026-08-31T00:00:00Z');
+      const delayedSnapshotMsg = createMessage(2, '2026-08-31T00:00:05Z');
+      const newlyArrivedDeltaMsg = createMessage(3, '2026-08-31T00:00:10Z');
+
+      // Current in-memory timeline already has old message and newly arrived delta message #3
+      const current = {
+        items: [oldServerMsg, newlyArrivedDeltaMsg],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      // Delayed snapshot query finishes and returns only messages #1 and #2 (queried before #3 was committed)
+      const snapshotPage = {
+        items: [oldServerMsg, delayedSnapshotMsg],
+        nextCursor: null,
+        snapshotSequence: 20
+      };
+
+      const seqMap = new Map<number, number>();
+      seqMap.set(3, 25); // Message 3 has delta sequence 25 > snapshotSequence 20
+
+      const merged = mergeTimelinePage(current, snapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      // Merged must retain #1, #2, AND newly arrived #3 (sequence 25 > snapshotSequence 20)
+      expect(merged.items.map((m) => m.id)).toEqual([1, 2, 3]);
+    });
+
+    it('discards stale un-snapshot items whose delta sequence is <= snapshotSequence', () => {
+      const serverMsg1 = createMessage(1, '2026-08-31T00:00:00Z');
+      const serverMsg2 = createMessage(2, '2026-08-31T00:00:05Z');
+      const obsoleteMsg = createMessage(99, '2026-08-31T00:00:08Z'); // Deleted or filtered out on server
+
+      const current = {
+        items: [serverMsg1, obsoleteMsg],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      const snapshotPage = {
+        items: [serverMsg1, serverMsg2],
+        nextCursor: null,
+        snapshotSequence: 50
+      };
+
+      const seqMap = new Map<number, number>();
+      seqMap.set(99, 45); // Sequence 45 <= snapshotSequence 50 (authoritative server snapshot already knows about seq 50)
+
+      const merged = mergeTimelinePage(current, snapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      // obsoleteMsg must be dropped because seq 45 <= snapshotSequence 50
+      expect(merged.items.map((m) => m.id)).toEqual([1, 2]);
+    });
+
+    it('retains newer delta items when snapshot page is empty if sequence > snapshotSequence', () => {
+      const concurrentMsg = createMessage(101, '2026-08-31T00:00:10Z');
+      const obsoleteMsg = createMessage(99, '2026-08-31T00:00:05Z');
+
+      const current = {
+        items: [obsoleteMsg, concurrentMsg],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      const emptySnapshotPage = {
+        items: [],
+        nextCursor: null,
+        snapshotSequence: 10
+      };
+
+      const seqMap = new Map<number, number>();
+      seqMap.set(99, 8); // seq 8 <= snapshotSequence 10 -> discard
+      seqMap.set(101, 11); // seq 11 > snapshotSequence 10 -> RETAIN!
+
+      const merged = mergeTimelinePage(current, emptySnapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      // concurrentMsg must be retained despite empty snapshot page
+      expect(merged.items.map((m) => m.id)).toEqual([101]);
+    });
+
+    it('discards all non-optimistic items when snapshot page is empty and no item is newer than watermark', () => {
+      const obsoleteMsg1 = createMessage(98, '2026-08-31T00:00:05Z');
+      const obsoleteMsg2 = createMessage(99, '2026-08-31T00:00:06Z');
+
+      const current = {
+        items: [obsoleteMsg1, obsoleteMsg2],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      const emptySnapshotPage = {
+        items: [],
+        nextCursor: null,
+        snapshotSequence: 10
+      };
+
+      const seqMap = new Map<number, number>();
+      seqMap.set(98, 5);
+      seqMap.set(99, 10);
+
+      const merged = mergeTimelinePage(current, emptySnapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      expect(merged.items).toEqual([]);
+    });
+
     it('retains newest 200 items when mode is refresh', () => {
       const baseTime = 1700000000000;
       const currentItems = Array.from({ length: 150 }, (_, i) =>

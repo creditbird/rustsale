@@ -1,5 +1,6 @@
 use chrono::SecondsFormat;
 use serde::{Deserialize, Deserializer, Serialize};
+use crate::conversation::events::ConversationMessageDeltaEvent;
 
 pub fn utc_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -736,6 +737,15 @@ pub struct ConversationMessage {
 pub struct TimelinePage {
     pub items: Vec<ConversationMessage>,
     pub next_cursor: Option<TimelineCursor>,
+    #[serde(default)]
+    pub snapshot_sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationHighWaterMark {
+    pub current_sequence: u64,
+    pub min_sequence: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1117,6 +1127,8 @@ pub struct SendConversationBatchResult {
     pub batch_id: String,
     pub client_batch_id: String,
     pub messages: Vec<ConversationMessage>,
+    #[serde(skip_serializing, default)]
+    pub delta_events: Vec<ConversationMessageDeltaEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

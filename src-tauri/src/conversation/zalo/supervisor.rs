@@ -958,37 +958,72 @@ impl ZaloSessionSupervisor {
             .ok_or_else(|| {
                 anyhow::anyhow!("Zalo account {provider_account_key} is not connected")
             })?;
-
-        let history_resp = client
-            .fetch_group_chat_history_with_cursor(&external_thread_id, Some(50), None)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch group chat history from Zalo: {e}"))?;
-
         let mut ingested_count = 0;
         let now_str = crate::conversation::types::utc_now();
+        let mut current_cursor: Option<String> = None;
+        let mut page_count = 0;
 
-        for group_msg in history_resp.group_msgs {
-            let model_msg = zca_rs::models::Message::Group(group_msg);
-            match crate::conversation::zalo::normalizer::normalize_message(
-                &provider_account_key,
-                account_display_name.as_deref(),
-                model_msg,
-            ) {
-                Ok(normalized_msg) => {
-                    if let Ok(applied) = self
-                        .service
-                        .repository
-                        .apply_normalized_message(&normalized_msg)
-                    {
-                        if !applied.duplicate {
-                            ingested_count += 1;
-                        }
+        while page_count < 3 {
+            page_count += 1;
+            let history_resp = match client
+                .fetch_group_chat_history_with_cursor(
+                    &external_thread_id,
+                    Some(50),
+                    current_cursor.as_deref(),
+                )
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if page_count == 1 {
+                        return Err(anyhow::anyhow!(
+                            "Failed to fetch group chat history from Zalo: {e}"
+                        ));
+                    } else {
+                        tracing::warn!(target: "zalo_supervisor", "Pagination stopped at page {page_count}: {e}");
+                        break;
                     }
                 }
-                Err(err) => {
-                    tracing::warn!(target: "zalo_supervisor", "Failed to normalize group history message: {err}");
+            };
+
+            let has_more = history_resp.more > 0 && !history_resp.last_action_id.is_empty();
+            let next_cursor = history_resp.last_action_id.clone();
+            let msgs_count = history_resp.group_msgs.len();
+
+            for mut group_msg in history_resp.group_msgs {
+                if group_msg.thread_id.is_empty() || group_msg.thread_id == "0" {
+                    group_msg.thread_id = external_thread_id.clone();
+                }
+                let model_msg = zca_rs::models::Message::Group(group_msg);
+                match crate::conversation::zalo::normalizer::normalize_message(
+                    &provider_account_key,
+                    account_display_name.as_deref(),
+                    model_msg,
+                ) {
+                    Ok(normalized_msg) => {
+                        if let Ok(applied) = self
+                            .service
+                            .repository
+                            .apply_normalized_message(&normalized_msg)
+                        {
+                            if !applied.duplicate {
+                                ingested_count += 1;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(target: "zalo_supervisor", "Failed to normalize group history message: {err}");
+                    }
                 }
             }
+
+            if !has_more
+                || msgs_count == 0
+                || next_cursor == current_cursor.clone().unwrap_or_default()
+            {
+                break;
+            }
+            current_cursor = Some(next_cursor);
         }
 
         if let Ok(conn) = open_db_connection(&self.db_path) {
@@ -998,17 +1033,127 @@ impl ZaloSessionSupervisor {
             );
         }
 
+        let lead_id_opt: Option<i64> = open_db_connection(&self.db_path).ok().and_then(|conn| {
+            conn.query_row(
+                "SELECT ci.lead_id FROM channel_identities ci
+                     JOIN conversation_participants cp ON cp.identity_id = ci.id
+                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                [conversation_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None)
+        });
+
         self.service
             .events
             .publish(crate::conversation::events::ConversationInvalidatedEvent {
                 conversation_id,
-                lead_id: None,
+                lead_id: lead_id_opt,
                 channel: crate::conversation::types::Channel::Zalo,
-                reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                reason: crate::conversation::events::ConversationInvalidationReason::HistorySync,
                 message_id: None,
             });
 
         Ok(ingested_count)
+    }
+
+    pub(crate) async fn sync_active_group_histories(
+        service: &ConversationService,
+        client: &dyn ZaloClient,
+        account_id: i64,
+        provider_account_key: &str,
+        account_display_name: Option<&str>,
+        db_path: &str,
+        max_groups: usize,
+    ) -> anyhow::Result<usize> {
+        let group_convs: Vec<(i64, String)> = {
+            let conn = open_db_connection(db_path)?;
+            let mut stmt = conn.prepare(
+                "SELECT id, external_thread_id
+                 FROM channel_conversations
+                 WHERE channel_account_id = ?1 AND kind = 'group'
+                 ORDER BY COALESCE(last_message_at, updated_at) DESC
+                 LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(rusqlite::params![account_id, max_groups as i64], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        let mut total_ingested = 0;
+        let now_str = crate::conversation::types::utc_now();
+
+        for (conv_id, group_id) in group_convs {
+            let history_resp = match client
+                .fetch_group_chat_history_with_cursor(&group_id, Some(50), None)
+                .await
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    tracing::warn!(target: "zalo_supervisor", group_id = %group_id, "Failed to fetch active group history: {err}");
+                    continue;
+                }
+            };
+
+            let mut group_ingested = 0;
+            for mut group_msg in history_resp.group_msgs {
+                if group_msg.thread_id.is_empty() || group_msg.thread_id == "0" {
+                    group_msg.thread_id = group_id.clone();
+                }
+                let model_msg = zca_rs::models::Message::Group(group_msg);
+                if let Ok(normalized_msg) = crate::conversation::zalo::normalizer::normalize_message(
+                    provider_account_key,
+                    account_display_name,
+                    model_msg,
+                ) {
+                    if let Ok(applied) =
+                        service.repository.apply_normalized_message(&normalized_msg)
+                    {
+                        if !applied.duplicate {
+                            group_ingested += 1;
+                        }
+                    }
+                }
+            }
+
+            if group_ingested > 0 {
+                total_ingested += group_ingested;
+                if let Ok(conn) = open_db_connection(db_path) {
+                    let _ = conn.execute(
+                        "UPDATE channel_conversations SET last_synced_at = ?1, updated_at = ?1 WHERE id = ?2",
+                        rusqlite::params![now_str, conv_id],
+                    );
+                }
+                let lead_id_opt: Option<i64> = open_db_connection(db_path).ok().and_then(|conn| {
+                    conn.query_row(
+                        "SELECT ci.lead_id FROM channel_identities ci
+                             JOIN conversation_participants cp ON cp.identity_id = ci.id
+                             WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                        [conv_id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None)
+                });
+
+                service
+                    .events
+                    .publish(crate::conversation::events::ConversationInvalidatedEvent {
+                        conversation_id: conv_id,
+                        lead_id: lead_id_opt,
+                        channel: crate::conversation::types::Channel::Zalo,
+                        reason:
+                            crate::conversation::events::ConversationInvalidationReason::HistorySync,
+                        message_id: None,
+                    });
+            }
+        }
+
+        Ok(total_ingested)
     }
 }
 
@@ -1223,6 +1368,27 @@ async fn run_session_loop(
             }
         }
 
+        // 5.5 Initial sync of recent group chat messages for active groups
+        if let Some(acc_id) = account_id {
+            let initial_service = service.clone();
+            let initial_client = client.clone();
+            let initial_key = provider_account_key.clone();
+            let initial_name = session.display_name.clone();
+            let initial_db = service.repository.db_path().to_string();
+            tokio::spawn(async move {
+                let _ = ZaloSessionSupervisor::sync_active_group_histories(
+                    initial_service.as_ref(),
+                    initial_client.as_ref(),
+                    acc_id,
+                    &initial_key,
+                    initial_name.as_deref(),
+                    &initial_db,
+                    20,
+                )
+                .await;
+            });
+        }
+
         // 6. Request initial history and reactions from stored checkpoints
         let mut pagination =
             match send_initial_history_requests(client.as_ref(), service.as_ref(), account_id) {
@@ -1264,6 +1430,11 @@ async fn run_session_loop(
         // 7. Drain receiver loop with reactive pagination state machine
         let mut outbox_ticker = tokio::time::interval(std::time::Duration::from_millis(200));
         let mut profile_ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut group_sync_ticker = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(180),
+            std::time::Duration::from_secs(180),
+        );
+        group_sync_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut history_ticker = tokio::time::interval_at(
             tokio::time::Instant::now() + HISTORY_RESUME_INTERVAL,
             HISTORY_RESUME_INTERVAL,
@@ -1335,6 +1506,27 @@ async fn run_session_loop(
                                 }
                             }));
                         }
+                    }
+                }
+                _ = group_sync_ticker.tick() => {
+                    if let Some(acc_id) = account_id {
+                        let service = service.clone();
+                        let client = client.clone();
+                        let key = provider_account_key.clone();
+                        let name = session.display_name.clone();
+                        let db = service.repository.db_path().to_string();
+                        tokio::spawn(async move {
+                            let _ = ZaloSessionSupervisor::sync_active_group_histories(
+                                service.as_ref(),
+                                client.as_ref(),
+                                acc_id,
+                                &key,
+                                name.as_deref(),
+                                &db,
+                                20,
+                            )
+                            .await;
+                        });
                     }
                 }
                 _ = history_ticker.tick() => {

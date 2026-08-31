@@ -549,3 +549,19 @@ CREATE TABLE IF NOT EXISTS facebook_comment_logs (
     FOREIGN KEY(automation_id) REFERENCES facebook_comment_automations(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fb_comment_logs_page_date ON facebook_comment_logs(page_id, created_at);
+
+CREATE TABLE IF NOT EXISTS conversation_deltas (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    lead_id INTEGER,
+    channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+    message_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL DEFAULT 'message',
+    payload_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_deltas_conv ON conversation_deltas(conversation_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_conversation_deltas_seq ON conversation_deltas(sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_deltas_message_event ON conversation_deltas(message_id, event_type);

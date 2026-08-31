@@ -23,6 +23,7 @@ fn setup_test_db() -> Connection {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
             provider_account_key TEXT NOT NULL,
+            self_external_id TEXT,
             display_name TEXT,
             avatar_url TEXT,
             enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
@@ -104,7 +105,9 @@ fn setup_test_db() -> Connection {
             error_code TEXT,
             error_message TEXT,
             reply_to_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-            reply_sender_identity_id INTEGER REFERENCES channel_identities(id) ON DELETE SET NULL
+            reply_sender_identity_id INTEGER REFERENCES channel_identities(id) ON DELETE SET NULL,
+            send_batch_id TEXT,
+            batch_index INTEGER
         );
         CREATE UNIQUE INDEX idx_messages_provider_unique
         ON messages(conversation_id, provider_message_id)
@@ -182,6 +185,41 @@ fn setup_test_db() -> Connection {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS message_send_batches (
+            id TEXT PRIMARY KEY,
+            conversation_id INTEGER NOT NULL,
+            channel_account_id INTEGER NOT NULL,
+            client_batch_id TEXT NOT NULL,
+            reply_to_message_id INTEGER,
+            part_count INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sending', 'partial', 'sent', 'failed')),
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            UNIQUE(channel_account_id, client_batch_id),
+            FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+            FOREIGN KEY(channel_account_id) REFERENCES channel_accounts(id) ON DELETE CASCADE,
+            FOREIGN KEY(reply_to_message_id) REFERENCES messages(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_deltas (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            lead_id INTEGER,
+            channel TEXT NOT NULL CHECK (channel IN ('zalo', 'whatsapp', 'messenger', 'email')),
+            message_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL DEFAULT 'message',
+            payload_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES channel_conversations(id) ON DELETE CASCADE,
+            FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_deltas_conv ON conversation_deltas(conversation_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_conversation_deltas_seq ON conversation_deltas(sequence);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_deltas_message_event ON conversation_deltas(message_id, event_type);
+
         INSERT INTO channel_accounts (id, channel, provider_account_key, display_name)
         VALUES (1, 'whatsapp', '84901234567', 'My WhatsApp Biz');
         "#
@@ -197,7 +235,8 @@ fn insert_test_lead(conn: &Connection, id: i64, phone: &str) {
     .unwrap();
 }
 
-fn get_conversation_lead_id(conn: &Connection, conversation_id: i64) -> Option<i64> {
+fn get_conversation_lead_id(conn: &Connection, conversation_id: impl Into<i64>) -> Option<i64> {
+    let conversation_id = conversation_id.into();
     conn.query_row(
         "SELECT ci.lead_id FROM conversation_participants cp
          JOIN channel_identities ci ON ci.id = cp.identity_id
@@ -281,7 +320,7 @@ fn test_normalizer_unlinks_when_match_becomes_ambiguous() {
         .unwrap()
         .unwrap();
 
-    let lead_id1: Option<i64> = get_conversation_lead_id(&conn, conv_id);
+    let lead_id1: Option<i64> = get_conversation_lead_id(&conn, &conv_id);
     assert_eq!(lead_id1, Some(101));
 
     // 2. A second duplicate lead with the same phone is added to CRM
@@ -294,7 +333,7 @@ fn test_normalizer_unlinks_when_match_becomes_ambiguous() {
         .unwrap();
 
     // 4. Invariant: lead_id MUST be set back to None / unlinked
-    let lead_id2: Option<i64> = get_conversation_lead_id(&conn, conv_id);
+    let lead_id2: Option<i64> = get_conversation_lead_id(&conn, &conv_id);
     assert_eq!(lead_id2, None);
 }
 
@@ -381,13 +420,13 @@ fn test_normalizer_resolves_lid_when_pn_mapping_exists() {
     let ext_thread: String = conn
         .query_row(
             "SELECT external_thread_id FROM channel_conversations WHERE id = ?1",
-            [conv_id],
+            [*conv_id],
             |r| r.get(0),
         )
         .unwrap();
     assert_eq!(ext_thread, "8613926842913@s.whatsapp.net");
 
-    let lead_id: Option<i64> = get_conversation_lead_id(&conn, conv_id);
+    let lead_id: Option<i64> = get_conversation_lead_id(&conn, &conv_id);
     assert_eq!(lead_id, Some(204));
 }
 
@@ -454,7 +493,7 @@ fn test_normalizer_inbound_direct_message_parsing() {
     let (ext_thread, kind, title): (String, String, String) = conn
         .query_row(
             "SELECT external_thread_id, kind, title FROM channel_conversations WHERE id = ?1",
-            [conv_id],
+            [*conv_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
@@ -477,7 +516,7 @@ fn test_normalizer_inbound_direct_message_parsing() {
     let (text, dir, status, prov_mid): (String, String, String, String) = conn
         .query_row(
             "SELECT text_content, direction, status, provider_message_id FROM messages WHERE conversation_id = ?1",
-            [conv_id],
+            [*conv_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
@@ -1658,7 +1697,7 @@ fn test_extract_and_ingest_image_with_encryption_metadata() {
              FROM message_attachments ma
              JOIN messages m ON m.id = ma.message_id
              WHERE m.conversation_id = ?1",
-            [conv_id],
+            [*conv_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
@@ -1679,7 +1718,7 @@ fn test_extract_and_ingest_image_with_encryption_metadata() {
             "SELECT ma.local_path FROM message_attachments ma
              JOIN messages m ON m.id = ma.message_id
              WHERE m.conversation_id = ?1",
-            [conv_id],
+            [*conv_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -2563,4 +2602,55 @@ fn test_extract_and_ingest_revoke_message_marks_tombstone() {
 
     assert_eq!(status, "removed");
     assert_eq!(text, "This message was deleted");
+}
+
+#[test]
+fn test_whatsapp_normalizer_delta_fault_injection_rolls_back_atomically() {
+    let mut conn = setup_test_db();
+
+    // 1. Install SQLite trigger to abort delta insertion
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: delta insert failure');
+         END;"
+    ).unwrap();
+
+    let raw = RawWhatsAppMessage {
+        id: "msg_fault_inject_001".to_string(),
+        chat_jid: "84901234567@s.whatsapp.net".to_string(),
+        sender_jid: Some("84901234567@s.whatsapp.net".to_string()),
+        sender_name: Some("Fault Customer".to_string()),
+        text: Some("This message should roll back cleanly".to_string()),
+        timestamp: Some("2026-08-28T10:00:00.000Z".to_string()),
+        is_from_me: false,
+        attachments: vec![],
+        quote: None,
+        raw_json: None,
+        mentions: vec![],
+    };
+
+    // Ingest must return error due to delta fault injection
+    let res = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw);
+    assert!(res.is_err(), "Ingestion must fail-closed when delta recording fails");
+
+    // 2. Assert fail-closed atomicity: message was NOT written
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE provider_message_id = 'msg_fault_inject_001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0, "Message must be completely rolled back");
+
+    // 3. Assert no partial deltas written
+    let delta_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM conversation_deltas",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(delta_count, 0, "No delta row should exist");
 }

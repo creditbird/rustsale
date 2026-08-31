@@ -8,6 +8,7 @@ import type {
   ConversationMessage,
   TimelinePage,
   ConversationInvalidatedEvent,
+  ConversationMessageDeltaEvent,
   ConversationCapabilities,
   SendConversationBatchRequest,
   SetConversationReactionRequest
@@ -26,6 +27,16 @@ beforeAll(() => {
 });
 
 let invalidationListeners = new Set<(event: ConversationInvalidatedEvent) => void>();
+let deltaListeners = new Set<(event: ConversationMessageDeltaEvent) => void>();
+let lagListeners = new Set<(payload: { skipped: number }) => void>();
+let reconnectListeners = new Set<() => void>();
+
+function emitLagged(skipped: number) {
+  for (const l of lagListeners) l({ skipped });
+}
+function emitReconnect() {
+  for (const l of reconnectListeners) l();
+}
 
 const richCapabilities: ConversationCapabilities = {
   maxTextLength: 2000,
@@ -52,6 +63,12 @@ const richCapabilities: ConversationCapabilities = {
 
 function emitInvalidated(event: ConversationInvalidatedEvent) {
   for (const listener of invalidationListeners) {
+    listener(event);
+  }
+}
+
+function emitDelta(event: ConversationMessageDeltaEvent) {
+  for (const listener of deltaListeners) {
     listener(event);
   }
 }
@@ -439,6 +456,13 @@ const mockStartDirectConversation = mock(
   })
 );
 
+const mockResumeConversationDeltas = mock(
+  async (_afterSeq: number, _limit?: number): Promise<ConversationMessageDeltaEvent[]> => []
+);
+const mockGetConversationHighWaterMark = mock(
+  async () => ({ currentSequence: 0, minSequence: 0 })
+);
+
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
   getContactTimeline: (leadId: number, channels: any[], before: any, limit: number) =>
@@ -448,11 +472,26 @@ mock.module('$lib/services/conversationService', () => ({
   getIdentityTimeline: (identityId: number, before: any, limit: number) =>
     mockGetIdentityTimeline(identityId, before, limit),
   getConversationRuntimeStatus: () => mockGetConversationRuntimeStatus(),
+  getConversationHighWaterMark: () => mockGetConversationHighWaterMark(),
   initConversationEventBridge: () => () => {},
   onConversationInvalidated: (listener: (event: ConversationInvalidatedEvent) => void) => {
     invalidationListeners.add(listener);
     return () => invalidationListeners.delete(listener);
   },
+  onConversationMessageDelta: (listener: (event: ConversationMessageDeltaEvent) => void) => {
+    deltaListeners.add(listener);
+    return () => deltaListeners.delete(listener);
+  },
+  onConversationDeltaLagged: (listener: (payload: { skipped: number }) => void) => {
+    lagListeners.add(listener);
+    return () => lagListeners.delete(listener);
+  },
+  onConversationBridgeReconnected: (listener: () => void) => {
+    reconnectListeners.add(listener);
+    return () => reconnectListeners.delete(listener);
+  },
+  resumeConversationDeltas: (afterSeq: number, limit?: number) =>
+    mockResumeConversationDeltas(afterSeq, limit),
   sendConversationBatch: (request: SendConversationBatchRequest) => mockSendConversationBatch(request),
   stageConversationAttachmentPaths: mock(async () => []),
   stageConversationClipboardImage: mock(async () => null),
@@ -472,7 +511,13 @@ mock.module('$lib/services/conversationService', () => ({
   syncAndDeepScanGroupMembers: (conversationId: number) =>
     mockSyncAndDeepScanGroupMembers(conversationId),
   batchImportGroupMembersToLeads: (request: unknown) =>
-    mockBatchImportGroupMembersToLeads(request)
+    mockBatchImportGroupMembersToLeads(request),
+  syncZaloGroupChatHistory: mock(async (_conversationId: number) => 0),
+  pinConversationMessage: mock(async () => {}),
+  unpinConversationMessage: mock(async () => {}),
+  listConversationPinnedMessages: mock(async () => []),
+  syncFacebookConversations: mock(async () => 0),
+  syncWhatsAppConversations: mock(async () => 0)
 }));
 
 mock.module('$lib/services/crmService', () => ({
@@ -485,20 +530,36 @@ mock.module('$lib/services/crmService', () => ({
   onLeadsChanged: mock((_listener: any) => () => {})
 }));
 
+mock.module('$lib/services/metaRealtimeService', () => ({
+  startMetaRealtimeListener: mock(() => () => {}),
+  stopMetaRealtimeListener: mock(() => {}),
+  schedulePageSync: mock(() => {})
+}));
+
 describe('ConversationWorkspace Component', () => {
   beforeEach(() => {
     setLocale('en');
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 0,
+      minSequence: 0
+    }));
+    mockResumeConversationDeltas.mockImplementation(async () => []);
   });
 
   afterEach(() => {
     cleanup();
     document.body.innerHTML = '';
     invalidationListeners.clear();
+    deltaListeners.clear();
+    lagListeners.clear();
+    reconnectListeners.clear();
     mockListConversationInbox.mockClear();
     mockGetContactTimeline.mockClear();
     mockGetConversationTimeline.mockClear();
     mockGetIdentityTimeline.mockClear();
     mockGetConversationRuntimeStatus.mockClear();
+    mockGetConversationHighWaterMark.mockClear();
+    mockResumeConversationDeltas.mockClear();
     mockSendConversationBatch.mockClear();
     mockRecallConversationMessage.mockClear();
     mockSetConversationReaction.mockClear();
@@ -698,7 +759,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 1,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 103
     });
 
@@ -713,7 +774,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 99,
       leadId: 99,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 104
     });
 
@@ -738,7 +799,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 28,
       leadId: null,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 103
     });
 
@@ -793,7 +854,7 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 1,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 429
     });
 
@@ -890,13 +951,187 @@ describe('ConversationWorkspace Component', () => {
       conversationId: 10,
       leadId: 1,
       channel: 'zalo',
-      reason: 'message',
+      reason: 'history_sync',
       messageId: 999
     });
 
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(screen.getByText('Tin nhắn realtime tức thì')).toBeTruthy();
+  });
+
+  test('8f. Invalidation for open customer with leadId = null still refreshes timeline via conversationId match', async () => {
+    const unlinkedZaloMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 1001,
+      conversationId: 10,
+      channel: 'zalo',
+      direction: 'inbound',
+      textContent: 'Tin nhắn Zalo leadId null',
+      content: { text: 'Tin nhắn Zalo leadId null' },
+      occurredAt: '2026-08-28T10:05:00Z',
+      status: 'received'
+    };
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [mockMsg1], nextCursor: null }))
+      .mockImplementationOnce(async () => ({ items: [mockMsg1, unlinkedZaloMsg], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: null,
+      channel: 'zalo',
+      reason: 'history_sync',
+      messageId: 1001
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(screen.getByText('Tin nhắn Zalo leadId null')).toBeTruthy();
+  });
+
+  test('8g. Non-discarding merge renders new message even if trailing receipt events arrive during IPC fetch', async () => {
+    const freshMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 1002,
+      conversationId: 10,
+      direction: 'inbound',
+      textContent: 'Tin nhắn ngay trước receipt',
+      content: { text: 'Tin nhắn ngay trước receipt' },
+      occurredAt: '2026-08-28T10:10:00Z',
+      status: 'received'
+    };
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [mockMsg1], nextCursor: null }))
+      .mockImplementationOnce(async () => {
+        // Simulate trailing receipt event arriving during in-flight IPC fetch
+        emitInvalidated({
+          conversationId: 10,
+          leadId: 1,
+          channel: 'zalo',
+          reason: 'receipt',
+          messageId: 1002
+        });
+        return { items: [mockMsg1, freshMsg], nextCursor: null };
+      })
+      .mockImplementation(async () => ({ items: [mockMsg1, freshMsg], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'history_sync',
+      messageId: 1002
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(screen.getByText('Tin nhắn ngay trước receipt')).toBeTruthy();
+  });
+
+  test('8h. Invalidation with mismatched event.leadId but matching item.replyTargets still refreshes open timeline instantly', async () => {
+    const mismatchLeadMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 1003,
+      conversationId: 10,
+      channel: 'zalo',
+      direction: 'inbound',
+      textContent: 'Tin nhắn mismatch lead id',
+      content: { text: 'Tin nhắn mismatch lead id' },
+      occurredAt: '2026-08-28T10:10:00Z',
+      status: 'received'
+    };
+    mockGetContactTimeline
+      .mockImplementationOnce(async () => ({ items: [mockMsg1], nextCursor: null }))
+      .mockImplementationOnce(async () => ({ items: [mockMsg1, mismatchLeadMsg], nextCursor: null }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 999, // Mismatched leadId from backend participant ambiguity
+      channel: 'zalo',
+      reason: 'history_sync',
+      messageId: 1003
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(screen.getByText('Tin nhắn mismatch lead id')).toBeTruthy();
+  });
+
+  test('8i. Direct ConversationMessageDeltaEvent renders new bubble immediately without requiring IPC timeline refetch', async () => {
+    const deltaMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 2005,
+      conversationId: 10,
+      channel: 'zalo',
+      direction: 'inbound',
+      textContent: 'Tin nhắn Delta tức thì 0ms',
+      content: { text: 'Tin nhắn Delta tức thì 0ms' },
+      occurredAt: '2026-08-28T10:15:00Z',
+      status: 'received'
+    };
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    mockGetContactTimeline.mockClear();
+
+    // Emit delta directly
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: deltaMsg,
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Verify DOM contains the new bubble in open timeline AND updated sidebar preview
+    const matchingElements = screen.getAllByText('Tin nhắn Delta tức thì 0ms');
+    expect(matchingElements.length).toBe(2);
+    // Verify getContactTimeline IPC was NOT called (0 IPC round-trips for immediate render)
+    expect(mockGetContactTimeline).not.toHaveBeenCalled();
+  });
+
+  test('8j. Outbound send displays optimistic message bubble immediately and reconciles seamlessly with server batch', async () => {
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByText('Xin chào')).toBeTruthy();
+
+    const textarea = screen.getByPlaceholderText(/Type a message|Send message/i) as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'Tin nhắn gửi đi tức thì 0ms' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
+
+    // Verify optimistic message is immediately in DOM in both timeline and sidebar preview
+    const matching = screen.getAllByText('Tin nhắn gửi đi tức thì 0ms');
+    expect(matching.length).toBeGreaterThanOrEqual(2);
+    expect(textarea.value).toBe('');
   });
 
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {
@@ -1647,5 +1882,409 @@ describe('ConversationWorkspace Component', () => {
     const waBadge = screen.getByRole('button', { name: 'whatsapp' });
     expect(waBadge).toBeTruthy();
     expect(waBadge.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  test('21. Inbound delta upserts directly into timeline and suppresses redundant 50-message IPC reload on message invalidation', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    let timelineCallCount = 0;
+    mockGetContactTimeline.mockImplementation(async () => {
+      timelineCallCount += 1;
+      return {
+        items: [mockMsg1],
+        hasMore: false,
+        nextCursor: null
+      };
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(screen.getByText('Chào shop')).toBeTruthy();
+    expect(timelineCallCount).toBe(1);
+
+    // Incoming delta
+    const deltaMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 202,
+      textContent: 'Tin nhắn delta realtime tức thì',
+      occurredAt: '2026-08-31T01:00:00Z'
+    };
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: deltaMsg,
+      emittedAtMs: Date.now()
+    });
+
+    // Simulated real-world dual emission: invalidation with reason 'message'
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 202
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The bubble is visible immediately
+    expect(screen.getByText('Tin nhắn delta realtime tức thì')).toBeTruthy();
+    // Invalidation did NOT trigger a redundant 50-message timeline IPC reload!
+    expect(timelineCallCount).toBe(1);
+  });
+
+  test('22. Sequence gap triggers resumeConversationDeltas to backfill missed messages', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    const missedMsg: ConversationMessage = {
+      ...mockMsg1,
+      id: 301,
+      textContent: 'Tin nhắn bị lỡ do gap sequence #1',
+      occurredAt: '2026-08-31T01:00:01Z'
+    };
+
+    mockResumeConversationDeltas.mockImplementation(async (afterSeq: number) => {
+      if (afterSeq === 1) {
+        return [
+          {
+            sequence: 2,
+            conversationId: 10,
+            leadId: 1,
+            channel: 'zalo',
+            message: missedMsg,
+            emittedAtMs: Date.now()
+          }
+        ];
+      }
+      return [];
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // First receive delta sequence 1
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: { ...mockMsg1, id: 300, textContent: 'Seq 1 msg' },
+      emittedAtMs: Date.now()
+    });
+    await tick();
+
+    // Then receive delta sequence 3 (gap detected: expected 2, got 3)
+    emitDelta({
+      sequence: 3,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: { ...mockMsg1, id: 302, textContent: 'Seq 3 msg' },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await tick();
+
+    // Verify resumeConversationDeltas was invoked for seq 1
+    expect(mockResumeConversationDeltas).toHaveBeenCalledWith(1, 200);
+    // Both seq 1, seq 2 (replayed), and seq 3 are rendered in open timeline
+    const timeline = document.querySelector('[data-timeline-container]');
+    expect(timeline).toBeTruthy();
+    expect(within(timeline as HTMLElement).getByText('Seq 1 msg')).toBeTruthy();
+    expect(within(timeline as HTMLElement).getByText('Tin nhắn bị lỡ do gap sequence #1')).toBeTruthy();
+    expect(within(timeline as HTMLElement).getByText('Seq 3 msg')).toBeTruthy();
+  });
+
+  test('23. Stale snapshot arriving after delta upsert does NOT drop the new message bubble', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Receive delta for message #400
+    emitDelta({
+      sequence: 1,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      message: { ...mockMsg1, id: 400, textContent: 'New delta message #400', occurredAt: '2026-08-31T01:00:10Z' },
+      emittedAtMs: Date.now()
+    });
+    await tick();
+
+    // Stale snapshot resolution finishes with only older messages
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'account_status',
+      messageId: undefined
+    });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The newly arrived delta bubble MUST remain visible (no drop!)
+    expect(screen.getByText('New delta message #400')).toBeTruthy();
+  });
+
+  test('24. Duplicate delta with seq <= lastSeenSequence is safely deduplicated', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const duplicateDelta = {
+      sequence: 5,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: { ...mockMsg1, id: 501, textContent: 'Duplicate test bubble', occurredAt: '2026-08-31T01:00:20Z' },
+      emittedAtMs: Date.now()
+    };
+
+    // First arrival
+    emitDelta(duplicateDelta);
+    await tick();
+
+    // Duplicate arrival with same sequence
+    emitDelta(duplicateDelta);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await tick();
+
+    const timeline = document.querySelector('[data-timeline-container]');
+    const bubbles = timeline ? within(timeline as HTMLElement).getAllByText('Duplicate test bubble') : [];
+    expect(bubbles.length).toBe(1);
+  });
+
+  test('25. Burst message invalidations coalesce fallback and trigger single reload if any message was not pushed via delta', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mockGetContactTimeline.mockClear();
+
+    // Burst of 3 invalidations for missing messages
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 901
+    });
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 902
+    });
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 903
+    });
+
+    // Wait for the coalesced 20ms fallback timer to fire
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await tick();
+
+    // Exactly 1 authoritative timeline reload should have been triggered for the burst!
+    expect(mockGetContactTimeline).toHaveBeenCalledTimes(1);
+  });
+
+  test('26. High water mark with minSequence > lastSeenSequence forces full timeline refresh on lag', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mockGetContactTimeline.mockClear();
+
+    // Server high water mark shows sequence advanced far beyond retention window (minSequence = 500)
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 600,
+      minSequence: 500
+    }));
+
+    // Broadcast receiver reports lag event (skipped 200 events)
+    emitLagged(200);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await tick();
+
+    // Because lastSeenSequence (100) < minSequence (500), it MUST reload full timeline page!
+    expect(mockGetContactTimeline).toHaveBeenCalledTimes(1);
+  });
+
+  test('27. High water mark within replay window resumes missed deltas on reconnect', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    // Initial high water mark before reconnect is 100
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 100,
+      minSequence: 1
+    }));
+
+    mockResumeConversationDeltas.mockImplementation(async () => [
+      {
+        sequence: 105,
+        conversationId: 10,
+        leadId: 1,
+        channel: 'zalo' as const,
+        message: { ...mockMsg1, id: 777, textContent: 'Resumed delta item #777' },
+        emittedAtMs: Date.now()
+      }
+    ]);
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Server high water mark shows sequence advanced to 105 (within minSequence = 1)
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 105,
+      minSequence: 1
+    }));
+
+    // Reconnect fires
+    emitReconnect();
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await tick();
+
+    // Replay should have resumed deltas and rendered resumed message
+    expect(mockResumeConversationDeltas).toHaveBeenCalled();
+    expect(screen.getAllByText('Resumed delta item #777').length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('28. Malformed replay deserialization error falls back to authoritative snapshot reload', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mockGetContactTimeline.mockClear();
+
+    // Replay throws error (e.g. malformed JSON in sequence 102)
+    mockResumeConversationDeltas.mockImplementation(async () => {
+      throw new Error('FromSqlConversionFailure: Malformed JSON payload');
+    });
+
+    // Gap triggers replay attempt
+    emitDelta({
+      sequence: 103,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 999,
+        textContent: 'Live delta after gap',
+        content: { text: 'Live delta after gap' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    // Because replay failed, it MUST trigger authoritative snapshot reload fallback!
+    await waitFor(() => {
+      expect(mockGetContactTimeline).toHaveBeenCalled();
+    });
+  });
+
+  test('29. Empty authoritative snapshot response does NOT drop newer pushed delta bubble', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 10
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A delta with sequence 11 arrives (newer than snapshotSequence 10)
+    emitDelta({
+      sequence: 11,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 888,
+        textContent: 'New bubble arriving after empty snapshot',
+        content: { text: 'New bubble arriving after empty snapshot' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Another refresh resolves with empty items and snapshotSequence 10
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      reason: 'history_sync',
+      messageId: 0
+    });
+
+    // The sequence-11 bubble MUST remain visible in timeline
+    await waitFor(() => {
+      expect(screen.queryAllByText('New bubble arriving after empty snapshot').length).toBeGreaterThanOrEqual(1);
+    });
   });
 });

@@ -2,7 +2,7 @@
 
 Title: WhatsApp Receipt & Review Findings Remediation Actual Status
 Date: 2026-08-30
-Status: P1 Complete (VERIFIED READY)
+Status: P1 Complete (CONDITIONALLY READY - Pending Live E4 External Integration Probe)
 Companion plan: `docs/plans/2026-08-30-whatsapp-receipt-remediation/2026-08-30-whatsapp-receipt-remediation-plan.md`
 Companion evidence: `docs/plans/2026-08-30-whatsapp-receipt-remediation/2026-08-30-whatsapp-receipt-remediation-evidence.md`
 Companion benchmark: `docs/plans/2026-08-30-whatsapp-receipt-remediation/2026-08-30-whatsapp-receipt-remediation-benchmark.md`
@@ -53,4 +53,4 @@ Out of scope:
 | Refresh | Date | Repo Basis | Changed Scope | Status Changes | Evidence | Next Phase Update |
 |---------|------|------------|----------------|----------------|----------|-------------------|
 | R0 | 2026-08-30 | baseline before P0 | Full review finding remediation | Initial classification | `E0-P0A-1` | Proceed to P1 implementation |
-| R1 | 2026-08-30 | post-P1 implementation | All 11 findings remediated and verified | All units `correct` | `E6-P1F-FULL` | VERIFIED READY |
+| R1 | 2026-08-30 | post-P1 implementation | All 11 findings remediated and verified | All units `correct` | `E6-P1F-FULL` | CONDITIONALLY READY (Pending Live E4 External Integration Probe) |

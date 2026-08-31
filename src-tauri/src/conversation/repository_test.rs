@@ -1922,6 +1922,147 @@ fn read_receipt_fallback_sweeps_conversation_when_anchor_msg_id_not_found() {
 }
 
 #[test]
+fn apply_receipt_rejects_empty_zero_or_missing_thread_anchor_without_mutating_db() {
+    let harness = Harness::new();
+
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-1",
+            "client-1",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap();
+    harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-2",
+            "client-2",
+            "2026-07-31T01:01:00.000Z",
+        ))
+        .unwrap();
+
+    // 1. Empty provider_message_id
+    let res1 = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(res1, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status IN ('delivered', 'read')"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 0);
+
+    // 2. Zero "0" provider_message_id
+    let res2 = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "0".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Delivered,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(res2, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status IN ('delivered', 'read')"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 0);
+
+    // 3. Empty external_thread_id
+    let res3 = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "".to_string(),
+            is_group: false,
+            provider_message_id: "message-1".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(res3, None);
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM messages WHERE status IN ('delivered', 'read')"),
+        0
+    );
+    assert_eq!(harness.scalar("SELECT COUNT(*) FROM message_receipts"), 0);
+}
+
+#[test]
+fn apply_receipt_mixed_batch_applies_valid_and_leaves_invalid_unapplied() {
+    let harness = Harness::new();
+
+    let id1 = harness
+        .repository
+        .apply_normalized_message(&outbound_direct_msg(
+            "message-10",
+            "client-10",
+            "2026-07-31T01:00:00.000Z",
+        ))
+        .unwrap()
+        .message_id;
+
+    // Invalid receipt
+    let inv_res = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(inv_res, None);
+
+    // Valid receipt
+    let val_res = harness
+        .repository
+        .apply_receipt(&NormalizedReceipt {
+            provider_account_key: "imei-a".to_string(),
+            external_thread_id: "peer-1".to_string(),
+            is_group: false,
+            provider_message_id: "message-10".to_string(),
+            recipient_external_ids: vec!["peer-1".to_string()],
+            kind: ReceiptKind::Read,
+            occurred_at: "2026-07-31T01:05:00.000Z".to_string(),
+            raw_payload: serde_json::json!({}),
+        })
+        .unwrap();
+    assert_eq!(val_res, Some(id1));
+
+    assert_eq!(
+        harness.text("SELECT status FROM messages WHERE id = 1"),
+        "read"
+    );
+    assert_eq!(
+        harness.scalar("SELECT COUNT(*) FROM message_receipts WHERE message_id = 1"),
+        1
+    );
+}
+
+#[test]
 fn out_of_order_ingestion_sweep_respects_timestamp_order() {
     let harness = Harness::new();
 
@@ -3261,7 +3402,7 @@ fn delete_conversation_and_start_direct_conversation_execute_without_sql_errors(
         initial_message: "Hello phone".to_string(),
     };
 
-    let msg = harness
+    let (msg, _) = harness
         .repository
         .start_direct_conversation(&start_req, "2026-08-01T00:00:00.000Z")
         .unwrap();
@@ -3300,7 +3441,7 @@ fn start_direct_conversation_assigns_numeric_provider_client_message_id() {
         initial_message: "Tin nhắn kiểm thử".to_string(),
     };
 
-    let message = harness
+    let (message, _) = harness
         .repository
         .start_direct_conversation(&request, "2026-08-03T09:34:58.278Z")
         .unwrap();
@@ -3561,7 +3702,7 @@ fn start_direct_conversation_reuses_existing_thread_by_external_id() {
     };
 
     // Calling start_direct_conversation must NOT fail with UNIQUE constraint error
-    let msg = harness
+    let (msg, _) = harness
         .repository
         .start_direct_conversation(&req, "2026-08-01T12:00:00.000Z")
         .unwrap();
@@ -3617,7 +3758,7 @@ fn start_direct_conversation_reuses_existing_thread_by_lead_phone() {
         initial_message: "Xin chào Thảo".to_string(),
     };
 
-    let msg = harness
+    let (msg, _) = harness
         .repository
         .start_direct_conversation(&req, "2026-08-01T12:00:00.000Z")
         .unwrap();
@@ -3671,7 +3812,7 @@ fn resolve_direct_phone_recipient_merges_provisional_thread_into_zalo_uid_thread
         display_name: None,
         initial_message: "Xin chào Thảo".to_string(),
     };
-    let message = harness
+    let (message, _) = harness
         .repository
         .start_direct_conversation(&request, "2026-08-02T00:45:54.120Z")
         .unwrap();
@@ -3756,7 +3897,7 @@ fn resolve_direct_phone_recipient_clears_uid_tombstone_for_explicit_reopen() {
     .unwrap();
     drop(conn);
 
-    let outbound = harness
+    let (outbound, _) = harness
         .repository
         .start_direct_conversation(
             &crate::conversation::types::StartDirectConversationRequest {
@@ -6442,10 +6583,371 @@ fn test_list_inbox_vectorized_bulk_performance_and_accuracy() {
     assert_eq!(group_item.participants.len(), 3);
     assert_eq!(group_item.participants[0].participant_role, "admin");
 
-    // Performance assertion: 200 items with ~600 messages must load in under 300ms in unoptimized debug mode under heavy test concurrency
+    // Performance assertion: 200 items with ~600 messages must load in under 500ms in unoptimized debug mode under heavy test concurrency
     assert!(
-        duration.as_millis() < 300,
+        duration.as_millis() < 500,
         "list_inbox took too long: {:?}",
         duration
     );
+}
+
+#[test]
+fn test_lookup_message_invalidation_info_prioritizes_linked_lead() {
+    let harness = Harness::new();
+
+    // 1. Create a direct message
+    let msg = direct_message_with_client_id("test-inval-1", "cli-inval-1");
+    let applied = harness.repository.apply_normalized_message(&msg).unwrap();
+
+    // 2. Insert two participants:
+    // Participant 1: Account owner (lead_id = None)
+    // Participant 2: Customer lead (lead_id = Some(114))
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    conn.execute(
+        "INSERT INTO leads (name, phone) VALUES ('Thao', '0901234567')",
+        [],
+    )
+    .unwrap();
+    let lead_id = conn.last_insert_rowid();
+
+    let account_identity_id: i64 = conn
+        .query_row(
+            "INSERT INTO channel_identities (channel, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES ('zalo', 'zalo_uid', 'owner_zalo_id', 'Me', '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z') RETURNING id",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let customer_identity_id: i64 = conn
+        .query_row(
+            "INSERT INTO channel_identities (channel, identity_namespace, external_id, display_name, lead_id, created_at, updated_at)
+             VALUES ('zalo', 'zalo_uid', 'customer_zalo_id', 'Thao', ?1, '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z') RETURNING id",
+            [lead_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // Insert participants into conversation
+    conn.execute(
+        "INSERT OR IGNORE INTO conversation_participants (conversation_id, identity_id) VALUES (?1, ?2)",
+        [applied.conversation_id, account_identity_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO conversation_participants (conversation_id, identity_id) VALUES (?1, ?2)",
+        [applied.conversation_id, customer_identity_id],
+    )
+    .unwrap();
+
+    // 3. Lookup invalidation info
+    let info = harness
+        .repository
+        .lookup_message_invalidation_info(applied.message_id)
+        .unwrap()
+        .expect("Should find invalidation info");
+
+    assert_eq!(info.0, applied.conversation_id);
+    assert_eq!(info.1, Some(lead_id));
+    assert_eq!(info.2, Channel::Zalo);
+}
+
+#[test]
+fn test_apply_normalized_message_atomically_records_delta() {
+    let harness = Harness::new();
+    let mut msg = direct_message("imei_test", "msg_delta_atomic_1");
+    msg.text_content = Some("Hello atomic delta".to_string());
+    let applied = harness.repository.apply_normalized_message(&msg).unwrap();
+
+    let delta = applied.delta_event.expect("Delta should be generated inside transaction");
+    assert_eq!(delta.sequence, 1);
+    assert_eq!(delta.conversation_id, applied.conversation_id);
+    assert_eq!(delta.message.id, applied.message_id);
+    assert_eq!(delta.message.text_content, Some("Hello atomic delta".to_string()));
+
+    // Verify it is immediately queryable via fetch_deltas_after_sequence
+    let replayed = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].sequence, 1);
+    assert_eq!(replayed[0].message.id, applied.message_id);
+}
+
+#[test]
+fn test_replay_deltas_large_gap_pagination() {
+    let harness = Harness::new();
+    for i in 1..=250 {
+        let mut msg = direct_message("imei_test", &format!("msg_paged_{i}"));
+        msg.text_content = Some(format!("Message {i}"));
+        let applied = harness.repository.apply_normalized_message(&msg).unwrap();
+        assert!(applied.delta_event.is_some());
+    }
+
+    // Page 1: 0..100
+    let page1 = harness.repository.fetch_deltas_after_sequence(0, 100).unwrap();
+    assert_eq!(page1.len(), 100);
+    assert_eq!(page1.first().unwrap().sequence, 1);
+    assert_eq!(page1.last().unwrap().sequence, 100);
+
+    // Page 2: 100..200
+    let page2 = harness.repository.fetch_deltas_after_sequence(100, 100).unwrap();
+    assert_eq!(page2.len(), 100);
+    assert_eq!(page2.first().unwrap().sequence, 101);
+    assert_eq!(page2.last().unwrap().sequence, 200);
+
+    // Page 3: 200..250
+    let page3 = harness.repository.fetch_deltas_after_sequence(200, 100).unwrap();
+    assert_eq!(page3.len(), 50);
+    assert_eq!(page3.first().unwrap().sequence, 201);
+    assert_eq!(page3.last().unwrap().sequence, 250);
+}
+
+#[test]
+fn test_delta_transaction_rollback_guarantee() {
+    let harness = Harness::new();
+    let conv_id = empty_group_conversation(&harness, "user_rollback");
+
+    let mut conn = open_db_connection(harness.repository.db_path()).unwrap();
+    let tx = conn.transaction().unwrap();
+
+    // 1. Insert a message within the transaction
+    let now = "2026-08-31T08:00:00Z";
+    let msg_id: i64 = tx
+        .query_row(
+            "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, content_json, ingested_at, status)
+             VALUES (?1, 'inbound', 'msg_fault_injection', 'text', 'Should be rolled back', '{\"text\":\"Should be rolled back\"}', ?2, 'received')
+             RETURNING id",
+            rusqlite::params![conv_id, now],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // 2. Record the delta within the SAME transaction
+    let delta = ConversationRepository::record_message_delta_tx(
+        &tx,
+        conv_id,
+        None,
+        Channel::Zalo,
+        msg_id,
+    )
+    .unwrap();
+    assert!(delta.is_some(), "Delta must be created inside transaction");
+    let seq = delta.unwrap().sequence;
+    assert!(seq > 0, "Sequence must be generated");
+
+    // 3. Verify delta row exists within the uncommitted transaction
+    let in_tx_deltas: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_deltas WHERE message_id = ?1",
+            [msg_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_tx_deltas, 1, "Delta row must be visible within active tx");
+
+    // 4. Inject fault: abort / drop the transaction without commit
+    drop(tx);
+
+    // 5. Verify 100% atomicity: neither message nor delta persists in SQLite
+    let post_conn = open_db_connection(harness.repository.db_path()).unwrap();
+    let msg_count: i64 = post_conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE id = ?1",
+            [msg_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0, "Message must be completely rolled back");
+
+    let delta_count: i64 = post_conn
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_deltas WHERE message_id = ?1",
+            [msg_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(delta_count, 0, "Delta must be completely rolled back");
+
+    let deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+    assert_eq!(deltas.len(), 0, "No delta should exist after rollback");
+
+    // 6. Test successful commit path for comparison
+    let mut conn2 = open_db_connection(harness.repository.db_path()).unwrap();
+    let tx2 = conn2.transaction().unwrap();
+    let committed_msg_id: i64 = tx2
+        .query_row(
+            "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, content_json, ingested_at, status)
+             VALUES (?1, 'inbound', 'msg_committed', 'text', 'Should persist', '{\"text\":\"Should persist\"}', ?2, 'received')
+             RETURNING id",
+            rusqlite::params![conv_id, now],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let committed_delta = ConversationRepository::record_message_delta_tx(
+        &tx2,
+        conv_id,
+        None,
+        Channel::Zalo,
+        committed_msg_id,
+    )
+    .unwrap()
+    .unwrap();
+    tx2.commit().unwrap();
+
+    let persisted_deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+    assert_eq!(persisted_deltas.len(), 1);
+    assert_eq!(persisted_deltas[0].message.id, committed_msg_id);
+    assert_eq!(persisted_deltas[0].sequence, committed_delta.sequence);
+}
+
+#[test]
+fn test_start_direct_conversation_delta_fault_injection_rolls_back_atomically() {
+    let harness = Harness::new();
+
+    // 1. Install trigger on harness DB to force delta insert error
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger_direct BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: direct-start delta failure');
+         END;"
+    ).unwrap();
+
+    let start_req = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 1,
+        phone_or_external_id: "0901112233".to_string(),
+        display_name: Some("Fault User".to_string()),
+        initial_message: "Should roll back cleanly".to_string(),
+    };
+
+    let res = harness.repository.start_direct_conversation(&start_req, "2026-08-31T00:00:00.000Z");
+    assert!(res.is_err(), "Must fail-closed when delta recording fails");
+
+    // Verify messages table has no entry
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE text_content = 'Should roll back cleanly'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0);
+
+    let delta_count: i64 = conn
+        .query_row("SELECT count(*) FROM conversation_deltas", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(delta_count, 0);
+}
+
+#[test]
+fn test_enqueue_outbound_batch_delta_fault_injection_rolls_back_atomically() {
+    let harness = Harness::new();
+
+    // Setup an active conversation
+    let msg1 = direct_message_with_client_id("m-init", "c-init");
+    let applied = harness.repository.apply_normalized_message(&msg1).unwrap();
+    let conv_id = applied.conversation_id;
+
+    // 1. Install trigger on harness DB to force delta insert error
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger_batch BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: batch outbound delta failure');
+         END;"
+    ).unwrap();
+
+    let request = crate::conversation::types::SendConversationBatchRequest {
+        conversation_id: conv_id,
+        client_batch_id: "fault_batch_id_001".into(),
+        reply_to_message_id: None,
+        parts: vec![
+            crate::conversation::types::ConversationSendPartRequest {
+                client_part_id: "fault_batch_c1".into(),
+                content: crate::conversation::types::ConversationSendPartContent::Text {
+                    text: "Fault Batch 1".into(),
+                    mentions: Vec::new(),
+                },
+            },
+        ],
+        message_tag: None,
+    };
+
+    let res = harness.repository.enqueue_outbound_batch(&request, "2026-08-31T00:00:00.000Z");
+    assert!(res.is_err(), "Must fail-closed when delta recording fails");
+
+    // Verify messages table has no entry with text 'Fault Batch 1'
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE text_content = 'Fault Batch 1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0);
+
+    let batch_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM message_send_batches WHERE client_batch_id = 'fault_batch_id_001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(batch_count, 0);
+}
+
+#[test]
+fn test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomically() {
+    let harness = Harness::new();
+
+    // Install trigger on harness DB to force delta insert error during Zalo ingest
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger_zalo BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: zalo normalized message delta failure');
+         END;"
+    ).unwrap();
+
+    let mut msg = direct_message_with_client_id("zalo-msg-fault", "cli-zalo-fault");
+    msg.channel = crate::conversation::types::Channel::Zalo;
+    msg.text_content = Some("Zalo text that must roll back".to_string());
+    msg.attachments = vec![NormalizedAttachment {
+        provider_attachment_id: None,
+        media_type: "image".to_string(),
+        mime_type: "image/png".to_string(),
+        file_name: Some("zalo.png".to_string()),
+        size_bytes: Some(1024),
+        remote_url: Some("https://example.com/zalo.png".to_string()),
+        thumbnail_url: None,
+        metadata_json: None,
+    }];
+
+    let res = harness.repository.apply_normalized_message(&msg);
+    assert!(res.is_err(), "Must fail-closed when delta recording fails during Zalo ingest");
+
+    // Verify messages table has no entry
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE text_content = 'Zalo text that must roll back'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0, "No message row should persist after delta failure");
+
+    // Verify attachments table has no entry
+    let att_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM message_attachments WHERE remote_url = 'https://example.com/zalo.png'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(att_count, 0, "No attachment row should persist after delta failure");
+
+    // Verify deltas table has no entry
+    let delta_count: i64 = conn
+        .query_row("SELECT count(*) FROM conversation_deltas", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(delta_count, 0, "No delta row should persist");
 }

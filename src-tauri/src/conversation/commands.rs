@@ -1277,7 +1277,7 @@ pub async fn download_conversation_attachment(
                     conversation_id,
                     lead_id: None,
                     channel: attachment_channel,
-                    reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                    reason: crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
                     message_id: None,
                 },
             );
@@ -1657,7 +1657,7 @@ pub async fn download_conversation_attachment(
                 conversation_id,
                 lead_id: None,
                 channel: Channel::WhatsApp,
-                reason: crate::conversation::events::ConversationInvalidationReason::Message,
+                reason: crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
                 message_id: None,
             });
 
@@ -1704,4 +1704,26 @@ fn parse_attachment_dimensions(metadata_json: &str) -> (Option<u32>, Option<u32>
     } else {
         (None, None)
     }
+}
+
+#[tauri::command]
+pub fn resume_conversation_deltas(
+    state: tauri::State<'_, ConversationState>,
+    after_sequence: u64,
+    limit: Option<usize>,
+) -> Result<Vec<crate::conversation::events::ConversationMessageDeltaEvent>, String> {
+    state
+        .service
+        .resume_deltas(after_sequence, limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_conversation_high_water_mark(
+    state: tauri::State<'_, ConversationState>,
+) -> Result<crate::conversation::types::ConversationHighWaterMark, String> {
+    state
+        .service
+        .get_high_water_mark()
+        .map_err(|error| error.to_string())
 }

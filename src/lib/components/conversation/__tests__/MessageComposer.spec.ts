@@ -272,7 +272,11 @@ describe('MessageComposer', () => {
       messageTag: null,
       parts: [{ clientPartId: expect.any(String), type: 'text', text: 'Xin chào' }]
     });
-    await waitFor(() => expect(onBatchQueued).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onBatchQueued).toHaveBeenCalledTimes(2));
+    const firstCall = (onBatchQueued.mock.calls as unknown as Array<[SendConversationBatchResult]>)[0]?.[0];
+    const secondCall = (onBatchQueued.mock.calls as unknown as Array<[SendConversationBatchResult]>)[1]?.[0];
+    expect(firstCall?.messages[0]?.id).toBeLessThan(0); // Optimistic render
+    expect(secondCall?.messages[0]?.id).toBeGreaterThan(0); // Server reconciliation
     expect((textarea as HTMLTextAreaElement).value).toBe('');
   });
 

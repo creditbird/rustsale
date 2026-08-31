@@ -36,32 +36,34 @@ const makeMessage = (id: number, status: ConversationMessage['status']): Convers
 describe('MessageBatchGroup', () => {
   afterEach(cleanup);
 
-  it('renders "Sent" when all messages are sent successfully', () => {
+  it('renders "Sent" status indicator inside message bubble', () => {
     render(MessageBatchGroup, { messages: [makeMessage(1, 'sent')] });
     expect(screen.getAllByText('Sent')).toHaveLength(1);
+    expect(screen.getByTitle('Sent')).toBeTruthy();
   });
 
-  it('renders "Delivered" when all messages are delivered', () => {
+  it('renders "Delivered" status indicator inside each message bubble', () => {
     render(MessageBatchGroup, { messages: [makeMessage(1, 'delivered'), makeMessage(2, 'delivered')] });
-    expect(screen.getAllByText('Delivered')).toHaveLength(1);
+    expect(screen.getAllByText('Delivered')).toHaveLength(2);
+    expect(screen.getAllByTitle('Delivered')).toHaveLength(2);
   });
 
-  it('renders "Read" with CheckCheck icon and blue color when all messages are read', () => {
+  it('renders "Read" with CheckCheck icon and blue color inside each message bubble', () => {
     const { container } = render(MessageBatchGroup, { messages: [makeMessage(1, 'read'), makeMessage(2, 'read')] });
-    expect(screen.getAllByText('Read')).toHaveLength(1);
-    const readIcon = container.querySelector('svg.lucide-check-check.text-\\[\\#53bdeb\\]');
-    expect(readIcon).toBeTruthy();
-    expect(readIcon?.classList.contains('lucide-check-check')).toBe(true);
+    expect(screen.getAllByText('Read')).toHaveLength(2);
+    const readIcons = container.querySelectorAll('svg.lucide-check-check.text-\\[\\#53bdeb\\]');
+    expect(readIcons.length).toBe(2);
   });
 
-  it('renders one aggregate footer and a failed-part warning for partial batches', () => {
+  it('renders individual message statuses and error message for failed parts', () => {
     render(MessageBatchGroup, { messages: [makeMessage(1, 'sent'), makeMessage(2, 'failed')] });
-    expect(screen.getAllByText('Partially sent')).toHaveLength(1);
+    expect(screen.getByTitle('Sent')).toBeTruthy();
+    expect(screen.getByTitle('Failed: Network error')).toBeTruthy();
     expect(screen.getByText('Network error')).toBeTruthy();
   });
 
-  it('renders "Failed to send" when all messages in batch failed', () => {
+  it('renders failed status when messages in batch failed', () => {
     render(MessageBatchGroup, { messages: [makeMessage(1, 'failed'), makeMessage(2, 'failed')] });
-    expect(screen.getAllByText('Failed to send')).toHaveLength(1);
+    expect(screen.getAllByTitle('Failed: Network error')).toHaveLength(2);
   });
 });

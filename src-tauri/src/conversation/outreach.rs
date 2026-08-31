@@ -48,7 +48,7 @@ pub struct OutreachConversationRecord {
     pub sent_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppliedOutreachMessage {
     pub applied: AppliedMessage,
     pub lead_id: i64,
@@ -158,6 +158,7 @@ pub fn record_outreach_success_in_transaction(
                 message_id,
                 duplicate: true,
                 replayed_reaction_count: 0,
+                delta_event: None,
             },
             lead_id: record.lead_id,
         });
@@ -198,6 +199,14 @@ pub fn record_outreach_success_in_transaction(
         |row| row.get(0),
     )?;
 
+    let delta_event = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+        &tx,
+        conversation_id,
+        Some(record.lead_id),
+        crate::conversation::types::Channel::Zalo,
+        message_id,
+    )?;
+
     // 7. Return AppliedOutreachMessage
     Ok(AppliedOutreachMessage {
         applied: AppliedMessage {
@@ -207,6 +216,7 @@ pub fn record_outreach_success_in_transaction(
             message_id,
             duplicate: false,
             replayed_reaction_count: 0,
+            delta_event,
         },
         lead_id: record.lead_id,
     })

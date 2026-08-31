@@ -268,6 +268,7 @@
           {conversationTitle}
           {capabilitiesForMessage}
           {pendingReactionsForMessage}
+          {pinnedMessageIds}
           {onReply}
           {onRecall}
           {onForward}

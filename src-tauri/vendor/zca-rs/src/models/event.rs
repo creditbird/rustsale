@@ -12,6 +12,53 @@ where
     }
 }
 
+fn deserialize_vec_string_or_number<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(arr) => {
+            let res = arr
+                .into_iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(s),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect();
+            Ok(res)
+        }
+        serde_json::Value::String(s) => Ok(vec![s]),
+        serde_json::Value::Number(n) => Ok(vec![n.to_string()]),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn deserialize_string_or_number_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(n) => Ok(n.as_u64().unwrap_or(0)),
+        serde_json::Value::String(s) => Ok(s.parse::<u64>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
+fn deserialize_string_or_number_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(n) => Ok(n.as_i64().map(|v| v as i32).unwrap_or(0)),
+        serde_json::Value::String(s) => Ok(s.parse::<i32>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FriendEventType {
     Add = 0,
@@ -552,23 +599,49 @@ fn parse_group_event_data(data: &serde_json::Value, r#type: GroupEventType) -> G
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TDeliveredMessage {
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number_i32")]
     pub seen: i32,
+    #[serde(default, deserialize_with = "deserialize_vec_string_or_number")]
     pub delivered_uids: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_vec_string_or_number")]
     pub seen_uids: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub real_msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number_u64")]
     pub m_s_ts: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+impl TDeliveredMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = (!self.msg_id.trim().is_empty() && self.msg_id.trim() != "0")
+            || (!self.real_msg_id.trim().is_empty() && self.real_msg_id.trim() != "0");
+        let has_recipient = self.delivered_uids.iter().any(|u| !u.trim().is_empty())
+            || self.seen_uids.iter().any(|u| !u.trim().is_empty());
+        has_msg_id && has_recipient
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TGroupDeliveredMessage {
     #[serde(flatten)]
     pub base: TDeliveredMessage,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub group_id: String,
+}
+
+impl TGroupDeliveredMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = (!self.base.msg_id.trim().is_empty() && self.base.msg_id.trim() != "0")
+            || (!self.base.real_msg_id.trim().is_empty() && self.base.real_msg_id.trim() != "0");
+        let has_group_id = !self.group_id.trim().is_empty();
+        has_msg_id && has_group_id
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -581,7 +654,12 @@ pub struct UserDeliveredMessage {
 
 impl UserDeliveredMessage {
     pub fn new(data: TDeliveredMessage) -> Self {
-        let thread_id = data.delivered_uids.first().cloned().unwrap_or_default();
+        let thread_id = data
+            .delivered_uids
+            .first()
+            .or_else(|| data.seen_uids.first())
+            .cloned()
+            .unwrap_or_default();
         Self {
             r#type: crate::models::ThreadType::User,
             data,
@@ -621,20 +699,43 @@ pub enum DeliveredMessage {
     Group(GroupDeliveredMessage),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TUserSeenMessage {
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub id_to: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub real_msg_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+impl TUserSeenMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = (!self.msg_id.trim().is_empty() && self.msg_id.trim() != "0")
+            || (!self.real_msg_id.trim().is_empty() && self.real_msg_id.trim() != "0");
+        let has_recipient = !self.id_to.trim().is_empty();
+        has_msg_id && has_recipient
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TGroupSeenMessage {
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub msg_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub group_id: String,
+    #[serde(default, deserialize_with = "deserialize_vec_string_or_number")]
     pub seen_uids: Vec<String>,
+}
+
+impl TGroupSeenMessage {
+    pub fn is_valid(&self) -> bool {
+        let has_msg_id = !self.msg_id.trim().is_empty() && self.msg_id.trim() != "0";
+        let has_group_id = !self.group_id.trim().is_empty();
+        has_msg_id && has_group_id
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -796,8 +897,8 @@ pub struct Undo {
 
 impl Undo {
     pub fn new(uid: &str, mut data: TUndo, is_group: bool) -> Self {
-        let is_self = data.uid_from == "0";
-        let thread_id = if is_group || data.uid_from == "0" {
+        let is_self = data.uid_from == "0" || (!uid.is_empty() && data.uid_from == uid);
+        let thread_id = if is_group || is_self {
             data.id_to.clone()
         } else {
             data.uid_from.clone()
@@ -1387,5 +1488,144 @@ mod tests {
 
         assert_eq!(ev.thread_id, "g9");
         assert!(matches!(ev.data, GroupEventData::Raw(_)));
+    }
+
+    #[test]
+    fn undo_detects_is_self_with_mobile_uid() {
+        let own_uid = "351966042521";
+        let peer_uid = "84903333333";
+        let group_id = "g_123456789";
+
+        let mut t_undo_self = create_dummy_undo();
+        t_undo_self.id_to = peer_uid.to_string();
+        t_undo_self.uid_from = own_uid.to_string();
+        let undo_self = Undo::new(own_uid, t_undo_self, false);
+        assert!(undo_self.is_self);
+        assert_eq!(undo_self.thread_id, peer_uid);
+
+        let mut t_undo_group = create_dummy_undo();
+        t_undo_group.id_to = group_id.to_string();
+        t_undo_group.uid_from = own_uid.to_string();
+        let undo_grp = Undo::new(own_uid, t_undo_group, true);
+        assert!(undo_grp.is_self);
+        assert_eq!(undo_grp.thread_id, group_id);
+    }
+
+    #[test]
+    fn delivered_and_seen_message_deserialization_handles_omitted_and_numeric_fields() {
+        // Minimal delivered payload from Zalo when recipient has not read yet (seen=0, no seenUids, no realMsgId)
+        let json_del = serde_json::json!({
+            "msgId": 8209689228975_u64,
+            "seen": 0,
+            "deliveredUids": [3378879609226363403_u64],
+            "mSTs": 1788085038787_u64
+        });
+        let del: TDeliveredMessage = serde_json::from_value(json_del).expect("must parse minimal delivered");
+        assert_eq!(del.msg_id, "8209689228975");
+        assert_eq!(del.seen, 0);
+        assert_eq!(del.delivered_uids, vec!["3378879609226363403"]);
+        assert!(del.seen_uids.is_empty());
+        assert_eq!(del.real_msg_id, "");
+        assert_eq!(del.m_s_ts, 1788085038787);
+
+        let user_del = UserDeliveredMessage::new(del);
+        assert_eq!(user_del.thread_id, "3378879609226363403");
+
+        // Minimal seen payload
+        let json_seen = serde_json::json!({
+            "idTo": 3378879609226363403_u64,
+            "msgId": 8209687565523_u64
+        });
+        let seen: TUserSeenMessage = serde_json::from_value(json_seen).expect("must parse minimal seen");
+        assert_eq!(seen.id_to, "3378879609226363403");
+        assert_eq!(seen.msg_id, "8209687565523");
+        assert_eq!(seen.real_msg_id, "");
+    }
+
+    #[test]
+    fn receipt_models_semantic_validation_rejects_empty_and_zero_ids() {
+        // Empty object deserializes due to serde(default), but is_valid must be false
+        let empty_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!empty_del.is_valid());
+
+        // Zero msgId without realMsgId is invalid
+        let zero_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "0",
+            "deliveredUids": ["user_123"]
+        })).unwrap();
+        assert!(!zero_del.is_valid());
+
+        // Zero msgId with non-zero realMsgId and recipient is valid
+        let real_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "0",
+            "realMsgId": "real_999",
+            "deliveredUids": ["user_123"]
+        })).unwrap();
+        assert!(real_del.is_valid());
+
+        // Valid msgId but no deliveredUids or seenUids is invalid
+        let no_uids_del: TDeliveredMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "12345",
+            "deliveredUids": []
+        })).unwrap();
+        assert!(!no_uids_del.is_valid());
+
+        // User seen with empty idTo or empty msgId is invalid
+        let empty_seen: TUserSeenMessage = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!empty_seen.is_valid());
+
+        let no_id_seen: TUserSeenMessage = serde_json::from_value(serde_json::json!({
+            "idTo": "user_123",
+            "msgId": "0"
+        })).unwrap();
+        assert!(!no_id_seen.is_valid());
+
+        let valid_seen: TUserSeenMessage = serde_json::from_value(serde_json::json!({
+            "idTo": "user_123",
+            "msgId": "12345"
+        })).unwrap();
+        assert!(valid_seen.is_valid());
+
+        // Group seen with empty groupId is invalid
+        let empty_group_seen: TGroupSeenMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "12345",
+            "groupId": ""
+        })).unwrap();
+        assert!(!empty_group_seen.is_valid());
+
+        let valid_group_seen: TGroupSeenMessage = serde_json::from_value(serde_json::json!({
+            "msgId": "12345",
+            "groupId": "group_123"
+        })).unwrap();
+        assert!(valid_group_seen.is_valid());
+    }
+
+    fn create_dummy_undo() -> TUndo {
+        TUndo {
+            action_id: "act-1".to_string(),
+            msg_id: "msg-1".to_string(),
+            cli_msg_id: "cli-1".to_string(),
+            msg_type: "undo".to_string(),
+            uid_from: "".to_string(),
+            id_to: "".to_string(),
+            d_name: "User".to_string(),
+            ts: "123".to_string(),
+            status: 1,
+            content: TUndoContent {
+                global_msg_id: 1,
+                cli_msg_id: 1,
+                delete_msg: 1,
+                src_id: 0,
+                dest_id: 0,
+            },
+            notify: "".to_string(),
+            ttl: 0,
+            user_id: "".to_string(),
+            uin: "".to_string(),
+            cmd: 501,
+            st: 0,
+            at: 0,
+            real_msg_id: "real-1".to_string(),
+        }
     }
 }

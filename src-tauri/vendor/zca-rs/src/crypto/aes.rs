@@ -307,6 +307,28 @@ pub fn decode_event_data(
     parsed: &serde_json::Value,
     cipher_key: Option<&str>,
 ) -> Result<serde_json::Value, ZaloError> {
+    // 1. If parsed already has target payload arrays at the top level:
+    if parsed.get("delivereds").is_some()
+        || parsed.get("seens").is_some()
+        || parsed.get("msgs").is_some()
+        || parsed.get("groupSeens").is_some()
+        || parsed.get("controls").is_some()
+    {
+        return Ok(parsed.clone());
+    }
+
+    // 2. If parsed["data"] is already a JSON object / array directly:
+    if let Some(inner_obj) = parsed.get("data") {
+        if inner_obj.is_object() || inner_obj.is_array() {
+            if let Some(data_field) = inner_obj.get("data") {
+                if data_field.is_object() || data_field.is_array() {
+                    return Ok(data_field.clone());
+                }
+            }
+            return Ok(inner_obj.clone());
+        }
+    }
+
     let raw_data = parsed
         .get("data")
         .and_then(|v| v.as_str())
@@ -315,14 +337,16 @@ pub fn decode_event_data(
     let encrypt_type = parsed
         .get("encrypt")
         .and_then(|v| v.as_i64())
-        .ok_or_else(|| ZaloError::PayloadFormat("Missing encrypt field".to_string()))?;
+        .unwrap_or(0);
 
     if encrypt_type == 0 {
-        let parsed: serde_json::Value = serde_json::from_str(raw_data)?;
-        return Ok(parsed
-            .get("data")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null));
+        let parsed_inner: serde_json::Value = serde_json::from_str(raw_data)?;
+        if let Some(data_field) = parsed_inner.get("data") {
+            if data_field.is_object() || data_field.is_array() {
+                return Ok(data_field.clone());
+            }
+        }
+        return Ok(parsed_inner);
     }
 
     let decoded_buffer = if encrypt_type == 1 {
@@ -371,11 +395,13 @@ pub fn decode_event_data(
 
     let s = String::from_utf8(decompressed).map_err(|e| ZaloError::Crypto(e.to_string()))?;
 
-    let parsed: serde_json::Value = serde_json::from_str(&s)?;
-    Ok(parsed
-        .get("data")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null))
+    let parsed_inner: serde_json::Value = serde_json::from_str(&s)?;
+    if let Some(data_field) = parsed_inner.get("data") {
+        if data_field.is_object() || data_field.is_array() {
+            return Ok(data_field.clone());
+        }
+    }
+    Ok(parsed_inner)
 }
 
 #[cfg(test)]
@@ -447,5 +473,28 @@ mod tests {
             "decoded payload must expose msgs at top level"
         );
         assert_eq!(msgs.unwrap().len(), 1);
+
+        // Variant 1: un-nested plaintext delivery payload
+        let plain_del = serde_json::json!({ "delivereds": [{ "msgId": "123" }] });
+        let parsed_del = serde_json::json!({
+            "data": plain_del.to_string(),
+            "encrypt": 0,
+        });
+        let out_del = decode_event_data(&parsed_del, None).expect("should decode un-nested");
+        assert!(out_del.get("delivereds").is_some());
+
+        // Variant 2: already parsed direct JSON object
+        let direct = serde_json::json!({
+            "data": { "delivereds": [{ "msgId": "456" }] }
+        });
+        let out_direct = decode_event_data(&direct, None).expect("should decode direct object");
+        assert!(out_direct.get("delivereds").is_some());
+
+        // Variant 3: top level delivereds array
+        let top_level = serde_json::json!({
+            "delivereds": [{ "msgId": "789" }]
+        });
+        let out_top = decode_event_data(&top_level, None).expect("should decode top-level");
+        assert!(out_top.get("delivereds").is_some());
     }
 }
