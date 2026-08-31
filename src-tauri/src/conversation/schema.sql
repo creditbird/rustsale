@@ -564,3 +564,4 @@ CREATE TABLE IF NOT EXISTS conversation_deltas (
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_deltas_conv ON conversation_deltas(conversation_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_conversation_deltas_seq ON conversation_deltas(sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_deltas_message_event ON conversation_deltas(message_id, event_type);

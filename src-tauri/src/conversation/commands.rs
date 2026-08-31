@@ -1717,3 +1717,13 @@ pub fn resume_conversation_deltas(
         .resume_deltas(after_sequence, limit)
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub fn get_conversation_high_water_mark(
+    state: tauri::State<'_, ConversationState>,
+) -> Result<crate::conversation::types::ConversationHighWaterMark, String> {
+    state
+        .service
+        .get_high_water_mark()
+        .map_err(|error| error.to_string())
+}

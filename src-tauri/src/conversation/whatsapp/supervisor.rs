@@ -393,43 +393,21 @@ impl WhatsAppSupervisor {
                             None,
                             sender_source_jid.as_deref(),
                         ) {
-                            if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+                            if let Ok(Some(applied)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
                                 &mut conn,
                                 account_id_val,
                                 &raw_msg,
                             ) {
-                                let lead_id_opt: Option<i64> = conn.query_row(
-                                    "SELECT ci.lead_id FROM channel_identities ci
-                                     JOIN conversation_participants cp ON cp.identity_id = ci.id
-                                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
-                                    [conv_id],
-                                    |r| r.get(0),
-                                ).optional().unwrap_or(None);
-
-                                let msg_id_opt: Option<i64> = conn.query_row(
-                                    "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
-                                    rusqlite::params![conv_id, raw_msg.id],
-                                    |r| r.get(0),
-                                ).optional().unwrap_or(None);
-
                                 events.publish(crate::conversation::events::ConversationInvalidatedEvent {
-                                    conversation_id: conv_id,
-                                    lead_id: lead_id_opt,
+                                    conversation_id: applied.conversation_id,
+                                    lead_id: applied.lead_id,
                                     channel: crate::conversation::types::Channel::WhatsApp,
                                     reason: crate::conversation::events::ConversationInvalidationReason::Message,
-                                    message_id: msg_id_opt,
+                                    message_id: Some(applied.message_id),
                                 });
 
-                                if let Some(msg_id) = msg_id_opt {
-                                    let repo = crate::conversation::repository::ConversationRepository::new(db_path.clone());
-                                    if let Ok(Some(delta_event)) = repo.record_message_delta(
-                                        conv_id,
-                                        lead_id_opt,
-                                        crate::conversation::types::Channel::WhatsApp,
-                                        msg_id,
-                                    ) {
-                                        events.publish_delta(delta_event);
-                                    }
+                                if let Some(delta_event) = applied.delta_event {
+                                    events.publish_delta(delta_event);
                                 }
                                 // Keep the protobuf thumbnail from ingestion. The full encrypted
                                 // payload is resolved lazily through `download_conversation_attachment`,
@@ -563,12 +541,15 @@ impl WhatsAppSupervisor {
                                                             if super::phone::is_group_jid(&chat_jid) { None } else { conv_title },
                                                             participant_override,
                                                         ) {
-                                                            if let Ok(Some(conv_id)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+                                                            if let Ok(Some(applied)) = super::normalizer::WhatsAppNormalizer::ingest_incoming_message(
                                                                 &mut conn,
                                                                 account_id_val,
                                                                 &raw_msg,
                                                             ) {
-                                                                invalidated_conv_ids.insert(conv_id);
+                                                                invalidated_conv_ids.insert(applied.conversation_id);
+                                                                if let Some(delta) = applied.delta_event {
+                                                                    events.publish_delta(delta);
+                                                                }
                                                             }
                                                         }
                                                     }

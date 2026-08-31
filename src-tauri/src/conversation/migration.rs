@@ -249,7 +249,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn ensure_conversation_deltas_schema(conn: &Connection) -> Result<()> {
+pub(crate) fn ensure_conversation_deltas_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS conversation_deltas (
             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,7 +264,16 @@ fn ensure_conversation_deltas_schema(conn: &Connection) -> Result<()> {
             FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_conversation_deltas_conv ON conversation_deltas(conversation_id, sequence);
-        CREATE INDEX IF NOT EXISTS idx_conversation_deltas_seq ON conversation_deltas(sequence);",
+        CREATE INDEX IF NOT EXISTS idx_conversation_deltas_seq ON conversation_deltas(sequence);
+
+        DELETE FROM conversation_deltas
+        WHERE sequence NOT IN (
+            SELECT MAX(sequence)
+            FROM conversation_deltas
+            GROUP BY message_id, event_type
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_deltas_message_event ON conversation_deltas(message_id, event_type);",
     )?;
     Ok(())
 }

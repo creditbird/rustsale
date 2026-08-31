@@ -1067,7 +1067,7 @@ fn complete_outbox_job_updates_provider_client_message_id_when_different_from_qu
         text: "Outbound message to be sent".to_string(),
         reply_to_message_id: None,
     };
-    let queued_msg = repo
+    let (queued_msg, _delta) = repo
         .enqueue_outbound_message(&req, "local-req-1", "job-outbox-1", "2026-08-18T10:00:00Z")
         .unwrap();
     assert_eq!(queued_msg.status, MessageStatus::Queued);

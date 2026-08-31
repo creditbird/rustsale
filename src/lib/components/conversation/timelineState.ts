@@ -122,12 +122,19 @@ export function filterMessages(
   return items.filter((item) => channelSet.has(item.channel));
 }
 
+export interface MergeTimelineOptions {
+  deltaWatermarkSequence?: number;
+  messageSequenceMap?: Map<number, number>;
+}
+
 export function mergeTimelinePage(
   current: TimelineVariant,
   page: TimelinePage,
   mode: 'refresh' | 'older',
-  deltaWatermarkIds?: Set<number>
+  options?: MergeTimelineOptions
 ): TimelineVariant {
+  const messageSequenceMap = options?.messageSequenceMap;
+
   let mergedItems: ConversationMessage[];
   if (mode === 'refresh') {
     const pageIds = new Set(page.items.map((item) => item.id));
@@ -145,12 +152,19 @@ export function mergeTimelinePage(
       }
     }
 
+    const snapshotSeq = page.snapshotSequence ?? 0;
+
     const retainedNewerItems =
       page.items.length > 0
         ? current.items.filter((item) => {
             if (pageIds.has(item.id)) return false;
             if (item.id < 0 || item.status === 'queued' || item.status === 'sending') return false;
-            if (deltaWatermarkIds && deltaWatermarkIds.has(item.id)) return true;
+            if (messageSequenceMap && snapshotSeq > 0) {
+              const seq = messageSequenceMap.get(item.id);
+              if (seq !== undefined) {
+                return seq > snapshotSeq;
+              }
+            }
             const itemTime = new Date(item.occurredAt).getTime();
             return itemTime > pageMaxTime || (itemTime === pageMaxTime && item.id > pageMaxId);
           })

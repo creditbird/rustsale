@@ -2175,9 +2175,19 @@ impl ConversationRepository {
             return Ok(TimelinePage {
                 items: Vec::new(),
                 next_cursor: None,
+                snapshot_sequence: 0,
             });
         }
-        let conn = open_db_connection(&self.db_path)?;
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let snapshot_sequence: u64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM conversation_deltas",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|v| v as u64)
+            .unwrap_or(0);
         let channel_placeholders = std::iter::repeat_n("?", channels.len())
             .collect::<Vec<_>>()
             .join(", ");
@@ -2222,15 +2232,15 @@ impl ConversationRepository {
         values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
         let clamped_limit = limit.clamp(1, 100);
         values.push(i64::from(clamped_limit).into());
-        let mut statement = conn.prepare(&sql)?;
+        let mut statement = tx.prepare(&sql)?;
         let rows = statement
             .query_map(
                 rusqlite::params_from_iter(values.iter()),
                 map_conversation_message,
             )?
             .collect::<Result<Vec<_>>>()?;
-        let mut page = page_from_descending_rows(rows, clamped_limit);
-        crate::conversation::projection::hydrate_messages(&conn, &mut page.items)?;
+        let mut page = page_from_descending_rows(rows, clamped_limit, snapshot_sequence);
+        crate::conversation::projection::hydrate_messages(&tx, &mut page.items)?;
         Ok(page)
     }
 
@@ -2240,7 +2250,16 @@ impl ConversationRepository {
         before: Option<&TimelineCursor>,
         limit: u32,
     ) -> Result<TimelinePage> {
-        let conn = open_db_connection(&self.db_path)?;
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let snapshot_sequence: u64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM conversation_deltas",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|v| v as u64)
+            .unwrap_or(0);
         let before_at = before.map(|cursor| cursor.occurred_at.as_str());
         let before_id = before.map(|cursor| cursor.message_id);
         let sql = format!(
@@ -2274,15 +2293,15 @@ impl ConversationRepository {
         }));
         values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
         values.push(i64::from(clamped_limit).into());
-        let mut statement = conn.prepare(&sql)?;
+        let mut statement = tx.prepare(&sql)?;
         let rows = statement
             .query_map(
                 rusqlite::params_from_iter(values.iter()),
                 map_conversation_message,
             )?
             .collect::<Result<Vec<_>>>()?;
-        let mut page = page_from_descending_rows(rows, clamped_limit);
-        crate::conversation::projection::hydrate_messages(&conn, &mut page.items)?;
+        let mut page = page_from_descending_rows(rows, clamped_limit, snapshot_sequence);
+        crate::conversation::projection::hydrate_messages(&tx, &mut page.items)?;
         Ok(page)
     }
 
@@ -2292,7 +2311,16 @@ impl ConversationRepository {
         before: Option<&TimelineCursor>,
         limit: u32,
     ) -> Result<TimelinePage> {
-        let conn = open_db_connection(&self.db_path)?;
+        let mut conn = open_db_connection(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let snapshot_sequence: u64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM conversation_deltas",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|v| v as u64)
+            .unwrap_or(0);
         let before_at = before.map(|cursor| cursor.occurred_at.as_str());
         let before_id = before.map(|cursor| cursor.message_id);
         let sql = format!(
@@ -2321,15 +2349,15 @@ impl ConversationRepository {
         }));
         values.push(before_id.map_or(rusqlite::types::Value::Null, Into::into));
         values.push(i64::from(clamped_limit).into());
-        let mut statement = conn.prepare(&sql)?;
+        let mut statement = tx.prepare(&sql)?;
         let rows = statement
             .query_map(
                 rusqlite::params_from_iter(values.iter()),
                 map_conversation_message,
             )?
             .collect::<Result<Vec<_>>>()?;
-        let mut page = page_from_descending_rows(rows, clamped_limit);
-        crate::conversation::projection::hydrate_messages(&conn, &mut page.items)?;
+        let mut page = page_from_descending_rows(rows, clamped_limit, snapshot_sequence);
+        crate::conversation::projection::hydrate_messages(&tx, &mut page.items)?;
         Ok(page)
     }
 
@@ -3030,19 +3058,32 @@ impl ConversationRepository {
                 };
                 let payload_json = serde_json::to_string(&event)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                tx.execute(
-                    "INSERT INTO conversation_deltas (conversation_id, lead_id, channel, message_id, event_type, payload_json, created_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, 'message', ?5, ?6)",
-                    rusqlite::params![
-                        conversation_id,
-                        lead_id,
-                        channel.as_str(),
-                        message_id,
-                        payload_json,
-                        emitted_at_ms,
-                    ],
-                )?;
-                let seq = tx.last_insert_rowid() as u64;
+                let existing_seq: Option<i64> = tx
+                    .query_row(
+                        "SELECT sequence FROM conversation_deltas WHERE message_id = ?1 AND event_type = 'message'",
+                        [message_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                let seq = if let Some(s) = existing_seq {
+                    s as u64
+                } else {
+                    tx.execute(
+                        "INSERT INTO conversation_deltas (conversation_id, lead_id, channel, message_id, event_type, payload_json, created_at_ms)
+                         VALUES (?1, ?2, ?3, ?4, 'message', ?5, ?6)
+                         ON CONFLICT(message_id, event_type) DO UPDATE SET created_at_ms = excluded.created_at_ms",
+                        rusqlite::params![
+                            conversation_id,
+                            lead_id,
+                            channel.as_str(),
+                            message_id,
+                            payload_json,
+                            emitted_at_ms,
+                        ],
+                    )?;
+                    tx.last_insert_rowid() as u64
+                };
                 event.sequence = seq;
                 let updated_payload = serde_json::to_string(&event)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -3070,6 +3111,21 @@ impl ConversationRepository {
         Ok(res)
     }
 
+    pub fn get_conversation_high_water_mark(
+        &self,
+    ) -> Result<crate::conversation::types::ConversationHighWaterMark> {
+        let conn = open_db_connection(&self.db_path)?;
+        let (current_seq, min_seq): (Option<i64>, Option<i64>) = conn.query_row(
+            "SELECT MAX(sequence), MIN(sequence) FROM conversation_deltas",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(crate::conversation::types::ConversationHighWaterMark {
+            current_sequence: current_seq.unwrap_or(0) as u64,
+            min_sequence: min_seq.unwrap_or(0) as u64,
+        })
+    }
+
     pub fn fetch_deltas_after_sequence(
         &self,
         after_sequence: u64,
@@ -3093,10 +3149,14 @@ impl ConversationRepository {
         let mut deltas = Vec::new();
         for row in rows {
             let (seq, payload_json) = row?;
-            if let Ok(mut event) = serde_json::from_str::<ConversationMessageDeltaEvent>(&payload_json) {
-                event.sequence = seq;
-                deltas.push(event);
-            }
+            let mut event: ConversationMessageDeltaEvent = serde_json::from_str(&payload_json)
+                .map_err(|err| rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                ))?;
+            event.sequence = seq;
+            deltas.push(event);
         }
         Ok(deltas)
     }
@@ -3200,7 +3260,7 @@ impl ConversationRepository {
         local_request_id: &str,
         job_id: &str,
         now: &str,
-    ) -> Result<ConversationMessage> {
+    ) -> Result<(ConversationMessage, Option<ConversationMessageDeltaEvent>)> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
@@ -3253,9 +3313,44 @@ impl ConversationRepository {
              WHERE m.id = ?1"
         );
         let message = tx.query_row(&sql, [message_id], map_conversation_message)?;
+        let mut list = vec![message];
+        crate::conversation::projection::hydrate_messages(&tx, &mut list)?;
+        let hydrated_msg = list.pop().expect("hydrated message");
+
+        let channel_name: String = tx
+            .query_row(
+                "SELECT channel FROM channel_accounts WHERE id = ?1",
+                [request.channel_account_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "zalo".to_string());
+        let channel = match channel_name.as_str() {
+            "whatsapp" => Channel::WhatsApp,
+            "messenger" => Channel::Messenger,
+            "email" => Channel::Email,
+            _ => Channel::Zalo,
+        };
+
+        let lead_id: Option<i64> = tx
+            .query_row(
+                "SELECT ci.lead_id FROM channel_identities ci
+                 JOIN conversation_participants cp ON cp.identity_id = ci.id
+                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                [request.conversation_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let delta_event = Self::record_message_delta_tx(
+            &tx,
+            request.conversation_id,
+            lead_id,
+            channel,
+            message_id,
+        )?;
 
         tx.commit()?;
-        Ok(message)
+        Ok((hydrated_msg, delta_event))
     }
 
     fn save_message_mentions_tx(
@@ -3475,6 +3570,7 @@ impl ConversationRepository {
                 batch_id,
                 client_batch_id: request.client_batch_id.clone(),
                 messages,
+                delta_events: Vec::new(),
             });
         }
 
@@ -3797,6 +3893,45 @@ impl ConversationRepository {
         crate::conversation::projection::hydrate_messages(&tx, &mut messages)
             .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
 
+        let channel_name: String = tx
+            .query_row(
+                "SELECT channel FROM channel_accounts WHERE id = ?1",
+                [channel_account_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "zalo".to_string());
+        let channel = match channel_name.as_str() {
+            "whatsapp" => Channel::WhatsApp,
+            "messenger" => Channel::Messenger,
+            "email" => Channel::Email,
+            _ => Channel::Zalo,
+        };
+
+        let lead_id: Option<i64> = tx
+            .query_row(
+                "SELECT ci.lead_id FROM channel_identities ci
+                 JOIN conversation_participants cp ON cp.identity_id = ci.id
+                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                [request.conversation_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+
+        let mut delta_events = Vec::new();
+        for msg in &messages {
+            let delta = Self::record_message_delta_tx(
+                &tx,
+                msg.conversation_id,
+                lead_id,
+                channel,
+                msg.id,
+            ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+            if let Some(d) = delta {
+                delta_events.push(d);
+            }
+        }
+
         tx.commit().map_err(|e| {
             ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
         })?;
@@ -3805,6 +3940,7 @@ impl ConversationRepository {
             batch_id,
             client_batch_id: request.client_batch_id.clone(),
             messages,
+            delta_events,
         })
     }
 
@@ -4281,7 +4417,7 @@ impl ConversationRepository {
         &self,
         request: &crate::conversation::types::StartDirectConversationRequest,
         now: &str,
-    ) -> Result<ConversationMessage> {
+    ) -> Result<(ConversationMessage, Option<ConversationMessageDeltaEvent>)> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
 
@@ -6765,7 +6901,11 @@ fn map_conversation_message(row: &rusqlite::Row) -> Result<ConversationMessage> 
     })
 }
 
-fn page_from_descending_rows(mut rows: Vec<ConversationMessage>, limit: u32) -> TimelinePage {
+fn page_from_descending_rows(
+    mut rows: Vec<ConversationMessage>,
+    limit: u32,
+    snapshot_sequence: u64,
+) -> TimelinePage {
     let limit_usize = limit.clamp(1, 100) as usize;
     let next_cursor = if rows.len() == limit_usize {
         rows.last().map(|msg| TimelineCursor {
@@ -6781,5 +6921,6 @@ fn page_from_descending_rows(mut rows: Vec<ConversationMessage>, limit: u32) -> 
     TimelinePage {
         items: rows,
         next_cursor,
+        snapshot_sequence,
     }
 }

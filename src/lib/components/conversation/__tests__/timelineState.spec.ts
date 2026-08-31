@@ -187,13 +187,44 @@ describe('timelineState', () => {
       // Delayed snapshot query finishes and returns only messages #1 and #2 (queried before #3 was committed)
       const snapshotPage = {
         items: [oldServerMsg, delayedSnapshotMsg],
-        nextCursor: null
+        nextCursor: null,
+        snapshotSequence: 20
       };
 
-      const merged = mergeTimelinePage(current, snapshotPage, 'refresh');
+      const seqMap = new Map<number, number>();
+      seqMap.set(3, 25); // Message 3 has delta sequence 25 > snapshotSequence 20
 
-      // Merged must retain #1, #2, AND newly arrived #3 (no bubble disappearance!)
+      const merged = mergeTimelinePage(current, snapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      // Merged must retain #1, #2, AND newly arrived #3 (sequence 25 > snapshotSequence 20)
       expect(merged.items.map((m) => m.id)).toEqual([1, 2, 3]);
+    });
+
+    it('discards stale un-snapshot items whose delta sequence is <= snapshotSequence', () => {
+      const serverMsg1 = createMessage(1, '2026-08-31T00:00:00Z');
+      const serverMsg2 = createMessage(2, '2026-08-31T00:00:05Z');
+      const obsoleteMsg = createMessage(99, '2026-08-31T00:00:08Z'); // Deleted or filtered out on server
+
+      const current = {
+        items: [serverMsg1, obsoleteMsg],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      const snapshotPage = {
+        items: [serverMsg1, serverMsg2],
+        nextCursor: null,
+        snapshotSequence: 50
+      };
+
+      const seqMap = new Map<number, number>();
+      seqMap.set(99, 45); // Sequence 45 <= snapshotSequence 50 (authoritative server snapshot already knows about seq 50)
+
+      const merged = mergeTimelinePage(current, snapshotPage, 'refresh', { messageSequenceMap: seqMap });
+
+      // obsoleteMsg must be dropped because seq 45 <= snapshotSequence 50
+      expect(merged.items.map((m) => m.id)).toEqual([1, 2]);
     });
 
     it('retains newest 200 items when mode is refresh', () => {

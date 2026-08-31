@@ -86,6 +86,10 @@ impl ConversationEventPublisher {
                             }
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                 tracing::warn!(target: "conversation", skipped, "invalidation forwarder lagged");
+                                let _ = app_handle.emit("conversation-invalidated", serde_json::json!({
+                                    "reason": "ReconcileRequired",
+                                    "skipped": skipped
+                                }));
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
@@ -99,6 +103,9 @@ impl ConversationEventPublisher {
                             }
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                 tracing::warn!(target: "conversation", skipped, "delta forwarder lagged");
+                                let _ = app_handle.emit("conversation-delta-lagged", serde_json::json!({
+                                    "skipped": skipped
+                                }));
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
                         }

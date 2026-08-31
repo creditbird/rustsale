@@ -8,7 +8,12 @@
 > • **Do NOT use `node`, `npm`, or `npx` under any circumstances.**
 
 > [!IMPORTANT]
-> **ALWAYS read Long-Term Memory at the start of planning or implementation** (using `mem0` tools: `search_memories`, `get_memories` or `agentmemory` tools: `memory_recall`, `memory_smart_search`) to retrieve session context, past lessons, and design decisions to avoid context loss. Save new learnings and conventions with `add_memory` or `memory_save`. Utilize **GitNexus** tools for codebase exploration and impact analysis as required.
+> **ALWAYS read BOTH Long-Term Memory systems (`mem0` AND `agentmemory`) at the start of planning or implementation**:
+> • Query `mem0` using `search_memories` / `get_memories`.
+> • Query `agentmemory` using `memory_recall` / `memory_smart_search` / `memory_reflect`.
+> • You MUST query BOTH memories to retrieve complete session context, past lessons, and design decisions to avoid context loss.
+> • Save new learnings and conventions to BOTH memories using `add_memory` (`mem0`) and `memory_save` / `memory_lesson_save` (`agentmemory`).
+> • Utilize **GitNexus** tools for codebase exploration and impact analysis as required.
 
 > [!IMPORTANT]
 > **MANDATORY IMPLEMENTATION HARNESS:** Before any task that creates, changes, fixes, refactors, migrates, or ships behavior, read and follow [`docs/IMPLEMENTATION_COMPLETION_HARNESS.md`](docs/IMPLEMENTATION_COMPLETION_HARNESS.md). Its requirement ledger, adversarial verification, evidence ladder, and Completion Lock control all implementation and remediation work. Do not claim completion while any lock condition remains open.
@@ -229,7 +234,7 @@ AI agent chooses the skill that fits the work.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **RustSale_v2** (7544 symbols, 19436 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **RustSale_v2** (7733 symbols, 19676 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

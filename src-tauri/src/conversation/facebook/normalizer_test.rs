@@ -102,6 +102,8 @@ fn test_ingest_conversations_batch_success() {
     assert_eq!(summary.delta_events[0].message.text_content, Some("Chào bạn!".to_string()));
     assert_eq!(summary.delta_events[1].sequence, 2);
     assert_eq!(summary.delta_events[1].message.text_content, Some("Chào chị, shop có thể hỗ trợ gì ạ?".to_string()));
+    assert_eq!(summary.delta_events[1].message.attachments.len(), 1);
+    assert_eq!(summary.delta_events[1].message.attachments[0].file_name.as_deref(), Some("catalog.png"));
 
     // Verify channel_identities
     let count: i64 = conn
@@ -309,7 +311,7 @@ fn test_ingest_webhook_event_inbound_message_delivery_and_read() {
             .unwrap();
 
     assert!(conv_id.is_some());
-    let cid = conv_id.unwrap();
+    let cid = conv_id.unwrap().conversation_id;
 
     // Verify identity created
     let ext_id: String = conn
@@ -429,4 +431,50 @@ fn test_ingest_webhook_event_rejects_unauthorized_mismatched_page_id() {
         )
         .unwrap();
     assert_eq!(id_count, 0);
+}
+
+#[test]
+fn test_facebook_normalizer_delta_fault_injection_rolls_back_atomically() {
+    let mut conn = create_test_db();
+
+    // 1. Install trigger to force delta failure
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger_fb BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: delta insert failure');
+         END;"
+    ).unwrap();
+
+    let payload = serde_json::json!({
+        "sender": { "id": "psid_customer_fault" },
+        "recipient": { "id": "page_123" },
+        "timestamp": 1724508965000_i64,
+        "message": {
+            "mid": "mid.fault.fb.001",
+            "text": "Fault message should be rolled back"
+        }
+    });
+
+    let res = FacebookMessengerNormalizer::ingest_webhook_event(
+        &mut conn,
+        1,
+        "page_123",
+        &payload,
+    );
+    assert!(res.is_err(), "Must fail-closed when delta fails");
+
+    // Verify messages table has no entry
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE provider_message_id = 'mid.fault.fb.001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0);
+
+    let delta_count: i64 = conn
+        .query_row("SELECT count(*) FROM conversation_deltas", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(delta_count, 0);
 }

@@ -11,6 +11,8 @@
     initConversationEventBridge,
     onConversationInvalidated,
     onConversationMessageDelta,
+    onConversationDeltaLagged,
+    onConversationBridgeReconnected,
     recallConversationMessage,
     pinConversationMessage,
     unpinConversationMessage,
@@ -19,6 +21,7 @@
     syncZaloGroupChatHistory,
     syncWhatsAppConversations,
     resumeConversationDeltas,
+    getConversationHighWaterMark,
     type InboxItem,
 
     type Channel,
@@ -806,12 +809,41 @@
   onMount(() => {
     const cleanupInvalidated = onConversationInvalidated(handleInvalidatedEvent);
     const cleanupDelta = onConversationMessageDelta(handleMessageDelta);
+    const cleanupLag = onConversationDeltaLagged(() => {
+      void initializeHighWaterMarkAndCatchUp();
+    });
+    const cleanupReconnect = onConversationBridgeReconnected(() => {
+      void initializeHighWaterMarkAndCatchUp();
+    });
+
+    const onFocus = () => {
+      void initializeHighWaterMarkAndCatchUp();
+    };
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void initializeHighWaterMarkAndCatchUp();
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onFocus);
+      document.addEventListener('visibilitychange', onVisibility);
+    }
+
+    void initializeHighWaterMarkAndCatchUp();
 
     return () => {
       cleanupInvalidated();
       cleanupDelta();
+      cleanupLag();
+      cleanupReconnect();
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
       if (inboxRefreshTimer) clearTimeout(inboxRefreshTimer);
       if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
+      if (invalidationFallbackTimer) clearTimeout(invalidationFallbackTimer);
     };
   });
 
@@ -937,6 +969,11 @@
   }
 
   function selectItem(item: InboxItem) {
+    if (selectedKey !== item.key) {
+      messageSequenceMap.clear();
+      pendingInvalidationMessageIds.clear();
+      pendingGeneralInvalidation = false;
+    }
     selectedKey = item.key;
 
     item.unreadCount = 0;
@@ -1067,8 +1104,21 @@
           }
 
           const latestExisting = variantsCache.get(key) || existing;
-          const updated = mergeTimelinePage(latestExisting, page, 'refresh', deltaUpsertedMessageIds);
+          const updated = mergeTimelinePage(latestExisting, page, 'refresh', {
+            messageSequenceMap
+          });
           variantsCache.set(key, updated);
+
+          if (page.snapshotSequence && page.snapshotSequence > 0) {
+            if (page.snapshotSequence > lastSeenSequence) {
+              lastSeenSequence = page.snapshotSequence;
+            }
+            for (const [mid, seq] of messageSequenceMap.entries()) {
+              if (seq <= page.snapshotSequence) {
+                messageSequenceMap.delete(mid);
+              }
+            }
+          }
 
           if (currentVariantKey === key) {
             currentVariant = updated;
@@ -1229,7 +1279,32 @@
   let lastSeenSequence = 0;
   let isResumingDeltas = false;
   let liveDeltaBuffer: ConversationMessageDeltaEvent[] = [];
-  let deltaUpsertedMessageIds: Set<number> = new Set();
+  const messageSequenceMap = new Map<number, number>();
+
+  const pendingInvalidationMessageIds = new Set<number>();
+  let pendingGeneralInvalidation = false;
+  let invalidationFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleInvalidationFallback() {
+    if (invalidationFallbackTimer) return;
+    invalidationFallbackTimer = setTimeout(() => {
+      invalidationFallbackTimer = null;
+      let shouldRefresh = pendingGeneralInvalidation;
+      if (!shouldRefresh) {
+        for (const mid of pendingInvalidationMessageIds) {
+          if (!currentVariant.items.some((m) => m.id === mid)) {
+            shouldRefresh = true;
+            break;
+          }
+        }
+      }
+      pendingInvalidationMessageIds.clear();
+      pendingGeneralInvalidation = false;
+      if (shouldRefresh) {
+        void refreshOpenTimeline();
+      }
+    }, IS_TEST_WORKSPACE ? 20 : 60);
+  }
 
   export interface DeltaPaintTelemetrySample {
     sequence: number;
@@ -1241,20 +1316,60 @@
 
   export function getDeltaPaintTelemetrySummary() {
     if (deltaPaintSamples.length === 0) {
-      return { count: 0, p50: 0, p95: 0, p99: 0, max: 0, avg: 0 };
+      return {
+        count: 0,
+        deltaToPaint: { p50: 0, p95: 0, p99: 0, max: 0, avg: 0 },
+        dbToPaint: { p50: 0, p95: 0, p99: 0, max: 0, avg: 0 },
+        p50: 0,
+        p95: 0,
+        p99: 0,
+        max: 0,
+        avg: 0
+      };
     }
-    const latencies = deltaPaintSamples.map((s) => s.deltaToPaintMs).sort((a, b) => a - b);
-    const count = latencies.length;
-    const p50 = latencies[Math.floor(count * 0.50)];
-    const p95 = latencies[Math.min(count - 1, Math.floor(count * 0.95))];
-    const p99 = latencies[Math.min(count - 1, Math.floor(count * 0.99))];
-    const max = latencies[count - 1];
-    const avg = Math.round((latencies.reduce((acc, v) => acc + v, 0) / count) * 100) / 100;
-    return { count, p50, p95, p99, max, avg };
+    const deltaLatencies = deltaPaintSamples.map((s) => s.deltaToPaintMs).sort((a, b) => a - b);
+    const dbLatencies = deltaPaintSamples.map((s) => s.dbToPaintMs).sort((a, b) => a - b);
+    const count = deltaLatencies.length;
+    const calc = (arr: number[]) => {
+      const p50 = arr[Math.floor(count * 0.50)];
+      const p95 = arr[Math.min(count - 1, Math.floor(count * 0.95))];
+      const p99 = arr[Math.min(count - 1, Math.floor(count * 0.99))];
+      const max = arr[count - 1];
+      const avg = Math.round((arr.reduce((acc, v) => acc + v, 0) / count) * 100) / 100;
+      return { p50, p95, p99, max, avg };
+    };
+    const deltaStats = calc(deltaLatencies);
+    const dbStats = calc(dbLatencies);
+    return {
+      count,
+      deltaToPaint: deltaStats,
+      dbToPaint: dbStats,
+      ...deltaStats
+    };
   }
 
   if (typeof window !== 'undefined') {
     (window as unknown as { __GET_DELTA_PAINT_TELEMETRY__?: typeof getDeltaPaintTelemetrySummary }).__GET_DELTA_PAINT_TELEMETRY__ = getDeltaPaintTelemetrySummary;
+  }
+
+  async function initializeHighWaterMarkAndCatchUp() {
+    try {
+      const hwm = await getConversationHighWaterMark();
+      if (!hwm || typeof hwm.currentSequence !== 'number') return;
+      if (lastSeenSequence === 0) {
+        lastSeenSequence = hwm.currentSequence;
+      } else if (typeof hwm.minSequence === 'number' && lastSeenSequence < hwm.minSequence) {
+        // Gap is beyond retention floor! Authoritative full snapshot is required.
+        lastSeenSequence = hwm.currentSequence;
+        if (selectedItem) {
+          void refreshOpenTimeline();
+        }
+      } else if (lastSeenSequence < hwm.currentSequence) {
+        await resumeMissedDeltas(lastSeenSequence, hwm.currentSequence);
+      }
+    } catch (err) {
+      console.error('[OmniChat Delta] Failed to get high water mark:', err);
+    }
   }
 
   async function resumeMissedDeltas(fromSeq: number, targetSeq?: number) {
@@ -1293,6 +1408,11 @@
       }
     } catch (err) {
       console.error('[OmniChat Delta] Failed to resume missed deltas:', err);
+      setTimeout(() => {
+        if (targetSeq && lastSeenSequence < targetSeq) {
+          void resumeMissedDeltas(lastSeenSequence, targetSeq);
+        }
+      }, 500);
     } finally {
       isResumingDeltas = false;
     }
@@ -1302,7 +1422,7 @@
     if (delta.sequence > lastSeenSequence) {
       lastSeenSequence = delta.sequence;
     }
-    deltaUpsertedMessageIds.add(delta.message.id);
+    messageSequenceMap.set(delta.message.id, delta.sequence);
 
     // 1. Instant Open Timeline Store Upsert
     if (selectedItem) {
@@ -1446,15 +1566,29 @@
 
       const affectsOpenItem = selectedItem !== null && eventAffectsItem(selectedItem, event);
 
-      if (affectsOpenItem && event.reason !== 'message') {
-        // Only trigger full 50-item timeline IPC reload for non-message invalidations
-        // (such as participant joins, pinning, unpinning, reactions, title changes, profile syncs).
-        // Message deltas are directly upserted into timeline via handleMessageDelta.
-        const timelineDelay = IS_TEST_WORKSPACE ? 10 : 0;
-        if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
-        timelineRefreshTimer = setTimeout(() => {
-          void refreshOpenTimeline();
-        }, timelineDelay);
+      if (affectsOpenItem) {
+        if (event.reason !== 'message') {
+          // Only trigger full 50-item timeline IPC reload for non-message invalidations
+          // (such as participant joins, pinning, unpinning, reactions, title changes, profile syncs).
+          // Message deltas are directly upserted into timeline via handleMessageDelta.
+          const timelineDelay = IS_TEST_WORKSPACE ? 10 : 0;
+          if (timelineRefreshTimer) clearTimeout(timelineRefreshTimer);
+          timelineRefreshTimer = setTimeout(() => {
+            void refreshOpenTimeline();
+          }, timelineDelay);
+        } else {
+          // Bounded fallback with burst-safe coalescing:
+          if (!event.messageId) {
+            pendingGeneralInvalidation = true;
+            scheduleInvalidationFallback();
+          } else {
+            const hasMessage = currentVariant.items.some((m) => m.id === event.messageId);
+            if (!hasMessage) {
+              pendingInvalidationMessageIds.add(event.messageId);
+              scheduleInvalidationFallback();
+            }
+          }
+        }
       }
     } else {
       inboxStale = true;

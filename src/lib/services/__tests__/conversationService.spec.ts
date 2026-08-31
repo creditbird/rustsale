@@ -641,8 +641,8 @@ describe('conversationService ref-counted invalidation bridge', () => {
 
     await getBridgePromise();
 
-    // 2 listeners total: 1 for invalidation, 1 for delta
-    expect(listenCallCount).toBe(2);
+    // 3 listeners total: 1 for invalidation, 1 for delta, 1 for lagged
+    expect(listenCallCount).toBe(3);
 
     unsub1();
     unsub2();
@@ -692,8 +692,8 @@ describe('conversationService ref-counted invalidation bridge', () => {
     expect(unlistenCallCount).toBe(0);
 
     unsub2();
-    // 2 unlisten calls: 1 for invalidation, 1 for delta
-    expect(unlistenCallCount).toBe(2);
+    // 3 unlisten calls: 1 for invalidation, 1 for delta, 1 for lagged
+    expect(unlistenCallCount).toBe(3);
   });
 
   test('a failed initial listen schedules one bounded retry and final cleanup cancels the retry', async () => {
@@ -702,18 +702,18 @@ describe('conversationService ref-counted invalidation bridge', () => {
     const unsub = initConversationEventBridge();
     expect(getBridgeRefCount()).toBe(1);
 
-    // Wait for the retry loop to trigger (attempt 1 failed on 1st listen, retry runs both = 3 total)
+    // Wait for the retry loop to trigger (attempt 1 failed on 1st listen, retry runs all 3 = 4 total)
     const deadline = Date.now() + 1_000;
-    while (listenCallCount < 3 && Date.now() < deadline) {
+    while (listenCallCount < 4 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    expect(listenCallCount).toBe(3);
+    expect(listenCallCount).toBe(4);
     expect(getBridgeRefCount()).toBe(1);
     expect(getBridgePromise()).not.toBeNull();
 
     unsub();
-    expect(unlistenCallCount).toBe(2);
+    expect(unlistenCallCount).toBe(3);
   });
 
   test('cancels scheduled retry when unsubscribed before retry fires', async () => {

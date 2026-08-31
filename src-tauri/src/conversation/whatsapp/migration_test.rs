@@ -487,7 +487,7 @@ fn test_start_direct_conversation_for_whatsapp_links_lead_and_prevents_duplicate
         initial_message: "Hello Vject!".to_string(),
     };
 
-    let msg = repo.start_direct_conversation(&req, now).unwrap();
+    let (msg, _) = repo.start_direct_conversation(&req, now).unwrap();
     assert_eq!(
         msg.direction,
         crate::conversation::types::MessageDirection::Outbound

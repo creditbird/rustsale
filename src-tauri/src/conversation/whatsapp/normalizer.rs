@@ -387,6 +387,71 @@ fn upsert_whatsapp_attachments(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct AppliedWhatsAppMessage {
+    pub conversation_id: i64,
+    pub lead_id: Option<i64>,
+    pub message_id: i64,
+    pub delta_event: Option<crate::conversation::events::ConversationMessageDeltaEvent>,
+}
+
+impl PartialEq for AppliedWhatsAppMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.conversation_id == other.conversation_id
+            && self.lead_id == other.lead_id
+            && self.message_id == other.message_id
+    }
+}
+
+impl std::ops::Deref for AppliedWhatsAppMessage {
+    type Target = i64;
+    fn deref(&self) -> &Self::Target {
+        &self.conversation_id
+    }
+}
+
+impl rusqlite::ToSql for AppliedWhatsAppMessage {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(rusqlite::types::ToSqlOutput::from(self.conversation_id))
+    }
+}
+
+impl PartialEq<i64> for AppliedWhatsAppMessage {
+    fn eq(&self, other: &i64) -> bool {
+        self.conversation_id == *other
+    }
+}
+
+impl PartialEq<AppliedWhatsAppMessage> for i64 {
+    fn eq(&self, other: &AppliedWhatsAppMessage) -> bool {
+        *self == other.conversation_id
+    }
+}
+
+impl PartialOrd<i64> for AppliedWhatsAppMessage {
+    fn partial_cmp(&self, other: &i64) -> Option<std::cmp::Ordering> {
+        self.conversation_id.partial_cmp(other)
+    }
+}
+
+impl PartialOrd<AppliedWhatsAppMessage> for i64 {
+    fn partial_cmp(&self, other: &AppliedWhatsAppMessage) -> Option<std::cmp::Ordering> {
+        self.partial_cmp(&other.conversation_id)
+    }
+}
+
+impl From<AppliedWhatsAppMessage> for i64 {
+    fn from(msg: AppliedWhatsAppMessage) -> Self {
+        msg.conversation_id
+    }
+}
+
+impl From<&AppliedWhatsAppMessage> for i64 {
+    fn from(msg: &AppliedWhatsAppMessage) -> Self {
+        msg.conversation_id
+    }
+}
+
 pub struct WhatsAppNormalizer;
 
 impl WhatsAppNormalizer {
@@ -692,7 +757,7 @@ impl WhatsAppNormalizer {
         conn: &mut Connection,
         channel_account_id: i64,
         msg: &RawWhatsAppMessage,
-    ) -> Result<Option<i64>> {
+    ) -> Result<Option<AppliedWhatsAppMessage>> {
         Self::ingest_message_transactional(conn, channel_account_id, msg)
     }
 
@@ -701,7 +766,7 @@ impl WhatsAppNormalizer {
         conn: &mut Connection,
         channel_account_id: i64,
         msg: &RawWhatsAppMessage,
-    ) -> Result<Option<i64>> {
+    ) -> Result<Option<AppliedWhatsAppMessage>> {
         let tx = conn.transaction()?;
         let now_str = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let event_time = Self::normalize_iso_timestamp(msg.timestamp.as_deref());
@@ -1033,8 +1098,41 @@ impl WhatsAppNormalizer {
                  WHERE conversation_id = ?1 AND provider_message_id = ?3",
                 params![conversation_id, now_str, msg.id],
             )?;
+            let lead_id_opt: Option<i64> = tx
+                .query_row(
+                    "SELECT ci.lead_id FROM channel_identities ci
+                     JOIN conversation_participants cp ON cp.identity_id = ci.id
+                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                    [conversation_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let msg_id: i64 = tx
+                .query_row(
+                    "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
+                    params![conversation_id, msg.id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            let delta_event = if msg_id > 0 {
+                crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+                    &tx,
+                    conversation_id,
+                    lead_id_opt,
+                    crate::conversation::types::Channel::WhatsApp,
+                    msg_id,
+                )?
+            } else {
+                None
+            };
             tx.commit()?;
-            return Ok(Some(conversation_id));
+            return Ok(Some(AppliedWhatsAppMessage {
+                conversation_id,
+                lead_id: lead_id_opt,
+                message_id: msg_id,
+                delta_event,
+            }));
         }
 
         let _message_id = match existing_message {
@@ -1190,8 +1288,31 @@ impl WhatsAppNormalizer {
             }
         }
 
+        let lead_id_opt: Option<i64> = tx
+            .query_row(
+                "SELECT ci.lead_id FROM channel_identities ci
+                 JOIN conversation_participants cp ON cp.identity_id = ci.id
+                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                [conversation_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let delta_event = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+            &tx,
+            conversation_id,
+            lead_id_opt,
+            crate::conversation::types::Channel::WhatsApp,
+            _message_id,
+        )?;
+
         tx.commit()?;
-        Ok(Some(conversation_id))
+        Ok(Some(AppliedWhatsAppMessage {
+            conversation_id,
+            lead_id: lead_id_opt,
+            message_id: _message_id,
+            delta_event,
+        }))
     }
 
     /// Ingests a WhatsApp reaction event.

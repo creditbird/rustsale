@@ -18,6 +18,13 @@ pub struct IngestSummary {
     pub delta_events: Vec<crate::conversation::events::ConversationMessageDeltaEvent>,
 }
 
+#[derive(Debug, Clone)]
+pub struct FacebookWebhookEventIngestResult {
+    pub conversation_id: i64,
+    pub lead_id: Option<i64>,
+    pub delta_events: Vec<crate::conversation::events::ConversationMessageDeltaEvent>,
+}
+
 pub struct FacebookMessengerNormalizer;
 
 impl FacebookMessengerNormalizer {
@@ -229,8 +236,8 @@ impl FacebookMessengerNormalizer {
                         )
                         .optional()?;
 
-                    let message_id = match existing_id {
-                        Some(id) => id,
+                    let (message_id, is_new) = match existing_id {
+                        Some(id) => (id, false),
                         None => {
                             tx.execute(
                                 "INSERT INTO messages (
@@ -253,32 +260,7 @@ impl FacebookMessengerNormalizer {
                             )?;
                             summary.new_messages_count += 1;
                             thread_new_messages += 1;
-                            let new_id = tx.last_insert_rowid();
-
-                            let lead_id_opt: Option<i64> = tx
-                                .query_row(
-                                    "SELECT ci.lead_id FROM channel_identities ci
-                                     JOIN conversation_participants cp ON cp.identity_id = ci.id
-                                     WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
-                                    [conversation_id],
-                                    |r| r.get(0),
-                                )
-                                .optional()
-                                .unwrap_or(None);
-
-                            if let Ok(Some(delta_event)) =
-                                crate::conversation::repository::ConversationRepository::record_message_delta_tx(
-                                    &tx,
-                                    conversation_id,
-                                    lead_id_opt,
-                                    crate::conversation::types::Channel::Messenger,
-                                    new_id,
-                                )
-                            {
-                                summary.delta_events.push(delta_event);
-                            }
-
-                            new_id
+                            (tx.last_insert_rowid(), true)
                         }
                     };
 
@@ -328,6 +310,31 @@ impl FacebookMessengerNormalizer {
                             )?;
                         }
                     }
+
+                    if is_new {
+                        let lead_id_opt: Option<i64> = tx
+                            .query_row(
+                                "SELECT ci.lead_id FROM channel_identities ci
+                                 JOIN conversation_participants cp ON cp.identity_id = ci.id
+                                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                                [conversation_id],
+                                |r| r.get(0),
+                            )
+                            .optional()
+                            .unwrap_or(None);
+
+                        let delta_event =
+                            crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+                                &tx,
+                                conversation_id,
+                                lead_id_opt,
+                                crate::conversation::types::Channel::Messenger,
+                                message_id,
+                            )?;
+                        if let Some(event) = delta_event {
+                            summary.delta_events.push(event);
+                        }
+                    }
                 }
             }
 
@@ -359,9 +366,10 @@ impl FacebookMessengerNormalizer {
         channel_account_id: i64,
         page_id: &str,
         payload: &serde_json::Value,
-    ) -> Result<Option<i64>> {
+    ) -> Result<Option<FacebookWebhookEventIngestResult>> {
         let tx = conn.transaction()?;
         let now_str = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        let mut delta_events = Vec::new();
 
         let msg_obj = if payload.get("message").is_some()
             || payload.get("delivery").is_some()
@@ -453,19 +461,20 @@ impl FacebookMessengerNormalizer {
             .optional()?;
 
         let conversation_id = match existing_conv {
-            Some(id) => {
+            Some(cid) => {
                 tx.execute(
-                    "UPDATE channel_conversations SET
-                        last_message_at = CASE
-                            WHEN ?1 > COALESCE(last_message_at, '') THEN ?1
-                            ELSE last_message_at
-                        END,
-                        last_synced_at = ?2,
-                        updated_at = ?2
+                    "UPDATE channel_conversations
+                     SET last_message_at = CASE
+                         WHEN ?1 IS NOT NULL AND (last_message_at IS NULL OR ?1 > last_message_at)
+                         THEN ?1
+                         ELSE last_message_at
+                     END,
+                     last_synced_at = ?2,
+                     updated_at = ?2
                      WHERE id = ?3",
-                    params![event_time, now_str, id],
+                    params![event_time, now_str, cid],
                 )?;
-                id
+                cid
             }
             None => {
                 tx.execute(
@@ -498,55 +507,48 @@ impl FacebookMessengerNormalizer {
             params![conversation_id, identity_id, now_str],
         )?;
 
-        // 4. Handle message payload
+        // 4. Handle incoming message text/attachments
         if let Some(msg) = msg_obj.get("message") {
-            let mid = msg.get("mid").and_then(|v| v.as_str()).unwrap_or("");
-            if !mid.is_empty() {
-                let text_content = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let (direction, sender_identity, status) = if is_outbound {
-                    ("outbound", None, "sent")
-                } else {
-                    ("inbound", Some(identity_id), "received")
-                };
+            let mid = msg.get("mid").and_then(|m| m.as_str());
+            let text = msg.get("text").and_then(|t| t.as_str());
+            let attachments = msg.get("attachments").and_then(|a| a.as_array());
 
+            if let Some(provider_mid) = mid {
                 let existing_msg: Option<i64> = tx
                     .query_row(
                         "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
-                        params![conversation_id, mid],
+                        params![conversation_id, provider_mid],
                         |row| row.get(0),
                     )
                     .optional()?;
 
                 if existing_msg.is_none() {
-                    let raw_json = msg_obj.to_string();
-                    let attachments = msg.get("attachments").and_then(|a| a.as_array());
-                    let content_type = if let Some(atts) = attachments {
-                        if !atts.is_empty() {
-                            atts[0]
-                                .get("type")
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("file")
-                        } else {
-                            "text"
-                        }
+                    let (content_type, content_json) = if text.is_some() {
+                        let json = serde_json::json!({ "text": text.unwrap_or("") });
+                        ("text", json.to_string())
+                    } else if attachments.is_some() {
+                        ("attachment", "{}".to_string())
                     } else {
-                        "text"
+                        ("system", "{}".to_string())
                     };
+
+                    let direction = if is_outbound { "outbound" } else { "inbound" };
+                    let sender_identity_id = if is_outbound { None } else { Some(identity_id) };
+                    let status = if is_outbound { "sent" } else { "received" };
 
                     tx.execute(
                         "INSERT INTO messages (
                             conversation_id, sender_identity_id, direction, provider_message_id,
-                            content_type, text_content, content_json, raw_payload_json,
-                            provider_timestamp, ingested_at, status
-                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', ?7, ?8, ?9, ?10)",
+                            content_type, text_content, content_json, provider_timestamp, ingested_at, status
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params![
                             conversation_id,
-                            sender_identity,
+                            sender_identity_id,
                             direction,
-                            mid,
+                            provider_mid,
                             content_type,
-                            text_content,
-                            raw_json,
+                            text,
+                            content_json,
                             event_time,
                             now_str,
                             status
@@ -584,16 +586,18 @@ impl FacebookMessengerNormalizer {
                             [conversation_id],
                             |r| r.get(0),
                         )
-                        .optional()
-                        .unwrap_or(None);
+                        .optional()?;
 
-                    let _ = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+                    let delta_event = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
                         &tx,
                         conversation_id,
                         lead_id_opt,
                         crate::conversation::types::Channel::Messenger,
                         message_id,
-                    );
+                    )?;
+                    if let Some(event) = delta_event {
+                        delta_events.push(event);
+                    }
                 }
             }
         }
@@ -631,7 +635,21 @@ impl FacebookMessengerNormalizer {
             }
         }
 
+        let lead_id_opt: Option<i64> = tx
+            .query_row(
+                "SELECT ci.lead_id FROM channel_identities ci
+                 JOIN conversation_participants cp ON cp.identity_id = ci.id
+                 WHERE cp.conversation_id = ?1 AND ci.lead_id IS NOT NULL LIMIT 1",
+                [conversation_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
         tx.commit()?;
-        Ok(Some(conversation_id))
+        Ok(Some(FacebookWebhookEventIngestResult {
+            conversation_id,
+            lead_id: lead_id_opt,
+            delta_events,
+        }))
     }
 }

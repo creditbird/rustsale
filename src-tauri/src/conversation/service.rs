@@ -398,7 +398,7 @@ impl ConversationService {
         request: &super::types::StartDirectConversationRequest,
     ) -> Result<super::types::ConversationMessage> {
         let now = crate::conversation::types::utc_now();
-        let message = self.repository.start_direct_conversation(request, &now)?;
+        let (message, delta) = self.repository.start_direct_conversation(request, &now)?;
         self.events.publish(ConversationInvalidatedEvent {
             conversation_id: message.conversation_id,
             lead_id: None,
@@ -406,13 +406,8 @@ impl ConversationService {
             reason: ConversationInvalidationReason::Message,
             message_id: Some(message.id),
         });
-        if let Ok(Some(delta)) = self.repository.record_message_delta(
-            message.conversation_id,
-            None,
-            message.channel,
-            message.id,
-        ) {
-            self.events.publish_delta(delta);
+        if let Some(delta_event) = delta {
+            self.events.publish_delta(delta_event);
         }
         Ok(message)
     }
@@ -469,14 +464,6 @@ impl ConversationService {
                             ConversationInvalidationReason::Reaction,
                         );
                     } else if applied.message_id > 0 {
-                        if let Ok(Some(delta)) = self.repository.record_message_delta(
-                            applied.conversation_id,
-                            None,
-                            message.channel,
-                            applied.message_id,
-                        ) {
-                            self.events.publish_delta(delta);
-                        }
                         let _ = self.publish_message_invalidation(
                             applied.message_id,
                             ConversationInvalidationReason::Message,
@@ -639,6 +626,12 @@ impl ConversationService {
             .fetch_deltas_after_sequence(after_sequence, limit.unwrap_or(200))?)
     }
 
+    pub fn get_high_water_mark(
+        &self,
+    ) -> Result<crate::conversation::types::ConversationHighWaterMark> {
+        Ok(self.repository.get_conversation_high_water_mark()?)
+    }
+
     pub fn apply_group_snapshot(&self, snapshot: &NormalizedGroupSnapshot) -> Result<i64> {
         let conversation_id = self.repository.apply_group_snapshot(snapshot)?;
         self.events.publish(ConversationInvalidatedEvent {
@@ -687,14 +680,9 @@ impl ConversationService {
         for msg in &res.messages {
             let _ =
                 self.publish_message_invalidation(msg.id, ConversationInvalidationReason::Message);
-            if let Ok(Some(delta)) = self.repository.record_message_delta(
-                msg.conversation_id,
-                None,
-                msg.channel,
-                msg.id,
-            ) {
-                self.events.publish_delta(delta);
-            }
+        }
+        for delta in &res.delta_events {
+            self.events.publish_delta(delta.clone());
         }
         Ok(res)
     }

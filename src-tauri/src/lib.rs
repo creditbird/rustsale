@@ -507,6 +507,7 @@ pub fn run() {
             conversation::commands::sync_whatsapp_conversations,
             conversation::commands::download_conversation_attachment,
             conversation::commands::resume_conversation_deltas,
+            conversation::commands::get_conversation_high_water_mark,
             facebook::commands::schedule_facebook_post,
             facebook::commands::publish_facebook_post_now,
             facebook::commands::list_facebook_scheduled_posts,

@@ -3402,7 +3402,7 @@ fn delete_conversation_and_start_direct_conversation_execute_without_sql_errors(
         initial_message: "Hello phone".to_string(),
     };
 
-    let msg = harness
+    let (msg, _) = harness
         .repository
         .start_direct_conversation(&start_req, "2026-08-01T00:00:00.000Z")
         .unwrap();
@@ -3441,7 +3441,7 @@ fn start_direct_conversation_assigns_numeric_provider_client_message_id() {
         initial_message: "Tin nhắn kiểm thử".to_string(),
     };
 
-    let message = harness
+    let (message, _) = harness
         .repository
         .start_direct_conversation(&request, "2026-08-03T09:34:58.278Z")
         .unwrap();
@@ -3702,7 +3702,7 @@ fn start_direct_conversation_reuses_existing_thread_by_external_id() {
     };
 
     // Calling start_direct_conversation must NOT fail with UNIQUE constraint error
-    let msg = harness
+    let (msg, _) = harness
         .repository
         .start_direct_conversation(&req, "2026-08-01T12:00:00.000Z")
         .unwrap();
@@ -3758,7 +3758,7 @@ fn start_direct_conversation_reuses_existing_thread_by_lead_phone() {
         initial_message: "Xin chào Thảo".to_string(),
     };
 
-    let msg = harness
+    let (msg, _) = harness
         .repository
         .start_direct_conversation(&req, "2026-08-01T12:00:00.000Z")
         .unwrap();
@@ -3812,7 +3812,7 @@ fn resolve_direct_phone_recipient_merges_provisional_thread_into_zalo_uid_thread
         display_name: None,
         initial_message: "Xin chào Thảo".to_string(),
     };
-    let message = harness
+    let (message, _) = harness
         .repository
         .start_direct_conversation(&request, "2026-08-02T00:45:54.120Z")
         .unwrap();
@@ -3897,7 +3897,7 @@ fn resolve_direct_phone_recipient_clears_uid_tombstone_for_explicit_reopen() {
     .unwrap();
     drop(conn);
 
-    let outbound = harness
+    let (outbound, _) = harness
         .repository
         .start_direct_conversation(
             &crate::conversation::types::StartDirectConversationRequest {
@@ -6703,15 +6703,194 @@ fn test_replay_deltas_large_gap_pagination() {
 #[test]
 fn test_delta_transaction_rollback_guarantee() {
     let harness = Harness::new();
+    let conv_id = empty_group_conversation(&harness, "user_rollback");
+
     let mut conn = open_db_connection(harness.repository.db_path()).unwrap();
     let tx = conn.transaction().unwrap();
 
-    let mut msg = direct_message("imei_test", "msg_rollback");
-    msg.text_content = Some("Will rollback".to_string());
+    // 1. Insert a message within the transaction
+    let now = "2026-08-31T08:00:00Z";
+    let msg_id: i64 = tx
+        .query_row(
+            "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, content_json, ingested_at, status)
+             VALUES (?1, 'inbound', 'msg_fault_injection', 'text', 'Should be rolled back', '{\"text\":\"Should be rolled back\"}', ?2, 'received')
+             RETURNING id",
+            rusqlite::params![conv_id, now],
+            |r| r.get(0),
+        )
+        .unwrap();
 
-    // Explicitly do not commit transaction
+    // 2. Record the delta within the SAME transaction
+    let delta = ConversationRepository::record_message_delta_tx(
+        &tx,
+        conv_id,
+        None,
+        Channel::Zalo,
+        msg_id,
+    )
+    .unwrap();
+    assert!(delta.is_some(), "Delta must be created inside transaction");
+    let seq = delta.unwrap().sequence;
+    assert!(seq > 0, "Sequence must be generated");
+
+    // 3. Verify delta row exists within the uncommitted transaction
+    let in_tx_deltas: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_deltas WHERE message_id = ?1",
+            [msg_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_tx_deltas, 1, "Delta row must be visible within active tx");
+
+    // 4. Inject fault: abort / drop the transaction without commit
     drop(tx);
 
+    // 5. Verify 100% atomicity: neither message nor delta persists in SQLite
+    let post_conn = open_db_connection(harness.repository.db_path()).unwrap();
+    let msg_count: i64 = post_conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE id = ?1",
+            [msg_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0, "Message must be completely rolled back");
+
+    let delta_count: i64 = post_conn
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_deltas WHERE message_id = ?1",
+            [msg_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(delta_count, 0, "Delta must be completely rolled back");
+
     let deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
-    assert_eq!(deltas.len(), 0, "No delta row should exist after rollback");
+    assert_eq!(deltas.len(), 0, "No delta should exist after rollback");
+
+    // 6. Test successful commit path for comparison
+    let mut conn2 = open_db_connection(harness.repository.db_path()).unwrap();
+    let tx2 = conn2.transaction().unwrap();
+    let committed_msg_id: i64 = tx2
+        .query_row(
+            "INSERT INTO messages (conversation_id, direction, provider_message_id, content_type, text_content, content_json, ingested_at, status)
+             VALUES (?1, 'inbound', 'msg_committed', 'text', 'Should persist', '{\"text\":\"Should persist\"}', ?2, 'received')
+             RETURNING id",
+            rusqlite::params![conv_id, now],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let committed_delta = ConversationRepository::record_message_delta_tx(
+        &tx2,
+        conv_id,
+        None,
+        Channel::Zalo,
+        committed_msg_id,
+    )
+    .unwrap()
+    .unwrap();
+    tx2.commit().unwrap();
+
+    let persisted_deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+    assert_eq!(persisted_deltas.len(), 1);
+    assert_eq!(persisted_deltas[0].message.id, committed_msg_id);
+    assert_eq!(persisted_deltas[0].sequence, committed_delta.sequence);
+}
+
+#[test]
+fn test_start_direct_conversation_delta_fault_injection_rolls_back_atomically() {
+    let harness = Harness::new();
+
+    // 1. Install trigger on harness DB to force delta insert error
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger_direct BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: direct-start delta failure');
+         END;"
+    ).unwrap();
+
+    let start_req = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 1,
+        phone_or_external_id: "0901112233".to_string(),
+        display_name: Some("Fault User".to_string()),
+        initial_message: "Should roll back cleanly".to_string(),
+    };
+
+    let res = harness.repository.start_direct_conversation(&start_req, "2026-08-31T00:00:00.000Z");
+    assert!(res.is_err(), "Must fail-closed when delta recording fails");
+
+    // Verify messages table has no entry
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE text_content = 'Should roll back cleanly'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0);
+
+    let delta_count: i64 = conn
+        .query_row("SELECT count(*) FROM conversation_deltas", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(delta_count, 0);
+}
+
+#[test]
+fn test_enqueue_outbound_batch_delta_fault_injection_rolls_back_atomically() {
+    let harness = Harness::new();
+
+    // Setup an active conversation
+    let msg1 = direct_message_with_client_id("m-init", "c-init");
+    let applied = harness.repository.apply_normalized_message(&msg1).unwrap();
+    let conv_id = applied.conversation_id;
+
+    // 1. Install trigger on harness DB to force delta insert error
+    let conn = open_db_connection(harness.repository.db_path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_delta_trigger_batch BEFORE INSERT ON conversation_deltas
+         BEGIN
+             SELECT RAISE(ABORT, 'Fault injection: batch outbound delta failure');
+         END;"
+    ).unwrap();
+
+    let request = crate::conversation::types::SendConversationBatchRequest {
+        conversation_id: conv_id,
+        client_batch_id: "fault_batch_id_001".into(),
+        reply_to_message_id: None,
+        parts: vec![
+            crate::conversation::types::ConversationSendPartRequest {
+                client_part_id: "fault_batch_c1".into(),
+                content: crate::conversation::types::ConversationSendPartContent::Text {
+                    text: "Fault Batch 1".into(),
+                    mentions: Vec::new(),
+                },
+            },
+        ],
+        message_tag: None,
+    };
+
+    let res = harness.repository.enqueue_outbound_batch(&request, "2026-08-31T00:00:00.000Z");
+    assert!(res.is_err(), "Must fail-closed when delta recording fails");
+
+    // Verify messages table has no entry with text 'Fault Batch 1'
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE text_content = 'Fault Batch 1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(msg_count, 0);
+
+    let batch_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM message_send_batches WHERE client_batch_id = 'fault_batch_id_001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(batch_count, 0);
 }

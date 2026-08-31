@@ -720,21 +720,20 @@ async fn test_whatsapp_inbound_message_publishes_delta_event() {
         mentions: vec![],
     };
 
-    let conv_id = crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+    let applied = crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::ingest_incoming_message(
         &mut conn,
         1,
         &raw_msg,
     ).unwrap().unwrap();
 
-    let msg_id: i64 = conn.query_row(
-        "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2",
-        rusqlite::params![conv_id, "wa_inbound_msg_001"],
-        |r| r.get(0),
-    ).unwrap();
-
-    let repo = ConversationRepository::new(db_path);
-    let delta = repo.record_message_delta(conv_id, None, crate::conversation::types::Channel::WhatsApp, msg_id).unwrap().unwrap();
+    let delta = applied.delta_event.expect("Delta must be generated inside the transaction");
     assert_eq!(delta.channel, crate::conversation::types::Channel::WhatsApp);
     assert_eq!(delta.message.text_content.as_deref(), Some("Chao shop qua WhatsApp"));
     assert!(delta.sequence > 0);
+
+    let repo = ConversationRepository::new(db_path);
+    let deltas = repo.fetch_deltas_after_sequence(0, 10).unwrap();
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(deltas[0].sequence, delta.sequence);
+    assert_eq!(deltas[0].message.id, applied.message_id);
 }

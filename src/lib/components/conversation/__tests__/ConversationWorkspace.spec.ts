@@ -28,6 +28,15 @@ beforeAll(() => {
 
 let invalidationListeners = new Set<(event: ConversationInvalidatedEvent) => void>();
 let deltaListeners = new Set<(event: ConversationMessageDeltaEvent) => void>();
+let lagListeners = new Set<(payload: { skipped: number }) => void>();
+let reconnectListeners = new Set<() => void>();
+
+function emitLagged(skipped: number) {
+  for (const l of lagListeners) l({ skipped });
+}
+function emitReconnect() {
+  for (const l of reconnectListeners) l();
+}
 
 const richCapabilities: ConversationCapabilities = {
   maxTextLength: 2000,
@@ -450,6 +459,9 @@ const mockStartDirectConversation = mock(
 const mockResumeConversationDeltas = mock(
   async (_afterSeq: number, _limit?: number): Promise<ConversationMessageDeltaEvent[]> => []
 );
+const mockGetConversationHighWaterMark = mock(
+  async () => ({ currentSequence: 0, minSequence: 0 })
+);
 
 mock.module('$lib/services/conversationService', () => ({
   listConversationInbox: () => mockListConversationInbox(),
@@ -460,6 +472,7 @@ mock.module('$lib/services/conversationService', () => ({
   getIdentityTimeline: (identityId: number, before: any, limit: number) =>
     mockGetIdentityTimeline(identityId, before, limit),
   getConversationRuntimeStatus: () => mockGetConversationRuntimeStatus(),
+  getConversationHighWaterMark: () => mockGetConversationHighWaterMark(),
   initConversationEventBridge: () => () => {},
   onConversationInvalidated: (listener: (event: ConversationInvalidatedEvent) => void) => {
     invalidationListeners.add(listener);
@@ -468,6 +481,14 @@ mock.module('$lib/services/conversationService', () => ({
   onConversationMessageDelta: (listener: (event: ConversationMessageDeltaEvent) => void) => {
     deltaListeners.add(listener);
     return () => deltaListeners.delete(listener);
+  },
+  onConversationDeltaLagged: (listener: (payload: { skipped: number }) => void) => {
+    lagListeners.add(listener);
+    return () => lagListeners.delete(listener);
+  },
+  onConversationBridgeReconnected: (listener: () => void) => {
+    reconnectListeners.add(listener);
+    return () => reconnectListeners.delete(listener);
   },
   resumeConversationDeltas: (afterSeq: number, limit?: number) =>
     mockResumeConversationDeltas(afterSeq, limit),
@@ -525,11 +546,15 @@ describe('ConversationWorkspace Component', () => {
     document.body.innerHTML = '';
     invalidationListeners.clear();
     deltaListeners.clear();
+    lagListeners.clear();
+    reconnectListeners.clear();
     mockListConversationInbox.mockClear();
     mockGetContactTimeline.mockClear();
     mockGetConversationTimeline.mockClear();
     mockGetIdentityTimeline.mockClear();
     mockGetConversationRuntimeStatus.mockClear();
+    mockGetConversationHighWaterMark.mockClear();
+    mockResumeConversationDeltas.mockClear();
     mockSendConversationBatch.mockClear();
     mockRecallConversationMessage.mockClear();
     mockSetConversationReaction.mockClear();
@@ -2049,5 +2074,126 @@ describe('ConversationWorkspace Component', () => {
     const timeline = document.querySelector('[data-timeline-container]');
     const bubbles = timeline ? within(timeline as HTMLElement).getAllByText('Duplicate test bubble') : [];
     expect(bubbles.length).toBe(1);
+  });
+
+  test('25. Burst message invalidations coalesce fallback and trigger single reload if any message was not pushed via delta', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mockGetContactTimeline.mockClear();
+
+    // Burst of 3 invalidations for missing messages
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 901
+    });
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 902
+    });
+    emitInvalidated({
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo',
+      reason: 'message',
+      messageId: 903
+    });
+
+    // Wait for the coalesced 20ms fallback timer to fire
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await tick();
+
+    // Exactly 1 authoritative timeline reload should have been triggered for the burst!
+    expect(mockGetContactTimeline).toHaveBeenCalledTimes(1);
+  });
+
+  test('26. High water mark with minSequence > lastSeenSequence forces full timeline refresh on lag', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mockGetContactTimeline.mockClear();
+
+    // Server high water mark shows sequence advanced far beyond retention window (minSequence = 500)
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 600,
+      minSequence: 500
+    }));
+
+    // Broadcast receiver reports lag event (skipped 200 events)
+    emitLagged(200);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await tick();
+
+    // Because lastSeenSequence (100) < minSequence (500), it MUST reload full timeline page!
+    expect(mockGetContactTimeline).toHaveBeenCalledTimes(1);
+  });
+
+  test('27. High water mark within replay window resumes missed deltas on reconnect', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => ({
+      items: [mockMsg1],
+      hasMore: false,
+      nextCursor: null,
+      snapshotSequence: 100
+    }));
+
+    // Initial high water mark before reconnect is 100
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 100,
+      minSequence: 1
+    }));
+
+    mockResumeConversationDeltas.mockImplementation(async () => [
+      {
+        sequence: 105,
+        conversationId: 10,
+        leadId: 1,
+        channel: 'zalo' as const,
+        message: { ...mockMsg1, id: 777, textContent: 'Resumed delta item #777' },
+        emittedAtMs: Date.now()
+      }
+    ]);
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Server high water mark shows sequence advanced to 105 (within minSequence = 1)
+    mockGetConversationHighWaterMark.mockImplementation(async () => ({
+      currentSequence: 105,
+      minSequence: 1
+    }));
+
+    // Reconnect fires
+    emitReconnect();
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await tick();
+
+    // Replay should have resumed deltas and rendered resumed message
+    expect(mockResumeConversationDeltas).toHaveBeenCalled();
+    expect(screen.getAllByText('Resumed delta item #777').length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -713,7 +713,7 @@ async fn worker_resolves_phone_to_zalo_uid_before_sending_and_merges_thread() {
         display_name: None,
         initial_message: "Xin chào Thảo".to_string(),
     };
-    let message = harness
+    let (message, _) = harness
         .repository
         .start_direct_conversation(&request, "2026-08-02T00:45:54.120Z")
         .unwrap();
