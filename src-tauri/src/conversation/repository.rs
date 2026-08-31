@@ -3066,13 +3066,16 @@ impl ConversationRepository {
                     )
                     .optional()?;
 
-                let seq = if let Some(s) = existing_seq {
+                let seq: u64 = if let Some(s) = existing_seq {
                     s as u64
                 } else {
-                    tx.execute(
+                    let mut stmt = tx.prepare(
                         "INSERT INTO conversation_deltas (conversation_id, lead_id, channel, message_id, event_type, payload_json, created_at_ms)
                          VALUES (?1, ?2, ?3, ?4, 'message', ?5, ?6)
-                         ON CONFLICT(message_id, event_type) DO UPDATE SET created_at_ms = excluded.created_at_ms",
+                         ON CONFLICT(message_id, event_type) DO UPDATE SET created_at_ms = excluded.created_at_ms
+                         RETURNING sequence",
+                    )?;
+                    stmt.query_row(
                         rusqlite::params![
                             conversation_id,
                             lead_id,
@@ -3081,8 +3084,8 @@ impl ConversationRepository {
                             payload_json,
                             emitted_at_ms,
                         ],
-                    )?;
-                    tx.last_insert_rowid() as u64
+                        |row| row.get::<_, i64>(0),
+                    )? as u64
                 };
                 event.sequence = seq;
                 let updated_payload = serde_json::to_string(&event)

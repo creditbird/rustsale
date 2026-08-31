@@ -1416,12 +1416,10 @@
       }
     } catch (err) {
       console.error('[OmniChat Delta] Failed to resume missed deltas:', err);
-      // Authoritative fallback: recover from corrupt/poisoned replay rows via full snapshot reload
+      // Authoritative fallback: recover from corrupt/poisoned replay rows via full snapshot reload.
+      // refreshOpenTimeline() updates the open timeline and safely sets lastSeenSequence to the server snapshotSequence.
       if (selectedItem) {
-        void refreshOpenTimeline();
-      }
-      if (targetSeq && targetSeq > lastSeenSequence) {
-        lastSeenSequence = targetSeq;
+        await refreshOpenTimeline();
       }
       // Drain live delta buffer for subsequent live events
       if (liveDeltaBuffer.length > 0) {
