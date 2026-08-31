@@ -1,10 +1,10 @@
 {
   "version": "0.1.14",
-  "notes": "Tích hợp WhatsApp Omnichannel hoàn chỉnh (QR login, media sync, reactions, group member sync), tối ưu luồng hội thoại và autofocus khi trả lời tin nhắn",
-  "pub_date": "2026-08-29T04:10:42.085Z",
+  "notes": "Phiên bản v0.1.14: Cập nhật tính năng và cải thiện hiệu năng cho RustSale CRM.",
+  "pub_date": "2026-08-31T09:24:04.400Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDZNNmNDY2ZkZ2ZNdTQzQ0lWbDNQSGY4VUpvVkVtcFE3TFQzZDFCYWhFZzdDYlFDSGhjODdmeUJTM0c1blFVQmYxejlXRStWbytTbnQ5dFVRcWdqaHdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTc2NjQxCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNF9hbWQ2NC5kZWIKem1CN2FGU1VvbXF4UWVlN1RsOC95N0w4L3VNZit3ejZpVkRQZHFtRTRJYWw2cjNWNGZSc2VrL21UUmk3VlR2NVJ4SlNWbkR0TFByKzR4S3pXS2hJQUE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUC91NFgrMHFseUJ4K2s3b3UzN3BuK1BkYjRmcjhBSmM5WHdlUVpLUjlNN3h3NC91aXJEcnhpZFEvZVJUNndKSVpqdFg3cndKNTRNTU0wUFNiZEJIdkEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MTY4MjQzCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNF9hbWQ2NC5kZWIKckxXQzU1Q2NSNEZNUGJVaVVZVEdNNlRtZ3lOU1RXejBJaTB1R3lXVElEUWM4ZHMzVDc1VEF2d2k1dWIyYVBKVG9NUVRzNGlVYUxMOEIyR1p5d1RSQ0E9PQo=",
       "url": "https://rustsale.trantrongtri.com/v0.1.14/RustSale%20CRM_0.1.14_amd64.deb"
     }
   }

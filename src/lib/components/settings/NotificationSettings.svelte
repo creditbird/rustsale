@@ -25,6 +25,7 @@
     setCloseToTray,
     setTrayDnd,
     testDesktopNotification,
+    subscribeTrayDndChanged,
     type NotificationSettings as SettingsType,
     type TrayConfig
   } from '$lib/services/desktopNotificationService';
@@ -44,16 +45,57 @@
   let loading = $state(true);
   let testing = $state(false);
 
-  onMount(async () => {
-    try {
-      const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
-      if (s) settings = s;
-      if (t) tray = t;
-    } catch (err) {
-      console.warn('Error loading notification settings:', err);
-    } finally {
-      loading = false;
-    }
+  onMount(() => {
+    let active = true;
+    let unsubDnd: (() => void) | null = null;
+    let dndEventReceived = false;
+
+    (async () => {
+      try {
+        // 1. Establish subscription first and ensure listener is active
+        try {
+          const unsub = await subscribeTrayDndChanged((enabled) => {
+            if (active) {
+              dndEventReceived = true;
+              tray.dnd_enabled = enabled;
+            }
+          });
+          if (active) {
+            unsubDnd = unsub;
+          } else {
+            unsub();
+            return;
+          }
+        } catch (subErr) {
+          console.warn('Failed to subscribe to tray DND updates:', subErr);
+        }
+
+        // 2. Read snapshots only after listener is confirmed active
+        const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
+        if (active) {
+          if (s) settings = s;
+          if (t) {
+            tray.close_to_tray = t.close_to_tray;
+            if (!dndEventReceived) {
+              tray.dnd_enabled = t.dnd_enabled;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Error loading notification settings:', err);
+      } finally {
+        if (active) {
+          loading = false;
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (unsubDnd) {
+        unsubDnd();
+      }
+    };
   });
 
   async function handleToggleEnabled() {

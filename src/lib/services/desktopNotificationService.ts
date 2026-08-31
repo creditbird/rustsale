@@ -22,6 +22,7 @@ let unlistenTrayDndChanged: UnlistenFn | null = null;
 
 let onNavigateCallback: ((conversationId: number, leadId?: number) => void) | null = null;
 let onMarkAllReadCallback: (() => void) | null = null;
+let onDndChangedCallback: ((enabled: boolean) => void) | null = null;
 
 export function formatNotificationPreviewText(
   rawText: string,
@@ -79,6 +80,27 @@ export function getActiveFocusState(): { activeConversationId: number | null; is
   return { activeConversationId, isFocused: isWindowFocused };
 }
 
+export interface FocusSyncResult {
+  accepted: boolean;
+  backend_seq: number;
+}
+
+let lastSyncedFocus: { convId: number | null; focused: boolean } | null = null;
+let focusLocalCounter = 0;
+let lastIssuedSeq = 0;
+
+function nextMonotonicFocusSeq(): number {
+  const nowUs = Date.now() * 1000;
+  focusLocalCounter = (focusLocalCounter + 1) % 1000;
+  const candidate = nowUs + focusLocalCounter;
+  if (candidate <= lastIssuedSeq) {
+    lastIssuedSeq += 1;
+    return lastIssuedSeq;
+  }
+  lastIssuedSeq = candidate;
+  return candidate;
+}
+
 export async function setConversationFocus(
   convId: number | null,
   focused?: boolean
@@ -87,14 +109,60 @@ export async function setConversationFocus(
   if (typeof focused === 'boolean') {
     isWindowFocused = focused;
   }
-  try {
-    await invoke('set_active_conversation_focus', {
-      activeConversationId,
-      isFocused: isWindowFocused
-    });
-  } catch (err) {
-    console.warn('Failed to sync conversation focus to backend:', err);
+
+  const targetConvId = activeConversationId;
+  const targetFocused = isWindowFocused;
+
+  if (
+    lastSyncedFocus &&
+    lastSyncedFocus.convId === targetConvId &&
+    lastSyncedFocus.focused === targetFocused
+  ) {
+    return;
   }
+
+  let seq = nextMonotonicFocusSeq();
+
+  try {
+    let result = await invoke<FocusSyncResult>('set_active_conversation_focus', {
+      activeConversationId: targetConvId,
+      isFocused: targetFocused,
+      seq
+    });
+
+    // Only rebase/retry if our target state is still the active state (not superseded by a newer call)
+    if (
+      result &&
+      !result.accepted &&
+      typeof result.backend_seq === 'number' &&
+      targetConvId === activeConversationId &&
+      targetFocused === isWindowFocused
+    ) {
+      lastIssuedSeq = Math.max(lastIssuedSeq, result.backend_seq);
+      seq = nextMonotonicFocusSeq();
+      result = await invoke<FocusSyncResult>('set_active_conversation_focus', {
+        activeConversationId: targetConvId,
+        isFocused: targetFocused,
+        seq
+      });
+    }
+
+    if (result && result.accepted !== false && seq === lastIssuedSeq) {
+      lastSyncedFocus = { convId: targetConvId, focused: targetFocused };
+    }
+  } catch (err) {
+    if (seq === lastIssuedSeq) {
+      lastSyncedFocus = null;
+    }
+    console.warn('Failed to sync conversation focus to backend:', err);
+    throw err;
+  }
+}
+
+export async function subscribeTrayDndChanged(callback: (enabled: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>('tray-dnd-changed', (event) => {
+    callback(event.payload);
+  });
 }
 
 export async function getNotificationSettings(): Promise<NotificationSettings> {
@@ -145,17 +213,43 @@ export async function setTrayDnd(enabled: boolean): Promise<void> {
   await invoke('set_tray_dnd', { enabled });
 }
 
+let sharedAudioCtx: AudioContext | null = null;
+
+function getSharedAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    if (!sharedAudioCtx || sharedAudioCtx.state === 'closed') {
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return null;
+      sharedAudioCtx = new AudioContextClass();
+    }
+    if (sharedAudioCtx.state === 'suspended') {
+      sharedAudioCtx.resume().catch(() => {});
+    }
+    return sharedAudioCtx;
+  } catch (err) {
+    console.debug('Notification chime audio context initialization error:', err);
+    return null;
+  }
+}
+
+export function _resetSharedAudioContextForTesting(): void {
+  sharedAudioCtx = null;
+}
+
+export function _getSharedAudioContextForTesting(): AudioContext | null {
+  return getSharedAudioContext();
+}
+
 export function playNotificationChime(): void {
   try {
-    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextClass) return;
-    const ctx = new AudioContextClass();
-    if (ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
+    const ctx = getSharedAudioContext();
+    if (!ctx) return;
 
     const now = ctx.currentTime;
-    
+
     // Create oscillator 1 (587.33 Hz - D5)
     const osc1 = ctx.createOscillator();
     const gain1 = ctx.createGain();
@@ -181,10 +275,6 @@ export function playNotificationChime(): void {
     gain2.connect(ctx.destination);
     osc2.start(now + 0.08);
     osc2.stop(now + 0.38);
-
-    setTimeout(() => {
-      ctx.close().catch(() => {});
-    }, 450);
   } catch (err) {
     console.debug('Notification chime audio error:', err);
   }
@@ -193,6 +283,7 @@ export function playNotificationChime(): void {
 export async function initDesktopNotificationBridge(options?: {
   onNavigate?: (conversationId: number, leadId?: number) => void;
   onMarkAllRead?: () => void;
+  onDndChanged?: (enabled: boolean) => void;
 }): Promise<() => void> {
   if (options?.onNavigate) {
     onNavigateCallback = options.onNavigate;
@@ -200,15 +291,18 @@ export async function initDesktopNotificationBridge(options?: {
   if (options?.onMarkAllRead) {
     onMarkAllReadCallback = options.onMarkAllRead;
   }
+  if (options?.onDndChanged) {
+    onDndChangedCallback = options.onDndChanged;
+  }
 
   const handleFocus = () => {
     isWindowFocused = true;
-    setConversationFocus(activeConversationId, true);
+    void setConversationFocus(activeConversationId, true).catch(() => {});
   };
 
   const handleBlur = () => {
     isWindowFocused = false;
-    setConversationFocus(activeConversationId, false);
+    void setConversationFocus(activeConversationId, false).catch(() => {});
   };
 
   if (typeof window !== 'undefined') {
@@ -228,6 +322,10 @@ export async function initDesktopNotificationBridge(options?: {
 
     unlistenTrayMarkAllRead = await listen('tray-mark-all-read', () => {
       onMarkAllReadCallback?.();
+    });
+
+    unlistenTrayDndChanged = await listen<boolean>('tray-dnd-changed', (event) => {
+      onDndChangedCallback?.(event.payload);
     });
   } catch (err) {
     console.warn('Failed to register notification listeners in frontend:', err);
@@ -252,5 +350,6 @@ export async function initDesktopNotificationBridge(options?: {
     }
     onNavigateCallback = null;
     onMarkAllReadCallback = null;
+    onDndChangedCallback = null;
   };
 }

@@ -118,7 +118,7 @@ Remediate all 8 blocking findings from Supervisor re-review (`rp_supervisor_2608
 
 - [x] P3-A: Full clean build and regression verification (`cargo test`, `bun test`, `bun run check`, `bun run build`, `cargo check`).
 - [x] P3-B: Clean `git diff --check` and structured commit boundaries with rollback anchors.
-- [ ] P3-C: Call independent Supervisor acceptance re-review.
+- [x] P3-C: Call independent Supervisor acceptance re-review.
 
 ## Rules
 

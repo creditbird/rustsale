@@ -4994,6 +4994,7 @@ dependencies = [
  "keyring",
  "lettre",
  "libc",
+ "minisign-verify",
  "percent-encoding",
  "psl",
  "rand 0.8.7",

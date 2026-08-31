@@ -1,0 +1,1 @@
+RustSale CRM Deterministic Updater Signature Verification Fixture v0.1.14

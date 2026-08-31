@@ -91,6 +91,7 @@ pub fn run() {
     install_rustls_crypto_provider();
     let tray_state = tray::TrayState::default();
     let notification_manager = std::sync::Arc::new(notification::NotificationManager::default());
+    notification_manager.set_tray_state(tray_state.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -278,38 +279,79 @@ pub fn run() {
             let notif_repo = conversation_repository.clone();
             let notif_app = app.handle().clone();
             let mut notif_events = conversation_events.subscribe();
+
+            let (notif_tx, notif_rx) = tokio::sync::mpsc::channel::<(i64, Option<i64>)>(128);
+            let notif_rx = std::sync::Arc::new(tokio::sync::Mutex::new(notif_rx));
+
+            for _ in 0..4 {
+                let rx = notif_rx.clone();
+                let repo = notif_repo.clone();
+                let mgr = notif_service.clone();
+                let handle = notif_app.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let job = {
+                            let mut lock = rx.lock().await;
+                            lock.recv().await
+                        };
+                        match job {
+                            Some((msg_id, lead_id)) => {
+                                let repo = repo.clone();
+                                let mgr = mgr.clone();
+                                let handle = handle.clone();
+                                match tokio::task::spawn_blocking(move || {
+                                    if let Ok(Some(msg)) = repo.get_message_by_id(msg_id) {
+                                        if msg.direction == conversation::types::MessageDirection::Inbound {
+                                            let sender = msg.sender_display_name.as_deref().unwrap_or("Khách hàng");
+                                            let text = msg.text_content.as_deref().unwrap_or("");
+                                            mgr.notify_inbound(
+                                                &handle,
+                                                msg.conversation_id,
+                                                lead_id,
+                                                msg.channel,
+                                                sender,
+                                                text,
+                                                &msg.content_type,
+                                                false,
+                                                None,
+                                            );
+                                        }
+                                    }
+                                }).await {
+                                    Ok(_) => {}
+                                    Err(join_err) => {
+                                        tracing::error!(target: "notification", %msg_id, %join_err, "Notification worker blocking task panicked or aborted");
+                                    }
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                });
+            }
+
             tauri::async_runtime::spawn(async move {
                 loop {
                     match notif_events.recv().await {
                         Ok(event) => {
                             if event.reason == conversation::events::ConversationInvalidationReason::Message {
                                 if let Some(msg_id) = event.message_id {
-                                    let repo = notif_repo.clone();
-                                    let mgr = notif_service.clone();
-                                    let handle = notif_app.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        if let Ok(Some(msg)) = repo.get_message_by_id(msg_id) {
-                                            if msg.direction == conversation::types::MessageDirection::Inbound {
-                                                let sender = msg.sender_display_name.as_deref().unwrap_or("Khách hàng");
-                                                let text = msg.text_content.as_deref().unwrap_or("");
-                                                mgr.notify_inbound(
-                                                    &handle,
-                                                    msg.conversation_id,
-                                                    event.lead_id,
-                                                    msg.channel,
-                                                    sender,
-                                                    text,
-                                                    &msg.content_type,
-                                                    false,
-                                                    None,
-                                                );
-                                            }
+                                    match notif_tx.try_send((msg_id, event.lead_id)) {
+                                        Ok(_) => {}
+                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                            tracing::warn!(target: "notification", %msg_id, "Notification queue full (128 items); message dropped to protect runtime");
                                         }
-                                    });
+                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                            tracing::warn!(target: "notification", %msg_id, "Notification worker queue closed");
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(target: "notification", skipped, "Notification event receiver lagged");
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }

@@ -66,3 +66,4 @@ whatsapp-rust = { version = "=0.7.0", default-features = false, features = ["sql
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
+minisign-verify = "0.2"
