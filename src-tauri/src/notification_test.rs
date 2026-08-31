@@ -242,3 +242,50 @@ fn test_dispatch_desktop_notification_and_test_command() {
         plugin_res
     );
 }
+
+#[test]
+fn test_dispatch_notification_deterministic_strategy() {
+    // 1. Primary succeeds -> Fallback is NOT called
+    let mut fallback_called = false;
+    let res1 = dispatch_notification_strategy(
+        || Ok(true),
+        || {
+            fallback_called = true;
+            Ok(())
+        },
+    );
+    assert!(res1.is_ok());
+    assert!(!fallback_called, "Fallback should not be called when primary succeeds");
+
+    // 2. Primary exits non-zero (Ok(false)) -> Fallback is called and succeeds
+    let mut fallback_called = false;
+    let res2 = dispatch_notification_strategy(
+        || Ok(false),
+        || {
+            fallback_called = true;
+            Ok(())
+        },
+    );
+    assert!(res2.is_ok());
+    assert!(fallback_called, "Fallback must be called when primary returns non-zero");
+
+    // 3. Primary fails to spawn / missing binary (Err) -> Fallback is called and succeeds
+    let mut fallback_called = false;
+    let res3 = dispatch_notification_strategy(
+        || Err("executable not found".to_string()),
+        || {
+            fallback_called = true;
+            Ok(())
+        },
+    );
+    assert!(res3.is_ok());
+    assert!(fallback_called, "Fallback must be called when primary fails to spawn");
+
+    // 4. Primary fails and Fallback also fails -> Dual failure returns Err
+    let res4 = dispatch_notification_strategy(
+        || Err("primary timed out".to_string()),
+        || Err("plugin delivery failed".to_string()),
+    );
+    assert!(res4.is_err(), "Dual failure must return Err");
+    assert_eq!(res4.unwrap_err(), "plugin delivery failed");
+}

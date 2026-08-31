@@ -295,7 +295,9 @@ pub fn dispatch_desktop_notification<R: Runtime>(
                             std::thread::sleep(Duration::from_millis(20));
                         }
                         Err(err) => {
-                            tracing::warn!(target: "notification", %err, "notify-send try_wait error; falling back to plugin");
+                            tracing::warn!(target: "notification", %err, "notify-send try_wait error; killing process and falling back to plugin");
+                            let _ = child.kill();
+                            let _ = child.wait();
                             break;
                         }
                     }
@@ -312,6 +314,20 @@ pub fn dispatch_desktop_notification<R: Runtime>(
     #[cfg(not(target_os = "linux"))]
     {
         show_plugin_notification(app, title, body)
+    }
+}
+
+pub fn dispatch_notification_strategy<FPrimary, FFallback>(
+    mut primary_runner: FPrimary,
+    mut fallback_runner: FFallback,
+) -> Result<(), String>
+where
+    FPrimary: FnMut() -> Result<bool, String>,
+    FFallback: FnMut() -> Result<(), String>,
+{
+    match primary_runner() {
+        Ok(true) => Ok(()),
+        Ok(false) | Err(_) => fallback_runner(),
     }
 }
 

@@ -153,14 +153,31 @@ describe('desktopNotificationService (Multi-Language & Focus Engine)', () => {
   });
 
   test('automatically rebases and retries when client sequence starts behind backend generation', async () => {
-    // Simulate backend being far ahead after WebView reload / clock adjustment
-    backendFocusState = { convId: 1, isFocused: true, seq: 9999999999999 };
+    // Current microsecond timestamp is ~1.77e15. We set backend to 5e15 (5 quadrillion) to be strictly ahead of client Date.now() * 1000
+    const highBackendSeq = 5_000_000_000_000_000;
+    backendFocusState = { convId: 1, isFocused: true, seq: highBackendSeq };
+
+    let ipcCalls = 0;
+    customFocusHandler = async (args) => {
+      ipcCalls++;
+      const seq = (args.seq as number) || 0;
+      if (seq > backendFocusState.seq) {
+        backendFocusState = {
+          convId: (args.activeConversationId as number | null) ?? null,
+          isFocused: (args.isFocused as boolean) ?? true,
+          seq
+        };
+        return { accepted: true, backend_seq: seq };
+      }
+      return { accepted: false, backend_seq: backendFocusState.seq };
+    };
 
     await setConversationFocus(777, true);
 
-    // Client must have rebased past backend sequence and successfully updated backend
+    // Assert that exactly 2 IPC calls occurred (Call 1 was rejected and returned highBackendSeq, Call 2 rebased and succeeded)
+    expect(ipcCalls).toBe(2);
     expect(backendFocusState.convId).toBe(777);
-    expect(backendFocusState.seq).toBeGreaterThan(9999999999999);
+    expect(backendFocusState.seq).toBeGreaterThan(highBackendSeq);
     expect(getActiveFocusState().activeConversationId).toBe(777);
   });
 

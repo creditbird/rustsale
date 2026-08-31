@@ -280,6 +280,7 @@ pub fn run() {
             let notif_app = app.handle().clone();
             let mut notif_events = conversation_events.subscribe();
             tauri::async_runtime::spawn(async move {
+                let notif_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
                 loop {
                     match notif_events.recv().await {
                         Ok(event) => {
@@ -288,25 +289,30 @@ pub fn run() {
                                     let repo = notif_repo.clone();
                                     let mgr = notif_service.clone();
                                     let handle = notif_app.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        if let Ok(Some(msg)) = repo.get_message_by_id(msg_id) {
-                                            if msg.direction == conversation::types::MessageDirection::Inbound {
-                                                let sender = msg.sender_display_name.as_deref().unwrap_or("Khách hàng");
-                                                let text = msg.text_content.as_deref().unwrap_or("");
-                                                mgr.notify_inbound(
-                                                    &handle,
-                                                    msg.conversation_id,
-                                                    event.lead_id,
-                                                    msg.channel,
-                                                    sender,
-                                                    text,
-                                                    &msg.content_type,
-                                                    false,
-                                                    None,
-                                                );
+                                    if let Ok(permit) = notif_semaphore.clone().try_acquire_owned() {
+                                        tokio::task::spawn_blocking(move || {
+                                            let _permit = permit;
+                                            if let Ok(Some(msg)) = repo.get_message_by_id(msg_id) {
+                                                if msg.direction == conversation::types::MessageDirection::Inbound {
+                                                    let sender = msg.sender_display_name.as_deref().unwrap_or("Khách hàng");
+                                                    let text = msg.text_content.as_deref().unwrap_or("");
+                                                    mgr.notify_inbound(
+                                                        &handle,
+                                                        msg.conversation_id,
+                                                        event.lead_id,
+                                                        msg.channel,
+                                                        sender,
+                                                        text,
+                                                        &msg.content_type,
+                                                        false,
+                                                        None,
+                                                    );
+                                                }
                                             }
-                                        }
-                                    });
+                                        });
+                                    } else {
+                                        tracing::warn!(target: "notification", "Notification task dropped due to concurrency saturation");
+                                    }
                                 }
                             }
                         }
