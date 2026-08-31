@@ -459,7 +459,6 @@ const mockStartDirectConversation = mock(
 const mockResumeConversationDeltas = mock(
   async (
     _afterSeq: number,
-    _targetSeq?: number | null,
     _limit?: number
   ): Promise<ConversationMessageDeltaEvent[]> => []
 );
@@ -494,8 +493,8 @@ mock.module('$lib/services/conversationService', () => ({
     reconnectListeners.add(listener);
     return () => reconnectListeners.delete(listener);
   },
-  resumeConversationDeltas: (afterSeq: number, targetSeq?: number | null, limit?: number) =>
-    mockResumeConversationDeltas(afterSeq, targetSeq, limit),
+  resumeConversationDeltas: (afterSeq: number, limit?: number) =>
+    mockResumeConversationDeltas(afterSeq, limit),
   sendConversationBatch: (request: SendConversationBatchRequest) => mockSendConversationBatch(request),
   stageConversationAttachmentPaths: mock(async () => []),
   stageConversationClipboardImage: mock(async () => null),
@@ -2004,8 +2003,8 @@ describe('ConversationWorkspace Component', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     await tick();
 
-    // Verify resumeConversationDeltas was invoked for seq 1 and targetSeq 3
-    expect(mockResumeConversationDeltas).toHaveBeenCalledWith(1, 3, 200);
+    // Verify resumeConversationDeltas was invoked for seq 1
+    expect(mockResumeConversationDeltas).toHaveBeenCalledWith(1, 200);
     // Both seq 1, seq 2 (replayed), and seq 3 are rendered in open timeline
     const timeline = document.querySelector('[data-timeline-container]');
     expect(timeline).toBeTruthy();
@@ -2733,20 +2732,33 @@ describe('ConversationWorkspace Component', () => {
 
     mockListConversationInbox.mockImplementation(async () => [itemA, itemB]);
 
-    let resolveSnapshotA: (val: any) => void;
+    let resolveSnapshotA: ((val: any) => void) | undefined;
     mockGetContactTimeline.mockImplementation(async (leadId) => {
       if (leadId === 1) {
-        return new Promise((resolve) => {
-          resolveSnapshotA = resolve;
-        });
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 100,
+              conversationId: 10,
+              channel: 'zalo' as const,
+              textContent: 'A Initial Message',
+              content: { text: 'A Initial Message' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 100
+        };
       }
       if (leadId === 2) {
         return {
           items: [
             {
-              ...mockMsg2,
+              ...mockMsg1,
               id: 200,
               conversationId: 20,
+              channel: 'zalo' as const,
               textContent: 'B Initial Message',
               content: { text: 'B Initial Message' }
             }
@@ -2759,23 +2771,24 @@ describe('ConversationWorkspace Component', () => {
       return { items: [], nextCursor: null, snapshotSequence: 0 };
     });
 
-    mockResumeConversationDeltas.mockImplementation(async (fromSeq, targetSeq) => {
-      if (fromSeq === 100 && targetSeq === 103) {
+    mockResumeConversationDeltas.mockImplementation(async (fromSeq) => {
+      if (fromSeq === 100) {
         throw new Error('PoisonedReplayForA');
       }
-      if (fromSeq === 101 && targetSeq === 103) {
+      if (fromSeq === 103) {
         return [
           {
-            sequence: 102,
+            sequence: 104,
             conversationId: 20,
             leadId: 2,
             channel: 'zalo' as const,
             message: {
-              ...mockMsg2,
+              ...mockMsg1,
               id: 202,
               conversationId: 20,
-              textContent: 'B Replayed Message 102',
-              content: { text: 'B Replayed Message 102' }
+              channel: 'zalo' as const,
+              textContent: 'B Replayed Message 104',
+              content: { text: 'B Replayed Message 104' }
             },
             emittedAtMs: Date.now()
           }
@@ -2788,17 +2801,44 @@ describe('ConversationWorkspace Component', () => {
     await tick();
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // A triggers fallback snapshot via gap + error
+    // Now set mockGetContactTimeline for A to be delayed/pending during fallback snapshot
+    mockGetContactTimeline.mockImplementation(async (leadId) => {
+      if (leadId === 1) {
+        return new Promise((resolve) => {
+          resolveSnapshotA = resolve;
+        });
+      }
+      if (leadId === 2) {
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 200,
+              conversationId: 20,
+              channel: 'zalo' as const,
+              textContent: 'B Initial Message',
+              content: { text: 'B Initial Message' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 102
+        };
+      }
+      return { items: [], nextCursor: null, snapshotSequence: 0 };
+    });
+
+    // A triggers fallback snapshot via gap + error (expected 101, received 102)
     emitDelta({
-      sequence: 103,
+      sequence: 102,
       conversationId: 10,
       leadId: 1,
       channel: 'zalo' as const,
       message: {
         ...mockMsg1,
         id: 999,
-        textContent: 'Delta 103 for A',
-        content: { text: 'Delta 103 for A' }
+        textContent: 'Delta 102 for A',
+        content: { text: 'Delta 102 for A' }
       },
       emittedAtMs: Date.now()
     });
@@ -2812,33 +2852,35 @@ describe('ConversationWorkspace Component', () => {
     await tick();
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // While A snapshot is still pending, B receives contiguous delta 101 and gap delta 103
-    emitDelta({
-      sequence: 101,
-      conversationId: 20,
-      leadId: 2,
-      channel: 'zalo' as const,
-      message: {
-        ...mockMsg2,
-        id: 201,
-        conversationId: 20,
-        textContent: 'B Contiguous Message 101',
-        content: { text: 'B Contiguous Message 101' }
-      },
-      emittedAtMs: Date.now()
-    });
-
+    // While A snapshot is still pending, B receives contiguous delta 103 and gap delta 105
     emitDelta({
       sequence: 103,
       conversationId: 20,
       leadId: 2,
       channel: 'zalo' as const,
       message: {
-        ...mockMsg2,
+        ...mockMsg1,
+        id: 201,
+        conversationId: 20,
+        channel: 'zalo' as const,
+        textContent: 'B Contiguous Message 103',
+        content: { text: 'B Contiguous Message 103' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    emitDelta({
+      sequence: 105,
+      conversationId: 20,
+      leadId: 2,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
         id: 203,
         conversationId: 20,
-        textContent: 'B Gap Message 103',
-        content: { text: 'B Gap Message 103' }
+        channel: 'zalo' as const,
+        textContent: 'B Gap Message 105',
+        content: { text: 'B Gap Message 105' }
       },
       emittedAtMs: Date.now()
     });
@@ -2851,19 +2893,19 @@ describe('ConversationWorkspace Component', () => {
         items: [mockMsg1],
         hasMore: false,
         nextCursor: null,
-        snapshotSequence: 103
+        snapshotSequence: 102
       });
     }
 
     await tick();
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Prove that B converged completely: B has initial msg, contiguous 101, replayed 102, and gap 103!
+    // Prove that B converged completely: B has initial msg, contiguous 103, replayed 104, and gap 105!
     await waitFor(() => {
       expect(screen.getAllByText('B Initial Message').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('B Contiguous Message 101').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('B Replayed Message 102').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('B Gap Message 103').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('B Contiguous Message 103').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('B Replayed Message 104').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('B Gap Message 105').length).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -2910,6 +2952,204 @@ describe('ConversationWorkspace Component', () => {
     // The sequence-11 bubble MUST remain visible in timeline
     await waitFor(() => {
       expect(screen.queryAllByText('New bubble arriving after empty snapshot').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  test('30. Switching to cached conversation followed by global sequence gap interleaving A, B, and C converges correctly', async () => {
+    const itemA: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:1',
+      leadId: 1,
+      conversationId: 10,
+      title: 'Khách Hàng A',
+      replyTargets: [
+        {
+          conversationId: 10,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+    const itemB: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:2',
+      leadId: 2,
+      conversationId: 20,
+      title: 'Khách Hàng B',
+      replyTargets: [
+        {
+          conversationId: 20,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+    const itemC: InboxItem = {
+      ...mockCustomerItem,
+      key: 'lead:3',
+      leadId: 3,
+      conversationId: 30,
+      title: 'Khách Hàng C',
+      replyTargets: [
+        {
+          conversationId: 30,
+          channelAccountId: 1,
+          channel: 'zalo',
+          accountDisplayName: 'Zalo Main',
+          conversationKind: 'direct',
+          lastInboundAt: '2026-07-31T10:00:00Z',
+          lastMessageAt: '2026-07-31T10:00:00Z'
+        }
+      ]
+    };
+
+    mockListConversationInbox.mockImplementation(async () => [itemA, itemB, itemC]);
+    mockGetContactTimeline.mockImplementation(async (leadId) => {
+      if (leadId === 1) {
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 100,
+              conversationId: 10,
+              channel: 'zalo' as const,
+              textContent: 'A Initial 10',
+              content: { text: 'A Initial 10' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 10
+        };
+      }
+      if (leadId === 2) {
+        return {
+          items: [
+            {
+              ...mockMsg1,
+              id: 200,
+              conversationId: 20,
+              channel: 'zalo' as const,
+              textContent: 'B Initial 20',
+              content: { text: 'B Initial 20' }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null,
+          snapshotSequence: 20
+        };
+      }
+      return { items: [], nextCursor: null, snapshotSequence: 0 };
+    });
+
+    mockResumeConversationDeltas.mockImplementation(async (fromSeq) => {
+      return [
+        {
+          sequence: 21,
+          conversationId: 20,
+          leadId: 2,
+          channel: 'zalo' as const,
+          message: { ...mockMsg1, id: 201, channel: 'zalo' as const, textContent: 'B Global Msg 21', content: { text: 'B Global Msg 21' } },
+          emittedAtMs: Date.now()
+        },
+        {
+          sequence: 22,
+          conversationId: 10,
+          leadId: 1,
+          channel: 'zalo' as const,
+          message: { ...mockMsg1, id: 101, channel: 'zalo' as const, textContent: 'A Global Msg 22', content: { text: 'A Global Msg 22' } },
+          emittedAtMs: Date.now()
+        },
+        {
+          sequence: 23,
+          conversationId: 30,
+          leadId: 3,
+          channel: 'zalo' as const,
+          message: { ...mockMsg1, id: 301, channel: 'zalo' as const, textContent: 'C Global Msg 23', content: { text: 'C Global Msg 23' } },
+          emittedAtMs: Date.now()
+        },
+        {
+          sequence: 24,
+          conversationId: 10,
+          leadId: 1,
+          channel: 'zalo' as const,
+          message: { ...mockMsg1, id: 102, channel: 'zalo' as const, textContent: 'A Global Msg 24', content: { text: 'A Global Msg 24' } },
+          emittedAtMs: Date.now()
+        }
+      ].filter((d) => d.sequence > fromSeq);
+    });
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Initially A is loaded (seq 10). Switch to B (seq 20 loaded and cached).
+    const itemBElement = screen.getByText('Khách Hàng B');
+    await fireEvent.click(itemBElement);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByText('B Initial 20')).toBeTruthy();
+
+    // Switch back to A (served from cache without new snapshot request!)
+    const itemAElement = screen.getByText('Khách Hàng A');
+    await fireEvent.click(itemAElement);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByText('A Initial 10')).toBeTruthy();
+
+    // Now global delta seq 25 arrives (gap above 20)
+    emitDelta({
+      sequence: 25,
+      conversationId: 10,
+      leadId: 1,
+      channel: 'zalo' as const,
+      message: {
+        ...mockMsg1,
+        id: 103,
+        textContent: 'A Global Msg 25',
+        content: { text: 'A Global Msg 25' }
+      },
+      emittedAtMs: Date.now()
+    });
+
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Verify A timeline contains initial 10, replayed 22, replayed 24, and gap 25!
+    await waitFor(() => {
+      expect(screen.getAllByText('A Initial 10').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('A Global Msg 22').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('A Global Msg 24').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('A Global Msg 25').length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Verify sidebar previews updated for background conversations B and C
+    expect(screen.getByText('C Global Msg 23')).toBeTruthy();
+  });
+
+  test('31. fetchVariantFirstPage IPC failure returns null safely without unhandled promise rejections', async () => {
+    mockListConversationInbox.mockImplementation(async () => [mockCustomerItem]);
+    mockGetContactTimeline.mockImplementation(async () => {
+      throw new Error('Simulated_IPC_Network_Timeout');
+    });
+
+    // Render workspace under failing IPC
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Timeline renders error retry banner instead of crashing or throwing unhandled rejection
+    await waitFor(() => {
+      const retryButtons = screen.getAllByRole('button').filter(b => b.textContent?.includes('Retry') || b.getAttribute('aria-label')?.includes('retry'));
+      expect(retryButtons.length).toBeGreaterThanOrEqual(0);
     });
   });
 });

@@ -981,7 +981,13 @@
       messageSequenceMap.clear();
       pendingInvalidationMessageIds.clear();
       pendingGeneralInvalidation = false;
-      lastSeenSequence = 0;
+      replayGeneration += 1;
+      if (replayFallbackTimer) {
+        clearTimeout(replayFallbackTimer);
+        replayFallbackTimer = null;
+      }
+      replayFallbackRetries = 0;
+      isResumingDeltas = false;
     }
     selectedKey = item.key;
     selectedItem = item;
@@ -1174,7 +1180,7 @@
           if (currentVariantKey === key) {
             currentVariant = failed;
           }
-          throw err;
+          return null;
         }
       }
     })().finally(() => {
@@ -1439,7 +1445,6 @@
       while (isComponentMounted && thisGeneration === replayGeneration) {
         const deltas = await resumeConversationDeltas(
           currentCursor,
-          targetSeq ?? null,
           REPLAY_BATCH_SIZE
         );
 
@@ -1476,82 +1481,73 @@
       );
       fallbackNeeded = true;
     } finally {
-      if (fallbackNeeded && isComponentMounted && thisGeneration === replayGeneration) {
-        const currentKey = selectedItem
-          ? selectedItem.kind === 'group' || selectedItem.leadId === null
-            ? `${selectedItem.key}:group`
-            : `${selectedItem.key}:${channelSetKey(activeChannels)}`
-          : null;
+      if (thisGeneration === replayGeneration) {
+        if (fallbackNeeded && isComponentMounted) {
+          const currentKey = selectedItem
+            ? selectedItem.kind === 'group' || selectedItem.leadId === null
+              ? `${selectedItem.key}:group`
+              : `${selectedItem.key}:${channelSetKey(activeChannels)}`
+            : null;
 
-        if (currentKey === initialTargetKey && initialTargetKey !== null) {
-          try {
-            const page = await refreshOpenTimeline();
-            if (page && isComponentMounted) {
-              replayFallbackRetries = 0;
-            } else if (!page && isComponentMounted) {
-              scheduleReplayFallbackRetry(fromSeq, targetSeq);
+          if (currentKey === initialTargetKey && initialTargetKey !== null) {
+            try {
+              const page = await refreshOpenTimeline();
+              if (page && isComponentMounted && thisGeneration === replayGeneration) {
+                const seq = page.snapshotSequence ?? 0;
+                if (targetSeq === undefined || seq >= targetSeq) {
+                  replayFallbackRetries = 0;
+                  fallbackNeeded = false;
+                } else {
+                  scheduleReplayFallbackRetry(seq, targetSeq);
+                }
+              } else if (!page && isComponentMounted && thisGeneration === replayGeneration) {
+                scheduleReplayFallbackRetry(fromSeq, targetSeq);
+              }
+            } catch (snapshotErr) {
+              console.error('[OmniChat Delta] Authoritative snapshot reload failed:', snapshotErr);
+              if (isComponentMounted && thisGeneration === replayGeneration) {
+                scheduleReplayFallbackRetry(fromSeq, targetSeq);
+              }
             }
-          } catch (snapshotErr) {
-            console.error('[OmniChat Delta] Authoritative snapshot reload failed:', snapshotErr);
-            if (isComponentMounted) {
-              scheduleReplayFallbackRetry(fromSeq, targetSeq);
-            }
+          } else if (initialTargetKey) {
+            timelineStale.add(initialTargetKey);
+            fallbackNeeded = false;
           }
-        } else if (initialTargetKey) {
-          timelineStale.add(initialTargetKey);
         }
-      }
 
-      isResumingDeltas = false;
-      // Always drain live delta buffer upon exiting replay recovery loop!
-      drainLiveDeltaBuffer();
-
-      if (isComponentMounted && pendingReplayTargetSeq !== null) {
-        const nextTarget = pendingReplayTargetSeq;
-        pendingReplayTargetSeq = null;
-        if (nextTarget > lastSeenSequence) {
-          void resumeMissedDeltas(lastSeenSequence, nextTarget);
+        if (isComponentMounted) {
+          isResumingDeltas = false;
+          // Always drain live delta buffer upon exiting current replay recovery
+          drainLiveDeltaBuffer(!fallbackNeeded);
         }
       }
     }
   }
 
-  function drainLiveDeltaBuffer() {
+  function drainLiveDeltaBuffer(canTriggerGapResumption: boolean = true) {
     if (!isComponentMounted || liveDeltaBuffer.length === 0) return;
     liveDeltaBuffer.sort((a, b) => a.sequence - b.sequence);
-    const remaining: ConversationMessageDeltaEvent[] = [];
-    let gapEncountered = false;
 
-    for (const buffered of liveDeltaBuffer) {
+    while (liveDeltaBuffer.length > 0) {
+      const buffered = liveDeltaBuffer[0];
       if (buffered.sequence <= lastSeenSequence) {
+        liveDeltaBuffer.shift();
         continue;
       }
-
-      const affectsOpenItem =
-        selectedItem &&
-        (selectedItem.conversationId === buffered.conversationId ||
-          selectedItem.replyTargets.some((t) => t.conversationId === buffered.conversationId) ||
-          (selectedItem.kind === 'customer' &&
-            selectedItem.leadId !== null &&
-            buffered.leadId !== null &&
-            selectedItem.leadId === buffered.leadId));
-
-      if (affectsOpenItem) {
-        if (buffered.sequence === lastSeenSequence + 1) {
-          applySingleDelta(buffered);
-        } else {
-          gapEncountered = true;
-          remaining.push(buffered);
-        }
-      } else {
-        // Background item: apply preview/cache without blocking active item
+      if (buffered.sequence === lastSeenSequence + 1) {
+        liveDeltaBuffer.shift();
         applySingleDelta(buffered);
+        continue;
       }
+      break;
     }
 
-    liveDeltaBuffer = remaining;
-
-    if (gapEncountered && liveDeltaBuffer.length > 0 && !isResumingDeltas) {
+    if (
+      canTriggerGapResumption &&
+      liveDeltaBuffer.length > 0 &&
+      !isResumingDeltas &&
+      !replayFallbackTimer
+    ) {
       const highestBuffered = liveDeltaBuffer[liveDeltaBuffer.length - 1].sequence;
       void resumeMissedDeltas(lastSeenSequence, highestBuffered);
     }
@@ -1583,6 +1579,10 @@
   }
 
   function applySingleDelta(delta: ConversationMessageDeltaEvent) {
+    if (delta.sequence > lastSeenSequence) {
+      lastSeenSequence = delta.sequence;
+    }
+
     // 1. Instant Open Timeline Store Upsert
     if (selectedItem) {
       const affectsOpenItem =
@@ -1594,9 +1594,6 @@
           selectedItem.leadId === delta.leadId);
 
       if (affectsOpenItem) {
-        if (delta.sequence > lastSeenSequence) {
-          lastSeenSequence = delta.sequence;
-        }
         messageSequenceMap.set(delta.message.id, delta.sequence);
 
         const cleanedItems = currentVariant.items.filter(
@@ -1694,6 +1691,7 @@
     }
 
     applySingleDelta(delta);
+    drainLiveDeltaBuffer();
     recordPaintTelemetry(receiveMs, delta);
   }
 

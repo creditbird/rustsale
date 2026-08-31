@@ -31,10 +31,48 @@ fn test_updater_signature_against_public_key() {
         PublicKey::from_base64(key_line).expect("Failed to parse base64 key line")
     };
 
-    // 2. Portable verification test fixture: verify minisign public key decodes cleanly
-    println!("✅ Tauri updater public key successfully decoded: length={}", pubkey_text.len());
+    // 2. Deterministic cryptographic verification of committed test fixture
+    let fixture_paths = [
+        "tests/fixtures/updater_fixture.txt",
+        "src-tauri/tests/fixtures/updater_fixture.txt",
+        "../src-tauri/tests/fixtures/updater_fixture.txt",
+    ];
+    let fixture_path = fixture_paths
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .expect("Missing updater_fixture.txt test fixture");
 
-    // 3. Locate release bundle dynamically if present
+    let sig_paths = [
+        "tests/fixtures/updater_fixture.txt.sig",
+        "src-tauri/tests/fixtures/updater_fixture.txt.sig",
+        "../src-tauri/tests/fixtures/updater_fixture.txt.sig",
+    ];
+    let sig_path = sig_paths
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .expect("Missing updater_fixture.txt.sig test fixture");
+
+    let fixture_bytes = fs::read(fixture_path).expect("Failed to read fixture bytes");
+    let raw_sig_str = fs::read_to_string(sig_path).expect("Failed to read fixture signature");
+    let sig_text = if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_sig_str.trim()) {
+        String::from_utf8(decoded).unwrap_or_else(|_| raw_sig_str.to_string())
+    } else {
+        raw_sig_str.to_string()
+    };
+
+    let fixture_signature = Signature::decode(&sig_text).expect("Failed to decode fixture signature");
+    let fixture_verify_result = public_key.verify(&fixture_bytes, &fixture_signature, false);
+    assert!(
+        fixture_verify_result.is_ok(),
+        "Deterministic test fixture signature verification failed: {:?}",
+        fixture_verify_result.err()
+    );
+    println!("✅ Deterministic updater fixture signature verified successfully!");
+
+    // 3. If exact release bundle for current version exists, verify it against latest.json
+    let version = tauri_conf["version"].as_str().unwrap_or("0.1.14");
+    let expected_deb_name = format!("RustSale CRM_{}_amd64.deb", version);
+
     let bundle_dirs = [
         "target/release/bundle/deb",
         "src-tauri/target/release/bundle/deb",
@@ -43,16 +81,9 @@ fn test_updater_signature_against_public_key() {
 
     let mut found_deb: Option<PathBuf> = None;
     for dir in &bundle_dirs {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("deb") {
-                    found_deb = Some(path);
-                    break;
-                }
-            }
-        }
-        if found_deb.is_some() {
+        let candidate = PathBuf::from(dir).join(&expected_deb_name);
+        if candidate.exists() {
+            found_deb = Some(candidate);
             break;
         }
     }
@@ -78,17 +109,17 @@ fn test_updater_signature_against_public_key() {
                 let verify_result = public_key.verify(&deb_bytes, &signature, false);
                 assert!(
                     verify_result.is_ok(),
-                    "Minisign cryptographic verification failed: {:?}",
+                    "Release .deb signature verification failed: {:?}",
                     verify_result.err()
                 );
                 println!(
-                    "✅ Minisign cryptographic verification SUCCEEDED for {:?} ({} bytes)",
+                    "✅ Minisign release bundle verification SUCCEEDED for {:?} ({} bytes)",
                     deb_path,
                     deb_bytes.len()
                 );
             }
         }
     } else {
-        println!("ℹ️ Release .deb bundle not present in clean checkout - cryptographic engine verified with public key fixture");
+        println!("ℹ️ Release .deb bundle not present in clean checkout - deterministic fixture verified");
     }
 }
