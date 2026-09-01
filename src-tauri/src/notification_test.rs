@@ -212,8 +212,8 @@ fn test_rate_limiting_debounces_rapid_burst_and_prunes() {
     assert_eq!(final_len, 3);
 }
 
-#[test]
-fn test_dispatch_desktop_notification_and_test_command() {
+#[tokio::test]
+async fn test_dispatch_desktop_notification_and_test_command() {
     let app = tauri::test::mock_builder()
         .plugin(tauri_plugin_notification::init())
         .manage(std::sync::Arc::new(NotificationManager::default()))
@@ -221,7 +221,7 @@ fn test_dispatch_desktop_notification_and_test_command() {
         .expect("failed to build mock app");
     let state = app.state::<std::sync::Arc<NotificationManager>>();
 
-    let test_res = test_desktop_notification(app.handle().clone(), state);
+    let test_res = test_desktop_notification(app.handle().clone(), state).await;
     assert!(
         test_res.is_ok(),
         "test_desktop_notification should return Ok: {:?}",

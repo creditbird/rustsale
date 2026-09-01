@@ -170,7 +170,7 @@
           {searchQuery ? 'No matching templates found' : 'No quick templates yet'}
         </div>
       {:else}
-        {#each filteredTemplates as item (item.id)}
+        {#each filteredTemplates.slice(0, 100) as item (item.id)}
           <div class="p-3 flex items-start justify-between gap-3 hover:bg-muted/30 transition-colors">
             <div class="flex-1 space-y-1 min-w-0">
               <div class="flex items-center gap-2">
@@ -219,7 +219,7 @@
                 type="button"
                 variant="ghost"
                 size="sm"
-                class="h-7 text-[11px] px-2 text-destructive hover:bg-destructive/10"
+                class="h-7 text-[11px] px-2 text-destructive hover:text-destructive hover:bg-destructive/10"
                 onclick={() => handleDelete(item.id)}
                 data-testid="delete-template-btn-{item.id}"
               >
@@ -228,6 +228,11 @@
             </div>
           </div>
         {/each}
+        {#if filteredTemplates.length > 100}
+          <div class="p-2.5 text-center text-muted-foreground text-[11px] bg-muted/20">
+            Showing first 100 of {filteredTemplates.length} templates. Use search to find specific items.
+          </div>
+        {/if}
       {/if}
     </div>
   </DialogContent>

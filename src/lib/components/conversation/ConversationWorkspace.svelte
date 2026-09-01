@@ -812,6 +812,21 @@
 
   let isComponentMounted = false;
 
+  function getEnvMode(): string {
+    try {
+      if (typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: { MODE?: string } }).env?.MODE) {
+        return (import.meta as unknown as { env: { MODE: string } }).env.MODE;
+      }
+    } catch {}
+    try {
+      if (typeof process !== 'undefined' && (process as unknown as { env?: { NODE_ENV?: string } })?.env?.NODE_ENV) {
+        return (process as unknown as { env: { NODE_ENV: string } }).env.NODE_ENV as string;
+      }
+    } catch {}
+    return 'production';
+  }
+  const IS_TEST = getEnvMode() === 'test';
+
   // Event Bridge registration
   onMount(() => {
     isComponentMounted = true;
@@ -847,8 +862,31 @@
 
     void initializeHighWaterMarkAndCatchUp();
 
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleHandle: number | null = null;
+
+    // Background pre-warm initial data immediately on startup in app runtime
+    if (!IS_TEST && !hasBeenActivated) {
+      hasBeenActivated = true;
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        idleHandle = window.requestIdleCallback(() => {
+          idleHandle = null;
+          void loadInitialData();
+        });
+      } else {
+        idleTimer = setTimeout(() => {
+          idleTimer = null;
+          void loadInitialData();
+        }, 100);
+      }
+    }
+
     return () => {
       isComponentMounted = false;
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleHandle !== null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleHandle);
+      }
       cleanupInvalidated();
       cleanupDelta();
       cleanupLag();
@@ -867,21 +905,6 @@
       }
     };
   });
-
-  function getEnvMode(): string {
-    try {
-      if (typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: { MODE?: string } }).env?.MODE) {
-        return (import.meta as unknown as { env: { MODE: string } }).env.MODE;
-      }
-    } catch {}
-    try {
-      if (typeof process !== 'undefined' && (process as unknown as { env?: { NODE_ENV?: string } })?.env?.NODE_ENV) {
-        return (process as unknown as { env: { NODE_ENV: string } }).env.NODE_ENV as string;
-      }
-    } catch {}
-    return 'production';
-  }
-  const IS_TEST = getEnvMode() === 'test';
 
   async function loadInitialData() {
     inboxLoading = true;
