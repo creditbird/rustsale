@@ -208,18 +208,23 @@ pub struct TMention {
     pub r#type: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TQuote {
     #[serde(deserialize_with = "deserialize_string_or_number")]
     pub owner_id: String,
+    #[serde(deserialize_with = "deserialize_string_or_number_u64")]
     pub cli_msg_id: u64,
+    #[serde(deserialize_with = "deserialize_string_or_number_u64")]
     pub global_msg_id: u64,
+    #[serde(deserialize_with = "deserialize_string_or_number_u32")]
     pub cli_msg_type: u32,
+    #[serde(deserialize_with = "deserialize_string_or_number_u64")]
     pub ts: u64,
     pub msg: String,
     pub attach: String,
     pub from_d: String,
+    #[serde(deserialize_with = "deserialize_string_or_number_i32")]
     pub ttl: i32,
 }
 
@@ -367,10 +372,32 @@ where
 {
     let v = serde_json::Value::deserialize(deserializer)?;
     match v {
-        serde_json::Value::String(s) => s.parse::<u64>().map_err(serde::de::Error::custom),
-        serde_json::Value::Number(n) => n
-            .as_u64()
-            .ok_or_else(|| serde::de::Error::custom("not a u64")),
+        serde_json::Value::Number(n) => Ok(n.as_u64().unwrap_or(0)),
+        serde_json::Value::String(s) => Ok(s.parse::<u64>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
+fn deserialize_string_or_number_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::Number(n) => Ok(n.as_u64().map(|v| v as u32).unwrap_or(0)),
+        serde_json::Value::String(s) => Ok(s.parse::<u32>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
+fn deserialize_string_or_number_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::Number(n) => Ok(n.as_i64().map(|v| v as i32).unwrap_or(0)),
+        serde_json::Value::String(s) => Ok(s.parse::<i32>().unwrap_or(0)),
         _ => Ok(0),
     }
 }

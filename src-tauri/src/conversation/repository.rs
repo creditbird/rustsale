@@ -1035,6 +1035,33 @@ impl ConversationRepository {
             }
         };
 
+        let reply_to_message_id = if let Some(reply) = &message.reply {
+            let mut resolved_id = None;
+            let p_msg_id = reply.provider_message_id.trim();
+            if !p_msg_id.is_empty() && p_msg_id != "0" {
+                resolved_id = tx
+                    .query_row(
+                        "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_message_id = ?2 LIMIT 1",
+                        params![conversation_id, p_msg_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+            }
+            let cli_msg_id = reply.provider_client_message_id.trim();
+            if resolved_id.is_none() && !cli_msg_id.is_empty() && cli_msg_id != "0" {
+                resolved_id = tx
+                    .query_row(
+                        "SELECT id FROM messages WHERE conversation_id = ?1 AND provider_client_message_id = ?2 LIMIT 1",
+                        params![conversation_id, cli_msg_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+            }
+            resolved_id
+        } else {
+            None
+        };
+
         if let Some(message_id) = existing_message_id {
             tx.execute(
                 "UPDATE messages
@@ -1043,6 +1070,7 @@ impl ConversationRepository {
                      provider_timestamp = COALESCE(provider_timestamp, ?4),
                      raw_payload_json = COALESCE(?5, raw_payload_json),
                      reply_sender_identity_id = COALESCE(reply_sender_identity_id, ?6),
+                     reply_to_message_id = COALESCE(reply_to_message_id, ?7),
                      status = CASE WHEN status IN ('sending', 'queued', 'failed') THEN 'sent' ELSE status END
                  WHERE id = ?1",
                 params![
@@ -1052,6 +1080,7 @@ impl ConversationRepository {
                     message.provider_timestamp,
                     message.raw_payload.as_ref().map(serde_json::Value::to_string),
                     reply_sender_identity_id,
+                    reply_to_message_id,
                 ],
             )?;
 
@@ -1201,8 +1230,8 @@ impl ConversationRepository {
              (conversation_id, sender_identity_id, direction, provider_message_id,
               provider_client_message_id, local_request_id, content_type, text_content,
               content_json, raw_payload_json, provider_timestamp, ingested_at, status,
-              reply_sender_identity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+              reply_sender_identity_id, reply_to_message_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 conversation_id,
                 sender_identity_id,
@@ -1221,6 +1250,7 @@ impl ConversationRepository {
                 message.ingested_at,
                 message.status.as_str(),
                 reply_sender_identity_id,
+                reply_to_message_id,
             ],
         )?;
         let message_id = tx.last_insert_rowid();

@@ -1140,11 +1140,11 @@
         replyTarget: currentReplyTarget
           ? {
               messageId: currentReplyTarget.messageId,
-              senderDisplayName: null,
-              contentType: 'text',
-              textContent: null,
-              mediaType: null,
-              occurredAt: new Date().toISOString()
+              senderDisplayName: currentReplyTarget.preview.senderDisplayName ?? null,
+              contentType: currentReplyTarget.preview.contentType ?? 'text',
+              textContent: currentReplyTarget.preview.textContent ?? null,
+              mediaType: currentReplyTarget.preview.mediaType ?? null,
+              occurredAt: currentReplyTarget.preview.occurredAt ?? new Date().toISOString()
             }
           : null,
         reactions: [],
@@ -1281,11 +1281,11 @@
       replyTarget: replyTarget
         ? {
             messageId: replyTarget.messageId,
-            senderDisplayName: null,
-            contentType: 'text',
-            textContent: null,
-            mediaType: null,
-            occurredAt: new Date().toISOString()
+            senderDisplayName: replyTarget.preview.senderDisplayName ?? null,
+            contentType: replyTarget.preview.contentType ?? 'text',
+            textContent: replyTarget.preview.textContent ?? null,
+            mediaType: replyTarget.preview.mediaType ?? null,
+            occurredAt: replyTarget.preview.occurredAt ?? new Date().toISOString()
           }
         : null,
       reactions: [],

@@ -280,6 +280,36 @@ describe('timelineState', () => {
       expect(merged.items).toEqual([]);
     });
 
+    it('retains distinct optimistic messages with identical content during refresh without premature eviction', () => {
+      const now = Date.now();
+      const opt1 = createMessage(-1, new Date(now - 4000).toISOString(), 'zalo', 'ok');
+      opt1.sendBatch = { sendBatchId: 'batch-client-1', status: 'queued', totalParts: 1, sentParts: 0, failedParts: 0 };
+      const opt2 = createMessage(-2, new Date(now - 1000).toISOString(), 'zalo', 'ok');
+      opt2.sendBatch = { sendBatchId: 'batch-client-2', status: 'queued', totalParts: 1, sentParts: 0, failedParts: 0 };
+
+      const current = {
+        items: [opt1, opt2],
+        nextCursor: null,
+        hasLoaded: true,
+        loading: false
+      };
+
+      // Server page has real message for batch-client-1 only
+      const real1 = createMessage(1001, new Date(now - 4000).toISOString(), 'zalo', 'ok');
+      real1.sendBatch = { sendBatchId: 'batch-client-1', status: 'sent', totalParts: 1, sentParts: 1, failedParts: 0 };
+
+      const snapshotPage = {
+        items: [real1],
+        nextCursor: null,
+        snapshotSequence: 10
+      };
+
+      const merged = mergeTimelinePage(current, snapshotPage, 'refresh');
+
+      // real1 resolved, opt2 retained in chronological order!
+      expect(merged.items.map((m) => m.id)).toEqual([1001, -2]);
+    });
+
     it('retains newest 200 items when mode is refresh', () => {
       const baseTime = 1700000000000;
       const currentItems = Array.from({ length: 150 }, (_, i) =>

@@ -337,24 +337,38 @@ fn extract_reply(quote_obj: Option<&Value>) -> Option<NormalizedReplyReference> 
     let p_msg_id = quote
         .get("globalMsgId")
         .or_else(|| quote.get("msgId"))
+        .or_else(|| quote.get("global_msg_id"))
+        .or_else(|| quote.get("msg_id"))
         .and_then(json_scalar_string)
-        .filter(|value| !value.is_empty())?;
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "0".to_string());
     let cli_msg_id = quote
         .get("cliMsgId")
+        .or_else(|| quote.get("cli_msg_id"))
         .and_then(json_scalar_string)
         .unwrap_or_default();
     let sender = quote
         .get("ownerId")
         .or_else(|| quote.get("uidFrom"))
+        .or_else(|| quote.get("owner_id"))
+        .or_else(|| quote.get("fromUid"))
+        .or_else(|| quote.get("from_uid"))
         .and_then(json_scalar_string)
         .unwrap_or_default();
     let text = quote
         .get("msg")
+        .or_else(|| quote.get("text"))
+        .or_else(|| quote.get("content"))
+        .or_else(|| quote.get("caption"))
+        .or_else(|| quote.get("title"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let c_type = quote
         .get("msgType")
         .or_else(|| quote.get("cliMsgType"))
+        .or_else(|| quote.get("msg_type"))
+        .or_else(|| quote.get("cli_msg_type"))
+        .or_else(|| quote.get("type"))
         .and_then(json_scalar_string)
         .unwrap_or_else(|| "text".to_string());
     let ts = quote
@@ -362,6 +376,14 @@ fn extract_reply(quote_obj: Option<&Value>) -> Option<NormalizedReplyReference> 
         .and_then(json_scalar_string)
         .map(|value| provider_time(&value))
         .unwrap_or_else(crate::conversation::types::utc_now);
+
+    if (p_msg_id.is_empty() || p_msg_id == "0")
+        && (cli_msg_id.is_empty() || cli_msg_id == "0")
+        && sender.is_empty()
+        && text.is_none()
+    {
+        return None;
+    }
 
     Some(NormalizedReplyReference {
         provider_message_id: p_msg_id,
