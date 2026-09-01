@@ -138,20 +138,21 @@ export function mergeTimelinePage(
   let mergedItems: ConversationMessage[];
   if (mode === 'refresh') {
     const pageIds = new Set(page.items.map((item) => item.id));
+    const pageBatchIds = new Set<string>();
+    for (const item of page.items) {
+      if (item.sendBatch?.sendBatchId) {
+        pageBatchIds.add(item.sendBatch.sendBatchId);
+      }
+    }
     const nowMs = Date.now();
     const optimisticItems = current.items.filter((item) => {
       if (pageIds.has(item.id)) return false;
       if (item.id < 0) {
+        if (item.sendBatch?.sendBatchId && pageBatchIds.has(item.sendBatch.sendBatchId)) {
+          return false;
+        }
         const itemTime = new Date(item.occurredAt).getTime();
-        if (nowMs - itemTime > 30000) return false;
-        const hasMatchedReal = page.items.some(
-          (real) =>
-            real.direction === 'outbound' &&
-            real.contentType === item.contentType &&
-            real.textContent === item.textContent &&
-            Math.abs(new Date(real.occurredAt).getTime() - itemTime) < 30000
-        );
-        if (hasMatchedReal) return false;
+        if (nowMs - itemTime > 60000) return false;
         return true;
       }
       return item.status === 'queued' || item.status === 'sending';

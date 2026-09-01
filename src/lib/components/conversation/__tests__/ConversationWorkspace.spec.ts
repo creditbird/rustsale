@@ -1208,6 +1208,74 @@ describe('ConversationWorkspace Component', () => {
     expect(timelineMatches.length).toBe(2);
   });
 
+  test('8l. Two identical outbound messages in rapid succession are reconciled independently by batch ID without premature eviction', async () => {
+    const makeBatchResponse = (req: SendConversationBatchRequest, count: number) => ({
+      batchId: `batch-server-${count}`,
+      clientBatchId: req.clientBatchId,
+      messages: [
+        {
+          id: 900 + count,
+          conversationId: 10,
+          channelAccountId: 1,
+          accountDisplayName: 'Zalo Account',
+          channel: 'zalo' as const,
+          senderDisplayName: 'Me',
+          senderIdentityId: 1,
+          senderExternalId: 'my-uid',
+          senderAvatarUrl: null,
+          direction: 'outbound' as const,
+          contentType: 'text',
+          textContent: 'ok',
+          content: { text: 'ok' },
+          occurredAt: new Date().toISOString(),
+          status: 'sent' as const,
+          removedAt: null,
+          errorMessage: null,
+          replyToMessageId: null,
+          attachments: [],
+          replyTarget: null,
+          reactions: [],
+          batchIndex: 0,
+          sendBatch: {
+            sendBatchId: `batch-server-${count}`,
+            status: 'sent' as const,
+            totalParts: 1,
+            sentParts: 1,
+            failedParts: 0
+          },
+          mentions: [],
+          actions: { reply: true, copy: true, recall: false, forward: true, react: true }
+        }
+      ]
+    });
+
+    mockSendConversationBatch
+      .mockImplementationOnce(async (req) => makeBatchResponse(req, 1))
+      .mockImplementationOnce(async (req) => makeBatchResponse(req, 2));
+
+    render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const textarea = screen.getByPlaceholderText(/Type a message|Send message/i) as HTMLTextAreaElement;
+
+    // Send first "ok"
+    await fireEvent.input(textarea, { target: { value: 'ok' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
+
+    // Send second "ok" immediately
+    await fireEvent.input(textarea, { target: { value: 'ok' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Both "ok" messages exist without duplicate ghost bubbles or missing bubbles
+    const okMatches = screen.getAllByText('ok');
+    // 2 in timeline + 1 in sidebar preview = 3 DOM elements
+    expect(okMatches.length).toBe(3);
+  });
+
   test('9. Link invalidation with conversationId = 0 reloads full inbox', async () => {
     render(ConversationWorkspace, { props: { activeTab: 'conversation' } });
     await tick();

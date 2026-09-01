@@ -1657,15 +1657,8 @@
           (item) =>
             !(
               item.id < 0 &&
-              ((deltaBatchId && item.sendBatch?.sendBatchId === deltaBatchId) ||
-                (delta.message.direction === 'outbound' &&
-                  item.direction === 'outbound' &&
-                  item.contentType === delta.message.contentType &&
-                  item.textContent === delta.message.textContent &&
-                  Math.abs(
-                    new Date(item.occurredAt).getTime() -
-                      new Date(delta.message.occurredAt).getTime()
-                  ) < 30000))
+              deltaBatchId &&
+              item.sendBatch?.sendBatchId === deltaBatchId
             )
         );
         const nextItems = mergeMessages(cleanedItems, [delta.message]);
