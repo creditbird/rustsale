@@ -138,9 +138,24 @@ export function mergeTimelinePage(
   let mergedItems: ConversationMessage[];
   if (mode === 'refresh') {
     const pageIds = new Set(page.items.map((item) => item.id));
-    const optimisticItems = current.items.filter(
-      (item) => !pageIds.has(item.id) && (item.id < 0 || item.status === 'queued' || item.status === 'sending')
-    );
+    const nowMs = Date.now();
+    const optimisticItems = current.items.filter((item) => {
+      if (pageIds.has(item.id)) return false;
+      if (item.id < 0) {
+        const itemTime = new Date(item.occurredAt).getTime();
+        if (nowMs - itemTime > 30000) return false;
+        const hasMatchedReal = page.items.some(
+          (real) =>
+            real.direction === 'outbound' &&
+            real.contentType === item.contentType &&
+            real.textContent === item.textContent &&
+            Math.abs(new Date(real.occurredAt).getTime() - itemTime) < 30000
+        );
+        if (hasMatchedReal) return false;
+        return true;
+      }
+      return item.status === 'queued' || item.status === 'sending';
+    });
 
     let pageMaxTime = -Infinity;
     let pageMaxId = -Infinity;

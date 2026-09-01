@@ -1652,12 +1652,20 @@
       if (affectsOpenItem) {
         messageSequenceMap.set(delta.message.id, delta.sequence);
 
+        const deltaBatchId = delta.message.sendBatch?.sendBatchId;
         const cleanedItems = currentVariant.items.filter(
           (item) =>
             !(
               item.id < 0 &&
-              delta.message.sendBatch?.sendBatchId &&
-              item.sendBatch?.sendBatchId === delta.message.sendBatch.sendBatchId
+              ((deltaBatchId && item.sendBatch?.sendBatchId === deltaBatchId) ||
+                (delta.message.direction === 'outbound' &&
+                  item.direction === 'outbound' &&
+                  item.contentType === delta.message.contentType &&
+                  item.textContent === delta.message.textContent &&
+                  Math.abs(
+                    new Date(item.occurredAt).getTime() -
+                      new Date(delta.message.occurredAt).getTime()
+                  ) < 30000))
             )
         );
         const nextItems = mergeMessages(cleanedItems, [delta.message]);
@@ -1852,16 +1860,19 @@
       return;
     }
 
-    const realBatchIds = new Set(
-      result.messages
-        .filter((m) => m.id > 0)
-        .map((m) => m.sendBatch?.sendBatchId || result.clientBatchId)
-        .filter(Boolean)
-    );
+    const realBatchIds = new Set<string>();
+    if (result.clientBatchId) realBatchIds.add(result.clientBatchId);
+    if (result.batchId) realBatchIds.add(result.batchId);
+    for (const m of result.messages) {
+      if (m.sendBatch?.sendBatchId) realBatchIds.add(m.sendBatch.sendBatchId);
+    }
+
+    const hasRealMessages = result.messages.some((m) => m.id > 0);
     const cleanedItems = currentVariant.items.filter(
       (item) =>
         !(
           item.id < 0 &&
+          hasRealMessages &&
           item.sendBatch?.sendBatchId &&
           realBatchIds.has(item.sendBatch.sendBatchId)
         )

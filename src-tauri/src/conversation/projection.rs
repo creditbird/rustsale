@@ -360,69 +360,173 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
             }
         }
         if msg.reply_target.is_none() {
-            if let Ok(Some(row_json)) = conn.query_row(
-                "SELECT raw_payload_json FROM messages WHERE id = ?1",
+            if let Ok((reply_sender_id, row_json)) = conn.query_row(
+                "SELECT reply_sender_identity_id, raw_payload_json FROM messages WHERE id = ?1",
                 [msg.id],
-                |r| r.get::<_, Option<String>>(0),
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
             ) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&row_json) {
-                    if let Some(q) = val.get("quote") {
-                        let text = q.get("text").and_then(|t| t.as_str()).map(str::to_string);
-                        let participant_jid = q
-                            .get("participant_jid")
-                            .and_then(|p| p.as_str())
-                            .unwrap_or("");
-                        let media_type = q
-                            .get("media_type")
-                            .and_then(|m| m.as_str())
-                            .map(str::to_string);
-
-                        let sender_name = if !participant_jid.is_empty() {
-                            let q_phone =
-                                crate::conversation::whatsapp::phone::resolve_lid_or_jid_to_phone(
-                                    conn,
-                                    participant_jid,
-                                )
-                                .or_else(|| {
-                                    crate::conversation::whatsapp::phone::jid_to_phone(
-                                        participant_jid,
-                                    )
-                                })
-                                .unwrap_or_else(|| participant_jid.to_string());
-                            let clean_digits: String =
-                                q_phone.chars().filter(|c| c.is_ascii_digit()).collect();
-                            let account_id_opt: Option<i64> = conn
-                                .query_row(
-                                    "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
-                                    [msg.conversation_id],
-                                    |r| r.get(0),
-                                )
-                                .optional()
-                                .unwrap_or(None);
-                            let name: Option<String> = conn
-                                .query_row(
-                                    "SELECT display_name FROM channel_identities WHERE channel = 'whatsapp' AND (?4 IS NULL OR channel_account_id = ?4) AND (external_id = ?1 OR external_id = ?2 OR external_id = ?3)",
-                                    rusqlite::params![participant_jid, q_phone, clean_digits, account_id_opt],
-                                    |r| r.get(0),
-                                )
-                                .optional()
-                                .unwrap_or(None);
-                            name.or_else(|| Some(format!("+{}", clean_digits)))
-                        } else {
-                            None
-                        };
-
-                        if text.is_some() || media_type.is_some() {
-                            msg.reply_target = Some(ConversationReplyTarget {
-                                message_id: None,
-                                sender_display_name: sender_name,
-                                content_type: media_type
-                                    .clone()
-                                    .unwrap_or_else(|| "text".to_string()),
-                                text_content: text,
-                                media_type,
-                                occurred_at: None,
+                if let Some(json_str) = row_json.as_deref() {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        let quote_val = val
+                            .get("quote")
+                            .or_else(|| val.get("data").and_then(|d| d.get("quote")))
+                            .or_else(|| val.get("base").and_then(|b| b.get("quote")))
+                            .or_else(|| {
+                                val.get("data")
+                                    .and_then(|d| d.get("base"))
+                                    .and_then(|b| b.get("quote"))
                             });
+
+                        if let Some(q) = quote_val {
+                            // 1. WhatsApp quote path (has participant_jid)
+                            if q.get("participant_jid").is_some() {
+                                let text = q.get("text").and_then(|t| t.as_str()).map(str::to_string);
+                                let participant_jid = q
+                                    .get("participant_jid")
+                                    .and_then(|p| p.as_str())
+                                    .unwrap_or("");
+                                let media_type = q
+                                    .get("media_type")
+                                    .and_then(|m| m.as_str())
+                                    .map(str::to_string);
+
+                                let sender_name = if !participant_jid.is_empty() {
+                                    let q_phone =
+                                        crate::conversation::whatsapp::phone::resolve_lid_or_jid_to_phone(
+                                            conn,
+                                            participant_jid,
+                                        )
+                                        .or_else(|| {
+                                            crate::conversation::whatsapp::phone::jid_to_phone(
+                                                participant_jid,
+                                            )
+                                        })
+                                        .unwrap_or_else(|| participant_jid.to_string());
+                                    let clean_digits: String =
+                                        q_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                                    let account_id_opt: Option<i64> = conn
+                                        .query_row(
+                                            "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                                            [msg.conversation_id],
+                                            |r| r.get(0),
+                                        )
+                                        .optional()
+                                        .unwrap_or(None);
+                                    let name: Option<String> = conn
+                                        .query_row(
+                                            "SELECT display_name FROM channel_identities WHERE channel = 'whatsapp' AND (?4 IS NULL OR channel_account_id = ?4) AND (external_id = ?1 OR external_id = ?2 OR external_id = ?3)",
+                                            rusqlite::params![participant_jid, q_phone, clean_digits, account_id_opt],
+                                            |r| r.get(0),
+                                        )
+                                        .optional()
+                                        .unwrap_or(None);
+                                    name.or_else(|| Some(format!("+{}", clean_digits)))
+                                } else {
+                                    None
+                                };
+
+                                if text.is_some() || media_type.is_some() {
+                                    msg.reply_target = Some(ConversationReplyTarget {
+                                        message_id: None,
+                                        sender_display_name: sender_name,
+                                        content_type: media_type
+                                            .clone()
+                                            .unwrap_or_else(|| "text".to_string()),
+                                        text_content: text,
+                                        media_type,
+                                        occurred_at: None,
+                                    });
+                                }
+                            } else {
+                                // 2. Zalo quote path (has msg / text / ownerId / fromD / attach)
+                                let text = q
+                                    .get("msg")
+                                    .or_else(|| q.get("text"))
+                                    .or_else(|| q.get("content"))
+                                    .or_else(|| q.get("caption"))
+                                    .or_else(|| q.get("title"))
+                                    .and_then(|t| t.as_str())
+                                    .map(str::to_string);
+
+                                let owner_uid = q
+                                    .get("ownerId")
+                                    .or_else(|| q.get("uidFrom"))
+                                    .or_else(|| q.get("owner_id"))
+                                    .or_else(|| q.get("fromUid"))
+                                    .or_else(|| q.get("from_uid"))
+                                    .and_then(|v| match v {
+                                        serde_json::Value::String(s) => Some(s.clone()),
+                                        serde_json::Value::Number(n) => Some(n.to_string()),
+                                        _ => None,
+                                    });
+
+                                let from_d = q
+                                    .get("fromD")
+                                    .or_else(|| q.get("from_d"))
+                                    .or_else(|| q.get("dName"))
+                                    .or_else(|| q.get("d_name"))
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.trim().is_empty())
+                                    .map(str::to_string);
+
+                                let c_type_str = q
+                                    .get("msgType")
+                                    .or_else(|| q.get("cliMsgType"))
+                                    .or_else(|| q.get("msg_type"))
+                                    .or_else(|| q.get("type"))
+                                    .and_then(|v| match v {
+                                        serde_json::Value::String(s) => Some(s.clone()),
+                                        serde_json::Value::Number(n) => Some(n.to_string()),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| "text".to_string());
+
+                                let media_type = match c_type_str.as_str() {
+                                    "chat.photo" | "photo" | "image" => Some("image".to_string()),
+                                    "chat.video.msg" | "video" => Some("video".to_string()),
+                                    "chat.voice" | "voice" | "audio" => Some("audio".to_string()),
+                                    "share.file" | "file" => Some("file".to_string()),
+                                    "chat.sticker" | "sticker" => Some("sticker".to_string()),
+                                    _ => None,
+                                };
+
+                                let sender_name = if let Some(ref uid) = owner_uid {
+                                    let name: Option<String> = conn
+                                        .query_row(
+                                            "SELECT display_name FROM channel_identities WHERE channel = 'zalo' AND external_id = ?1 AND display_name IS NOT NULL AND display_name != '' LIMIT 1",
+                                            [uid],
+                                            |r| r.get(0),
+                                        )
+                                        .optional()
+                                        .unwrap_or(None);
+                                    name.or(from_d)
+                                } else if let Some(identity_id) = reply_sender_id {
+                                    let name: Option<String> = conn
+                                        .query_row(
+                                            "SELECT display_name FROM channel_identities WHERE id = ?1 AND display_name IS NOT NULL AND display_name != ''",
+                                            [identity_id],
+                                            |r| r.get(0),
+                                        )
+                                        .optional()
+                                        .unwrap_or(None);
+                                    name.or(from_d)
+                                } else {
+                                    from_d
+                                };
+
+                                if text.is_some() || media_type.is_some() || sender_name.is_some() {
+                                    msg.reply_target = Some(ConversationReplyTarget {
+                                        message_id: None,
+                                        sender_display_name: sender_name,
+                                        content_type: media_type
+                                            .clone()
+                                            .unwrap_or_else(|| "text".to_string()),
+                                        text_content: text,
+                                        media_type,
+                                        occurred_at: None,
+                                    });
+                                }
+                            }
                         }
                     }
                 }

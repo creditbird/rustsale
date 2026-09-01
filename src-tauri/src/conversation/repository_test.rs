@@ -386,6 +386,129 @@ fn quote_owner_is_persisted_and_included_in_group_member_evidence() {
     assert!(evidence.contains(&"peer-1".to_string()));
 }
 
+#[test]
+fn test_reply_to_message_id_is_resolved_and_hydrated_in_group_message() {
+    let harness = Harness::new();
+    let mut orig_msg = direct_message("imei-a", "orig-msg-1");
+    orig_msg.external_thread_id = "group-100".to_string();
+    orig_msg.conversation_kind = ConversationKind::Group;
+    orig_msg.text_content = Some("Original parent text".to_string());
+    orig_msg.provider_message_id = Some("orig-provider-100".to_string());
+    orig_msg.provider_client_message_id = Some("orig-client-100".to_string());
+
+    let orig_applied = harness
+        .repository
+        .apply_normalized_message(&orig_msg)
+        .unwrap();
+
+    let mut reply_msg = direct_message("imei-a", "reply-msg-1");
+    reply_msg.external_thread_id = "group-100".to_string();
+    reply_msg.conversation_kind = ConversationKind::Group;
+    reply_msg.text_content = Some("Reply response text".to_string());
+    reply_msg.provider_message_id = Some("reply-provider-101".to_string());
+    reply_msg.reply = Some(NormalizedReplyReference {
+        provider_message_id: "orig-provider-100".to_string(),
+        provider_client_message_id: "orig-client-100".to_string(),
+        sender_external_id: "peer-1".to_string(),
+        occurred_at: "2026-08-10T00:00:00Z".to_string(),
+        text_content: Some("Original parent text".to_string()),
+        content_type: "text".to_string(),
+        raw_quote: serde_json::json!({
+            "globalMsgId": "orig-provider-100",
+            "msg": "Original parent text",
+            "ownerId": "peer-1",
+            "fromD": "Alice"
+        }),
+    });
+
+    let reply_applied = harness
+        .repository
+        .apply_normalized_message(&reply_msg)
+        .unwrap();
+
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let reply_to_id: Option<i64> = conn
+        .query_row(
+            "SELECT reply_to_message_id FROM messages WHERE id = ?1",
+            [reply_applied.message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reply_to_id, Some(orig_applied.message_id));
+    drop(conn);
+
+    let page = harness
+        .repository
+        .get_conversation_timeline(reply_applied.conversation_id, None, 50)
+        .unwrap();
+    let reply_item = page
+        .items
+        .iter()
+        .find(|m| m.id == reply_applied.message_id)
+        .expect("Reply message must exist in list");
+
+    assert!(reply_item.reply_target.is_some());
+    let target = reply_item.reply_target.as_ref().unwrap();
+    assert_eq!(target.message_id, Some(orig_applied.message_id));
+    assert_eq!(target.text_content.as_deref(), Some("Original parent text"));
+}
+
+#[test]
+fn test_zalo_quote_fallback_hydrates_when_original_message_not_in_local_db() {
+    let harness = Harness::new();
+    let mut reply_msg = direct_message("imei-a", "reply-orphan-1");
+    reply_msg.external_thread_id = "group-200".to_string();
+    reply_msg.conversation_kind = ConversationKind::Group;
+    reply_msg.text_content = Some("Replying to an older external message".to_string());
+    reply_msg.provider_message_id = Some("reply-provider-201".to_string());
+    reply_msg.raw_payload = Some(serde_json::json!({
+        "quote": {
+            "globalMsgId": "historical-9999",
+            "msg": "Older quote outside local DB",
+            "ownerId": "historical-sender",
+            "fromD": "Ktv Dung",
+            "msgType": "text"
+        }
+    }));
+    reply_msg.reply = Some(NormalizedReplyReference {
+        provider_message_id: "historical-9999".to_string(),
+        provider_client_message_id: "".to_string(),
+        sender_external_id: "historical-sender".to_string(),
+        occurred_at: "2026-08-01T00:00:00Z".to_string(),
+        text_content: Some("Older quote outside local DB".to_string()),
+        content_type: "text".to_string(),
+        raw_quote: serde_json::json!({
+            "globalMsgId": "historical-9999",
+            "msg": "Older quote outside local DB",
+            "ownerId": "historical-sender",
+            "fromD": "Ktv Dung"
+        }),
+    });
+
+    let applied = harness
+        .repository
+        .apply_normalized_message(&reply_msg)
+        .unwrap();
+
+    let page = harness
+        .repository
+        .get_conversation_timeline(applied.conversation_id, None, 50)
+        .unwrap();
+    let reply_item = page
+        .items
+        .iter()
+        .find(|m| m.id == applied.message_id)
+        .expect("Reply message must exist");
+
+    assert!(reply_item.reply_target.is_some());
+    let target = reply_item.reply_target.as_ref().unwrap();
+    assert_eq!(target.sender_display_name.as_deref(), Some("Ktv Dung"));
+    assert_eq!(
+        target.text_content.as_deref(),
+        Some("Older quote outside local DB")
+    );
+}
+
 mod group_member_lead_import {
     use super::*;
     use crate::conversation::repository::{
