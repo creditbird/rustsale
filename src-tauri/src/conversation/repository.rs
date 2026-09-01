@@ -1330,7 +1330,6 @@ impl ConversationRepository {
 
     pub fn list_inbox(&self) -> Result<Vec<InboxItem>> {
         let conn = open_db_connection(&self.db_path)?;
-        let _ = crate::conversation::migration::reconcile_duplicate_whatsapp_conversations_and_identities(&conn);
         let mut items = Vec::new();
 
         // 1. Customer rows: Linked direct/email conversations grouped by lead_id (key: "lead:{lead_id}")
@@ -1591,7 +1590,6 @@ impl ConversationRepository {
             Option<String>,
             Option<String>,
             String,
-            Option<String>,
             bool,
         )> = {
             let mut stmt = conn.prepare(
@@ -1599,25 +1597,6 @@ impl ConversationRepository {
                         ci.display_name,
                         ci.avatar_url,
                         ci.external_id,
-                        (
-                            SELECT CASE
-                                WHEN json_valid(m.raw_payload_json)
-                                THEN json_extract(m.raw_payload_json, '$.dName')
-                                ELSE NULL
-                            END
-                            FROM conversation_participants cp2
-                            JOIN messages m ON m.conversation_id = cp2.conversation_id
-                            WHERE cp2.identity_id = ci.id
-                              AND m.sender_identity_id = ci.id
-                              AND m.direction = 'inbound'
-                              AND NULLIF(TRIM(CASE
-                                  WHEN json_valid(m.raw_payload_json)
-                                  THEN json_extract(m.raw_payload_json, '$.dName')
-                                  ELSE NULL
-                              END), '') IS NOT NULL
-                            ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
-                            LIMIT 1
-                        ) AS latest_inbound_display_name,
                         EXISTS (
                             SELECT 1
                             FROM conversation_participants cp3
@@ -1643,8 +1622,7 @@ impl ConversationRepository {
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, i64>(5)? != 0,
+                    row.get::<_, i64>(4)? != 0,
                 ))
             })?;
             rows.collect::<Result<Vec<_>>>()?
@@ -1796,13 +1774,51 @@ impl ConversationRepository {
                 }
             }
 
+            // Bulk 2.4: Targeted inbound message display name resolution ONLY for identities needing fallback
+            let mut inbound_dname_map: std::collections::HashMap<i64, String> =
+                std::collections::HashMap::new();
+            let identities_needing_name: Vec<i64> = unlinked_identities
+                .iter()
+                .filter(|(_, d_name, _, _, matches_acc)| {
+                    *matches_acc
+                        || d_name.is_none()
+                        || d_name.as_deref().unwrap_or("").trim().is_empty()
+                })
+                .map(|(id, _, _, _, _)| *id)
+                .collect();
+
+            if !identities_needing_name.is_empty() {
+                let mut dname_stmt = conn.prepare(
+                    "SELECT cp.identity_id,
+                            CASE
+                                WHEN json_valid(m.raw_payload_json) THEN json_extract(m.raw_payload_json, '$.dName')
+                                ELSE NULL
+                            END AS d_name
+                     FROM conversation_participants cp
+                     JOIN messages m ON m.conversation_id = cp.conversation_id AND m.sender_identity_id = cp.identity_id
+                     WHERE cp.identity_id = ?1 AND m.direction = 'inbound'
+                       AND NULLIF(TRIM(CASE WHEN json_valid(m.raw_payload_json) THEN json_extract(m.raw_payload_json, '$.dName') ELSE NULL END), '') IS NOT NULL
+                     ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
+                     LIMIT 1",
+                )?;
+                for id in identities_needing_name {
+                    let name_opt: Option<Option<String>> = dname_stmt
+                        .query_row([id], |row| row.get::<_, Option<String>>(1))
+                        .optional()?;
+                    if let Some(Some(n)) = name_opt {
+                        if !n.trim().is_empty() {
+                            inbound_dname_map.insert(id, n);
+                        }
+                    }
+                }
+            }
+
             // Assemble Unknown Items
             for (
                 identity_id,
                 display_name,
                 avatar_url,
                 external_id,
-                latest_inbound_display_name,
                 matches_account_name,
             ) in unlinked_identities
             {
@@ -1811,7 +1827,8 @@ impl ConversationRepository {
                 } else {
                     display_name
                 };
-                let title = latest_inbound_display_name
+                let latest_inbound_name = inbound_dname_map.get(&identity_id).cloned();
+                let title = latest_inbound_name
                     .filter(|s| !s.trim().is_empty())
                     .or_else(|| stored_display_name.filter(|s| !s.trim().is_empty()))
                     .filter(|s| !s.trim().is_empty())

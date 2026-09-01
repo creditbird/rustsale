@@ -295,14 +295,22 @@ export async function initDesktopNotificationBridge(options?: {
     onDndChangedCallback = options.onDndChanged;
   }
 
+  let focusDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
   const handleFocus = () => {
     isWindowFocused = true;
-    void setConversationFocus(activeConversationId, true).catch(() => {});
+    if (focusDebounceTimer) clearTimeout(focusDebounceTimer);
+    focusDebounceTimer = setTimeout(() => {
+      void setConversationFocus(activeConversationId, true).catch(() => {});
+    }, 150);
   };
 
   const handleBlur = () => {
     isWindowFocused = false;
-    void setConversationFocus(activeConversationId, false).catch(() => {});
+    if (focusDebounceTimer) clearTimeout(focusDebounceTimer);
+    focusDebounceTimer = setTimeout(() => {
+      void setConversationFocus(activeConversationId, false).catch(() => {});
+    }, 150);
   };
 
   if (typeof window !== 'undefined') {
@@ -332,6 +340,10 @@ export async function initDesktopNotificationBridge(options?: {
   }
 
   return () => {
+    if (focusDebounceTimer) {
+      clearTimeout(focusDebounceTimer);
+      focusDebounceTimer = null;
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('blur', handleBlur);

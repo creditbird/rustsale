@@ -250,7 +250,7 @@ pub fn show_plugin_notification<R: Runtime>(
 
 #[cfg(target_os = "linux")]
 pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<(), String> {
-    let mut child = std::process::Command::new("notify-send")
+    let output = std::process::Command::new("notify-send")
         .arg(title)
         .arg(body)
         .arg("-a")
@@ -264,37 +264,20 @@ pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<(), String> 
         .arg("3500")
         .arg("-h")
         .arg("string:category:im.received")
-        .spawn()
+        .arg("-h")
+        .arg("int:transient:1")
+        .arg("-h")
+        .arg("string:desktop-entry:rustsale-crm")
+        .output()
         .map_err(|e| format!("notify-send spawn failed: {e}"))?;
 
-    let start = Instant::now();
-    let timeout = Duration::from_millis(1500);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    tracing::warn!(target: "notification", %status, "notify-send exited non-zero");
-                    return Err(format!("notify-send exited non-zero: {status}"));
-                }
-            }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    tracing::warn!(target: "notification", "notify-send timed out after 1.5s; killing process");
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("notify-send timed out after 1.5s".to_string());
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(err) => {
-                tracing::warn!(target: "notification", %err, "notify-send try_wait error; killing process");
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("notify-send try_wait error: {err}"));
-            }
-        }
+    if output.status.success() {
+        Ok(())
+    } else {
+        let status = output.status;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(target: "notification", %status, %stderr, "notify-send exited non-zero");
+        Err(format!("notify-send exited non-zero: {status} ({stderr})"))
     }
 }
 
@@ -363,7 +346,7 @@ pub fn set_active_conversation_focus(
 }
 
 #[tauri::command]
-pub fn test_desktop_notification<R: Runtime>(
+pub async fn test_desktop_notification<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, std::sync::Arc<NotificationManager>>,
 ) -> Result<(), String> {
@@ -374,7 +357,13 @@ pub fn test_desktop_notification<R: Runtime>(
         "Đây là thông báo thử nghiệm từ RustSale CRM. Tính năng hoạt động hoàn hảo!".to_string()
     };
 
-    dispatch_desktop_notification(&app, "[RustSale] Thông báo thử nghiệm", &body)?;
+    let app_handle = app.clone();
+    let body_clone = body.clone();
+    tokio::task::spawn_blocking(move || {
+        dispatch_desktop_notification(&app_handle, "[RustSale] Thông báo thử nghiệm", &body_clone)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))??;
 
     let _ = app.emit(
         "desktop-notification-sent",
