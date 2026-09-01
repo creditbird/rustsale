@@ -250,7 +250,7 @@ pub fn show_plugin_notification<R: Runtime>(
 
 #[cfg(target_os = "linux")]
 pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<(), String> {
-    let output = std::process::Command::new("notify-send")
+    let mut child = std::process::Command::new("notify-send")
         .arg(title)
         .arg(body)
         .arg("-a")
@@ -268,17 +268,41 @@ pub fn execute_linux_notify_send(title: &str, body: &str) -> Result<(), String> 
         .arg("int:transient:1")
         .arg("-h")
         .arg("string:desktop-entry:rustsale-crm")
-        .output()
+        .spawn()
         .map_err(|e| format!("notify-send spawn failed: {e}"))?;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        let status = output.status;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(target: "notification", %status, %stderr, "notify-send exited non-zero");
-        Err(format!("notify-send exited non-zero: {status} ({stderr})"))
-    }
+    // Offload child waiting and bounded timeout cleanup to background worker thread
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_millis(1500);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        tracing::warn!(target: "notification", %status, "notify-send background process exited non-zero");
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        tracing::warn!(target: "notification", "notify-send background process timed out after 1.5s; killing");
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => {
+                    tracing::warn!(target: "notification", %err, "notify-send background try_wait error");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(())
 }
 
 pub fn dispatch_desktop_notification<R: Runtime>(

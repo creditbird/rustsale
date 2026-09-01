@@ -862,15 +862,20 @@
 
     void initializeHighWaterMarkAndCatchUp();
 
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleHandle: number | null = null;
+
     // Background pre-warm initial data immediately on startup in app runtime
     if (!IS_TEST && !hasBeenActivated) {
       hasBeenActivated = true;
       if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-        window.requestIdleCallback(() => {
+        idleHandle = window.requestIdleCallback(() => {
+          idleHandle = null;
           void loadInitialData();
         });
       } else {
-        setTimeout(() => {
+        idleTimer = setTimeout(() => {
+          idleTimer = null;
           void loadInitialData();
         }, 100);
       }
@@ -878,6 +883,10 @@
 
     return () => {
       isComponentMounted = false;
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleHandle !== null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleHandle);
+      }
       cleanupInvalidated();
       cleanupDelta();
       cleanupLag();
