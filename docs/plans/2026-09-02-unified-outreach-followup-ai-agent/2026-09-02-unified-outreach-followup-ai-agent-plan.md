@@ -101,11 +101,11 @@ Unify RustSale's fragmented outreach silos (`ZaloOutreach.svelte`, `WhatsAppOutr
 ### P2: AI Agent Runner & Evidence Ledger (Comp AI Architecture)
 
 - Phase Goal: Build the core AI brain with factual verification, intent classification, and follow-up generation.
-- [ ] P2-A: Implement Evidence Extractor & Policy Gate
+- [x] P2-A: Implement Evidence Extractor & Policy Gate
   - Goal: Query internal product catalogue, pricing, and past interaction history as verifiable evidence prior to AI generation.
   - Scope: `src-tauri/src/ai/evidence.rs`, `src-tauri/src/ai/policy.rs`.
   - Acceptance: Verified facts pass to prompt; unverified claims flagged with low confidence.
-- [ ] P2-B: Implement Intent Classifier & Smart Reply Generator
+- [x] P2-B: Implement Intent Classifier & Smart Reply Generator
   - Goal: Categorize incoming messages (AskingPrice, Schedule, Complaint, Unsubscribe) and generate contextual replies.
   - Scope: `src-tauri/src/ai/intent.rs`, `src-tauri/src/ai/generator.rs`, `src-tauri/src/ai/gateway.rs`.
   - Acceptance: Unit tests on sample customer queries produce accurate intents and drafted replies.

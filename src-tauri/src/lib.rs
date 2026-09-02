@@ -4,6 +4,7 @@
 use tauri::Manager;
 
 pub mod administrative_catalog;
+pub mod ai;
 mod commands;
 #[cfg(test)]
 mod commands_test;
@@ -574,7 +575,12 @@ pub fn run() {
             notification::get_notification_settings,
             notification::update_notification_settings,
             notification::set_active_conversation_focus,
-            notification::test_desktop_notification
+            notification::test_desktop_notification,
+            ai::commands::classify_customer_intent,
+            ai::commands::generate_smart_reply_suggestions,
+            ai::commands::get_pending_ai_proposals,
+            ai::commands::review_ai_proposal,
+            ai::commands::get_lead_evidence_context
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

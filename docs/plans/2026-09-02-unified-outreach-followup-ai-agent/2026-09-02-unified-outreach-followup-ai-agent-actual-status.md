@@ -24,4 +24,5 @@
 
 - `2026-09-02`: Initial baseline established. All current outreach components identified and cataloged for migration into unified architecture.
 - `2026-09-02`: Phase P1 ("Unified Schema & Event-Driven Backbone") completed. Schema migration (`campaigns`, `campaign_steps`, `campaign_executions`, `lead_journey_states`, `ai_evidence_logs`, `ai_action_proposals`), complete CRUD functions, `EventBus` broadcast backbone, and unit tests passing cleanly (833 passed).
+- `2026-09-02`: Phase P2 ("AI Agent Runner & Evidence Ledger") completed. Built `EvidenceExtractor`, `PolicyGate`, `IntentClassifier` (heuristic + LLM), `SmartReplyGenerator` (3 variants: Brief, Detailed, Promotional), `LlmGateway` (OpenAI, Gemini, Claude, Ollama, Mock fallback), Tauri commands in `src-tauri/src/ai/commands.rs`, and unit test suite passing 100%.
 
