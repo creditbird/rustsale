@@ -113,11 +113,11 @@ Unify RustSale's fragmented outreach silos (`ZaloOutreach.svelte`, `WhatsAppOutr
 ### P3: Rust Background Sequence Scheduler & Dispatcher
 
 - Phase Goal: Build durable, non-blocking background sequence execution with anti-ban throttling.
-- [ ] P3-A: Implement Campaign Sequence State Machine
+- [x] P3-A: Implement Campaign Sequence State Machine
   - Goal: Execute multi-step sequences (Step 1 -> Delay -> Condition Check -> Step 2) in background `tokio` tasks.
   - Scope: `src-tauri/src/campaign/scheduler.rs`, `src-tauri/src/campaign/evaluator.rs`.
   - Acceptance: Mock sequences progress through steps, pause when customer replies, and respect delay intervals.
-- [ ] P3-B: Implement Omnichannel Dispatcher & Account Rotation
+- [x] P3-B: Implement Omnichannel Dispatcher & Account Rotation
   - Goal: Route outbound step execution to the target platform adapter (Zalo, WhatsApp, Email, FB) with rate-limit throttling.
   - Scope: `src-tauri/src/campaign/dispatcher.rs`, `src-tauri/src/campaign/throttling.rs`.
   - Acceptance: Messages dispatched respecting per-account rate limits without blocking UI threads.

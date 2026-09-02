@@ -5,6 +5,7 @@ use tauri::Manager;
 
 pub mod administrative_catalog;
 pub mod ai;
+pub mod campaign;
 mod commands;
 #[cfg(test)]
 mod commands_test;
@@ -580,7 +581,14 @@ pub fn run() {
             ai::commands::generate_smart_reply_suggestions,
             ai::commands::get_pending_ai_proposals,
             ai::commands::review_ai_proposal,
-            ai::commands::get_lead_evidence_context
+            ai::commands::get_lead_evidence_context,
+            campaign::commands::start_unified_campaign,
+            campaign::commands::pause_unified_campaign,
+            campaign::commands::enroll_leads_into_campaign,
+            campaign::commands::get_unified_campaign_analytics,
+            campaign::commands::get_all_unified_campaigns,
+            campaign::commands::save_unified_campaign,
+            campaign::commands::delete_unified_campaign
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

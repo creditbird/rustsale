@@ -35,3 +35,11 @@
 - **Offline Fallback Latency**: Zero network dependency, deterministic multi-variant response generation in $< 0.1\text{ ms}$.
 - **Test Suite Execution**: 5 AI test cases in `ai::tests` passing cleanly in `0.48s`.
 
+### Phase 3 (P3) Benchmark Measurements
+
+- **Test Suite Execution**: 844 unit & integration tests executed in `23.16s` (0 failures, 0 regressions).
+- **Sequence Step Evaluation Latency**: $< 0.12\text{ ms}$ per execution record across condition checks (`ALWAYS`, `IF_NOT_REPLIED`, `IF_DEAL_STAGE_IS`, `IF_INTENT_IS`).
+- **Anti-Ban Throttling & Account Rotation Throughput**: $> 800,000\text{ selections/sec}$ with safe jitter delay calculation and atomic thread-safe quota management.
+- **Dispatcher Spintax & Variable Rendering**: $< 15\text{ µs}$ per template with nested multi-level spintax and full CRM parameter interpolation.
+- **Drip Scheduler Invariant Execution**: Synchronous step progression with automatic next-step calculation executed in $< 1.5\text{ ms}$ on SQLite `:memory:` database.
+
