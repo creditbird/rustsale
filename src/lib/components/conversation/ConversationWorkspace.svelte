@@ -627,11 +627,24 @@
 
   function scrollToMatchedMessage(messageId?: number) {
     if (!messageId) return;
+    if (timelineRef?.scrollToMessage) {
+      timelineRef.scrollToMessage(messageId).then((scrolled) => {
+        if (!scrolled) {
+          const el = document.querySelector(`[data-message-id="${messageId}"]`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('ring-2', 'ring-primary', 'bg-primary/10', 'transition-all', 'duration-500');
+            setTimeout(() => el.classList.remove('ring-2', 'ring-primary', 'bg-primary/10'), 1500);
+          }
+        }
+      });
+      return;
+    }
     const el = document.querySelector(`[data-message-id="${messageId}"]`);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.classList.add('ring-2', 'ring-primary');
-      setTimeout(() => el.classList.remove('ring-2', 'ring-primary'), 2000);
+      el.classList.add('ring-2', 'ring-primary', 'bg-primary/10', 'transition-all', 'duration-500');
+      setTimeout(() => el.classList.remove('ring-2', 'ring-primary', 'bg-primary/10'), 1500);
     }
   }
 
@@ -2194,6 +2207,7 @@
         onToggleReaction={handleToggleReaction}
         onImageClick={handleImageClick}
         onUserClick={handleUserClick}
+        onJumpToMessage={scrollToMatchedMessage}
       />
 
 

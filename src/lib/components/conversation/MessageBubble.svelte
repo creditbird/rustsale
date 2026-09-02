@@ -32,7 +32,8 @@
     onPin = () => {},
     onToggleReaction = () => Promise.resolve(null),
     onImageClick = () => {},
-    onUserClick = () => {}
+    onUserClick = () => {},
+    onJumpToMessage = () => {}
   }: {
     message: ConversationMessage;
     isGroup?: boolean;
@@ -58,6 +59,7 @@
       sourceMessageId?: number;
       targetEl?: HTMLElement;
     }) => void;
+    onJumpToMessage?: (messageId: number) => void;
   } = $props();
 
   let actionsOpen = $state(false);
@@ -601,7 +603,14 @@
       </div>
     {:else}
       {#if message.replyTarget}
-        <MessageReplyPreview replyTarget={message.replyTarget} onClick={() => onReply(message)} />
+        <MessageReplyPreview
+          replyTarget={message.replyTarget}
+          onClick={() => {
+            if (message.replyTarget?.messageId) {
+              onJumpToMessage(message.replyTarget.messageId);
+            }
+          }}
+        />
       {/if}
       <MessageContentRenderer
         {message}
