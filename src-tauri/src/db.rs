@@ -463,6 +463,134 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
+        // ====================================================================
+        // Unified Omnichannel Campaigns & Sequences (P1-A)
+        // ====================================================================
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                channel_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'DRAFT',
+                audience_filter_json TEXT,
+                schedule_config_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS campaign_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                step_order INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                delay_minutes INTEGER NOT NULL DEFAULT 0,
+                condition_type TEXT NOT NULL DEFAULT 'ALWAYS',
+                template_content TEXT NOT NULL,
+                ai_prompt_override TEXT,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS campaign_executions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                step_id INTEGER NOT NULL REFERENCES campaign_steps(id) ON DELETE CASCADE,
+                lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+                target_phone TEXT,
+                target_account_id TEXT,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                error_message TEXT,
+                scheduled_at TEXT NOT NULL,
+                executed_at TEXT,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS lead_journey_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
+                current_stage TEXT NOT NULL DEFAULT 'DISCOVERY',
+                active_campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+                last_inbound_at TEXT,
+                last_outbound_at TEXT,
+                ai_intent_tag TEXT,
+                ai_qualification_score REAL,
+                notes TEXT,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS ai_evidence_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+                conversation_id INTEGER,
+                action_type TEXT NOT NULL,
+                evidence_source TEXT NOT NULL,
+                evidence_data_json TEXT NOT NULL,
+                confidence_score REAL NOT NULL,
+                decision TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS ai_action_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+                conversation_id INTEGER,
+                platform TEXT NOT NULL,
+                proposed_content TEXT NOT NULL,
+                reasoning TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                reviewed_by TEXT,
+                reviewed_at TEXT,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_campaign_steps_order
+             ON campaign_steps(campaign_id, step_order)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_campaign_executions_status
+             ON campaign_executions(status, scheduled_at)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_campaign_executions_campaign_lead
+             ON campaign_executions(campaign_id, lead_id)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lead_journey_lead
+             ON lead_journey_states(lead_id)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_evidence_logs_lead
+             ON ai_evidence_logs(lead_id)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_status
+             ON ai_action_proposals(status, created_at)",
+            [],
+        )?;
+
         tx.execute(
             "CREATE TABLE IF NOT EXISTS app_metadata (
                 key TEXT PRIMARY KEY,
@@ -1091,3 +1219,675 @@ pub fn log_email_outreach_attempt(
     )?;
     Ok(())
 }
+
+// ============================================================================
+// Unified Campaigns & Sequence Management
+// ============================================================================
+
+#[allow(dead_code)]
+pub fn create_campaign(
+    conn: &Connection,
+    name: &str,
+    description: Option<&str>,
+    channel_type: &str,
+    status: &str,
+    audience_filter_json: Option<&str>,
+    schedule_config_json: Option<&str>,
+) -> Result<i64> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO campaigns (name, description, channel_type, status, audience_filter_json, schedule_config_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        rusqlite::params![
+            name,
+            description,
+            channel_type,
+            status,
+            audience_filter_json,
+            schedule_config_json,
+            now
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub fn get_campaign(conn: &Connection, id: i64) -> Result<Option<crate::models::Campaign>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, description, channel_type, status, audience_filter_json, schedule_config_json, created_at, updated_at
+         FROM campaigns WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query([id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(crate::models::Campaign {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            description: row.get(2)?,
+            channel_type: row.get(3)?,
+            status: row.get(4)?,
+            audience_filter_json: row.get(5)?,
+            schedule_config_json: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(dead_code)]
+pub fn get_all_campaigns(conn: &Connection) -> Result<Vec<crate::models::Campaign>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, description, channel_type, status, audience_filter_json, schedule_config_json, created_at, updated_at
+         FROM campaigns ORDER BY id DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(crate::models::Campaign {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            description: row.get(2)?,
+            channel_type: row.get(3)?,
+            status: row.get(4)?,
+            audience_filter_json: row.get(5)?,
+            schedule_config_json: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    })?;
+    let mut campaigns = Vec::new();
+    for r in rows {
+        campaigns.push(r?);
+    }
+    Ok(campaigns)
+}
+
+#[allow(dead_code)]
+pub fn update_campaign(
+    conn: &Connection,
+    id: i64,
+    name: &str,
+    description: Option<&str>,
+    channel_type: &str,
+    status: &str,
+    audience_filter_json: Option<&str>,
+    schedule_config_json: Option<&str>,
+) -> Result<()> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "UPDATE campaigns
+         SET name = ?1, description = ?2, channel_type = ?3, status = ?4,
+             audience_filter_json = ?5, schedule_config_json = ?6, updated_at = ?7
+         WHERE id = ?8",
+        rusqlite::params![
+            name,
+            description,
+            channel_type,
+            status,
+            audience_filter_json,
+            schedule_config_json,
+            now,
+            id
+        ],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn delete_campaign(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM campaigns WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+// ============================================================================
+// Campaign Steps
+// ============================================================================
+
+#[allow(dead_code)]
+pub fn create_campaign_step(
+    conn: &Connection,
+    campaign_id: i64,
+    step_order: i32,
+    channel: &str,
+    delay_minutes: i32,
+    condition_type: &str,
+    template_content: &str,
+    ai_prompt_override: Option<&str>,
+) -> Result<i64> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO campaign_steps (campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            campaign_id,
+            step_order,
+            channel,
+            delay_minutes,
+            condition_type,
+            template_content,
+            ai_prompt_override,
+            now
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub fn get_campaign_steps(
+    conn: &Connection,
+    campaign_id: i64,
+) -> Result<Vec<crate::models::CampaignStep>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at
+         FROM campaign_steps WHERE campaign_id = ?1 ORDER BY step_order ASC",
+    )?;
+    let rows = stmt.query_map([campaign_id], |row| {
+        Ok(crate::models::CampaignStep {
+            id: Some(row.get(0)?),
+            campaign_id: row.get(1)?,
+            step_order: row.get(2)?,
+            channel: row.get(3)?,
+            delay_minutes: row.get(4)?,
+            condition_type: row.get(5)?,
+            template_content: row.get(6)?,
+            ai_prompt_override: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    })?;
+    let mut steps = Vec::new();
+    for r in rows {
+        steps.push(r?);
+    }
+    Ok(steps)
+}
+
+#[allow(dead_code)]
+pub fn get_campaign_step(conn: &Connection, id: i64) -> Result<Option<crate::models::CampaignStep>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at
+         FROM campaign_steps WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query([id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(crate::models::CampaignStep {
+            id: Some(row.get(0)?),
+            campaign_id: row.get(1)?,
+            step_order: row.get(2)?,
+            channel: row.get(3)?,
+            delay_minutes: row.get(4)?,
+            condition_type: row.get(5)?,
+            template_content: row.get(6)?,
+            ai_prompt_override: row.get(7)?,
+            created_at: row.get(8)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(dead_code)]
+pub fn update_campaign_step(
+    conn: &Connection,
+    id: i64,
+    step_order: i32,
+    channel: &str,
+    delay_minutes: i32,
+    condition_type: &str,
+    template_content: &str,
+    ai_prompt_override: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE campaign_steps
+         SET step_order = ?1, channel = ?2, delay_minutes = ?3, condition_type = ?4,
+             template_content = ?5, ai_prompt_override = ?6
+         WHERE id = ?7",
+        rusqlite::params![
+            step_order,
+            channel,
+            delay_minutes,
+            condition_type,
+            template_content,
+            ai_prompt_override,
+            id
+        ],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn delete_campaign_step(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM campaign_steps WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+// ============================================================================
+// Campaign Executions
+// ============================================================================
+
+#[allow(dead_code)]
+pub fn create_campaign_execution(
+    conn: &Connection,
+    campaign_id: i64,
+    step_id: i64,
+    lead_id: i32,
+    target_phone: Option<&str>,
+    target_account_id: Option<&str>,
+    scheduled_at: &str,
+) -> Result<i64> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO campaign_executions (campaign_id, step_id, lead_id, target_phone, target_account_id, status, error_message, scheduled_at, executed_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, ?6, NULL, ?7)",
+        rusqlite::params![
+            campaign_id,
+            step_id,
+            lead_id,
+            target_phone,
+            target_account_id,
+            scheduled_at,
+            now
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub fn get_campaign_executions(
+    conn: &Connection,
+    campaign_id: i64,
+) -> Result<Vec<crate::models::CampaignExecution>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, campaign_id, step_id, lead_id, target_phone, target_account_id, status, error_message, scheduled_at, executed_at, created_at
+         FROM campaign_executions WHERE campaign_id = ?1 ORDER BY scheduled_at ASC",
+    )?;
+    let rows = stmt.query_map([campaign_id], |row| {
+        Ok(crate::models::CampaignExecution {
+            id: Some(row.get(0)?),
+            campaign_id: row.get(1)?,
+            step_id: row.get(2)?,
+            lead_id: row.get(3)?,
+            target_phone: row.get(4)?,
+            target_account_id: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            scheduled_at: row.get(8)?,
+            executed_at: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut executions = Vec::new();
+    for r in rows {
+        executions.push(r?);
+    }
+    Ok(executions)
+}
+
+#[allow(dead_code)]
+pub fn get_due_campaign_executions(
+    conn: &Connection,
+    now_iso: &str,
+    limit: usize,
+) -> Result<Vec<crate::models::CampaignExecution>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, campaign_id, step_id, lead_id, target_phone, target_account_id, status, error_message, scheduled_at, executed_at, created_at
+         FROM campaign_executions
+         WHERE status = 'PENDING' AND scheduled_at <= ?1
+         ORDER BY scheduled_at ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![now_iso, limit as i64], |row| {
+        Ok(crate::models::CampaignExecution {
+            id: Some(row.get(0)?),
+            campaign_id: row.get(1)?,
+            step_id: row.get(2)?,
+            lead_id: row.get(3)?,
+            target_phone: row.get(4)?,
+            target_account_id: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            scheduled_at: row.get(8)?,
+            executed_at: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut executions = Vec::new();
+    for r in rows {
+        executions.push(r?);
+    }
+    Ok(executions)
+}
+
+#[allow(dead_code)]
+pub fn update_campaign_execution_status(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    error_message: Option<&str>,
+    executed_at: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE campaign_executions
+         SET status = ?1, error_message = ?2, executed_at = ?3
+         WHERE id = ?4",
+        rusqlite::params![status, error_message, executed_at, id],
+    )?;
+    Ok(())
+}
+
+// ============================================================================
+// Lead Journey States
+// ============================================================================
+
+#[allow(dead_code)]
+pub fn get_lead_journey_state(
+    conn: &Connection,
+    lead_id: i32,
+) -> Result<Option<crate::models::LeadJourneyState>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, lead_id, current_stage, active_campaign_id, last_inbound_at, last_outbound_at, ai_intent_tag, ai_qualification_score, notes, updated_at
+         FROM lead_journey_states WHERE lead_id = ?1",
+    )?;
+    let mut rows = stmt.query([lead_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(crate::models::LeadJourneyState {
+            id: Some(row.get(0)?),
+            lead_id: row.get(1)?,
+            current_stage: row.get(2)?,
+            active_campaign_id: row.get(3)?,
+            last_inbound_at: row.get(4)?,
+            last_outbound_at: row.get(5)?,
+            ai_intent_tag: row.get(6)?,
+            ai_qualification_score: row.get(7)?,
+            notes: row.get(8)?,
+            updated_at: row.get(9)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(dead_code)]
+pub fn get_or_create_lead_journey_state(
+    conn: &Connection,
+    lead_id: i32,
+) -> Result<crate::models::LeadJourneyState> {
+    if let Some(state) = get_lead_journey_state(conn, lead_id)? {
+        return Ok(state);
+    }
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO lead_journey_states (lead_id, current_stage, active_campaign_id, last_inbound_at, last_outbound_at, ai_intent_tag, ai_qualification_score, notes, updated_at)
+         VALUES (?1, 'DISCOVERY', NULL, NULL, NULL, NULL, NULL, NULL, ?2)",
+        rusqlite::params![lead_id, now],
+    )?;
+    let id = conn.last_insert_rowid();
+    Ok(crate::models::LeadJourneyState {
+        id: Some(id),
+        lead_id,
+        current_stage: "DISCOVERY".to_string(),
+        active_campaign_id: None,
+        last_inbound_at: None,
+        last_outbound_at: None,
+        ai_intent_tag: None,
+        ai_qualification_score: None,
+        notes: None,
+        updated_at: now,
+    })
+}
+
+#[allow(dead_code)]
+pub fn update_lead_journey_state(
+    conn: &Connection,
+    lead_id: i32,
+    current_stage: &str,
+    active_campaign_id: Option<i64>,
+    last_inbound_at: Option<&str>,
+    last_outbound_at: Option<&str>,
+    ai_intent_tag: Option<&str>,
+    ai_qualification_score: Option<f64>,
+    notes: Option<&str>,
+) -> Result<()> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO lead_journey_states (lead_id, current_stage, active_campaign_id, last_inbound_at, last_outbound_at, ai_intent_tag, ai_qualification_score, notes, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(lead_id) DO UPDATE SET
+             current_stage = excluded.current_stage,
+             active_campaign_id = excluded.active_campaign_id,
+             last_inbound_at = COALESCE(excluded.last_inbound_at, lead_journey_states.last_inbound_at),
+             last_outbound_at = COALESCE(excluded.last_outbound_at, lead_journey_states.last_outbound_at),
+             ai_intent_tag = COALESCE(excluded.ai_intent_tag, lead_journey_states.ai_intent_tag),
+             ai_qualification_score = COALESCE(excluded.ai_qualification_score, lead_journey_states.ai_qualification_score),
+             notes = COALESCE(excluded.notes, lead_journey_states.notes),
+             updated_at = excluded.updated_at",
+        rusqlite::params![
+            lead_id,
+            current_stage,
+            active_campaign_id,
+            last_inbound_at,
+            last_outbound_at,
+            ai_intent_tag,
+            ai_qualification_score,
+            notes,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+// ============================================================================
+// AI Evidence Logs
+// ============================================================================
+
+#[allow(dead_code)]
+pub fn insert_ai_evidence_log(
+    conn: &Connection,
+    lead_id: Option<i32>,
+    conversation_id: Option<i64>,
+    action_type: &str,
+    evidence_source: &str,
+    evidence_data_json: &str,
+    confidence_score: f64,
+    decision: &str,
+) -> Result<i64> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO ai_evidence_logs (lead_id, conversation_id, action_type, evidence_source, evidence_data_json, confidence_score, decision, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            lead_id,
+            conversation_id,
+            action_type,
+            evidence_source,
+            evidence_data_json,
+            confidence_score,
+            decision,
+            now
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub fn get_ai_evidence_logs_by_lead(
+    conn: &Connection,
+    lead_id: i32,
+) -> Result<Vec<crate::models::AiEvidenceLog>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, lead_id, conversation_id, action_type, evidence_source, evidence_data_json, confidence_score, decision, created_at
+         FROM ai_evidence_logs WHERE lead_id = ?1 ORDER BY id DESC",
+    )?;
+    let rows = stmt.query_map([lead_id], |row| {
+        Ok(crate::models::AiEvidenceLog {
+            id: Some(row.get(0)?),
+            lead_id: row.get(1)?,
+            conversation_id: row.get(2)?,
+            action_type: row.get(3)?,
+            evidence_source: row.get(4)?,
+            evidence_data_json: row.get(5)?,
+            confidence_score: row.get(6)?,
+            decision: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    })?;
+    let mut logs = Vec::new();
+    for r in rows {
+        logs.push(r?);
+    }
+    Ok(logs)
+}
+
+// ============================================================================
+// AI Action Proposals
+// ============================================================================
+
+#[allow(dead_code)]
+pub fn create_ai_action_proposal(
+    conn: &Connection,
+    lead_id: Option<i32>,
+    conversation_id: Option<i64>,
+    platform: &str,
+    proposed_content: &str,
+    reasoning: &str,
+) -> Result<i64> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO ai_action_proposals (lead_id, conversation_id, platform, proposed_content, reasoning, status, reviewed_by, reviewed_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, NULL, ?6)",
+        rusqlite::params![
+            lead_id,
+            conversation_id,
+            platform,
+            proposed_content,
+            reasoning,
+            now
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub fn get_ai_action_proposals(
+    conn: &Connection,
+    status_filter: Option<&str>,
+) -> Result<Vec<crate::models::AiActionProposal>> {
+    let mut proposals = Vec::new();
+    if let Some(status) = status_filter {
+        let mut stmt = conn.prepare(
+            "SELECT id, lead_id, conversation_id, platform, proposed_content, reasoning, status, reviewed_by, reviewed_at, created_at
+             FROM ai_action_proposals WHERE status = ?1 ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([status], |row| {
+            Ok(crate::models::AiActionProposal {
+                id: Some(row.get(0)?),
+                lead_id: row.get(1)?,
+                conversation_id: row.get(2)?,
+                platform: row.get(3)?,
+                proposed_content: row.get(4)?,
+                reasoning: row.get(5)?,
+                status: row.get(6)?,
+                reviewed_by: row.get(7)?,
+                reviewed_at: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?;
+        for r in rows {
+            proposals.push(r?);
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, lead_id, conversation_id, platform, proposed_content, reasoning, status, reviewed_by, reviewed_at, created_at
+             FROM ai_action_proposals ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::models::AiActionProposal {
+                id: Some(row.get(0)?),
+                lead_id: row.get(1)?,
+                conversation_id: row.get(2)?,
+                platform: row.get(3)?,
+                proposed_content: row.get(4)?,
+                reasoning: row.get(5)?,
+                status: row.get(6)?,
+                reviewed_by: row.get(7)?,
+                reviewed_at: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?;
+        for r in rows {
+            proposals.push(r?);
+        }
+    }
+    Ok(proposals)
+}
+
+#[allow(dead_code)]
+pub fn get_ai_action_proposal(
+    conn: &Connection,
+    id: i64,
+) -> Result<Option<crate::models::AiActionProposal>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, lead_id, conversation_id, platform, proposed_content, reasoning, status, reviewed_by, reviewed_at, created_at
+         FROM ai_action_proposals WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query([id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(crate::models::AiActionProposal {
+            id: Some(row.get(0)?),
+            lead_id: row.get(1)?,
+            conversation_id: row.get(2)?,
+            platform: row.get(3)?,
+            proposed_content: row.get(4)?,
+            reasoning: row.get(5)?,
+            status: row.get(6)?,
+            reviewed_by: row.get(7)?,
+            reviewed_at: row.get(8)?,
+            created_at: row.get(9)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(dead_code)]
+pub fn update_ai_action_proposal_status(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    reviewed_by: Option<&str>,
+) -> Result<()> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "UPDATE ai_action_proposals
+         SET status = ?1, reviewed_by = ?2, reviewed_at = ?3
+         WHERE id = ?4",
+        rusqlite::params![status, reviewed_by, now, id],
+    )?;
+    Ok(())
+}
+

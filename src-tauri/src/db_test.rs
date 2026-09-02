@@ -23,6 +23,12 @@ mod tests {
         assert!(tables.contains(&"categories".to_string()));
         assert!(tables.contains(&"lead_categories".to_string()));
         assert!(tables.contains(&"outreach_history".to_string()));
+        assert!(tables.contains(&"campaigns".to_string()));
+        assert!(tables.contains(&"campaign_steps".to_string()));
+        assert!(tables.contains(&"campaign_executions".to_string()));
+        assert!(tables.contains(&"lead_journey_states".to_string()));
+        assert!(tables.contains(&"ai_evidence_logs".to_string()));
+        assert!(tables.contains(&"ai_action_proposals".to_string()));
 
         let zalo_columns: Vec<String> = conn
             .prepare("PRAGMA table_info(zalo_sessions)")
@@ -1229,4 +1235,307 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn test_unified_campaign_and_steps_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // 1. Create campaign
+        let camp_id = db::create_campaign(
+            &conn,
+            "SaaS Summer Outreach",
+            Some("Multi-channel outreach to tech CEOs"),
+            "omnichannel",
+            "DRAFT",
+            Some(r#"{"status": "New", "has_zalo": 1}"#),
+            Some(r#"{"days": [1,2,3,4,5], "start_time": "09:00", "end_time": "17:00"}"#),
+        )
+        .expect("create_campaign failed");
+
+        assert!(camp_id > 0);
+
+        // 2. Read campaign
+        let camp = db::get_campaign(&conn, camp_id)
+            .expect("get_campaign failed")
+            .expect("campaign not found");
+        assert_eq!(camp.name, "SaaS Summer Outreach");
+        assert_eq!(camp.channel_type, "omnichannel");
+        assert_eq!(camp.status, "DRAFT");
+
+        // 3. Update campaign
+        db::update_campaign(
+            &conn,
+            camp_id,
+            "SaaS Summer Outreach v2",
+            Some("Updated description"),
+            "zalo",
+            "ACTIVE",
+            Some(r#"{"status": "Qualified"}"#),
+            None,
+        )
+        .expect("update_campaign failed");
+
+        let updated_camp = db::get_campaign(&conn, camp_id)
+            .expect("get_campaign failed")
+            .unwrap();
+        assert_eq!(updated_camp.name, "SaaS Summer Outreach v2");
+        assert_eq!(updated_camp.status, "ACTIVE");
+        assert_eq!(updated_camp.channel_type, "zalo");
+
+        // 4. Create campaign steps
+        let step1_id = db::create_campaign_step(
+            &conn,
+            camp_id,
+            1,
+            "zalo",
+            0,
+            "ALWAYS",
+            "Hello {name}, welcome to RustSale!",
+            Some("Keep it friendly and brief."),
+        )
+        .expect("create step 1 failed");
+
+        let step2_id = db::create_campaign_step(
+            &conn,
+            camp_id,
+            2,
+            "whatsapp",
+            2880, // 2 days
+            "IF_NO_REPLY",
+            "Hi {name}, following up on our previous note.",
+            None,
+        )
+        .expect("create step 2 failed");
+
+        let steps = db::get_campaign_steps(&conn, camp_id).expect("get_campaign_steps failed");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].id, Some(step1_id));
+        assert_eq!(steps[0].step_order, 1);
+        assert_eq!(steps[1].id, Some(step2_id));
+        assert_eq!(steps[1].step_order, 2);
+        assert_eq!(steps[1].delay_minutes, 2880);
+
+        // 5. Update step
+        db::update_campaign_step(
+            &conn,
+            step1_id,
+            1,
+            "zalo",
+            10,
+            "ALWAYS",
+            "Updated template for {name}",
+            None,
+        )
+        .expect("update step 1 failed");
+
+        let step1 = db::get_campaign_step(&conn, step1_id)
+            .expect("get step 1 failed")
+            .unwrap();
+        assert_eq!(step1.template_content, "Updated template for {name}");
+        assert_eq!(step1.delay_minutes, 10);
+
+        // 6. Delete step & campaign cascade
+        db::delete_campaign_step(&conn, step2_id).expect("delete step 2 failed");
+        let steps_after_delete = db::get_campaign_steps(&conn, camp_id).unwrap();
+        assert_eq!(steps_after_delete.len(), 1);
+
+        db::delete_campaign(&conn, camp_id).expect("delete campaign failed");
+        assert!(db::get_campaign(&conn, camp_id).unwrap().is_none());
+        assert_eq!(db::get_campaign_steps(&conn, camp_id).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_campaign_executions_and_due_query() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // Insert lead
+        conn.execute(
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+             VALUES ('John Doe', 'TestCo', 'New', 1000.0, '2026-09-01T00:00:00Z', 'Alex', 'john@test.com', '0911223344')",
+            [],
+        )
+        .unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        let camp_id = db::create_campaign(
+            &conn,
+            "Follow-up Wave 1",
+            None,
+            "zalo",
+            "ACTIVE",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let step_id = db::create_campaign_step(
+            &conn,
+            camp_id,
+            1,
+            "zalo",
+            0,
+            "ALWAYS",
+            "Initial touchpoint",
+            None,
+        )
+        .unwrap();
+
+        // Create executions: one past due, one in the future
+        let exec1_id = db::create_campaign_execution(
+            &conn,
+            camp_id,
+            step_id,
+            lead_id,
+            Some("0911223344"),
+            None,
+            "2026-09-01T10:00:00Z",
+        )
+        .expect("create exec1 failed");
+
+        let _exec2_id = db::create_campaign_execution(
+            &conn,
+            camp_id,
+            step_id,
+            lead_id,
+            Some("0911223344"),
+            None,
+            "2026-09-03T10:00:00Z",
+        )
+        .expect("create exec2 failed");
+
+        // Query due executions at 2026-09-02T00:00:00Z
+        let due = db::get_due_campaign_executions(&conn, "2026-09-02T00:00:00Z", 10)
+            .expect("get_due_campaign_executions failed");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, Some(exec1_id));
+
+        // Update status to EXECUTED
+        db::update_campaign_execution_status(
+            &conn,
+            exec1_id,
+            "COMPLETED",
+            None,
+            Some("2026-09-02T00:01:00Z"),
+        )
+        .expect("update status failed");
+
+        let due_after = db::get_due_campaign_executions(&conn, "2026-09-02T00:00:00Z", 10).unwrap();
+        assert_eq!(due_after.len(), 0);
+    }
+
+    #[test]
+    fn test_lead_journey_state_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        conn.execute(
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+             VALUES ('Jane Smith', 'Innovate', 'Discovery', 5000.0, '2026-09-01T00:00:00Z', 'Alex', 'jane@innovate.com', '0922334455')",
+            [],
+        )
+        .unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        // 1. Get or create initial state
+        let initial_state = db::get_or_create_lead_journey_state(&conn, lead_id)
+            .expect("get_or_create_lead_journey_state failed");
+        assert_eq!(initial_state.lead_id, lead_id);
+        assert_eq!(initial_state.current_stage, "DISCOVERY");
+        assert!(initial_state.active_campaign_id.is_none());
+
+        // Create campaign for valid foreign key reference
+        let camp_id = db::create_campaign(
+            &conn,
+            "Onboarding Wave",
+            None,
+            "omnichannel",
+            "ACTIVE",
+            None,
+            None,
+        )
+        .expect("create_campaign failed");
+
+        // 2. Update journey state
+        db::update_lead_journey_state(
+            &conn,
+            lead_id,
+            "QUALIFIED",
+            Some(camp_id),
+            Some("2026-09-02T08:00:00Z"),
+            Some("2026-09-02T08:30:00Z"),
+            Some("AskingPrice"),
+            Some(0.92),
+            Some("Customer expressed high buying intent"),
+        )
+        .expect("update_lead_journey_state failed");
+
+        let updated_state = db::get_lead_journey_state(&conn, lead_id)
+            .expect("get_lead_journey_state failed")
+            .unwrap();
+        assert_eq!(updated_state.current_stage, "QUALIFIED");
+        assert_eq!(updated_state.active_campaign_id, Some(camp_id));
+        assert_eq!(updated_state.ai_intent_tag.as_deref(), Some("AskingPrice"));
+        assert_eq!(updated_state.ai_qualification_score, Some(0.92));
+    }
+
+    #[test]
+    fn test_ai_evidence_logs_and_proposals_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        conn.execute(
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+             VALUES ('Mark Wood', 'TechCorp', 'New', 10000.0, '2026-09-01T00:00:00Z', 'Alex', 'mark@techcorp.com', '0933445566')",
+            [],
+        )
+        .unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        // 1. Insert AI evidence log
+        let log_id = db::insert_ai_evidence_log(
+            &conn,
+            Some(lead_id),
+            Some(1001),
+            "INTENT_CLASSIFICATION",
+            "PRICING_CATALOGUE",
+            r#"{"matched_plan": "Enterprise", "price_vnd": 45000000}"#,
+            0.98,
+            "OFFER_STANDARD_DISCOUNT",
+        )
+        .expect("insert_ai_evidence_log failed");
+        assert!(log_id > 0);
+
+        let logs = db::get_ai_evidence_logs_by_lead(&conn, lead_id)
+            .expect("get_ai_evidence_logs_by_lead failed");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].action_type, "INTENT_CLASSIFICATION");
+        assert_eq!(logs[0].confidence_score, 0.98);
+
+        // 2. Create AI action proposal
+        let prop_id = db::create_ai_action_proposal(
+            &conn,
+            Some(lead_id),
+            Some(1001),
+            "zalo",
+            "Gói Enterprise bên em có giá 45 triệu / năm với đầy đủ tính năng CRM & Outreach.",
+            "Customer asked for Enterprise pricing in message #1001",
+        )
+        .expect("create_ai_action_proposal failed");
+
+        let pending_props = db::get_ai_action_proposals(&conn, Some("PENDING"))
+            .expect("get_ai_action_proposals failed");
+        assert_eq!(pending_props.len(), 1);
+        assert_eq!(pending_props[0].id, Some(prop_id));
+        assert_eq!(pending_props[0].status, "PENDING");
+
+        // 3. Update proposal status
+        db::update_ai_action_proposal_status(&conn, prop_id, "APPROVED", Some("SalesManager"))
+            .expect("update_ai_action_proposal_status failed");
+
+        let prop = db::get_ai_action_proposal(&conn, prop_id)
+            .expect("get_ai_action_proposal failed")
+            .unwrap();
+        assert_eq!(prop.status, "APPROVED");
+        assert_eq!(prop.reviewed_by.as_deref(), Some("SalesManager"));
+        assert!(prop.reviewed_at.is_some());
+    }
 }
+

@@ -222,3 +222,91 @@ pub struct EmailOutreachCompletePayload {
     pub total_sent: i32,
     pub message: String,
 }
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Campaign {
+    pub id: Option<i64>,
+    pub name: String,
+    pub description: Option<String>,
+    pub channel_type: String,
+    pub status: String,
+    pub audience_filter_json: Option<String>,
+    pub schedule_config_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct CampaignStep {
+    pub id: Option<i64>,
+    pub campaign_id: i64,
+    pub step_order: i32,
+    pub channel: String,
+    pub delay_minutes: i32,
+    pub condition_type: String,
+    pub template_content: String,
+    pub ai_prompt_override: Option<String>,
+    pub created_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct CampaignExecution {
+    pub id: Option<i64>,
+    pub campaign_id: i64,
+    pub step_id: i64,
+    pub lead_id: i32,
+    pub target_phone: Option<String>,
+    pub target_account_id: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub scheduled_at: String,
+    pub executed_at: Option<String>,
+    pub created_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LeadJourneyState {
+    pub id: Option<i64>,
+    pub lead_id: i32,
+    pub current_stage: String,
+    pub active_campaign_id: Option<i64>,
+    pub last_inbound_at: Option<String>,
+    pub last_outbound_at: Option<String>,
+    pub ai_intent_tag: Option<String>,
+    pub ai_qualification_score: Option<f64>,
+    pub notes: Option<String>,
+    pub updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AiEvidenceLog {
+    pub id: Option<i64>,
+    pub lead_id: Option<i32>,
+    pub conversation_id: Option<i64>,
+    pub action_type: String,
+    pub evidence_source: String,
+    pub evidence_data_json: String,
+    pub confidence_score: f64,
+    pub decision: String,
+    pub created_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AiActionProposal {
+    pub id: Option<i64>,
+    pub lead_id: Option<i32>,
+    pub conversation_id: Option<i64>,
+    pub platform: String,
+    pub proposed_content: String,
+    pub reasoning: String,
+    pub status: String,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<String>,
+    pub created_at: String,
+}
