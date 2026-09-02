@@ -13,7 +13,9 @@
     Settings2,
     Sparkles,
     ChevronRight,
-    Share2
+    Share2,
+    Workflow,
+    ShieldCheck
   } from 'lucide-svelte';
   import { updaterService, type UpdaterState } from '$lib/services/updaterService';
   import { getCurrentUser, verifyDeviceAndSubscription, type DeviceVerificationResult } from '$lib/services/licenseService';
@@ -93,6 +95,8 @@
     { id: 'leads', label: m.nav_leads(), icon: Users },
     { id: 'categories', label: m.nav_categories(), icon: Tags },
     { id: 'conversation', label: m.nav_conversation(), icon: MessagesSquare },
+    { id: 'campaign_center', label: m.nav_campaign_center(), icon: Workflow },
+    { id: 'ai_approval', label: m.nav_ai_approval(), icon: ShieldCheck },
     { id: 'facebook_hub', label: m.nav_facebook_hub(), icon: Share2 },
     { id: 'outreach', label: m.nav_outreach(), icon: MessageSquare },
     { id: 'whatsapp_outreach', label: m.nav_whatsapp_outreach(), icon: MessageCircleMore },

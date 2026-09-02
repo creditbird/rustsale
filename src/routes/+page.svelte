@@ -11,6 +11,8 @@
   import CategoryManager from '$lib/components/CategoryManager.svelte';
   import ConversationWorkspace from '$lib/components/conversation/ConversationWorkspace.svelte';
   import FacebookHub from '$lib/components/facebook/FacebookHub.svelte';
+  import CampaignCenter from '$lib/components/campaign/CampaignCenter.svelte';
+  import AIApprovalQueue from '$lib/components/campaign/AIApprovalQueue.svelte';
   import Settings from '$lib/components/Settings.svelte';
   import LicenseModal from '$lib/components/LicenseModal.svelte';
   import { verifyDeviceAndSubscription } from '$lib/services/licenseService';
@@ -41,6 +43,8 @@
     get leads() { return { title: m.tab_leads_title(), subtitle: m.tab_leads_subtitle() }; },
     get categories() { return { title: m.tab_categories_title(), subtitle: m.tab_categories_subtitle() }; },
     get conversation() { return { title: m.tab_conversation_title(), subtitle: m.tab_conversation_subtitle() }; },
+    get campaign_center() { return { title: m.tab_campaign_center_title(), subtitle: m.tab_campaign_center_subtitle() }; },
+    get ai_approval() { return { title: m.tab_ai_approval_title(), subtitle: m.tab_ai_approval_subtitle() }; },
     get facebook_hub() { return { title: m.tab_facebook_hub_title(), subtitle: m.tab_facebook_hub_subtitle() }; },
     get outreach() { return { title: m.tab_outreach_title(), subtitle: m.tab_outreach_subtitle() }; },
     get whatsapp_outreach() { return { title: m.tab_whatsapp_outreach_title(), subtitle: m.tab_whatsapp_outreach_subtitle() }; },
@@ -217,6 +221,10 @@
 
       {#if activeTab === 'facebook_hub'}
         <FacebookHub {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
+      {:else if activeTab === 'campaign_center'}
+        <CampaignCenter {activeTab} />
+      {:else if activeTab === 'ai_approval'}
+        <AIApprovalQueue {activeTab} />
       {:else if activeTab === 'dashboard'}
         <Dashboard {activeTab} />
       {:else if activeTab === 'scraper'}

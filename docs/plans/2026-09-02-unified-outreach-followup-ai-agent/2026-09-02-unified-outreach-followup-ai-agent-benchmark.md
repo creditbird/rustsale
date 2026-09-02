@@ -43,3 +43,11 @@
 - **Dispatcher Spintax & Variable Rendering**: $< 15\text{ µs}$ per template with nested multi-level spintax and full CRM parameter interpolation.
 - **Drip Scheduler Invariant Execution**: Synchronous step progression with automatic next-step calculation executed in $< 1.5\text{ ms}$ on SQLite `:memory:` database.
 
+### Phase 4 (P4) Benchmark Measurements
+
+- **Frontend Type Safety (`bun run check`)**: `0 errors` across all TypeScript and Svelte 5 rune files (`$state`, `$derived`, `$props`).
+- **Frontend Test Suite Execution (`bun test`)**: `678 passed`, `0 failed`, `4,800 expect() calls` executed in `36.44s`.
+- **New Service & Component Tests**: 14 service unit tests (`unifiedCampaignService.spec.ts`, `aiAgentService.spec.ts`) and 7 component tests (`CampaignComponents.spec.ts`, `Sidebar.spec.ts`) executed in `< 1.25s` with 0 failures.
+- **I18n Compilation Performance**: Paraglide compilation completed in `< 3s` generating TypeScript typings for `vi` and `en` locales.
+
+

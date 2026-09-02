@@ -963,6 +963,33 @@
     persistDraft(true);
   }
 
+  export function insertDraftText(draft: string): void {
+    const el = textareaElement;
+    const currentText = text;
+    const start = el?.selectionStart ?? currentText.length;
+    const end = el?.selectionEnd ?? start;
+    const inserted = insertTextAtSelection(currentText, draft, start, end);
+
+    text = inserted.value;
+    lastProcessedText = inserted.value;
+    hasText = inserted.value.trim().length > 0;
+    textLengthExceeded =
+      selectedCapabilities.maxTextLength > 0 && inserted.value.length > selectedCapabilities.maxTextLength;
+    if (el) {
+      el.value = inserted.value;
+      el.focus();
+      el.setSelectionRange(inserted.caret, inserted.caret);
+    }
+    scheduleAutoResize();
+    persistDraft(true);
+  }
+
+  export async function sendDraftText(draft: string): Promise<void> {
+    insertDraftText(draft);
+    await tick();
+    await handleSend();
+  }
+
   let statusReason = $derived.by(() => {
     if (!selectedOption) return 'No sending account selected';
     if (selectedOption.status === 'connected') return null;

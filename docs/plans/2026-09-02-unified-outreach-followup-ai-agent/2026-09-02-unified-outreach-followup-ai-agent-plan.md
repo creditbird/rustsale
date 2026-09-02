@@ -125,11 +125,11 @@ Unify RustSale's fragmented outreach silos (`ZaloOutreach.svelte`, `WhatsAppOutr
 ### P4: Unified Svelte 5 Frontend & Human-in-the-Loop Approval
 
 - Phase Goal: Replace fragmented outreach pages with unified Campaign Center and AI Copilot Inbox integration.
-- [ ] P4-A: Build Unified Campaign Center UI
+- [x] P4-A: Build Unified Campaign Center UI
   - Goal: Interactive sequence builder, audience segment selector, and campaign performance dashboard.
   - Scope: `src/lib/components/campaign/CampaignCenter.svelte`, `src/lib/components/campaign/SequenceBuilder.svelte`.
   - Acceptance: Users can configure multi-channel sequence campaigns, preview steps, and monitor progress.
-- [ ] P4-B: Build AI Copilot Toolbar & 1-Click Approval Queue in Inbox
+- [x] P4-B: Build AI Copilot Toolbar & 1-Click Approval Queue in Inbox
   - Goal: Display AI suggestions in conversation timeline and provide a centralized review desk for batch outreach.
   - Scope: `src/lib/components/conversation/AICopilotBar.svelte`, `src/lib/components/campaign/AIApprovalQueue.svelte`.
   - Acceptance: Sales reps can review, edit, and approve AI-generated messages with 1 click.
