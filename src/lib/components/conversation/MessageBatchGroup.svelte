@@ -20,7 +20,8 @@
     onPin = () => {},
     onToggleReaction = () => Promise.resolve(null),
     onImageClick = () => {},
-    onUserClick = () => {}
+    onUserClick = () => {},
+    onJumpToMessage = () => {}
   }: {
     messages: ConversationMessage[];
     isGroup?: boolean;
@@ -45,6 +46,7 @@
       sourceMessageId?: number;
       targetEl?: HTMLElement;
     }) => void;
+    onJumpToMessage?: (messageId: number) => void;
   } = $props();
 </script>
 
@@ -65,6 +67,7 @@
       {onToggleReaction}
       {onImageClick}
       {onUserClick}
+      {onJumpToMessage}
     />
     {#if message.status === 'failed' && message.errorMessage}
       <p class="ml-auto max-w-[70%] px-3 text-xs text-destructive">{message.errorMessage}</p>

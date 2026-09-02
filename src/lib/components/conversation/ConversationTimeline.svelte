@@ -30,7 +30,8 @@
     onPin = () => {},
     onToggleReaction = () => Promise.resolve(null),
     onImageClick = () => {},
-    onUserClick = () => {}
+    onUserClick = () => {},
+    onJumpToMessage = () => {}
   }: {
     items: ConversationMessage[];
     loading?: boolean;
@@ -44,7 +45,6 @@
     pendingReactionsForMessage?: (messageId: number) => ConversationReactionCode[];
     pinnedMessageIds?: Set<number>;
     onReply?: (message: ConversationMessage) => void;
-
     onRecall?: (message: ConversationMessage) => void;
     onForward?: (message: ConversationMessage) => void;
     onPin?: (message: ConversationMessage) => void;
@@ -61,6 +61,7 @@
       sourceMessageId?: number;
       targetEl?: HTMLElement;
     }) => void;
+    onJumpToMessage?: (messageId: number) => void;
   } = $props();
 
   let containerEl: HTMLElement | null = $state(null);
@@ -195,6 +196,28 @@
     }
   }
 
+  export async function scrollToMessage(messageId: number): Promise<boolean> {
+    if (!containerEl) return false;
+    const index = items.findIndex((item) => item.id === messageId);
+    if (index !== -1) {
+      if (items.length > MAX_DOM_ITEMS && (index < virtualWindow.start || index >= virtualWindow.end)) {
+        windowStart = Math.max(0, Math.min(items.length - MAX_DOM_ITEMS, index - Math.floor(MAX_DOM_ITEMS / 2)));
+        await tick();
+      }
+    }
+    await tick();
+    const el = containerEl.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('ring-2', 'ring-primary', 'bg-primary/10', 'transition-all', 'duration-500');
+      setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-primary', 'bg-primary/10');
+      }, 1500);
+      return true;
+    }
+    return false;
+  }
+
   function handleScroll() {
     if (!containerEl) return;
     const distanceToBottom = Math.abs(containerEl.scrollTop);
@@ -276,6 +299,7 @@
           {onToggleReaction}
           {onImageClick}
           {onUserClick}
+          {onJumpToMessage}
         />
       {:else}
         <MessageBubble
@@ -292,6 +316,7 @@
           {onToggleReaction}
           {onImageClick}
           {onUserClick}
+          {onJumpToMessage}
         />
       {/if}
     {/each}

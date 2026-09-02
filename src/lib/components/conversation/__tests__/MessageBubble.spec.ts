@@ -639,5 +639,43 @@ describe('MessageBubble Component', () => {
     expect(avatarContainer?.classList.contains('mt-0.5')).toBe(true);
     expect(avatarContainer?.classList.contains('mb-1')).toBe(false);
   });
+
+  test('clicking quote preview invokes onJumpToMessage without invoking onReply', async () => {
+    const onReply = mock(() => {});
+    const onJumpToMessage = mock(() => {});
+    const quotedMessage: ConversationMessage = {
+      ...baseMessage,
+      id: 808,
+      textContent: 'Em phản hồi tin nhắn này nè',
+      replyTarget: {
+        messageId: 505,
+        senderDisplayName: 'Duy',
+        contentType: 'text',
+        textContent: 'Đẩy hết 300 trang scan pdf...',
+        mediaType: null,
+        occurredAt: '2026-08-26T12:00:00Z'
+      }
+    };
+
+    render(MessageBubble, {
+      props: {
+        message: quotedMessage,
+        isGroup: true,
+        onReply,
+        onJumpToMessage
+      }
+    });
+
+    const quotePreview = screen.getByTestId('message-reply-preview');
+    expect(quotePreview).toBeTruthy();
+    expect(screen.getByText('Duy')).toBeTruthy();
+    expect(screen.getByText('Đẩy hết 300 trang scan pdf...')).toBeTruthy();
+
+    await fireEvent.click(quotePreview);
+
+    expect(onJumpToMessage).toHaveBeenCalledTimes(1);
+    expect(onJumpToMessage).toHaveBeenCalledWith(505);
+    expect(onReply).toHaveBeenCalledTimes(0);
+  });
 });
 
