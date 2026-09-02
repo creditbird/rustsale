@@ -16,6 +16,12 @@
 > • Utilize **GitNexus** tools for codebase exploration and impact analysis as required.
 
 > [!IMPORTANT]
+> **TAURI ARCHITECTURE & ABSOLUTE OPTIMIZATION (TAURI SKILL):**
+> • Always consult and strictly follow the `/tauri` skill (`/home/arch/.gemini/config/skills/tauri/SKILL.md`) for all Tauri v2 desktop & native app design, implementation, IPC, async runtime, state management, capabilities, and build optimization.
+> • **System Architecture & Performance Mindset**: When implementing features, proactively design for maximum system throughput, zero UI jank, non-blocking async loops, minimal memory footprint, and tight capability boundaries.
+> • **Maximum Efficiency at QA Gate**: Ensure maximum performance metrics at the QA verification gate — verify non-blocking async handlers (`spawn_blocking` for heavy CPU/blocking I/O), drop mutex locks before `.await`, minimize JSON serialization overhead (use Custom/Asset Protocol or binary/streaming Channel for large payloads), and enforce strict CSP before claiming completion.
+
+> [!IMPORTANT]
 > **MANDATORY IMPLEMENTATION HARNESS:** Before any task that creates, changes, fixes, refactors, migrates, or ships behavior, read and follow [`docs/IMPLEMENTATION_COMPLETION_HARNESS.md`](docs/IMPLEMENTATION_COMPLETION_HARNESS.md). Its requirement ledger, adversarial verification, evidence ladder, and Completion Lock control all implementation and remediation work. Do not claim completion while any lock condition remains open.
 
 > [!IMPORTANT]

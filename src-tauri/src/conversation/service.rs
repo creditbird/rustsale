@@ -2202,8 +2202,16 @@ impl ConversationService {
             ""
         };
 
-        let sender_jid = if is_group {
-            msg.sender_identity_id.and_then(|id| {
+        let chat_jid = if external_thread_id.contains('@') {
+            external_thread_id.clone()
+        } else {
+            crate::conversation::whatsapp::phone::phone_to_direct_jid(&external_thread_id)
+        };
+
+        let is_from_me = msg.direction == crate::conversation::types::MessageDirection::Outbound;
+
+        let sender_jid = if is_group && !is_from_me {
+            let ext_id_opt = msg.sender_identity_id.and_then(|id| {
                 let conn = open_db_connection(self.repository.db_path()).ok()?;
                 conn.query_row(
                     "SELECT external_id FROM channel_identities WHERE id = ?1",
@@ -2211,16 +2219,21 @@ impl ConversationService {
                     |r| r.get::<_, String>(0),
                 )
                 .ok()
+            });
+            ext_id_opt.map(|ext_id| {
+                if ext_id.contains('@') {
+                    ext_id
+                } else {
+                    crate::conversation::whatsapp::phone::phone_to_direct_jid(&ext_id)
+                }
             })
         } else {
             None
         };
 
-        let is_from_me = msg.direction == crate::conversation::types::MessageDirection::Outbound;
-
         let send_res = client
             .send_reaction(
-                &external_thread_id,
+                &chat_jid,
                 &provider_message_id,
                 sender_jid.as_deref(),
                 emoji_str,

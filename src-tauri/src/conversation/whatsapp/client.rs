@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use whatsapp_rust::wacore_binary::JidExt;
 
 use super::normalizer::RawWhatsAppQuote;
 
@@ -394,15 +395,38 @@ impl WhatsAppClient for RealWhatsAppClient {
         emoji: &str,
         is_from_me: bool,
     ) -> Result<()> {
-        let chat: whatsapp_rust::Jid = chat_jid
+        let normalized_chat_jid = if chat_jid.contains('@') {
+            chat_jid.to_string()
+        } else {
+            super::phone::phone_to_direct_jid(chat_jid)
+        };
+
+        let chat: whatsapp_rust::Jid = normalized_chat_jid
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid chat JID '{}': {}", chat_jid, e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid chat JID '{}': {}", normalized_chat_jid, e))?;
+
+        let is_group = chat.is_group();
+        let normalized_participant = if is_group {
+            if is_from_me {
+                None
+            } else {
+                target_sender_jid.map(|s| {
+                    if s.contains('@') {
+                        s.to_string()
+                    } else {
+                        super::phone::phone_to_direct_jid(s)
+                    }
+                })
+            }
+        } else {
+            None
+        };
 
         let key = whatsapp_rust::prelude::wa::MessageKey {
             remote_jid: Some(chat.to_string()),
             from_me: Some(is_from_me),
             id: Some(target_message_id.to_string()),
-            participant: target_sender_jid.map(str::to_string),
+            participant: normalized_participant,
         };
 
         self.client
@@ -711,10 +735,43 @@ impl WhatsAppClient for MockWhatsAppClient {
         emoji: &str,
         is_from_me: bool,
     ) -> Result<()> {
+        let normalized_chat_jid = if chat_jid.contains('@') {
+            chat_jid.to_string()
+        } else {
+            super::phone::phone_to_direct_jid(chat_jid)
+        };
+
+        let chat: whatsapp_rust::Jid = normalized_chat_jid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid chat JID '{}': {}", normalized_chat_jid, e))?;
+
+        let is_group = chat.is_group();
+        let normalized_participant = if is_group {
+            if is_from_me {
+                None
+            } else {
+                target_sender_jid.map(|s| {
+                    if s.contains('@') {
+                        s.to_string()
+                    } else {
+                        super::phone::phone_to_direct_jid(s)
+                    }
+                })
+            }
+        } else {
+            None
+        };
+
+        if let Some(ref p) = normalized_participant {
+            p.as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|e| anyhow::anyhow!("Invalid participant JID '{}': {}", p, e))?;
+        }
+
         self.sent_reactions.lock().unwrap().push(MockSentReaction {
-            chat_jid: chat_jid.to_string(),
+            chat_jid: chat.to_string(),
             target_message_id: target_message_id.to_string(),
-            target_sender_jid: target_sender_jid.map(str::to_string),
+            target_sender_jid: normalized_participant,
             emoji: emoji.to_string(),
             is_from_me,
         });

@@ -737,3 +737,214 @@ async fn test_whatsapp_inbound_message_publishes_delta_event() {
     assert_eq!(deltas[0].sequence, delta.sequence);
     assert_eq!(deltas[0].message.id, applied.message_id);
 }
+
+#[tokio::test]
+async fn test_set_whatsapp_conversation_reaction_dm_matrix() {
+    use crate::conversation::types::{
+        ConversationCapabilities, ConversationReactionCode, SetConversationReactionRequest,
+    };
+
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let conn = open_db_connection(&db_path).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    let cap_json = serde_json::to_string(&ConversationCapabilities::whatsapp()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts
+         (id, channel, provider_account_key, display_name, self_external_id, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', '84901111111', 1, 'connected', ?1, ?2, ?2)",
+        rusqlite::params![cap_json, now],
+    ).unwrap();
+
+    // 1. Direct conversation with raw phone thread ID (without @s.whatsapp.net)
+    conn.execute(
+        "INSERT INTO channel_conversations
+         (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+         VALUES (10, 1, '84949743369', 'direct', 'Thao', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    // Outbound message (from me, like in user screenshot)
+    conn.execute(
+        "INSERT INTO messages
+         (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (101, 10, 'outbound', 'wamid_outbound_001', 'text', 'tesst nua', 'sent', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    // Inbound message (from customer)
+    conn.execute(
+        "INSERT INTO messages
+         (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (102, 10, 'inbound', 'wamid_inbound_002', 'text', 'ok', 'received', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    let publisher = Arc::new(ConversationEventPublisher::new(100));
+    let repo = Arc::new(ConversationRepository::new(db_path.clone()));
+    let service = ConversationService::new(repo, publisher, _dir.path().join("spool"));
+    let mock_client = MockWhatsAppClient::new();
+
+    // A. React LIKE to outbound message in DM
+    let req_out = SetConversationReactionRequest {
+        message_id: 101,
+        reaction: ConversationReactionCode::Like,
+        active: true,
+        count: None,
+        client_mutation_id: "mut-wa-out-001".to_string(),
+    };
+    let res_out = service
+        .set_whatsapp_conversation_reaction(&req_out, &mock_client)
+        .await
+        .unwrap();
+
+    assert_eq!(res_out.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    let sent = mock_client.get_sent_reactions();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].chat_jid, "84949743369@s.whatsapp.net");
+    assert_eq!(sent[0].target_message_id, "wamid_outbound_001");
+    assert_eq!(sent[0].target_sender_jid, None);
+    assert_eq!(sent[0].emoji, "👍");
+    assert!(sent[0].is_from_me);
+
+    // B. React HEART to inbound message in DM
+    let req_in = SetConversationReactionRequest {
+        message_id: 102,
+        reaction: ConversationReactionCode::Heart,
+        active: true,
+        count: None,
+        client_mutation_id: "mut-wa-in-002".to_string(),
+    };
+    let res_in = service
+        .set_whatsapp_conversation_reaction(&req_in, &mock_client)
+        .await
+        .unwrap();
+
+    assert_eq!(res_in.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    let sent = mock_client.get_sent_reactions();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].chat_jid, "84949743369@s.whatsapp.net");
+    assert_eq!(sent[1].target_message_id, "wamid_inbound_002");
+    assert_eq!(sent[1].target_sender_jid, None);
+    assert_eq!(sent[1].emoji, "❤️");
+    assert!(!sent[1].is_from_me);
+
+    // C. Remove reaction (active = false)
+    let req_unreact = SetConversationReactionRequest {
+        message_id: 101,
+        reaction: ConversationReactionCode::Like,
+        active: false,
+        count: None,
+        client_mutation_id: "mut-wa-out-003".to_string(),
+    };
+    let res_unreact = service
+        .set_whatsapp_conversation_reaction(&req_unreact, &mock_client)
+        .await
+        .unwrap();
+
+    assert_eq!(res_unreact.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    let sent = mock_client.get_sent_reactions();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[2].emoji, "");
+}
+
+#[tokio::test]
+async fn test_set_whatsapp_conversation_reaction_group_matrix() {
+    use crate::conversation::types::{
+        ConversationCapabilities, ConversationReactionCode, SetConversationReactionRequest,
+    };
+
+    let (db_path, _dir) = setup_test_supervisor_db();
+    let conn = open_db_connection(&db_path).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    let cap_json = serde_json::to_string(&ConversationCapabilities::whatsapp()).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts
+         (id, channel, provider_account_key, display_name, self_external_id, enabled, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', '84901111111', 'Sales Rep 1', '84901111111', 1, 'connected', ?1, ?2, ?2)",
+        rusqlite::params![cap_json, now],
+    ).unwrap();
+
+    // Group conversation
+    conn.execute(
+        "INSERT INTO channel_conversations
+         (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+         VALUES (20, 1, '120363123456789@g.us', 'group', 'AI Community', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    // Group sender identity with raw phone number (no @s.whatsapp.net in external_id)
+    conn.execute(
+        "INSERT INTO channel_identities
+         (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+         VALUES (301, 'whatsapp', 1, 'phone', '84903333333', 'Member Alex', ?1, ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    // Inbound group message from Member Alex
+    conn.execute(
+        "INSERT INTO messages
+         (id, conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (201, 20, 301, 'inbound', 'wamid_grp_in_001', 'text', 'Hello group', 'received', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    // Outbound group message from me
+    conn.execute(
+        "INSERT INTO messages
+         (id, conversation_id, direction, provider_message_id, content_type, text_content, status, ingested_at)
+         VALUES (202, 20, 'outbound', 'wamid_grp_out_002', 'text', 'Welcome', 'sent', ?1)",
+        rusqlite::params![now],
+    ).unwrap();
+
+    let publisher = Arc::new(ConversationEventPublisher::new(100));
+    let repo = Arc::new(ConversationRepository::new(db_path.clone()));
+    let service = ConversationService::new(repo, publisher, _dir.path().join("spool"));
+    let mock_client = MockWhatsAppClient::new();
+
+    // A. React HAHA to inbound group message -> target_sender_jid MUST be normalized to 84903333333@s.whatsapp.net
+    let req_in = SetConversationReactionRequest {
+        message_id: 201,
+        reaction: ConversationReactionCode::Haha,
+        active: true,
+        count: None,
+        client_mutation_id: "mut-wa-grp-001".to_string(),
+    };
+    let res_in = service
+        .set_whatsapp_conversation_reaction(&req_in, &mock_client)
+        .await
+        .unwrap();
+
+    assert_eq!(res_in.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    let sent = mock_client.get_sent_reactions();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].chat_jid, "120363123456789@g.us");
+    assert_eq!(sent[0].target_message_id, "wamid_grp_in_001");
+    assert_eq!(sent[0].target_sender_jid, Some("84903333333@s.whatsapp.net".to_string()));
+    assert_eq!(sent[0].emoji, "😂");
+    assert!(!sent[0].is_from_me);
+
+    // B. React WOW to outbound group message -> target_sender_jid MUST be None
+    let req_out = SetConversationReactionRequest {
+        message_id: 202,
+        reaction: ConversationReactionCode::Wow,
+        active: true,
+        count: None,
+        client_mutation_id: "mut-wa-grp-002".to_string(),
+    };
+    let res_out = service
+        .set_whatsapp_conversation_reaction(&req_out, &mock_client)
+        .await
+        .unwrap();
+
+    assert_eq!(res_out.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    let sent = mock_client.get_sent_reactions();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].chat_jid, "120363123456789@g.us");
+    assert_eq!(sent[1].target_message_id, "wamid_grp_out_002");
+    assert_eq!(sent[1].target_sender_jid, None);
+    assert_eq!(sent[1].emoji, "😮");
+    assert!(sent[1].is_from_me);
+}
+
