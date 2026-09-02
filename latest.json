@@ -1,11 +1,11 @@
 {
-  "version": "0.1.15",
-  "notes": "Kiến trúc Realtime Push-Delta Sync đa kênh (Zalo, WhatsApp, Messenger), hiển thị tin nhắn tức thì (<16ms), tối ưu bộ đệm hội thoại, xác thực chữ ký cập nhật và cải thiện hiệu năng toàn diện.",
-  "pub_date": "2026-09-01T09:41:30.765Z",
+  "version": "0.1.16",
+  "notes": "Tối ưu hiệu năng tải hội thoại và sửa lỗi treo UI khi hiển thị thông báo Linux",
+  "pub_date": "2026-09-02T06:25:06.488Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDBJRWhNa1loYzNPMnhBUHJUVTBibS9pSlhES0puc1BpRCtQYzBFV0liNFpWTnVJbUt6czZudlh3Z0poVzZyK1VvTUJzNEpJOVdBdUZRdGtVNURUK0FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MjU1NjkwCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNV9hbWQ2NC5kZWIKdlBMZ3pDNUUwTXNlbldxK3pjYUpESFhWMU8vQWl0ZU1BY25rQ2tWdHlmOTMra2o0TVB3VlNmN0NPYUo5a24xdjZmQ3ZqUXI4aG5QTWlROVdMZHpyQnc9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.15/RustSale%20CRM_0.1.15_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHlnS1pQMlM0dnA4UG1WWDZpV1YyUURLU2prTC9oRk5XUjk2Q2pQMnU0MWFGTzdSbUQ5NlQ2dHp2eTZPWlFlTnE3d0hCWTlnaEpHWUlPOGoxL2lzeWc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzMwMzA1CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNl9hbWQ2NC5kZWIKLzVQWEFLVkxoSTdKNTIwd1lzU3hZNStrM1ZmVFBmemJQL2JYSGc5djRxSGhUZmthalErUE81YU5sdWdaYnVFYXduQ2Jrb2c2Vys5QUFYd3hkaWRuREE9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.16/RustSale%20CRM_0.1.16_amd64.deb"
     }
   }
 }
