@@ -1,11 +1,11 @@
 {
-  "version": "0.1.16",
-  "notes": "Tối ưu hiệu năng tải hội thoại và sửa lỗi treo UI khi hiển thị thông báo Linux",
-  "pub_date": "2026-09-02T06:25:06.488Z",
+  "version": "0.1.17",
+  "notes": "Cập nhật điều hướng & cuộn đến tin nhắn trích dẫn (quote preview) và chuẩn hóa xử lý emoji reaction trên WhatsApp",
+  "pub_date": "2026-09-02T10:10:46.649Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHlnS1pQMlM0dnA4UG1WWDZpV1YyUURLU2prTC9oRk5XUjk2Q2pQMnU0MWFGTzdSbUQ5NlQ2dHp2eTZPWlFlTnE3d0hCWTlnaEpHWUlPOGoxL2lzeWc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzMwMzA1CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xNl9hbWQ2NC5kZWIKLzVQWEFLVkxoSTdKNTIwd1lzU3hZNStrM1ZmVFBmemJQL2JYSGc5djRxSGhUZmthalErUE81YU5sdWdaYnVFYXduQ2Jrb2c2Vys5QUFYd3hkaWRuREE9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.16/RustSale%20CRM_0.1.16_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDZzZ0VnZ3ZZY1MvU2pnVEJWRXNrMnEzS3AzeFBwUGZ3WktUYVpuN05XTVgwamgzTnhyUEpYcC9sMWY3emlxQjFRT0c4UmFLS1psYmxrSDJhU2tySVFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzQzODQ1CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xN19hbWQ2NC5kZWIKWkpyUkxYYWxvZS9FV0JaU081RFRTc091aFgwdDYyaS82RUJEVXd4eXpsdEphMzV6SHk0RW9rbDE0ZEZNbjZ1RTI2RVhIQzE2dmo5RXMrcTFxU1hPQ0E9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.17/RustSale%20CRM_0.1.17_amd64.deb"
     }
   }
 }
