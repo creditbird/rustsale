@@ -249,6 +249,8 @@ pub struct CampaignStep {
     pub template_content: String,
     pub ai_prompt_override: Option<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub template_id: Option<i64>,
 }
 
 #[allow(dead_code)]
@@ -310,3 +312,67 @@ pub struct AiActionProposal {
     pub reviewed_at: Option<String>,
     pub created_at: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TemplateFolderRecord {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TemplateRecord {
+    pub id: i64,
+    pub folder_id: Option<i64>,
+    pub name: String,
+    pub channel: String,
+    pub stage: Option<String>,
+    pub subject: Option<String>,
+    pub content: String,
+    pub media_url: Option<String>,
+    pub ai_prompt: Option<String>,
+    pub tags_json: Option<String>,
+    pub usage_count: i64,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateTemplateInput {
+    pub folder_id: Option<i64>,
+    pub name: String,
+    pub channel: String,
+    pub stage: Option<String>,
+    pub subject: Option<String>,
+    pub content: String,
+    pub media_url: Option<String>,
+    pub ai_prompt: Option<String>,
+    pub tags_json: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UpdateTemplateInput {
+    pub id: i64,
+    pub folder_id: Option<i64>,
+    pub name: String,
+    pub channel: String,
+    pub stage: Option<String>,
+    pub subject: Option<String>,
+    pub content: String,
+    pub media_url: Option<String>,
+    pub ai_prompt: Option<String>,
+    pub tags_json: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct TemplateFilter {
+    pub channel: Option<String>,
+    pub folder_id: Option<i64>,
+    pub stage: Option<String>,
+    pub search_query: Option<String>,
+    pub tag: Option<String>,
+}
+

@@ -22,6 +22,7 @@ export interface CampaignStep {
   template_content: string;
   ai_prompt_override?: string | null;
   created_at?: string;
+  template_id?: number | null;
 }
 
 export interface CampaignExecution {

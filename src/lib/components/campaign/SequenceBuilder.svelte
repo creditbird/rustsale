@@ -16,10 +16,16 @@
     Eye,
     HelpCircle,
     ChevronDown,
-    ChevronUp
+    ChevronUp,
+    FolderOpen,
+    Save,
+    BookOpen
   } from 'lucide-svelte';
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
+  import TemplatePickerModal from '$lib/components/template/TemplatePickerModal.svelte';
+  import SaveTemplateModal from '$lib/components/template/SaveTemplateModal.svelte';
+  import { incrementTemplateUsage, type TemplateRecord } from '$lib/services/templateService';
 
   let {
     steps = $bindable<CampaignStep[]>([]),
@@ -32,6 +38,47 @@
   let previewModalOpen = $state(false);
   let activePreviewStepIndex = $state<number | null>(null);
   let previewSampleOutput = $state('');
+
+  let pickerModalOpen = $state(false);
+  let activePickerStepIndex = $state<number | null>(null);
+  let pickerChannel = $state('zalo');
+
+  let saveModalOpen = $state(false);
+  let activeSaveStepIndex = $state<number | null>(null);
+  let saveInitialContent = $state('');
+  let saveInitialChannel = $state('zalo');
+
+  function openPickerForStep(index: number) {
+    activePickerStepIndex = index;
+    pickerChannel = steps[index]?.channel || 'zalo';
+    pickerModalOpen = true;
+  }
+
+  function handleTemplateSelected(template: TemplateRecord) {
+    if (activePickerStepIndex !== null && steps[activePickerStepIndex]) {
+      steps[activePickerStepIndex].template_content = template.content;
+      steps[activePickerStepIndex].template_id = template.id;
+      if (template.ai_prompt && !steps[activePickerStepIndex].ai_prompt_override) {
+        steps[activePickerStepIndex].ai_prompt_override = template.ai_prompt;
+      }
+      incrementTemplateUsage(template.id).catch((err) => {
+        console.warn('Failed to increment template usage:', err);
+      });
+    }
+  }
+
+  function openSaveForStep(index: number) {
+    activeSaveStepIndex = index;
+    saveInitialContent = steps[index]?.template_content || '';
+    saveInitialChannel = steps[index]?.channel || 'zalo';
+    saveModalOpen = true;
+  }
+
+  function handleTemplateSaved(savedId: number) {
+    if (activeSaveStepIndex !== null && steps[activeSaveStepIndex]) {
+      steps[activeSaveStepIndex].template_id = savedId;
+    }
+  }
 
   const CHANNEL_OPTIONS = [
     { id: 'zalo', label: 'Zalo', icon: MessageSquare, color: 'text-blue-600 bg-blue-500/10 border-blue-500/30' },
@@ -328,30 +375,66 @@
             <!-- Row 2: Template Editor & Spintax / Placeholders -->
             <div class="flex flex-col gap-2">
               <div class="flex items-center justify-between gap-2 flex-wrap">
-                <label for={`template-step-${index}`} class="text-xs font-medium text-muted-foreground">Nội Dung Tin Nhắn Mẫu</label>
+                <div class="flex items-center gap-2">
+                  <label for={`template-step-${index}`} class="text-xs font-medium text-muted-foreground">Nội Dung Tin Nhắn Mẫu</label>
+                  {#if step.template_id}
+                    <Badge variant="outline" class="text-[10px] text-primary border-primary/30 flex items-center gap-1 font-mono">
+                      <BookOpen class="w-3 h-3" />
+                      <span>Mẫu #{step.template_id}</span>
+                    </Badge>
+                  {/if}
+                </div>
 
                 {#if !readonly}
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    <span class="text-[11px] text-muted-foreground">Biến:</span>
-                    {#each PLACEHOLDERS as p}
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <!-- Template Library Integration Buttons -->
+                    <div class="flex items-center gap-1">
                       <button
                         type="button"
-                        onclick={() => insertPlaceholder(index, p.token)}
-                        class="text-[11px] px-2 py-0.5 rounded bg-muted hover:bg-muted/80 text-foreground border border-border transition-colors font-mono cursor-pointer"
-                        title={`Chèn ${p.label}`}
+                        onclick={() => openPickerForStep(index)}
+                        class="text-[11px] px-2.5 py-1 rounded-md bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 transition-colors font-medium flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                        title="Chọn mẫu từ Thư Viện Mẫu tập trung"
                       >
-                        {p.token}
+                        <FolderOpen class="w-3.5 h-3.5" />
+                        <span>Chọn từ Thư Viện Mẫu</span>
                       </button>
-                    {/each}
 
-                    <button
-                      type="button"
-                      onclick={() => insertSpintaxSample(index)}
-                      class="text-[11px] px-2 py-0.5 rounded bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors font-medium flex items-center gap-1 cursor-pointer"
-                    >
-                      <Sparkles class="w-3 h-3" />
-                      <span>Thêm Spintax</span>
-                    </button>
+                      <button
+                        type="button"
+                        onclick={() => openSaveForStep(index)}
+                        class="text-[11px] px-2.5 py-1 rounded-md bg-muted hover:bg-muted/80 text-foreground border border-border transition-colors font-medium flex items-center gap-1.5 cursor-pointer"
+                        title="Lưu nội dung bước này vào Thư Viện Mẫu"
+                      >
+                        <Save class="w-3.5 h-3.5" />
+                        <span>Lưu thành Mẫu</span>
+                      </button>
+                    </div>
+
+                    <div class="h-3.5 w-px bg-border/70 mx-0.5"></div>
+
+                    <!-- Variables & Spintax -->
+                    <div class="flex items-center gap-1 flex-wrap">
+                      <span class="text-[11px] text-muted-foreground">Biến:</span>
+                      {#each PLACEHOLDERS as p}
+                        <button
+                          type="button"
+                          onclick={() => insertPlaceholder(index, p.token)}
+                          class="text-[11px] px-2 py-0.5 rounded bg-muted hover:bg-muted/80 text-foreground border border-border transition-colors font-mono cursor-pointer"
+                          title={`Chèn ${p.label}`}
+                        >
+                          {p.token}
+                        </button>
+                      {/each}
+
+                      <button
+                        type="button"
+                        onclick={() => insertSpintaxSample(index)}
+                        class="text-[11px] px-2 py-0.5 rounded bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                      >
+                        <Sparkles class="w-3 h-3" />
+                        <span>+ Spintax</span>
+                      </button>
+                    </div>
                   </div>
                 {/if}
               </div>
@@ -443,3 +526,18 @@
     </div>
   </div>
 {/if}
+
+<!-- Template Picker Modal -->
+<TemplatePickerModal
+  bind:open={pickerModalOpen}
+  channel={pickerChannel}
+  onSelect={handleTemplateSelected}
+/>
+
+<!-- Save Template Modal -->
+<SaveTemplateModal
+  bind:open={saveModalOpen}
+  initialContent={saveInitialContent}
+  initialChannel={saveInitialChannel}
+  onSaved={handleTemplateSaved}
+/>

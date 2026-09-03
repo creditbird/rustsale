@@ -490,6 +490,7 @@ pub fn save_unified_campaign_internal(
             &step.condition_type,
             &step.template_content,
             step.ai_prompt_override.as_deref(),
+            step.template_id,
         )
         .map_err(|e| format!("Failed to create campaign step: {}", e))?;
     }

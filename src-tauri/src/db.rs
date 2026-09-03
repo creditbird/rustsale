@@ -464,6 +464,104 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         )?;
 
         // ====================================================================
+        // Unified Template Management Center (P1-A)
+        // ====================================================================
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS template_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                color TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER REFERENCES template_folders(id) ON DELETE SET NULL,
+                name TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                stage TEXT,
+                subject TEXT,
+                content TEXT NOT NULL,
+                media_url TEXT,
+                ai_prompt TEXT,
+                tags_json TEXT,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_templates_channel ON templates(channel)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_templates_folder ON templates(folder_id)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_templates_stage ON templates(stage)",
+            [],
+        )?;
+
+        // Idempotent migration from legacy outreach_templates (zalo) and email_templates (email)
+        tx.execute(
+            "INSERT INTO templates (
+                name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+            )
+            SELECT 
+                ot.name,
+                'zalo',
+                NULL,
+                NULL,
+                ot.content,
+                ot.image_url,
+                NULL,
+                '[\"zalo\"]',
+                0,
+                NULL,
+                ot.created_at,
+                ot.created_at
+            FROM outreach_templates ot
+            WHERE NOT EXISTS (
+                SELECT 1 FROM templates t 
+                WHERE t.channel = 'zalo' AND t.name = ot.name AND t.content = ot.content
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "INSERT INTO templates (
+                name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+            )
+            SELECT 
+                et.name,
+                'email',
+                NULL,
+                et.subject,
+                et.content,
+                NULL,
+                NULL,
+                '[\"email\"]',
+                0,
+                NULL,
+                et.created_at,
+                et.created_at
+            FROM email_templates et
+            WHERE NOT EXISTS (
+                SELECT 1 FROM templates t 
+                WHERE t.channel = 'email' AND t.name = et.name AND t.content = et.content
+            )",
+            [],
+        )?;
+
+        // ====================================================================
         // Unified Omnichannel Campaigns & Sequences (P1-A)
         // ====================================================================
         tx.execute(
@@ -491,10 +589,16 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 condition_type TEXT NOT NULL DEFAULT 'ALWAYS',
                 template_content TEXT NOT NULL,
                 ai_prompt_override TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                template_id INTEGER REFERENCES templates(id) ON DELETE SET NULL
             )",
             [],
         )?;
+
+        let _ = tx.execute(
+            "ALTER TABLE campaign_steps ADD COLUMN template_id INTEGER REFERENCES templates(id) ON DELETE SET NULL",
+            [],
+        );
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS campaign_executions (
@@ -1358,14 +1462,15 @@ pub fn create_campaign_step(
     condition_type: &str,
     template_content: &str,
     ai_prompt_override: Option<&str>,
+    template_id: Option<i64>,
 ) -> Result<i64> {
     let now: String =
         conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
             row.get(0)
         })?;
     conn.execute(
-        "INSERT INTO campaign_steps (campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO campaign_steps (campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             campaign_id,
             step_order,
@@ -1374,7 +1479,8 @@ pub fn create_campaign_step(
             condition_type,
             template_content,
             ai_prompt_override,
-            now
+            now,
+            template_id,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -1386,7 +1492,7 @@ pub fn get_campaign_steps(
     campaign_id: i64,
 ) -> Result<Vec<crate::models::CampaignStep>> {
     let mut stmt = conn.prepare(
-        "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at
+        "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id
          FROM campaign_steps WHERE campaign_id = ?1 ORDER BY step_order ASC",
     )?;
     let rows = stmt.query_map([campaign_id], |row| {
@@ -1400,6 +1506,7 @@ pub fn get_campaign_steps(
             template_content: row.get(6)?,
             ai_prompt_override: row.get(7)?,
             created_at: row.get(8)?,
+            template_id: row.get(9)?,
         })
     })?;
     let mut steps = Vec::new();
@@ -1412,7 +1519,7 @@ pub fn get_campaign_steps(
 #[allow(dead_code)]
 pub fn get_campaign_step(conn: &Connection, id: i64) -> Result<Option<crate::models::CampaignStep>> {
     let mut stmt = conn.prepare(
-        "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at
+        "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id
          FROM campaign_steps WHERE id = ?1",
     )?;
     let mut rows = stmt.query([id])?;
@@ -1427,6 +1534,7 @@ pub fn get_campaign_step(conn: &Connection, id: i64) -> Result<Option<crate::mod
             template_content: row.get(6)?,
             ai_prompt_override: row.get(7)?,
             created_at: row.get(8)?,
+            template_id: row.get(9)?,
         }))
     } else {
         Ok(None)
@@ -1443,12 +1551,13 @@ pub fn update_campaign_step(
     condition_type: &str,
     template_content: &str,
     ai_prompt_override: Option<&str>,
+    template_id: Option<i64>,
 ) -> Result<()> {
     conn.execute(
         "UPDATE campaign_steps
          SET step_order = ?1, channel = ?2, delay_minutes = ?3, condition_type = ?4,
-             template_content = ?5, ai_prompt_override = ?6
-         WHERE id = ?7",
+             template_content = ?5, ai_prompt_override = ?6, template_id = ?7
+         WHERE id = ?8",
         rusqlite::params![
             step_order,
             channel,
@@ -1456,6 +1565,7 @@ pub fn update_campaign_step(
             condition_type,
             template_content,
             ai_prompt_override,
+            template_id,
             id
         ],
     )?;
@@ -1890,4 +2000,257 @@ pub fn update_ai_action_proposal_status(
     )?;
     Ok(())
 }
+
+// ============================================================================
+// Unified Template Management Center (P1-C)
+// ============================================================================
+
+#[allow(dead_code)]
+pub fn get_template_folders(conn: &Connection) -> Result<Vec<crate::models::TemplateFolderRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, color, created_at, updated_at
+         FROM template_folders
+         ORDER BY name ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(crate::models::TemplateFolderRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            color: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+        })
+    })?;
+    let mut folders = Vec::new();
+    for r in rows {
+        folders.push(r?);
+    }
+    Ok(folders)
+}
+
+#[allow(dead_code)]
+pub fn create_template_folder(conn: &Connection, name: &str, color: Option<&str>) -> Result<i64> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO template_folders (name, color, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![name, color, now, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub fn delete_template_folder(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE templates SET folder_id = NULL WHERE folder_id = ?1",
+        [id],
+    )?;
+    conn.execute("DELETE FROM template_folders WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn get_templates(
+    conn: &Connection,
+    filter: Option<&crate::models::TemplateFilter>,
+) -> Result<Vec<crate::models::TemplateRecord>> {
+    let mut sql = String::from(
+        "SELECT id, folder_id, name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+         FROM templates
+         WHERE 1=1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(f) = filter {
+        if let Some(ch) = &f.channel {
+            let ch_trimmed = ch.trim();
+            if !ch_trimmed.is_empty() && ch_trimmed.to_lowercase() != "all" {
+                sql.push_str(" AND LOWER(channel) = LOWER(?)");
+                params.push(Box::new(ch_trimmed.to_string()));
+            }
+        }
+        if let Some(folder_id) = f.folder_id {
+            if folder_id > 0 {
+                sql.push_str(" AND folder_id = ?");
+                params.push(Box::new(folder_id));
+            } else if folder_id == -1 {
+                sql.push_str(" AND folder_id IS NULL");
+            }
+        }
+        if let Some(stage) = &f.stage {
+            let st = stage.trim();
+            if !st.is_empty() && st.to_lowercase() != "all" {
+                sql.push_str(" AND stage = ?");
+                params.push(Box::new(st.to_string()));
+            }
+        }
+        if let Some(query) = &f.search_query {
+            let q = query.trim();
+            if !q.is_empty() {
+                sql.push_str(" AND (name LIKE ? OR content LIKE ? OR subject LIKE ?)");
+                let pattern = format!("%{}%", q);
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern));
+            }
+        }
+        if let Some(tag) = &f.tag {
+            let t = tag.trim();
+            if !t.is_empty() && t.to_lowercase() != "all" {
+                sql.push_str(" AND tags_json LIKE ?");
+                let pattern = format!("%{}%", t);
+                params.push(Box::new(pattern));
+            }
+        }
+    }
+
+    sql.push_str(" ORDER BY updated_at DESC, id DESC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(crate::models::TemplateRecord {
+            id: row.get(0)?,
+            folder_id: row.get(1)?,
+            name: row.get(2)?,
+            channel: row.get(3)?,
+            stage: row.get(4)?,
+            subject: row.get(5)?,
+            content: row.get(6)?,
+            media_url: row.get(7)?,
+            ai_prompt: row.get(8)?,
+            tags_json: row.get(9)?,
+            usage_count: row.get(10)?,
+            last_used_at: row.get(11)?,
+            created_at: row.get(12)?,
+            updated_at: row.get(13)?,
+        })
+    })?;
+
+    let mut templates = Vec::new();
+    for r in rows {
+        templates.push(r?);
+    }
+    Ok(templates)
+}
+
+#[allow(dead_code)]
+pub fn get_template_by_id(
+    conn: &Connection,
+    id: i64,
+) -> Result<Option<crate::models::TemplateRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, folder_id, name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+         FROM templates
+         WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query([id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(crate::models::TemplateRecord {
+            id: row.get(0)?,
+            folder_id: row.get(1)?,
+            name: row.get(2)?,
+            channel: row.get(3)?,
+            stage: row.get(4)?,
+            subject: row.get(5)?,
+            content: row.get(6)?,
+            media_url: row.get(7)?,
+            ai_prompt: row.get(8)?,
+            tags_json: row.get(9)?,
+            usage_count: row.get(10)?,
+            last_used_at: row.get(11)?,
+            created_at: row.get(12)?,
+            updated_at: row.get(13)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(dead_code)]
+pub fn create_template(
+    conn: &Connection,
+    input: &crate::models::CreateTemplateInput,
+) -> Result<i64> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "INSERT INTO templates (
+            folder_id, name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL, ?10, ?11)",
+        rusqlite::params![
+            input.folder_id,
+            input.name,
+            input.channel,
+            input.stage,
+            input.subject,
+            input.content,
+            input.media_url,
+            input.ai_prompt,
+            input.tags_json,
+            now,
+            now
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub fn update_template(
+    conn: &Connection,
+    input: &crate::models::UpdateTemplateInput,
+) -> Result<()> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "UPDATE templates
+         SET folder_id = ?1, name = ?2, channel = ?3, stage = ?4, subject = ?5,
+             content = ?6, media_url = ?7, ai_prompt = ?8, tags_json = ?9, updated_at = ?10
+         WHERE id = ?11",
+        rusqlite::params![
+            input.folder_id,
+            input.name,
+            input.channel,
+            input.stage,
+            input.subject,
+            input.content,
+            input.media_url,
+            input.ai_prompt,
+            input.tags_json,
+            now,
+            input.id
+        ],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn delete_template(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM templates WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn increment_template_usage(conn: &Connection, id: i64) -> Result<()> {
+    let now: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute(
+        "UPDATE templates
+         SET usage_count = usage_count + 1, last_used_at = ?1, updated_at = ?2
+         WHERE id = ?3",
+        rusqlite::params![now, now, id],
+    )?;
+    Ok(())
+}
+
 

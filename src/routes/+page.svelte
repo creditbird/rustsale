@@ -13,6 +13,7 @@
   import FacebookHub from '$lib/components/facebook/FacebookHub.svelte';
   import CampaignCenter from '$lib/components/campaign/CampaignCenter.svelte';
   import AIApprovalQueue from '$lib/components/campaign/AIApprovalQueue.svelte';
+  import TemplateCenter from '$lib/components/template/TemplateCenter.svelte';
   import Settings from '$lib/components/Settings.svelte';
   import LicenseModal from '$lib/components/LicenseModal.svelte';
   import { verifyDeviceAndSubscription } from '$lib/services/licenseService';
@@ -44,6 +45,10 @@
     get categories() { return { title: m.tab_categories_title(), subtitle: m.tab_categories_subtitle() }; },
     get conversation() { return { title: m.tab_conversation_title(), subtitle: m.tab_conversation_subtitle() }; },
     get campaign_center() { return { title: m.tab_campaign_center_title(), subtitle: m.tab_campaign_center_subtitle() }; },
+    template_center: {
+      title: 'Thư Viện Template Mẫu',
+      subtitle: 'Quản lý kho nội dung, kịch bản mẫu đa kênh và phân tích hiệu suất'
+    },
     get ai_approval() { return { title: m.tab_ai_approval_title(), subtitle: m.tab_ai_approval_subtitle() }; },
     get facebook_hub() { return { title: m.tab_facebook_hub_title(), subtitle: m.tab_facebook_hub_subtitle() }; },
     get outreach() { return { title: m.tab_outreach_title(), subtitle: m.tab_outreach_subtitle() }; },
@@ -223,6 +228,8 @@
         <FacebookHub {activeTab} onOpenSettings={() => (activeTab = 'settings')} />
       {:else if activeTab === 'campaign_center'}
         <CampaignCenter {activeTab} />
+      {:else if activeTab === 'template_center'}
+        <TemplateCenter {activeTab} />
       {:else if activeTab === 'ai_approval'}
         <AIApprovalQueue {activeTab} />
       {:else if activeTab === 'dashboard'}

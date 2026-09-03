@@ -71,6 +71,31 @@ fn setup_test_db() -> Connection {
              created_at TEXT NOT NULL
          );
 
+         CREATE TABLE IF NOT EXISTS template_folders (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+             color TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS templates (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             folder_id INTEGER REFERENCES template_folders(id) ON DELETE SET NULL,
+             name TEXT NOT NULL,
+             channel TEXT NOT NULL,
+             stage TEXT,
+             subject TEXT,
+             content TEXT NOT NULL,
+             media_url TEXT,
+             ai_prompt TEXT,
+             tags_json TEXT,
+             usage_count INTEGER NOT NULL DEFAULT 0,
+             last_used_at TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+
          CREATE TABLE IF NOT EXISTS campaigns (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              name TEXT NOT NULL,
@@ -92,7 +117,8 @@ fn setup_test_db() -> Connection {
              condition_type TEXT NOT NULL DEFAULT 'ALWAYS',
              template_content TEXT NOT NULL,
              ai_prompt_override TEXT,
-             created_at TEXT NOT NULL
+             created_at TEXT NOT NULL,
+             template_id INTEGER REFERENCES templates(id) ON DELETE SET NULL
          );
 
          CREATE TABLE IF NOT EXISTS campaign_executions (
@@ -190,6 +216,7 @@ fn test_sequence_save_and_enrollment() {
             template_content: "Chào {{name}} từ {{company}}, em gửi báo giá nhé!".to_string(),
             ai_prompt_override: None,
             created_at: "".to_string(),
+            template_id: None,
         },
         CampaignStep {
             id: None,
@@ -201,6 +228,7 @@ fn test_sequence_save_and_enrollment() {
             template_content: "Anh/Chị {{name}} đã xem qua báo giá chưa ạ?".to_string(),
             ai_prompt_override: None,
             created_at: "".to_string(),
+            template_id: None,
         },
     ];
 
@@ -242,6 +270,7 @@ fn test_condition_evaluator_all_variants() {
         template_content: "Hello".to_string(),
         ai_prompt_override: None,
         created_at: "".to_string(),
+        template_id: None,
     };
     let res = StepConditionEvaluator::evaluate(&conn, &step_always, lead_id, None).unwrap();
     assert_eq!(res, ConditionResult::Execute);
@@ -257,6 +286,7 @@ fn test_condition_evaluator_all_variants() {
         template_content: "Followup".to_string(),
         ai_prompt_override: None,
         created_at: "".to_string(),
+        template_id: None,
     };
     let res = StepConditionEvaluator::evaluate(&conn, &step_reply, lead_id, None).unwrap();
     assert_eq!(res, ConditionResult::Execute);
@@ -290,6 +320,7 @@ fn test_condition_evaluator_all_variants() {
         template_content: "Special offer".to_string(),
         ai_prompt_override: None,
         created_at: "".to_string(),
+        template_id: None,
     };
     let res_stage_match =
         StepConditionEvaluator::evaluate(&conn, &step_stage_match, lead_id, None).unwrap();
@@ -305,6 +336,7 @@ fn test_condition_evaluator_all_variants() {
         template_content: "Contract onboarding".to_string(),
         ai_prompt_override: None,
         created_at: "".to_string(),
+        template_id: None,
     };
     let res_stage_mismatch =
         StepConditionEvaluator::evaluate(&conn, &step_stage_mismatch, lead_id, None).unwrap();
@@ -321,6 +353,7 @@ fn test_condition_evaluator_all_variants() {
         template_content: "Pricing details".to_string(),
         ai_prompt_override: None,
         created_at: "".to_string(),
+        template_id: None,
     };
     let res_intent =
         StepConditionEvaluator::evaluate(&conn, &step_intent_match, lead_id, None).unwrap();
@@ -336,6 +369,7 @@ fn test_condition_evaluator_all_variants() {
         template_content: "Apology".to_string(),
         ai_prompt_override: None,
         created_at: "".to_string(),
+        template_id: None,
     };
     let res_intent_mismatch =
         StepConditionEvaluator::evaluate(&conn, &step_intent_mismatch, lead_id, None).unwrap();
@@ -469,6 +503,7 @@ fn test_scheduler_step_progression_and_scheduling_next_step() {
             template_content: "Bước 1: Chào {{name}}!".to_string(),
             ai_prompt_override: None,
             created_at: "".to_string(),
+            template_id: None,
         },
         CampaignStep {
             id: None,
@@ -480,6 +515,7 @@ fn test_scheduler_step_progression_and_scheduling_next_step() {
             template_content: "Bước 2: Follow up {{name}}!".to_string(),
             ai_prompt_override: None,
             created_at: "".to_string(),
+            template_id: None,
         },
     ];
 
@@ -538,6 +574,7 @@ fn test_campaign_analytics_aggregation() {
             template_content: "Step 1".to_string(),
             ai_prompt_override: None,
             created_at: "".to_string(),
+            template_id: None,
         },
         CampaignStep {
             id: None,
@@ -549,6 +586,7 @@ fn test_campaign_analytics_aggregation() {
             template_content: "Step 2".to_string(),
             ai_prompt_override: None,
             created_at: "".to_string(),
+            template_id: None,
         },
     ];
 
