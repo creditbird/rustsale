@@ -1,11 +1,19 @@
 {
   "version": "0.1.17",
   "notes": "Cập nhật điều hướng & cuộn đến tin nhắn trích dẫn (quote preview) và chuẩn hóa xử lý emoji reaction trên WhatsApp",
-  "pub_date": "2026-09-02T10:10:46.649Z",
+  "pub_date": "2026-09-05T02:44:56.823Z",
   "platforms": {
     "linux-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDZzZ0VnZ3ZZY1MvU2pnVEJWRXNrMnEzS3AzeFBwUGZ3WktUYVpuN05XTVgwamgzTnhyUEpYcC9sMWY3emlxQjFRT0c4UmFLS1psYmxrSDJhU2tySVFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzQzODQ1CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xN19hbWQ2NC5kZWIKWkpyUkxYYWxvZS9FV0JaU081RFRTc091aFgwdDYyaS82RUJEVXd4eXpsdEphMzV6SHk0RW9rbDE0ZEZNbjZ1RTI2RVhIQzE2dmo5RXMrcTFxU1hPQ0E9PQo=",
       "url": "https://rustsale.trantrongtri.com/v0.1.17/RustSale%20CRM_0.1.17_amd64.deb"
+    },
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHpyeUV6dGRmQWwzKzFJSzBnYnVmbTdaN3pjYjNncGdFSThjOFNabFRsanE3U1F5WFp1akkxWFYzbzhPU3RlMG9nMDZ1eWR6MUpFbEZHc2M3bWdDbWdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NTc2Mjk1CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xN194NjQtc2V0dXAuZXhlCkw4OHprNys3NWxJVTFvU01LMEJLU09QRTBHOXlmTkhGK0F3c2kxZ3RsT0o0MEpwenRGa2p4MjE5MkFhMW5XR0g3N054bnpOZlJsNU5oMFRkYWF3S0JnPT0K",
+      "url": "https://rustsale.trantrongtri.com/v0.1.17/RustSale%20CRM_0.1.17_x64-setup.exe"
+    },
+    "windows-x86_64-msi": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUHh4SEkvMkd6ME1semRlU3cwdmcvRStTSUM2Ujg1ZTdoVVlXR21SR2c4bkhtelNleEM3RVhEdjJwZlIrUE44dmFicmsyd3NpMW9naVRGQmxtQzI3WXdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NTc2Mjk1CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xN194NjRfZW4tVVMubXNpClN5N2ZyRlZSV1REWDgxQXpmQy9iT2dlSkJHVk56ak8wUXpGREVmR2lVNGhtZnhGMWorQ2srdm5GUTI0ekl0eE1QbGNTZzlNc2pYc0JWV3FxM01sNEJBPT0K",
+      "url": "https://rustsale.trantrongtri.com/v0.1.17/RustSale%20CRM_0.1.17_x64_en-US.msi"
     }
   }
 }
