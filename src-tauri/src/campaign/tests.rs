@@ -840,7 +840,7 @@ fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
         [],
     ).unwrap();
 
-    // 2. Test Zalo live dispatch
+    // 2. Test Zalo live dispatch (initially transitions to SUBMITTED awaiting external confirmation)
     let payload_zalo = DispatchPayload {
         campaign_id: 1,
         step_id: 1,
@@ -853,7 +853,7 @@ fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
     };
     let res_zalo = OmnichannelDispatcher::dispatch(&conn, &payload_zalo, DispatchMode::Live).unwrap();
     assert!(res_zalo.success);
-    assert_eq!(res_zalo.delivery_status, "DELIVERED");
+    assert_eq!(res_zalo.delivery_status, "SUBMITTED");
     assert!(res_zalo.provider_message_id.as_ref().unwrap().starts_with("zalo_msg_"));
 
     // 3. Test WhatsApp live dispatch
@@ -869,7 +869,7 @@ fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
     };
     let res_wa = OmnichannelDispatcher::dispatch(&conn, &payload_wa, DispatchMode::Live).unwrap();
     assert!(res_wa.success);
-    assert_eq!(res_wa.delivery_status, "DELIVERED");
+    assert_eq!(res_wa.delivery_status, "SUBMITTED");
     assert!(res_wa.provider_message_id.as_ref().unwrap().starts_with("wamid."));
 
     // 4. Test Email live dispatch
@@ -885,7 +885,7 @@ fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
     };
     let res_email = OmnichannelDispatcher::dispatch(&conn, &payload_email, DispatchMode::Live).unwrap();
     assert!(res_email.success);
-    assert_eq!(res_email.delivery_status, "DELIVERED");
+    assert_eq!(res_email.delivery_status, "SUBMITTED");
     assert!(res_email.provider_message_id.as_ref().unwrap().starts_with("<"));
 
     // 5. Test Facebook live dispatch
@@ -901,10 +901,27 @@ fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
     };
     let res_fb = OmnichannelDispatcher::dispatch(&conn, &payload_fb, DispatchMode::Live).unwrap();
     assert!(res_fb.success);
-    assert_eq!(res_fb.delivery_status, "DELIVERED");
+    assert_eq!(res_fb.delivery_status, "SUBMITTED");
     assert!(res_fb.provider_message_id.as_ref().unwrap().starts_with("mid.$gA_"));
 
-    // Verify all 4 are persisted in outreach_history with DELIVERED status
+    // Before confirmation: all 4 are in SUBMITTED state in outreach_history
+    let submitted_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'SUBMITTED'",
+            [lead_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(submitted_count, 4);
+
+    // External delivery confirmation arrives via webhook / callback for each
+    let now = "2026-09-05T08:00:00Z";
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_zalo.provider_message_id.as_ref().unwrap(), now).unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_wa.provider_message_id.as_ref().unwrap(), now).unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_email.provider_message_id.as_ref().unwrap(), now).unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_fb.provider_message_id.as_ref().unwrap(), now).unwrap());
+
+    // Verify all 4 transitioned to DELIVERED status
     let delivered_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'DELIVERED'",
@@ -945,17 +962,26 @@ fn test_dispatcher_idempotency_duplicate_send_prevention() {
         ai_prompt_override: None,
     };
 
-    // First dispatch sends and marks DELIVERED
+    // First dispatch sends and marks SUBMITTED
     let res1 = OmnichannelDispatcher::dispatch(&conn, &payload, DispatchMode::Live).unwrap();
     assert!(res1.success);
-    assert_eq!(res1.delivery_status, "DELIVERED");
+    assert_eq!(res1.delivery_status, "SUBMITTED");
     let initial_msg_id = res1.message_id.unwrap();
 
-    // Second dispatch of exact same step for same lead
+    // Second dispatch of exact same step while SUBMITTED recovers existing submission receipt
     let res2 = OmnichannelDispatcher::dispatch(&conn, &payload, DispatchMode::Live).unwrap();
     assert!(res2.success);
-    assert_eq!(res2.delivery_status, "DELIVERED");
+    assert_eq!(res2.delivery_status, "SUBMITTED");
     assert_eq!(res2.message_id.unwrap(), initial_msg_id);
+
+    // External provider confirms delivery
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res1.provider_message_id.as_ref().unwrap(), "2026-09-05T08:00:00Z").unwrap());
+
+    // Third dispatch after DELIVERED recovers DELIVERED record
+    let res3 = OmnichannelDispatcher::dispatch(&conn, &payload, DispatchMode::Live).unwrap();
+    assert!(res3.success);
+    assert_eq!(res3.delivery_status, "DELIVERED");
+    assert_eq!(res3.message_id.unwrap(), initial_msg_id);
 
     // Verify outreach_history has strictly 1 record
     let count: i64 = conn
@@ -1193,7 +1219,7 @@ fn test_database_idempotency_unique_constraint_concurrency_race() {
 
     let provider = DefaultChannelDeliveryProvider::default();
 
-    // First dispatch succeeds
+    // First dispatch succeeds and transitions to SUBMITTED
     let res1 = OmnichannelDispatcher::dispatch_with_provider(
         &conn,
         &payload,
@@ -1202,11 +1228,11 @@ fn test_database_idempotency_unique_constraint_concurrency_race() {
     ).expect("First dispatch should succeed");
 
     assert!(res1.success);
-    assert_eq!(res1.delivery_status, "DELIVERED");
+    assert_eq!(res1.delivery_status, "SUBMITTED");
     let msg_id1 = res1.message_id.unwrap();
 
-    // Second dispatch with same campaign/step/lead:
-    // Should be intercepted by idempotency check and safely return existing confirmation
+    // Second dispatch with same campaign/step/lead while SUBMITTED:
+    // Intercepted by idempotency check and safely returns existing submission receipt
     let res2 = OmnichannelDispatcher::dispatch_with_provider(
         &conn,
         &payload,
@@ -1216,6 +1242,25 @@ fn test_database_idempotency_unique_constraint_concurrency_race() {
 
     assert!(res2.success);
     assert_eq!(res2.message_id, Some(msg_id1));
+    assert_eq!(res2.delivery_status, "SUBMITTED");
+
+    // External provider confirms delivery
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+        &conn,
+        res1.provider_message_id.as_ref().unwrap(),
+        "2026-09-05T08:00:00Z",
+    ).unwrap());
+
+    // Third dispatch recovers DELIVERED
+    let res3 = OmnichannelDispatcher::dispatch_with_provider(
+        &conn,
+        &payload,
+        DispatchMode::Live,
+        &provider,
+    ).expect("Third dispatch should recover delivered record");
+    assert!(res3.success);
+    assert_eq!(res3.delivery_status, "DELIVERED");
+    assert_eq!(res3.message_id, Some(msg_id1));
 
     // Verify exactly 1 record exists in outreach_history with unique idempotency_key
     let count: i64 = conn
@@ -1242,5 +1287,192 @@ fn test_database_idempotency_unique_constraint_concurrency_race() {
         "Expected UNIQUE constraint violation, got: {}",
         err_str
     );
+}
+
+struct MockProviderWithCallCounter {
+    call_count: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ChannelDeliveryProvider for MockProviderWithCallCounter {
+    async fn deliver(
+        &self,
+        _channel: &str,
+        _account: &str,
+        _recipient: &str,
+        _message: &str,
+        _idempotency_key: &str,
+        _timeout: std::time::Duration,
+    ) -> Result<ProviderDeliveryResponse, String> {
+        let prev = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ProviderDeliveryResponse {
+            provider_message_id: format!("prov_counted_{}", prev),
+            status: DeliveryStatus::Submitted,
+        })
+    }
+}
+
+#[test]
+fn test_provider_acceptance_client_timeout_and_retry_reconciliation() {
+    let conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Retry Lead", "Retry Co", "0955667788", "retry@co.vn");
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_RETRY', 'Retry Sess', 1)",
+        [],
+    ).unwrap();
+
+    let payload = DispatchPayload {
+        campaign_id: 55,
+        step_id: 66,
+        lead_id,
+        channel: "ZALO".to_string(),
+        target_recipient: "0955667788".to_string(),
+        account_id: Some("IMEI_RETRY".to_string()),
+        template_content: "Retry reconciliation test".to_string(),
+        ai_prompt_override: None,
+    };
+
+    let provider = MockProviderWithCallCounter {
+        call_count: std::sync::atomic::AtomicUsize::new(0),
+    };
+
+    // 1. Initial attempt transmits to provider and records SUBMITTED state
+    let res1 = OmnichannelDispatcher::dispatch_with_provider(
+        &conn,
+        &payload,
+        DispatchMode::Live,
+        &provider,
+    ).unwrap();
+    assert!(res1.success);
+    assert_eq!(res1.delivery_status, "SUBMITTED");
+    assert_eq!(provider.call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // 2. Client retry occurs (e.g. after a client-side timeout / network drop):
+    // The dispatcher must reconcile using the database idempotency key,
+    // recovering the in-flight SUBMITTED receipt WITHOUT calling the external provider again!
+    let res2 = OmnichannelDispatcher::dispatch_with_provider(
+        &conn,
+        &payload,
+        DispatchMode::Live,
+        &provider,
+    ).unwrap();
+    assert!(res2.success);
+    assert_eq!(res2.delivery_status, "SUBMITTED");
+    assert_eq!(res2.message_id, res1.message_id);
+    // CRITICAL: Call count must remain 1 - no duplicate provider transmission
+    assert_eq!(
+        provider.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "Provider must not be called again on retry of already submitted message"
+    );
+}
+
+#[test]
+fn test_stuck_submission_reconciliation_worker() {
+    let conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Stuck Lead", "Stuck Co", "0966778899", "stuck@co.vn");
+
+    // Insert an outreach submission timestamped 1 hour ago
+    conn.execute(
+        "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei, idempotency_key, provider_message_id)
+         VALUES (?1, 1, 'SUBMITTED', NULL, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3600 seconds'), 'IMEI_STUCK', 'campaign:1:step:1:lead:stuck', 'prov_stuck_123')",
+        [lead_id],
+    ).unwrap();
+
+    // Insert a fresh outreach submission sent 10 seconds ago (should NOT be reconciled)
+    conn.execute(
+        "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei, idempotency_key, provider_message_id)
+         VALUES (?1, 2, 'SUBMITTED', NULL, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds'), 'IMEI_STUCK', 'campaign:1:step:2:lead:stuck', 'prov_fresh_123')",
+        [lead_id],
+    ).unwrap();
+
+    // Reconcile submissions stuck beyond 300s
+    let reconciled_count = OmnichannelDispatcher::reconcile_stuck_submissions(&conn, 300).unwrap();
+    assert_eq!(reconciled_count, 1, "Only the 1-hour-old submission should be reconciled");
+
+    // Verify stuck submission transitioned to FAILED with reconciliation note
+    let (status1, err1): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, error_message FROM outreach_history WHERE provider_message_id = 'prov_stuck_123'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status1, "FAILED");
+    assert!(err1.unwrap().contains("Reconciled"));
+
+    // Verify fresh submission remains in SUBMITTED state
+    let status2: String = conn
+        .query_row(
+            "SELECT status FROM outreach_history WHERE provider_message_id = 'prov_fresh_123'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status2, "SUBMITTED");
+}
+
+#[test]
+fn test_legacy_migration_idempotency_upgrade_path() {
+    let conn = Connection::open_in_memory().unwrap();
+
+    // 1. Create legacy schema without idempotency_key and provider_message_id
+    conn.execute_batch(
+        "CREATE TABLE outreach_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            template_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            sent_at TEXT NOT NULL,
+            session_imei TEXT NOT NULL
+        );
+        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei)
+        VALUES (1, 10, 'SENT', '2026-01-01T00:00:00Z', 'IMEI_OLD_1');
+        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei)
+        VALUES (1, 10, 'SENT', '2026-01-02T00:00:00Z', 'IMEI_OLD_1');
+        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei)
+        VALUES (2, 20, 'DELIVERED', '2026-01-03T00:00:00Z', 'IMEI_OLD_2');"
+    ).unwrap();
+
+    // 2. Execute migration upgrade script as performed in db::init_db
+    conn.execute("ALTER TABLE outreach_history ADD COLUMN idempotency_key TEXT", []).unwrap();
+    conn.execute("ALTER TABLE outreach_history ADD COLUMN provider_message_id TEXT", []).unwrap();
+    conn.execute(
+        "UPDATE outreach_history SET idempotency_key = 'legacy:history:' || id WHERE idempotency_key IS NULL",
+        [],
+    ).unwrap();
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_history_idempotency ON outreach_history(idempotency_key)",
+        [],
+    ).unwrap();
+
+    // 3. Verify all legacy rows have distinct, populated idempotency keys
+    let mut stmt = conn.prepare("SELECT id, idempotency_key FROM outreach_history ORDER BY id ASC").unwrap();
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].1, "legacy:history:1");
+    assert_eq!(rows[1].1, "legacy:history:2");
+    assert_eq!(rows[2].1, "legacy:history:3");
+
+    // 4. Verify unique constraint works on new rows
+    let res_ok = conn.execute(
+        "INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, idempotency_key)
+         VALUES (3, 30, 'SUBMITTED', '2026-09-05T00:00:00Z', 'IMEI_NEW', 'campaign:1:step:1:lead:3')",
+        [],
+    );
+    assert!(res_ok.is_ok());
+
+    let res_dup = conn.execute(
+        "INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, idempotency_key)
+         VALUES (3, 30, 'SUBMITTED', '2026-09-05T00:00:00Z', 'IMEI_NEW', 'campaign:1:step:1:lead:3')",
+        [],
+    );
+    assert!(res_dup.is_err(), "Duplicate insertion must violate idx_outreach_history_idempotency");
 }
 

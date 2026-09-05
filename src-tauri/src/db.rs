@@ -273,7 +273,14 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
 
         let _ = tx.execute("ALTER TABLE outreach_history ADD COLUMN idempotency_key TEXT", []);
         let _ = tx.execute("ALTER TABLE outreach_history ADD COLUMN provider_message_id TEXT", []);
-        let _ = tx.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_history_idempotency ON outreach_history(idempotency_key)", []);
+        let _ = tx.execute(
+            "UPDATE outreach_history SET idempotency_key = 'legacy:history:' || id WHERE idempotency_key IS NULL",
+            [],
+        );
+        let _ = tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_history_idempotency ON outreach_history(idempotency_key)",
+            [],
+        );
 
         tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_lead_categories_category ON lead_categories(category_id)",

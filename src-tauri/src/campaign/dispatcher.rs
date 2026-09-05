@@ -75,6 +75,7 @@ pub trait ChannelDeliveryProvider: Send + Sync {
 #[derive(Clone)]
 pub struct DefaultChannelDeliveryProvider {
     pub http_client: reqwest::Client,
+    pub simulated_status: DeliveryStatus,
 }
 
 impl Default for DefaultChannelDeliveryProvider {
@@ -84,6 +85,16 @@ impl Default for DefaultChannelDeliveryProvider {
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
+            simulated_status: DeliveryStatus::Submitted,
+        }
+    }
+}
+
+impl DefaultChannelDeliveryProvider {
+    pub fn with_status(status: DeliveryStatus) -> Self {
+        Self {
+            simulated_status: status,
+            ..Default::default()
         }
     }
 }
@@ -112,7 +123,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("zalo_msg_{}_{}", account, hash_prefix),
-                        status: DeliveryStatus::Delivered,
+                        status: self.simulated_status,
                     })
                 }
                 "WHATSAPP" => {
@@ -121,7 +132,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("wamid.HBg_{}_{}", account, hash_prefix),
-                        status: DeliveryStatus::Delivered,
+                        status: self.simulated_status,
                     })
                 }
                 "EMAIL" => {
@@ -130,7 +141,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("<{}.{}@rustsale.vn>", hash_prefix, account),
-                        status: DeliveryStatus::Delivered,
+                        status: self.simulated_status,
                     })
                 }
                 "FACEBOOK" => {
@@ -139,7 +150,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("mid.$gA_{}_{}", account, hash_prefix),
-                        status: DeliveryStatus::Delivered,
+                        status: self.simulated_status,
                     })
                 }
                 other => Err(format!("Unsupported delivery provider channel '{}'", other)),
@@ -360,7 +371,18 @@ impl OmnichannelDispatcher {
                     delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
                 });
             } else if status == "SUBMITTED" {
-                return Err("Concurrent delivery already in progress for this execution".to_string());
+                // Previously submitted and acknowledged by provider; return idempotent submitted receipt
+                return Ok(DispatchResult {
+                    success: true,
+                    rendered_message,
+                    dispatched_channel: channel_normalized,
+                    account_used: existing_account.or_else(|| payload.account_id.clone()),
+                    error: None,
+                    is_dry_run: false,
+                    message_id: Some(existing_id),
+                    provider_message_id: prov_id.or_else(|| Some(format!("recovered_submitted_{}", existing_id))),
+                    delivery_status: DeliveryStatus::Submitted.as_str().to_string(),
+                });
             }
         }
 
@@ -411,6 +433,18 @@ impl OmnichannelDispatcher {
                                 provider_message_id: wprov.or_else(|| Some(format!("recovered_idempotent_{}", wid))),
                                 delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
                             });
+                        } else if wstatus == "SUBMITTED" {
+                            return Ok(DispatchResult {
+                                success: true,
+                                rendered_message,
+                                dispatched_channel: channel_normalized,
+                                account_used: wacc.or_else(|| payload.account_id.clone()),
+                                error: None,
+                                is_dry_run: false,
+                                message_id: Some(wid),
+                                provider_message_id: wprov.or_else(|| Some(format!("recovered_submitted_{}", wid))),
+                                delivery_status: DeliveryStatus::Submitted.as_str().to_string(),
+                            });
                         }
                     }
                     return Err("Concurrent delivery collision on idempotency key".to_string());
@@ -439,16 +473,25 @@ impl OmnichannelDispatcher {
 
         match delivery_result {
             Ok(resp) => {
-                // 5. Provider confirmed delivery: update status to DELIVERED and persist activity
-                Self::confirm_outreach_delivery(
-                    conn,
-                    outreach_id,
-                    payload.lead_id,
-                    &channel_normalized,
-                    &rendered_message,
-                    &now,
-                    &resp.provider_message_id,
-                )?;
+                let status_str = resp.status.as_str().to_string();
+                if resp.status == DeliveryStatus::Delivered {
+                    // 5a. Provider confirmed delivery synchronously: update status to DELIVERED and persist activity
+                    Self::confirm_outreach_delivery(
+                        conn,
+                        outreach_id,
+                        payload.lead_id,
+                        &channel_normalized,
+                        &rendered_message,
+                        &now,
+                        &resp.provider_message_id,
+                    )?;
+                } else if resp.status == DeliveryStatus::Submitted {
+                    // 5b. Provider accepted message for async transmission: update provider receipt, remain in SUBMITTED
+                    conn.execute(
+                        "UPDATE outreach_history SET provider_message_id = ?1, status = 'SUBMITTED', error_message = NULL WHERE id = ?2",
+                        rusqlite::params![&resp.provider_message_id, outreach_id],
+                    ).map_err(|e| format!("Failed to update outreach submission provider receipt: {}", e))?;
+                }
 
                 Ok(DispatchResult {
                     success: true,
@@ -459,7 +502,7 @@ impl OmnichannelDispatcher {
                     is_dry_run: false,
                     message_id: Some(outreach_id),
                     provider_message_id: Some(resp.provider_message_id),
-                    delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
+                    delivery_status: status_str,
                 })
             }
             Err(provider_err) => {
@@ -657,5 +700,78 @@ impl OmnichannelDispatcher {
         )
         .map_err(|e| format!("Failed to update outreach history to FAILED: {}", e))?;
         Ok(())
+    }
+
+    /// Authoritative delivery confirmation handler. Transitions a SUBMITTED record
+    /// to DELIVERED when the provider sends a webhook or delivery acknowledgment receipt.
+    pub fn confirm_provider_delivery(
+        conn: &Connection,
+        provider_msg_id: &str,
+        confirmed_at: &str,
+    ) -> Result<bool, String> {
+        let record: Option<(i64, i32, String, String)> = conn
+            .query_row(
+                "SELECT id, lead_id, session_imei, status FROM outreach_history WHERE provider_message_id = ?1 LIMIT 1",
+                [provider_msg_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .ok();
+
+        if let Some((outreach_id, lead_id, _account, status)) = record {
+            if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
+                return Ok(true);
+            }
+
+            Self::confirm_outreach_delivery(
+                conn,
+                outreach_id,
+                lead_id,
+                "OMNICHANNEL",
+                "Outreach delivery confirmed by external provider",
+                confirmed_at,
+                provider_msg_id,
+            )?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Reconciles submissions that have been stuck in SUBMITTED state beyond a timeout threshold.
+    /// Transitions them to FAILED so the scheduler can safely retry or log failures.
+    pub fn reconcile_stuck_submissions(
+        conn: &Connection,
+        timeout_seconds: u64,
+    ) -> Result<usize, String> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cutoff_epoch = now_epoch.saturating_sub(timeout_seconds);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM outreach_history
+                 WHERE status = 'SUBMITTED'
+                   AND (CAST(strftime('%s', sent_at) AS INTEGER) <= ?1 OR sent_at = '')",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let stuck_ids: Vec<i64> = stmt
+            .query_map([cutoff_epoch as i64], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+
+        let count = stuck_ids.len();
+        for id in stuck_ids {
+            let _ = Self::mark_outreach_failed(
+                conn,
+                id,
+                &format!("Delivery confirmation timeout expired after {}s (Reconciled)", timeout_seconds),
+            );
+        }
+
+        Ok(count)
     }
 }
