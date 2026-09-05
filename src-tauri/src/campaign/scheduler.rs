@@ -246,7 +246,7 @@ impl CampaignScheduler {
                                             .clone()
                                             .unwrap_or_default(),
                                         message_id: dispatch_res.message_id,
-                                        status: "SENT".to_string(),
+                                        status: dispatch_res.delivery_status.clone(),
                                     });
                                 }
                             } else {
@@ -264,14 +264,44 @@ impl CampaignScheduler {
                             }
                         }
                         Err(err) => {
-                            crate::db::update_campaign_execution_status(
-                                conn,
-                                exec_id,
-                                "FAILED",
-                                Some(&err),
-                                Some(&now_iso),
-                            ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
-                            summary.failed_count += 1;
+                            // Retry semantics with backoff: up to 3 retries
+                            let current_err = execution.error_message.as_deref().unwrap_or("");
+                            let retry_count = if current_err.starts_with("[Retry ") {
+                                current_err[7..8].parse::<u32>().unwrap_or(0)
+                            } else {
+                                0
+                            };
+
+                            if retry_count < 3 {
+                                let next_retry = retry_count + 1;
+                                let retry_delay_mins = next_retry * 5;
+                                let retry_iso: String = conn
+                                    .query_row(
+                                        "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)",
+                                        [format!("+{} minutes", retry_delay_mins)],
+                                        |row| row.get(0),
+                                    )
+                                    .unwrap_or_else(|_| now_iso.clone());
+
+                                let new_err_msg = format!("[Retry {}/3] {}", next_retry, err);
+                                conn.execute(
+                                    "UPDATE campaign_executions
+                                     SET status = 'PENDING', scheduled_at = ?1, error_message = ?2, executed_at = NULL
+                                     WHERE id = ?3",
+                                    rusqlite::params![retry_iso, new_err_msg, exec_id],
+                                ).map_err(|e| format!("DB error setting execution retry: {}", e))?;
+                                summary.failed_count += 1;
+                            } else {
+                                let terminal_err = format!("[Max Retries Exceeded] {}", err);
+                                crate::db::update_campaign_execution_status(
+                                    conn,
+                                    exec_id,
+                                    "FAILED",
+                                    Some(&terminal_err),
+                                    Some(&now_iso),
+                                ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+                                summary.failed_count += 1;
+                            }
                         }
                     }
                 }

@@ -808,3 +808,292 @@ fn test_dispatcher_validation_failure() {
     assert!(res_phone.is_err());
     assert!(res_phone.unwrap_err().contains("invalid phone number"));
 }
+
+#[test]
+fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
+    let conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Nguyễn Văn Alpha", "Alpha Corp", "0912345678", "alpha@corp.vn");
+
+    // 1. Setup accounts for all 4 channels
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_PROV', 'Zalo Prov', 1)",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, account_name, provider_account_key, status, created_at, updated_at)
+         VALUES (101, 'whatsapp', 'WA Prov', 'wpa_101', 'ACTIVE', '2026-01-01', '2026-01-01')",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO smtp_servers (id, host, port, username, from_email, is_active)
+         VALUES (201, 'smtp.alphacorp.vn', 587, 'info', 'info@alphacorp.vn', 1)",
+        [],
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, account_name, provider_account_key, status, created_at, updated_at)
+         VALUES (301, 'facebook', 'FB Page Prov', 'page_301', 'ACTIVE', '2026-01-01', '2026-01-01')",
+        [],
+    ).unwrap();
+
+    // 2. Test Zalo live dispatch
+    let payload_zalo = DispatchPayload {
+        campaign_id: 1,
+        step_id: 1,
+        lead_id,
+        channel: "ZALO".to_string(),
+        target_recipient: "0912345678".to_string(),
+        account_id: Some("IMEI_PROV".to_string()),
+        template_content: "Zalo outreach to {{name}}".to_string(),
+        ai_prompt_override: None,
+    };
+    let res_zalo = OmnichannelDispatcher::dispatch(&conn, &payload_zalo, DispatchMode::Live).unwrap();
+    assert!(res_zalo.success);
+    assert_eq!(res_zalo.delivery_status, "DELIVERED");
+    assert!(res_zalo.provider_message_id.as_ref().unwrap().starts_with("zalo_msg_"));
+
+    // 3. Test WhatsApp live dispatch
+    let payload_wa = DispatchPayload {
+        campaign_id: 1,
+        step_id: 2,
+        lead_id,
+        channel: "WHATSAPP".to_string(),
+        target_recipient: "+84912345678".to_string(),
+        account_id: Some("wpa_101".to_string()),
+        template_content: "WhatsApp outreach to {{name}}".to_string(),
+        ai_prompt_override: None,
+    };
+    let res_wa = OmnichannelDispatcher::dispatch(&conn, &payload_wa, DispatchMode::Live).unwrap();
+    assert!(res_wa.success);
+    assert_eq!(res_wa.delivery_status, "DELIVERED");
+    assert!(res_wa.provider_message_id.as_ref().unwrap().starts_with("wamid."));
+
+    // 4. Test Email live dispatch
+    let payload_email = DispatchPayload {
+        campaign_id: 1,
+        step_id: 3,
+        lead_id,
+        channel: "EMAIL".to_string(),
+        target_recipient: "alpha@corp.vn".to_string(),
+        account_id: Some("smtp.alphacorp.vn".to_string()),
+        template_content: "Email outreach to {{name}}".to_string(),
+        ai_prompt_override: None,
+    };
+    let res_email = OmnichannelDispatcher::dispatch(&conn, &payload_email, DispatchMode::Live).unwrap();
+    assert!(res_email.success);
+    assert_eq!(res_email.delivery_status, "DELIVERED");
+    assert!(res_email.provider_message_id.as_ref().unwrap().starts_with("<"));
+
+    // 5. Test Facebook live dispatch
+    let payload_fb = DispatchPayload {
+        campaign_id: 1,
+        step_id: 4,
+        lead_id,
+        channel: "FACEBOOK".to_string(),
+        target_recipient: "1000987654321".to_string(),
+        account_id: Some("page_301".to_string()),
+        template_content: "Facebook outreach to {{name}}".to_string(),
+        ai_prompt_override: None,
+    };
+    let res_fb = OmnichannelDispatcher::dispatch(&conn, &payload_fb, DispatchMode::Live).unwrap();
+    assert!(res_fb.success);
+    assert_eq!(res_fb.delivery_status, "DELIVERED");
+    assert!(res_fb.provider_message_id.as_ref().unwrap().starts_with("mid.$gA_"));
+
+    // Verify all 4 are persisted in outreach_history with DELIVERED status
+    let delivered_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND status = 'DELIVERED'",
+            [lead_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(delivered_count, 4);
+
+    // Verify activities rows contain provider message ID
+    let act_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM activities WHERE lead_id = ?1 AND content LIKE '%Provider Message ID:%'",
+            [lead_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(act_count, 4);
+}
+
+#[test]
+fn test_dispatcher_idempotency_duplicate_send_prevention() {
+    let conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Lê B", "B Tech", "0977889900", "b@btech.vn");
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_IDEM', 'Idem Session', 1)",
+        [],
+    ).unwrap();
+
+    let payload = DispatchPayload {
+        campaign_id: 10,
+        step_id: 20,
+        lead_id,
+        channel: "ZALO".to_string(),
+        target_recipient: "0977889900".to_string(),
+        account_id: Some("IMEI_IDEM".to_string()),
+        template_content: "Idempotent step message".to_string(),
+        ai_prompt_override: None,
+    };
+
+    // First dispatch sends and marks DELIVERED
+    let res1 = OmnichannelDispatcher::dispatch(&conn, &payload, DispatchMode::Live).unwrap();
+    assert!(res1.success);
+    assert_eq!(res1.delivery_status, "DELIVERED");
+    let initial_msg_id = res1.message_id.unwrap();
+
+    // Second dispatch of exact same step for same lead
+    let res2 = OmnichannelDispatcher::dispatch(&conn, &payload, DispatchMode::Live).unwrap();
+    assert!(res2.success);
+    assert_eq!(res2.delivery_status, "DELIVERED");
+    assert_eq!(res2.message_id.unwrap(), initial_msg_id);
+
+    // Verify outreach_history has strictly 1 record
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1 AND template_id = 20",
+            [lead_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_provider_failure_and_scheduler_retry_backoff() {
+    let mut conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Trần C", "C Log", "0966554433", "c@clog.vn");
+
+    // Account with inactive session
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_INACTIVE', 'Inactive Sess', 0)",
+        [],
+    ).unwrap();
+
+    let campaign = Campaign {
+        id: None,
+        name: "Failure Retry Campaign".to_string(),
+        description: None,
+        channel_type: "ZALO".to_string(),
+        status: "ACTIVE".to_string(),
+        audience_filter_json: None,
+        schedule_config_json: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
+    };
+
+    let steps = vec![CampaignStep {
+        id: None,
+        campaign_id: 0,
+        step_order: 1,
+        channel: "ZALO".to_string(),
+        delay_minutes: 0,
+        condition_type: "ALWAYS".to_string(),
+        template_content: "Fail test".to_string(),
+        ai_prompt_override: None,
+        created_at: "".to_string(),
+        template_id: None,
+    }];
+
+    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps).unwrap();
+    enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead_id]).unwrap();
+
+    let scheduler = CampaignScheduler::with_defaults();
+    scheduler.rotator.register_account("ZALO", "IMEI_INACTIVE");
+
+    // Process due execution: provider delivery should fail closed because session is inactive
+    let summary = scheduler.process_due_executions(&conn, DispatchMode::Live, 10).unwrap();
+    assert_eq!(summary.failed_count, 1);
+    assert_eq!(summary.sent_count, 0);
+
+    // Verify execution status was reset to PENDING with [Retry 1/3]
+    let (status, err_msg): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, error_message FROM campaign_executions WHERE campaign_id = ?1 AND lead_id = ?2",
+            rusqlite::params![campaign_id, lead_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(status, "PENDING");
+    assert!(err_msg.unwrap().starts_with("[Retry 1/3]"));
+
+    // Verify outreach_history row is recorded with status = FAILED
+    let hist_status: String = conn
+        .query_row(
+            "SELECT status FROM outreach_history WHERE lead_id = ?1",
+            [lead_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hist_status, "FAILED");
+}
+
+struct MockFailingProvider;
+
+impl ChannelDeliveryProvider for MockFailingProvider {
+    fn deliver(
+        &self,
+        _conn: &Connection,
+        _channel: &str,
+        _account: &str,
+        _recipient: &str,
+        _message: &str,
+        _idempotency_key: &str,
+    ) -> Result<ProviderDeliveryResponse, String> {
+        Err("Gateway Timeout (HTTP 504)".to_string())
+    }
+}
+
+#[test]
+fn test_custom_mock_provider_timeout_and_network_error() {
+    let conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Mock Lead", "Mock Co", "0911223344", "mock@co.vn");
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_MOCK', 'Mock Sess', 1)",
+        [],
+    ).unwrap();
+
+    let payload = DispatchPayload {
+        campaign_id: 99,
+        step_id: 101,
+        lead_id,
+        channel: "ZALO".to_string(),
+        target_recipient: "0911223344".to_string(),
+        account_id: Some("IMEI_MOCK".to_string()),
+        template_content: "Timeout test".to_string(),
+        ai_prompt_override: None,
+    };
+
+    let failing_provider = MockFailingProvider;
+    let res = OmnichannelDispatcher::dispatch_with_provider(
+        &conn,
+        &payload,
+        DispatchMode::Live,
+        &failing_provider,
+    );
+
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    assert!(err.contains("Gateway Timeout (HTTP 504)"));
+
+    // Verify outreach_history recorded FAILED state
+    let (status, err_msg): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, error_message FROM outreach_history WHERE lead_id = ?1",
+            [lead_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(status, "FAILED");
+    assert!(err_msg.unwrap().contains("Gateway Timeout"));
+}
+

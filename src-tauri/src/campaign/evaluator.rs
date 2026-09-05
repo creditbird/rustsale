@@ -94,7 +94,7 @@ impl StepConditionEvaluator {
         let prev_execution_time: Option<String> = conn
             .query_row(
                 "SELECT executed_at FROM campaign_executions
-                 WHERE campaign_id = ?1 AND lead_id = ?2 AND step_id != ?3 AND status = 'SENT'
+                 WHERE campaign_id = ?1 AND lead_id = ?2 AND step_id != ?3 AND status IN ('SENT', 'DELIVERED')
                  ORDER BY executed_at DESC LIMIT 1",
                 rusqlite::params![step.campaign_id, lead_id, step.id.unwrap_or(0)],
                 |row| row.get(0),
