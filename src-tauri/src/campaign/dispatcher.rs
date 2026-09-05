@@ -751,6 +751,31 @@ impl OmnichannelDispatcher {
         Ok(())
     }
 
+    /// Constant-time byte comparison preventing timing side-channel attacks on webhook secrets/signatures.
+    pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut diff = 0u8;
+        for (x, y) in a.iter().zip(b.iter()) {
+            diff |= x ^ y;
+        }
+        diff == 0
+    }
+
+    /// Freshness verification to prevent webhook replay attacks.
+    pub fn verify_webhook_timestamp(timestamp_epoch: i64, max_skew_secs: i64) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        if (now - timestamp_epoch).abs() > max_skew_secs {
+            return Err(format!(
+                "Webhook replay detected: timestamp skew of {}s exceeds allowed window of {}s",
+                (now - timestamp_epoch).abs(),
+                max_skew_secs
+            ));
+        }
+        Ok(())
+    }
+
     /// Authoritative delivery confirmation handler. Transitions a SUBMITTED or SUBMITTED_STALE record
     /// to DELIVERED when the provider sends a webhook or delivery acknowledgment receipt.
     pub fn confirm_provider_delivery(
@@ -759,10 +784,11 @@ impl OmnichannelDispatcher {
         expected_channel: Option<&str>,
         confirmed_at: &str,
     ) -> Result<bool, String> {
-        Self::confirm_provider_delivery_with_auth(
+        Self::confirm_provider_delivery_secure(
             conn,
             provider_msg_id,
             expected_channel,
+            None,
             None,
             confirmed_at,
         )
@@ -776,22 +802,87 @@ impl OmnichannelDispatcher {
         auth_token: Option<&str>,
         confirmed_at: &str,
     ) -> Result<bool, String> {
-        if let Some(token) = auth_token {
-            if token.trim().is_empty() {
+        Self::confirm_provider_delivery_secure(
+            conn,
+            provider_msg_id,
+            expected_channel,
+            auth_token,
+            None,
+            confirmed_at,
+        )
+    }
+
+    /// Authoritative delivery confirmation handler with constant-time authentication,
+    /// provider secret verification, and composite channel-scoped lookup.
+    pub fn confirm_provider_delivery_secure(
+        conn: &Connection,
+        provider_msg_id: &str,
+        expected_channel: Option<&str>,
+        provided_secret: Option<&str>,
+        expected_secret: Option<&str>,
+        confirmed_at: &str,
+    ) -> Result<bool, String> {
+        // 1. Authenticate webhook credentials if expected_secret is configured
+        if let Some(expected) = expected_secret {
+            match provided_secret {
+                Some(provided) => {
+                    if !Self::constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+                        return Err("Unauthorized webhook: invalid provider authentication secret or signature".to_string());
+                    }
+                }
+                None => {
+                    return Err("Unauthorized webhook: missing required authentication secret".to_string());
+                }
+            }
+        } else if let Some(provided) = provided_secret {
+            if provided.trim().is_empty() {
                 return Err("Webhook delivery confirmation failed: empty authentication token provided".to_string());
             }
         }
 
-        let record: Option<(i64, i32, String, String)> = conn
-            .query_row(
-                "SELECT id, lead_id, channel, status FROM outreach_history WHERE provider_message_id = ?1 LIMIT 1",
-                [provider_msg_id],
+        // 2. Resolve outreach record by provider_message_id and channel
+        let record: (i64, i32, String, String) = if let Some(channel) = expected_channel {
+            // Check exact channel match
+            if let Ok(rec) = conn.query_row(
+                "SELECT id, lead_id, channel, status FROM outreach_history WHERE provider_message_id = ?1 AND channel = ?2 LIMIT 1",
+                rusqlite::params![provider_msg_id, channel],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .ok();
+            ) {
+                rec
+            } else if let Ok(rec) = conn.query_row(
+                "SELECT id, lead_id, channel, status FROM outreach_history WHERE provider_message_id = ?1 AND channel = 'OMNICHANNEL' LIMIT 1",
+                rusqlite::params![provider_msg_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ) {
+                rec
+            } else {
+                // Check if the provider_message_id exists for a DIFFERENT channel to surface channel mismatch
+                if let Ok(actual_channel) = conn.query_row(
+                    "SELECT channel FROM outreach_history WHERE provider_message_id = ?1 LIMIT 1",
+                    rusqlite::params![provider_msg_id],
+                    |row| row.get::<_, String>(0),
+                ) {
+                    return Err(format!("Channel mismatch: expected {}, found {}", channel, actual_channel));
+                }
+                return Ok(false);
+            }
+        } else {
+            match conn.query_row(
+                "SELECT id, lead_id, channel, status FROM outreach_history WHERE provider_message_id = ?1 LIMIT 1",
+                rusqlite::params![provider_msg_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ) {
+                Ok(rec) => rec,
+                Err(_) => return Ok(false),
+            }
+        };
 
-        if let Some((outreach_id, lead_id, channel, status)) = record {
+        let (outreach_id, lead_id, channel, status) = record;
             if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
+                tracing::info!(
+                    "Idempotent duplicate webhook delivery confirmed for provider_message_id={}, outreach_id={}",
+                    provider_msg_id, outreach_id
+                );
                 return Ok(true); // Terminal idempotent state
             }
 
@@ -806,25 +897,22 @@ impl OmnichannelDispatcher {
                 return Err(format!("Invalid state transition from {} to DELIVERED for outreach {}", status, outreach_id));
             }
 
-            let channel_name = if !channel.is_empty() {
+            let channel_name = if !channel.is_empty() && !channel.eq_ignore_ascii_case("OMNICHANNEL") {
                 channel.as_str()
             } else {
                 expected_channel.unwrap_or("OMNICHANNEL")
             };
 
-            Self::confirm_outreach_delivery(
-                conn,
-                outreach_id,
-                lead_id,
-                channel_name,
-                "Outreach delivery confirmed by external provider",
-                confirmed_at,
-                provider_msg_id,
-            )?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        Self::confirm_outreach_delivery(
+            conn,
+            outreach_id,
+            lead_id,
+            channel_name,
+            "Outreach delivery confirmed by external provider",
+            confirmed_at,
+            provider_msg_id,
+        )?;
+        Ok(true)
     }
 
     /// Reconciles submissions that have been stuck in SUBMITTED state beyond a timeout threshold.
@@ -876,6 +964,14 @@ impl OmnichannelDispatcher {
             if affected > 0 {
                 reconciled_count += affected;
             }
+        }
+
+        if reconciled_count > 0 {
+            tracing::warn!(
+                reconciled_count,
+                timeout_seconds,
+                "Reconciled stuck omnichannel submissions into SUBMITTED_STALE state"
+            );
         }
 
         Ok(reconciled_count)

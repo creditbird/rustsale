@@ -1571,75 +1571,54 @@ fn test_concurrent_reconciliation_workers_and_late_webhook_race() {
 }
 
 #[test]
-fn test_provider_message_id_unique_index_and_legacy_disambiguation() {
+fn test_provider_message_id_composite_unique_index_and_cross_channel_isolation() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
         "CREATE TABLE outreach_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             lead_id INTEGER NOT NULL,
             template_id INTEGER NOT NULL,
+            channel TEXT NOT NULL,
             status TEXT NOT NULL,
             sent_at TEXT NOT NULL,
             session_imei TEXT NOT NULL,
             provider_message_id TEXT
         );
-        -- Insert legacy rows with some duplicates and some NULLs
-        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
-        VALUES (1, 1, 'SENT', '2026-01-01T00:00:00Z', 'IMEI_1', 'msg_dup_1');
-        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
-        VALUES (2, 1, 'SENT', '2026-01-01T00:00:00Z', 'IMEI_2', 'msg_dup_1');
-        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
-        VALUES (3, 1, 'FAILED', '2026-01-01T00:00:00Z', 'IMEI_3', NULL);
-        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
-        VALUES (4, 1, 'FAILED', '2026-01-01T00:00:00Z', 'IMEI_4', NULL);"
+        -- Create composite partial index scoped to (channel, provider_message_id)
+        CREATE UNIQUE INDEX idx_outreach_channel_provider_msg_id
+        ON outreach_history(channel, provider_message_id)
+        WHERE provider_message_id IS NOT NULL;
+        
+        -- Insert rows across different channels with the EXACT same provider message ID
+        INSERT INTO outreach_history (lead_id, template_id, channel, status, sent_at, session_imei, provider_message_id)
+        VALUES (1, 1, 'FACEBOOK', 'SENT', '2026-01-01T00:00:00Z', 'FB_PAGE_1', 'ext_msg_100');
+        INSERT INTO outreach_history (lead_id, template_id, channel, status, sent_at, session_imei, provider_message_id)
+        VALUES (2, 1, 'WHATSAPP', 'SENT', '2026-01-01T00:00:00Z', 'WPA_1', 'ext_msg_100');
+        
+        -- Multiple NULL provider IDs across channels are allowed
+        INSERT INTO outreach_history (lead_id, template_id, channel, status, sent_at, session_imei, provider_message_id)
+        VALUES (3, 1, 'EMAIL', 'FAILED', '2026-01-01T00:00:00Z', 'SMTP_1', NULL);
+        INSERT INTO outreach_history (lead_id, template_id, channel, status, sent_at, session_imei, provider_message_id)
+        VALUES (4, 1, 'EMAIL', 'FAILED', '2026-01-01T00:00:00Z', 'SMTP_1', NULL);"
     ).unwrap();
 
-    // Run migration disambiguation script
-    conn.execute(
-        "UPDATE outreach_history
-         SET provider_message_id = provider_message_id || ':legacy_dup:' || id
-         WHERE id IN (
-             SELECT o1.id FROM outreach_history o1
-             JOIN (
-                 SELECT provider_message_id, MIN(id) as min_id
-                 FROM outreach_history
-                 WHERE provider_message_id IS NOT NULL
-                 GROUP BY provider_message_id
-                 HAVING COUNT(*) > 1
-             ) dups ON o1.provider_message_id = dups.provider_message_id AND o1.id != dups.min_id
-         )",
-        [],
-    ).unwrap();
+    // Verify external IDs remain completely unmangled and distinct
+    let fb_msg: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 1", [], |r| r.get(0)).unwrap();
+    let wa_msg: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 2", [], |r| r.get(0)).unwrap();
+    assert_eq!(fb_msg, "ext_msg_100", "External IDs must never be mutated or rewritten");
+    assert_eq!(wa_msg, "ext_msg_100", "External IDs must never be mutated or rewritten");
 
-    // Create unique partial index
-    conn.execute(
-        "CREATE UNIQUE INDEX idx_outreach_provider_message_id
-         ON outreach_history(provider_message_id)
-         WHERE provider_message_id IS NOT NULL",
-        [],
-    ).unwrap();
-
-    // Verify disambiguated values
-    let p1: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 1", [], |r| r.get(0)).unwrap();
-    let p2: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 2", [], |r| r.get(0)).unwrap();
-    assert_eq!(p1, "msg_dup_1");
-    assert_eq!(p2, "msg_dup_1:legacy_dup:2");
-
-    // Multiple NULLs are allowed by partial index
-    let null_count: i64 = conn.query_row("SELECT COUNT(*) FROM outreach_history WHERE provider_message_id IS NULL", [], |r| r.get(0)).unwrap();
-    assert_eq!(null_count, 2);
-
-    // New duplicate non-null provider_message_id is rejected by database constraint
+    // Attempting duplicate within the SAME channel is rejected by database constraint
     let dup_insert = conn.execute(
-        "INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
-         VALUES (5, 1, 'SUBMITTED', '2026-09-05T00:00:00Z', 'IMEI_5', 'msg_dup_1')",
+        "INSERT INTO outreach_history (lead_id, template_id, channel, status, sent_at, session_imei, provider_message_id)
+         VALUES (5, 1, 'FACEBOOK', 'SUBMITTED', '2026-09-05T00:00:00Z', 'FB_PAGE_2', 'ext_msg_100')",
         [],
     );
-    assert!(dup_insert.is_err(), "Unique index must reject duplicate provider_message_id");
+    assert!(dup_insert.is_err(), "Composite index must reject duplicate provider_message_id within the same channel");
 }
 
 #[test]
-fn test_webhook_authentication_and_channel_mismatch_rejection() {
+fn test_webhook_authentication_replay_protection_and_secret_verification() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
         "CREATE TABLE outreach_history (
@@ -1652,8 +1631,12 @@ fn test_webhook_authentication_and_channel_mismatch_rejection() {
             sent_at TEXT NOT NULL,
             session_imei TEXT NOT NULL,
             idempotency_key TEXT UNIQUE,
-            provider_message_id TEXT UNIQUE
+            provider_message_id TEXT
         );
+        CREATE UNIQUE INDEX idx_outreach_channel_provider_msg_id
+        ON outreach_history(channel, provider_message_id)
+        WHERE provider_message_id IS NOT NULL;
+
         CREATE TABLE activities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             lead_id INTEGER NOT NULL,
@@ -1666,39 +1649,80 @@ fn test_webhook_authentication_and_channel_mismatch_rejection() {
         VALUES (1, 10, 'WHATSAPP', 'SUBMITTED', '2026-09-05T08:00:00Z', 'IMEI_1', 'wa_sec_test_001');"
     ).unwrap();
 
-    // 1. Empty auth token rejected
-    let empty_auth_res = OmnichannelDispatcher::confirm_provider_delivery_with_auth(
+    // 1. Replay attack verification: expired timestamp rejected, fresh timestamp accepted
+    let now = chrono::Utc::now().timestamp();
+    let expired_timestamp = now - 600; // 10 minutes ago (> 300s skew)
+    assert!(OmnichannelDispatcher::verify_webhook_timestamp(expired_timestamp, 300).is_err());
+    assert!(OmnichannelDispatcher::verify_webhook_timestamp(now - 15, 300).is_ok());
+
+    // 2. Empty or missing required secret rejected
+    let empty_secret_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
         &conn,
         "wa_sec_test_001",
         Some("WHATSAPP"),
         Some("   "),
+        Some("super-secret-token"),
         "2026-09-05T08:01:00Z",
     );
-    assert!(empty_auth_res.is_err(), "Empty webhook authentication token must be rejected");
+    assert!(empty_secret_res.is_err(), "Empty or mismatching secret must be rejected");
 
-    // 2. Mismatched channel rejected
-    let mismatch_channel_res = OmnichannelDispatcher::confirm_provider_delivery_with_auth(
+    let missing_secret_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
+        &conn,
+        "wa_sec_test_001",
+        Some("WHATSAPP"),
+        None,
+        Some("super-secret-token"),
+        "2026-09-05T08:01:00Z",
+    );
+    assert!(missing_secret_res.is_err(), "Missing secret must be rejected when expected_secret is set");
+
+    // 3. Wrong secret rejected via constant-time check
+    let wrong_secret_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
+        &conn,
+        "wa_sec_test_001",
+        Some("WHATSAPP"),
+        Some("wrong-secret-token"),
+        Some("super-secret-token"),
+        "2026-09-05T08:01:00Z",
+    );
+    assert!(wrong_secret_res.is_err(), "Wrong secret must be rejected");
+
+    // 4. Mismatched channel rejected
+    let mismatch_channel_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
         &conn,
         "wa_sec_test_001",
         Some("ZALO"),
-        Some("valid-webhook-secret-token"),
+        Some("super-secret-token"),
+        Some("super-secret-token"),
         "2026-09-05T08:01:00Z",
     );
     assert!(mismatch_channel_res.is_err(), "Mismatched channel callback must be rejected");
 
-    // 3. Matching channel and valid auth token succeeds
-    let valid_res = OmnichannelDispatcher::confirm_provider_delivery_with_auth(
+    // 5. Valid matching credentials succeed
+    let valid_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
         &conn,
         "wa_sec_test_001",
         Some("WHATSAPP"),
-        Some("valid-webhook-secret-token"),
+        Some("super-secret-token"),
+        Some("super-secret-token"),
         "2026-09-05T08:01:00Z",
     );
-    assert!(valid_res.unwrap(), "Matching channel and valid token must confirm delivery");
+    assert!(valid_res.unwrap(), "Matching channel and valid credentials must confirm delivery");
 
     // Verify status is DELIVERED
     let status: String = conn.query_row("SELECT status FROM outreach_history WHERE id = 1", [], |r| r.get(0)).unwrap();
     assert_eq!(status, "DELIVERED");
+
+    // 6. Duplicate webhook delivery remains idempotent
+    let dup_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
+        &conn,
+        "wa_sec_test_001",
+        Some("WHATSAPP"),
+        Some("super-secret-token"),
+        Some("super-secret-token"),
+        "2026-09-05T08:02:00Z",
+    );
+    assert!(dup_res.unwrap(), "Duplicate webhook confirmation must return Ok(true) idempotently");
 }
 
 #[tokio::test]

@@ -1,16 +1,28 @@
 use rusqlite::{Connection, Result};
 use std::time::Duration;
 
+fn is_safe_identifier(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Idempotent migration helper that checks SQLite PRAGMA table_info before altering the table.
-/// Operates on the active connection or transaction (&conn / &tx). If the column already exists,
-/// it safely no-ops. If column addition fails, the returned Result propagates via `?` to allow
-/// clean rollback of the enclosing transaction.
+/// Operates on the active connection or transaction (&conn / &tx). Validates table and column
+/// identifiers to prevent SQL injection. If the column already exists, it safely no-ops.
+/// If column addition fails, the returned Result propagates via `?` to allow clean rollback
+/// of the enclosing transaction.
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
     col_name: &str,
     col_def: &str,
 ) -> Result<()> {
+    if !is_safe_identifier(table) || !is_safe_identifier(col_name) {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "Unsafe SQL identifier in migration: table={}, column={}",
+            table, col_name
+        )));
+    }
+
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
     let mut rows = stmt.query([])?;
     let mut exists = false;
@@ -289,25 +301,12 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
-        // Ensure legacy duplicate provider_message_ids (if any) are disambiguated before creating unique partial index
+        // Scoped composite unique index on (channel, provider_message_id) preserves
+        // externally issued identifiers intact without mutating historical values.
+        tx.execute("DROP INDEX IF EXISTS idx_outreach_provider_message_id", [])?;
         tx.execute(
-            "UPDATE outreach_history
-             SET provider_message_id = provider_message_id || ':legacy_dup:' || id
-             WHERE id IN (
-                 SELECT o1.id FROM outreach_history o1
-                 JOIN (
-                     SELECT provider_message_id, MIN(id) as min_id
-                     FROM outreach_history
-                     WHERE provider_message_id IS NOT NULL
-                     GROUP BY provider_message_id
-                     HAVING COUNT(*) > 1
-                 ) dups ON o1.provider_message_id = dups.provider_message_id AND o1.id != dups.min_id
-             )",
-            [],
-        )?;
-        tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_provider_message_id
-             ON outreach_history(provider_message_id)
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_channel_provider_msg_id
+             ON outreach_history(channel, provider_message_id)
              WHERE provider_message_id IS NOT NULL",
             [],
         )?;
