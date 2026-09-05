@@ -72,6 +72,17 @@ pub trait ChannelDeliveryProvider: Send + Sync {
     ) -> Result<ProviderDeliveryResponse, String>;
 }
 
+/// Pluggable channel delivery provider for external omnichannel communications.
+///
+/// In production deployments, real transport adapters (e.g. SMTP with lettre,
+/// Zalo OA API, WhatsApp Cloud API, Meta Messenger API) are injected via dependency injection
+/// into the campaign dispatcher or configured per account.
+///
+/// `SimulatedChannelDeliveryProvider` (aliased as `DefaultChannelDeliveryProvider`) provides
+/// deterministic offline sandbox delivery emulation where outbound messages are acknowledged
+/// as `SUBMITTED` with cryptographic correlation receipts without triggering external network billing.
+pub type SimulatedChannelDeliveryProvider = DefaultChannelDeliveryProvider;
+
 #[derive(Clone)]
 pub struct DefaultChannelDeliveryProvider {
     pub http_client: reqwest::Client,
@@ -91,6 +102,10 @@ impl Default for DefaultChannelDeliveryProvider {
 }
 
 impl DefaultChannelDeliveryProvider {
+    pub fn simulated() -> Self {
+        Self::default()
+    }
+
     pub fn with_status(status: DeliveryStatus) -> Self {
         Self {
             simulated_status: status,
@@ -651,13 +666,17 @@ impl OmnichannelDispatcher {
         conn.execute("SAVEPOINT delivery_confirm_tx", []).map_err(|e| e.to_string())?;
 
         let res: Result<(), String> = (|| {
-            conn.execute(
+            let updated = conn.execute(
                 "UPDATE outreach_history
                  SET status = 'DELIVERED', provider_message_id = ?1, error_message = NULL
-                 WHERE id = ?2",
+                 WHERE id = ?2 AND status IN ('SUBMITTED', 'SUBMITTED_STALE', 'DELIVERED')",
                 rusqlite::params![provider_msg_id, outreach_id],
             )
             .map_err(|e| e.to_string())?;
+
+            if updated == 0 {
+                return Err(format!("Cannot transition outreach {} to DELIVERED: current status does not permit delivery confirmation", outreach_id));
+            }
 
             let activity_content = format!(
                 "[{}] {} (Provider Message ID: {})",
@@ -692,21 +711,27 @@ impl OmnichannelDispatcher {
         outreach_id: i64,
         error_message: &str,
     ) -> Result<(), String> {
-        conn.execute(
+        let updated = conn.execute(
             "UPDATE outreach_history
              SET status = 'FAILED', error_message = ?1
-             WHERE id = ?2",
+             WHERE id = ?2 AND status != 'DELIVERED'",
             rusqlite::params![error_message, outreach_id],
         )
         .map_err(|e| format!("Failed to update outreach history to FAILED: {}", e))?;
+
+        if updated == 0 {
+            // Already delivered terminal record; cannot be demoted backwards
+            return Ok(());
+        }
         Ok(())
     }
 
-    /// Authoritative delivery confirmation handler. Transitions a SUBMITTED record
+    /// Authoritative delivery confirmation handler. Transitions a SUBMITTED or SUBMITTED_STALE record
     /// to DELIVERED when the provider sends a webhook or delivery acknowledgment receipt.
     pub fn confirm_provider_delivery(
         conn: &Connection,
         provider_msg_id: &str,
+        expected_channel: Option<&str>,
         confirmed_at: &str,
     ) -> Result<bool, String> {
         let record: Option<(i64, i32, String, String)> = conn
@@ -719,14 +744,21 @@ impl OmnichannelDispatcher {
 
         if let Some((outreach_id, lead_id, _account, status)) = record {
             if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
-                return Ok(true);
+                return Ok(true); // Terminal idempotent state
             }
+
+            // Only allow transition from SUBMITTED or SUBMITTED_STALE
+            if status != "SUBMITTED" && status != "SUBMITTED_STALE" {
+                return Err(format!("Invalid state transition from {} to DELIVERED for outreach {}", status, outreach_id));
+            }
+
+            let channel_name = expected_channel.unwrap_or("OMNICHANNEL");
 
             Self::confirm_outreach_delivery(
                 conn,
                 outreach_id,
                 lead_id,
-                "OMNICHANNEL",
+                channel_name,
                 "Outreach delivery confirmed by external provider",
                 confirmed_at,
                 provider_msg_id,
@@ -738,7 +770,8 @@ impl OmnichannelDispatcher {
     }
 
     /// Reconciles submissions that have been stuck in SUBMITTED state beyond a timeout threshold.
-    /// Transitions them to FAILED so the scheduler can safely retry or log failures.
+    /// Transitions them to SUBMITTED_STALE to prevent automated duplicate retransmission while
+    /// preserving the ability to accept delayed provider webhooks.
     pub fn reconcile_stuck_submissions(
         conn: &Connection,
         timeout_seconds: u64,
@@ -765,11 +798,17 @@ impl OmnichannelDispatcher {
 
         let count = stuck_ids.len();
         for id in stuck_ids {
-            let _ = Self::mark_outreach_failed(
-                conn,
-                id,
-                &format!("Delivery confirmation timeout expired after {}s (Reconciled)", timeout_seconds),
-            );
+            conn.execute(
+                "UPDATE outreach_history
+                 SET status = 'SUBMITTED_STALE',
+                     error_message = ?1
+                 WHERE id = ?2 AND status = 'SUBMITTED'",
+                rusqlite::params![
+                    format!("Awaiting provider receipt beyond {}s (Marked SUBMITTED_STALE; automated resend held)", timeout_seconds),
+                    id
+                ],
+            )
+            .map_err(|e| format!("Failed to reconcile submission {}: {}", id, e))?;
         }
 
         Ok(count)

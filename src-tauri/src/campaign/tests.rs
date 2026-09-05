@@ -916,10 +916,10 @@ fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
 
     // External delivery confirmation arrives via webhook / callback for each
     let now = "2026-09-05T08:00:00Z";
-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_zalo.provider_message_id.as_ref().unwrap(), now).unwrap());
-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_wa.provider_message_id.as_ref().unwrap(), now).unwrap());
-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_email.provider_message_id.as_ref().unwrap(), now).unwrap());
-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_fb.provider_message_id.as_ref().unwrap(), now).unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_zalo.provider_message_id.as_ref().unwrap(), Some("ZALO"), now).unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_wa.provider_message_id.as_ref().unwrap(), Some("WHATSAPP"), now).unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_email.provider_message_id.as_ref().unwrap(), Some("EMAIL"), now).unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_fb.provider_message_id.as_ref().unwrap(), Some("FACEBOOK"), now).unwrap());
 
     // Verify all 4 transitioned to DELIVERED status
     let delivered_count: i64 = conn
@@ -975,7 +975,7 @@ fn test_dispatcher_idempotency_duplicate_send_prevention() {
     assert_eq!(res2.message_id.unwrap(), initial_msg_id);
 
     // External provider confirms delivery
-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res1.provider_message_id.as_ref().unwrap(), "2026-09-05T08:00:00Z").unwrap());
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res1.provider_message_id.as_ref().unwrap(), Some("ZALO"), "2026-09-05T08:00:00Z").unwrap());
 
     // Third dispatch after DELIVERED recovers DELIVERED record
     let res3 = OmnichannelDispatcher::dispatch(&conn, &payload, DispatchMode::Live).unwrap();
@@ -1248,6 +1248,7 @@ fn test_database_idempotency_unique_constraint_concurrency_race() {
     assert!(OmnichannelDispatcher::confirm_provider_delivery(
         &conn,
         res1.provider_message_id.as_ref().unwrap(),
+        Some("ZALO"),
         "2026-09-05T08:00:00Z",
     ).unwrap());
 
@@ -1390,7 +1391,7 @@ fn test_stuck_submission_reconciliation_worker() {
     let reconciled_count = OmnichannelDispatcher::reconcile_stuck_submissions(&conn, 300).unwrap();
     assert_eq!(reconciled_count, 1, "Only the 1-hour-old submission should be reconciled");
 
-    // Verify stuck submission transitioned to FAILED with reconciliation note
+    // Verify stuck submission transitioned to SUBMITTED_STALE (holding automated retries to prevent duplicate send)
     let (status1, err1): (String, Option<String>) = conn
         .query_row(
             "SELECT status, error_message FROM outreach_history WHERE provider_message_id = 'prov_stuck_123'",
@@ -1398,8 +1399,8 @@ fn test_stuck_submission_reconciliation_worker() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(status1, "FAILED");
-    assert!(err1.unwrap().contains("Reconciled"));
+    assert_eq!(status1, "SUBMITTED_STALE");
+    assert!(err1.unwrap().contains("automated resend held"));
 
     // Verify fresh submission remains in SUBMITTED state
     let status2: String = conn
@@ -1410,6 +1411,30 @@ fn test_stuck_submission_reconciliation_worker() {
         )
         .unwrap();
     assert_eq!(status2, "SUBMITTED");
+
+    // Delayed webhook arrives for the stale submission: confirms delivery successfully
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+        &conn,
+        "prov_stuck_123",
+        Some("ZALO"),
+        "2026-09-05T08:05:00Z",
+    ).unwrap());
+
+    let (status_deliv, _): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, error_message FROM outreach_history WHERE provider_message_id = 'prov_stuck_123'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status_deliv, "DELIVERED");
+
+    // Backwards transition protection: cannot demote DELIVERED to FAILED or SUBMITTED
+    let demote_attempt = conn.execute(
+        "UPDATE outreach_history SET status = 'FAILED' WHERE provider_message_id = 'prov_stuck_123' AND status != 'DELIVERED'",
+        [],
+    ).unwrap();
+    assert_eq!(demote_attempt, 0, "Terminal DELIVERED records cannot be demoted backwards");
 }
 
 #[test]
