@@ -23,6 +23,23 @@ mod tests {
         assert!(tables.contains(&"categories".to_string()));
         assert!(tables.contains(&"lead_categories".to_string()));
         assert!(tables.contains(&"outreach_history".to_string()));
+        assert!(tables.contains(&"campaigns".to_string()));
+        assert!(tables.contains(&"campaign_steps".to_string()));
+        assert!(tables.contains(&"campaign_executions".to_string()));
+        assert!(tables.contains(&"lead_journey_states".to_string()));
+        assert!(tables.contains(&"ai_evidence_logs".to_string()));
+        assert!(tables.contains(&"ai_action_proposals".to_string()));
+        assert!(tables.contains(&"template_folders".to_string()));
+        assert!(tables.contains(&"templates".to_string()));
+
+        let campaign_step_cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(campaign_steps)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(campaign_step_cols.contains(&"template_id".to_string()));
 
         let zalo_columns: Vec<String> = conn
             .prepare("PRAGMA table_info(zalo_sessions)")
@@ -1229,4 +1246,604 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn test_unified_campaign_and_steps_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // 1. Create campaign
+        let camp_id = db::create_campaign(
+            &conn,
+            "SaaS Summer Outreach",
+            Some("Multi-channel outreach to tech CEOs"),
+            "omnichannel",
+            "DRAFT",
+            Some(r#"{"status": "New", "has_zalo": 1}"#),
+            Some(r#"{"days": [1,2,3,4,5], "start_time": "09:00", "end_time": "17:00"}"#),
+        )
+        .expect("create_campaign failed");
+
+        assert!(camp_id > 0);
+
+        // 2. Read campaign
+        let camp = db::get_campaign(&conn, camp_id)
+            .expect("get_campaign failed")
+            .expect("campaign not found");
+        assert_eq!(camp.name, "SaaS Summer Outreach");
+        assert_eq!(camp.channel_type, "omnichannel");
+        assert_eq!(camp.status, "DRAFT");
+
+        // 3. Update campaign
+        db::update_campaign(
+            &conn,
+            camp_id,
+            "SaaS Summer Outreach v2",
+            Some("Updated description"),
+            "zalo",
+            "ACTIVE",
+            Some(r#"{"status": "Qualified"}"#),
+            None,
+        )
+        .expect("update_campaign failed");
+
+        let updated_camp = db::get_campaign(&conn, camp_id)
+            .expect("get_campaign failed")
+            .unwrap();
+        assert_eq!(updated_camp.name, "SaaS Summer Outreach v2");
+        assert_eq!(updated_camp.status, "ACTIVE");
+        assert_eq!(updated_camp.channel_type, "zalo");
+
+        // 4. Create campaign steps
+        let step1_id = db::create_campaign_step(
+            &conn,
+            camp_id,
+            1,
+            "zalo",
+            0,
+            "ALWAYS",
+            "Hello {name}, welcome to RustSale!",
+            Some("Keep it friendly and brief."),
+            None,
+        )
+        .expect("create step 1 failed");
+
+        let step2_id = db::create_campaign_step(
+            &conn,
+            camp_id,
+            2,
+            "whatsapp",
+            2880, // 2 days
+            "IF_NO_REPLY",
+            "Hi {name}, following up on our previous note.",
+            None,
+            None,
+        )
+        .expect("create step 2 failed");
+
+        let steps = db::get_campaign_steps(&conn, camp_id).expect("get_campaign_steps failed");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].id, Some(step1_id));
+        assert_eq!(steps[0].step_order, 1);
+        assert_eq!(steps[1].id, Some(step2_id));
+        assert_eq!(steps[1].step_order, 2);
+        assert_eq!(steps[1].delay_minutes, 2880);
+
+        // 5. Update step
+        db::update_campaign_step(
+            &conn,
+            step1_id,
+            1,
+            "zalo",
+            10,
+            "ALWAYS",
+            "Updated template for {name}",
+            None,
+            None,
+        )
+        .expect("update step 1 failed");
+
+        let step1 = db::get_campaign_step(&conn, step1_id)
+            .expect("get step 1 failed")
+            .unwrap();
+        assert_eq!(step1.template_content, "Updated template for {name}");
+        assert_eq!(step1.delay_minutes, 10);
+
+        // 6. Delete step & campaign cascade
+        db::delete_campaign_step(&conn, step2_id).expect("delete step 2 failed");
+        let steps_after_delete = db::get_campaign_steps(&conn, camp_id).unwrap();
+        assert_eq!(steps_after_delete.len(), 1);
+
+        db::delete_campaign(&conn, camp_id).expect("delete campaign failed");
+        assert!(db::get_campaign(&conn, camp_id).unwrap().is_none());
+        assert_eq!(db::get_campaign_steps(&conn, camp_id).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_campaign_executions_and_due_query() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // Insert lead
+        conn.execute(
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+             VALUES ('John Doe', 'TestCo', 'New', 1000.0, '2026-09-01T00:00:00Z', 'Alex', 'john@test.com', '0911223344')",
+            [],
+        )
+        .unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        let camp_id = db::create_campaign(
+            &conn,
+            "Follow-up Wave 1",
+            None,
+            "zalo",
+            "ACTIVE",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let step_id = db::create_campaign_step(
+            &conn,
+            camp_id,
+            1,
+            "zalo",
+            0,
+            "ALWAYS",
+            "Initial touchpoint",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Create executions: one past due, one in the future
+        let exec1_id = db::create_campaign_execution(
+            &conn,
+            camp_id,
+            step_id,
+            lead_id,
+            Some("0911223344"),
+            None,
+            "2026-09-01T10:00:00Z",
+        )
+        .expect("create exec1 failed");
+
+        let _exec2_id = db::create_campaign_execution(
+            &conn,
+            camp_id,
+            step_id,
+            lead_id,
+            Some("0911223344"),
+            None,
+            "2026-09-03T10:00:00Z",
+        )
+        .expect("create exec2 failed");
+
+        // Query due executions at 2026-09-02T00:00:00Z
+        let due = db::get_due_campaign_executions(&conn, "2026-09-02T00:00:00Z", 10)
+            .expect("get_due_campaign_executions failed");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, Some(exec1_id));
+
+        // Update status to EXECUTED
+        db::update_campaign_execution_status(
+            &conn,
+            exec1_id,
+            "COMPLETED",
+            None,
+            Some("2026-09-02T00:01:00Z"),
+        )
+        .expect("update status failed");
+
+        let due_after = db::get_due_campaign_executions(&conn, "2026-09-02T00:00:00Z", 10).unwrap();
+        assert_eq!(due_after.len(), 0);
+    }
+
+    #[test]
+    fn test_lead_journey_state_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        conn.execute(
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+             VALUES ('Jane Smith', 'Innovate', 'Discovery', 5000.0, '2026-09-01T00:00:00Z', 'Alex', 'jane@innovate.com', '0922334455')",
+            [],
+        )
+        .unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        // 1. Get or create initial state
+        let initial_state = db::get_or_create_lead_journey_state(&conn, lead_id)
+            .expect("get_or_create_lead_journey_state failed");
+        assert_eq!(initial_state.lead_id, lead_id);
+        assert_eq!(initial_state.current_stage, "DISCOVERY");
+        assert!(initial_state.active_campaign_id.is_none());
+
+        // Create campaign for valid foreign key reference
+        let camp_id = db::create_campaign(
+            &conn,
+            "Onboarding Wave",
+            None,
+            "omnichannel",
+            "ACTIVE",
+            None,
+            None,
+        )
+        .expect("create_campaign failed");
+
+        // 2. Update journey state
+        db::update_lead_journey_state(
+            &conn,
+            lead_id,
+            "QUALIFIED",
+            Some(camp_id),
+            Some("2026-09-02T08:00:00Z"),
+            Some("2026-09-02T08:30:00Z"),
+            Some("AskingPrice"),
+            Some(0.92),
+            Some("Customer expressed high buying intent"),
+        )
+        .expect("update_lead_journey_state failed");
+
+        let updated_state = db::get_lead_journey_state(&conn, lead_id)
+            .expect("get_lead_journey_state failed")
+            .unwrap();
+        assert_eq!(updated_state.current_stage, "QUALIFIED");
+        assert_eq!(updated_state.active_campaign_id, Some(camp_id));
+        assert_eq!(updated_state.ai_intent_tag.as_deref(), Some("AskingPrice"));
+        assert_eq!(updated_state.ai_qualification_score, Some(0.92));
+    }
+
+    #[test]
+    fn test_ai_evidence_logs_and_proposals_crud() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        conn.execute(
+            "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+             VALUES ('Mark Wood', 'TechCorp', 'New', 10000.0, '2026-09-01T00:00:00Z', 'Alex', 'mark@techcorp.com', '0933445566')",
+            [],
+        )
+        .unwrap();
+        let lead_id = conn.last_insert_rowid() as i32;
+
+        // 1. Insert AI evidence log
+        let log_id = db::insert_ai_evidence_log(
+            &conn,
+            Some(lead_id),
+            Some(1001),
+            "INTENT_CLASSIFICATION",
+            "PRICING_CATALOGUE",
+            r#"{"matched_plan": "Enterprise", "price_vnd": 45000000}"#,
+            0.98,
+            "OFFER_STANDARD_DISCOUNT",
+        )
+        .expect("insert_ai_evidence_log failed");
+        assert!(log_id > 0);
+
+        let logs = db::get_ai_evidence_logs_by_lead(&conn, lead_id)
+            .expect("get_ai_evidence_logs_by_lead failed");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].action_type, "INTENT_CLASSIFICATION");
+        assert_eq!(logs[0].confidence_score, 0.98);
+
+        // 2. Create AI action proposal
+        let prop_id = db::create_ai_action_proposal(
+            &conn,
+            Some(lead_id),
+            Some(1001),
+            "zalo",
+            "Gói Enterprise bên em có giá 45 triệu / năm với đầy đủ tính năng CRM & Outreach.",
+            "Customer asked for Enterprise pricing in message #1001",
+        )
+        .expect("create_ai_action_proposal failed");
+
+        let pending_props = db::get_ai_action_proposals(&conn, Some("PENDING"))
+            .expect("get_ai_action_proposals failed");
+        assert_eq!(pending_props.len(), 1);
+        assert_eq!(pending_props[0].id, Some(prop_id));
+        assert_eq!(pending_props[0].status, "PENDING");
+
+        // 3. Update proposal status
+        db::update_ai_action_proposal_status(&conn, prop_id, "APPROVED", Some("SalesManager"))
+            .expect("update_ai_action_proposal_status failed");
+
+        let prop = db::get_ai_action_proposal(&conn, prop_id)
+            .expect("get_ai_action_proposal failed")
+            .unwrap();
+        assert_eq!(prop.status, "APPROVED");
+        assert_eq!(prop.reviewed_by.as_deref(), Some("SalesManager"));
+        assert!(prop.reviewed_at.is_some());
+    }
+
+    #[test]
+    fn test_template_management_crud_and_filters() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // 1. Create Folders
+        let folder1_id = db::create_template_folder(&conn, "Giới thiệu sản phẩm", Some("#3B82F6"))
+            .expect("create folder 1 failed");
+        let folder2_id = db::create_template_folder(&conn, "Chăm sóc khách hàng", Some("#10B981"))
+            .expect("create folder 2 failed");
+        assert!(folder1_id > 0);
+        assert!(folder2_id > 0);
+
+        let folders = db::get_template_folders(&conn).expect("get_template_folders failed");
+        assert_eq!(folders.len(), 2);
+        assert!(folders.iter().any(|f| f.name == "Giới thiệu sản phẩm"));
+        assert!(folders.iter().any(|f| f.name == "Chăm sóc khách hàng"));
+
+        // 2. Create Templates
+        let t1_id = db::create_template(
+            &conn,
+            &crate::models::CreateTemplateInput {
+                folder_id: Some(folder1_id),
+                name: "Chào mừng khách hàng mới".to_string(),
+                channel: "zalo".to_string(),
+                stage: Some("DISCOVERY".to_string()),
+                subject: None,
+                content: "Xin chào {{name}}, cảm ơn bạn đã quan tâm đến RustSale!".to_string(),
+                media_url: Some("https://example.com/banner.png".to_string()),
+                ai_prompt: Some("Tùy biến xưng hô theo ngành nghề".to_string()),
+                tags_json: Some("[\"welcome\", \"zalo\"]".to_string()),
+            },
+        )
+        .expect("create template 1 failed");
+        assert!(t1_id > 0);
+
+        let t2_id = db::create_template(
+            &conn,
+            &crate::models::CreateTemplateInput {
+                folder_id: Some(folder2_id),
+                name: "Email báo giá chi tiết".to_string(),
+                channel: "email".to_string(),
+                stage: Some("PITCH".to_string()),
+                subject: Some("Báo giá giải pháp phần mềm RustSale".to_string()),
+                content: "Kính gửi {{name}}, em xin gửi bảng báo giá phần mềm.".to_string(),
+                media_url: None,
+                ai_prompt: None,
+                tags_json: Some("[\"quote\", \"pricing\"]".to_string()),
+            },
+        )
+        .expect("create template 2 failed");
+
+        let t3_id = db::create_template(
+            &conn,
+            &crate::models::CreateTemplateInput {
+                folder_id: None,
+                name: "WhatsApp nhắc lịch hẹn".to_string(),
+                channel: "whatsapp".to_string(),
+                stage: Some("QUALIFICATION".to_string()),
+                subject: None,
+                content: "Hi {{name}}, em nhắc lịch demo chiều nay lúc 14h nhé.".to_string(),
+                media_url: None,
+                ai_prompt: None,
+                tags_json: Some("[\"reminder\"]".to_string()),
+            },
+        )
+        .expect("create template 3 failed");
+
+        // 3. Get Template by ID
+        let t1 = db::get_template_by_id(&conn, t1_id)
+            .expect("get_template_by_id failed")
+            .unwrap();
+        assert_eq!(t1.name, "Chào mừng khách hàng mới");
+        assert_eq!(t1.channel, "zalo");
+        assert_eq!(t1.folder_id, Some(folder1_id));
+        assert_eq!(t1.usage_count, 0);
+        assert!(t1.last_used_at.is_none());
+
+        // 4. Update Template
+        db::update_template(
+            &conn,
+            &crate::models::UpdateTemplateInput {
+                id: t1_id,
+                folder_id: Some(folder1_id),
+                name: "Chào mừng khách hàng VIP".to_string(),
+                channel: "zalo".to_string(),
+                stage: Some("DISCOVERY".to_string()),
+                subject: None,
+                content: "Xin chào Quý khách {{name}}, chào mừng bạn đến với VIP RustSale!".to_string(),
+                media_url: Some("https://example.com/banner-vip.png".to_string()),
+                ai_prompt: Some("Thêm giọng điệu trang trọng".to_string()),
+                tags_json: Some("[\"welcome\", \"vip\"]".to_string()),
+            },
+        )
+        .expect("update_template failed");
+
+        let t1_updated = db::get_template_by_id(&conn, t1_id).unwrap().unwrap();
+        assert_eq!(t1_updated.name, "Chào mừng khách hàng VIP");
+        assert!(t1_updated.content.contains("VIP RustSale"));
+
+        // 5. Increment Usage
+        db::increment_template_usage(&conn, t1_id).expect("increment_template_usage failed");
+        let t1_used = db::get_template_by_id(&conn, t1_id).unwrap().unwrap();
+        assert_eq!(t1_used.usage_count, 1);
+        assert!(t1_used.last_used_at.is_some());
+
+        // 6. Test Filters
+        // Filter by channel = zalo
+        let zalo_templates = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                channel: Some("zalo".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(zalo_templates.len(), 1);
+        assert_eq!(zalo_templates[0].id, t1_id);
+
+        // Filter by channel = email
+        let email_templates = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                channel: Some("email".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(email_templates.len(), 1);
+        assert_eq!(email_templates[0].id, t2_id);
+
+        // Filter by folder_id
+        let folder2_templates = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                folder_id: Some(folder2_id),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(folder2_templates.len(), 1);
+        assert_eq!(folder2_templates[0].id, t2_id);
+
+        // Filter by unfiled (folder_id == -1)
+        let unfiled_templates = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                folder_id: Some(-1),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(unfiled_templates.len(), 1);
+        assert_eq!(unfiled_templates[0].id, t3_id);
+
+        // Filter by stage = PITCH
+        let pitch_templates = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                stage: Some("PITCH".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(pitch_templates.len(), 1);
+        assert_eq!(pitch_templates[0].id, t2_id);
+
+        // Filter by search_query
+        let search_templates = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                search_query: Some("lịch demo".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(search_templates.len(), 1);
+        assert_eq!(search_templates[0].id, t3_id);
+
+        // Filter by tag
+        let tag_templates = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                tag: Some("vip".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(tag_templates.len(), 1);
+        assert_eq!(tag_templates[0].id, t1_id);
+
+        // 7. Delete Folder (should unfile associated templates, not cascade delete them)
+        db::delete_template_folder(&conn, folder1_id).expect("delete_template_folder failed");
+        let t1_after_folder_del = db::get_template_by_id(&conn, t1_id).unwrap().unwrap();
+        assert_eq!(t1_after_folder_del.folder_id, None);
+
+        // 8. Delete Template
+        db::delete_template(&conn, t3_id).expect("delete_template failed");
+        let t3_deleted = db::get_template_by_id(&conn, t3_id).unwrap();
+        assert!(t3_deleted.is_none());
+    }
+
+    #[test]
+    fn test_template_migration_idempotency() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+
+        // Insert mock legacy outreach (Zalo) template and email template
+        conn.execute(
+            "INSERT INTO outreach_templates (name, content, image_url, created_at)
+             VALUES ('Mẫu Zalo Chào Khách', 'Chào bạn!', 'img1.png', '2026-09-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO email_templates (name, subject, content, created_at)
+             VALUES ('Mẫu Email Báo Giá', 'Báo giá tháng 9', 'Kính gửi...', '2026-09-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Run the idempotent migration queries (same as init_db)
+        conn.execute(
+            "INSERT INTO templates (
+                name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+            )
+            SELECT 
+                ot.name, 'zalo', NULL, NULL, ot.content, ot.image_url, NULL, '[\"zalo\"]', 0, NULL, ot.created_at, ot.created_at
+            FROM outreach_templates ot
+            WHERE NOT EXISTS (
+                SELECT 1 FROM templates t 
+                WHERE t.channel = 'zalo' AND t.name = ot.name AND t.content = ot.content
+            )",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO templates (
+                name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+            )
+            SELECT 
+                et.name, 'email', NULL, et.subject, et.content, NULL, NULL, '[\"email\"]', 0, NULL, et.created_at, et.created_at
+            FROM email_templates et
+            WHERE NOT EXISTS (
+                SELECT 1 FROM templates t 
+                WHERE t.channel = 'email' AND t.name = et.name AND t.content = et.content
+            )",
+            [],
+        )
+        .unwrap();
+
+        let templates_after_first = db::get_templates(&conn, None).unwrap();
+        assert_eq!(templates_after_first.len(), 2);
+        assert!(templates_after_first.iter().any(|t| t.channel == "zalo" && t.name == "Mẫu Zalo Chào Khách"));
+        assert!(templates_after_first.iter().any(|t| t.channel == "email" && t.name == "Mẫu Email Báo Giá"));
+
+        // Re-run the migration queries again to verify idempotency
+        conn.execute(
+            "INSERT INTO templates (
+                name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+            )
+            SELECT 
+                ot.name, 'zalo', NULL, NULL, ot.content, ot.image_url, NULL, '[\"zalo\"]', 0, NULL, ot.created_at, ot.created_at
+            FROM outreach_templates ot
+            WHERE NOT EXISTS (
+                SELECT 1 FROM templates t 
+                WHERE t.channel = 'zalo' AND t.name = ot.name AND t.content = ot.content
+            )",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO templates (
+                name, channel, stage, subject, content, media_url, ai_prompt, tags_json, usage_count, last_used_at, created_at, updated_at
+            )
+            SELECT 
+                et.name, 'email', NULL, et.subject, et.content, NULL, NULL, '[\"email\"]', 0, NULL, et.created_at, et.created_at
+            FROM email_templates et
+            WHERE NOT EXISTS (
+                SELECT 1 FROM templates t 
+                WHERE t.channel = 'email' AND t.name = et.name AND t.content = et.content
+            )",
+            [],
+        )
+        .unwrap();
+
+        let templates_after_second = db::get_templates(&conn, None).unwrap();
+        // Count must still be exactly 2
+        assert_eq!(templates_after_second.len(), 2);
+    }
 }
+
+

@@ -222,3 +222,157 @@ pub struct EmailOutreachCompletePayload {
     pub total_sent: i32,
     pub message: String,
 }
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Campaign {
+    pub id: Option<i64>,
+    pub name: String,
+    pub description: Option<String>,
+    pub channel_type: String,
+    pub status: String,
+    pub audience_filter_json: Option<String>,
+    pub schedule_config_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct CampaignStep {
+    pub id: Option<i64>,
+    pub campaign_id: i64,
+    pub step_order: i32,
+    pub channel: String,
+    pub delay_minutes: i32,
+    pub condition_type: String,
+    pub template_content: String,
+    pub ai_prompt_override: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub template_id: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct CampaignExecution {
+    pub id: Option<i64>,
+    pub campaign_id: i64,
+    pub step_id: i64,
+    pub lead_id: i32,
+    pub target_phone: Option<String>,
+    pub target_account_id: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub scheduled_at: String,
+    pub executed_at: Option<String>,
+    pub created_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LeadJourneyState {
+    pub id: Option<i64>,
+    pub lead_id: i32,
+    pub current_stage: String,
+    pub active_campaign_id: Option<i64>,
+    pub last_inbound_at: Option<String>,
+    pub last_outbound_at: Option<String>,
+    pub ai_intent_tag: Option<String>,
+    pub ai_qualification_score: Option<f64>,
+    pub notes: Option<String>,
+    pub updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AiEvidenceLog {
+    pub id: Option<i64>,
+    pub lead_id: Option<i32>,
+    pub conversation_id: Option<i64>,
+    pub action_type: String,
+    pub evidence_source: String,
+    pub evidence_data_json: String,
+    pub confidence_score: f64,
+    pub decision: String,
+    pub created_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AiActionProposal {
+    pub id: Option<i64>,
+    pub lead_id: Option<i32>,
+    pub conversation_id: Option<i64>,
+    pub platform: String,
+    pub proposed_content: String,
+    pub reasoning: String,
+    pub status: String,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TemplateFolderRecord {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TemplateRecord {
+    pub id: i64,
+    pub folder_id: Option<i64>,
+    pub name: String,
+    pub channel: String,
+    pub stage: Option<String>,
+    pub subject: Option<String>,
+    pub content: String,
+    pub media_url: Option<String>,
+    pub ai_prompt: Option<String>,
+    pub tags_json: Option<String>,
+    pub usage_count: i64,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateTemplateInput {
+    pub folder_id: Option<i64>,
+    pub name: String,
+    pub channel: String,
+    pub stage: Option<String>,
+    pub subject: Option<String>,
+    pub content: String,
+    pub media_url: Option<String>,
+    pub ai_prompt: Option<String>,
+    pub tags_json: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UpdateTemplateInput {
+    pub id: i64,
+    pub folder_id: Option<i64>,
+    pub name: String,
+    pub channel: String,
+    pub stage: Option<String>,
+    pub subject: Option<String>,
+    pub content: String,
+    pub media_url: Option<String>,
+    pub ai_prompt: Option<String>,
+    pub tags_json: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct TemplateFilter {
+    pub channel: Option<String>,
+    pub folder_id: Option<i64>,
+    pub stage: Option<String>,
+    pub search_query: Option<String>,
+    pub tag: Option<String>,
+}
+

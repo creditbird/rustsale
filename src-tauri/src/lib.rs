@@ -4,6 +4,8 @@
 use tauri::Manager;
 
 pub mod administrative_catalog;
+pub mod ai;
+pub mod campaign;
 mod commands;
 #[cfg(test)]
 mod commands_test;
@@ -11,6 +13,7 @@ pub mod conversation;
 mod db;
 #[cfg(test)]
 mod db_test;
+pub mod events;
 pub mod facebook;
 pub mod google_maps_jobs;
 mod models;
@@ -494,6 +497,15 @@ pub fn run() {
             commands::create_email_template,
             commands::update_email_template,
             commands::delete_email_template,
+            commands::get_templates,
+            commands::get_template_by_id,
+            commands::create_template,
+            commands::update_template,
+            commands::delete_template,
+            commands::get_template_folders,
+            commands::create_template_folder,
+            commands::delete_template_folder,
+            commands::increment_template_usage,
             commands::send_email_outreach,
             conversation::commands::list_conversation_inbox,
             conversation::commands::mark_conversation_read,
@@ -573,7 +585,19 @@ pub fn run() {
             notification::get_notification_settings,
             notification::update_notification_settings,
             notification::set_active_conversation_focus,
-            notification::test_desktop_notification
+            notification::test_desktop_notification,
+            ai::commands::classify_customer_intent,
+            ai::commands::generate_smart_reply_suggestions,
+            ai::commands::get_pending_ai_proposals,
+            ai::commands::review_ai_proposal,
+            ai::commands::get_lead_evidence_context,
+            campaign::commands::start_unified_campaign,
+            campaign::commands::pause_unified_campaign,
+            campaign::commands::enroll_leads_into_campaign,
+            campaign::commands::get_unified_campaign_analytics,
+            campaign::commands::get_all_unified_campaigns,
+            campaign::commands::save_unified_campaign,
+            campaign::commands::delete_unified_campaign
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

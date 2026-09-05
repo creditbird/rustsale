@@ -8102,3 +8102,108 @@ pub async fn save_image_file<R: tauri::Runtime>(
     })
     .await
 }
+
+// ============================================================================
+// Unified Template Management Center Commands (P1-C)
+// ============================================================================
+
+#[tauri::command]
+pub fn get_templates(
+    filter: Option<crate::models::TemplateFilter>,
+    state: tauri::State<DbState>,
+) -> Result<Vec<crate::models::TemplateRecord>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_templates(&conn, filter.as_ref()).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn get_template_by_id(
+    id: i64,
+    state: tauri::State<DbState>,
+) -> Result<Option<crate::models::TemplateRecord>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_template_by_id(&conn, id).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn create_template(
+    input: crate::models::CreateTemplateInput,
+    state: tauri::State<DbState>,
+) -> Result<i64, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::create_template(&conn, &input).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn update_template(
+    input: crate::models::UpdateTemplateInput,
+    state: tauri::State<DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::update_template(&conn, &input).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_template(id: i64, state: tauri::State<DbState>) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::delete_template(&conn, id).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn get_template_folders(
+    state: tauri::State<DbState>,
+) -> Result<Vec<crate::models::TemplateFolderRecord>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::get_template_folders(&conn).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn create_template_folder(
+    name: String,
+    color: Option<String>,
+    state: tauri::State<DbState>,
+) -> Result<i64, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::create_template_folder(&conn, &name, color.as_deref())
+        .map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn delete_template_folder(id: i64, state: tauri::State<DbState>) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::delete_template_folder(&conn, id).map_err(|e| format!("Database error: {}", e))
+}
+
+#[tauri::command]
+pub fn increment_template_usage(id: i64, state: tauri::State<DbState>) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::db::increment_template_usage(&conn, id).map_err(|e| format!("Database error: {}", e))
+}
+

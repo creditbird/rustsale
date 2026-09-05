@@ -52,6 +52,7 @@
   import LinkedLeadActions from './LinkedLeadActions.svelte';
   import ConversationTimeline from './ConversationTimeline.svelte';
   import MessageComposer from './MessageComposer.svelte';
+  import AICopilotBar from './AICopilotBar.svelte';
   import Facebook24hPolicyBanner from './Facebook24hPolicyBanner.svelte';
   import type { InboxReplyTarget } from '$lib/services/conversationService';
   import { evaluateFacebookWindow } from './facebookPolicyGate';
@@ -105,6 +106,7 @@
   let createLeadName = $state('');
   let createLeadPhoneOrUid = $state('');
   let createLeadIdentityId = $state<number | null>(null);
+  let composerRef = $state<{ insertDraftText: (draft: string) => void; sendDraftText: (draft: string) => Promise<void> } | null>(null);
 
   function normalizedDisplayName(value?: string | null): string {
     return value?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
@@ -2222,8 +2224,20 @@
         </div>
       {/if}
 
+      <!-- AI Copilot Toolbar -->
+      {#if selectedItem}
+        <AICopilotBar
+          leadId={selectedItem.leadId ?? null}
+          conversationId={selectedItem.conversationId ?? null}
+          lastMessageText={selectedItem.lastMessagePreview ?? ''}
+          onInsertDraft={(draft) => composerRef?.insertDraftText(draft)}
+          onSendDraft={(draft) => composerRef?.sendDraftText(draft)}
+        />
+      {/if}
+
       <!-- Message Composer -->
       <MessageComposer
+        bind:this={composerRef}
         item={selectedItem}
         runtime={runtime}
         disabled={false}
