@@ -49,7 +49,7 @@ mock.module('$lib/services/desktopNotificationService', () => ({
   }
 }));
 
-describe('NotificationSettings component (E4 Runtime Multi-Language Verification)', () => {
+describe('NotificationSettings component (E2 Component Mock Verification)', () => {
   beforeEach(() => {
     cleanup();
     mockNotificationSettings = {
@@ -71,7 +71,7 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     cleanup();
   });
 
-  test('E4-vi: renders fully localized Vietnamese UI elements and badges', async () => {
+  test('E2-vi: renders fully localized Vietnamese UI elements and badges', async () => {
     setLocale('vi');
     render(NotificationSettings);
 
@@ -91,7 +91,7 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     expect(testNotificationCalled).toBe(true);
   });
 
-  test('E4-en: renders fully localized English UI elements and badges', async () => {
+  test('E2-en: renders fully localized English UI elements and badges', async () => {
     setLocale('en');
     render(NotificationSettings);
 
@@ -111,7 +111,7 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     expect(testNotificationCalled).toBe(true);
   });
 
-  test('E4-dnd: renders DND active alert with localized disable button when DND is on', async () => {
+  test('E2-dnd: renders DND active alert with localized disable button when DND is on', async () => {
     mockTrayState.dnd_enabled = true;
     setLocale('vi');
     render(NotificationSettings);
@@ -124,23 +124,47 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     expect(mockTrayState.dnd_enabled).toBe(false);
   });
 
-  test('E4-toggle: toggling settings updates state and invokes backend commands', async () => {
+  test('E2-toggle: toggling all 6 settings switches updates state and invokes backend commands', async () => {
     setLocale('vi');
     render(NotificationSettings);
 
     const switches = await screen.findAllByRole('switch');
     expect(switches.length).toBe(6);
 
-    // Toggle Desktop Notifications (first switch)
+    // 0. Toggle Desktop Notifications
     await fireEvent.click(switches[0]);
     expect(mockNotificationSettings.enabled).toBe(false);
 
-    // Toggle Close to Tray (second switch)
+    // 1. Toggle Close to Tray
     await fireEvent.click(switches[1]);
     expect(mockTrayState.close_to_tray).toBe(false);
 
-    // Toggle Launch at System Startup (third switch)
+    // 2. Toggle Launch at System Startup
     await fireEvent.click(switches[2]);
     expect(mockAutostartEnabled).toBe(true);
+
+    // 3. Toggle Notification Sound
+    await fireEvent.click(switches[3]);
+    expect(mockNotificationSettings.sound_enabled).toBe(false);
+
+    // 4. Toggle Privacy Mode
+    await fireEvent.click(switches[4]);
+    expect(mockNotificationSettings.privacy_mode).toBe(true);
+
+    // 5. Toggle Mute Group Chats
+    await fireEvent.click(switches[5]);
+    expect(mockNotificationSettings.mute_groups).toBe(true);
+  });
+
+  test('E2-rollback: reverts autostart switch when backend call fails', async () => {
+    setLocale('vi');
+    render(NotificationSettings);
+
+    const switches = await screen.findAllByRole('switch');
+    shouldRejectUpdate = true;
+
+    // Toggle Autostart (switch 2) when backend rejects
+    await fireEvent.click(switches[2]);
+    expect(mockAutostartEnabled).toBe(false);
   });
 });

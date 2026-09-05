@@ -57,11 +57,12 @@ Out of scope:
 |------|---------------|----------------|--------|--------------------|----------|--------------------|
 | Backend crate `tauri-plugin-autostart` | Added in `src-tauri/Cargo.toml` | Added with version `2` | `correct` | 1 related file | `E1-P1A-DEPS` | preserve |
 | Frontend dependency `@tauri-apps/plugin-autostart` | Installed in `package.json` | Installed with version `^2` via bun | `correct` | 1 related file | `E1-P1A-DEPS` | preserve |
-| Tauri capability permissions | Contains core, opener, dialog, updater, process, notification, shell:allow-spawn, autostart:default | Included `"autostart:default"` | `correct` | 1 related file | `E1-P1B-BACKEND` | preserve |
-| Rust lib plugin registration & startup arg | Registered autostart plugin with `LaunchAgent` & `Some(vec!["--autostart"])`; hides window if `--autostart` present | Registered plugin and startup handler | `correct` | 42 related files | `E1-P1B-BACKEND` | preserve |
+| Tauri capability permissions | Contains core, opener, dialog, updater, process, notification, shell:allow-spawn, autostart:default | Included `"autostart:default"` at line 13 | `correct` | 1 related file | `E1-P1B-BACKEND` | preserve |
+| Rust lib plugin registration & startup arg | Registered autostart plugin with `LaunchAgent` & `Some(vec!["--autostart"])`; safe `determine_autostart_action` with fallback to visible window on tray failure | Registered plugin, safe startup handler, and unit tests | `correct` | 42 related files | `E1-P1B-FAILCLOSED` | preserve |
 | Autostart frontend service | Created `src/lib/services/autostartService.ts` | `src/lib/services/autostartService.ts` exports `isAutostartEnabled` and `setAutostart` with error safety | `correct` | 0 related files | `E2-P2A-SERVICE` | preserve |
 | Localization strings | Added autostart keys in `messages/vi.json` and `messages/en.json` | Vietnamese & English keys for label, description, status, and error | `correct` | 2 related files | `E2-P2A-SERVICE` | preserve |
-| Settings UI toggle | Added Autostart toggle row with dynamic badge, active state sync, and error toast | Includes Autostart toggle row with dynamic badge, active state sync, and error toast | `correct` | 8 related files | `E2-P2B-UI` | preserve |
+| Settings UI toggle | Added Autostart toggle row with dynamic badge, active state sync, error rollback, and 6-switch test | Includes Autostart toggle row with dynamic badge, active state sync, and error toast | `correct` | 8 related files | `E2-P2B-REMEDIATION` | preserve |
+| Tauri CSP configuration | Strict production CSP and devCsp configured in `src-tauri/tauri.conf.json` | Strict CSP policy defined without null | `correct` | 1 related file | `E1-P1B-CSP` | preserve |
 
 ## Status Refresh Log
 
@@ -71,7 +72,8 @@ Out of scope:
 | R1 | 2026-09-05 | after P1-A deps add | `package.json`, `Cargo.toml` | deps: `missing -> correct` | `E1-P1A-DEPS` | proceed to P1-B |
 | R2 | 2026-09-05 | after P1-B backend register | `default.json`, `lib.rs` | backend & capability: `missing -> correct` | `E1-P1B-BACKEND` | proceed to P2-A |
 | R3 | 2026-09-05 | after P2-A service & i18n | `autostartService.ts`, `messages/*.json` | service & i18n: `missing -> correct` | `E2-P2A-SERVICE` | proceed to P2-B |
-| R4 | 2026-09-05 | after P2-B UI & P3-A verify | `NotificationSettings.svelte`, tests | UI & tests: `missing -> correct` | `E2-P2B-UI`, `E3-P3A-VERIFY` | all units complete |
+| R4 | 2026-09-05 | after P2-B UI & P3-A verify | `NotificationSettings.svelte`, tests | UI & tests: `missing -> correct` | `E2-P2B-UI`, `E3-P3A-VERIFY` | initial commit b1e5c5d |
+| R5 | 2026-09-05 | post-review remediation | `lib.rs`, `tauri.conf.json`, `NotificationSettings.spec.ts`, `native_autostart_linux_test.rs` | fail-closed tray boot, strict CSP, all 6 switches exercised, native Linux E4 test | `E1-P1B-FAILCLOSED`, `E1-P1B-CSP`, `E2-P2B-REMEDIATION`, `E4-P3A-LINUX` | resubmission ready |
 
 ## Phase Touch Map
 
