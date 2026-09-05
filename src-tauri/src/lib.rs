@@ -103,10 +103,19 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .manage(tray_state)
         .manage(notification_manager.clone())
         .setup(move |app| {
             let _ = tray::init_tray(app.handle());
+            if std::env::args().any(|arg| arg == "--autostart") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
             let app_data_dir = app
                 .path()
                 .app_data_dir()

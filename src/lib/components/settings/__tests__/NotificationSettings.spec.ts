@@ -16,8 +16,17 @@ let mockTrayState = {
   dnd_enabled: false
 };
 
+let mockAutostartEnabled = false;
 let shouldRejectUpdate = false;
 let testNotificationCalled = false;
+
+mock.module('$lib/services/autostartService', () => ({
+  isAutostartEnabled: async () => mockAutostartEnabled,
+  setAutostart: async (val: boolean) => {
+    if (shouldRejectUpdate) throw new Error('Autostart update failed');
+    mockAutostartEnabled = val;
+  }
+}));
 
 mock.module('$lib/services/desktopNotificationService', () => ({
   getNotificationSettings: async () => ({ ...mockNotificationSettings }),
@@ -53,6 +62,7 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
       close_to_tray: true,
       dnd_enabled: false
     };
+    mockAutostartEnabled = false;
     shouldRejectUpdate = false;
     testNotificationCalled = false;
   });
@@ -68,6 +78,7 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     expect(await screen.findByText('Thông báo & Khay hệ thống')).toBeTruthy();
     expect(await screen.findByText('Bật thông báo trên màn hình (Desktop Notifications)')).toBeTruthy();
     expect(await screen.findByText('Thu nhỏ xuống khay hệ thống khi đóng (Close to Tray)')).toBeTruthy();
+    expect(await screen.findByText('Khởi động cùng hệ thống (Launch at Startup)')).toBeTruthy();
     expect(await screen.findByText('Chế độ riêng tư (Privacy Mode)')).toBeTruthy();
     expect(await screen.findByText('Âm thanh thông báo (Sound Chime)')).toBeTruthy();
     expect(await screen.findByText('Tắt thông báo nhóm chat')).toBeTruthy();
@@ -87,6 +98,7 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     expect(await screen.findByText('Notifications & System Tray')).toBeTruthy();
     expect(await screen.findByText('Enable Desktop Notifications')).toBeTruthy();
     expect(await screen.findByText('Minimize to System Tray on Close')).toBeTruthy();
+    expect(await screen.findByText('Launch at System Startup')).toBeTruthy();
     expect(await screen.findByText('Privacy Mode')).toBeTruthy();
     expect(await screen.findByText('Notification Sound (Chime)')).toBeTruthy();
     expect(await screen.findByText('Mute Group Chats')).toBeTruthy();
@@ -117,7 +129,7 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     render(NotificationSettings);
 
     const switches = await screen.findAllByRole('switch');
-    expect(switches.length).toBe(5);
+    expect(switches.length).toBe(6);
 
     // Toggle Desktop Notifications (first switch)
     await fireEvent.click(switches[0]);
@@ -126,5 +138,9 @@ describe('NotificationSettings component (E4 Runtime Multi-Language Verification
     // Toggle Close to Tray (second switch)
     await fireEvent.click(switches[1]);
     expect(mockTrayState.close_to_tray).toBe(false);
+
+    // Toggle Launch at System Startup (third switch)
+    await fireEvent.click(switches[2]);
+    expect(mockAutostartEnabled).toBe(true);
   });
 });
