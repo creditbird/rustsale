@@ -86,25 +86,34 @@ impl CampaignScheduler {
                 continue;
             }
 
-            // 2. Load step definition
+            // 2. Atomic claim: transition PENDING -> RUNNING to eliminate concurrency races
+            let claimed = crate::db::claim_campaign_execution(conn, exec_id, &now_iso)
+                .map_err(|e| format!("DB error claiming execution {}: {}", exec_id, e))?;
+
+            if !claimed {
+                // Already claimed or executed by another concurrent worker instance
+                continue;
+            }
+
+            // 3. Load step definition
             let step = match crate::db::get_campaign_step(conn, execution.step_id)
                 .map_err(|e| format!("DB error loading step: {}", e))?
             {
                 Some(s) => s,
                 None => {
-                    let _ = crate::db::update_campaign_execution_status(
+                    crate::db::update_campaign_execution_status(
                         conn,
                         exec_id,
                         "FAILED",
                         Some("Campaign step definition not found"),
                         Some(&now_iso),
-                    );
+                    ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
                     summary.failed_count += 1;
                     continue;
                 }
             };
 
-            // 3. Evaluate step condition
+            // 4. Evaluate step condition
             let condition_result = StepConditionEvaluator::evaluate(
                 conn,
                 &step,
@@ -114,18 +123,18 @@ impl CampaignScheduler {
 
             match condition_result {
                 ConditionResult::Skip { reason } => {
-                    let _ = crate::db::update_campaign_execution_status(
+                    crate::db::update_campaign_execution_status(
                         conn,
                         exec_id,
                         "SKIPPED",
                         Some(&reason),
                         Some(&now_iso),
-                    );
+                    ).map_err(|e| format!("DB error updating execution to SKIPPED: {}", e))?;
                     summary.skipped_count += 1;
                     continue;
                 }
                 ConditionResult::Execute => {
-                    // 4. Select account and check anti-ban throttling
+                    // 5. Select account and check anti-ban throttling
                     let account = self
                         .rotator
                         .next_account(&step.channel, &self.throttler)
@@ -139,12 +148,20 @@ impl CampaignScheduler {
                                 error = %throttle_err,
                                 "Account throttled; delaying execution"
                             );
+                            // Release claim back to PENDING so it can be retried when rate limit lifts
+                            crate::db::update_campaign_execution_status(
+                                conn,
+                                exec_id,
+                                "PENDING",
+                                Some("Throttled; waiting for rate limit"),
+                                None,
+                            ).map_err(|e| format!("DB error resetting throttled execution: {}", e))?;
                             summary.throttled_count += 1;
                             continue;
                         }
                     }
 
-                    // 5. Dispatch message
+                    // 6. Dispatch message
                     let payload = DispatchPayload {
                         campaign_id: execution.campaign_id,
                         step_id: step.id.unwrap_or(0),
@@ -159,20 +176,20 @@ impl CampaignScheduler {
                     match OmnichannelDispatcher::dispatch(conn, &payload, mode) {
                         Ok(dispatch_res) => {
                             if dispatch_res.success {
-                                let _ = crate::db::update_campaign_execution_status(
+                                crate::db::update_campaign_execution_status(
                                     conn,
                                     exec_id,
                                     "SENT",
                                     None,
                                     Some(&now_iso),
-                                );
+                                ).map_err(|e| format!("DB error updating execution to SENT: {}", e))?;
 
                                 if let Some(ref acc) = account {
                                     self.throttler.record_sent(acc);
                                 }
 
                                 // Update lead journey state
-                                let _ = crate::db::update_lead_journey_state(
+                                if let Err(e) = crate::db::update_lead_journey_state(
                                     conn,
                                     execution.lead_id,
                                     "OUTREACH",
@@ -182,11 +199,13 @@ impl CampaignScheduler {
                                     None,
                                     None,
                                     None,
-                                );
+                                ) {
+                                    eprintln!("[CampaignScheduler] Warning: failed to update lead journey state: {}", e);
+                                }
 
                                 summary.sent_count += 1;
 
-                                // 6. Schedule next sequential step if present
+                                // 7. Schedule next sequential step if present
                                 let next_step_opt: Option<(i64, i32)> = conn
                                     .query_row(
                                         "SELECT id, delay_minutes FROM campaign_steps
@@ -206,7 +225,7 @@ impl CampaignScheduler {
                                         )
                                         .unwrap_or_else(|_| now_iso.clone());
 
-                                    let _ = crate::db::create_campaign_execution(
+                                    crate::db::create_campaign_execution(
                                         conn,
                                         execution.campaign_id,
                                         next_step_id,
@@ -214,7 +233,7 @@ impl CampaignScheduler {
                                         execution.target_phone.as_deref(),
                                         account.as_deref(),
                                         &next_scheduled_iso,
-                                    );
+                                    ).map_err(|e| format!("DB error scheduling next step execution: {}", e))?;
                                     summary.next_steps_scheduled += 1;
                                 }
 
@@ -234,24 +253,24 @@ impl CampaignScheduler {
                                 let err_msg = dispatch_res
                                     .error
                                     .unwrap_or_else(|| "Unknown dispatch failure".to_string());
-                                let _ = crate::db::update_campaign_execution_status(
+                                crate::db::update_campaign_execution_status(
                                     conn,
                                     exec_id,
                                     "FAILED",
                                     Some(&err_msg),
                                     Some(&now_iso),
-                                );
+                                ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
                                 summary.failed_count += 1;
                             }
                         }
                         Err(err) => {
-                            let _ = crate::db::update_campaign_execution_status(
+                            crate::db::update_campaign_execution_status(
                                 conn,
                                 exec_id,
                                 "FAILED",
                                 Some(&err),
                                 Some(&now_iso),
-                            );
+                            ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
                             summary.failed_count += 1;
                         }
                     }
@@ -277,14 +296,39 @@ impl CampaignScheduler {
                 let scheduler = self.clone();
 
                 let _ = tokio::task::spawn_blocking(move || {
-                    if let Ok(conn) = rusqlite::Connection::open(&db_path_clone) {
-                        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-                        let _ = conn.execute_batch(
-                            "PRAGMA foreign_keys = ON;
-                             PRAGMA journal_mode = WAL;
-                             PRAGMA synchronous = NORMAL;",
-                        );
-                        let _ = scheduler.process_due_executions(&conn, DispatchMode::Live, 50);
+                    match rusqlite::Connection::open(&db_path_clone) {
+                        Ok(conn) => {
+                            if let Err(e) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
+                                eprintln!("[CampaignScheduler] Failed to set busy timeout: {}", e);
+                            }
+                            if let Err(e) = conn.execute_batch(
+                                "PRAGMA foreign_keys = ON;
+                                 PRAGMA journal_mode = WAL;
+                                 PRAGMA synchronous = NORMAL;",
+                            ) {
+                                eprintln!("[CampaignScheduler] Failed to set PRAGMAs: {}", e);
+                            }
+                            match scheduler.process_due_executions(&conn, DispatchMode::Live, 50) {
+                                Ok(summary) => {
+                                    if summary.total_due_found > 0 {
+                                        println!(
+                                            "[CampaignScheduler] Processed cycle: due={}, sent={}, skipped={}, throttled={}, failed={}",
+                                            summary.total_due_found,
+                                            summary.sent_count,
+                                            summary.skipped_count,
+                                            summary.throttled_count,
+                                            summary.failed_count
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("[CampaignScheduler] Execution cycle error: {}", err);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[CampaignScheduler] Failed to open SQLite database at {}: {}", db_path_clone, err);
+                        }
                     }
                 })
                 .await;

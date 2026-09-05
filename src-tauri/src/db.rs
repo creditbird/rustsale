@@ -1679,6 +1679,21 @@ pub fn get_due_campaign_executions(
 }
 
 #[allow(dead_code)]
+pub fn claim_campaign_execution(
+    conn: &Connection,
+    id: i64,
+    now_iso: &str,
+) -> Result<bool> {
+    let rows_affected = conn.execute(
+        "UPDATE campaign_executions
+         SET status = 'RUNNING', executed_at = ?1
+         WHERE id = ?2 AND status = 'PENDING'",
+        rusqlite::params![now_iso, id],
+    )?;
+    Ok(rows_affected > 0)
+}
+
+#[allow(dead_code)]
 pub fn update_campaign_execution_status(
     conn: &Connection,
     id: i64,

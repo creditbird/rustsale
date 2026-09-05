@@ -171,6 +171,42 @@ fn setup_test_db() -> Connection {
              reviewed_by TEXT,
              reviewed_at TEXT,
              created_at TEXT NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS activities (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             lead_id INTEGER NOT NULL,
+             activity_type TEXT NOT NULL,
+             content TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             performed_by TEXT,
+             FOREIGN KEY (lead_id) REFERENCES leads (id) ON DELETE CASCADE
+         );
+
+         CREATE TABLE IF NOT EXISTS channel_accounts (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             channel TEXT NOT NULL,
+             account_name TEXT NOT NULL,
+             provider_account_key TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'ACTIVE',
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS zalo_sessions (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             imei TEXT NOT NULL,
+             session_name TEXT NOT NULL,
+             is_active INTEGER NOT NULL DEFAULT 1
+         );
+
+         CREATE TABLE IF NOT EXISTS smtp_servers (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             host TEXT NOT NULL,
+             port INTEGER NOT NULL,
+             username TEXT,
+             from_email TEXT NOT NULL,
+             is_active INTEGER NOT NULL DEFAULT 1
          );",
     )
     .expect("failed to setup schema");
@@ -441,6 +477,11 @@ fn test_dispatcher_spintax_and_variable_interpolation() {
     );
 
     let template = "{Kính gửi|Chào anh|Chào bạn} {{name}} từ {{company}}! Số {{phone}} của anh đã được duyệt.";
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name) VALUES ('IMEI_TEST', 'Test Session')",
+        [],
+    )
+    .unwrap();
     let (rendered, phone) = OmnichannelDispatcher::render_for_lead(&conn, template, lead_id);
 
     assert_eq!(phone, "0988112233");
@@ -527,6 +568,11 @@ fn test_scheduler_step_progression_and_scheduling_next_step() {
     let scheduler = CampaignScheduler::with_defaults();
     scheduler.rotator.register_account("ZALO", "IMEI_MAIN");
     scheduler.rotator.register_account("WHATSAPP", "+84933445566");
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name) VALUES ('IMEI_MAIN', 'Test Session')",
+        [],
+    )
+    .unwrap();
 
     // Process due executions (Step 1 is due immediately)
     let summary = scheduler
@@ -639,4 +685,126 @@ fn test_campaign_analytics_aggregation() {
     assert_eq!(analytics.step_breakdown.len(), 2);
     assert!(analytics.response_rate > 0.0);
     assert!(analytics.conversion_rate > 0.0);
+}
+
+#[test]
+fn test_campaign_scheduler_atomic_claim_concurrency_race() {
+    let mut conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Concurrency Lead", "Concurrent Co", "0988776655", "c@co.com");
+
+    let campaign = Campaign {
+        id: None,
+        name: "Concurrency Test Campaign".to_string(),
+        description: None,
+        channel_type: "ZALO".to_string(),
+        status: "ACTIVE".to_string(),
+        audience_filter_json: None,
+        schedule_config_json: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
+    };
+
+    let steps = vec![CampaignStep {
+        id: None,
+        campaign_id: 0,
+        step_order: 1,
+        channel: "ZALO".to_string(),
+        delay_minutes: 0,
+        condition_type: "ALWAYS".to_string(),
+        template_content: "Hello {{name}}!".to_string(),
+        ai_prompt_override: None,
+        created_at: "".to_string(),
+        template_id: None,
+    }];
+
+    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps).unwrap();
+    enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead_id]).unwrap();
+
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name) VALUES ('IMEI_CONC', 'Session')",
+        [],
+    )
+    .unwrap();
+
+    let scheduler1 = CampaignScheduler::with_defaults();
+    scheduler1.rotator.register_account("ZALO", "IMEI_CONC");
+    let scheduler2 = CampaignScheduler::with_defaults();
+    scheduler2.rotator.register_account("ZALO", "IMEI_CONC");
+
+    // Worker 1 processes and claims the execution
+    let summary1 = scheduler1
+        .process_due_executions(&conn, DispatchMode::Live, 10)
+        .unwrap();
+
+    assert_eq!(summary1.total_due_found, 1);
+    assert_eq!(summary1.sent_count, 1);
+
+    // Worker 2 immediately tries to process the same DB
+    let summary2 = scheduler2
+        .process_due_executions(&conn, DispatchMode::Live, 10)
+        .unwrap();
+
+    // Since worker 1 atomically claimed and updated the status to SENT, worker 2 finds 0 due executions
+    assert_eq!(summary2.total_due_found, 0);
+    assert_eq!(summary2.sent_count, 0);
+
+    // Verify exactly ONE outreach_history record exists (no duplicate send)
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM outreach_history WHERE lead_id = ?1",
+            [lead_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_spintax_malformed_empty_braces_no_panic() {
+    // Malformed empty braces should resolve safely without modulo by zero panic
+    let res1 = OmnichannelDispatcher::resolve_spintax("{}");
+    assert_eq!(res1, "");
+
+    let res2 = OmnichannelDispatcher::resolve_spintax("Hello {} world!");
+    assert_eq!(res2, "Hello  world!");
+
+    let res3 = OmnichannelDispatcher::resolve_spintax("{   }");
+    assert_eq!(res3, "");
+
+    let res4 = OmnichannelDispatcher::resolve_spintax("{a|b|c}");
+    assert!(res4 == "a" || res4 == "b" || res4 == "c");
+}
+
+#[test]
+fn test_dispatcher_validation_failure() {
+    let conn = setup_test_db();
+    let payload_bad_email = DispatchPayload {
+        campaign_id: 1,
+        step_id: 1,
+        lead_id: 1,
+        channel: "EMAIL".to_string(),
+        target_recipient: "not-an-email".to_string(),
+        account_id: None,
+        template_content: "Test".to_string(),
+        ai_prompt_override: None,
+    };
+
+    let res = OmnichannelDispatcher::dispatch(&conn, &payload_bad_email, DispatchMode::Live);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("invalid email address"));
+
+    let payload_empty_phone = DispatchPayload {
+        campaign_id: 1,
+        step_id: 1,
+        lead_id: 1,
+        channel: "WHATSAPP".to_string(),
+        target_recipient: "123".to_string(), // Too short
+        account_id: None,
+        template_content: "Test".to_string(),
+        ai_prompt_override: None,
+    };
+
+    let res_phone = OmnichannelDispatcher::dispatch(&conn, &payload_empty_phone, DispatchMode::Live);
+    assert!(res_phone.is_err());
+    assert!(res_phone.unwrap_err().contains("invalid phone number"));
 }

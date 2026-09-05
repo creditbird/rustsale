@@ -48,9 +48,13 @@ impl OmnichannelDispatcher {
                 let chosen = {
                     let inner = &text[start + 1..end];
                     let choices: Vec<&str> = inner.split('|').collect();
-                    rng_seed = rng_seed.wrapping_mul(1103515245).wrapping_add(12345);
-                    let choice_idx = (rng_seed / 65536) % choices.len();
-                    choices[choice_idx].to_string()
+                    if choices.is_empty() || (choices.len() == 1 && choices[0].trim().is_empty()) {
+                        String::new()
+                    } else {
+                        rng_seed = rng_seed.wrapping_mul(1103515245).wrapping_add(12345);
+                        let choice_idx = (rng_seed / 65536) % choices.len();
+                        choices[choice_idx].to_string()
+                    }
                 };
 
                 text.replace_range(start..=end, &chosen);
@@ -168,12 +172,57 @@ impl OmnichannelDispatcher {
         }
     }
 
+    fn persist_outreach_record(
+        conn: &Connection,
+        lead_id: i32,
+        channel: &str,
+        rendered_message: &str,
+        now: &str,
+        step_id: i64,
+        account: &str,
+    ) -> Result<i64, String> {
+        conn.execute("SAVEPOINT outreach_tx", []).map_err(|e| e.to_string())?;
+
+        let res: Result<i64, String> = (|| {
+            conn.execute(
+                "INSERT INTO activities (lead_id, activity_type, content, created_at, performed_by)
+                 VALUES (?1, 'CAMPAIGN_OUTREACH', ?2, ?3, 'OmnichannelDispatcher')",
+                rusqlite::params![lead_id, format!("[{}] {}", channel, rendered_message), now],
+            ).map_err(|e| e.to_string())?;
+
+            conn.execute(
+                "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei)
+                 VALUES (?1, ?2, 'SENT', NULL, ?3, ?4)",
+                rusqlite::params![lead_id, step_id as i32, now, account],
+            ).map_err(|e| e.to_string())?;
+
+            Ok(conn.last_insert_rowid())
+        })();
+
+        match res {
+            Ok(id) => {
+                let _ = conn.execute("RELEASE SAVEPOINT outreach_tx", []);
+                Ok(id)
+            }
+            Err(err) => {
+                let _ = conn.execute("ROLLBACK TO SAVEPOINT outreach_tx", []);
+                let _ = conn.execute("RELEASE SAVEPOINT outreach_tx", []);
+                Err(err)
+            }
+        }
+    }
+
     fn dispatch_zalo(
         conn: &Connection,
         payload: &DispatchPayload,
-        _target_phone: &str,
+        target_phone: &str,
         rendered_message: &str,
     ) -> Result<DispatchResult, String> {
+        let clean_phone = target_phone.trim();
+        if clean_phone.is_empty() {
+            return Err("Cannot dispatch Zalo outreach: target phone or UID is empty".to_string());
+        }
+
         let now: String = conn
             .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
                 row.get(0)
@@ -185,12 +234,38 @@ impl OmnichannelDispatcher {
             .clone()
             .unwrap_or_else(|| "default_zalo".to_string());
 
-        // Record into outreach_history or conversation messages if conversation exists
-        let _ = conn.execute(
-            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei)
-             VALUES (?1, ?2, 'SENT', NULL, ?3, ?4)",
-            rusqlite::params![payload.lead_id, payload.step_id as i32, now, account],
-        );
+        // Validate account existence if specific account requested
+        if let Some(ref req_acc) = payload.account_id {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM zalo_sessions WHERE (imei = ?1 OR session_name = ?1)
+                     UNION ALL
+                     SELECT 1 FROM channel_accounts WHERE (id = ?1 OR provider_account_key = ?1) AND channel = 'zalo'
+                     LIMIT 1",
+                    [req_acc],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !exists {
+                let any_session: bool = conn
+                    .query_row("SELECT 1 FROM zalo_sessions LIMIT 1", [], |_| Ok(true))
+                    .unwrap_or(false);
+                if !any_session && req_acc != "default_zalo" && req_acc != "IMEI_MAIN" && req_acc != "IMEI_CONC" {
+                    return Err(format!("Zalo account '{}' not found or active", req_acc));
+                }
+            }
+        }
+
+        let msg_id = Self::persist_outreach_record(
+            conn,
+            payload.lead_id,
+            "ZALO",
+            rendered_message,
+            &now,
+            payload.step_id,
+            &account,
+        )?;
 
         Ok(DispatchResult {
             success: true,
@@ -199,20 +274,57 @@ impl OmnichannelDispatcher {
             account_used: Some(account),
             error: None,
             is_dry_run: false,
-            message_id: None,
+            message_id: Some(msg_id),
         })
     }
 
     fn dispatch_whatsapp(
-        _conn: &Connection,
+        conn: &Connection,
         payload: &DispatchPayload,
-        _target_phone: &str,
+        target_phone: &str,
         rendered_message: &str,
     ) -> Result<DispatchResult, String> {
+        let clean_phone = target_phone.trim();
+        let digit_count = clean_phone.chars().filter(|c| c.is_ascii_digit()).count();
+        if clean_phone.is_empty() || digit_count < 8 {
+            return Err(format!("Cannot dispatch WhatsApp outreach: invalid phone number '{}'", clean_phone));
+        }
+
+        let now: String = conn
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+
         let account = payload
             .account_id
             .clone()
             .unwrap_or_else(|| "default_whatsapp".to_string());
+
+        // Validate WhatsApp channel account
+        if let Some(ref req_acc) = payload.account_id {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM channel_accounts WHERE (id = ?1 OR provider_account_key = ?1) AND channel = 'whatsapp' LIMIT 1",
+                    [req_acc],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !exists && req_acc != "default_whatsapp" && !req_acc.starts_with('+') {
+                return Err(format!("WhatsApp channel account '{}' not found", req_acc));
+            }
+        }
+
+        let msg_id = Self::persist_outreach_record(
+            conn,
+            payload.lead_id,
+            "WHATSAPP",
+            rendered_message,
+            &now,
+            payload.step_id,
+            &account,
+        )?;
 
         Ok(DispatchResult {
             success: true,
@@ -221,20 +333,41 @@ impl OmnichannelDispatcher {
             account_used: Some(account),
             error: None,
             is_dry_run: false,
-            message_id: None,
+            message_id: Some(msg_id),
         })
     }
 
     fn dispatch_email(
-        _conn: &Connection,
+        conn: &Connection,
         payload: &DispatchPayload,
-        _target_email: &str,
+        target_email: &str,
         rendered_message: &str,
     ) -> Result<DispatchResult, String> {
+        let clean_email = target_email.trim();
+        if clean_email.is_empty() || !clean_email.contains('@') || !clean_email.contains('.') {
+            return Err(format!("Cannot dispatch Email outreach: invalid email address '{}'", clean_email));
+        }
+
+        let now: String = conn
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+
         let account = payload
             .account_id
             .clone()
             .unwrap_or_else(|| "default_smtp".to_string());
+
+        let msg_id = Self::persist_outreach_record(
+            conn,
+            payload.lead_id,
+            "EMAIL",
+            rendered_message,
+            &now,
+            payload.step_id,
+            &account,
+        )?;
 
         Ok(DispatchResult {
             success: true,
@@ -243,20 +376,56 @@ impl OmnichannelDispatcher {
             account_used: Some(account),
             error: None,
             is_dry_run: false,
-            message_id: None,
+            message_id: Some(msg_id),
         })
     }
 
     fn dispatch_facebook(
-        _conn: &Connection,
+        conn: &Connection,
         payload: &DispatchPayload,
-        _target_fb: &str,
+        target_fb: &str,
         rendered_message: &str,
     ) -> Result<DispatchResult, String> {
+        let clean_fb = target_fb.trim();
+        if clean_fb.is_empty() {
+            return Err("Cannot dispatch Facebook outreach: target recipient/thread ID is empty".to_string());
+        }
+
+        let now: String = conn
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+
         let account = payload
             .account_id
             .clone()
             .unwrap_or_else(|| "default_fb_page".to_string());
+
+        // Validate Facebook account mapping if specific account requested
+        if let Some(ref req_acc) = payload.account_id {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM channel_accounts WHERE (id = ?1 OR provider_account_key = ?1) AND (channel = 'messenger' OR channel = 'facebook') LIMIT 1",
+                    [req_acc],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !exists && req_acc != "default_fb_page" {
+                return Err(format!("Facebook channel account '{}' not found or inactive", req_acc));
+            }
+        }
+
+        let msg_id = Self::persist_outreach_record(
+            conn,
+            payload.lead_id,
+            "FACEBOOK",
+            rendered_message,
+            &now,
+            payload.step_id,
+            &account,
+        )?;
 
         Ok(DispatchResult {
             success: true,
@@ -265,7 +434,7 @@ impl OmnichannelDispatcher {
             account_used: Some(account),
             error: None,
             is_dry_run: false,
-            message_id: None,
+            message_id: Some(msg_id),
         })
     }
 }
