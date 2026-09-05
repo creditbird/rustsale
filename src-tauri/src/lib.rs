@@ -711,4 +711,3 @@ mod tests {
         assert_eq!(action, AutostartBootAction::NoMainWindow);
     }
 }
-

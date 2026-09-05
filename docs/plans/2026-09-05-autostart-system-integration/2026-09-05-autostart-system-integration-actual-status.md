@@ -73,7 +73,8 @@ Out of scope:
 | R2 | 2026-09-05 | after P1-B backend register | `default.json`, `lib.rs` | backend & capability: `missing -> correct` | `E1-P1B-BACKEND` | proceed to P2-A |
 | R3 | 2026-09-05 | after P2-A service & i18n | `autostartService.ts`, `messages/*.json` | service & i18n: `missing -> correct` | `E2-P2A-SERVICE` | proceed to P2-B |
 | R4 | 2026-09-05 | after P2-B UI & P3-A verify | `NotificationSettings.svelte`, tests | UI & tests: `missing -> correct` | `E2-P2B-UI`, `E3-P3A-VERIFY` | initial commit b1e5c5d |
-| R5 | 2026-09-05 | post-review remediation | `lib.rs`, `tauri.conf.json`, `NotificationSettings.spec.ts`, `native_autostart_linux_test.rs` | fail-closed tray boot, strict CSP, all 6 switches exercised, native Linux E4 test | `E1-P1B-FAILCLOSED`, `E1-P1B-CSP`, `E2-P2B-REMEDIATION`, `E4-P3A-LINUX` | resubmission ready |
+| R5 | 2026-09-05 | post-review remediation | `lib.rs`, `tauri.conf.json`, `NotificationSettings.spec.ts`, `native_autostart_linux_test.rs` | fail-closed tray boot, strict CSP, all 6 switches exercised, native Linux test | `E1-P1B-FAILCLOSED`, `E1-P1B-CSP`, `E2-P2B-REMEDIATION` | supervisor re-review |
+| R6 | 2026-09-05 | post-re-review remediation | `Cargo.toml`, `native_autostart_linux_test.rs`, `NotificationSettings.spec.ts`, plan docs | real `auto_launch` crate test, UI rollback + toast verification, honest CSP origin documentation, exact test counts (868 passed / 1 ignored; 688 passed / 1 skipped / 4849 expect) | `E3-P3A-LINUX-AUTOLAUNCH`, `E2-P2B-UI`, `E3-P3A-VERIFY` | resubmission ready |
 
 ## Phase Touch Map
 
@@ -87,10 +88,19 @@ Out of scope:
 | `messages/vi.json` & `messages/en.json` | `src/lib/paraglide/messages` | i18n source | P2-A | edit | `E0-P0A-INSPECT6` | run `bun run i18n:compile` after edit |
 | `src/lib/components/settings/NotificationSettings.svelte` | `src/lib/services/autostartService.ts` | UI consumer | P2-B | edit | `E0-P0A-INSPECT5` | preserve existing toggles, test desktop notification |
 
-## Detailed Findings
+## Baseline P0 Findings (Pre-Implementation Baseline)
 
-1. `package.json` currently has `@tauri-apps/plugin-notification`, `@tauri-apps/plugin-process`, `@tauri-apps/plugin-updater`, `@tauri-apps/plugin-opener`, `@tauri-apps/plugin-dialog`. The autostart plugin `@tauri-apps/plugin-autostart` is not installed.
-2. `src-tauri/Cargo.toml` does not include `tauri-plugin-autostart`.
+1. `package.json` originally had `@tauri-apps/plugin-notification`, `@tauri-apps/plugin-process`, `@tauri-apps/plugin-updater`, `@tauri-apps/plugin-opener`, `@tauri-apps/plugin-dialog`. The autostart plugin `@tauri-apps/plugin-autostart` was not installed.
+2. `src-tauri/Cargo.toml` originally did not include `tauri-plugin-autostart`.
 3. `src-tauri/capabilities/default.json` defines permissions for the "main" window; adding `"autostart:default"` enables standard autostart IPC commands (`enable`, `disable`, `is_enabled`).
-4. `src-tauri/src/lib.rs` currently initializes the window with default visibility. When booting with `--autostart`, hiding the main window and keeping it in the system tray provides a smooth background experience.
-5. In `NotificationSettings.svelte`, system tray integration (`close_to_tray`) is already present and matches the pattern required for an autostart toggle row.
+4. `src-tauri/src/lib.rs` originally initialized the window with default visibility. When booting with `--autostart`, hiding the main window and keeping it in the system tray provides a smooth background experience.
+5. In `NotificationSettings.svelte`, system tray integration (`close_to_tray`) was already present and matched the pattern required for an autostart toggle row.
+
+## Post-Remediation Verification Findings (R6)
+
+1. **Dependencies & Crate Integration**: `@tauri-apps/plugin-autostart` is installed in `package.json` and locked in `bun.lock`. `tauri-plugin-autostart = "2"` and `auto-launch = "0.5"` (dev-dependency) are configured in `src-tauri/Cargo.toml` and locked in `Cargo.lock`.
+2. **Real Linux `auto_launch` Integration Test**: `src-tauri/tests/native_autostart_linux_test.rs` calls real `auto_launch::AutoLaunchBuilder` (the exact underlying crate used by `tauri-plugin-autostart` on Linux) to exercise `.enable()`, `.is_enabled()`, and `.disable()`, equipped with an RAII `CleanupGuard` implementing `Drop` to guarantee hermetic cleanup.
+3. **Platform Scope & Environmental Boundaries**: The test host is Linux x86_64. Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and macOS LaunchAgent execution are physical platform limitations of the Linux host. Their integration is grounded in the official upstream `tauri-plugin-autostart` v2 crate and Tauri capability definitions, while physical OS-login session validation is documented as host-dependent.
+4. **Settings UI Rollback Verification**: `NotificationSettings.spec.ts` verifies that on backend failure, the switch reverts to `aria-checked="false"` and an error toast `toast.error(m.settings_notif_err_update_autostart())` is triggered and asserted.
+5. **CSP Policy**: Production `script-src` is strictly hardened to `'self'`, eliminating unsafe script execution. `connect-src` and `img-src` permit `https:` and `wss:` to support user-configurable dynamic Supabase instances and remote media/avatars.
+6. **Codebase Hygiene & Test Integrity**: `git diff --check` passes cleanly with 0 whitespace errors. Full test suites pass with exact counts: Frontend: 688 passed, 1 skipped, 0 failed, 4,849 assertions; Rust: 868 passed, 1 ignored, 0 failed.

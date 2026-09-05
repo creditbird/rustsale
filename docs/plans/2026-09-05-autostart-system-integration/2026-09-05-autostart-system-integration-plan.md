@@ -55,8 +55,8 @@ When the host OS (Linux, Windows, or macOS) starts up, RustSale CRM cannot launc
 | R-03 | Safe `--autostart` boot & tray-failure resilience | App hidden to tray on `--autostart` ONLY if tray is ready; never strands user | System boot quietly minimizes; if tray fails, window remains visible | Window hidden with broken tray, or hide error crashes app | `determine_autostart_action` & 4 Rust tests (`E1-P1B-FAILCLOSED`) | P1-B | `GREEN` |
 | R-04 | Provide frontend autostart service | `isAutostartEnabled` and `setAutostart` handle errors gracefully | Returns boolean state and toggles OS registry | Exception thrown in non-tauri or dev env caught safely | `autostartService.ts` & 6 unit tests (`E2-P2A-SERVICE`) | P2-A | `GREEN` |
 | R-05 | Add localization strings in Vietnamese and English | Both locales define autostart title, description, and status | Paraglide compiles without missing key warnings | Undefined translation runtime error | `messages/*.json` & `bun run i18n:compile` (`E2-P2A-SERVICE`) | P2-A | `GREEN` |
-| R-06 | Integrate Autostart switch in Settings UI | Rendered inside `NotificationSettings.svelte` with active badge and Sonner toast | Toggling all 6 switches updates state; errors rollback | Failure shows error toast and reverts switch | Component view & E2 test suite (5 pass) (`E2-P2B-UI`) | P2-B | `GREEN` |
-| R-07 | End-to-end quality gates & strict CSP | Svelte checks, strict CSP, native Linux E4 test, and full test suite pass | Zero errors in `bun run check`, `cargo test`, and `bun test` | Type or compile errors block release; open CSP | Harness QA report (`E3-P3A-VERIFY`, `E4-P3A-LINUX`) | P3-A | `GREEN` |
+| R-06 | Integrate Autostart switch in Settings UI | Rendered inside `NotificationSettings.svelte` with active badge and Sonner toast | Toggling all 6 switches updates state; errors rollback | Failure shows error toast and reverts switch to false | Component view & E2 test suite (5 pass, UI rollback + toast verified) (`E2-P2B-UI`) | P2-B | `GREEN` |
+| R-07 | Native Linux auto_launch test, CSP policy & quality gates | Svelte checks, strict script CSP, native Linux auto_launch integration test, and full test suite pass | Zero errors in `bun run check`, `cargo check`, and `bun test` | Type or compile errors block release; unhandled errors | Harness QA report (`E3-P3A-VERIFY`, `E3-P3A-LINUX-AUTOLAUNCH`) | P3-A | `GREEN` |
 
 ## Acceptance Criteria
 
@@ -158,12 +158,16 @@ When the host OS (Linux, Windows, or macOS) starts up, RustSale CRM cannot launc
 ### P3: Quality Gate & Verification
 
 - [x] P3-A: Quality gate, test execution, and change detection
-  - Goal: Run all verification commands (`bun run check`, `bun test`, `cargo check`), run Anvien `detect-changes`, and verify release readiness.
+  - Goal: Run all verification commands (`bun run check`, `bun test`, `cargo check`, `cargo test`), run real Linux `auto_launch` integration test, verify clean `git diff --check`, run Anvien `detect-changes`, and verify release readiness.
   - Work Steps:
-    1. Run `bun run check`.
-    2. Run `cargo check`.
-    3. Run `anvien detect-changes --repo /home/arch/Project/test/RustSale_v2 --scope all`.
-    4. Record closure evidence.
+    1. Run `bun run check` (0 errors, 6 existing Svelte warnings).
+    2. Run `cargo check` (0 errors, 0 warnings).
+    3. Run `cargo test` (868 passed, 1 ignored live network probe, 0 failed).
+    4. Run `cargo test --test native_autostart_linux_test` (1 passed, tests real `auto_launch` crate lifecycle with RAII cleanup).
+    5. Run `bun test` (688 passed, 1 skipped CloakBrowser download smoke test, 0 failed, 4,849 expect calls across 689 tests / 74 files).
+    6. Verify `git diff --check` passes with exit code 0 (no trailing blank lines or whitespace defects).
+    7. Run `anvien detect-changes --repo /home/arch/Project/test/RustSale_v2 --scope all`.
+    8. Record closure evidence.
   - Implementation Gate: P1 and P2 complete.
-  - Acceptance: 100% tests/checks pass; clean detect-changes.
-  - Evidence Targets: `E3-P3A-VERIFY`.
+  - Acceptance: 100% tests/checks pass; clean detect-changes; clean diff check.
+  - Evidence Targets: `E3-P3A-VERIFY`, `E3-P3A-LINUX-AUTOLAUNCH`.

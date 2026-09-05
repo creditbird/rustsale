@@ -5014,6 +5014,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "async-trait",
+ "auto-launch",
  "base64 0.22.1",
  "cdp-lite",
  "chrono",

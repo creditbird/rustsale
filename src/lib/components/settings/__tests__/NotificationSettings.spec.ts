@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { setLocale } from '$lib/i18n';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { m, setLocale } from '$lib/i18n';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import NotificationSettings from '../NotificationSettings.svelte';
 import * as desktopNotificationService from '$lib/services/desktopNotificationService';
+import { toast } from 'svelte-sonner';
 
 let mockNotificationSettings = {
   enabled: true,
@@ -46,7 +47,8 @@ mock.module('$lib/services/desktopNotificationService', () => ({
   testDesktopNotification: async () => {
     if (shouldRejectUpdate) throw new Error('Test failed');
     testNotificationCalled = true;
-  }
+  },
+  subscribeTrayDndChanged: () => () => {}
 }));
 
 describe('NotificationSettings component (E2 Component Mock Verification)', () => {
@@ -156,15 +158,33 @@ describe('NotificationSettings component (E2 Component Mock Verification)', () =
     expect(mockNotificationSettings.mute_groups).toBe(true);
   });
 
-  test('E2-rollback: reverts autostart switch when backend call fails', async () => {
+  test('E2-rollback: reverts autostart switch and shows error toast when backend call fails', async () => {
     setLocale('vi');
+    let toastErrorMessage = '';
+    const toastErrorSpy = spyOn(toast, 'error').mockImplementation((msg: any) => {
+      toastErrorMessage = String(msg);
+      return '' as any;
+    });
+
     render(NotificationSettings);
 
     const switches = await screen.findAllByRole('switch');
+    const autostartSwitch = switches[2];
+    expect(autostartSwitch.getAttribute('aria-checked')).toBe('false');
+
     shouldRejectUpdate = true;
 
     // Toggle Autostart (switch 2) when backend rejects
-    await fireEvent.click(switches[2]);
-    expect(mockAutostartEnabled).toBe(false);
+    await fireEvent.click(autostartSwitch);
+
+    // Verify UI state is rolled back to false
+    await waitFor(() => {
+      expect(autostartSwitch.getAttribute('aria-checked')).toBe('false');
+    });
+
+    // Verify error toast was shown with the localized error message
+    expect(toastErrorMessage).toBe(m.settings_notif_err_update_autostart());
+
+    toastErrorSpy.mockRestore();
   });
 });

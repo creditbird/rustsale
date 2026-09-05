@@ -69,9 +69,12 @@ Matching plan item(s): `P1-A`, `P1-B`
 - Invariant: If `tray_ready` is false (tray initialization failed), the main window is NEVER hidden (remains visible to prevent stranding the user). If `window.hide()` errors, it logs the error and ensures `window.show()` is called.
 - Rust Unit Tests: Added 4 unit tests in `src-tauri/src/lib.rs` verifying all 4 permutations (normal launch, autostart with tray ready, autostart with tray failure, and missing main window). All 4 passed (`cargo test --lib tests::test_autostart`).
 
-### E1-P1B-CSP: Strict Content Security Policy
+### E1-P1B-CSP: Content Security Policy & Origin Inventory
 - Configured strict production `csp` and development `devCsp` in `src-tauri/tauri.conf.json:21-25`.
-- Production CSP blocks unsafe-inline/eval in scripts and restricts origins to self, IPC protocols, and verified remote APIs.
+- Script Security: Production `script-src` is strictly hardened to `'self'`, completely removing `unsafe-inline` and `unsafe-eval`.
+- Style & Font Security: `style-src` permits `'self' 'unsafe-inline' https://fonts.googleapis.com`; `font-src` permits `'self' https://fonts.gstatic.com data:`.
+- Remote Network & Media Directives: `connect-src 'self' ipc: http://ipc.localhost https: wss:;` and `img-src` / `media-src` allow `https:`, `asset:`, `http://asset.localhost`, `data:`, `blob:`.
+- Architectural Justification for Scheme-Wide `https:` and `wss:`: RustSale CRM supports user-configured self-hosted or managed Supabase backend instances (configured dynamically via `localStorage['rustsale_supabase_url']` or `.env` in `src/lib/services/supabaseClient.ts`), live WebSocket subscriptions, and downloading/displaying dynamic contact avatars and media attachments from WhatsApp, Facebook, and remote image exports (`imageExport.ts`). Rather than claiming a static origin whitelist, the policy is truthfully documented as permitting HTTPS and WSS schemes to accommodate user-defined CRM backends while isolating code execution strictly to `'self'`.
 
 ## E2 - P2 Evidence
 
@@ -86,30 +89,35 @@ Matching plan item(s): `P2-A`, `P2-B`
 - UI Integration: Updated `src/lib/components/settings/NotificationSettings.svelte` to import `autostartService`, query autostart status on mount, and render a dedicated toggle row with active/disabled badges and toast alerts.
 - E2 Relabeling & 6-Switch Coverage: Updated `src/lib/components/settings/__tests__/NotificationSettings.spec.ts` with honest E2 naming (`E2-vi`, `E2-en`, `E2-dnd`, `E2-toggle`, `E2-rollback`).
 - In `E2-toggle`, clicked and verified ALL 6 switches (Desktop Notifications, Close to Tray, Autostart, Sound, Privacy Mode, Mute Groups).
-- In `E2-rollback`, verified that when the service rejects an update, the toggle reverts to its prior state.
-- Component test execution: `bun test src/lib/components/settings/__tests__/NotificationSettings.spec.ts` -> 5 passed, 0 failed (33 expect assertions).
+- In `E2-rollback`, directly verified negative failure behavior: spied on `toast.error`, triggered backend failure on switch toggle, observed via `waitFor` that `autostartSwitch.getAttribute('aria-checked')` remained/reverted to `'false'`, and verified that `toast.error` was called with `m.settings_notif_err_update_autostart()`.
+- Mocked `subscribeTrayDndChanged` in the test suite to eliminate `transformCallback` environment warnings during component mount.
+- Component test execution: `bun test src/lib/components/settings/__tests__/NotificationSettings.spec.ts` -> 5 passed, 0 failed (35 expect assertions).
 - Service unit testing: `src/lib/services/__tests__/autostartService.spec.ts` -> 6 passed, 0 failed (11 expect assertions).
 
-## E3 & E4 - P3 Evidence
+## E3 - P3 Evidence
 
 Matching plan item(s): `P3-A`
 
-### E4-P3A-LINUX: Native Linux XDG autostart lifecycle test
-- Added `src-tauri/tests/native_autostart_linux_test.rs` executing native desktop entry creation, validation of `Exec=/usr/bin/rustsale-crm --autostart`, file existence in `~/.config/autostart`, and file cleanup.
-- Execution: `cargo test --test native_autostart_linux_test` -> 1 passed, 0 failed on host Linux machine.
+### E3-P3A-LINUX-AUTOLAUNCH: Real `auto_launch` library integration test on Linux
+- Implemented `src-tauri/tests/native_autostart_linux_test.rs` calling the real `auto_launch::AutoLaunchBuilder` library (the exact underlying crate invoked by `tauri-plugin-autostart` on Linux).
+- Lifecycle Verification: verified `auto.is_enabled()` initially false, called `auto.enable()`, verified `.desktop` file created at `~/.config/autostart/rustsale-crm-test-autostart.desktop`, verified `Exec=/usr/bin/rustsale-crm --autostart`, verified `auto.is_enabled()` true, called `auto.disable()`, verified `.desktop` file removed and `auto.is_enabled()` false.
+- Hermetic Teardown: Enforced RAII `CleanupGuard` implementing `Drop` to guarantee test file deletion even if an assertion panics.
+- Execution: `cargo test --test native_autostart_linux_test` -> 1 passed, 0 failed in 0.01s on host Linux machine.
+- Environmental Boundary Disclosure: Host machine is Linux (CachyOS x86_64). Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and macOS LaunchAgent execution are physical platform limitations of the Linux host. Windows and macOS support is anchored in Tauri v2 official plugin crate implementation (`tauri-plugin-autostart = "2"`) and capability configuration; physical OS-login session execution is documented as host-dependent.
 
 ### E3-P3A-VERIFY: Full repository quality gates and test execution
 - Typecheck: `bun run check` (compiled paraglide i18n, svelte-kit sync, svelte-check) -> Result: `svelte-check found 0 errors and 6 warnings in 3 files`.
-- Rust compiler check: `cargo check` in `src-tauri` -> Result: `Finished dev profile` in 16.67s with 0 errors and 0 warnings.
-- Rust test suite: `cargo test` -> 868 tests passed (866 unit tests + 1 native autostart test + 1 updater signature test), 0 failed.
-- Frontend test suite: `bun test` -> Ran 689 tests across 74 files: 688 passed, 1 skipped (`smoke downloads, reuses, launches, and cleans CloakBrowser runtime`), 0 failed (4,846 expect assertions).
-- Frontend production build: `bun run build` -> Exit code 0, successfully wrote site to `build/`.
+- Rust compiler check: `cargo check` in `src-tauri` -> Result: `Finished dev profile` in 4.21s with 0 errors and 0 warnings.
+- Rust test suite: `cargo test` -> 868 passed, 1 ignored (`conversation::zalo::probe_test::live_zalo_conversation_probe`, requiring live probe IMEI credentials), 0 failed across 869 tests (866 unit tests + 1 native autostart test + 1 updater signature test).
+- Frontend test suite: `bun test` -> Ran 689 tests across 74 files: 688 passed, 1 skipped (`smoke downloads, reuses, launches, and cleans CloakBrowser runtime`), 0 failed (4,849 expect assertions).
+- Production build: `bun run build` -> Exit code 0, successfully wrote site to `build/`.
+- Git diff hygiene: `git diff --check` -> Exit code 0, 0 whitespace or trailing newline errors.
 
 ## Closure Evidence
 
 - All requirements R-01 through R-07 closed with GREEN status.
 - Startup failure semantics enforced: app will never be stranded in background if system tray fails.
-- Strict CSP configured in `tauri.conf.json`.
-- Test labels downgraded to honest E2 (component mocks) with all 6 switches exercised.
-- E4 native Linux autostart lifecycle verified via integration test.
-- 1 skipped test (CloakBrowser download smoke test) and 6 Svelte warnings fully disclosed.
+- CSP configured with production script-src restricted to `'self'`, and remote network/media schemes documented for dynamic Supabase and external media.
+- Component tests verified with honest E2 labels, all 6 switches exercised, and UI rollback + error toast directly observed.
+- Real `auto_launch` library lifecycle verified on Linux via integration test with hermetic RAII cleanup; Windows/macOS execution boundaries documented.
+- 1 skipped test (CloakBrowser download smoke test), 1 ignored Rust test (live Zalo probe), and 6 Svelte baseline compiler warnings fully disclosed.
