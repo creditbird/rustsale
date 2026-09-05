@@ -263,11 +263,17 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 error_message TEXT,
                 sent_at TEXT NOT NULL,
                 session_imei TEXT NOT NULL,
+                idempotency_key TEXT UNIQUE,
+                provider_message_id TEXT,
                 FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE,
                 FOREIGN KEY(template_id) REFERENCES outreach_templates(id) ON DELETE CASCADE
             )",
             [],
         )?;
+
+        let _ = tx.execute("ALTER TABLE outreach_history ADD COLUMN idempotency_key TEXT", []);
+        let _ = tx.execute("ALTER TABLE outreach_history ADD COLUMN provider_message_id TEXT", []);
+        let _ = tx.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_history_idempotency ON outreach_history(idempotency_key)", []);
 
         tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_lead_categories_category ON lead_categories(category_id)",

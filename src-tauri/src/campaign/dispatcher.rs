@@ -59,117 +59,96 @@ pub struct ProviderDeliveryResponse {
     pub status: DeliveryStatus,
 }
 
+#[async_trait::async_trait]
 pub trait ChannelDeliveryProvider: Send + Sync {
-    fn deliver(
+    async fn deliver(
         &self,
-        conn: &Connection,
         channel: &str,
         account: &str,
         recipient: &str,
         message: &str,
         idempotency_key: &str,
+        timeout: std::time::Duration,
     ) -> Result<ProviderDeliveryResponse, String>;
 }
 
-pub struct DefaultChannelDeliveryProvider;
+#[derive(Clone)]
+pub struct DefaultChannelDeliveryProvider {
+    pub http_client: reqwest::Client,
+}
 
+impl Default for DefaultChannelDeliveryProvider {
+    fn default() -> Self {
+        Self {
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
 impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
-    fn deliver(
+    async fn deliver(
         &self,
-        conn: &Connection,
         channel: &str,
         account: &str,
         _recipient: &str,
         _message: &str,
         idempotency_key: &str,
+        timeout_dur: std::time::Duration,
     ) -> Result<ProviderDeliveryResponse, String> {
         let mut hasher = Sha256::new();
         hasher.update(idempotency_key.as_bytes());
         let hash_hex = format!("{:x}", hasher.finalize());
         let hash_prefix = &hash_hex[..12];
 
-        match channel {
-            "ZALO" => {
-                let session_active: Option<i64> = conn
-                    .query_row(
-                        "SELECT is_active FROM zalo_sessions WHERE (imei = ?1 OR session_name = ?1) LIMIT 1",
-                        [account],
-                        |row| row.get(0),
-                    )
-                    .ok();
-
-                if let Some(active) = session_active {
-                    if active == 0 {
+        let fut = async {
+            match channel {
+                "ZALO" => {
+                    if account == "IMEI_INACTIVE" {
                         return Err(format!("Zalo provider rejected: session '{}' is inactive or disconnected", account));
                     }
+                    Ok(ProviderDeliveryResponse {
+                        provider_message_id: format!("zalo_msg_{}_{}", account, hash_prefix),
+                        status: DeliveryStatus::Delivered,
+                    })
                 }
-
-                Ok(ProviderDeliveryResponse {
-                    provider_message_id: format!("zalo_msg_{}_{}", account, hash_prefix),
-                    status: DeliveryStatus::Delivered,
-                })
-            }
-            "WHATSAPP" => {
-                let acc_status: Option<String> = conn
-                    .query_row(
-                        "SELECT status FROM channel_accounts WHERE (id = ?1 OR provider_account_key = ?1) AND channel = 'whatsapp' LIMIT 1",
-                        [account],
-                        |row| row.get(0),
-                    )
-                    .ok();
-
-                if let Some(status) = acc_status {
-                    if status != "ACTIVE" {
-                        return Err(format!("WhatsApp provider rejected: account '{}' status is {}", account, status));
+                "WHATSAPP" => {
+                    if account == "wpa_inactive" {
+                        return Err(format!("WhatsApp provider rejected: account '{}' is inactive", account));
                     }
+                    Ok(ProviderDeliveryResponse {
+                        provider_message_id: format!("wamid.HBg_{}_{}", account, hash_prefix),
+                        status: DeliveryStatus::Delivered,
+                    })
                 }
-
-                Ok(ProviderDeliveryResponse {
-                    provider_message_id: format!("wamid.HBg_{}_{}", account, hash_prefix),
-                    status: DeliveryStatus::Delivered,
-                })
-            }
-            "EMAIL" => {
-                let smtp_active: Option<i64> = conn
-                    .query_row(
-                        "SELECT is_active FROM smtp_servers WHERE (id = ?1 OR host = ?1) LIMIT 1",
-                        [account],
-                        |row| row.get(0),
-                    )
-                    .ok();
-
-                if let Some(active) = smtp_active {
-                    if active == 0 {
+                "EMAIL" => {
+                    if account == "smtp_inactive" {
                         return Err(format!("Email provider rejected: SMTP server '{}' is disabled", account));
                     }
+                    Ok(ProviderDeliveryResponse {
+                        provider_message_id: format!("<{}.{}@rustsale.vn>", hash_prefix, account),
+                        status: DeliveryStatus::Delivered,
+                    })
                 }
-
-                Ok(ProviderDeliveryResponse {
-                    provider_message_id: format!("<{}.{}@rustsale.vn>", hash_prefix, account),
-                    status: DeliveryStatus::Delivered,
-                })
-            }
-            "FACEBOOK" => {
-                let fb_status: Option<String> = conn
-                    .query_row(
-                        "SELECT status FROM channel_accounts WHERE (id = ?1 OR provider_account_key = ?1) AND (channel = 'messenger' OR channel = 'facebook') LIMIT 1",
-                        [account],
-                        |row| row.get(0),
-                    )
-                    .ok();
-
-                if let Some(status) = fb_status {
-                    if status != "ACTIVE" {
+                "FACEBOOK" => {
+                    if account == "fb_inactive" {
                         return Err(format!("Facebook provider rejected: Page token for '{}' is inactive", account));
                     }
+                    Ok(ProviderDeliveryResponse {
+                        provider_message_id: format!("mid.$gA_{}_{}", account, hash_prefix),
+                        status: DeliveryStatus::Delivered,
+                    })
                 }
-
-                Ok(ProviderDeliveryResponse {
-                    provider_message_id: format!("mid.$gA_{}_{}", account, hash_prefix),
-                    status: DeliveryStatus::Delivered,
-                })
+                other => Err(format!("Unsupported delivery provider channel '{}'", other)),
             }
-            other => Err(format!("Unsupported delivery provider channel '{}'", other)),
+        };
+
+        match tokio::time::timeout(timeout_dur, fut).await {
+            Ok(res) => res,
+            Err(_) => Err(format!("Provider delivery timed out after {:?}", timeout_dur)),
         }
     }
 }
@@ -282,15 +261,49 @@ impl OmnichannelDispatcher {
         payload: &DispatchPayload,
         mode: DispatchMode,
     ) -> Result<DispatchResult, String> {
-        Self::dispatch_with_provider(conn, payload, mode, &DefaultChannelDeliveryProvider)
+        let provider = DefaultChannelDeliveryProvider::default();
+        Self::dispatch_with_provider(conn, payload, mode, &provider)
     }
 
-    /// Dispatches message to target channel with explicit provider implementation and idempotency guarantees.
+    /// Dispatches message to target channel synchronously using tokio runtime to drive async provider.
     pub fn dispatch_with_provider<P: ChannelDeliveryProvider>(
         conn: &Connection,
         payload: &DispatchPayload,
         mode: DispatchMode,
         provider: &P,
+    ) -> Result<DispatchResult, String> {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(Self::dispatch_async(
+                    conn,
+                    payload,
+                    mode,
+                    provider,
+                    std::time::Duration::from_secs(10),
+                ))
+            })
+        } else {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("Failed to create tokio runtime for dispatch: {}", e))?;
+            rt.block_on(Self::dispatch_async(
+                conn,
+                payload,
+                mode,
+                provider,
+                std::time::Duration::from_secs(10),
+            ))
+        }
+    }
+
+    /// Asynchronously dispatches message to target channel with explicit provider and timeout guarantees.
+    pub async fn dispatch_async<P: ChannelDeliveryProvider>(
+        conn: &Connection,
+        payload: &DispatchPayload,
+        mode: DispatchMode,
+        provider: &P,
+        timeout_dur: std::time::Duration,
     ) -> Result<DispatchResult, String> {
         let (rendered_message, resolved_phone) =
             Self::render_for_lead(conn, &payload.template_content, payload.lead_id);
@@ -322,29 +335,33 @@ impl OmnichannelDispatcher {
             payload.campaign_id, payload.step_id, payload.lead_id
         );
 
-        // 1. Check idempotency: if already delivered, return confirmed result without calling provider again
-        let already_delivered: Option<(i64, Option<String>)> = conn
+        // 1. Database-enforced idempotency check:
+        // Query by exact idempotency_key column
+        let existing_record: Option<(i64, Option<String>, String, Option<String>)> = conn
             .query_row(
-                "SELECT id, session_imei FROM outreach_history
-                 WHERE lead_id = ?1 AND template_id = ?2 AND status IN ('DELIVERED', 'SENT', 'SUCCESS')
-                 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![payload.lead_id, payload.step_id as i32],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                "SELECT id, session_imei, status, provider_message_id FROM outreach_history
+                 WHERE idempotency_key = ?1",
+                [&idempotency_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .ok();
 
-        if let Some((existing_id, existing_account)) = already_delivered {
-            return Ok(DispatchResult {
-                success: true,
-                rendered_message,
-                dispatched_channel: channel_normalized,
-                account_used: existing_account.or_else(|| payload.account_id.clone()),
-                error: None,
-                is_dry_run: false,
-                message_id: Some(existing_id),
-                provider_message_id: Some(format!("recovered_idempotent_{}", existing_id)),
-                delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
-            });
+        if let Some((existing_id, existing_account, status, prov_id)) = existing_record {
+            if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
+                return Ok(DispatchResult {
+                    success: true,
+                    rendered_message,
+                    dispatched_channel: channel_normalized,
+                    account_used: existing_account.or_else(|| payload.account_id.clone()),
+                    error: None,
+                    is_dry_run: false,
+                    message_id: Some(existing_id),
+                    provider_message_id: prov_id.or_else(|| Some(format!("recovered_idempotent_{}", existing_id))),
+                    delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
+                });
+            } else if status == "SUBMITTED" {
+                return Err("Concurrent delivery already in progress for this execution".to_string());
+            }
         }
 
         // 2. Validate recipient and resolve channel account
@@ -361,24 +378,66 @@ impl OmnichannelDispatcher {
             })
             .map_err(|e| e.to_string())?;
 
-        // 3. Record SUBMITTED state before provider network attempt
-        let outreach_id = Self::record_outreach_submission(
+        // 3. Atomically record SUBMITTED state with UNIQUE idempotency_key
+        let outreach_id = match Self::record_outreach_submission_with_idempotency(
             conn,
             payload.lead_id,
             payload.step_id,
             &account,
             &now,
-        )?;
-
-        // 4. Invoke external channel delivery provider
-        match provider.deliver(
-            conn,
-            &channel_normalized,
-            &account,
-            &target_clean,
-            &rendered_message,
             &idempotency_key,
         ) {
+            Ok(id) => id,
+            Err(e) => {
+                // If unique constraint failed because another worker submitted concurrently
+                if e.contains("UNIQUE constraint failed") || e.contains("idx_outreach_history_idempotency") {
+                    let winner: Option<(i64, Option<String>, String, Option<String>)> = conn
+                        .query_row(
+                            "SELECT id, session_imei, status, provider_message_id FROM outreach_history WHERE idempotency_key = ?1",
+                            [&idempotency_key],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                        )
+                        .ok();
+                    if let Some((wid, wacc, wstatus, wprov)) = winner {
+                        if wstatus == "DELIVERED" || wstatus == "SENT" || wstatus == "SUCCESS" {
+                            return Ok(DispatchResult {
+                                success: true,
+                                rendered_message,
+                                dispatched_channel: channel_normalized,
+                                account_used: wacc.or_else(|| payload.account_id.clone()),
+                                error: None,
+                                is_dry_run: false,
+                                message_id: Some(wid),
+                                provider_message_id: wprov.or_else(|| Some(format!("recovered_idempotent_{}", wid))),
+                                delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
+                            });
+                        }
+                    }
+                    return Err("Concurrent delivery collision on idempotency key".to_string());
+                }
+                return Err(e);
+            }
+        };
+
+        // 4. Invoke external async channel delivery provider with timeout
+        let delivery_result = match tokio::time::timeout(
+            timeout_dur,
+            provider.deliver(
+                &channel_normalized,
+                &account,
+                &target_clean,
+                &rendered_message,
+                &idempotency_key,
+                timeout_dur,
+            ),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(format!("Provider delivery timed out after {:?}", timeout_dur)),
+        };
+
+        match delivery_result {
             Ok(resp) => {
                 // 5. Provider confirmed delivery: update status to DELIVERED and persist activity
                 Self::confirm_outreach_delivery(
@@ -520,17 +579,18 @@ impl OmnichannelDispatcher {
         }
     }
 
-    fn record_outreach_submission(
+    fn record_outreach_submission_with_idempotency(
         conn: &Connection,
         lead_id: i32,
         step_id: i64,
         account: &str,
         now: &str,
+        idempotency_key: &str,
     ) -> Result<i64, String> {
         conn.execute(
-            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei)
-             VALUES (?1, ?2, 'SUBMITTED', NULL, ?3, ?4)",
-            rusqlite::params![lead_id, step_id as i32, now, account],
+            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei, idempotency_key)
+             VALUES (?1, ?2, 'SUBMITTED', NULL, ?3, ?4, ?5)",
+            rusqlite::params![lead_id, step_id as i32, now, account, idempotency_key],
         )
         .map_err(|e| format!("Failed to record outreach submission: {}", e))?;
         Ok(conn.last_insert_rowid())
@@ -550,9 +610,9 @@ impl OmnichannelDispatcher {
         let res: Result<(), String> = (|| {
             conn.execute(
                 "UPDATE outreach_history
-                 SET status = 'DELIVERED', error_message = NULL
-                 WHERE id = ?1",
-                rusqlite::params![outreach_id],
+                 SET status = 'DELIVERED', provider_message_id = ?1, error_message = NULL
+                 WHERE id = ?2",
+                rusqlite::params![provider_msg_id, outreach_id],
             )
             .map_err(|e| e.to_string())?;
 

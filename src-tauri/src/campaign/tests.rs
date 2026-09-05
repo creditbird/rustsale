@@ -48,7 +48,9 @@ fn setup_test_db() -> Connection {
              status TEXT NOT NULL,
              error_message TEXT,
              sent_at TEXT NOT NULL,
-             session_imei TEXT NOT NULL
+             session_imei TEXT NOT NULL,
+             idempotency_key TEXT UNIQUE,
+             provider_message_id TEXT
          );
 
          CREATE TABLE IF NOT EXISTS conversations (
@@ -1038,15 +1040,16 @@ fn test_provider_failure_and_scheduler_retry_backoff() {
 
 struct MockFailingProvider;
 
+#[async_trait::async_trait]
 impl ChannelDeliveryProvider for MockFailingProvider {
-    fn deliver(
+    async fn deliver(
         &self,
-        _conn: &Connection,
         _channel: &str,
         _account: &str,
         _recipient: &str,
         _message: &str,
         _idempotency_key: &str,
+        _timeout: std::time::Duration,
     ) -> Result<ProviderDeliveryResponse, String> {
         Err("Gateway Timeout (HTTP 504)".to_string())
     }
@@ -1095,5 +1098,149 @@ fn test_custom_mock_provider_timeout_and_network_error() {
 
     assert_eq!(status, "FAILED");
     assert!(err_msg.unwrap().contains("Gateway Timeout"));
+}
+
+struct MockHangingProvider;
+
+#[async_trait::async_trait]
+impl ChannelDeliveryProvider for MockHangingProvider {
+    async fn deliver(
+        &self,
+        _channel: &str,
+        _account: &str,
+        _recipient: &str,
+        _message: &str,
+        _idempotency_key: &str,
+        _timeout: std::time::Duration,
+    ) -> Result<ProviderDeliveryResponse, String> {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        Ok(ProviderDeliveryResponse {
+            provider_message_id: "late_response".to_string(),
+            status: DeliveryStatus::Delivered,
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_provider_async_timeout_cancellation() {
+    let conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Timeout Lead", "Timeout Co", "0933445566", "timeout@co.vn");
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_TIMEOUT', 'Timeout Sess', 1)",
+        [],
+    ).unwrap();
+
+    let payload = DispatchPayload {
+        campaign_id: 10,
+        step_id: 20,
+        lead_id,
+        channel: "ZALO".to_string(),
+        target_recipient: "0933445566".to_string(),
+        account_id: Some("IMEI_TIMEOUT".to_string()),
+        template_content: "Hanging test".to_string(),
+        ai_prompt_override: None,
+    };
+
+    let hanging_provider = MockHangingProvider;
+    let res = OmnichannelDispatcher::dispatch_async(
+        &conn,
+        &payload,
+        DispatchMode::Live,
+        &hanging_provider,
+        std::time::Duration::from_millis(50),
+    ).await;
+
+    assert!(res.is_err(), "Expected timeout error but got success");
+    let err = res.unwrap_err();
+    assert!(
+        err.contains("timed out") || err.contains("Provider delivery timed out"),
+        "Expected timeout message, got: {}",
+        err
+    );
+
+    // Verify outreach_history status was recorded as FAILED
+    let (status, err_msg): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, error_message FROM outreach_history WHERE lead_id = ?1",
+            [lead_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(status, "FAILED");
+    assert!(err_msg.unwrap().contains("timed out"));
+}
+
+#[test]
+fn test_database_idempotency_unique_constraint_concurrency_race() {
+    let conn = setup_test_db();
+    let lead_id = insert_test_lead(&conn, "Race Lead", "Race Co", "0944556677", "race@co.vn");
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_RACE', 'Race Sess', 1)",
+        [],
+    ).unwrap();
+
+    let payload = DispatchPayload {
+        campaign_id: 88,
+        step_id: 99,
+        lead_id,
+        channel: "ZALO".to_string(),
+        target_recipient: "0944556677".to_string(),
+        account_id: Some("IMEI_RACE".to_string()),
+        template_content: "Idempotency test {{name}}".to_string(),
+        ai_prompt_override: None,
+    };
+
+    let provider = DefaultChannelDeliveryProvider::default();
+
+    // First dispatch succeeds
+    let res1 = OmnichannelDispatcher::dispatch_with_provider(
+        &conn,
+        &payload,
+        DispatchMode::Live,
+        &provider,
+    ).expect("First dispatch should succeed");
+
+    assert!(res1.success);
+    assert_eq!(res1.delivery_status, "DELIVERED");
+    let msg_id1 = res1.message_id.unwrap();
+
+    // Second dispatch with same campaign/step/lead:
+    // Should be intercepted by idempotency check and safely return existing confirmation
+    let res2 = OmnichannelDispatcher::dispatch_with_provider(
+        &conn,
+        &payload,
+        DispatchMode::Live,
+        &provider,
+    ).expect("Second dispatch should return existing idempotent result");
+
+    assert!(res2.success);
+    assert_eq!(res2.message_id, Some(msg_id1));
+
+    // Verify exactly 1 record exists in outreach_history with unique idempotency_key
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM outreach_history WHERE lead_id = ?1",
+            [lead_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "Only one outreach history entry must exist");
+
+    // Verify unique index on idempotency_key rejects raw duplicate insert
+    let idempotency_key = format!("campaign:{}:step:{}:lead:{}", payload.campaign_id, payload.step_id, payload.lead_id);
+    let duplicate_insert = conn.execute(
+        "INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, idempotency_key)
+         VALUES (?1, ?2, 'SUBMITTED', '2026-09-05T00:00:00Z', 'IMEI_RACE', ?3)",
+        rusqlite::params![lead_id, payload.step_id as i32, idempotency_key],
+    );
+
+    assert!(duplicate_insert.is_err());
+    let err_str = duplicate_insert.unwrap_err().to_string();
+    assert!(
+        err_str.contains("UNIQUE constraint failed") || err_str.contains("idx_outreach_history_idempotency"),
+        "Expected UNIQUE constraint violation, got: {}",
+        err_str
+    );
 }
 
