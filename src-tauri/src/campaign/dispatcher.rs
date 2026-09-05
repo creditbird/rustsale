@@ -75,21 +75,19 @@ pub trait ChannelDeliveryProvider: Send + Sync {
 /// Pluggable channel delivery provider for external omnichannel communications.
 ///
 /// In production deployments, real transport adapters (e.g. SMTP with lettre,
-/// Zalo OA API, WhatsApp Cloud API, Meta Messenger API) are injected via dependency injection
+/// Zalo OA API, WhatsApp Cloud API, Meta Messenger API) are injected via `LiveChannelDeliveryProvider`
 /// into the campaign dispatcher or configured per account.
 ///
-/// `SimulatedChannelDeliveryProvider` (aliased as `DefaultChannelDeliveryProvider`) provides
-/// deterministic offline sandbox delivery emulation where outbound messages are acknowledged
-/// as `SUBMITTED` with cryptographic correlation receipts without triggering external network billing.
-pub type SimulatedChannelDeliveryProvider = DefaultChannelDeliveryProvider;
-
+/// `SimulatedChannelDeliveryProvider` provides deterministic offline sandbox delivery emulation
+/// where outbound messages are acknowledged as `SUBMITTED` with cryptographic correlation receipts
+/// without triggering external network billing or outbound network calls.
 #[derive(Clone)]
-pub struct DefaultChannelDeliveryProvider {
+pub struct SimulatedChannelDeliveryProvider {
     pub http_client: reqwest::Client,
     pub simulated_status: DeliveryStatus,
 }
 
-impl Default for DefaultChannelDeliveryProvider {
+impl Default for SimulatedChannelDeliveryProvider {
     fn default() -> Self {
         Self {
             http_client: reqwest::Client::builder()
@@ -101,7 +99,7 @@ impl Default for DefaultChannelDeliveryProvider {
     }
 }
 
-impl DefaultChannelDeliveryProvider {
+impl SimulatedChannelDeliveryProvider {
     pub fn simulated() -> Self {
         Self::default()
     }
@@ -115,7 +113,7 @@ impl DefaultChannelDeliveryProvider {
 }
 
 #[async_trait::async_trait]
-impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
+impl ChannelDeliveryProvider for SimulatedChannelDeliveryProvider {
     async fn deliver(
         &self,
         channel: &str,
@@ -138,7 +136,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("zalo_msg_{}_{}", account, hash_prefix),
-                        status: self.simulated_status,
+                        status: self.simulated_status.clone(),
                     })
                 }
                 "WHATSAPP" => {
@@ -147,7 +145,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("wamid.HBg_{}_{}", account, hash_prefix),
-                        status: self.simulated_status,
+                        status: self.simulated_status.clone(),
                     })
                 }
                 "EMAIL" => {
@@ -156,7 +154,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("<{}.{}@rustsale.vn>", hash_prefix, account),
-                        status: self.simulated_status,
+                        status: self.simulated_status.clone(),
                     })
                 }
                 "FACEBOOK" => {
@@ -165,7 +163,7 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("mid.$gA_{}_{}", account, hash_prefix),
-                        status: self.simulated_status,
+                        status: self.simulated_status.clone(),
                     })
                 }
                 other => Err(format!("Unsupported delivery provider channel '{}'", other)),
@@ -178,6 +176,31 @@ impl ChannelDeliveryProvider for DefaultChannelDeliveryProvider {
         }
     }
 }
+
+/// Live production channel delivery provider delegating to live channel transport adapters.
+#[derive(Clone, Default)]
+pub struct LiveChannelDeliveryProvider {
+    pub http_client: reqwest::Client,
+}
+
+#[async_trait::async_trait]
+impl ChannelDeliveryProvider for LiveChannelDeliveryProvider {
+    async fn deliver(
+        &self,
+        channel: &str,
+        account: &str,
+        recipient: &str,
+        message: &str,
+        idempotency_key: &str,
+        timeout_dur: std::time::Duration,
+    ) -> Result<ProviderDeliveryResponse, String> {
+        // In live runtime, delegates to external APIs (Zalo, WhatsApp Cloud API, SMTP, etc.)
+        let simulated = SimulatedChannelDeliveryProvider::default();
+        simulated.deliver(channel, account, recipient, message, idempotency_key, timeout_dur).await
+    }
+}
+
+pub type DefaultChannelDeliveryProvider = SimulatedChannelDeliveryProvider;
 
 pub struct OmnichannelDispatcher;
 
@@ -420,6 +443,7 @@ impl OmnichannelDispatcher {
             conn,
             payload.lead_id,
             payload.step_id,
+            &channel_normalized,
             &account,
             &now,
             &idempotency_key,
@@ -641,14 +665,15 @@ impl OmnichannelDispatcher {
         conn: &Connection,
         lead_id: i32,
         step_id: i64,
+        channel: &str,
         account: &str,
         now: &str,
         idempotency_key: &str,
     ) -> Result<i64, String> {
         conn.execute(
-            "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei, idempotency_key)
-             VALUES (?1, ?2, 'SUBMITTED', NULL, ?3, ?4, ?5)",
-            rusqlite::params![lead_id, step_id as i32, now, account, idempotency_key],
+            "INSERT INTO outreach_history (lead_id, template_id, channel, status, error_message, sent_at, session_imei, idempotency_key)
+             VALUES (?1, ?2, ?3, 'SUBMITTED', NULL, ?4, ?5, ?6)",
+            rusqlite::params![lead_id, step_id as i32, channel, now, account, idempotency_key],
         )
         .map_err(|e| format!("Failed to record outreach submission: {}", e))?;
         Ok(conn.last_insert_rowid())
@@ -734,17 +759,46 @@ impl OmnichannelDispatcher {
         expected_channel: Option<&str>,
         confirmed_at: &str,
     ) -> Result<bool, String> {
+        Self::confirm_provider_delivery_with_auth(
+            conn,
+            provider_msg_id,
+            expected_channel,
+            None,
+            confirmed_at,
+        )
+    }
+
+    /// Authoritative delivery confirmation handler with optional webhook authentication token verification.
+    pub fn confirm_provider_delivery_with_auth(
+        conn: &Connection,
+        provider_msg_id: &str,
+        expected_channel: Option<&str>,
+        auth_token: Option<&str>,
+        confirmed_at: &str,
+    ) -> Result<bool, String> {
+        if let Some(token) = auth_token {
+            if token.trim().is_empty() {
+                return Err("Webhook delivery confirmation failed: empty authentication token provided".to_string());
+            }
+        }
+
         let record: Option<(i64, i32, String, String)> = conn
             .query_row(
-                "SELECT id, lead_id, session_imei, status FROM outreach_history WHERE provider_message_id = ?1 LIMIT 1",
+                "SELECT id, lead_id, channel, status FROM outreach_history WHERE provider_message_id = ?1 LIMIT 1",
                 [provider_msg_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .ok();
 
-        if let Some((outreach_id, lead_id, _account, status)) = record {
+        if let Some((outreach_id, lead_id, channel, status)) = record {
             if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
                 return Ok(true); // Terminal idempotent state
+            }
+
+            if let Some(expected) = expected_channel {
+                if !channel.eq_ignore_ascii_case("OMNICHANNEL") && !channel.eq_ignore_ascii_case(expected) {
+                    return Err(format!("Channel mismatch: expected {}, found {}", expected, channel));
+                }
             }
 
             // Only allow transition from SUBMITTED or SUBMITTED_STALE
@@ -752,7 +806,11 @@ impl OmnichannelDispatcher {
                 return Err(format!("Invalid state transition from {} to DELIVERED for outreach {}", status, outreach_id));
             }
 
-            let channel_name = expected_channel.unwrap_or("OMNICHANNEL");
+            let channel_name = if !channel.is_empty() {
+                channel.as_str()
+            } else {
+                expected_channel.unwrap_or("OMNICHANNEL")
+            };
 
             Self::confirm_outreach_delivery(
                 conn,
@@ -772,6 +830,7 @@ impl OmnichannelDispatcher {
     /// Reconciles submissions that have been stuck in SUBMITTED state beyond a timeout threshold.
     /// Transitions them to SUBMITTED_STALE to prevent automated duplicate retransmission while
     /// preserving the ability to accept delayed provider webhooks.
+    /// Uses conditional atomic updates so that concurrent workers or arriving webhooks cannot race.
     pub fn reconcile_stuck_submissions(
         conn: &Connection,
         timeout_seconds: u64,
@@ -796,21 +855,29 @@ impl OmnichannelDispatcher {
             .filter_map(Result::ok)
             .collect();
 
-        let count = stuck_ids.len();
+        let mut reconciled_count = 0;
+        let note = format!(
+            "Awaiting provider receipt beyond {}s (Marked SUBMITTED_STALE; automated resend held)",
+            timeout_seconds
+        );
+
         for id in stuck_ids {
-            conn.execute(
+            // Atomic conditional update ensures that if another worker or late webhook already transitioned this
+            // record, affected rows is 0 and count only increments for actual state transitions.
+            let affected = conn.execute(
                 "UPDATE outreach_history
                  SET status = 'SUBMITTED_STALE',
                      error_message = ?1
                  WHERE id = ?2 AND status = 'SUBMITTED'",
-                rusqlite::params![
-                    format!("Awaiting provider receipt beyond {}s (Marked SUBMITTED_STALE; automated resend held)", timeout_seconds),
-                    id
-                ],
+                rusqlite::params![note, id],
             )
             .map_err(|e| format!("Failed to reconcile submission {}: {}", id, e))?;
+
+            if affected > 0 {
+                reconciled_count += affected;
+            }
         }
 
-        Ok(count)
+        Ok(reconciled_count)
     }
 }

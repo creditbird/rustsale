@@ -45,6 +45,7 @@ fn setup_test_db() -> Connection {
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              lead_id INTEGER NOT NULL,
              template_id INTEGER NOT NULL,
+             channel TEXT NOT NULL DEFAULT 'OMNICHANNEL',
              status TEXT NOT NULL,
              error_message TEXT,
              sent_at TEXT NOT NULL,
@@ -1500,4 +1501,223 @@ fn test_legacy_migration_idempotency_upgrade_path() {
     );
     assert!(res_dup.is_err(), "Duplicate insertion must violate idx_outreach_history_idempotency");
 }
+
+#[test]
+fn test_concurrent_reconciliation_workers_and_late_webhook_race() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE outreach_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            template_id INTEGER NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'ZALO',
+            status TEXT NOT NULL,
+            error_message TEXT,
+            sent_at TEXT NOT NULL,
+            session_imei TEXT NOT NULL,
+            idempotency_key TEXT UNIQUE,
+            provider_message_id TEXT
+        );
+        CREATE TABLE activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            activity_type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            performed_by TEXT NOT NULL
+        );"
+    ).unwrap();
+
+    let old_timestamp = "2026-01-01T00:00:00Z";
+    conn.execute(
+        "INSERT INTO outreach_history (lead_id, template_id, channel, status, sent_at, session_imei, provider_message_id)
+         VALUES (1, 10, 'ZALO', 'SUBMITTED', ?1, 'IMEI_1', 'prov_race_100')",
+        [old_timestamp],
+    ).unwrap();
+
+    // 1. Worker 1 executes reconciliation and claims the submission
+    let count1 = OmnichannelDispatcher::reconcile_stuck_submissions(&conn, 300).unwrap();
+    assert_eq!(count1, 1, "Worker 1 must claim and transition the 1 stuck submission to SUBMITTED_STALE");
+
+    // 2. Worker 2 executes concurrently: since Worker 1 updated status to SUBMITTED_STALE, Worker 2 finds 0 affected
+    let count2 = OmnichannelDispatcher::reconcile_stuck_submissions(&conn, 300).unwrap();
+    assert_eq!(count2, 0, "Worker 2 must see 0 affected rows (no race condition / double count)");
+
+    // 3. Late webhook arrives: confirms delivery successfully (SUBMITTED_STALE -> DELIVERED)
+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+        &conn,
+        "prov_race_100",
+        Some("ZALO"),
+        "2026-09-05T09:00:00Z",
+    ).unwrap());
+
+    let (final_status, _): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, error_message FROM outreach_history WHERE provider_message_id = 'prov_race_100'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(final_status, "DELIVERED");
+
+    // 4. Duplicate webhook delivery arrives: remains idempotent
+    let dup_confirm = OmnichannelDispatcher::confirm_provider_delivery(
+        &conn,
+        "prov_race_100",
+        Some("ZALO"),
+        "2026-09-05T09:01:00Z",
+    ).unwrap();
+    assert!(dup_confirm, "Subsequent webhook callback must return Ok(true) idempotently");
+}
+
+#[test]
+fn test_provider_message_id_unique_index_and_legacy_disambiguation() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE outreach_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            template_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            sent_at TEXT NOT NULL,
+            session_imei TEXT NOT NULL,
+            provider_message_id TEXT
+        );
+        -- Insert legacy rows with some duplicates and some NULLs
+        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
+        VALUES (1, 1, 'SENT', '2026-01-01T00:00:00Z', 'IMEI_1', 'msg_dup_1');
+        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
+        VALUES (2, 1, 'SENT', '2026-01-01T00:00:00Z', 'IMEI_2', 'msg_dup_1');
+        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
+        VALUES (3, 1, 'FAILED', '2026-01-01T00:00:00Z', 'IMEI_3', NULL);
+        INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
+        VALUES (4, 1, 'FAILED', '2026-01-01T00:00:00Z', 'IMEI_4', NULL);"
+    ).unwrap();
+
+    // Run migration disambiguation script
+    conn.execute(
+        "UPDATE outreach_history
+         SET provider_message_id = provider_message_id || ':legacy_dup:' || id
+         WHERE id IN (
+             SELECT o1.id FROM outreach_history o1
+             JOIN (
+                 SELECT provider_message_id, MIN(id) as min_id
+                 FROM outreach_history
+                 WHERE provider_message_id IS NOT NULL
+                 GROUP BY provider_message_id
+                 HAVING COUNT(*) > 1
+             ) dups ON o1.provider_message_id = dups.provider_message_id AND o1.id != dups.min_id
+         )",
+        [],
+    ).unwrap();
+
+    // Create unique partial index
+    conn.execute(
+        "CREATE UNIQUE INDEX idx_outreach_provider_message_id
+         ON outreach_history(provider_message_id)
+         WHERE provider_message_id IS NOT NULL",
+        [],
+    ).unwrap();
+
+    // Verify disambiguated values
+    let p1: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 1", [], |r| r.get(0)).unwrap();
+    let p2: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 2", [], |r| r.get(0)).unwrap();
+    assert_eq!(p1, "msg_dup_1");
+    assert_eq!(p2, "msg_dup_1:legacy_dup:2");
+
+    // Multiple NULLs are allowed by partial index
+    let null_count: i64 = conn.query_row("SELECT COUNT(*) FROM outreach_history WHERE provider_message_id IS NULL", [], |r| r.get(0)).unwrap();
+    assert_eq!(null_count, 2);
+
+    // New duplicate non-null provider_message_id is rejected by database constraint
+    let dup_insert = conn.execute(
+        "INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, provider_message_id)
+         VALUES (5, 1, 'SUBMITTED', '2026-09-05T00:00:00Z', 'IMEI_5', 'msg_dup_1')",
+        [],
+    );
+    assert!(dup_insert.is_err(), "Unique index must reject duplicate provider_message_id");
+}
+
+#[test]
+fn test_webhook_authentication_and_channel_mismatch_rejection() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE outreach_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            template_id INTEGER NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'WHATSAPP',
+            status TEXT NOT NULL,
+            error_message TEXT,
+            sent_at TEXT NOT NULL,
+            session_imei TEXT NOT NULL,
+            idempotency_key TEXT UNIQUE,
+            provider_message_id TEXT UNIQUE
+        );
+        CREATE TABLE activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            activity_type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            performed_by TEXT NOT NULL
+        );
+        INSERT INTO outreach_history (lead_id, template_id, channel, status, sent_at, session_imei, provider_message_id)
+        VALUES (1, 10, 'WHATSAPP', 'SUBMITTED', '2026-09-05T08:00:00Z', 'IMEI_1', 'wa_sec_test_001');"
+    ).unwrap();
+
+    // 1. Empty auth token rejected
+    let empty_auth_res = OmnichannelDispatcher::confirm_provider_delivery_with_auth(
+        &conn,
+        "wa_sec_test_001",
+        Some("WHATSAPP"),
+        Some("   "),
+        "2026-09-05T08:01:00Z",
+    );
+    assert!(empty_auth_res.is_err(), "Empty webhook authentication token must be rejected");
+
+    // 2. Mismatched channel rejected
+    let mismatch_channel_res = OmnichannelDispatcher::confirm_provider_delivery_with_auth(
+        &conn,
+        "wa_sec_test_001",
+        Some("ZALO"),
+        Some("valid-webhook-secret-token"),
+        "2026-09-05T08:01:00Z",
+    );
+    assert!(mismatch_channel_res.is_err(), "Mismatched channel callback must be rejected");
+
+    // 3. Matching channel and valid auth token succeeds
+    let valid_res = OmnichannelDispatcher::confirm_provider_delivery_with_auth(
+        &conn,
+        "wa_sec_test_001",
+        Some("WHATSAPP"),
+        Some("valid-webhook-secret-token"),
+        "2026-09-05T08:01:00Z",
+    );
+    assert!(valid_res.unwrap(), "Matching channel and valid token must confirm delivery");
+
+    // Verify status is DELIVERED
+    let status: String = conn.query_row("SELECT status FROM outreach_history WHERE id = 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(status, "DELIVERED");
+}
+
+#[tokio::test]
+async fn test_live_and_simulated_delivery_provider_separation() {
+    let sim_provider = SimulatedChannelDeliveryProvider::default();
+    let sim_res = sim_provider
+        .deliver("ZALO", "IMEI_DEV", "0901234567", "Hello", "test:key:1", std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(sim_res.provider_message_id.starts_with("zalo_msg_IMEI_DEV_"));
+    assert_eq!(sim_res.status, DeliveryStatus::Submitted);
+
+    let live_provider = LiveChannelDeliveryProvider::default();
+    let live_res = live_provider
+        .deliver("ZALO", "IMEI_PROD", "0901234567", "Hello", "test:key:2", std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(live_res.provider_message_id.starts_with("zalo_msg_IMEI_PROD_"));
+    assert_eq!(live_res.status, DeliveryStatus::Submitted);
+}
+
 

@@ -1,6 +1,10 @@
 use rusqlite::{Connection, Result};
 use std::time::Duration;
 
+/// Idempotent migration helper that checks SQLite PRAGMA table_info before altering the table.
+/// Operates on the active connection or transaction (&conn / &tx). If the column already exists,
+/// it safely no-ops. If column addition fails, the returned Result propagates via `?` to allow
+/// clean rollback of the enclosing transaction.
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -22,6 +26,7 @@ fn add_column_if_missing(
     }
     Ok(())
 }
+
 
 pub fn open_db_connection(db_path: &str) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
@@ -259,6 +264,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lead_id INTEGER NOT NULL,
                 template_id INTEGER NOT NULL,
+                channel TEXT NOT NULL DEFAULT 'OMNICHANNEL',
                 status TEXT NOT NULL,
                 error_message TEXT,
                 sent_at TEXT NOT NULL,
@@ -271,6 +277,7 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
+        add_column_if_missing(&tx, "outreach_history", "channel", "channel TEXT NOT NULL DEFAULT 'OMNICHANNEL'")?;
         add_column_if_missing(&tx, "outreach_history", "idempotency_key", "idempotency_key TEXT")?;
         add_column_if_missing(&tx, "outreach_history", "provider_message_id", "provider_message_id TEXT")?;
         tx.execute(
@@ -279,6 +286,29 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
         )?;
         tx.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_history_idempotency ON outreach_history(idempotency_key)",
+            [],
+        )?;
+
+        // Ensure legacy duplicate provider_message_ids (if any) are disambiguated before creating unique partial index
+        tx.execute(
+            "UPDATE outreach_history
+             SET provider_message_id = provider_message_id || ':legacy_dup:' || id
+             WHERE id IN (
+                 SELECT o1.id FROM outreach_history o1
+                 JOIN (
+                     SELECT provider_message_id, MIN(id) as min_id
+                     FROM outreach_history
+                     WHERE provider_message_id IS NOT NULL
+                     GROUP BY provider_message_id
+                     HAVING COUNT(*) > 1
+                 ) dups ON o1.provider_message_id = dups.provider_message_id AND o1.id != dups.min_id
+             )",
+            [],
+        )?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_provider_message_id
+             ON outreach_history(provider_message_id)
+             WHERE provider_message_id IS NOT NULL",
             [],
         )?;
 
