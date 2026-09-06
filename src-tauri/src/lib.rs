@@ -2,6 +2,7 @@
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use tauri::Manager;
+use tauri_plugin_autostart::MacosLauncher;
 
 pub mod administrative_catalog;
 pub mod ai;
@@ -129,7 +130,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
         .manage(tray_state)
