@@ -70,11 +70,11 @@ Matching plan item(s): `P1-A`, `P1-B`
 - Rust Unit Tests: Added 4 unit tests in `src-tauri/src/lib.rs` verifying all 4 permutations (normal launch, autostart with tray ready, autostart with tray failure, and missing main window). All 4 passed (`cargo test --lib tests::test_autostart`).
 
 ### E1-P1B-CSP: Content Security Policy & Origin Inventory
-- Configured strict production `csp` and development `devCsp` in `src-tauri/tauri.conf.json:21-25`.
-- Script Security: Production `script-src` is strictly hardened to `'self'`, completely removing `unsafe-inline` and `unsafe-eval`.
+- Configured production `csp` and development `devCsp` in `src-tauri/tauri.conf.json:21-25`.
+- Script Security: Production `script-src` is hardened to `'self'`, excluding `unsafe-inline` and `unsafe-eval`.
 - Style & Font Security: `style-src` permits `'self' 'unsafe-inline' https://fonts.googleapis.com`; `font-src` permits `'self' https://fonts.gstatic.com data:`.
 - Remote Network & Media Directives: `connect-src 'self' ipc: http://ipc.localhost https: wss:;` and `img-src` / `media-src` allow `https:`, `asset:`, `http://asset.localhost`, `data:`, `blob:`.
-- Architectural Justification for Scheme-Wide `https:` and `wss:`: RustSale CRM supports user-configured self-hosted or managed Supabase backend instances (configured dynamically via `localStorage['rustsale_supabase_url']` or `.env` in `src/lib/services/supabaseClient.ts`), live WebSocket subscriptions, and downloading/displaying dynamic contact avatars and media attachments from WhatsApp, Facebook, and remote image exports (`imageExport.ts`). Rather than claiming a static origin whitelist, the policy is truthfully documented as permitting HTTPS and WSS schemes to accommodate user-defined CRM backends while isolating code execution strictly to `'self'`.
+- Architectural Explanation for Scheme-Wide `https:` and `wss:`: RustSale CRM supports user-configured self-hosted or managed Supabase backend instances (configured dynamically via `localStorage['rustsale_supabase_url']` or `.env` in `src/lib/services/supabaseClient.ts`), live WebSocket subscriptions, and downloading/displaying dynamic contact avatars and media attachments from WhatsApp, Facebook, and remote image exports (`imageExport.ts`). Rather than claiming a static origin whitelist or absolute immunity to all injection attacks, the policy is truthfully documented as permitting HTTPS and WSS schemes to accommodate user-defined CRM backends while isolating code script execution to `'self'`.
 
 ## E2 - P2 Evidence
 
@@ -98,26 +98,36 @@ Matching plan item(s): `P2-A`, `P2-B`
 
 Matching plan item(s): `P3-A`
 
-### E3-P3A-LINUX-AUTOLAUNCH: Real `auto_launch` library integration test on Linux
-- Implemented `src-tauri/tests/native_autostart_linux_test.rs` calling the real `auto_launch::AutoLaunchBuilder` library (the exact underlying crate invoked by `tauri-plugin-autostart` on Linux).
-- Lifecycle Verification: verified `auto.is_enabled()` initially false, called `auto.enable()`, verified `.desktop` file created at `~/.config/autostart/rustsale-crm-test-autostart.desktop`, verified `Exec=/usr/bin/rustsale-crm --autostart`, verified `auto.is_enabled()` true, called `auto.disable()`, verified `.desktop` file removed and `auto.is_enabled()` false.
-- Hermetic Teardown: Enforced RAII `CleanupGuard` implementing `Drop` to guarantee test file deletion even if an assertion panics.
-- Execution: `cargo test --test native_autostart_linux_test` -> 1 passed, 0 failed in 0.01s on host Linux machine.
-- Environmental Boundary Disclosure: Host machine is Linux (CachyOS x86_64). Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and macOS LaunchAgent execution are physical platform limitations of the Linux host. Windows and macOS support is anchored in Tauri v2 official plugin crate implementation (`tauri-plugin-autostart = "2"`) and capability configuration; physical OS-login session execution is documented as host-dependent.
+### E3-P3A-LINUX-AUTOLAUNCH: Real `auto_launch` library integration tests on Linux
+- Implemented `src-tauri/tests/native_autostart_linux_test.rs` calling the real `auto_launch::AutoLaunchBuilder` library (the exact underlying crate invoked by `tauri-plugin-autostart` on Linux) across 4 isolated integration tests:
+  1. `test_linux_native_xdg_autostart_lifecycle`: generates a unique owned app name (`rustsale-crm-test-lifecycle-<pid>-<timestamp>`), verifies initial `!auto.is_enabled()`, calls `.enable()`, verifies `.desktop` file creation on disk with `Exec=/usr/bin/rustsale-crm --autostart` and `Type=Application`, verifies `auto.is_enabled()`, calls `.disable()`, and verifies file deletion and `!auto.is_enabled()`.
+  2. `test_linux_native_autostart_non_default_xdg_alignment`: verifies that when `XDG_CONFIG_HOME` points to a non-default directory, test assertions and cleanup target the true disk location written by locked `auto-launch 0.5.0` (`dirs::home_dir().join(".config").join("autostart")`), leaving zero orphaned files.
+  3. `test_cleanup_guard_removes_file_on_panic_unwind`: verifies via `std::panic::catch_unwind` that the RAII `CleanupGuard` removes the desktop file upon test assertion panic unwinding. Note: As documented in the Rust Reference on process termination, destructors run during normal return and unwinding panics, but not on process termination without unwinding (e.g. SIGKILL or abort).
+  4. `test_concurrent_autostart_isolation`: runs 4 concurrent threads with independent unique names, proving thread isolation without collision.
+- Clean formatting: verified with `rustfmt --check --edition 2021 src-tauri/tests/native_autostart_linux_test.rs` -> Exit code 0.
+- Execution: `cargo test --test native_autostart_linux_test` -> 4 passed, 0 failed in 0.01s on host Linux machine. Also verified with custom `XDG_CONFIG_HOME=/tmp/test_xdg_config` -> 4 passed, 0 failed in 0.01s.
+- Environmental Boundary & Physical Platform Limitations:
+  - Host machine is Linux x86_64.
+  - Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and macOS LaunchAgent execution are physical platform limitations of the Linux host.
+  - Physical OS-login session execution (spawning background process on user desktop login and verifying tray recovery) cannot be executed in headless CI/Linux terminal without active display manager / login session.
+  - Packaged executable resolution through Tauri IPC (`tauri-plugin-autostart` commands over live webview IPC in mounted desktop application) requires running full packaged Tauri GUI with real OS session.
+  - Windows and macOS support is anchored in Tauri v2 official plugin crate implementation (`tauri-plugin-autostart = "2"`) and capability configuration; physical OS-login session execution is documented as host-dependent.
 
 ### E3-P3A-VERIFY: Full repository quality gates and test execution
 - Typecheck: `bun run check` (compiled paraglide i18n, svelte-kit sync, svelte-check) -> Result: `svelte-check found 0 errors and 6 warnings in 3 files`.
 - Rust compiler check: `cargo check` in `src-tauri` -> Result: `Finished dev profile` in 4.21s with 0 errors and 0 warnings.
-- Rust test suite: `cargo test` -> 868 passed, 1 ignored (`conversation::zalo::probe_test::live_zalo_conversation_probe`, requiring live probe IMEI credentials), 0 failed across 869 tests (866 unit tests + 1 native autostart test + 1 updater signature test).
-- Frontend test suite: `bun test` -> Ran 689 tests across 74 files: 688 passed, 1 skipped (`smoke downloads, reuses, launches, and cleans CloakBrowser runtime`), 0 failed (4,849 expect assertions).
+- Rust test suite: `cargo test` -> 871 passed (866 library unit tests + 4 native autostart tests + 1 updater signature test), 1 ignored (`conversation::zalo::probe_test::live_zalo_conversation_probe`, requiring live probe IMEI credentials), 0 failed across 872 tests.
+- Frontend test suite: `bun test` -> Ran 689 tests across 74 files: 688 passed, 1 skipped (`smoke downloads, reuses, launches, and cleans CloakBrowser runtime`), 0 failed (exact **4,848 expect assertions**).
 - Production build: `bun run build` -> Exit code 0, successfully wrote site to `build/`.
 - Git diff hygiene: `git diff --check` -> Exit code 0, 0 whitespace or trailing newline errors.
+- Code formatting hygiene: `rustfmt --check --edition 2021 src-tauri/tests/native_autostart_linux_test.rs` -> Exit code 0.
 
 ## Closure Evidence
 
-- All requirements R-01 through R-07 closed with GREEN status.
-- Startup failure semantics enforced: app will never be stranded in background if system tray fails.
+- Readiness classification: **`CONDITIONALLY READY`**.
+- Startup failure semantics enforced: app will never be stranded in background if system tray fails (unit decision logic verified).
 - CSP configured with production script-src restricted to `'self'`, and remote network/media schemes documented for dynamic Supabase and external media.
 - Component tests verified with honest E2 labels, all 6 switches exercised, and UI rollback + error toast directly observed.
-- Real `auto_launch` library lifecycle verified on Linux via integration test with hermetic RAII cleanup; Windows/macOS execution boundaries documented.
-- 1 skipped test (CloakBrowser download smoke test), 1 ignored Rust test (live Zalo probe), and 6 Svelte baseline compiler warnings fully disclosed.
+- Real `auto_launch` library lifecycle verified on Linux via 4 isolated integration tests with RAII cleanup, non-default XDG alignment, panic unwinding verification, and concurrency isolation.
+- Quality gates verified: 688 Bun tests pass (1 skipped CloakBrowser download smoke test, 4,848 expect assertions), 871 Rust tests pass (1 ignored live Zalo probe), 0 check errors.
+- Physical OS-login session execution, Windows Registry, and macOS LaunchAgent physical execution boundaries honestly disclosed and tracked for target OS QA.

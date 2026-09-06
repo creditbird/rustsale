@@ -37,6 +37,16 @@ Benchmark sections follow the plan phases: `B0` (baseline), `B1` (backend), `B2`
 | P2 | Notification Settings Toggles | count | 5 | 6 | 6 | 6 | +1 | `E2-P2B-UI` |
 | P2 | i18n Localization Keys Added | count | 0 | 4 | 4 | 4 | +4 | `E2-P2A-SERVICE` |
 
+## B3 - P3 Benchmarks
+
+| Phase | Metric | Unit | Baseline | Latest | Final | Target | Delta | Evidence |
+|---|---|---|---|---|---|---|---|---|
+| P3 | Native Autostart Linux Tests | count | 0 | 4 | 4 | 4 | +4 | `E3-P3A-LINUX-AUTOLAUNCH` |
+| P3 | Backend Rust Passed Tests | count | 868 | 871 | 871 | 871 | +3 | `E3-P3A-VERIFY` |
+| P3 | Frontend Bun Passed Tests | count | 688 | 688 | 688 | 688 | 0 | `E3-P3A-VERIFY` |
+| P3 | Frontend Test Assertions | count | 4842 | 4848 | 4848 | 4848 | +6 | `E3-P3A-VERIFY` |
+| P3 | Test Suite Formatting Errors (rustfmt) | count | 1 | 0 | 0 | 0 | -1 | `E3-P3A-LINUX-AUTOLAUNCH` |
+
 ## Non-Benchmarkable Notes
 
 Autostart system entry points rely on operating-system native registries and launch agents; latency is instantaneous at UI toggle level and non-blocking for background startup execution.

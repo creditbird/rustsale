@@ -3,7 +3,7 @@
 ## Metadata
 
 - Date: `2026-09-05`
-- Status: `completed`
+- Status: `conditionally_ready`
 - Plan: `docs/plans/2026-09-05-autostart-system-integration/2026-09-05-autostart-system-integration-plan.md`
 - Evidence: `docs/plans/2026-09-05-autostart-system-integration/2026-09-05-autostart-system-integration-evidence.md`
 - Benchmark: `docs/plans/2026-09-05-autostart-system-integration/2026-09-05-autostart-system-integration-benchmark.md`
@@ -52,11 +52,12 @@ When the host OS (Linux, Windows, or macOS) starts up, RustSale CRM cannot launc
 |---|---|---|---|---|---|---|---|
 | R-01 | Install official Tauri v2 autostart dependencies | Frontend uses `bun add`, backend uses `tauri-plugin-autostart = "2"` | Dependencies resolve and compile cleanly | Missing package or version mismatch | `Cargo.lock` & `bun.lock` (`E1-P1A-DEPS`) | P1-A | `GREEN` |
 | R-02 | Grant minimal Tauri v2 autostart permissions | Default capability window `"main"` includes `"autostart:default"` | App frontend can call `enable()`, `disable()`, `isEnabled()` | Permission denied IPC error | `src-tauri/capabilities/default.json:13` (`E1-P1B-BACKEND`) | P1-B | `GREEN` |
-| R-03 | Safe `--autostart` boot & tray-failure resilience | App hidden to tray on `--autostart` ONLY if tray is ready; never strands user | System boot quietly minimizes; if tray fails, window remains visible | Window hidden with broken tray, or hide error crashes app | `determine_autostart_action` & 4 Rust tests (`E1-P1B-FAILCLOSED`) | P1-B | `GREEN` |
+| R-03 | Safe `--autostart` boot & tray-failure resilience | App hidden to tray on `--autostart` ONLY if tray is ready; never strands user | System boot quietly minimizes; if tray fails, window remains visible | Window hidden with broken tray, or hide error crashes app | `determine_autostart_action` & 4 Rust unit tests (`E1-P1B-FAILCLOSED`) | P1-B | `GREEN (Unit logic verified; live display manager OS-login session validation deferred to target OS QA)` |
 | R-04 | Provide frontend autostart service | `isAutostartEnabled` and `setAutostart` handle errors gracefully | Returns boolean state and toggles OS registry | Exception thrown in non-tauri or dev env caught safely | `autostartService.ts` & 6 unit tests (`E2-P2A-SERVICE`) | P2-A | `GREEN` |
 | R-05 | Add localization strings in Vietnamese and English | Both locales define autostart title, description, and status | Paraglide compiles without missing key warnings | Undefined translation runtime error | `messages/*.json` & `bun run i18n:compile` (`E2-P2A-SERVICE`) | P2-A | `GREEN` |
 | R-06 | Integrate Autostart switch in Settings UI | Rendered inside `NotificationSettings.svelte` with active badge and Sonner toast | Toggling all 6 switches updates state; errors rollback | Failure shows error toast and reverts switch to false | Component view & E2 test suite (5 pass, UI rollback + toast verified) (`E2-P2B-UI`) | P2-B | `GREEN` |
-| R-07 | Native Linux auto_launch test, CSP policy & quality gates | Svelte checks, strict script CSP, native Linux auto_launch integration test, and full test suite pass | Zero errors in `bun run check`, `cargo check`, and `bun test` | Type or compile errors block release; unhandled errors | Harness QA report (`E3-P3A-VERIFY`, `E3-P3A-LINUX-AUTOLAUNCH`) | P3-A | `GREEN` |
+| R-07 | Native Linux auto_launch test, CSP policy & quality gates | Svelte checks, hardened CSP, 4 native Linux auto_launch integration tests with XDG alignment, and full test suite pass | Zero errors in `bun run check`, `cargo check`, and `bun test` | Type or compile errors block release; unhandled errors | Harness QA report (`E3-P3A-VERIFY`, `E3-P3A-LINUX-AUTOLAUNCH`) | P3-A | `CONDITIONALLY READY (Linux crate & gates GREEN; live desktop session login, Windows Registry & macOS LaunchAgent deferred to target OS QA)` |
+
 
 ## Acceptance Criteria
 
@@ -158,16 +159,17 @@ When the host OS (Linux, Windows, or macOS) starts up, RustSale CRM cannot launc
 ### P3: Quality Gate & Verification
 
 - [x] P3-A: Quality gate, test execution, and change detection
-  - Goal: Run all verification commands (`bun run check`, `bun test`, `cargo check`, `cargo test`), run real Linux `auto_launch` integration test, verify clean `git diff --check`, run Anvien `detect-changes`, and verify release readiness.
+  - Goal: Run all verification commands (`bun run check`, `bun test`, `cargo check`, `cargo test`), run 4 real Linux `auto_launch` integration tests with hermetic cleanup and XDG alignment, verify clean `rustfmt` on the test suite, verify clean `git diff --check`, run Anvien `detect-changes`, and verify conditional release readiness.
   - Work Steps:
     1. Run `bun run check` (0 errors, 6 existing Svelte warnings).
     2. Run `cargo check` (0 errors, 0 warnings).
-    3. Run `cargo test` (868 passed, 1 ignored live network probe, 0 failed).
-    4. Run `cargo test --test native_autostart_linux_test` (1 passed, tests real `auto_launch` crate lifecycle with RAII cleanup).
-    5. Run `bun test` (688 passed, 1 skipped CloakBrowser download smoke test, 0 failed, 4,849 expect calls across 689 tests / 74 files).
-    6. Verify `git diff --check` passes with exit code 0 (no trailing blank lines or whitespace defects).
-    7. Run `anvien detect-changes --repo /home/arch/Project/test/RustSale_v2 --scope all`.
-    8. Record closure evidence.
+    3. Run `cargo test` (871 passed: 866 lib unit tests + 4 native autostart tests + 1 updater signature test, 1 ignored live network probe, 0 failed).
+    4. Run `cargo test --test native_autostart_linux_test` (4 passed: lifecycle, non-default XDG alignment, panic unwinding cleanup, and concurrent isolation).
+    5. Run `rustfmt --check --edition 2021 src-tauri/tests/native_autostart_linux_test.rs` (exit code 0, formatting clean).
+    6. Run `bun test` (688 passed, 1 skipped CloakBrowser download smoke test, 0 failed, 4,848 expect calls across 689 tests / 74 files).
+    7. Verify `git diff --check` passes with exit code 0 (no trailing blank lines or whitespace defects).
+    8. Run `anvien detect-changes --repo /home/arch/Project/test/RustSale_v2 --scope all`.
+    9. Record closure evidence and conditional readiness boundaries.
   - Implementation Gate: P1 and P2 complete.
-  - Acceptance: 100% tests/checks pass; clean detect-changes; clean diff check.
+  - Acceptance: 100% tests/checks pass; clean detect-changes; clean diff check; test formatting verified.
   - Evidence Targets: `E3-P3A-VERIFY`, `E3-P3A-LINUX-AUTOLAUNCH`.

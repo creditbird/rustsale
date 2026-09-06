@@ -2,7 +2,7 @@
 
 Title: Autostart System Integration
 Date: 2026-09-05
-Status: Complete
+Status: CONDITIONALLY READY
 Companion plan: `docs/plans/2026-09-05-autostart-system-integration/2026-09-05-autostart-system-integration-plan.md`
 Companion evidence: `docs/plans/2026-09-05-autostart-system-integration/2026-09-05-autostart-system-integration-evidence.md`
 Companion benchmark: `docs/plans/2026-09-05-autostart-system-integration/2026-09-05-autostart-system-integration-benchmark.md`
@@ -62,7 +62,8 @@ Out of scope:
 | Autostart frontend service | Created `src/lib/services/autostartService.ts` | `src/lib/services/autostartService.ts` exports `isAutostartEnabled` and `setAutostart` with error safety | `correct` | 0 related files | `E2-P2A-SERVICE` | preserve |
 | Localization strings | Added autostart keys in `messages/vi.json` and `messages/en.json` | Vietnamese & English keys for label, description, status, and error | `correct` | 2 related files | `E2-P2A-SERVICE` | preserve |
 | Settings UI toggle | Added Autostart toggle row with dynamic badge, active state sync, error rollback, and 6-switch test | Includes Autostart toggle row with dynamic badge, active state sync, and error toast | `correct` | 8 related files | `E2-P2B-REMEDIATION` | preserve |
-| Tauri CSP configuration | Strict production CSP and devCsp configured in `src-tauri/tauri.conf.json` | Strict CSP policy defined without null | `correct` | 1 related file | `E1-P1B-CSP` | preserve |
+| Tauri CSP configuration | Hardened production CSP (`script-src 'self'`) and devCsp configured in `src-tauri/tauri.conf.json` with documented https/wss scheme allowances | Hardened CSP policy defined without null | `correct` | 1 related file | `E1-P1B-CSP` | preserve |
+| Native Linux tests & Environmental boundaries | 4 isolated tests in `native_autostart_linux_test.rs` covering lifecycle, non-default XDG alignment, panic unwinding, and concurrency | Hermetic native library tests, clean rustfmt, honest boundary disclosure | `correct` | 1 related file | `E3-P3A-LINUX-AUTOLAUNCH` | preserve |
 
 ## Status Refresh Log
 
@@ -74,7 +75,8 @@ Out of scope:
 | R3 | 2026-09-05 | after P2-A service & i18n | `autostartService.ts`, `messages/*.json` | service & i18n: `missing -> correct` | `E2-P2A-SERVICE` | proceed to P2-B |
 | R4 | 2026-09-05 | after P2-B UI & P3-A verify | `NotificationSettings.svelte`, tests | UI & tests: `missing -> correct` | `E2-P2B-UI`, `E3-P3A-VERIFY` | initial commit b1e5c5d |
 | R5 | 2026-09-05 | post-review remediation | `lib.rs`, `tauri.conf.json`, `NotificationSettings.spec.ts`, `native_autostart_linux_test.rs` | fail-closed tray boot, strict CSP, all 6 switches exercised, native Linux test | `E1-P1B-FAILCLOSED`, `E1-P1B-CSP`, `E2-P2B-REMEDIATION` | supervisor re-review |
-| R6 | 2026-09-05 | post-re-review remediation | `Cargo.toml`, `native_autostart_linux_test.rs`, `NotificationSettings.spec.ts`, plan docs | real `auto_launch` crate test, UI rollback + toast verification, honest CSP origin documentation, exact test counts (868 passed / 1 ignored; 688 passed / 1 skipped / 4849 expect) | `E3-P3A-LINUX-AUTOLAUNCH`, `E2-P2B-UI`, `E3-P3A-VERIFY` | resubmission ready |
+| R6 | 2026-09-05 | post-re-review remediation | `Cargo.toml`, `native_autostart_linux_test.rs`, `NotificationSettings.spec.ts`, plan docs | real `auto_launch` crate test, UI rollback + toast verification, honest CSP origin documentation | `E3-P3A-LINUX-AUTOLAUNCH`, `E2-P2B-UI`, `E3-P3A-VERIFY` | supervisor review reject |
+| R7 | 2026-09-06 | post-supervisor-reject remediation | `native_autostart_linux_test.rs`, plan ledgers | fixed XDG divergence and cleanup bug, unique owned app names, added panic unwinding and concurrency tests, formatted via rustfmt, updated exact test assertions (Bun 4,848, Rust 871), synchronized readiness to CONDITIONALLY READY | `E3-P3A-LINUX-AUTOLAUNCH`, `E3-P3A-VERIFY` | resubmission ready |
 
 ## Phase Touch Map
 
@@ -96,11 +98,27 @@ Out of scope:
 4. `src-tauri/src/lib.rs` originally initialized the window with default visibility. When booting with `--autostart`, hiding the main window and keeping it in the system tray provides a smooth background experience.
 5. In `NotificationSettings.svelte`, system tray integration (`close_to_tray`) was already present and matched the pattern required for an autostart toggle row.
 
-## Post-Remediation Verification Findings (R6)
+## Post-Remediation Verification Findings (R7)
 
-1. **Dependencies & Crate Integration**: `@tauri-apps/plugin-autostart` is installed in `package.json` and locked in `bun.lock`. `tauri-plugin-autostart = "2"` and `auto-launch = "0.5"` (dev-dependency) are configured in `src-tauri/Cargo.toml` and locked in `Cargo.lock`.
-2. **Real Linux `auto_launch` Integration Test**: `src-tauri/tests/native_autostart_linux_test.rs` calls real `auto_launch::AutoLaunchBuilder` (the exact underlying crate used by `tauri-plugin-autostart` on Linux) to exercise `.enable()`, `.is_enabled()`, and `.disable()`, equipped with an RAII `CleanupGuard` implementing `Drop` to guarantee hermetic cleanup.
-3. **Platform Scope & Environmental Boundaries**: The test host is Linux x86_64. Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and macOS LaunchAgent execution are physical platform limitations of the Linux host. Their integration is grounded in the official upstream `tauri-plugin-autostart` v2 crate and Tauri capability definitions, while physical OS-login session validation is documented as host-dependent.
-4. **Settings UI Rollback Verification**: `NotificationSettings.spec.ts` verifies that on backend failure, the switch reverts to `aria-checked="false"` and an error toast `toast.error(m.settings_notif_err_update_autostart())` is triggered and asserted.
-5. **CSP Policy**: Production `script-src` is strictly hardened to `'self'`, eliminating unsafe script execution. `connect-src` and `img-src` permit `https:` and `wss:` to support user-configurable dynamic Supabase instances and remote media/avatars.
-6. **Codebase Hygiene & Test Integrity**: `git diff --check` passes cleanly with 0 whitespace errors. Full test suites pass with exact counts: Frontend: 688 passed, 1 skipped, 0 failed, 4,849 assertions; Rust: 868 passed, 1 ignored, 0 failed.
+1. **Native Linux auto_launch Path & Cleanup Isolation**:
+   - Locked `auto-launch 0.5.0` on Linux (`src/linux.rs:81`) hardcodes resolution of the desktop directory via `dirs::home_dir().unwrap().join(".config").join("autostart")`, ignoring `XDG_CONFIG_HOME`.
+   - `src-tauri/tests/native_autostart_linux_test.rs` now defines `get_auto_launch_autostart_dir()` aligning assertions and cleanup with this exact disk location.
+   - Test application names are dynamically generated with unique process ID and timestamp suffixes (`rustsale-crm-test-<prefix>-<pid>-<timestamp>`), guaranteeing zero collision with pre-existing user desktop entries and enabling safe concurrent runs.
+   - A dedicated test `test_linux_native_autostart_non_default_xdg_alignment` verifies that when `XDG_CONFIG_HOME` points to a temporary custom directory, the test correctly locates and cleans up the actual desktop entry written to `~/.config/autostart`, leaving 0 orphaned entries.
+   - A dedicated test `test_cleanup_guard_removes_file_on_panic_unwind` uses `std::panic::catch_unwind` to prove that RAII `CleanupGuard`'s `Drop` implementation executes during panic stack unwinding, deleting the desktop file. (As per Rust Reference, process termination without unwinding such as SIGKILL does not run destructors).
+   - A dedicated test `test_concurrent_autostart_isolation` runs 4 concurrent threads with independent AutoLaunch instances and unique names, proving thread isolation without shared state interference.
+   - The test file cleanly passes `rustfmt --check --edition 2021 src-tauri/tests/native_autostart_linux_test.rs` with exit code 0.
+2. **Readiness Status & Environmental Boundaries (CONDITIONALLY READY)**:
+   - The implementation is classified as `CONDITIONALLY READY`.
+   - Verified on host: Linux x86_64 library integration (auto-launch 0.5.0 lifecycle, non-default XDG, panic unwinding cleanup, concurrent isolation), Tauri v2 capability configuration (`"autostart:default"` in `default.json`), `--autostart` boot logic & tray resilience (fail-closed, 4 Rust unit tests), frontend autostart service (6 unit tests), localization (VI/EN 4 keys compiled via Paraglide), Settings UI switch & rollback + toast on backend failure (5 E2 tests), and hardened production CSP (`script-src 'self'`).
+   - Environmental Gaps / Limitations:
+     - Real physical OS-login session launch and tray recovery in desktop environment: cannot be executed in headless CI/Linux terminal without active display manager / login session.
+     - Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and macOS LaunchAgent execution: physical platform limitations of Linux host.
+     - Packaged executable resolution through Tauri IPC (`tauri-plugin-autostart` commands over live webview IPC in mounted desktop application): requires running full packaged Tauri GUI with real OS session.
+   - Follow-up Action: Cross-platform smoke testing on native Windows and macOS machines, and session-login verification upon release packaging.
+3. **Settings UI Rollback Verification**: `NotificationSettings.spec.ts` verifies that on backend failure, the switch reverts to `aria-checked="false"` and an error toast `toast.error(m.settings_notif_err_update_autostart())` is triggered and asserted.
+4. **CSP Policy**: Production `script-src` is hardened to `'self'`, disallowing unsafe-inline and unsafe-eval. `connect-src` and `img-src` permit `https:` and `wss:` to support user-configurable dynamic Supabase instances and remote media/avatars.
+5. **Codebase Hygiene & Test Integrity**:
+   - `git diff --check` passes cleanly with 0 whitespace errors.
+   - Frontend tests: `bun test` ran 689 tests across 74 files: 688 passed, 1 skipped (`smoke downloads, reuses, launches, and cleans CloakBrowser runtime`), 0 failed, exact **4,848 expect assertions**.
+   - Rust tests: `cargo test` ran 872 tests: 871 passed (866 library unit tests + 4 native autostart tests + 1 updater signature test), 1 ignored (`conversation::zalo::probe_test::live_zalo_conversation_probe`), 0 failed.
