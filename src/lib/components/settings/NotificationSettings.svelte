@@ -29,6 +29,7 @@
     type NotificationSettings as SettingsType,
     type TrayConfig
   } from '$lib/services/desktopNotificationService';
+  import { isAutostartEnabled, setAutostart } from '$lib/services/autostartService';
 
   let settings = $state<SettingsType>({
     enabled: true,
@@ -42,6 +43,7 @@
     dnd_enabled: false
   });
 
+  let autostartEnabled = $state(false);
   let loading = $state(true);
   let testing = $state(false);
 
@@ -71,7 +73,11 @@
         }
 
         // 2. Read snapshots only after listener is confirmed active
-        const [s, t] = await Promise.all([getNotificationSettings(), getTrayState()]);
+        const [s, t, auto] = await Promise.all([
+          getNotificationSettings(),
+          getTrayState(),
+          isAutostartEnabled()
+        ]);
         if (active) {
           if (s) settings = s;
           if (t) {
@@ -80,6 +86,7 @@
               tray.dnd_enabled = t.dnd_enabled;
             }
           }
+          autostartEnabled = auto;
         }
       } catch (err) {
         console.warn('Error loading notification settings:', err);
@@ -117,6 +124,17 @@
     } catch (err) {
       tray.close_to_tray = !next;
       toast.error(m.settings_notif_err_update_tray());
+    }
+  }
+
+  async function handleToggleAutostart() {
+    const next = !autostartEnabled;
+    autostartEnabled = next;
+    try {
+      await setAutostart(next);
+    } catch (err) {
+      autostartEnabled = !next;
+      toast.error(m.settings_notif_err_update_autostart());
     }
   }
 
@@ -296,7 +314,38 @@
           </button>
         </div>
 
-        <!-- 3. Notification Sound -->
+        <!-- 3. Launch at System Startup -->
+        <div class="py-3.5 flex items-center justify-between gap-4">
+          <div class="space-y-0.5">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium text-foreground">
+                {m.settings_notif_autostart()}
+              </span>
+              {#if autostartEnabled}
+                <Badge variant="outline" class="text-[10px] bg-primary/10 text-primary border-primary/30">
+                  {m.settings_notif_status_autostart()}
+                </Badge>
+              {/if}
+            </div>
+            <p class="text-xs text-muted-foreground">
+              {m.settings_notif_autostart_desc()}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-label={m.settings_notif_autostart()}
+            aria-checked={autostartEnabled}
+            onclick={handleToggleAutostart}
+            class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2 {autostartEnabled ? 'bg-primary' : 'bg-muted'}"
+          >
+            <span
+              class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out {autostartEnabled ? 'translate-x-5' : 'translate-x-0'}"
+            ></span>
+          </button>
+        </div>
+
+        <!-- 4. Notification Sound -->
         <div class="py-3.5 flex items-center justify-between gap-4">
           <div class="space-y-0.5">
             <div class="flex items-center gap-2">

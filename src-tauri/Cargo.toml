@@ -25,6 +25,7 @@ tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-autostart = "2"
 libc = "0.2"
 sha2 = "0.10"
 infer = "0.16"
@@ -67,6 +68,7 @@ whatsapp-rust = { version = "=0.7.0", default-features = false, features = ["sql
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
 minisign-verify = "0.2"
+auto-launch = "0.5"
 
 [profile.release]
 opt-level = 3

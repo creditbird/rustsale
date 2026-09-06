@@ -2,6 +2,7 @@
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use tauri::Manager;
+use tauri_plugin_autostart::MacosLauncher;
 
 pub mod administrative_catalog;
 pub mod ai;
@@ -20,6 +21,31 @@ mod models;
 pub mod notification;
 pub mod scrapers;
 pub mod tray;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum AutostartBootAction {
+    NormalLaunch,
+    HiddenToTray,
+    ShowDueToTrayFailure,
+    NoMainWindow,
+}
+
+pub fn determine_autostart_action(
+    has_autostart_arg: bool,
+    tray_ready: bool,
+    has_window: bool,
+) -> AutostartBootAction {
+    if !has_autostart_arg {
+        return AutostartBootAction::NormalLaunch;
+    }
+    if !has_window {
+        return AutostartBootAction::NoMainWindow;
+    }
+    if !tray_ready {
+        return AutostartBootAction::ShowDueToTrayFailure;
+    }
+    AutostartBootAction::HiddenToTray
+}
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -103,10 +129,53 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .manage(tray_state)
         .manage(notification_manager.clone())
         .setup(move |app| {
-            let _ = tray::init_tray(app.handle());
+            let tray_ready = match tray::init_tray(app.handle()) {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::error!("Failed to initialize system tray: {:?}", e);
+                    false
+                }
+            };
+
+            let has_autostart_arg = std::env::args().any(|arg| arg == "--autostart");
+            let main_window = app.get_webview_window("main");
+            let action = determine_autostart_action(
+                has_autostart_arg,
+                tray_ready,
+                main_window.is_some(),
+            );
+
+            match action {
+                AutostartBootAction::HiddenToTray => {
+                    if let Some(window) = main_window {
+                        if let Err(e) = window.hide() {
+                            tracing::error!("Failed to hide main window during autostart boot: {:?}", e);
+                            let _ = window.show();
+                        } else {
+                            tracing::info!("Application launched in autostart mode, window minimized to tray");
+                        }
+                    }
+                }
+                AutostartBootAction::ShowDueToTrayFailure => {
+                    tracing::warn!("System tray failed to initialize; keeping main window visible to prevent stranded process");
+                    if let Some(window) = main_window {
+                        let _ = window.show();
+                    }
+                }
+                AutostartBootAction::NormalLaunch => {
+                    tracing::debug!("Application launched normally, main window visible");
+                }
+                AutostartBootAction::NoMainWindow => {
+                    tracing::warn!("Autostart launch detected but main window was not found");
+                }
+            }
             let app_data_dir = app
                 .path()
                 .app_data_dir()
@@ -611,4 +680,35 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_autostart_normal_launch() {
+        let action = determine_autostart_action(false, true, true);
+        assert_eq!(action, AutostartBootAction::NormalLaunch);
+    }
+
+    #[test]
+    fn test_autostart_hidden_to_tray_when_ready() {
+        let action = determine_autostart_action(true, true, true);
+        assert_eq!(action, AutostartBootAction::HiddenToTray);
+    }
+
+    #[test]
+    fn test_autostart_shows_window_when_tray_fails() {
+        // Crucial safety invariant: If system tray fails to initialize on OS boot,
+        // we MUST NOT hide the window, otherwise the user has no way to interact with the app.
+        let action = determine_autostart_action(true, false, true);
+        assert_eq!(action, AutostartBootAction::ShowDueToTrayFailure);
+    }
+
+    #[test]
+    fn test_autostart_no_main_window() {
+        let action = determine_autostart_action(true, true, false);
+        assert_eq!(action, AutostartBootAction::NoMainWindow);
+    }
 }
