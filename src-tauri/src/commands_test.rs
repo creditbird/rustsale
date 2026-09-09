@@ -4302,8 +4302,37 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_command_inspect_lead_import_file() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let csv_content = "Name,Phone,Email\nAlpha,0912345678,alpha@test.com\nBeta,0987654321,beta@test.com\n";
+        file.write_all(csv_content.as_bytes()).unwrap();
+
+        let path = file.path().with_extension("csv");
+        std::fs::copy(file.path(), &path).unwrap();
+
+        let res = commands::inspect_lead_import_file(path.to_string_lossy().to_string(), None).await;
+        assert!(res.is_ok());
+        let inspection = res.unwrap();
+        assert_eq!(inspection.file_type, "csv");
+        assert_eq!(inspection.headers, vec!["Name", "Phone", "Email"]);
+        assert_eq!(inspection.sample_rows.len(), 2);
+        assert_eq!(inspection.total_rows_estimate, 2);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn test_command_inspect_nonexistent_file() {
+        let res = commands::inspect_lead_import_file("/non/existent/path/xyz.csv".to_string(), None).await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Tệp không tồn tại"));
+    }
+
     #[test]
     fn test_is_public_ip_adversarial_matrix() {
+
         use std::net::IpAddr;
 
         // Disallowed IPv4 addresses

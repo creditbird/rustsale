@@ -7605,6 +7605,141 @@ pub async fn export_leads_csv_file<R: tauri::Runtime>(
 }
 
 #[tauri::command]
+pub async fn pick_lead_import_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    tokio::task::spawn_blocking(move || {
+        let res = app
+            .dialog()
+            .file()
+            .add_filter("Bảng tính (Excel, CSV)", &["xlsx", "xls", "csv"])
+            .blocking_pick_file();
+
+        match res {
+            Some(fp) => fp
+                .into_path()
+                .map(|p| Some(p.to_string_lossy().into_owned()))
+                .map_err(|e| format!("Đường dẫn tệp không hợp lệ: {}", e)),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| format!("Lỗi worker chọn tệp: {}", e))?
+}
+
+#[tauri::command]
+pub async fn inspect_lead_import_file(
+    file_path: String,
+    sheet_name: Option<String>,
+) -> Result<crate::lead_importer::types::ImportInspection, String> {
+    tokio::task::spawn_blocking(move || {
+        crate::lead_importer::inspector::inspect_lead_file(
+            std::path::Path::new(&file_path),
+            sheet_name.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Lỗi worker kiểm tra tệp: {}", e))?
+}
+
+#[tauri::command]
+pub async fn execute_lead_import<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    options: crate::lead_importer::types::LeadImportOptions,
+    on_progress: tauri::ipc::Channel<crate::lead_importer::types::ImportProgress>,
+    _state: tauri::State<'_, DbState>,
+) -> Result<crate::lead_importer::types::ImportSummaryResult, String> {
+    use tauri::{Emitter, Manager};
+
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        // Step 1: Parse input file in worker thread without acquiring DB lock
+        let all_data_rows = crate::lead_importer::importer::parse_import_rows(&options)?;
+
+        // Step 2: Acquire DB lock only for the atomic database operations
+        let db_state = app_handle.state::<DbState>();
+        let mut conn = db_state
+            .conn
+            .lock()
+            .map_err(|e| format!("Lỗi khóa CSDL: {}", e))?;
+
+        // Step 3: Execute import loop and stream progress
+        crate::lead_importer::importer::execute_lead_import_rows(
+            &mut conn,
+            &options,
+            all_data_rows,
+            |p| {
+                let _ = on_progress.send(p.clone());
+                let _ = app_handle.emit("lead-import-progress", &p);
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("Lỗi luồng xử lý import: {}", e))?
+}
+
+#[tauri::command]
+pub async fn download_lead_import_template<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    format: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let is_excel = format.to_lowercase() == "xlsx" || format.to_lowercase() == "excel";
+    let (default_name, bytes) = if is_excel {
+        (
+            "RustSale_Lead_Template.xlsx".to_string(),
+            crate::lead_importer::template::generate_excel_lead_template()?,
+        )
+    } else {
+        (
+            "RustSale_Lead_Template.csv".to_string(),
+            crate::lead_importer::template::generate_csv_lead_template(),
+        )
+    };
+
+    let filter_name = if is_excel {
+        "Excel File (*.xlsx)"
+    } else {
+        "CSV File (*.csv)"
+    };
+    let filter_ext = if is_excel { "xlsx" } else { "csv" };
+
+    let selected_path = tokio::task::spawn_blocking(move || {
+        let res = app
+            .dialog()
+            .file()
+            .set_file_name(&default_name)
+            .add_filter(filter_name, &[filter_ext])
+            .blocking_save_file();
+
+        match res {
+            Some(fp) => fp
+                .into_path()
+                .map(Some)
+                .map_err(|e| format!("Đường dẫn lưu tệp không hợp lệ: {}", e)),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| format!("Lỗi worker dialog: {}", e))??;
+
+    let file_path = match selected_path {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    tokio::fs::write(&file_path, &bytes)
+        .await
+        .map_err(|e| format!("Lỗi ghi tệp mẫu: {}", e))?;
+
+    Ok(Some(file_path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+
 pub async fn install_portable_linux_update(version: String) -> Result<bool, String> {
     #[cfg(not(target_os = "linux"))]
     {

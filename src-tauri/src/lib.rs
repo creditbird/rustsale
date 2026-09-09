@@ -17,6 +17,7 @@ mod db_test;
 pub mod events;
 pub mod facebook;
 pub mod google_maps_jobs;
+pub mod lead_importer;
 mod models;
 pub mod notification;
 pub mod scrapers;
@@ -646,6 +647,11 @@ pub fn run() {
             commands::sync_and_deep_scan_group_members,
             commands::get_hardware_id,
             commands::export_leads_csv_file,
+            commands::pick_lead_import_file,
+            commands::inspect_lead_import_file,
+            commands::execute_lead_import,
+            commands::download_lead_import_template,
+
             commands::save_image_file,
             commands::install_portable_linux_update,
             tray::get_tray_state,

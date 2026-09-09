@@ -9,9 +9,10 @@
   import { Badge } from '$lib/components/ui/badge';
   import { Checkbox } from '$lib/components/ui/checkbox';
   import * as Select from '$lib/components/ui/select';
-  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink, Download } from 'lucide-svelte';
+  import { Search, Plus, FolderPlus, CheckCircle2, XCircle, X, ChevronLeft, ChevronRight, ExternalLink, Download, Upload } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
   import { exportLeadsToCsv } from '$lib/utils/leadsExportCsv';
+  import LeadImportModal from './LeadImportModal.svelte';
   import { m, formatCurrency, convertCurrency, currencyState, type Currency } from '$lib/i18n';
 
   let { leads = [], entityType = 'leads', onRefresh, onOpenConversation } = $props<{
@@ -38,6 +39,9 @@
   let assigningCategory = $state(false);
   let assignErrorMsg = $state<string | null>(null);
   let assignSuccessMsg = $state<string | null>(null);
+
+  // Lead import modal state
+  let showImportModal = $state(false);
 
   // Lead creation modal states
   let showAddModal = $state(false);
@@ -315,6 +319,10 @@
           {m.leads_assign_category({ count: selectedRows.size })}
         </Button>
       {/if}
+      <Button variant="outline" size="sm" onclick={() => { showImportModal = true; }} class="gap-2">
+        <Upload class="size-4" />
+        {m.leads_import_btn()}
+      </Button>
       <Button size="sm" onclick={() => { showAddModal = true; modalErrorMsg = null; }} class="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
         <Plus class="size-4" />
         {entityType === 'contacts' ? m.leads_add_contact() : m.leads_new_lead()}
@@ -701,3 +709,12 @@
     </div>
   </div>
 {/if}
+
+<!-- Lead Import Modal -->
+<LeadImportModal
+  bind:open={showImportModal}
+  onSuccess={() => {
+    onRefresh?.();
+    crmService.notifyLeadsChanged();
+  }}
+/>
