@@ -98,7 +98,7 @@ pub struct FriendRecommendationsDataInfo {
     pub phone_number: String,
     pub status: String,
     pub gender: crate::models::Gender,
-    pub dob: u32,
+    pub dob: i64,
     pub r#type: i32,
     pub recomm_type: FriendRecommendationsType,
     pub recomm_src: i32,

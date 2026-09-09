@@ -3,6 +3,8 @@ mod tests {
     use super::super::commands;
     use super::super::db;
 
+    const NO_APP_HANDLE: Option<&tauri::AppHandle> = None;
+
     #[test]
     fn test_crm_commands() {
         let mut conn = db::init_db(":memory:").unwrap();
@@ -1312,7 +1314,7 @@ mod tests {
 
         // Run send_zalo_outreach_internal
         let res = commands::send_zalo_outreach_internal(
-            None,
+            NO_APP_HANDLE,
             &db_mutex,
             "mock-imei".to_string(),
             vec![lead_id_1, lead_id_2, lead_id_3, lead_id_4],
@@ -1511,7 +1513,7 @@ mod tests {
         let db_mutex = Mutex::new(conn);
 
         let res = commands::send_zalo_outreach_internal(
-            None,
+            NO_APP_HANDLE,
             &db_mutex,
             "mock-imei".to_string(),
             vec![lead_id_1, lead_id_2, lead_id_3],
@@ -1609,7 +1611,7 @@ mod tests {
         let db_mutex = Mutex::new(conn);
 
         let res = commands::send_zalo_outreach_internal(
-            None,
+            NO_APP_HANDLE,
             &db_mutex,
             "mock-imei".to_string(),
             vec![lead_id_1, lead_id_2, lead_id_3],
@@ -2759,7 +2761,7 @@ mod tests {
         let total_leads = lead_ids.len();
 
         let res1 = commands::send_zalo_outreach_internal(
-            None,
+            NO_APP_HANDLE,
             &db_mutex,
             partitions[0].0.clone(),
             partitions[0].1.clone(),
@@ -2776,7 +2778,7 @@ mod tests {
         .unwrap();
 
         let res2 = commands::send_zalo_outreach_internal(
-            None,
+            NO_APP_HANDLE,
             &db_mutex,
             partitions[1].0.clone(),
             partitions[1].1.clone(),
@@ -4800,5 +4802,1107 @@ mod tests {
         for h in handles {
             h.await.unwrap();
         }
+    }
+
+    #[test]
+    fn test_zalo_outreach_skips_leads_without_phone() {
+        let mut conn = crate::db::init_db(":memory:").unwrap();
+
+        // 1. Lead with valid mobile phone
+        let lead_with_phone = commands::add_lead_internal(
+            &mut conn,
+            "Lead Valid Phone".into(),
+            "Company A".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "lead1@example.com".into(),
+            "0901234567".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 2. Lead with empty phone and no zalo_uid
+        let lead_no_phone = commands::add_lead_internal(
+            &mut conn,
+            "Lead No Phone".into(),
+            "Company B".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "lead2@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 3. Lead with whitespace phone and no zalo_uid
+        let lead_ws_phone = commands::add_lead_internal(
+            &mut conn,
+            "Lead Whitespace Phone".into(),
+            "Company C".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "lead3@example.com".into(),
+            "   ".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 4. Lead without phone but with cached zalo_uid
+        let lead_with_uid = commands::add_lead_internal(
+            &mut conn,
+            "Lead With UID".into(),
+            "Company D".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "lead4@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '1234567890' WHERE id = ?1",
+            rusqlite::params![lead_with_uid],
+        )
+        .unwrap();
+
+        let query = commands::OutreachLeadQuery {
+            category_id: None,
+            segmentation: "never_sent".to_string(),
+            filter_template_id: None,
+            channel: "zalo".to_string(),
+            search: None,
+            filter_verified_zalo: false,
+            filter_unreached: false,
+            filter_mobile_only: false,
+        };
+
+        let page = commands::get_outreach_leads_page_internal(&conn, &query, None, 50).unwrap();
+        let returned_ids: Vec<i32> = page.items.into_iter().filter_map(|l| l.id).collect();
+
+        assert!(
+            returned_ids.contains(&lead_with_phone),
+            "Lead with valid phone should be included"
+        );
+        assert!(
+            returned_ids.contains(&lead_with_uid),
+            "Lead with Zalo UID should be included"
+        );
+        assert!(
+            !returned_ids.contains(&lead_no_phone),
+            "Lead without phone should be skipped"
+        );
+        assert!(
+            !returned_ids.contains(&lead_ws_phone),
+            "Lead with whitespace phone should be skipped"
+        );
+        assert_eq!(
+            page.total, 2,
+            "Total count should only include outreachable leads"
+        );
+
+        let resolved = commands::resolve_outreach_lead_ids_internal(&conn, &query, &[]).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert!(resolved.contains(&lead_with_phone));
+        assert!(resolved.contains(&lead_with_uid));
+
+        // Test filter_outreachable_zalo_lead_ids
+        let all_ids = vec![lead_with_phone, lead_no_phone, lead_ws_phone, lead_with_uid];
+        let (valid_ids, invalid_ids) =
+            commands::filter_outreachable_zalo_lead_ids(&conn, &all_ids).unwrap();
+        assert_eq!(valid_ids.len(), 2);
+        assert_eq!(invalid_ids.len(), 2);
+        assert!(valid_ids.contains(&lead_with_phone));
+        assert!(valid_ids.contains(&lead_with_uid));
+        assert!(invalid_ids.contains(&lead_no_phone));
+        assert!(invalid_ids.contains(&lead_ws_phone));
+
+        // Check invalid leads were marked in DB
+        let (has_zalo_2, zalo_status_2): (Option<i32>, Option<String>) = conn
+            .query_row(
+                "SELECT has_zalo, zalo_status FROM leads WHERE id = ?1",
+                [lead_no_phone],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(has_zalo_2, Some(0));
+        assert_eq!(zalo_status_2.as_deref(), Some("INVALID_PHONE"));
+    }
+
+    #[test]
+    fn test_zalo_outreach_eligibility_sentinels_and_whitespace() {
+        let mut conn = crate::db::init_db(":memory:").unwrap();
+
+        // 1. Whitespace phone only (\t\n) -> EXCLUDED
+        let lead_tab_newline = commands::add_lead_internal(
+            &mut conn,
+            "Tab Newline Phone".into(),
+            "Company WS".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "ws@example.com".into(),
+            "\t\n".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 2. Sentinel UID "0" -> EXCLUDED
+        let lead_uid_zero = commands::add_lead_internal(
+            &mut conn,
+            "UID Zero".into(),
+            "Company Zero".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "zero@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '0' WHERE id = ?1",
+            rusqlite::params![lead_uid_zero],
+        )
+        .unwrap();
+
+        // 3. Sentinel UID "-1" -> EXCLUDED
+        let lead_uid_neg = commands::add_lead_internal(
+            &mut conn,
+            "UID Neg".into(),
+            "Company Neg".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "neg@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '-1' WHERE id = ?1",
+            rusqlite::params![lead_uid_neg],
+        )
+        .unwrap();
+
+        // 4. Sentinel UID "null" -> EXCLUDED
+        let lead_uid_null = commands::add_lead_internal(
+            &mut conn,
+            "UID Null".into(),
+            "Company Null".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "null@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = 'null' WHERE id = ?1",
+            rusqlite::params![lead_uid_null],
+        )
+        .unwrap();
+
+        // 5. Padded sentinel UID " -1 " -> EXCLUDED
+        let lead_uid_padded_neg = commands::add_lead_internal(
+            &mut conn,
+            "Padded Neg".into(),
+            "Company Padded Neg".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "pneg@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = ' -1 ' WHERE id = ?1",
+            rusqlite::params![lead_uid_padded_neg],
+        )
+        .unwrap();
+
+        // 6. Padded sentinel UID " 0 " -> EXCLUDED
+        let lead_uid_padded_zero = commands::add_lead_internal(
+            &mut conn,
+            "Padded Zero".into(),
+            "Company Padded Zero".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "pzero@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = ' 0 ' WHERE id = ?1",
+            rusqlite::params![lead_uid_padded_zero],
+        )
+        .unwrap();
+
+        // 7. All-zeros UID "00" -> EXCLUDED
+        let lead_uid_double_zero = commands::add_lead_internal(
+            &mut conn,
+            "Double Zero".into(),
+            "Company Double Zero".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "dzero@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '00' WHERE id = ?1",
+            rusqlite::params![lead_uid_double_zero],
+        )
+        .unwrap();
+
+        // 8. Padded sentinel UID " undefined " -> EXCLUDED
+        let lead_uid_padded_undefined = commands::add_lead_internal(
+            &mut conn,
+            "Padded Undefined".into(),
+            "Company Undef".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "pundef@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = ' undefined ' WHERE id = ?1",
+            rusqlite::params![lead_uid_padded_undefined],
+        )
+        .unwrap();
+
+        // 9. Single digit phone "1" (no UID) -> EXCLUDED
+        let lead_phone_one = commands::add_lead_internal(
+            &mut conn,
+            "Phone One".into(),
+            "Company One".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "pone@example.com".into(),
+            "1".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 10. Short digit phone "+84-90-123" (no UID) -> EXCLUDED
+        let lead_phone_short = commands::add_lead_internal(
+            &mut conn,
+            "Phone Short".into(),
+            "Company Short".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "pshort@example.com".into(),
+            "+84-90-123".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 11. Alphabetic phone "abc" (no UID) -> EXCLUDED
+        let lead_phone_abc = commands::add_lead_internal(
+            &mut conn,
+            "Phone Abc".into(),
+            "Company Abc".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "pabc@example.com".into(),
+            "abc".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 12. Valid mobile phone AND sentinel UID "0" -> INCLUDED (fallback to valid phone)
+        let lead_phone_and_zero_uid = commands::add_lead_internal(
+            &mut conn,
+            "Phone and Zero UID".into(),
+            "Company Fallback".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "fallback@example.com".into(),
+            "0909999888".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '0' WHERE id = ?1",
+            rusqlite::params![lead_phone_and_zero_uid],
+        )
+        .unwrap();
+
+        // 13. Numeric UID only -> INCLUDED
+        let lead_valid_uid_only = commands::add_lead_internal(
+            &mut conn,
+            "Valid UID Only".into(),
+            "Company UID".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "uid@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '1862258430779885879' WHERE id = ?1",
+            rusqlite::params![lead_valid_uid_only],
+        )
+        .unwrap();
+
+        // 14. String/cached UID only "cached-uid" -> INCLUDED
+        let lead_uid_cached = commands::add_lead_internal(
+            &mut conn,
+            "Cached UID Lead".into(),
+            "Company Cached".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "cached@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = 'cached-uid' WHERE id = ?1",
+            rusqlite::params![lead_uid_cached],
+        )
+        .unwrap();
+
+        // 15. International formatted mobile "+84 90 123 4567" -> INCLUDED
+        let lead_phone_intl_format = commands::add_lead_internal(
+            &mut conn,
+            "Intl Mobile Lead".into(),
+            "Company Intl".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "intl@example.com".into(),
+            "+84 90 123 4567".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 16. Invalid phone "1" BUT has valid UID "cached-uid" -> INCLUDED (UID fallback)
+        let lead_invalid_phone_with_cached_uid = commands::add_lead_internal(
+            &mut conn,
+            "Phone One With Cached UID".into(),
+            "Company Fallback2".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "fb2@example.com".into(),
+            "1".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = 'cached-uid' WHERE id = ?1",
+            rusqlite::params![lead_invalid_phone_with_cached_uid],
+        )
+        .unwrap();
+
+        let query = commands::OutreachLeadQuery {
+            category_id: None,
+            segmentation: "all".to_string(),
+            filter_template_id: None,
+            channel: "zalo".to_string(),
+            search: None,
+            filter_verified_zalo: false,
+            filter_unreached: false,
+            filter_mobile_only: false,
+        };
+
+        let page = commands::get_outreach_leads_page_internal(&conn, &query, None, 50).unwrap();
+        let ids: Vec<i32> = page.items.into_iter().filter_map(|l| l.id).collect();
+
+        assert_eq!(page.total, 5, "Exactly 5 leads must be eligible in SQL");
+        assert!(ids.contains(&lead_phone_and_zero_uid));
+        assert!(ids.contains(&lead_valid_uid_only));
+        assert!(ids.contains(&lead_uid_cached));
+        assert!(ids.contains(&lead_phone_intl_format));
+        assert!(ids.contains(&lead_invalid_phone_with_cached_uid));
+
+        assert!(!ids.contains(&lead_tab_newline));
+        assert!(!ids.contains(&lead_uid_zero));
+        assert!(!ids.contains(&lead_uid_neg));
+        assert!(!ids.contains(&lead_uid_null));
+        assert!(!ids.contains(&lead_uid_padded_neg));
+        assert!(!ids.contains(&lead_uid_padded_zero));
+        assert!(!ids.contains(&lead_uid_double_zero));
+        assert!(!ids.contains(&lead_uid_padded_undefined));
+        assert!(!ids.contains(&lead_phone_one));
+        assert!(!ids.contains(&lead_phone_short));
+        assert!(!ids.contains(&lead_phone_abc));
+
+        let batch = vec![
+            lead_tab_newline,
+            lead_uid_zero,
+            lead_uid_neg,
+            lead_uid_null,
+            lead_uid_padded_neg,
+            lead_uid_padded_zero,
+            lead_uid_double_zero,
+            lead_uid_padded_undefined,
+            lead_phone_one,
+            lead_phone_short,
+            lead_phone_abc,
+            lead_phone_and_zero_uid,
+            lead_valid_uid_only,
+            lead_uid_cached,
+            lead_phone_intl_format,
+            lead_invalid_phone_with_cached_uid,
+        ];
+        let (valid, invalid) = commands::filter_outreachable_zalo_lead_ids(&conn, &batch).unwrap();
+        assert_eq!(valid.len(), 5, "Helper must accept exactly 5 valid leads");
+        assert_eq!(
+            invalid.len(),
+            11,
+            "Helper must reject exactly 11 invalid leads"
+        );
+        assert!(valid.contains(&lead_phone_and_zero_uid));
+        assert!(valid.contains(&lead_valid_uid_only));
+        assert!(valid.contains(&lead_uid_cached));
+        assert!(valid.contains(&lead_phone_intl_format));
+        assert!(valid.contains(&lead_invalid_phone_with_cached_uid));
+
+        assert!(invalid.contains(&lead_tab_newline));
+        assert!(invalid.contains(&lead_uid_zero));
+        assert!(invalid.contains(&lead_uid_neg));
+        assert!(invalid.contains(&lead_uid_null));
+        assert!(invalid.contains(&lead_uid_padded_neg));
+        assert!(invalid.contains(&lead_uid_padded_zero));
+        assert!(invalid.contains(&lead_uid_double_zero));
+        assert!(invalid.contains(&lead_uid_padded_undefined));
+        assert!(invalid.contains(&lead_phone_one));
+        assert!(invalid.contains(&lead_phone_short));
+        assert!(invalid.contains(&lead_phone_abc));
+    }
+
+    #[test]
+    fn test_filter_outreachable_zalo_lead_ids_propagates_db_errors() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Table 'leads' does not exist in this connection
+        let res = commands::filter_outreachable_zalo_lead_ids(&conn, &[1, 2]);
+        assert!(
+            res.is_err(),
+            "Missing table must return Err from filter helper"
+        );
+
+        // Read-only DB write failure propagation
+        let mut rw_conn = crate::db::init_db(":memory:").unwrap();
+        let lead_id = commands::add_lead_internal(
+            &mut rw_conn,
+            "No Phone Lead".into(),
+            "Company".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "test@example.com".into(),
+            "".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Set DB to query_only (read-only)
+        rw_conn.execute_batch("PRAGMA query_only = ON;").unwrap();
+        // Helper must attempt to write UPDATE and return Err instead of swallowing it
+        let read_only_res = commands::filter_outreachable_zalo_lead_ids(&rw_conn, &[lead_id]);
+        assert!(
+            read_only_res.is_err(),
+            "Read-only DB must return Err when update fails, got: {:?}",
+            read_only_res
+        );
+    }
+
+    #[test]
+    fn test_email_sibling_outreach_lead_filter() {
+        let mut conn = crate::db::init_db(":memory:").unwrap();
+
+        let lead_valid_email = commands::add_lead_internal(
+            &mut conn,
+            "Valid Email".into(),
+            "Company A".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "valid@example.com".into(),
+            "0901234567".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lead_empty_email = commands::add_lead_internal(
+            &mut conn,
+            "Empty Email".into(),
+            "Company B".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "".into(),
+            "0901234568".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lead_ws_email = commands::add_lead_internal(
+            &mut conn,
+            "WS Email".into(),
+            "Company C".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "   ".into(),
+            "0901234569".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lead_no_at_email = commands::add_lead_internal(
+            &mut conn,
+            "No At Email".into(),
+            "Company D".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "invalid-email".into(),
+            "0901234570".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let query = commands::OutreachLeadQuery {
+            category_id: None,
+            segmentation: "all".to_string(),
+            filter_template_id: None,
+            channel: "email".to_string(),
+            search: None,
+            filter_verified_zalo: true, // Should be ignored for email
+            filter_unreached: false,
+            filter_mobile_only: false,
+        };
+
+        let page = commands::get_outreach_leads_page_internal(&conn, &query, None, 50).unwrap();
+        let ids: Vec<i32> = page.items.into_iter().filter_map(|l| l.id).collect();
+
+        assert_eq!(page.total, 1, "Only valid email must be included");
+        assert!(ids.contains(&lead_valid_email));
+        assert!(!ids.contains(&lead_empty_email));
+        assert!(!ids.contains(&lead_ws_email));
+        assert!(!ids.contains(&lead_no_at_email));
+    }
+
+    #[test]
+    fn test_zca_dob_all_models_both_negative_values() {
+        let negative_dobs = [-25200, -72255600];
+
+        for dob_val in negative_dobs {
+            // 1. UserBasic
+            let json_basic = serde_json::json!({
+                "avatar": "https://avatar.url",
+                "cover": "https://cover.url",
+                "status": "active",
+                "gender": 1,
+                "dob": dob_val,
+                "sdob": "31/12/1969",
+                "globalId": "gid_123",
+                "bizPkg": { "label": null, "pkgId": 0 },
+                "uid": "123456789",
+                "zalo_name": "Test User",
+                "display_name": "Test User"
+            });
+            let parsed_basic: Result<zca_rs::models::UserBasic, _> =
+                serde_json::from_value(json_basic);
+            assert!(
+                parsed_basic.is_ok(),
+                "UserBasic must deserialize dob={dob_val}, err: {:?}",
+                parsed_basic.err()
+            );
+
+            // 2. User
+            let json_user = serde_json::json!({
+                "userId": "123456789",
+                "username": "testuser",
+                "displayName": "Test User",
+                "zaloName": "Test User",
+                "avatar": "https://avatar.url",
+                "bgavatar": "",
+                "cover": "",
+                "gender": 1,
+                "dob": dob_val,
+                "sdob": "18/09/1967",
+                "status": "",
+                "phoneNumber": "0903733899",
+                "isFr": 0,
+                "isBlocked": 0,
+                "lastActionTime": 0,
+                "lastUpdateTime": 0,
+                "isActive": 1,
+                "key": 0,
+                "type": 0,
+                "isActivePC": 0,
+                "isActiveWeb": 0,
+                "isValid": 1,
+                "userKey": "",
+                "accountStatus": 0,
+                "oaInfo": null,
+                "user_mode": 0,
+                "globalId": "gid_456",
+                "bizPkg": { "label": null, "pkgId": 0 },
+                "createdTs": 0,
+                "oa_status": null
+            });
+            let parsed_user: Result<zca_rs::models::User, _> = serde_json::from_value(json_user);
+            assert!(
+                parsed_user.is_ok(),
+                "User must deserialize dob={dob_val}, err: {:?}",
+                parsed_user.err()
+            );
+
+            // 3. FriendRecommendationsDataInfo
+            let json_friend_info = serde_json::json!({
+                "userId": "123456789",
+                "username": "testfriend",
+                "displayName": "Test Friend",
+                "zaloName": "Test Friend",
+                "avatar": "https://avatar.url",
+                "phoneNumber": "0866091839",
+                "status": "",
+                "gender": 1,
+                "dob": dob_val,
+                "type": 0,
+                "recommType": 0,
+                "recommSrc": 0,
+                "recommTime": 0,
+                "recommInfo": { "suggestWay": 0, "source": 0, "message": "" },
+                "bizPkg": { "label": null, "pkgId": 0 },
+                "isSeenFriendReq": false
+            });
+            let parsed_friend: Result<zca_rs::apis::friend::FriendRecommendationsDataInfo, _> =
+                serde_json::from_value(json_friend_info);
+            assert!(
+                parsed_friend.is_ok(),
+                "FriendRecommendationsDataInfo must deserialize dob={dob_val}, err: {:?}",
+                parsed_friend.err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_zalo_outreach_partitioning_and_runtime_mock_execution() {
+        // 1. Test partition_outreach_leads logic (dedup IMEIs and lead IDs, even round-robin)
+        let imeis = vec![
+            "imei-alpha".to_string(),
+            "imei-beta".to_string(),
+            "imei-alpha".to_string(),
+        ];
+        let leads = vec![101, 102, 103, 104, 101, 102];
+        let partitions = commands::partition_outreach_leads(&imeis, &leads).unwrap();
+        assert_eq!(partitions.len(), 2, "Duplicate IMEIs must be deduplicated");
+        assert_eq!(partitions[0].0, "imei-alpha");
+        assert_eq!(partitions[0].1, vec![101, 103]);
+        assert_eq!(partitions[1].0, "imei-beta");
+        assert_eq!(partitions[1].1, vec![102, 104]);
+
+        // 2. Test runtime mock execution with multiple sessions and error handling
+        let conn = crate::db::init_db(":memory:").unwrap();
+        let conn_mutex = std::sync::Mutex::new(conn);
+
+        // Insert template
+        {
+            let conn = conn_mutex.lock().unwrap();
+            conn.execute(
+                "INSERT INTO outreach_templates (id, name, content, created_at) VALUES (1, 'Zalo Promo', 'Hello {{name}}', '2026-09-08T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Insert leads: 2 valid, 2 invalid (empty and whitespace)
+        let lead1 = {
+            let mut conn = conn_mutex.lock().unwrap();
+            commands::add_lead_internal(
+                &mut conn,
+                "Lead One".into(),
+                "Company 1".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "l1@example.com".into(),
+                "0901111111".into(),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let lead2_invalid_empty = {
+            let mut conn = conn_mutex.lock().unwrap();
+            commands::add_lead_internal(
+                &mut conn,
+                "Lead Two".into(),
+                "Company 2".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "l2@example.com".into(),
+                "".into(),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let lead3_invalid_ws = {
+            let mut conn = conn_mutex.lock().unwrap();
+            commands::add_lead_internal(
+                &mut conn,
+                "Lead Three".into(),
+                "Company 3".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "l3@example.com".into(),
+                "   \t\n  ".into(),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let lead4 = {
+            let mut conn = conn_mutex.lock().unwrap();
+            commands::add_lead_internal(
+                &mut conn,
+                "Lead Four".into(),
+                "Company 4".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "l4@example.com".into(),
+                "0904444444".into(),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        // Filter outreachable leads
+        let all_input_ids = vec![lead1, lead2_invalid_empty, lead3_invalid_ws, lead4];
+        let (valid_ids, skipped_ids) = {
+            let conn = conn_mutex.lock().unwrap();
+            commands::filter_outreachable_zalo_lead_ids(&conn, &all_input_ids).unwrap()
+        };
+        assert_eq!(valid_ids, vec![lead1, lead4]);
+        assert_eq!(skipped_ids, vec![lead2_invalid_empty, lead3_invalid_ws]);
+
+        // Verify invalid leads marked in DB
+        {
+            let conn = conn_mutex.lock().unwrap();
+            for invalid_id in &skipped_ids {
+                let (has_zalo, zalo_status): (Option<i32>, Option<String>) = conn
+                    .query_row(
+                        "SELECT has_zalo, zalo_status FROM leads WHERE id = ?1",
+                        [invalid_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(has_zalo, Some(0));
+                assert_eq!(zalo_status.as_deref(), Some("INVALID_PHONE"));
+            }
+        }
+
+        // Partition the 2 valid leads across 2 mock sessions
+        let mock_imeis = vec!["mock-imei-1".to_string(), "mock-imei-2".to_string()];
+        let run_partitions = commands::partition_outreach_leads(&mock_imeis, &valid_ids).unwrap();
+        assert_eq!(run_partitions.len(), 2);
+        assert_eq!(run_partitions[0], ("mock-imei-1".to_string(), vec![lead1]));
+        assert_eq!(run_partitions[1], ("mock-imei-2".to_string(), vec![lead4]));
+
+        let options = commands::ZaloOutreachRunOptions {
+            enable_burst_limit: false,
+            burst_max_messages: 0,
+            burst_delay_seconds: 0,
+            inter_message_delay_seconds: 0,
+        };
+
+        // Execute session 1
+        let scope1 = commands::OutreachProgressScope {
+            processed_offset: 0,
+            sent_offset: 0,
+            total_leads: 2,
+            emit_complete: false,
+        };
+        let res1 = commands::send_zalo_outreach_internal(
+            NO_APP_HANDLE,
+            &conn_mutex,
+            "mock-imei-1".to_string(),
+            vec![lead1],
+            1,
+            options,
+            scope1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(res1.total_sent, 1);
+
+        // Execute session 2
+        let scope2 = commands::OutreachProgressScope {
+            processed_offset: 1,
+            sent_offset: 1,
+            total_leads: 2,
+            emit_complete: true,
+        };
+        let res2 = commands::send_zalo_outreach_internal(
+            NO_APP_HANDLE,
+            &conn_mutex,
+            "mock-imei-2".to_string(),
+            vec![lead4],
+            1,
+            options,
+            scope2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(res2.total_sent, 1);
+
+        // Verify DB updates post-outreach
+        {
+            let conn = conn_mutex.lock().unwrap();
+
+            // Check leads table updated for both valid leads
+            for sent_lead_id in &[lead1, lead4] {
+                let (has_zalo, zalo_reached, zalo_status): (i32, i32, Option<String>) = conn
+                    .query_row(
+                        "SELECT has_zalo, zalo_reached, zalo_status FROM leads WHERE id = ?1",
+                        [sent_lead_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .unwrap();
+                assert_eq!(has_zalo, 1);
+                assert_eq!(zalo_reached, 1);
+                assert_eq!(zalo_status.as_deref(), Some("VERIFIED_EXIST"));
+            }
+
+            // Check outreach_history table records both sessions with correct IMEIs
+            let history_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM outreach_history WHERE status = 'SUCCESS'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(history_count, 2);
+
+            let session1_record: (i32, String) = conn
+                .query_row(
+                    "SELECT lead_id, session_imei FROM outreach_history WHERE lead_id = ?1",
+                    [lead1],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(session1_record, (lead1, "mock-imei-1".to_string()));
+
+            let session2_record: (i32, String) = conn
+                .query_row(
+                    "SELECT lead_id, session_imei FROM outreach_history WHERE lead_id = ?1",
+                    [lead4],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(session2_record, (lead4, "mock-imei-2".to_string()));
+
+            // Check activities table has 2 entries
+            let activity_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM activities WHERE activity_type = 'Outreach'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(activity_count, 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_zalo_worker_invalid_phone_write_error_propagation() {
+        let mut conn = crate::db::init_db(":memory:").unwrap();
+        let template_id =
+            crate::db::create_outreach_template(&conn, "Test Template", "Hello {{name}}", None)
+                .unwrap();
+        let lead_id = commands::add_lead_internal(
+            &mut conn,
+            "Bad Lead".into(),
+            "Company".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "".into(),
+            "123".into(), // invalid non-mobile phone, no zalo_uid
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Put database into read-only mode so UPDATE will fail
+        conn.execute_batch("PRAGMA query_only = ON;").unwrap();
+        let db_mutex = std::sync::Mutex::new(conn);
+
+        let res = commands::send_zalo_outreach_internal(
+            NO_APP_HANDLE,
+            &db_mutex,
+            "mock-imei".to_string(),
+            vec![lead_id],
+            template_id,
+            commands::ZaloOutreachRunOptions::default(),
+            commands::OutreachProgressScope::default(),
+        )
+        .await;
+
+        assert!(
+            res.is_err(),
+            "Worker must propagate DB write error when UPDATE fails"
+        );
+        let err_msg = res.unwrap_err();
+        assert!(
+            err_msg.contains("Database write error"),
+            "Error must contain 'Database write error', got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_zalo_outreach_events_and_progress_emission() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri::Listener;
+
+        let conn = crate::db::init_db(":memory:").unwrap();
+        let mut conn = conn;
+        crate::db::seed_data(&mut conn).unwrap();
+
+        let template_id =
+            crate::db::create_outreach_template(&conn, "Event Test Tpl", "Hello {{name}}", None)
+                .unwrap();
+
+        let lead_id = commands::add_lead_internal(
+            &mut conn,
+            "Test Lead".into(),
+            "Company".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "".into(),
+            "0912345678".into(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let db_state = commands::DbState {
+            conn: std::sync::Mutex::new(conn),
+        };
+
+        let app = mock_builder()
+            .manage(db_state)
+            .build(mock_context(noop_assets()))
+            .unwrap();
+
+        let log_count = Arc::new(AtomicUsize::new(0));
+        let progress_count = Arc::new(AtomicUsize::new(0));
+        let complete_count = Arc::new(AtomicUsize::new(0));
+
+        let log_count_clone = log_count.clone();
+        app.listen("outreach-log", move |_event| {
+            log_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let progress_count_clone = progress_count.clone();
+        app.listen("outreach-progress", move |_event| {
+            progress_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let complete_count_clone = complete_count.clone();
+        app.listen("outreach-complete", move |_event| {
+            complete_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        use tauri::Manager;
+        let state = app.state::<commands::DbState>();
+        let app_handle = app.handle().clone();
+
+        let scope = commands::OutreachProgressScope {
+            processed_offset: 0,
+            sent_offset: 0,
+            total_leads: 1,
+            emit_complete: true,
+        };
+
+        let res = commands::send_zalo_outreach_internal(
+            Some(&app_handle),
+            &state.conn,
+            "mock-imei-event-test".to_string(),
+            vec![lead_id],
+            template_id,
+            commands::ZaloOutreachRunOptions::default(),
+            scope,
+        )
+        .await;
+
+        assert!(res.is_ok(), "Mock outreach run should succeed: {:?}", res);
+        assert_eq!(res.unwrap().total_sent, 1);
+
+        assert!(
+            log_count.load(Ordering::SeqCst) >= 1,
+            "Must have emitted at least 1 outreach-log event, got {}",
+            log_count.load(Ordering::SeqCst)
+        );
+        assert!(
+            progress_count.load(Ordering::SeqCst) >= 1,
+            "Must have emitted at least 1 outreach-progress event, got {}",
+            progress_count.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            complete_count.load(Ordering::SeqCst),
+            1,
+            "Must have emitted exactly 1 outreach-complete event, got {}",
+            complete_count.load(Ordering::SeqCst)
+        );
     }
 }
