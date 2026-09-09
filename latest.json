@@ -1,11 +1,19 @@
 {
   "version": "0.1.19",
   "notes": "Phiên bản v0.1.19: Tích hợp bộ nhập Lead từ file Excel (.xlsx, .xls) và CSV tốc độ cao với giao diện wizard, tự động chuẩn hóa số điện thoại, khử trùng lặp; Tối ưu hóa điều kiện gửi tin Zalo Outreach.",
-  "pub_date": "2026-09-09T05:58:14.386Z",
+  "pub_date": "2026-09-09T07:08:21.676Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDFZSXF2NGpuMURGTXpkUTFERENDOEp4cXJJdFFPTmNNaVJsQ0VWRGMreFlsdG1OaXcycHo1dXlJZm51WXB6WHlQcWdhK3RLeUpxNUprSDI1UDB3UFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTMzNDkyCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xOV9hbWQ2NC5kZWIKT3ZFZ1o3dVNNMlNJMHpab2ZQRFY4NEVLMkczWUhwSE11WkY5LzZTZE5pMGtxUmVadlBUdEZRVjJhWDhrOFNLMXg5UGVBU0pwaGdYWGo2Q2JWQ0FRQ2c9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDJQZE1kYkcyKzhsMWk5WWZUYW5INmtyRmdZbVJOUTRBR2hIQkZyVTJYZnRxVmhFbGpReGs4NTBaREdublJFNnNGTVRGRncyZktGRVpQaTBLcHQ4SGdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTM1MDA1CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xOV9hbWQ2NC5kZWIKZjJUVms4clIwL0JrUGQxOVQxVklwYTZlSEtIVmVuMmU0Y053dlBDOEdXclBNM3RuQ2JlUFo3a3JlQnd4MkdhUzNaa01YcXFSaUNhOGZjak5FUnVXREE9PQo=",
       "url": "https://rustsale.trantrongtri.com/v0.1.19/RustSale%20CRM_0.1.19_amd64.deb"
+    },
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDV5U3RUYkp0cGpmRFg5Q29yZVRPUUtpRXdIQ2pybXhPd2hpTkkzQUk2RC9ncFp5ZzJSWjJEaFFGZ1VjNUFUMS9QS1B6TGdwYTZ4NlpzS0liVWRMT3dRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTM3NzAwCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xOV94NjQtc2V0dXAuZXhlClcxS29HVVJRcUZnVldjKzUzNittSVgxeUM1NXIxd0xFamtvUmJZY2thYmJJNnlJT05tcC93anF0dWlKS2VRdjVJYXoyRElIQkFsOHNmWTRzS3BLVkNnPT0K",
+      "url": "https://rustsale.trantrongtri.com/v0.1.19/RustSale%20CRM_0.1.19_x64-setup.exe"
+    },
+    "windows-x86_64-msi": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDBnQlRJNTJQMVlDV3pKYm9JVE9YUWI2K3JuVU9Tb2loOEYvL2Y1UFA5QnNobGdpL2hmYWRsNnYvbVB6UC9McDd3a0V3QUhocXBZWGx1TTBQYk4zaGdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTM3NzAwCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xOV94NjRfZW4tVVMubXNpCml1cEZ3Yy9iWVlWQTZWSndydFVwWnl2WEs1UTNrTUZqRWZoNTZPOEh1RzRvM1UrTWVKNnhNcjg0cm10NjBMNDU3R3FEYzFBVjdPL2pzOUZqOVJvMEFnPT0K",
+      "url": "https://rustsale.trantrongtri.com/v0.1.19/RustSale%20CRM_0.1.19_x64_en-US.msi"
     }
   }
 }
