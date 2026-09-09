@@ -1,11 +1,11 @@
 {
-  "version": "0.1.18",
-  "notes": "Tích hợp tính năng tự động khởi động cùng hệ thống (Autostart) với công tắc bật/tắt trong Cài đặt và tối ưu an toàn khay hệ thống (System Tray)",
-  "pub_date": "2026-09-06T08:01:00.180Z",
+  "version": "0.1.19",
+  "notes": "Phiên bản v0.1.19: Tích hợp bộ nhập Lead từ file Excel (.xlsx, .xls) và CSV tốc độ cao với giao diện wizard, tự động chuẩn hóa số điện thoại, khử trùng lặp; Tối ưu hóa điều kiện gửi tin Zalo Outreach.",
+  "pub_date": "2026-09-09T05:58:14.386Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDd6WlJ1VldSOXNHS2ZONjJFMHNIM1lPYndKRkVPUFV3VTFLcUJOWHNSbWg1RDVKYVd1bmpPZmpBam9kUU5oU2gvcFhaTkhMSkZlZXVReU84aWtvcndnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjgxNjU5CWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xOF9hbWQ2NC5kZWIKL0h2SnNvYVlobHV6bWpNTXovMDlpRi9sWll5UFEvcFFlNXFRWGxqcjg0TTJFT2dhTjJ4dzIzVkZnRlNDb3V3Z2lHOXM5VklsWitaVTR1QXFYazRPQlE9PQo=",
-      "url": "https://rustsale.trantrongtri.com/v0.1.18/RustSale%20CRM_0.1.18_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeGk0KzZxa2hxUDFZSXF2NGpuMURGTXpkUTFERENDOEp4cXJJdFFPTmNNaVJsQ0VWRGMreFlsdG1OaXcycHo1dXlJZm51WXB6WHlQcWdhK3RLeUpxNUprSDI1UDB3UFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTMzNDkyCWZpbGU6UnVzdFNhbGUgQ1JNXzAuMS4xOV9hbWQ2NC5kZWIKT3ZFZ1o3dVNNMlNJMHpab2ZQRFY4NEVLMkczWUhwSE11WkY5LzZTZE5pMGtxUmVadlBUdEZRVjJhWDhrOFNLMXg5UGVBU0pwaGdYWGo2Q2JWQ0FRQ2c9PQo=",
+      "url": "https://rustsale.trantrongtri.com/v0.1.19/RustSale%20CRM_0.1.19_amd64.deb"
     }
   }
 }
