@@ -548,11 +548,57 @@
     }
   }
 
+  function sanitizeZaloUid(uid: string | null | undefined): string | null {
+    if (!uid) return null;
+    const trimmed = uid.replace(/[\t\r\n]/g, '').trim();
+    const lower = trimmed.toLowerCase();
+    if (!trimmed || lower === '0' || lower === '-0' || lower === '-1' || lower === 'null' || lower === 'undefined') {
+      return null;
+    }
+    if (/^0+$/.test(trimmed)) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  function normalizePhoneDigits(phone: string): string {
+    let phonePart = phone;
+    const match = phone.search(/[^0-9\s+\-().,\[\]]/);
+    if (match !== -1) {
+      phonePart = phone.slice(0, match);
+    }
+    let digits = phonePart.replace(/\D/g, '');
+    if (digits.startsWith('0084')) {
+      return '0' + digits.slice(4);
+    } else if (digits.startsWith('84')) {
+      return '0' + digits.slice(2);
+    }
+    return digits;
+  }
+
+  function isVnMobile(phone: string | null | undefined): boolean {
+    if (!phone) return false;
+    const normalized = normalizePhoneDigits(phone);
+    if (normalized.length !== 10) return false;
+    const prefix = normalized.slice(0, 2);
+    return ['03', '05', '07', '08', '09'].includes(prefix);
+  }
+
+  function isLeadOutreachable(lead: { phone?: string | null; zalo_uid?: string | null }): boolean {
+    if (sanitizeZaloUid(lead.zalo_uid)) {
+      return true;
+    }
+    return isVnMobile(lead.phone);
+  }
+
   async function resolveSelectedLeadIds(): Promise<number[]> {
     if (selectAllMatching) {
       return resolveOutreachLeadIds(currentLeadFilters(), excludedLeadIds);
     }
-    return [...selectedLeadIds];
+    return selectedLeadIds.filter(id => {
+      const lead = leads.find(l => l.id === id);
+      return !lead || isLeadOutreachable(lead);
+    });
   }
 
   function appendCampaignLog(msg: string) {
@@ -910,18 +956,19 @@
           <div class="max-h-48 overflow-y-auto p-2 rounded-md border border-border bg-muted/20 flex flex-col gap-1">
             {#each leads as lead (lead.id)}
               {#if lead.id}
-                {@const isSelected = selectAllMatching ? !excludedLeadSet.has(lead.id) : selectedLeadSet.has(lead.id)}
+                {@const isOutreachable = isLeadOutreachable(lead)}
+                {@const isSelected = isOutreachable && (selectAllMatching ? !excludedLeadSet.has(lead.id) : selectedLeadSet.has(lead.id))}
                 <div 
-                  class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5 font-semibold' : ''}"
-                  onclick={() => lead.id && toggleLead(lead.id)}
+                  class="flex items-center justify-between p-1.5 rounded-md hover:bg-muted/50 cursor-pointer transition-colors text-xs {isSelected ? 'bg-primary/5 font-semibold' : ''} {!isOutreachable ? 'opacity-50 cursor-not-allowed' : ''}"
+                  onclick={() => lead.id && isOutreachable && toggleLead(lead.id)}
                   role="button"
                   tabindex="0"
-                  onkeydown={(e) => e.key === 'Enter' && lead.id && toggleLead(lead.id)}
+                  onkeydown={(e) => e.key === 'Enter' && lead.id && isOutreachable && toggleLead(lead.id)}
                 >
                   <div class="flex items-center gap-2 truncate">
                     <Checkbox 
                       checked={isSelected}
-                      disabled={isCampaignRunning}
+                      disabled={isCampaignRunning || !isOutreachable}
                     />
                     <span class="font-medium text-foreground truncate">{lead.name}</span>
                     {#if lead.has_zalo === 1}
@@ -933,9 +980,20 @@
                     {/if}
                   </div>
                   <div class="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
-                    <span>{lead.phone}</span>
-                    {#if lead.phone && (lead.phone.startsWith('09') || lead.phone.startsWith('03') || lead.phone.startsWith('07') || lead.phone.startsWith('08') || lead.phone.startsWith('05'))}
-                      <Badge variant="outline" class="text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20">Mobile</Badge>
+                    {#if isOutreachable}
+                      {#if isVnMobile(lead.phone)}
+                        <span>{lead.phone}</span>
+                        <Badge variant="outline" class="text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20">Mobile</Badge>
+                      {:else if sanitizeZaloUid(lead.zalo_uid)}
+                        <span class="text-xs text-muted-foreground">UID: {sanitizeZaloUid(lead.zalo_uid)}</span>
+                      {/if}
+                    {:else}
+                      {#if lead.phone?.trim()}
+                        <span class="text-muted-foreground/60">{lead.phone}</span>
+                        <Badge variant="destructive" class="text-[9px] px-1 py-0 bg-destructive/10 text-destructive border-destructive/20">Invalid phone</Badge>
+                      {:else}
+                        <Badge variant="destructive" class="text-[9px] px-1 py-0 bg-destructive/10 text-destructive border-destructive/20">No phone</Badge>
+                      {/if}
                     {/if}
                     <span class="truncate max-w-[120px]">{lead.company}</span>
                   </div>

@@ -109,11 +109,42 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
         }
     }
 
-    if query.filter_verified_zalo {
-        sql.push_str(" AND l.has_zalo = 1");
-    } else if query.channel != "email" {
-        sql.push_str(" AND COALESCE(l.has_zalo, 1) != 0");
+    if query.channel != "email" {
+        sql.push_str(
+            " AND (
+                (
+                    l.zalo_uid IS NOT NULL
+                    AND LOWER(TRIM(REPLACE(REPLACE(REPLACE(l.zalo_uid, CHAR(9), ''), CHAR(10), ''), CHAR(13), ''))) NOT IN ('', '0', '-0', '-1', 'null', 'undefined')
+                    AND LOWER(TRIM(REPLACE(REPLACE(REPLACE(l.zalo_uid, CHAR(9), ''), CHAR(10), ''), CHAR(13), ''))) GLOB '*[^0]*'
+                )
+                OR
+                (
+                    l.phone IS NOT NULL
+                    AND (
+                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), '-', ''), '+', ''), '.', ''), '(', ''), ')', ''), CHAR(9), ''), CHAR(10), '') GLOB '0[35789][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                        OR
+                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), '-', ''), '+', ''), '.', ''), '(', ''), ')', ''), CHAR(9), ''), CHAR(10), '') GLOB '0[35789][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][^0-9]*'
+                        OR
+                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), '-', ''), '+', ''), '.', ''), '(', ''), ')', ''), CHAR(9), ''), CHAR(10), '') GLOB '84[35789][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                        OR
+                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), '-', ''), '+', ''), '.', ''), '(', ''), ')', ''), CHAR(9), ''), CHAR(10), '') GLOB '84[35789][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][^0-9]*'
+                        OR
+                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), '-', ''), '+', ''), '.', ''), '(', ''), ')', ''), CHAR(9), ''), CHAR(10), '') GLOB '0084[35789][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                        OR
+                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), '-', ''), '+', ''), '.', ''), '(', ''), ')', ''), CHAR(9), ''), CHAR(10), '') GLOB '0084[35789][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][^0-9]*'
+                    )
+                )
+            )",
+        );
+        if query.filter_verified_zalo {
+            sql.push_str(" AND l.has_zalo = 1");
+        } else {
+            sql.push_str(" AND COALESCE(l.has_zalo, 1) != 0");
+        }
+    } else {
+        sql.push_str(" AND (l.email IS NOT NULL AND TRIM(l.email) != '' AND l.email LIKE '%@%')");
     }
+
     if query.filter_unreached {
         sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
     }
@@ -123,39 +154,37 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
         );
     }
 
-    if query.category_id.is_some() {
-        let history_table = if query.channel == "email" {
-            "email_outreach_history"
-        } else {
-            "outreach_history"
-        };
+    let history_table = if query.channel == "email" {
+        "email_outreach_history"
+    } else {
+        "outreach_history"
+    };
 
-        match query.segmentation.as_str() {
-            "never_sent" => {
-                if query.channel != "email" {
-                    sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
-                    sql.push_str(" AND COALESCE(l.zalo_status, '') NOT IN ('BLOCKED_STRANGER', 'VERIFIED_NOT_EXIST', 'NOT_FOUND', 'INVALID_PHONE')");
-                }
-                sql.push_str(&format!(
-                    " AND NOT EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.status = 'SUCCESS')"
-                ));
+    match query.segmentation.as_str() {
+        "never_sent" => {
+            if query.channel != "email" {
+                sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
+                sql.push_str(" AND COALESCE(l.zalo_status, '') NOT IN ('BLOCKED_STRANGER', 'VERIFIED_NOT_EXIST', 'NOT_FOUND', 'INVALID_PHONE')");
             }
-            "last_failed" => {
-                sql.push_str(&format!(
-                    " AND (SELECT history.status FROM {history_table} history WHERE history.lead_id = l.id ORDER BY history.sent_at DESC, history.id DESC LIMIT 1) = 'FAILED'"
-                ));
-            }
-            "template_success" => {
-                let template_id = query
-                    .filter_template_id
-                    .ok_or_else(|| "Template ID is required for success filtering".to_string())?;
-                sql.push_str(&format!(
-                    " AND EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.template_id = ? AND history.status = 'SUCCESS')"
-                ));
-                params.push(Value::Integer(i64::from(template_id)));
-            }
-            _ => {}
+            sql.push_str(&format!(
+                " AND NOT EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.status = 'SUCCESS')"
+            ));
         }
+        "last_failed" => {
+            sql.push_str(&format!(
+                " AND (SELECT history.status FROM {history_table} history WHERE history.lead_id = l.id ORDER BY history.sent_at DESC, history.id DESC LIMIT 1) = 'FAILED'"
+            ));
+        }
+        "template_success" => {
+            let template_id = query
+                .filter_template_id
+                .ok_or_else(|| "Template ID is required for success filtering".to_string())?;
+            sql.push_str(&format!(
+                " AND EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.template_id = ? AND history.status = 'SUCCESS')"
+            ));
+            params.push(Value::Integer(i64::from(template_id)));
+        }
+        _ => {}
     }
 
     Ok((sql, params))
@@ -1199,7 +1228,15 @@ pub(crate) fn sanitize_valid_zalo_uid(uid: Option<&str>) -> Option<String> {
     uid.map(str::trim)
         .filter(|value| {
             let lowercase = value.to_ascii_lowercase();
-            !value.is_empty() && !matches!(lowercase.as_str(), "0" | "-1" | "null" | "undefined")
+            if value.is_empty()
+                || matches!(lowercase.as_str(), "0" | "-0" | "-1" | "null" | "undefined")
+            {
+                return false;
+            }
+            if value.chars().all(|c| c == '0') {
+                return false;
+            }
+            true
         })
         .map(str::to_string)
 }
@@ -2858,90 +2895,78 @@ pub async fn send_zalo_outreach(
     lead_ids: Vec<i32>,
     template_id: i32,
 ) -> Result<(), String> {
-    let app_handle_clone = app_handle.clone();
-    tokio::spawn(async move {
-        let db_state = app_handle_clone.state::<DbState>();
-        let _ = send_zalo_outreach_internal(
-            Some(&app_handle_clone),
-            &db_state.conn,
-            imei,
-            lead_ids,
-            template_id,
-            ZaloOutreachRunOptions::default(),
-            OutreachProgressScope::default(),
-        )
-        .await;
-    });
-    Ok(())
-}
+    let (valid_lead_ids, skipped_ids) = {
+        let db_state = app_handle.state::<DbState>();
+        let conn = db_state
+            .conn
+            .lock()
+            .map_err(|e| format!("Database lock error: {e}"))?;
+        filter_outreachable_zalo_lead_ids(&conn, &lead_ids)
+            .map_err(|e| format!("Database error: {e}"))?
+    };
 
-#[tauri::command]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "preserve the existing Tauri Zalo outreach IPC argument contract"
-)]
-pub async fn start_zalo_outreach(
-    app_handle: tauri::AppHandle,
-    imeis: Vec<String>,
-    template_id: i32,
-    lead_ids: Vec<i32>,
-    enable_burst_limit: Option<bool>,
-    burst_max_messages: Option<u32>,
-    burst_delay_seconds: Option<u64>,
-    inter_message_delay_seconds: Option<u64>,
-) -> Result<(), String> {
-    let enable_burst = enable_burst_limit.unwrap_or(false);
-    let burst_max = burst_max_messages.unwrap_or(0);
-    let burst_delay = burst_delay_seconds.unwrap_or(0);
-    let inter_delay = inter_message_delay_seconds.unwrap_or(0);
+    if !skipped_ids.is_empty() {
+        let _ = app_handle.emit(
+            "outreach-log",
+            OutreachLogPayload {
+                message: format!(
+                    "Automatically skipped {} lead(s) missing phone number before starting campaign",
+                    skipped_ids.len()
+                ),
+            },
+        );
+    }
 
-    let partitions = partition_outreach_leads(&imeis, &lead_ids)?;
-    let active_partitions: Vec<(String, Vec<i32>)> = partitions
-        .into_iter()
-        .filter(|(_, ids)| !ids.is_empty())
-        .collect();
-
-    if active_partitions.is_empty() {
+    if valid_lead_ids.is_empty() {
+        let _ = app_handle.emit(
+            "outreach-log",
+            OutreachLogPayload {
+                message: "No leads with valid phone numbers or Zalo UIDs to outreach.".to_string(),
+            },
+        );
+        let _ = app_handle.emit(
+            "outreach-complete",
+            OutreachCompletePayload {
+                total_sent: 0,
+                message: "No eligible leads found (missing phone numbers).".to_string(),
+            },
+        );
         return Ok(());
     }
 
-    let total_leads: usize = active_partitions.iter().map(|(_, ids)| ids.len()).sum();
+    let total_leads = valid_lead_ids.len();
     let app_handle_clone = app_handle.clone();
-
     tokio::spawn(async move {
         let db_state = app_handle_clone.state::<DbState>();
-        let mut processed_offset = 0;
-        let mut sent_offset = 0;
-        let num_partitions = active_partitions.len();
-
-        for (part_idx, (imei, part_leads)) in active_partitions.into_iter().enumerate() {
-            let count = part_leads.len();
-            let is_last = part_idx == num_partitions - 1;
-            let scope = OutreachProgressScope {
-                processed_offset,
-                sent_offset,
+        let res = send_zalo_outreach_internal(
+            Some(&app_handle_clone),
+            &db_state.conn,
+            imei,
+            valid_lead_ids,
+            template_id,
+            ZaloOutreachRunOptions::default(),
+            OutreachProgressScope {
+                processed_offset: 0,
+                sent_offset: 0,
                 total_leads,
-                emit_complete: is_last,
-            };
-            if let Ok(res) = send_zalo_outreach_internal(
-                Some(&app_handle_clone),
-                &db_state.conn,
-                imei,
-                part_leads,
-                template_id,
-                ZaloOutreachRunOptions {
-                    enable_burst_limit: enable_burst,
-                    burst_max_messages: burst_max,
-                    burst_delay_seconds: burst_delay,
-                    inter_message_delay_seconds: inter_delay,
+                emit_complete: true,
+            },
+        )
+        .await;
+        if let Err(err_msg) = res {
+            let _ = app_handle_clone.emit(
+                "outreach-log",
+                OutreachLogPayload {
+                    message: format!("Campaign failed: {err_msg}"),
                 },
-                scope,
-            )
-            .await
-            {
-                sent_offset += res.total_sent;
-            }
-            processed_offset += count;
+            );
+            let _ = app_handle_clone.emit(
+                "outreach-complete",
+                OutreachCompletePayload {
+                    total_sent: 0,
+                    message: format!("Campaign stopped due to error: {err_msg}"),
+                },
+            );
         }
     });
     Ok(())
@@ -2974,7 +2999,7 @@ pub fn normalize_phone_digits(phone: &str) -> String {
     }
 }
 
-fn is_vn_mobile(phone: &str) -> bool {
+pub fn is_vn_mobile(phone: &str) -> bool {
     let normalized = normalize_phone_digits(phone);
     if normalized.len() != 10 {
         return false;
@@ -2982,6 +3007,183 @@ fn is_vn_mobile(phone: &str) -> bool {
 
     let prefix = &normalized[0..2];
     matches!(prefix, "03" | "05" | "07" | "08" | "09")
+}
+
+pub fn is_valid_zalo_lead_target(phone: Option<&str>, zalo_uid: Option<&str>) -> bool {
+    if sanitize_valid_zalo_uid(zalo_uid).is_some() {
+        return true;
+    }
+    phone.map(is_vn_mobile).unwrap_or(false)
+}
+
+pub fn filter_outreachable_zalo_lead_ids(
+    conn: &Connection,
+    lead_ids: &[i32],
+) -> Result<(Vec<i32>, Vec<i32>), rusqlite::Error> {
+    if lead_ids.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut valid_ids = Vec::new();
+    let mut invalid_ids = Vec::new();
+
+    for &id in lead_ids {
+        let res: Result<(Option<String>, Option<String>), rusqlite::Error> = conn.query_row(
+            "SELECT phone, zalo_uid FROM leads WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        match res {
+            Ok((phone_opt, uid_opt)) => {
+                if is_valid_zalo_lead_target(phone_opt.as_deref(), uid_opt.as_deref()) {
+                    valid_ids.push(id);
+                } else {
+                    invalid_ids.push(id);
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                invalid_ids.push(id);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    for &id in &invalid_ids {
+        conn.execute(
+            "UPDATE leads SET has_zalo = 0, zalo_status = 'INVALID_PHONE' WHERE id = ?1",
+            [id],
+        )?;
+    }
+
+    Ok((valid_ids, invalid_ids))
+}
+
+#[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the existing Tauri Zalo outreach IPC argument contract"
+)]
+pub async fn start_zalo_outreach(
+    app_handle: tauri::AppHandle,
+    imeis: Vec<String>,
+    template_id: i32,
+    lead_ids: Vec<i32>,
+    enable_burst_limit: Option<bool>,
+    burst_max_messages: Option<u32>,
+    burst_delay_seconds: Option<u64>,
+    inter_message_delay_seconds: Option<u64>,
+) -> Result<(), String> {
+    let enable_burst = enable_burst_limit.unwrap_or(false);
+    let burst_max = burst_max_messages.unwrap_or(0);
+    let burst_delay = burst_delay_seconds.unwrap_or(0);
+    let inter_delay = inter_message_delay_seconds.unwrap_or(0);
+
+    let (valid_lead_ids, skipped_ids) = {
+        let db_state = app_handle.state::<DbState>();
+        let conn = db_state
+            .conn
+            .lock()
+            .map_err(|e| format!("Database lock error: {e}"))?;
+        filter_outreachable_zalo_lead_ids(&conn, &lead_ids)
+            .map_err(|e| format!("Database error: {e}"))?
+    };
+
+    if !skipped_ids.is_empty() {
+        let _ = app_handle.emit(
+            "outreach-log",
+            OutreachLogPayload {
+                message: format!(
+                    "Automatically skipped {} lead(s) missing phone number before starting campaign",
+                    skipped_ids.len()
+                ),
+            },
+        );
+    }
+
+    if valid_lead_ids.is_empty() {
+        let _ = app_handle.emit(
+            "outreach-log",
+            OutreachLogPayload {
+                message: "No leads with valid phone numbers or Zalo UIDs to outreach.".to_string(),
+            },
+        );
+        let _ = app_handle.emit(
+            "outreach-complete",
+            OutreachCompletePayload {
+                total_sent: 0,
+                message: "No eligible leads found (missing phone numbers).".to_string(),
+            },
+        );
+        return Ok(());
+    }
+
+    let partitions = partition_outreach_leads(&imeis, &valid_lead_ids)?;
+    let active_partitions: Vec<(String, Vec<i32>)> = partitions
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .collect();
+
+    if active_partitions.is_empty() {
+        return Ok(());
+    }
+
+    let total_leads: usize = active_partitions.iter().map(|(_, ids)| ids.len()).sum();
+    let app_handle_clone = app_handle.clone();
+
+    tokio::spawn(async move {
+        let db_state = app_handle_clone.state::<DbState>();
+        let mut processed_offset = 0;
+        let mut sent_offset = 0;
+        let num_partitions = active_partitions.len();
+
+        for (part_idx, (imei, part_leads)) in active_partitions.into_iter().enumerate() {
+            let count = part_leads.len();
+            let is_last = part_idx == num_partitions - 1;
+            let scope = OutreachProgressScope {
+                processed_offset,
+                sent_offset,
+                total_leads,
+                emit_complete: is_last,
+            };
+            match send_zalo_outreach_internal(
+                Some(&app_handle_clone),
+                &db_state.conn,
+                imei,
+                part_leads,
+                template_id,
+                ZaloOutreachRunOptions {
+                    enable_burst_limit: enable_burst,
+                    burst_max_messages: burst_max,
+                    burst_delay_seconds: burst_delay,
+                    inter_message_delay_seconds: inter_delay,
+                },
+                scope,
+            )
+            .await
+            {
+                Ok(res) => {
+                    sent_offset += res.total_sent;
+                }
+                Err(err_msg) => {
+                    let _ = app_handle_clone.emit(
+                        "outreach-log",
+                        OutreachLogPayload {
+                            message: format!("Partition {part_idx} failed: {err_msg}"),
+                        },
+                    );
+                    let _ = app_handle_clone.emit(
+                        "outreach-complete",
+                        OutreachCompletePayload {
+                            total_sent: sent_offset,
+                            message: format!("Campaign stopped due to error: {err_msg}"),
+                        },
+                    );
+                    break;
+                }
+            }
+            processed_offset += count;
+        }
+    });
+    Ok(())
 }
 
 fn render_zalo_template(template: &str, lead_name: &str) -> String {
@@ -3085,8 +3287,8 @@ pub fn partition_outreach_leads(
     Ok(result)
 }
 
-pub async fn send_zalo_outreach_internal(
-    app_handle: Option<&tauri::AppHandle>,
+pub async fn send_zalo_outreach_internal<R: tauri::Runtime>(
+    app_handle: Option<&tauri::AppHandle<R>>,
     conn_mutex: &std::sync::Mutex<Connection>,
     imei: String,
     lead_ids: Vec<i32>,
@@ -3221,6 +3423,16 @@ pub async fn send_zalo_outreach_internal(
 
                 if phone.trim().is_empty() {
                     let msg = format!("Lead {} is missing phone number", lead_id);
+                    {
+                        let conn = conn_mutex
+                            .lock()
+                            .map_err(|e| format!("Database lock error: {e}"))?;
+                        conn.execute(
+                            "UPDATE leads SET has_zalo = 0, zalo_status = 'INVALID_PHONE' WHERE id = ?1",
+                            rusqlite::params![lead_id],
+                        )
+                        .map_err(|e| format!("Database write error updating invalid phone for lead {lead_id}: {e}"))?;
+                    }
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "outreach-log",
@@ -3246,13 +3458,16 @@ pub async fn send_zalo_outreach_internal(
                 if phone != "not-found" && !is_vn_mobile(&phone) {
                     let msg = format!("Skipping non-mobile number: {}", phone);
                     println!("{}", msg);
-                    let _ = {
-                        let conn_guard = conn_mutex.lock().unwrap();
-                        conn_guard.execute(
-                            "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                    {
+                        let conn = conn_mutex
+                            .lock()
+                            .map_err(|e| format!("Database lock error: {e}"))?;
+                        conn.execute(
+                            "UPDATE leads SET has_zalo = 0, zalo_status = 'INVALID_PHONE' WHERE id = ?1",
                             rusqlite::params![lead_id],
                         )
-                    };
+                        .map_err(|e| format!("Database write error updating invalid phone for lead {lead_id}: {e}"))?;
+                    }
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "outreach-log",
@@ -3277,13 +3492,16 @@ pub async fn send_zalo_outreach_internal(
 
                 if phone == "not-found" {
                     let msg = format!("Phone number {} not found on Zalo (Mock)", phone);
-                    let _ = {
-                        let conn_guard = conn_mutex.lock().unwrap();
-                        conn_guard.execute(
+                    {
+                        let conn = conn_mutex
+                            .lock()
+                            .map_err(|e| format!("Database lock error: {e}"))?;
+                        conn.execute(
                             "UPDATE leads SET has_zalo = 0, zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
                             rusqlite::params![lead_id],
                         )
-                    };
+                        .map_err(|e| format!("Database write error updating lead {lead_id}: {e}"))?;
+                    }
                     if let Some(app) = app_handle {
                         let _ = app.emit(
                             "outreach-log",
@@ -3720,6 +3938,16 @@ pub async fn send_zalo_outreach_internal(
 
             if phone.trim().is_empty() {
                 let msg = format!("Lead {} ({}) is missing phone number", lead_name, lead_id);
+                {
+                    let conn = conn_mutex
+                        .lock()
+                        .map_err(|e| format!("Database lock error: {e}"))?;
+                    conn.execute(
+                        "UPDATE leads SET has_zalo = 0, zalo_status = 'INVALID_PHONE' WHERE id = ?1",
+                        rusqlite::params![lead_id],
+                    )
+                    .map_err(|e| format!("Database write error updating invalid phone for lead {lead_id}: {e}"))?;
+                }
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "outreach-log",
@@ -3744,13 +3972,16 @@ pub async fn send_zalo_outreach_internal(
             if !is_vn_mobile(&phone) {
                 let msg = format!("Skipping non-mobile number: {}", phone);
                 println!("{}", msg);
-                let _ = {
-                    let conn_guard = conn_mutex.lock().unwrap();
-                    conn_guard.execute(
-                        "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
+                {
+                    let conn = conn_mutex
+                        .lock()
+                        .map_err(|e| format!("Database lock error: {e}"))?;
+                    conn.execute(
+                        "UPDATE leads SET has_zalo = 0, zalo_status = 'INVALID_PHONE' WHERE id = ?1",
                         rusqlite::params![lead_id],
                     )
-                };
+                    .map_err(|e| format!("Database write error updating invalid phone for lead {lead_id}: {e}"))?;
+                }
                 if let Some(app) = app_handle {
                     let _ = app.emit(
                         "outreach-log",
@@ -3813,22 +4044,37 @@ pub async fn send_zalo_outreach_internal(
                         "LOOKUP_FAILED"
                     };
 
-                    let conn_guard = conn_mutex.lock();
-                    if let Ok(conn) = conn_guard {
-                        let _ = conn.execute(
+                    {
+                        let mut conn = conn_mutex
+                            .lock()
+                            .map_err(|e| format!("Database lock error: {e}"))?;
+                        let tx = conn.transaction().map_err(|e| {
+                            format!("Database transaction error for lead {lead_id}: {e}")
+                        })?;
+                        tx.execute(
                             "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
                             rusqlite::params![status_str, lead_id],
-                        );
+                        )
+                        .map_err(|e| {
+                            format!("Database write error updating lead {lead_id}: {e}")
+                        })?;
                         if status_str == "VERIFIED_NOT_EXIST" {
-                            let _ = conn.execute(
+                            tx.execute(
                                 "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
                                 rusqlite::params![lead_id],
-                            );
+                            )
+                            .map_err(|e| {
+                                format!("Database write error updating lead {lead_id}: {e}")
+                            })?;
                         }
-                        let _ = conn.execute(
+                        tx.execute(
                             "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                             rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
-                        );
+                        )
+                        .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                        tx.commit().map_err(|e| {
+                            format!("Database transaction commit error for lead {lead_id}: {e}")
+                        })?;
                     }
 
                     if let Some(app) = app_handle {
@@ -3890,16 +4136,28 @@ pub async fn send_zalo_outreach_internal(
                             lead_name, sanitized_phone, user.uid
                         );
                         let now: String = chrono::Utc::now().to_rfc3339();
-                        let conn_guard = conn_mutex.lock();
-                        if let Ok(conn) = conn_guard {
-                            let _ = conn.execute(
+                        {
+                            let mut conn = conn_mutex
+                                .lock()
+                                .map_err(|e| format!("Database lock error: {e}"))?;
+                            let tx = conn.transaction().map_err(|e| {
+                                format!("Database transaction error for lead {lead_id}: {e}")
+                            })?;
+                            tx.execute(
                                 "UPDATE leads SET zalo_status = 'LOOKUP_FAILED' WHERE id = ?1",
                                 rusqlite::params![lead_id],
-                            );
-                            let _ = conn.execute(
+                            )
+                            .map_err(|e| {
+                                format!("Database write error updating lead {lead_id}: {e}")
+                            })?;
+                            tx.execute(
                                 "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                                 rusqlite::params![lead_id, template_id, "Invalid Zalo UID from provider", &now, &imei],
-                            );
+                            )
+                            .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                            tx.commit().map_err(|e| {
+                                format!("Database transaction commit error for lead {lead_id}: {e}")
+                            })?;
                         }
                         if let Some(app) = app_handle {
                             let _ = app.emit(
@@ -3918,16 +4176,26 @@ pub async fn send_zalo_outreach_internal(
                         sanitized_phone, lead_name
                     );
                     let now: String = chrono::Utc::now().to_rfc3339();
-                    let conn_guard = conn_mutex.lock();
-                    if let Ok(conn) = conn_guard {
-                        let _ = conn.execute(
+                    {
+                        let mut conn = conn_mutex
+                            .lock()
+                            .map_err(|e| format!("Database lock error: {e}"))?;
+                        let tx = conn.transaction().map_err(|e| {
+                            format!("Database transaction error for lead {lead_id}: {e}")
+                        })?;
+                        tx.execute(
                             "UPDATE leads SET has_zalo = 0, zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
                             rusqlite::params![lead_id],
-                        );
-                        let _ = conn.execute(
+                        )
+                        .map_err(|e| format!("Database write error updating lead {lead_id}: {e}"))?;
+                        tx.execute(
                             "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                             rusqlite::params![lead_id, template_id, "Phone number not found on Zalo", &now, &imei],
-                        );
+                        )
+                        .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                        tx.commit().map_err(|e| {
+                            format!("Database transaction commit error for lead {lead_id}: {e}")
+                        })?;
                     }
                     if let Some(app) = app_handle {
                         let _ = app.emit(
@@ -4142,16 +4410,26 @@ pub async fn send_zalo_outreach_internal(
                     "SEND_FAILED"
                 };
 
-                let conn_guard = conn_mutex.lock();
-                if let Ok(conn) = conn_guard {
-                    let _ = conn.execute(
+                {
+                    let mut conn = conn_mutex
+                        .lock()
+                        .map_err(|e| format!("Database lock error: {e}"))?;
+                    let tx = conn.transaction().map_err(|e| {
+                        format!("Database transaction error for lead {lead_id}: {e}")
+                    })?;
+                    tx.execute(
                         "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
                         rusqlite::params![status_str, lead_id],
-                    );
-                    let _ = conn.execute(
+                    )
+                    .map_err(|e| format!("Database write error updating lead {lead_id}: {e}"))?;
+                    tx.execute(
                         "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                         rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
-                    );
+                    )
+                    .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                    tx.commit().map_err(|e| {
+                        format!("Database transaction commit error for lead {lead_id}: {e}")
+                    })?;
                 }
                 if let Some(app) = app_handle {
                     let _ = app.emit(
@@ -8206,4 +8484,3 @@ pub fn increment_template_usage(id: i64, state: tauri::State<DbState>) -> Result
         .map_err(|e| format!("Database lock error: {}", e))?;
     crate::db::increment_template_usage(&conn, id).map_err(|e| format!("Database error: {}", e))
 }
-
